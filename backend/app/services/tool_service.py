@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -42,6 +41,7 @@ def list_tools() -> dict[str, Any]:
         {"name": "search_web"},
         {"name": "research_web"},
         {"name": "browser_search"},
+        {"name": "browser_run"},
         {"name": "multi_web_search"},
         {"name": "python_execute"},
         {"name": "list_project_tree"},
@@ -51,6 +51,9 @@ def list_tools() -> dict[str, Any]:
         {"name": "preview_project_patch"},
         {"name": "apply_project_patch"},
         {"name": "replace_in_file"},
+        {"name": "apply_replace_in_file"},
+        {"name": "rollback_project_patch"},
+        {"name": "list_patch_backups"},
         {"name": "git_status"},
         {"name": "git_commit_push"},
         {"name": "list_library"},
@@ -124,6 +127,15 @@ def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, An
             max_results=int(args.get("max_results", 5)),
         )
 
+    if tool_name == "browser_run":
+        from app.services.browser_agent import BrowserAgent
+        agent = BrowserAgent()
+        return agent.run(
+            start_url=str(args.get("start_url", "")),
+            steps=args.get("steps", []) if isinstance(args.get("steps", []), list) else [],
+            headless=bool(args.get("headless", True)),
+        )
+
     if tool_name == "multi_web_search":
         from app.services.web_multisearch_service import WebMultiSearchService
         service = WebMultiSearchService()
@@ -181,6 +193,29 @@ def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, An
             str(args.get("old_text", "")),
             str(args.get("new_text", "")),
             int(args.get("max_chars", 20000)),
+        )
+
+    if tool_name == "apply_replace_in_file":
+        patch = ProjectPatchService()
+        return patch.apply_replace_in_file(
+            str(args.get("path", "")),
+            str(args.get("old_text", "")),
+            str(args.get("new_text", "")),
+            int(args.get("max_chars", 20000)),
+        )
+
+    if tool_name == "rollback_project_patch":
+        patch = ProjectPatchService()
+        return patch.rollback_patch(
+            str(args.get("path", "")),
+            str(args.get("backup_id", "")),
+        )
+
+    if tool_name == "list_patch_backups":
+        patch = ProjectPatchService()
+        return patch.list_backups(
+            path=str(args.get("path", "")).strip() or None,
+            limit=int(args.get("limit", 20)),
         )
 
     if tool_name == "git_status":

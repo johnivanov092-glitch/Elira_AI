@@ -8,6 +8,8 @@ from app.schemas.project_patch import (
     ApplyProjectPatchRequest,
     PreviewProjectPatchRequest,
     ReplaceInFileRequest,
+    RollbackProjectPatchRequest,
+    PatchBackupsRequest,
 )
 from app.services.tool_service import run_tool
 
@@ -25,19 +27,15 @@ def preview_project_patch(payload: PreviewProjectPatchRequest):
                 "max_chars": payload.max_chars,
             },
         )
-        return JSONResponse(
-            content=jsonable_encoder(result),
-            media_type="application/json; charset=utf-8",
-        )
+        return JSONResponse(content=jsonable_encoder(result), media_type="application/json; charset=utf-8")
     except Exception as exc:
-        fallback = {
-            "ok": False,
-            "path": payload.path,
-            "error": str(exc),
-            "route": "/api/project/patch/preview",
-        }
         return JSONResponse(
-            content=jsonable_encoder(fallback),
+            content=jsonable_encoder({
+                "ok": False,
+                "path": payload.path,
+                "error": str(exc),
+                "route": "/api/project/patch/preview",
+            }),
             media_type="application/json; charset=utf-8",
         )
 
@@ -52,19 +50,15 @@ def apply_project_patch(payload: ApplyProjectPatchRequest):
                 "new_content": payload.new_content,
             },
         )
-        return JSONResponse(
-            content=jsonable_encoder(result),
-            media_type="application/json; charset=utf-8",
-        )
+        return JSONResponse(content=jsonable_encoder(result), media_type="application/json; charset=utf-8")
     except Exception as exc:
-        fallback = {
-            "ok": False,
-            "path": payload.path,
-            "error": str(exc),
-            "route": "/api/project/patch/apply",
-        }
         return JSONResponse(
-            content=jsonable_encoder(fallback),
+            content=jsonable_encoder({
+                "ok": False,
+                "path": payload.path,
+                "error": str(exc),
+                "route": "/api/project/patch/apply",
+            }),
             media_type="application/json; charset=utf-8",
         )
 
@@ -81,18 +75,85 @@ def replace_in_file(payload: ReplaceInFileRequest):
                 "max_chars": payload.max_chars,
             },
         )
+        return JSONResponse(content=jsonable_encoder(result), media_type="application/json; charset=utf-8")
+    except Exception as exc:
         return JSONResponse(
-            content=jsonable_encoder(result),
+            content=jsonable_encoder({
+                "ok": False,
+                "path": payload.path,
+                "error": str(exc),
+                "route": "/api/project/patch/replace",
+            }),
             media_type="application/json; charset=utf-8",
         )
+
+
+@router.post("/replace-apply")
+def apply_replace_in_file(payload: ReplaceInFileRequest):
+    try:
+        result = run_tool(
+            "apply_replace_in_file",
+            {
+                "path": payload.path,
+                "old_text": payload.old_text,
+                "new_text": payload.new_text,
+                "max_chars": payload.max_chars,
+            },
+        )
+        return JSONResponse(content=jsonable_encoder(result), media_type="application/json; charset=utf-8")
     except Exception as exc:
-        fallback = {
-            "ok": False,
-            "path": payload.path,
-            "error": str(exc),
-            "route": "/api/project/patch/replace",
-        }
         return JSONResponse(
-            content=jsonable_encoder(fallback),
+            content=jsonable_encoder({
+                "ok": False,
+                "path": payload.path,
+                "error": str(exc),
+                "route": "/api/project/patch/replace-apply",
+            }),
+            media_type="application/json; charset=utf-8",
+        )
+
+
+@router.post("/rollback")
+def rollback_project_patch(payload: RollbackProjectPatchRequest):
+    try:
+        result = run_tool(
+            "rollback_project_patch",
+            {
+                "path": payload.path,
+                "backup_id": payload.backup_id,
+            },
+        )
+        return JSONResponse(content=jsonable_encoder(result), media_type="application/json; charset=utf-8")
+    except Exception as exc:
+        return JSONResponse(
+            content=jsonable_encoder({
+                "ok": False,
+                "path": payload.path,
+                "error": str(exc),
+                "route": "/api/project/patch/rollback",
+            }),
+            media_type="application/json; charset=utf-8",
+        )
+
+
+@router.post("/backups")
+def list_project_patch_backups(payload: PatchBackupsRequest):
+    try:
+        result = run_tool(
+            "list_patch_backups",
+            {
+                "path": payload.path,
+                "limit": payload.limit,
+            },
+        )
+        return JSONResponse(content=jsonable_encoder(result), media_type="application/json; charset=utf-8")
+    except Exception as exc:
+        return JSONResponse(
+            content=jsonable_encoder({
+                "ok": False,
+                "path": payload.path,
+                "error": str(exc),
+                "route": "/api/project/patch/backups",
+            }),
             media_type="application/json; charset=utf-8",
         )
