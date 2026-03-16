@@ -13,6 +13,7 @@ from app.api.routes.tools import router as tools_router
 from app.api.routes.project_patch import router as project_patch_router
 from app.api.routes.agent_supervisor import router as agent_supervisor_router
 from app.api.routes.run_history import router as run_history_router
+from app.api.routes.desktop_bridge import router as desktop_bridge_router
 
 # Optional runtime routes (safe import)
 try:
@@ -72,6 +73,9 @@ def root():
                 "/api/browser/screenshot",
                 "/api/desktop/status",
                 "/api/desktop/info",
+                "/api/desktop/handshake",
+                "/api/desktop/workspace",
+                "/api/desktop/open-project",
                 "/api/supervisor/status",
                 "/api/supervisor/agents",
                 "/api/supervisor/agents/register",
@@ -118,6 +122,7 @@ app.include_router(tools_router)
 app.include_router(project_patch_router)
 app.include_router(agent_supervisor_router)
 app.include_router(run_history_router)
+app.include_router(desktop_bridge_router)
 
 
 # -----------------------------
