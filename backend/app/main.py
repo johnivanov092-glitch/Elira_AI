@@ -19,6 +19,26 @@ from app.api.routes.autonomous_dev import router as autonomous_dev_router
 from app.api.routes.project_brain import router as project_brain_router
 
 try:
+    from app.api.routes.multi_agent import router as multi_agent_router
+except Exception:
+    multi_agent_router = None
+
+try:
+    from app.api.routes.phase10 import router as phase10_router
+except Exception:
+    phase10_router = None
+
+try:
+    from app.api.routes.phase11 import router as phase11_router
+except Exception:
+    phase11_router = None
+
+try:
+    from app.api.routes.phase12 import router as phase12_router
+except Exception:
+    phase12_router = None
+
+try:
     from app.api.routes.browser_runtime import router as browser_runtime_router
 except Exception:
     browser_runtime_router = None
@@ -94,6 +114,21 @@ def root():
                 "/api/multi-agent/bootstrap",
                 "/api/multi-agent/run",
                 "/api/multi-agent/runs",
+                "/api/phase10/status",
+                "/api/phase10/research/run",
+                "/api/phase10/browser/run",
+                "/api/phase11/status",
+                "/api/phase11/patch/preview",
+                "/api/phase11/patch/apply",
+                "/api/phase11/patch/rollback",
+                "/api/phase11/patch/verify",
+                "/api/phase11/patch/backups",
+                "/api/phase12/status",
+                "/api/phase12/executions",
+                "/api/phase12/executions/{execution_id}",
+                "/api/phase12/executions/{execution_id}/events",
+                "/api/phase12/executions/{execution_id}/artifacts",
+                "/api/phase12/executions/start",
             ],
         },
         media_type="application/json; charset=utf-8",
@@ -122,11 +157,17 @@ app.include_router(desktop_lifecycle_router)
 app.include_router(autonomous_dev_router)
 app.include_router(project_brain_router)
 
-try:
-    from app.api.routes.multi_agent import router as multi_agent_router
+if multi_agent_router:
     app.include_router(multi_agent_router)
-except Exception:
-    multi_agent_router = None
+
+if phase10_router:
+    app.include_router(phase10_router)
+
+if phase11_router:
+    app.include_router(phase11_router)
+
+if phase12_router:
+    app.include_router(phase12_router)
 
 if browser_runtime_router:
     app.include_router(browser_runtime_router)
