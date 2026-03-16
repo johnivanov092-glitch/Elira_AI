@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import json
@@ -18,6 +19,8 @@ from app.services.library_service import (
     build_library_context,
 )
 from app.services.git_service import GitService
+from app.services.project_map_service import ProjectMapService
+from app.services.project_brain_loop_service import ProjectBrainLoopService
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 DATA_DIR = BASE_DIR / "data"
@@ -52,6 +55,10 @@ def list_tools() -> dict[str, Any]:
         {"name": "git_commit_push"},
         {"name": "list_library"},
         {"name": "build_library_context"},
+        {"name": "project_map_scan"},
+        {"name": "project_map_search"},
+        {"name": "project_brain_analyze"},
+        {"name": "project_brain_loop"},
     ]
     return {"ok": True, "tools": tools, "count": len(tools)}
 
@@ -102,20 +109,12 @@ def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, An
     if tool_name == "research_web":
         query = str(args.get("query", "")).strip()
         results = research_web(query=query, max_results=int(args.get("max_results", 5)))
-        if isinstance(results, list):
-            context = "\n".join(
-                f"{r.get('title','')} - {r.get('snippet','')}"
-                for r in results[:5]
-                if isinstance(r, dict)
-            )
-            return {
-                "ok": True,
-                "query": query,
-                "results": results,
-                "count": len(results),
-                "context": context,
-            }
-        return results
+        return {
+            "ok": True,
+            "query": query,
+            "results": results,
+            "count": len(results) if isinstance(results, list) else 0,
+        }
 
     if tool_name == "browser_search":
         from app.services.browser_agent import BrowserAgent
@@ -197,5 +196,36 @@ def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, An
 
     if tool_name == "build_library_context":
         return build_library_context()
+
+    if tool_name == "project_map_scan":
+        service = ProjectMapService()
+        return service.build_map(
+            max_depth=int(args.get("max_depth", 4)),
+            max_items=int(args.get("max_items", 500)),
+        )
+
+    if tool_name == "project_map_search":
+        service = ProjectMapService()
+        return service.search(
+            str(args.get("query", "")),
+            max_hits=int(args.get("max_hits", 30)),
+        )
+
+    if tool_name == "project_brain_analyze":
+        service = ProjectBrainLoopService()
+        return service.analyze(
+            focus=str(args.get("focus", "backend")),
+            max_iterations=int(args.get("max_iterations", 3)),
+        )
+
+    if tool_name == "project_brain_loop":
+        service = ProjectBrainLoopService()
+        return service.run_loop(
+            path=str(args.get("path", "")),
+            new_content=str(args.get("new_content", "")),
+            message=str(args.get("message", "AI Project Brain patch")),
+            max_iterations=int(args.get("max_iterations", 1)),
+            auto_push=bool(args.get("auto_push", False)),
+        )
 
     return {"ok": False, "error": f"Unknown tool: {tool_name}"}
