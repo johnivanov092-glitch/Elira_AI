@@ -4,6 +4,7 @@ import RunHistoryView from "./RunHistoryView";
 import BackendControlPanel from "./BackendControlPanel";
 import AutonomousDevPanel from "./AutonomousDevPanel";
 import ProjectBrainPanel from "./ProjectBrainPanel";
+import MultiAgentPanel from "./MultiAgentPanel";
 
 export default function WorkspaceShell() {
   return (
@@ -15,6 +16,7 @@ export default function WorkspaceShell() {
         <BackendControlPanel />
         <AutonomousDevPanel />
         <ProjectBrainPanel />
+        <MultiAgentPanel />
       </div>
     </div>
   );
