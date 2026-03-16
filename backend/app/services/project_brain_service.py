@@ -1,29 +1,33 @@
-
 from __future__ import annotations
 
 from typing import Any
+
 from app.services.project_service import list_project_tree, search_project, read_project_file
-from app.services.tool_service import run_tool
+from app.services.project_patch_service import ProjectPatchService
+from app.services.git_service import GitService
 
 
 class ProjectBrainService:
-    '''
-    Stage 8 – Project Brain
+    """
+    Project Brain service without circular imports.
 
-    Capabilities:
-    - scan project structure
-    - search codebase
-    - read important files
-    - suggest improvements
-    - optionally trigger patches + git commits
-    '''
+    Safe:
+    - scans project
+    - searches code
+    - reads files
+    - previews/applies patches
+    - optionally commits/pushes via GitService
+
+    IMPORTANT:
+    This service does NOT import tool_service.
+    """
 
     def scan_project(self) -> dict[str, Any]:
         tree = list_project_tree(max_depth=4, max_items=500)
         return {
             "ok": True,
             "type": "project_scan",
-            "tree": tree
+            "tree": tree,
         }
 
     def find_code(self, query: str) -> dict[str, Any]:
@@ -32,36 +36,49 @@ class ProjectBrainService:
             "ok": True,
             "type": "search",
             "query": query,
-            "results": results
+            "results": results,
         }
 
     def read_file(self, path: str) -> dict[str, Any]:
         return read_project_file(path, max_chars=20000)
 
-    def apply_patch_and_push(self, path: str, new_content: str, message: str = "AI Project Brain patch"):
-        preview = run_tool("preview_project_patch", {
-            "path": path,
-            "new_content": new_content
-        })
+    def preview_patch(self, path: str, new_content: str) -> dict[str, Any]:
+        patch = ProjectPatchService()
+        return patch.preview_patch(path, new_content, max_chars=20000)
 
+    def apply_patch(self, path: str, new_content: str) -> dict[str, Any]:
+        patch = ProjectPatchService()
+        return patch.apply_patch(path, new_content)
+
+    def apply_patch_and_push(
+        self,
+        path: str,
+        new_content: str,
+        message: str = "AI Project Brain patch",
+        auto_push: bool = False,
+    ) -> dict[str, Any]:
+        preview = self.preview_patch(path, new_content)
         if not preview.get("ok"):
             return preview
 
-        apply = run_tool("apply_project_patch", {
-            "path": path,
-            "new_content": new_content
-        })
+        apply_result = self.apply_patch(path, new_content)
+        if not apply_result.get("ok"):
+            return {
+                "ok": False,
+                "preview": preview,
+                "apply": apply_result,
+                "git": None,
+            }
 
-        if not apply.get("ok"):
-            return apply
-
-        git = run_tool("git_commit_push", {
-            "message": message
-        })
+        git_result = None
+        if auto_push:
+            git = GitService()
+            git_result = git.commit_and_push(message)
 
         return {
             "ok": True,
             "preview": preview,
-            "apply": apply,
-            "git": git
+            "apply": apply_result,
+            "git": git_result,
+            "auto_push": auto_push,
         }
