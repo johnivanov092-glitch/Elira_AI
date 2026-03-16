@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+pydantic
+ollama
+pandas
+pypdf
+requests
+beautifulsoup4
+duckduckgo-search
+python-multipart
+aiofiles

@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+
+# Logs
+*.log
+
+# Env
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python build
+build/
+dist/
+*.egg-info/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# Temporary
+tmp/
+temp/
+
+# Jarvis runtime data
+data/run_history.json
+data/memory_store.json
+
+# Ollama
+ollama_logs/
+
+# Frontend build
+frontend/dist/
+frontend/.next/
+
+# Local configs
+local_settings.json
