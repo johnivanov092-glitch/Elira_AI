@@ -1,0 +1,14 @@
+{
+  "app_mode": "server",
+  "app_status": "starting",
+  "backend_status": "unknown",
+  "frontend_status": "unknown",
+  "desktop_attached": false,
+  "desktop_window_ready": false,
+  "backend_pid": null,
+  "backend_url": "http://127.0.0.1:8000",
+  "started_at": "2026-03-16T14:23:18.629550+00:00",
+  "updated_at": "2026-03-16T14:23:18.629550+00:00",
+  "last_error": null,
+  "meta": {}
+}

@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -12,6 +11,7 @@ from app.api.routes.profiles import router as profiles_router
 from app.api.routes.settings import router as settings_router
 from app.api.routes.tools import router as tools_router
 from app.api.routes.project_patch import router as project_patch_router
+from app.api.routes.agent_supervisor import router as agent_supervisor_router
 
 # Optional runtime routes (safe import)
 try:
@@ -71,6 +71,15 @@ def root():
                 "/api/browser/screenshot",
                 "/api/desktop/status",
                 "/api/desktop/info",
+                "/api/supervisor/status",
+                "/api/supervisor/agents",
+                "/api/supervisor/agents/register",
+                "/api/supervisor/run",
+                "/api/supervisor/runs",
+                "/api/supervisor/events",
+                "/api/supervisor/schedule",
+                "/api/supervisor/jobs",
+                "/api/supervisor/bootstrap",
             ],
         },
         media_type="application/json; charset=utf-8",
@@ -102,6 +111,7 @@ app.include_router(memory_router)
 app.include_router(agents_router)
 app.include_router(tools_router)
 app.include_router(project_patch_router)
+app.include_router(agent_supervisor_router)
 
 
 # -----------------------------
