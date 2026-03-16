@@ -1,15 +1,26 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Jarvis Work",
-  "version": "0.1.0",
-  "identifier": "com.jarvis.work",
-  "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
-    "devUrl": "http://127.0.0.1:5173",
-    "frontendDist": "../frontend/dist"
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "package": {
+    "productName": "Jarvis Work",
+    "version": "0.1.0"
   },
-  "app": {
+  "build": {
+    "beforeDevCommand": "npm --prefix frontend run dev",
+    "beforeBuildCommand": "npm --prefix frontend run build",
+    "devPath": "http://127.0.0.1:5173",
+    "distDir": "../frontend/dist"
+  },
+  "tauri": {
+    "bundle": {
+      "active": true,
+      "targets": [
+        "nsis"
+      ],
+      "identifier": "com.jarvis.work",
+      "windows": {
+        "digestAlgorithm": "sha256"
+      }
+    },
     "windows": [
       {
         "title": "Jarvis Work",
@@ -18,14 +29,5 @@
         "resizable": true
       }
     ]
-  },
-  "bundle": {
-    "active": true,
-    "targets": [
-      "nsis"
-    ],
-    "windows": {
-      "digestAlgorithm": "sha256"
-    }
   }
 }

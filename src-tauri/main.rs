@@ -2,7 +2,6 @@
 
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
-use tauri::Manager;
 
 struct BackendState {
     child: Mutex<Option<Child>>,
@@ -111,7 +110,7 @@ fn main() {
         .setup(|app| {
             let handle = app.handle();
             let state: tauri::State<BackendState> = handle.state();
-            let _ = start_backend(handle.clone(), state);
+            let _ = start_backend(handle, state);
             Ok(())
         })
         .run(tauri::generate_context!())
