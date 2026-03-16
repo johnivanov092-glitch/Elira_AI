@@ -12,6 +12,7 @@ from app.api.routes.settings import router as settings_router
 from app.api.routes.tools import router as tools_router
 from app.api.routes.project_patch import router as project_patch_router
 from app.api.routes.agent_supervisor import router as agent_supervisor_router
+from app.api.routes.run_history import router as run_history_router
 
 # Optional runtime routes (safe import)
 try:
@@ -80,6 +81,10 @@ def root():
                 "/api/supervisor/schedule",
                 "/api/supervisor/jobs",
                 "/api/supervisor/bootstrap",
+                "/api/run-history/status",
+                "/api/run-history/run",
+                "/api/run-history/runs",
+                "/api/run-history/runs/{run_id}",
             ],
         },
         media_type="application/json; charset=utf-8",
@@ -112,6 +117,7 @@ app.include_router(agents_router)
 app.include_router(tools_router)
 app.include_router(project_patch_router)
 app.include_router(agent_supervisor_router)
+app.include_router(run_history_router)
 
 
 # -----------------------------
