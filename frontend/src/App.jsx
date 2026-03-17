@@ -1,6 +1,7 @@
-import JarvisChatShell from "./components/JarvisChatShell";
-import "./styles.css";
 
-export default function App() {
-  return <JarvisChatShell />;
+import JarvisLayout from "./components/JarvisLayout"
+import "./styles.css"
+
+export default function App(){
+return <JarvisLayout/>
 }
