@@ -1,0 +1,23 @@
+
+body {
+  overflow: hidden;
+}
+
+.jarvis-layout {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-container {
+  overflow-y: auto;
+  height: calc(100vh - 120px);
+}
+
+.sidebar {
+  overflow: hidden;
+}
+
+.right-panel {
+  overflow: hidden;
+}
