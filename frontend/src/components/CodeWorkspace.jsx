@@ -6,15 +6,16 @@ import DiffViewer from "./DiffViewer";
 import TerminalPanel from "./TerminalPanel";
 import PatchHistoryPanel from "./PatchHistoryPanel";
 import BatchVerifyPanel from "./BatchVerifyPanel";
+import ProjectMapPanel from "./ProjectMapPanel";
+import PatchPlanPanel from "./PatchPlanPanel";
+import FileOpsPanel from "./FileOpsPanel";
 
 export default function CodeWorkspace() {
   const [files, setFiles] = useState([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [editorValue, setEditorValue] = useState("");
   const [originalValue, setOriginalValue] = useState("");
-  const [instruction, setInstruction] = useState(
-    "Улучши выбранный файл безопасно и без лишних переписываний."
-  );
+  const [instruction, setInstruction] = useState("Улучши выбранный файл безопасно и без лишних переписываний.");
   const [previewValue, setPreviewValue] = useState("");
   const [logs, setLogs] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(false);
@@ -32,9 +33,12 @@ export default function CodeWorkspace() {
   const [stagedContents, setStagedContents] = useState({});
   const [batchVerifyResult, setBatchVerifyResult] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
+  const [projectMap, setProjectMap] = useState(null);
+  const [patchPlan, setPatchPlan] = useState(null);
 
   useEffect(() => {
     loadFiles();
+    loadProjectMap();
   }, []);
 
   useEffect(() => {
@@ -59,6 +63,16 @@ export default function CodeWorkspace() {
       appendLog(`Ошибка загрузки snapshot: ${e.message || "unknown error"}`);
     } finally {
       setLoadingFiles(false);
+    }
+  }
+
+  async function loadProjectMap() {
+    try {
+      const result = await api.getProjectMap();
+      setProjectMap(result);
+      appendLog(`Project Map загружен: ${result.count || 0} файлов.`);
+    } catch (e) {
+      appendLog(`Ошибка project map: ${e.message || "unknown error"}`);
     }
   }
 
@@ -103,7 +117,7 @@ export default function CodeWorkspace() {
     setLogs((prev) => [
       `${new Date().toLocaleTimeString()}  ${message}`,
       ...prev,
-    ].slice(0, 140));
+    ].slice(0, 160));
   }
 
   async function buildDiff(original, updated) {
@@ -246,6 +260,7 @@ export default function CodeWorkspace() {
       }
 
       await loadHistory(selectedPath || "");
+      await loadFiles();
     } catch (e) {
       appendLog(`Ошибка batch apply: ${e.message || "unknown error"}`);
     } finally {
@@ -360,10 +375,77 @@ export default function CodeWorkspace() {
     }
   }
 
+  async function handleBuildPlan() {
+    try {
+      const result = await api.patchPlan({
+        goal: instruction,
+        current_path: selectedPath,
+        current_content: editorValue,
+        staged_paths: stagedPaths,
+      });
+      setPatchPlan(result);
+      appendLog("Patch plan построен.");
+    } catch (e) {
+      appendLog(`Ошибка patch plan: ${e.message || "unknown error"}`);
+    }
+  }
+
+  async function handleCreateFile(path, content) {
+    try {
+      const result = await api.createFile({ path, content });
+      appendLog(`Файл создан: ${result.path}`);
+      await loadFiles();
+      await loadProjectMap();
+    } catch (e) {
+      appendLog(`Ошибка create file: ${e.message || "unknown error"}`);
+    }
+  }
+
+  async function handleRenameFile(oldPath, newPath) {
+    if (!oldPath || !newPath) {
+      appendLog("Для rename нужен текущий и новый путь.");
+      return;
+    }
+    try {
+      const result = await api.renameFile({ old_path: oldPath, new_path: newPath });
+      appendLog(`Файл переименован: ${result.old_path} → ${result.new_path}`);
+      if (selectedPath === oldPath) {
+        setSelectedPath(newPath);
+      }
+      await loadFiles();
+      await loadProjectMap();
+    } catch (e) {
+      appendLog(`Ошибка rename file: ${e.message || "unknown error"}`);
+    }
+  }
+
+  async function handleDeleteFile(path) {
+    if (!path) {
+      appendLog("Нет выбранного файла для удаления.");
+      return;
+    }
+    try {
+      const result = await api.deleteFile({ path });
+      appendLog(`Файл удалён: ${result.path}`);
+      if (selectedPath === path) {
+        setSelectedPath("");
+        setEditorValue("");
+        setOriginalValue("");
+        setPreviewValue("");
+        setDiffText("");
+        setDiffStats(null);
+      }
+      await loadFiles();
+      await loadProjectMap();
+    } catch (e) {
+      appendLog(`Ошибка delete file: ${e.message || "unknown error"}`);
+    }
+  }
+
   const stagedCount = useMemo(() => stagedPaths.length, [stagedPaths]);
 
   return (
-    <div className="code-workspace-v4">
+    <div className="code-workspace-v5">
       <div className="code-left">
         <FileExplorer
           files={files}
@@ -460,6 +542,23 @@ export default function CodeWorkspace() {
       </div>
 
       <div className="code-right">
+        <PatchPlanPanel
+          plan={patchPlan}
+          onBuildPlan={handleBuildPlan}
+        />
+
+        <ProjectMapPanel
+          projectMap={projectMap}
+          onRefresh={loadProjectMap}
+        />
+
+        <FileOpsPanel
+          onCreate={handleCreateFile}
+          onRename={handleRenameFile}
+          onDelete={handleDeleteFile}
+          selectedPath={selectedPath}
+        />
+
         <PatchHistoryPanel
           items={historyItems}
           selectedId={selectedHistoryId}

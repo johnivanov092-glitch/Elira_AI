@@ -120,4 +120,17 @@ export const api = {
 
   getPatchHistoryItem: (id) =>
     request(`/api/jarvis/patch/history/get?id=${encodeURIComponent(id)}`),
+
+  getProjectMap: () => request("/api/jarvis/project/map"),
+  createFile: ({ path, content }) =>
+    request("/api/jarvis/fs/create", { method: "POST", body: { path, content } }),
+  deleteFile: ({ path }) =>
+    request("/api/jarvis/fs/delete", { method: "POST", body: { path } }),
+  renameFile: ({ old_path, new_path }) =>
+    request("/api/jarvis/fs/rename", { method: "POST", body: { old_path, new_path } }),
+  patchPlan: ({ goal, current_path, current_content, staged_paths }) =>
+    request("/api/jarvis/patch/plan", {
+      method: "POST",
+      body: { goal, current_path, current_content, staged_paths },
+    }),
 };
