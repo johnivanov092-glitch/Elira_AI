@@ -32,124 +32,17 @@ function asArray(payload) {
 }
 
 export const api = {
-  getProjectSnapshot: () => request("/snapshot"),
-  getProjectFile: (path) => request(`/file?path=${encodeURIComponent(path)}`),
-
-  previewPatch: ({ path, instruction, content }) =>
-    request("/agent/ollama/run", {
+  runPhase20: ({ goal, selected_paths }) =>
+    request("/api/jarvis/phase20/run", {
       method: "POST",
-      body: {
-        mode: "code",
-        selected_path: path,
-        selected_content: content,
-        goal: instruction,
-        project_files: [path],
-      },
+      body: { goal, selected_paths },
     }),
 
-  diffPatch: ({ path, original, updated }) =>
-    request("/api/jarvis/patch/diff", {
-      method: "POST",
-      body: { path, original, updated },
-    }),
-
-  applyPatch: ({ path, content }) =>
-    request("/api/jarvis/patch/apply", {
-      method: "POST",
-      body: { path, content },
-    }),
-
-  applyPatchBatch: (items) =>
-    request("/api/jarvis/patch/apply-batch", {
-      method: "POST",
-      body: { items },
-    }),
-
-  rollbackPatch: ({ path }) =>
-    request("/api/jarvis/patch/rollback", {
-      method: "POST",
-      body: { path },
-    }),
-
-  verifyPatch: ({ path, content }) =>
-    request("/api/jarvis/patch/verify", {
-      method: "POST",
-      body: { path, content },
-    }),
-
-  verifyPatchBatch: (items) =>
-    request("/api/jarvis/patch/verify-batch", {
-      method: "POST",
-      body: { items },
-    }),
-
-  listPatchHistory: async (path = "") => {
-    const payload = await request(`/api/jarvis/patch/history/list?path=${encodeURIComponent(path)}`);
+  listPhase20History: async () => {
+    const payload = await request("/api/jarvis/phase20/history/list");
     return asArray(payload);
   },
 
-  getPatchHistoryItem: (id) =>
-    request(`/api/jarvis/patch/history/get?id=${encodeURIComponent(id)}`),
-
-  getProjectMap: () => request("/api/jarvis/project/map"),
-  createFile: ({ path, content }) =>
-    request("/api/jarvis/fs/create", { method: "POST", body: { path, content } }),
-  deleteFile: ({ path }) =>
-    request("/api/jarvis/fs/delete", { method: "POST", body: { path } }),
-  renameFile: ({ old_path, new_path }) =>
-    request("/api/jarvis/fs/rename", { method: "POST", body: { old_path, new_path } }),
-
-  patchPlan: ({ goal, current_path, current_content, staged_paths }) =>
-    request("/api/jarvis/patch/plan", {
-      method: "POST",
-      body: { goal, current_path, current_content, staged_paths },
-    }),
-
-  runTask: ({ goal, mode, current_path, staged_paths }) =>
-    request("/api/jarvis/task/run", {
-      method: "POST",
-      body: { goal, mode, current_path, staged_paths },
-    }),
-
-  listTaskHistory: async () => {
-    const payload = await request("/api/jarvis/task/history/list");
-    return asArray(payload);
-  },
-
-  getTaskHistoryItem: (id) =>
-    request(`/api/jarvis/task/history/get?id=${encodeURIComponent(id)}`),
-
-  runSupervisor: ({ goal, mode, current_path, staged_paths, auto_apply }) =>
-    request("/api/jarvis/supervisor/run", {
-      method: "POST",
-      body: { goal, mode, current_path, staged_paths, auto_apply },
-    }),
-
-  executeSupervisor: ({ goal, current_path, current_content, auto_apply }) =>
-    request("/api/jarvis/supervisor/execute", {
-      method: "POST",
-      body: { goal, current_path, current_content, auto_apply },
-    }),
-
-  listSupervisorHistory: async () => {
-    const payload = await request("/api/jarvis/supervisor/history/list");
-    return asArray(payload);
-  },
-
-  getSupervisorHistoryItem: (id) =>
-    request(`/api/jarvis/supervisor/history/get?id=${encodeURIComponent(id)}`),
-
-  runPhase19: ({ goal, mode, selected_paths }) =>
-    request("/api/jarvis/phase19/run", {
-      method: "POST",
-      body: { goal, mode, selected_paths },
-    }),
-
-  listPhase19History: async () => {
-    const payload = await request("/api/jarvis/phase19/history/list");
-    return asArray(payload);
-  },
-
-  getPhase19HistoryItem: (id) =>
-    request(`/api/jarvis/phase19/history/get?id=${encodeURIComponent(id)}`),
+  getPhase20HistoryItem: (id) =>
+    request(`/api/jarvis/phase20/history/get?id=${encodeURIComponent(id)}`),
 };
