@@ -76,4 +76,48 @@ export const api = {
         project_files: [path],
       },
     }),
+
+  diffPatch: ({ path, original, updated }) =>
+    request("/api/jarvis/patch/diff", {
+      method: "POST",
+      body: { path, original, updated },
+    }),
+
+  applyPatch: ({ path, content }) =>
+    request("/api/jarvis/patch/apply", {
+      method: "POST",
+      body: { path, content },
+    }),
+
+  applyPatchBatch: (items) =>
+    request("/api/jarvis/patch/apply-batch", {
+      method: "POST",
+      body: { items },
+    }),
+
+  rollbackPatch: ({ path }) =>
+    request("/api/jarvis/patch/rollback", {
+      method: "POST",
+      body: { path },
+    }),
+
+  verifyPatch: ({ path, content }) =>
+    request("/api/jarvis/patch/verify", {
+      method: "POST",
+      body: { path, content },
+    }),
+
+  verifyPatchBatch: (items) =>
+    request("/api/jarvis/patch/verify-batch", {
+      method: "POST",
+      body: { items },
+    }),
+
+  listPatchHistory: async (path = "") => {
+    const payload = await request(`/api/jarvis/patch/history/list?path=${encodeURIComponent(path)}`);
+    return asArray(payload);
+  },
+
+  getPatchHistoryItem: (id) =>
+    request(`/api/jarvis/patch/history/get?id=${encodeURIComponent(id)}`),
 };

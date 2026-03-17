@@ -1,31 +1,28 @@
 export default function DiffViewer({
-  original,
-  updated,
+  diffText,
+  stats,
   loading,
 }) {
   return (
     <div className="diff-viewer">
       <div className="pane-title">Diff Preview</div>
 
-      {loading ? <div className="pane-empty">Подготовка preview...</div> : null}
+      {loading ? <div className="pane-empty">Подготовка diff...</div> : null}
 
-      {!loading && !updated ? (
+      {!loading && !diffText ? (
         <div className="pane-empty">
-          Здесь появится предложенное изменение после Preview Patch.
+          Здесь появится diff по строкам после Preview Patch или Verify.
         </div>
       ) : null}
 
-      {!loading && updated ? (
-        <div className="diff-grid">
-          <div className="diff-col">
-            <div className="diff-col-title">Current</div>
-            <pre className="diff-code">{original}</pre>
+      {!loading && diffText ? (
+        <>
+          <div className="diff-stats">
+            <span>+ {stats?.added || 0}</span>
+            <span>- {stats?.removed || 0}</span>
           </div>
-          <div className="diff-col">
-            <div className="diff-col-title">Proposed</div>
-            <pre className="diff-code">{updated}</pre>
-          </div>
-        </div>
+          <pre className="unified-diff">{diffText}</pre>
+        </>
       ) : null}
     </div>
   );

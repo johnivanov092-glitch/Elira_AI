@@ -187,27 +187,45 @@ button, input, textarea, select { font: inherit; }
 .send-btn:disabled, .soft-btn:disabled { opacity: 0.55; cursor: default; }
 
 .code-shell-wrap { min-height: 0; padding: 16px 18px; }
-.code-workspace-v2 {
-  display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px; gap: 14px; height: 100%;
+.code-workspace-v4 {
+  display: grid; grid-template-columns: 300px minmax(0, 1fr) 360px; gap: 14px; height: 100%;
 }
-.code-left, .code-center, .code-right, .file-explorer, .code-editor-shell, .diff-viewer, .terminal-panel, .patch-controls {
+.code-left, .code-center, .code-right, .file-explorer, .code-editor-shell, .diff-viewer, .terminal-panel, .patch-controls, .patch-history-panel, .batch-verify-panel {
   min-height: 0;
 }
-.file-explorer, .code-editor-shell, .diff-viewer, .terminal-panel, .patch-controls {
+.code-right {
+  display: grid;
+  grid-template-rows: 250px 220px 1fr;
+  gap: 14px;
+}
+.file-explorer, .code-editor-shell, .diff-viewer, .terminal-panel, .patch-controls, .patch-history-panel, .batch-verify-panel {
   border: 1px solid var(--border); border-radius: 16px; background: #1e1e1e; overflow: hidden;
 }
 .pane-title {
   padding: 12px 14px; border-bottom: 1px solid var(--border); font-weight: 700;
 }
 .pane-toolbar { padding: 12px; border-bottom: 1px solid var(--border); }
-.file-list { max-height: calc(100vh - 250px); overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.file-row {
-  border: 1px solid var(--border-soft); border-radius: 12px; background: #262626; color: var(--text);
-  padding: 10px 12px; text-align: left; cursor: pointer;
+.file-list, .patch-history-list {
+  max-height: calc(100vh - 250px); overflow: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px;
 }
-.file-row.active { border-color: #5c5c5c; background: #303030; }
+.file-row, .history-row {
+  border: 1px solid var(--border-soft); border-radius: 12px; background: #262626; color: var(--text);
+  padding: 10px 12px; text-align: left;
+}
+.file-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+.file-row-main {
+  background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; padding: 0;
+}
+.file-row.active, .history-row.active { border-color: #5c5c5c; background: #303030; }
 .file-row-name { font-weight: 600; }
-.file-row-path { font-size: 12px; color: var(--muted); margin-top: 6px; word-break: break-all; }
+.file-row-path, .history-path { font-size: 12px; color: var(--muted); margin-top: 6px; word-break: break-all; }
+.stage-btn {
+  height: 32px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border); background: #2b2b2b; color: var(--text); cursor: pointer;
+}
+.stage-btn.staged { background: #3a3a3a; border-color: #676767; }
+.history-row-top { display: flex; justify-content: space-between; gap: 10px; }
+.history-action { text-transform: uppercase; font-size: 11px; letter-spacing: 0.08em; }
+.history-id, .history-time { color: var(--muted); font-size: 12px; }
 .pane-empty { padding: 14px; color: var(--muted); }
 .editor-subtitle { padding: 10px 14px; color: var(--muted); border-bottom: 1px solid var(--border); font-size: 12px; }
 .editor-wrap { display: grid; grid-template-columns: 64px 1fr; min-height: 420px; }
@@ -225,27 +243,45 @@ button, input, textarea, select { font: inherit; }
   width: calc(100% - 28px); margin: 12px 14px; min-height: 90px; resize: vertical;
   border-radius: 12px; border: 1px solid var(--border); background: #252525; color: var(--text); padding: 12px;
 }
-.patch-buttons { display: flex; gap: 10px; padding: 0 14px 14px 14px; }
-.diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
-.diff-col { min-width: 0; }
-.diff-col + .diff-col { border-left: 1px solid var(--border); }
-.diff-col-title { padding: 10px 12px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
-.diff-code {
+.patch-buttons, .batch-bar {
+  display: flex; gap: 10px; padding: 0 14px 14px 14px; flex-wrap: wrap; align-items: center;
+}
+.batch-bar { justify-content: space-between; border-top: 1px solid var(--border); padding-top: 14px; }
+.batch-bar-meta, .batch-verify-summary, .batch-verify-stats {
+  color: #dfdfdf; font-size: 13px;
+}
+.diff-stats {
+  display: flex; gap: 14px; padding: 10px 14px; border-bottom: 1px solid var(--border); color: #dfdfdf;
+}
+.unified-diff {
   margin: 0; padding: 12px; min-height: 260px; max-height: 420px; overflow: auto;
   white-space: pre-wrap; font-family: "JetBrains Mono", monospace; line-height: 1.5;
 }
-.terminal-log { max-height: calc(100vh - 220px); overflow: auto; padding: 12px; }
+.verify-box, .history-preview-box {
+  margin: 12px; padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: #252525;
+}
+.verify-title { font-weight: 700; margin-bottom: 6px; }
+.verify-meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.verify-list { margin: 0; padding-left: 18px; color: #e6e6e6; }
+.history-preview-stats { color: #e6e6e6; font-size: 12px; }
+.batch-verify-body, .batch-verify-list { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.batch-verify-row {
+  border: 1px solid var(--border-soft); border-radius: 10px; background: #262626; padding: 10px 12px;
+}
+.batch-verify-path { font-weight: 600; }
+.terminal-log { max-height: calc(100vh - 620px); overflow: auto; padding: 12px; }
 .terminal-line {
   font-family: "JetBrains Mono", monospace; font-size: 12px; line-height: 1.5;
   color: #d9d9d9; margin-bottom: 8px;
 }
 
-@media (max-width: 1400px) {
-  .code-workspace-v2 { grid-template-columns: 220px minmax(0, 1fr) 280px; }
+@media (max-width: 1480px) {
+  .code-workspace-v4 { grid-template-columns: 260px minmax(0, 1fr) 320px; }
 }
 @media (max-width: 1280px) {
   .top-bar { grid-template-columns: 1fr; justify-items: start; height: auto; }
   .top-right { justify-self: start; }
   .jarvis-app { grid-template-columns: 240px 1fr; }
-  .code-workspace-v2 { grid-template-columns: 1fr; }
+  .code-workspace-v4 { grid-template-columns: 1fr; }
+  .code-right { grid-template-rows: 240px 200px 1fr; }
 }
