@@ -42,43 +42,91 @@ async function safeRequest(path, options = {}, fallback = null) {
   }
 }
 
+function normalizeArrayPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.chats)) return payload.chats;
+  if (Array.isArray(payload?.messages)) return payload.messages;
+  if (Array.isArray(payload?.files)) return payload.files;
+  return [];
+}
+
 // ------------------------------
-// Chat / shell API (backward compatible)
+// Chat / shell API
 // ------------------------------
 export async function listChats() {
-  return safeRequest("/api/jarvis/chats", {}, { items: [] });
+  const payload = await safeRequest("/api/jarvis/chats", {}, []);
+  return normalizeArrayPayload(payload);
 }
 
 export async function createChat(body = {}) {
   return request("/api/jarvis/chats", { method: "POST", body });
 }
 
-export async function renameChat(id, body = {}) {
-  return request(`/api/jarvis/chats/${encodeURIComponent(id)}`, {
+export async function renameChat(arg1, arg2) {
+  const params =
+    typeof arg1 === "object" && arg1 !== null
+      ? arg1
+      : { id: arg1, title: arg2 };
+  return request(`/api/jarvis/chats/${encodeURIComponent(params.id)}`, {
     method: "PATCH",
-    body,
+    body: { title: params.title },
   });
 }
 
-export async function pinChat(id, pinned = true) {
-  return request(`/api/jarvis/chats/${encodeURIComponent(id)}/pin`, {
+export async function pinChat(arg1, arg2) {
+  const params =
+    typeof arg1 === "object" && arg1 !== null
+      ? arg1
+      : { id: arg1, pinned: arg2 };
+  return request(`/api/jarvis/chats/${encodeURIComponent(params.id)}/pin`, {
     method: "PATCH",
-    body: { pinned },
+    body: { pinned: Boolean(params.pinned) },
   });
 }
 
-export async function deleteChat(id) {
+export async function saveChatToMemory(arg1, arg2) {
+  const params =
+    typeof arg1 === "object" && arg1 !== null
+      ? arg1
+      : { id: arg1, saved: arg2 };
+
+  // Try a dedicated route first; fall back to generic chat patch if needed.
+  return safeRequest(
+    `/api/jarvis/chats/${encodeURIComponent(params.id)}/memory`,
+    {
+      method: "PATCH",
+      body: { saved: Boolean(params.saved) },
+    },
+    () =>
+      request(`/api/jarvis/chats/${encodeURIComponent(params.id)}`, {
+        method: "PATCH",
+        body: { memory_saved: Boolean(params.saved) },
+      })
+  );
+}
+
+export async function deleteChat(arg) {
+  const id = typeof arg === "object" && arg !== null ? arg.id : arg;
   return request(`/api/jarvis/chats/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
 }
 
-export async function getMessages(chatId) {
-  return safeRequest(
+export async function getMessages(arg) {
+  const chatId = typeof arg === "object" && arg !== null ? arg.chatId : arg;
+  const payload = await safeRequest(
     `/api/jarvis/chats/${encodeURIComponent(chatId)}/messages`,
     {},
-    { items: [] }
+    []
   );
+  return normalizeArrayPayload(payload);
+}
+
+export async function addMessage(body = {}) {
+  return request("/api/jarvis/messages", { method: "POST", body });
 }
 
 export async function sendMessage(body = {}) {
@@ -90,11 +138,11 @@ export async function execute(body = {}) {
 }
 
 export async function listOllamaModels() {
-  const payload = await safeRequest("/api/jarvis/models", {}, { items: [] });
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.models)) return payload.models;
-  return [];
+  const payload = await safeRequest("/api/jarvis/models", {}, []);
+  if (Array.isArray(payload?.models)) return { models: payload.models };
+  if (Array.isArray(payload?.items)) return { models: payload.items };
+  if (Array.isArray(payload)) return { models: payload };
+  return { models: [] };
 }
 
 export async function getSettings() {
@@ -106,15 +154,17 @@ export async function updateSettings(body = {}) {
 }
 
 export async function searchJarvis(query = "") {
-  return safeRequest(
+  const payload = await safeRequest(
     `/api/jarvis/search?q=${encodeURIComponent(query)}`,
     {},
-    { items: [] }
+    []
   );
+  return normalizeArrayPayload(payload);
 }
 
 export async function listProjects() {
-  return safeRequest("/api/jarvis/projects", {}, { items: [] });
+  const payload = await safeRequest("/api/jarvis/projects", {}, []);
+  return normalizeArrayPayload(payload);
 }
 
 // ------------------------------
@@ -122,8 +172,14 @@ export async function listProjects() {
 // ------------------------------
 export async function getProjectSnapshot() {
   const payload = await request("/api/project-brain/snapshot");
-  if (Array.isArray(payload?.files)) return payload;
-  return { ...payload, files: [] };
+  return {
+    ...payload,
+    files: normalizeArrayPayload(payload?.files ? payload : { files: [] }).length
+      ? payload.files
+      : Array.isArray(payload?.files)
+      ? payload.files
+      : [],
+  };
 }
 
 export async function getProjectFile(path) {
@@ -139,11 +195,12 @@ export async function listPatchHistory({ path = "", limit = 20 } = {}) {
   if (path) query.set("path", path);
   if (limit) query.set("limit", String(limit));
 
-  return safeRequest(
+  const payload = await safeRequest(
     `/api/jarvis/patch/history/list${query.toString() ? `?${query.toString()}` : ""}`,
     {},
     { items: [] }
   );
+  return { ...payload, items: normalizeArrayPayload(payload) };
 }
 
 export async function previewPatch(body = {}) {
@@ -163,7 +220,8 @@ export async function verifyPatch(body = {}) {
 }
 
 export async function listRunHistory() {
-  return safeRequest("/api/jarvis/run-history/list", {}, { items: [] });
+  const payload = await safeRequest("/api/jarvis/run-history/list", {}, { items: [] });
+  return { ...payload, items: normalizeArrayPayload(payload) };
 }
 
 export async function autocodeSuggest(body = {}) {
@@ -182,8 +240,10 @@ export const api = {
   createChat,
   renameChat,
   pinChat,
+  saveChatToMemory,
   deleteChat,
   getMessages,
+  addMessage,
   sendMessage,
   execute,
   listOllamaModels,
