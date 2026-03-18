@@ -1,270 +1,154 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/ide";
-import MemoryPanel from "./MemoryPanel";
-import CodeWorkspace from "./CodeWorkspace";
-
-function normalizeArray(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.results)) return payload.results;
-  if (Array.isArray(payload?.data)) return payload.data;
-  return [];
-}
-
-function getChatId(chat) {
-  return chat?.id ?? chat?.chat_id ?? chat?.uuid;
-}
-
-function getChatTitle(chat) {
-  return chat?.title || chat?.name || "Новый чат";
-}
-
-function getChatPinned(chat) {
-  return Boolean(chat?.pinned ?? chat?.is_pinned);
-}
-
-function getMessageRole(message) {
-  return message?.role || message?.sender || "assistant";
-}
-
-function getMessageContent(message) {
-  return (
-    message?.content ??
-    message?.text ??
-    message?.message ??
-    message?.answer ??
-    ""
-  );
-}
+import IdeWorkspaceShell from "./IdeWorkspaceShell";
 
 export default function JarvisChatShell() {
-  const [activeLeftTab, setActiveLeftTab] = useState("chats");
   const [activeTopTab, setActiveTopTab] = useState("chat");
-
-  const [chats, setChats] = useState([]);
-  const [selectedChatId, setSelectedChatId] = useState(null);
-  const [messages, setMessages] = useState([]);
-  const [composer, setComposer] = useState("");
-
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchChats, setSearchChats] = useState([]);
-  const [searchProjects, setSearchProjects] = useState([]);
-
-  const [memoryItems, setMemoryItems] = useState([]);
-
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState("");
-
-  const [models] = useState([{ name: "qwen3:8b" }]);
   const [selectedModel, setSelectedModel] = useState("qwen3:8b");
-  const [agentProfile, setAgentProfile] = useState("Сбалансированный");
+  const [modelOptions, setModelOptions] = useState([]);
+  const [profile, setProfile] = useState("Сбалансированный");
+  const [chats, setChats] = useState([]);
+  const [activeChatId, setActiveChatId] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [inputValue, setInputValue] = useState("");
+  const [searchValue, setSearchValue] = useState("");
+  const [errorText, setErrorText] = useState("");
+  const [contextWindow, setContextWindow] = useState("32768");
 
   useEffect(() => {
-    boot();
+    init();
   }, []);
 
-  useEffect(() => {
-    if (selectedChatId) {
-      loadMessages(selectedChatId);
-    }
-  }, [selectedChatId]);
-
-  useEffect(() => {
-    if (activeLeftTab === "search" && searchQuery.trim()) {
-      const timer = setTimeout(() => {
-        runSearch(searchQuery.trim());
-      }, 250);
-      return () => clearTimeout(timer);
-    }
-  }, [searchQuery, activeLeftTab]);
-
-  async function boot() {
+  async function init() {
     try {
-      await Promise.all([loadChats(), loadMemory()]);
-    } catch (e) {
-      setError(e.message || "Не удалось загрузить интерфейс");
-    }
-  }
+      const [models, chatItems] = await Promise.all([
+        api.listOllamaModels(),
+        api.listChats(),
+      ]);
 
-  async function loadChats() {
-    const payload = await api.listChats();
-    const items = normalizeArray(payload);
-    setChats(items);
-    if (!selectedChatId && items.length) {
-      setSelectedChatId(getChatId(items[0]));
-    }
-  }
+      setModelOptions(models || []);
+      if (models?.length) setSelectedModel(models[0].name || models[0]);
 
-  async function loadMessages(chatId) {
-    const payload = await api.getMessages(chatId);
-    setMessages(normalizeArray(payload));
-  }
-
-  async function loadMemory(q = "") {
-    const items = await api.listMemory(q);
-    setMemoryItems(items);
-  }
-
-  async function runSearch(query) {
-    try {
-      const payload = await api.search(query);
-      setSearchChats(normalizeArray(payload?.chats ?? payload));
-      setSearchProjects(normalizeArray(payload?.projects ?? []));
-      await loadMemory(query);
-    } catch {
-      setSearchChats([]);
-      setSearchProjects([]);
-    }
-  }
-
-  async function handleCreateChat() {
-    try {
-      const created = await api.createChat("Новый чат");
-      await loadChats();
-      const id = getChatId(created);
-      if (id) setSelectedChatId(id);
-    } catch (e) {
-      setError(e.message || "Не удалось создать чат");
-    }
-  }
-
-  async function handleRenameChat(chat) {
-    const current = getChatTitle(chat);
-    const title = window.prompt("Новое название чата", current);
-    if (!title || title.trim() === current) return;
-    try {
-      await api.renameChat(getChatId(chat), title.trim());
-      await loadChats();
-    } catch (e) {
-      setError(e.message || "Не удалось переименовать чат");
-    }
-  }
-
-  async function handleDeleteChat(chat) {
-    if (!window.confirm(`Удалить чат "${getChatTitle(chat)}"?`)) return;
-    try {
-      await api.deleteChat(getChatId(chat));
-      await loadChats();
-      if (selectedChatId === getChatId(chat)) {
-        setSelectedChatId(null);
-        setMessages([]);
+      if (chatItems?.length) {
+        setChats(chatItems);
+        const firstId = chatItems[0].id;
+        setActiveChatId(firstId);
+        const msgs = await api.getMessages({ chatId: firstId });
+        setMessages(msgs || []);
+      } else {
+        const created = await handleNewChat(true);
+        if (created?.id) {
+          const msgs = await api.getMessages({ chatId: created.id });
+          setMessages(msgs || []);
+        }
       }
     } catch (e) {
-      setError(e.message || "Не удалось удалить чат");
+      setErrorText(e.message || "Ошибка инициализации");
     }
   }
 
-  async function handleTogglePin(chat) {
+  async function reloadChats(selectId = "") {
+    const items = await api.listChats();
+    setChats(items || []);
+    if (selectId) setActiveChatId(selectId);
+  }
+
+  async function handleNewChat(silent = false) {
     try {
-      await api.pinChat(getChatId(chat), !getChatPinned(chat));
-      await loadChats();
+      const created = await api.createChat({ title: "Новый чат" });
+      await reloadChats(created.id);
+      setActiveChatId(created.id);
+      setMessages(await api.getMessages({ chatId: created.id }));
+      if (!silent) setErrorText("");
+      return created;
     } catch (e) {
-      setError(e.message || "Не удалось закрепить чат");
+      setErrorText(e.message || "Ошибка создания чата");
+      return null;
     }
   }
 
-  async function handleSaveToMemory(pinned = false) {
-    const selectedChat = chats.find((item) => getChatId(item) === selectedChatId);
-    const lastAssistant = [...messages].reverse().find((m) => getMessageRole(m) === "assistant");
-    const content = lastAssistant?.content || composer.trim();
-
-    if (!content) return;
-
+  async function openChat(chatId) {
     try {
-      await api.saveMemory({
-        chat_id: selectedChatId,
-        title: selectedChat ? getChatTitle(selectedChat) : "Чат",
-        content,
-        source: activeTopTab,
-        pinned,
-      });
-      await loadMemory();
-      setActiveLeftTab("memory");
+      setActiveChatId(chatId);
+      const msgs = await api.getMessages({ chatId });
+      setMessages(msgs || []);
     } catch (e) {
-      setError(e.message || "Не удалось сохранить в памяти");
-    }
-  }
-
-  async function handleDeleteMemory(id) {
-    try {
-      await api.deleteMemory(id);
-      await loadMemory(activeLeftTab === "search" ? searchQuery : "");
-    } catch (e) {
-      setError(e.message || "Не удалось удалить из памяти");
+      setErrorText(e.message || "Ошибка открытия чата");
     }
   }
 
   async function handleSend() {
-    const content = composer.trim();
-    if (!content) return;
+    const text = inputValue.trim();
+    if (!text || !activeChatId) return;
 
-    let chatId = selectedChatId;
     try {
-      setSending(true);
-      setError("");
-
-      if (!chatId) {
-        const created = await api.createChat(content.slice(0, 40) || "Новый чат");
-        chatId = getChatId(created);
-        setSelectedChatId(chatId);
-        await loadChats();
-      }
-
-      await api.addMessage({
-        chat_id: chatId,
+      setErrorText("");
+      const userMsg = await api.addMessage({
+        chatId: activeChatId,
         role: "user",
-        content,
-        metadata: {
-          model: selectedModel,
-          agent_profile: agentProfile,
-          route: activeTopTab,
-        },
+        content: text,
       });
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content },
-      ]);
-      setComposer("");
+      setMessages((prev) => [...prev, userMsg]);
+      setInputValue("");
 
-      const exec = await api.execute({
-        chat_id: chatId,
-        content,
+      const assistantMsg = await api.execute({
+        chatId: activeChatId,
+        message: text,
         mode: activeTopTab,
         model: selectedModel,
-        agent_profile: agentProfile,
       });
 
-      if (exec?.assistant_content) {
-        await api.addMessage({
-          chat_id: chatId,
-          role: "assistant",
-          content: exec.assistant_content,
-          metadata: {
-            mode: exec.mode,
-            model: exec.model,
-            agent_profile: exec.agent_profile,
-          },
-        });
-      }
-
-      await loadMessages(chatId);
-      await loadChats();
+      setMessages((prev) => [...prev, assistantMsg]);
     } catch (e) {
-      setError(e.message || "Не удалось отправить сообщение");
-    } finally {
-      setSending(false);
+      setErrorText(e.message || "Ошибка отправки сообщения");
     }
   }
 
-  const pinnedChats = useMemo(
-    () => chats.filter((chat) => getChatPinned(chat)),
-    [chats]
-  );
-  const regularChats = useMemo(
-    () => chats.filter((chat) => !getChatPinned(chat)),
-    [chats]
-  );
+  async function handleDeleteChat(id) {
+    try {
+      await api.deleteChat({ id });
+      const next = chats.filter((item) => item.id !== id);
+      setChats(next);
+      if (activeChatId === id) {
+        if (next.length) {
+          await openChat(next[0].id);
+        } else {
+          const created = await handleNewChat(true);
+          if (created?.id) await openChat(created.id);
+        }
+      }
+    } catch (e) {
+      setErrorText(e.message || "Ошибка удаления чата");
+    }
+  }
+
+  async function handlePinChat(id, pinned) {
+    try {
+      await api.pinChat({ id, pinned: !pinned });
+      await reloadChats(activeChatId);
+    } catch (e) {
+      setErrorText(e.message || "Ошибка закрепления");
+    }
+  }
+
+  async function handleSaveToMemory(id, saved) {
+    try {
+      await api.saveChatToMemory({ id, saved: !saved });
+      await reloadChats(activeChatId);
+    } catch (e) {
+      setErrorText(e.message || "Ошибка памяти");
+    }
+  }
+
+  const filteredChats = useMemo(() => {
+    const q = searchValue.trim().toLowerCase();
+    if (!q) return chats;
+    return chats.filter((item) => item.title?.toLowerCase().includes(q));
+  }, [searchValue, chats]);
+
+  const pinnedChats = useMemo(() => filteredChats.filter((item) => item.pinned), [filteredChats]);
+  const regularChats = useMemo(() => filteredChats.filter((item) => !item.pinned), [filteredChats]);
 
   const topTabs = [
     { key: "chat", label: "Chat" },
@@ -274,354 +158,150 @@ export default function JarvisChatShell() {
     { key: "image", label: "Text-to-Image" },
   ];
 
+  if (activeTopTab === "code") {
+    return <IdeWorkspaceShell onBackToChat={() => setActiveTopTab("chat")} />;
+  }
+
   return (
-    <div className="jarvis-app">
-      <aside className="sidebar">
-        <button className="new-chat-btn" onClick={handleCreateChat}>
-          <span className="plus">＋</span>
-          <span>Новый чат</span>
+    <div className="jarvis-shell">
+      <aside className="jarvis-sidebar">
+        <button className="sidebar-newchat-btn" onClick={() => handleNewChat(false)}>
+          + Новый чат
         </button>
 
-        <nav className="left-nav">
-          <button
-            className={`left-nav-item ${activeLeftTab === "search" ? "active" : ""}`}
-            onClick={() => setActiveLeftTab("search")}
-          >
-            <span className="left-nav-icon">⌕</span>
-            <span>Поиск</span>
-          </button>
+        <div className="sidebar-nav">
+          <div className="sidebar-nav-item">
+            <span>⌕</span>
+            <input
+              className="sidebar-search-input"
+              value={searchValue}
+              onChange={(e) => setSearchValue(e.target.value)}
+              placeholder="Поиск"
+            />
+          </div>
+          <div className="sidebar-nav-item active">☰ Чаты</div>
+          <div className="sidebar-nav-item">★ Память</div>
+          <div className="sidebar-nav-item">▣ Проекты</div>
+          <div className="sidebar-nav-item">⚙ Настройки</div>
+        </div>
 
-          <button
-            className={`left-nav-item ${activeLeftTab === "chats" ? "active" : ""}`}
-            onClick={() => setActiveLeftTab("chats")}
-          >
-            <span className="left-nav-icon">☰</span>
-            <span>Чаты</span>
-          </button>
-
-          <button
-            className={`left-nav-item ${activeLeftTab === "memory" ? "active" : ""}`}
-            onClick={() => setActiveLeftTab("memory")}
-          >
-            <span className="left-nav-icon">★</span>
-            <span>Память</span>
-          </button>
-
-          <button
-            className={`left-nav-item ${activeLeftTab === "projects" ? "active" : ""}`}
-            onClick={() => setActiveLeftTab("projects")}
-          >
-            <span className="left-nav-icon">▣</span>
-            <span>Проекты</span>
-          </button>
-
-          <button
-            className={`left-nav-item ${activeLeftTab === "settings" ? "active" : ""}`}
-            onClick={() => setActiveLeftTab("settings")}
-          >
-            <span className="left-nav-icon">⚙</span>
-            <span>Настройки</span>
-          </button>
-        </nav>
-
-        <div className="left-content">
-          {activeLeftTab === "chats" ? (
-            <div className="chat-groups">
-              {[
-                { label: "Закреплённые", items: pinnedChats },
-                { label: "Все чаты", items: regularChats },
-              ].map((group) => (
-                <section key={group.label} className="chat-group">
-                  <div className="group-title">{group.label}</div>
-
-                  {group.items.length ? (
-                    group.items.map((chat) => (
-                      <button
-                        key={getChatId(chat)}
-                        className={`chat-card ${selectedChatId === getChatId(chat) ? "active" : ""}`}
-                        onClick={() => setSelectedChatId(getChatId(chat))}
-                      >
-                        <div className="chat-card-top">
-                          <div className="chat-card-title">{getChatTitle(chat)}</div>
-                          <div className="chat-card-actions" onClick={(e) => e.stopPropagation()}>
-                            <button
-                              className={`mini-icon ${getChatPinned(chat) ? "is-pinned" : ""}`}
-                              onClick={() => handleTogglePin(chat)}
-                              title="Закрепить в памяти"
-                            >
-                              📌
-                            </button>
-                            <button
-                              className="mini-icon"
-                              onClick={() => handleRenameChat(chat)}
-                              title="Переименовать"
-                            >
-                              ✎
-                            </button>
-                            <button
-                              className="mini-icon"
-                              onClick={() => handleDeleteChat(chat)}
-                              title="Удалить"
-                            >
-                              🗑
-                            </button>
-                          </div>
-                        </div>
-                        <div className="chat-card-meta">Память чатов</div>
-                      </button>
-                    ))
-                  ) : (
-                    <div className="empty-hint">Здесь пока пусто.</div>
-                  )}
-                </section>
-              ))}
-            </div>
-          ) : null}
-
-          {activeLeftTab === "search" ? (
-            <div className="search-panel">
-              <div className="group-title">Поиск по чатам, памяти и проектам</div>
-              <input
-                className="sidebar-input"
-                placeholder="Ключевые слова..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-
-              <div className="search-results">
-                <div className="search-block">
-                  <div className="search-title">Чаты</div>
-                  {searchChats.length ? (
-                    searchChats.map((item, index) => (
-                      <button
-                        key={`${getChatId(item) || "chat"}-${index}`}
-                        className="search-item"
-                        onClick={() => {
-                          const id = getChatId(item);
-                          if (id) {
-                            setActiveLeftTab("chats");
-                            setSelectedChatId(id);
-                          }
-                        }}
-                      >
-                        {getChatTitle(item)}
-                      </button>
-                    ))
-                  ) : (
-                    <div className="empty-hint">Нет совпадений по чатам.</div>
-                  )}
-                </div>
-
-                <div className="search-block">
-                  <div className="search-title">Память</div>
-                  {memoryItems.length ? (
-                    memoryItems.map((item) => (
-                      <div key={item.id} className="search-item static">
-                        {item.title || item.content.slice(0, 60)}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="empty-hint">Нет совпадений по памяти.</div>
-                  )}
-                </div>
-
-                <div className="search-block">
-                  <div className="search-title">Проекты</div>
-                  {searchProjects.length ? (
-                    searchProjects.map((item, index) => (
-                      <div key={`project-${index}`} className="search-item static">
-                        {item?.name || item?.title || item?.path || "Проект"}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="empty-hint">Нет совпадений по проектам.</div>
-                  )}
-                </div>
+        <div className="sidebar-section-title">Закреплённые</div>
+        <div className="chat-list">
+          {pinnedChats.length ? pinnedChats.map((chat) => (
+            <button
+              key={chat.id}
+              className={`chat-list-item ${activeChatId === chat.id ? "active" : ""}`}
+              onClick={() => openChat(chat.id)}
+            >
+              <div className="chat-list-title">{chat.title}</div>
+              <div className="chat-list-actions">
+                <span onClick={(e) => { e.stopPropagation(); handlePinChat(chat.id, chat.pinned); }}>📌</span>
+                <span onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}>🗑</span>
               </div>
-            </div>
-          ) : null}
+            </button>
+          )) : <div className="sidebar-empty">Здесь пока пусто.</div>}
+        </div>
 
-          {activeLeftTab === "memory" ? (
-            <MemoryPanel items={memoryItems} onDelete={handleDeleteMemory} />
-          ) : null}
-
-          {activeLeftTab === "projects" ? (
-            <div className="placeholder-panel">
-              <div className="group-title">Проекты</div>
-              <div className="empty-hint">
-                Здесь будет проектный контекст, файлы и project brain.
+        <div className="sidebar-section-title">Все чаты</div>
+        <div className="chat-list">
+          {regularChats.length ? regularChats.map((chat) => (
+            <button
+              key={chat.id}
+              className={`chat-list-item ${activeChatId === chat.id ? "active" : ""}`}
+              onClick={() => openChat(chat.id)}
+            >
+              <div>
+                <div className="chat-list-title">{chat.title}</div>
+                <div className="chat-list-subtitle">{chat.memory_saved ? "Память чатов" : ""}</div>
               </div>
-            </div>
-          ) : null}
-
-          {activeLeftTab === "settings" ? (
-            <div className="settings-panel">
-              <div className="group-title">Настройки</div>
-
-              <label className="settings-field">
-                <span>LLM</span>
-                <select
-                  className="sidebar-select"
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                >
-                  {models.map((model, index) => (
-                    <option key={`${model.name}-${index}`} value={model.name}>
-                      {model.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="settings-field">
-                <span>Профиль агента</span>
-                <select
-                  className="sidebar-select"
-                  value={agentProfile}
-                  onChange={(e) => setAgentProfile(e.target.value)}
-                >
-                  <option>Сбалансированный</option>
-                  <option>Кодинг</option>
-                  <option>Исследование</option>
-                  <option>Мульти-агентный</option>
-                </select>
-              </label>
-            </div>
-          ) : null}
+              <div className="chat-list-actions">
+                <span onClick={(e) => { e.stopPropagation(); handlePinChat(chat.id, chat.pinned); }}>📌</span>
+                <span onClick={(e) => { e.stopPropagation(); handleSaveToMemory(chat.id, chat.memory_saved); }}>🧠</span>
+                <span onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}>🗑</span>
+              </div>
+            </button>
+          )) : <div className="sidebar-empty">Здесь пока пусто.</div>}
         </div>
       </aside>
 
-      <section className="main-panel">
-        <header className="top-bar">
-          <div className="brand-title">Jarvis</div>
+      <main className="jarvis-main">
+        <div className="jarvis-topbar">
+          <div className="jarvis-brand">Jarvis</div>
 
-          <div className="top-center">
-            <div className="jarvis-head">
-              <div className="logo-badge">J</div>
+          <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="topbar-select">
+            {(modelOptions?.length ? modelOptions : [{ name: selectedModel }]).map((item) => (
+              <option key={item.name || item} value={item.name || item}>
+                {item.name || item}
+              </option>
+            ))}
+          </select>
 
-              <select
-                className="top-select"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
+          <select value={profile} onChange={(e) => setProfile(e.target.value)} className="topbar-select">
+            <option value="Сбалансированный">Сбалансированный</option>
+            <option value="Точный">Точный</option>
+            <option value="Быстрый">Быстрый</option>
+          </select>
+
+          <select value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} className="topbar-select">
+            {[4096, 8192, 16384, 32768, 65536, 131072, 262144].map((v) => (
+              <option key={v} value={String(v)}>
+                {Math.round(v / 1024)}k
+              </option>
+            ))}
+          </select>
+
+          <div className="topbar-tabs">
+            {topTabs.map((tab) => (
+              <button
+                key={tab.key}
+                className={`soft-btn ${activeTopTab === tab.key ? "active" : ""}`}
+                onClick={() => setActiveTopTab(tab.key)}
               >
-                {models.map((model, index) => (
-                  <option key={`${model.name}-${index}`} value={model.name}>
-                    {model.name}
-                  </option>
-                ))}
-              </select>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
-              <select
-                className="top-select"
-                value={agentProfile}
-                onChange={(e) => setAgentProfile(e.target.value)}
-              >
-                <option>Сбалансированный</option>
-                <option>Кодинг</option>
-                <option>Исследование</option>
-                <option>Мульти-агентный</option>
-              </select>
-
-              <div className="top-tabs">
-                {topTabs.map((tab) => (
-                  <button
-                    key={tab.key}
-                    className={`top-tab ${activeTopTab === tab.key ? "active" : ""}`}
-                    onClick={() => setActiveTopTab(tab.key)}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
+        <div className="chat-page">
+          <div className="chat-header-row">
+            <div className="chat-page-title">Чаты</div>
+            <div className="chat-header-actions">
+              <button className="soft-btn" onClick={() => activeChatId && handleSaveToMemory(activeChatId, chats.find((c) => c.id === activeChatId)?.memory_saved)}>
+                Сохранить в памяти
+              </button>
+              <button className="soft-btn" onClick={() => activeChatId && handlePinChat(activeChatId, chats.find((c) => c.id === activeChatId)?.pinned)}>
+                Закрепить в памяти
+              </button>
             </div>
           </div>
 
-          <div className="top-right">
-            {selectedModel} • {agentProfile}
+          <div className="assistant-greeting">
+            Jarvis готов. Начни новый чат или напиши сообщение.
           </div>
-        </header>
 
-        {activeTopTab === "code" ? (
-          <div className="code-shell-wrap">
-            <CodeWorkspace />
+          <div className="message-stream">
+            {messages.map((msg) => (
+              <div key={msg.id} className={`message-row ${msg.role}`}>
+                <div className="message-bubble">{msg.content}</div>
+              </div>
+            ))}
           </div>
-        ) : (
-          <div className="chat-area">
-            <div className="chat-area-header">
-              <div className="section-title">Чаты</div>
-              <div className="chat-memory-actions">
-                <button className="soft-btn" onClick={() => handleSaveToMemory(false)}>
-                  Сохранить в памяти
-                </button>
-                <button className="soft-btn" onClick={() => handleSaveToMemory(true)}>
-                  Закрепить в памяти
-                </button>
-              </div>
-            </div>
 
-            <div className="messages">
-              {!selectedChatId && !messages.length ? (
-                <div className="assistant-row">
-                  <div className="assistant-avatar">✦</div>
-                  <div className="assistant-bubble">
-                    Jarvis готов. Начни новый чат или напиши сообщение.
-                  </div>
-                </div>
-              ) : null}
+          {errorText ? <div className="error-banner">{errorText}</div> : null}
 
-              {messages.map((message, index) => {
-                const role = getMessageRole(message);
-                const content = getMessageContent(message);
-
-                return (
-                  <div
-                    key={message?.id || `${role}-${index}`}
-                    className={`message-row ${role === "user" ? "user" : "assistant"}`}
-                  >
-                    <div className={`message-avatar ${role === "user" ? "user" : "assistant"}`}>
-                      {role === "user" ? "Ты" : "J"}
-                    </div>
-                    <div className={`message-bubble ${role === "user" ? "user" : "assistant"}`}>
-                      {content}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {error ? <div className="error-banner">{error}</div> : null}
-
-            <div className="composer-wrap">
-              <div className="composer-toolbar">
-                <button className="attach-btn" title="Добавить">
-                  ＋
-                </button>
-              </div>
-
-              <textarea
-                className="composer"
-                value={composer}
-                onChange={(e) => setComposer(e.target.value)}
-                placeholder="Напиши задачу... Jarvis сам выберет режим"
-              />
-
-              <div className="composer-footer">
-                <div className="composer-meta">
-                  Режим: {activeTopTab} • {selectedModel}
-                </div>
-
-                <button
-                  className="send-btn"
-                  onClick={handleSend}
-                  disabled={sending || !composer.trim()}
-                >
-                  ➤
-                </button>
-              </div>
-            </div>
+          <div className="chat-input-shell smaller">
+            <button className="input-plus-btn">+</button>
+            <textarea
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Напиши задачу... Jarvis сам выберет режим"
+              className="chat-textarea"
+            />
+            <button className="send-btn" onClick={handleSend}>➤</button>
           </div>
-        )}
-      </section>
+        </div>
+      </main>
     </div>
   );
 }
