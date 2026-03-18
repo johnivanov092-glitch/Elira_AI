@@ -47,7 +47,7 @@ export function verifyPatch(body) {
 }
 
 export function listRunHistory() {
-  return request("/api/jarvis/patch/history/list");
+  return request("/api/jarvis/run-history/list");
 }
 
 export function autocodeSuggest(body) {

@@ -1,16 +1,20 @@
 import React, { useMemo, useState } from "react";
 import * as api from "../api/ide";
+import DiffViewer from "./DiffViewer";
 
 export default function AutoCodingPanel({
   selectedPath,
   currentContent,
   onPatchApplied,
+  onHistoryRefresh,
 }) {
   const [goal, setGoal] = useState("");
   const [maxSteps, setMaxSteps] = useState(2);
   const [loading, setLoading] = useState(false);
   const [proposal, setProposal] = useState(null);
+  const [preview, setPreview] = useState(null);
   const [verifyResult, setVerifyResult] = useState(null);
+
   const canRun = useMemo(
     () => Boolean(selectedPath && goal.trim()),
     [selectedPath, goal]
@@ -19,6 +23,8 @@ export default function AutoCodingPanel({
   async function handleSuggest() {
     if (!canRun) return;
     setLoading(true);
+    setProposal(null);
+    setPreview(null);
     setVerifyResult(null);
     try {
       const result = await api.autocodeSuggest({
@@ -35,20 +41,66 @@ export default function AutoCodingPanel({
     }
   }
 
-  async function handleApply() {
+  async function handlePreview() {
     if (!proposal?.patch) return;
+    setLoading(true);
+    try {
+      const result = await api.previewPatch({
+        path: selectedPath,
+        original_content: currentContent,
+        content: proposal.patch,
+        goal: goal.trim(),
+      });
+      setPreview(result);
+    } catch (error) {
+      alert(error.message || "Preview failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleApply() {
+    if (!proposal?.patch || !preview?.ok) {
+      alert("Сначала сделай Preview");
+      return;
+    }
     setLoading(true);
     try {
       const result = await api.applyPatch({
         path: selectedPath,
         content: proposal.patch,
+        goal: goal.trim(),
+        run_id: preview?.run_id,
       });
       if (onPatchApplied) {
         onPatchApplied(proposal.patch, result);
       }
+      if (onHistoryRefresh) {
+        await onHistoryRefresh();
+      }
       alert("Patch applied");
     } catch (error) {
       alert(error.message || "Apply failed");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRollback() {
+    const runId = preview?.run_id || proposal?.run_id;
+    if (!runId) {
+      alert("Нет run_id для rollback");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api.rollbackPatch({ run_id: runId, path: selectedPath });
+      if (onHistoryRefresh) {
+        await onHistoryRefresh();
+      }
+      alert("Rollback done");
+    } catch (error) {
+      alert(error.message || "Rollback failed");
     } finally {
       setLoading(false);
     }
@@ -60,8 +112,12 @@ export default function AutoCodingPanel({
       const result = await api.verifyPatch({
         path: selectedPath,
         goal: goal.trim(),
+        run_id: preview?.run_id,
       });
       setVerifyResult(result);
+      if (onHistoryRefresh) {
+        await onHistoryRefresh();
+      }
     } catch (error) {
       alert(error.message || "Verify failed");
     } finally {
@@ -77,16 +133,16 @@ export default function AutoCodingPanel({
       background: "#11161d",
       color: "#e6edf3",
       display: "grid",
-      gap: 10,
+      gap: 12,
     }}>
-      <div style={{ fontWeight: 700 }}>Auto-Coding Loop</div>
+      <div style={{ fontWeight: 700 }}>Auto-Coding + Diff Flow</div>
 
       <label style={{ display: "grid", gap: 6 }}>
         <span style={{ fontSize: 12, opacity: 0.8 }}>Goal</span>
         <textarea
           value={goal}
           onChange={(e) => setGoal(e.target.value)}
-          placeholder="Например: исправь обработку ошибок и добавь защиту от пустого path"
+          placeholder="Например: исправь null-check и добавь защиту от пустого path"
           style={{
             width: "100%",
             minHeight: 90,
@@ -122,8 +178,14 @@ export default function AutoCodingPanel({
         <button onClick={handleSuggest} disabled={!canRun || loading}>
           {loading ? "Running..." : "Suggest Patch"}
         </button>
-        <button onClick={handleApply} disabled={!proposal?.patch || loading}>
-          Apply Suggested Patch
+        <button onClick={handlePreview} disabled={!proposal?.patch || loading}>
+          Preview Patch
+        </button>
+        <button onClick={handleApply} disabled={!preview?.ok || loading}>
+          Apply Patch
+        </button>
+        <button onClick={handleRollback} disabled={!preview?.run_id || loading}>
+          Rollback
         </button>
         <button onClick={handleVerify} disabled={!selectedPath || loading}>
           Verify
@@ -148,19 +210,10 @@ export default function AutoCodingPanel({
           <div style={{ fontSize: 12, opacity: 0.8 }}>
             Steps used: {proposal.steps_used ?? "-"}
           </div>
-          <div style={{ fontWeight: 600 }}>Proposed content</div>
-          <pre style={{
-            margin: 0,
-            whiteSpace: "pre-wrap",
-            overflowX: "auto",
-            background: "#06090d",
-            padding: 10,
-            borderRadius: 8,
-          }}>
-            {proposal.patch || ""}
-          </pre>
         </div>
       )}
+
+      <DiffViewer diffLines={preview?.diff_lines || []} />
 
       {verifyResult && (
         <div style={{
