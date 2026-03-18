@@ -7,7 +7,7 @@ const LIBRARY_KEY = "jarvis_library_files_v7";
 const CHAT_CONTEXT_KEY = "jarvis_chat_context_map_v7";
 
 const PROFILE_DESCRIPTIONS = {
-  "Универсальный": "Обычные ответы без лишней глубины. Подходит для повседневной работы.",
+  "Универсальный": "Используйте официальный тон, используя ясные, хорошо структурированные предложения и точный язык. Сохраняйте профессионализм и избегайте разговорных выражений. Предоставляйте подробные объяснения, оставаясь краткими и уважительными, как если бы вы обращались к коллеге-профессионалу.",
   "Программист": "Код, исправления, архитектура, реализация, рефакторинг и технические решения.",
   "Оркестратор": "Планирование, orchestration, multi-agent сценарии, маршруты работы и backend-пайплайны.",
   "Исследователь": "Факты, анализ источников, сравнения, изучение темы и web-поиск с опорой на ресурсы.",
@@ -145,7 +145,11 @@ export default function JarvisChatShell() {
         ? models
         : [];
       setModelOptions(normalizedModels);
-      if (normalizedModels.length) {
+
+      const preferred = normalizedModels.find((item) => (item.name || item) === "qwen3:8b");
+      if (preferred) {
+        setSelectedModel(preferred.name || preferred);
+      } else if (normalizedModels.length) {
         setSelectedModel(normalizedModels[0].name || normalizedModels[0]);
       }
 
@@ -242,15 +246,14 @@ export default function JarvisChatShell() {
         content: text,
       });
 
-      const nextMessages = [...messages, userMsg];
-      setMessages(nextMessages);
+      setMessages((prev) => [...prev, userMsg]);
       setInputValue("");
       await autoRenameChat(text);
 
       const contextFiles = getContextFilesForChat(activeChatId, libraryFiles).filter((item) => item.use_in_context);
       const contextPrefix = contextFiles.length
-        ? "\n\nКонтекст из библиотеки:\n" +
-          contextFiles.map((f) => `- ${f.name}${f.preview ? `: ${f.preview.slice(0, 1200)}` : ""}`).join("\n")
+        ? "\\n\\nКонтекст из библиотеки:\\n" +
+          contextFiles.map((f) => `- ${f.name}${f.preview ? `: ${f.preview.slice(0, 1200)}` : ""}`).join("\\n")
         : "";
 
       const assistantMsg = await api.execute({
@@ -544,7 +547,7 @@ export default function JarvisChatShell() {
             )}
           </div>
 
-                    {renameMode && activeSidebarTab === "chats" ? (
+          {renameMode && activeSidebarTab === "chats" ? (
             <div className="rename-bar">
               <input
                 value={renameValue}
@@ -568,7 +571,7 @@ export default function JarvisChatShell() {
                       </option>
                     ))}
                   </select>
-                  <div className="settings-desc">Выбирает активную модель Ollama для ответов.</div>
+                  <div className="settings-desc">По умолчанию используется qwen3:8b, если модель доступна в Ollama.</div>
                 </div>
 
                 <div className="settings-tile">
