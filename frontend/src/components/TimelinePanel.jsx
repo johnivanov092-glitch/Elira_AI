@@ -1,19 +1,15 @@
-export default function TimelinePanel({ timeline }) {
+
+import React from "react";
+
+export default function TimelinePanel({ events }) {
   return (
-    <div className="timeline-list">
-      {timeline.length === 0 ? (
-        <div className="memory-small">Шагов пока нет.</div>
-      ) : (
-        timeline.map((item, idx) => (
-          <div key={`${item.step}-${idx}`} className="timeline-card">
-            <div className="timeline-head">
-              <div className="timeline-title">{item.title}</div>
-              <div className={`timeline-status ${item.status}`}>{item.status}</div>
-            </div>
-            <div className="timeline-detail">{item.detail}</div>
-          </div>
-        ))
-      )}
+    <div>
+      <h4>Timeline</h4>
+      {events.map((e, i) => (
+        <div key={i}>
+          {e.timestamp} — {e.type}
+        </div>
+      ))}
     </div>
-  )
+  );
 }

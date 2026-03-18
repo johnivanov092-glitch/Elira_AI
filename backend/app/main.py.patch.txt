@@ -1,0 +1,7 @@
+# В backend/app/main.py добавь:
+
+from app.api.routes.jarvis_autocode import router as jarvis_autocode_router
+
+# И в секцию include_router(...):
+
+app.include_router(jarvis_autocode_router)

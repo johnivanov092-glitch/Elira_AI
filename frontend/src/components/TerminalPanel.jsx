@@ -1,16 +1,14 @@
-export default function TerminalPanel({ logs = [] }) {
+
+import React from "react";
+
+export default function TerminalPanel({ events }) {
   return (
-    <div className="terminal-card">
-      <div className="terminal-title">Логи</div>
-      <div className="terminal-log-list">
-        {logs.length ? logs.map((line, idx) => (
-          <div key={`${idx}-${line}`} className="terminal-log-line">
-            {line}
-          </div>
-        )) : (
-          <div className="sidebar-empty">Пока пусто.</div>
-        )}
-      </div>
+    <div style={{ background: "#000", color: "#0f0", padding: 10 }}>
+      {events.map((e, i) => (
+        <div key={i}>
+          [{e.timestamp}] {e.type} → {e.message}
+        </div>
+      ))}
     </div>
   );
 }
