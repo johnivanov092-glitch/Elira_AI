@@ -13,9 +13,7 @@ function normalizeError(payload, status) {
 
 async function parseResponse(res) {
   const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return await res.json();
-  }
+  if (contentType.includes("application/json")) return await res.json();
   return await res.text();
 }
 
@@ -30,11 +28,7 @@ async function request(path, options = {}) {
   });
 
   const payload = await parseResponse(res);
-
-  if (!res.ok) {
-    throw new Error(normalizeError(payload, res.status));
-  }
-
+  if (!res.ok) throw new Error(normalizeError(payload, res.status));
   return payload;
 }
 
@@ -60,13 +54,38 @@ function normalizeArray(payload) {
   return [];
 }
 
+function unwrapItem(payload) {
+  if (!payload || typeof payload !== "object") return payload;
+  if (payload.item && typeof payload.item === "object") return payload.item;
+  if (payload.chat && typeof payload.chat === "object") return payload.chat;
+  if (payload.message && typeof payload.message === "object") return payload.message;
+  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) return payload.data;
+  return payload;
+}
+
 function normalizeChat(item = {}) {
+  const pinnedValue =
+    item.pinned ??
+    item.is_pinned ??
+    item.pin ??
+    item.pinned_flag ??
+    false;
+
+  const memoryValue =
+    item.memory_saved ??
+    item.saved_to_memory ??
+    item.saved_in_memory ??
+    item.in_memory ??
+    item.memory ??
+    item.saved ??
+    false;
+
   return {
     ...item,
     id: item.id ?? item.chat_id ?? item.uuid ?? "",
     title: item.title ?? item.name ?? "Новый чат",
-    pinned: Boolean(item.pinned),
-    memory_saved: Boolean(item.memory_saved ?? item.saved_to_memory ?? item.saved),
+    pinned: Boolean(pinnedValue),
+    memory_saved: Boolean(memoryValue),
     created_at: item.created_at ?? item.createdAt ?? "",
     updated_at: item.updated_at ?? item.updatedAt ?? "",
   };
@@ -90,21 +109,10 @@ function normalizeMessage(item = {}) {
   };
 }
 
-function unwrapItem(payload) {
-  if (!payload || typeof payload !== "object") return payload;
-  if (payload.item && typeof payload.item === "object") return payload.item;
-  if (payload.chat && typeof payload.chat === "object") return payload.chat;
-  if (payload.message && typeof payload.message === "object") return payload.message;
-  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) return payload.data;
-  return payload;
-}
-
 function extractAgentError(payload) {
   if (!payload || typeof payload !== "object") return "";
   if (payload.ok === false) {
-    if (typeof payload?.meta?.error === "string" && payload.meta.error.trim()) {
-      return payload.meta.error;
-    }
+    if (typeof payload?.meta?.error === "string" && payload.meta.error.trim()) return payload.meta.error;
     if (Array.isArray(payload.timeline)) {
       const details = payload.timeline
         .map((item) => item?.detail || item?.title || "")
@@ -112,9 +120,7 @@ function extractAgentError(payload) {
         .join(" | ");
       if (details) return details;
     }
-    if (typeof payload.answer === "string" && payload.answer.trim()) {
-      return "";
-    }
+    if (typeof payload.answer === "string" && payload.answer.trim()) return "";
     return "run_agent вернул ошибку";
   }
   return "";
@@ -141,32 +147,42 @@ export async function renameChat(arg1, arg2) {
 
 export async function pinChat(arg1, arg2) {
   const params = typeof arg1 === "object" && arg1 !== null ? arg1 : { id: arg1, pinned: arg2 };
-  const payload = await request(`/api/jarvis/chats/${encodeURIComponent(params.id)}/pin`, {
-    method: "PATCH",
-    body: { pinned: Boolean(params.pinned) },
-  });
+  const id = encodeURIComponent(params.id);
+  const nextPinned = Boolean(params.pinned);
+
+  const payload = await safeRequest(
+    `/api/jarvis/chats/${id}/pin`,
+    { method: "PATCH", body: { pinned: nextPinned } },
+    () => request(`/api/jarvis/chats/${id}`, { method: "PATCH", body: { pinned: nextPinned, is_pinned: nextPinned } })
+  );
+
   return normalizeChat(unwrapItem(payload));
 }
 
 export async function saveChatToMemory(arg1, arg2) {
   const params = typeof arg1 === "object" && arg1 !== null ? arg1 : { id: arg1, saved: arg2 };
+  const id = encodeURIComponent(params.id);
+  const nextSaved = Boolean(params.saved);
+
   const payload = await safeRequest(
-    `/api/jarvis/chats/${encodeURIComponent(params.id)}/memory`,
-    { method: "PATCH", body: { saved: Boolean(params.saved) } },
-    () =>
-      request(`/api/jarvis/chats/${encodeURIComponent(params.id)}`, {
-        method: "PATCH",
-        body: { memory_saved: Boolean(params.saved) },
-      })
+    `/api/jarvis/chats/${id}/memory`,
+    { method: "PATCH", body: { saved: nextSaved } },
+    () => request(`/api/jarvis/chats/${id}`, {
+      method: "PATCH",
+      body: {
+        memory_saved: nextSaved,
+        saved_to_memory: nextSaved,
+        saved_in_memory: nextSaved,
+      },
+    })
   );
+
   return normalizeChat(unwrapItem(payload));
 }
 
 export async function deleteChat(arg) {
   const id = typeof arg === "object" && arg !== null ? arg.id : arg;
-  return request(`/api/jarvis/chats/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+  return request(`/api/jarvis/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function getMessages(arg) {
@@ -194,15 +210,7 @@ export async function sendMessage(body = {}) {
 }
 
 export async function execute(body = {}) {
-  const userInput = String(
-    body.user_input ??
-      body.message ??
-      body.prompt ??
-      body.text ??
-      body.query ??
-      ""
-  ).trim();
-
+  const userInput = String(body.user_input ?? body.message ?? body.prompt ?? body.text ?? body.query ?? "").trim();
   const response = await request("/api/chat/send", {
     method: "POST",
     body: {
@@ -216,25 +224,12 @@ export async function execute(body = {}) {
   });
 
   const routeError = extractAgentError(response);
-  if (routeError) {
-    throw new Error(routeError);
-  }
+  if (routeError) throw new Error(routeError);
 
-  const content =
-    response?.content ??
-    response?.answer ??
-    response?.response ??
-    response?.message ??
-    "";
+  const content = response?.content ?? response?.answer ?? response?.response ?? response?.message ?? "";
+  if (!String(content || "").trim()) throw new Error("Пустой ответ от /api/chat/send");
 
-  if (!String(content || "").trim()) {
-    throw new Error("Пустой ответ от /api/chat/send");
-  }
-
-  return {
-    ...response,
-    content: typeof content === "string" ? content : String(content ?? ""),
-  };
+  return { ...response, content: typeof content === "string" ? content : String(content ?? "") };
 }
 
 export async function listOllamaModels() {
@@ -265,10 +260,7 @@ export async function listProjects() {
 
 export async function getProjectSnapshot() {
   const payload = await request("/api/project-brain/snapshot");
-  return {
-    ...payload,
-    files: Array.isArray(payload?.files) ? payload.files : [],
-  };
+  return { ...payload, files: Array.isArray(payload?.files) ? payload.files : [] };
 }
 
 export async function getProjectFile(path) {
@@ -283,11 +275,7 @@ export async function listPatchHistory({ path = "", limit = 20 } = {}) {
   const query = new URLSearchParams();
   if (path) query.set("path", path);
   if (limit) query.set("limit", String(limit));
-  const payload = await safeRequest(
-    `/api/jarvis/patch/history/list${query.toString() ? `?${query.toString()}` : ""}`,
-    {},
-    { items: [] }
-  );
+  const payload = await safeRequest(`/api/jarvis/patch/history/list${query.toString() ? `?${query.toString()}` : ""}`, {}, { items: [] });
   return { ...payload, items: normalizeArray(payload) };
 }
 
