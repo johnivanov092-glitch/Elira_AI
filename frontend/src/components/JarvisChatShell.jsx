@@ -1,9 +1,18 @@
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/ide";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 
 const LIBRARY_KEY = "jarvis_ui_library_files_v2";
+const CHAT_CONTEXT_KEY = "jarvis_chat_context_files_v2";
+
+const DEFAULT_PROFILES = {
+  "Универсальный": "Универсальный профиль для обычных ответов, без лишней глубины.",
+  "Программист": "Профиль для кода, исправлений, архитектуры и технической реализации.",
+  "Оркестратор": "Профиль для планирования, multi-agent сценариев, backend orchestration и пайплайнов.",
+  "Исследователь": "Профиль для поиска, сравнения, анализа источников и фактологической проверки.",
+  "Аналитик": "Профиль для выводов, рисков, структурирования данных и принятия решений.",
+  "Сократ": "Профиль для обучения через вопросы и постепенное раскрытие темы.",
+};
 
 function loadLibraryFiles() {
   try {
@@ -17,6 +26,18 @@ function saveLibraryFiles(items) {
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(items));
 }
 
+function loadChatContextMap() {
+  try {
+    return JSON.parse(localStorage.getItem(CHAT_CONTEXT_KEY) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function saveChatContextMap(value) {
+  localStorage.setItem(CHAT_CONTEXT_KEY, JSON.stringify(value));
+}
+
 function makeId(prefix = "id") {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -25,12 +46,12 @@ async function fileToLibraryRecord(file) {
   let textPreview = "";
   const isTextLike =
     file.type.startsWith("text/") ||
-    file.name.match(/\.(txt|md|json|js|jsx|ts|tsx|py|css|html|yml|yaml|xml|csv|log)$/i);
+    file.name.match(/\.(txt|md|json|js|jsx|ts|tsx|py|css|html|yml|yaml|xml|csv|log|ini|toml)$/i);
 
   if (isTextLike) {
     try {
       const text = await file.text();
-      textPreview = text.slice(0, 4000);
+      textPreview = text.slice(0, 12000);
     } catch {
       textPreview = "";
     }
@@ -43,7 +64,15 @@ async function fileToLibraryRecord(file) {
     type: file.type || "unknown",
     uploaded_at: new Date().toISOString(),
     preview: textPreview,
+    use_in_context: true,
+    source: "chat-upload",
   };
+}
+
+function getContextFilesForChat(chatId, libraryFiles) {
+  const map = loadChatContextMap();
+  const ids = map[chatId] || [];
+  return libraryFiles.filter((item) => ids.includes(item.id));
 }
 
 export default function JarvisChatShell() {
@@ -55,7 +84,7 @@ export default function JarvisChatShell() {
   const [selectedModel, setSelectedModel] = useState("qwen3:8b");
   const [modelOptions, setModelOptions] = useState([]);
   const [profile, setProfile] = useState("Универсальный");
-  const [profileOptions, setProfileOptions] = useState([]);
+  const [profileDescriptions, setProfileDescriptions] = useState(DEFAULT_PROFILES);
   const [contextWindow, setContextWindow] = useState("4096");
 
   const [chats, setChats] = useState([]);
@@ -68,6 +97,8 @@ export default function JarvisChatShell() {
 
   const [libraryFiles, setLibraryFiles] = useState(loadLibraryFiles());
   const [selectedLibraryId, setSelectedLibraryId] = useState("");
+  const [renameChatId, setRenameChatId] = useState("");
+  const [renameValue, setRenameValue] = useState("");
 
   useEffect(() => {
     init();
@@ -75,17 +106,21 @@ export default function JarvisChatShell() {
 
   async function init() {
     try {
-      const [models, profiles, chatItems] = await Promise.all([
+      const [models, chatItems] = await Promise.all([
         api.listOllamaModels(),
-        api.listProfiles(),
         api.listChats(),
       ]);
 
-      setModelOptions(models || []);
-      if (models?.length) setSelectedModel(models[0].name || models[0]);
+      const normalizedModels = Array.isArray(models?.models)
+        ? models.models
+        : Array.isArray(models)
+        ? models
+        : [];
 
-      setProfileOptions(profiles || []);
-      if (profiles?.length) setProfile(profiles[0].name || profiles[0]);
+      setModelOptions(normalizedModels);
+      if (normalizedModels.length) {
+        setSelectedModel(normalizedModels[0].name || normalizedModels[0]);
+      }
 
       if (chatItems?.length) {
         setChats(chatItems);
@@ -130,8 +165,23 @@ export default function JarvisChatShell() {
       setMessages((await api.getMessages({ chatId })) || []);
       setActiveSidebarTab("chats");
       setActiveMainTab("chat");
+      setRenameChatId("");
+      setRenameValue("");
     } catch (e) {
       setErrorText(e.message || "Ошибка открытия чата");
+    }
+  }
+
+  async function handleRenameChat(id) {
+    const title = renameValue.trim();
+    if (!title) return;
+    try {
+      await api.renameChat({ id, title });
+      await loadChats(id);
+      setRenameChatId("");
+      setRenameValue("");
+    } catch (e) {
+      setErrorText(e.message || "Ошибка переименования чата");
     }
   }
 
@@ -141,6 +191,7 @@ export default function JarvisChatShell() {
 
     try {
       setErrorText("");
+
       const userMsg = await api.addMessage({
         chatId: activeChatId,
         role: "user",
@@ -150,11 +201,20 @@ export default function JarvisChatShell() {
       setMessages((prev) => [...prev, userMsg]);
       setInputValue("");
 
+      const contextFiles = getContextFilesForChat(activeChatId, libraryFiles)
+        .filter((item) => item.use_in_context);
+
+      const contextPrefix = contextFiles.length
+        ? "\\n\\nКонтекст из библиотеки:\\n" +
+          contextFiles.map((f) => `- ${f.name}${f.preview ? `: ${f.preview.slice(0, 1200)}` : ""}`).join("\\n")
+        : "";
+
       const assistantMsg = await api.execute({
         chatId: activeChatId,
-        message: text,
-        profileName: profile,
+        message: `${text}${contextPrefix}`,
+        mode: profile === "Оркестратор" ? "orchestrator" : profile === "Исследователь" || profile === "Аналитик" ? "research" : profile === "Программист" ? "code" : "chat",
         model: selectedModel,
+        profile_name: profile,
       });
 
       setMessages((prev) => [...prev, assistantMsg]);
@@ -213,6 +273,13 @@ export default function JarvisChatShell() {
     saveLibraryFiles(next);
     setActiveSidebarTab("library");
     setSelectedLibraryId(records[0]?.id || "");
+
+    if (activeChatId) {
+      const map = loadChatContextMap();
+      const currentIds = map[activeChatId] || [];
+      map[activeChatId] = Array.from(new Set([...records.map((r) => r.id), ...currentIds]));
+      saveChatContextMap(map);
+    }
   }
 
   function onDrop(e) {
@@ -238,9 +305,32 @@ export default function JarvisChatShell() {
     const next = libraryFiles.filter((item) => item.id !== id);
     setLibraryFiles(next);
     saveLibraryFiles(next);
+
+    const map = loadChatContextMap();
+    const updated = Object.fromEntries(
+      Object.entries(map).map(([chatId, ids]) => [chatId, (ids || []).filter((v) => v !== id)])
+    );
+    saveChatContextMap(updated);
+
     if (selectedLibraryId === id) {
       setSelectedLibraryId(next[0]?.id || "");
     }
+  }
+
+  function toggleLibraryContext(fileId, checked) {
+    const next = libraryFiles.map((item) =>
+      item.id === fileId ? { ...item, use_in_context: checked } : item
+    );
+    setLibraryFiles(next);
+    saveLibraryFiles(next);
+
+    if (!activeChatId) return;
+    const map = loadChatContextMap();
+    const currentIds = new Set(map[activeChatId] || []);
+    if (checked) currentIds.add(fileId);
+    else currentIds.delete(fileId);
+    map[activeChatId] = Array.from(currentIds);
+    saveChatContextMap(map);
   }
 
   const filteredChats = useMemo(() => {
@@ -256,9 +346,9 @@ export default function JarvisChatShell() {
     () => libraryFiles.find((item) => item.id === selectedLibraryId) || libraryFiles[0] || null,
     [libraryFiles, selectedLibraryId]
   );
-  const selectedProfileItem = useMemo(
-    () => profileOptions.find((item) => item.name === profile) || null,
-    [profileOptions, profile]
+  const currentContextFiles = useMemo(
+    () => (activeChatId ? getContextFilesForChat(activeChatId, libraryFiles).filter((f) => f.use_in_context) : []),
+    [activeChatId, libraryFiles]
   );
 
   if (activeMainTab === "code") {
@@ -290,84 +380,53 @@ export default function JarvisChatShell() {
           />
         </div>
 
-        {activeSidebarTab === "settings" && (
-          <>
-            <div className="sidebar-section-title">Настройки</div>
-
-            <label className="settings-row">
-              <span>Модель</span>
-              <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="topbar-select full dark-select">
-                {(modelOptions?.length ? modelOptions : [{ name: selectedModel }]).map((item) => (
-                  <option key={item.name || item} value={item.name || item}>
-                    {item.name || item}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="settings-row">
-              <span>Профиль</span>
-              <select value={profile} onChange={(e) => setProfile(e.target.value)} className="topbar-select full dark-select">
-                {(profileOptions?.length ? profileOptions : [{ name: profile }]).map((item) => (
-                  <option key={item.name || item} value={item.name || item}>
-                    {item.name || item}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            {selectedProfileItem?.description ? (
-              <div className="profile-help">
-                {selectedProfileItem.description}
-              </div>
-            ) : null}
-
-            <label className="settings-row">
-              <span>Контекст</span>
-              <select value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} className="topbar-select full dark-select">
-                {[4096, 8192, 16384, 32768, 65536, 131072, 262144].map((v) => (
-                  <option key={v} value={String(v)}>
-                    {Math.round(v / 1024)}k
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div className="profile-help">
-              Профиль определяет стиль и глубину работы агента. Оркестратор и Исследователь используют более сложный маршрут ответа, если backend это поддерживает.
-            </div>
-          </>
-        )}
-
         {activeSidebarTab === "chats" && (
           <>
             <div className="sidebar-section-title">Закреплённые</div>
             <div className="chat-list">
               {pinnedChats.length ? pinnedChats.map((chat) => (
-                <button key={chat.id} className={`chat-list-item ${activeChatId === chat.id ? "active" : ""}`} onClick={() => openChat(chat.id)}>
-                  <div className="chat-list-title">{chat.title}</div>
+                <div key={chat.id} className={`chat-list-item ${activeChatId === chat.id ? "active" : ""}`}>
+                  {renameChatId === chat.id ? (
+                    <div className="rename-row">
+                      <input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="rename-input" />
+                      <button className="mini-btn" onClick={() => handleRenameChat(chat.id)}>✓</button>
+                    </div>
+                  ) : (
+                    <button className="chat-title-btn" onClick={() => openChat(chat.id)}>{chat.title}</button>
+                  )}
                   <div className="chat-list-actions">
-                    <span onClick={(e) => { e.stopPropagation(); handlePinChat(chat.id, chat.pinned); }}>📌</span>
-                    <span onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}>🗑</span>
+                    <span onClick={() => { setRenameChatId(chat.id); setRenameValue(chat.title || ""); }}>✎</span>
+                    <span onClick={() => handlePinChat(chat.id, chat.pinned)}>📌</span>
+                    <span onClick={() => handleDeleteChat(chat.id)}>🗑</span>
                   </div>
-                </button>
+                </div>
               )) : <div className="sidebar-empty">Здесь пока пусто.</div>}
             </div>
 
             <div className="sidebar-section-title">Все чаты</div>
             <div className="chat-list">
               {regularChats.length ? regularChats.map((chat) => (
-                <button key={chat.id} className={`chat-list-item ${activeChatId === chat.id ? "active" : ""}`} onClick={() => openChat(chat.id)}>
-                  <div>
-                    <div className="chat-list-title">{chat.title}</div>
-                    <div className="chat-list-subtitle">{chat.memory_saved ? "Память чатов" : ""}</div>
+                <div key={chat.id} className={`chat-list-item ${activeChatId === chat.id ? "active" : ""}`}>
+                  <div className="chat-list-main">
+                    {renameChatId === chat.id ? (
+                      <div className="rename-row">
+                        <input value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="rename-input" />
+                        <button className="mini-btn" onClick={() => handleRenameChat(chat.id)}>✓</button>
+                      </div>
+                    ) : (
+                      <button className="chat-title-btn" onClick={() => openChat(chat.id)}>
+                        <div className="chat-list-title">{chat.title}</div>
+                        <div className="chat-list-subtitle">{chat.memory_saved ? "Память чатов" : ""}</div>
+                      </button>
+                    )}
                   </div>
                   <div className="chat-list-actions">
-                    <span onClick={(e) => { e.stopPropagation(); handlePinChat(chat.id, chat.pinned); }}>📌</span>
-                    <span onClick={(e) => { e.stopPropagation(); handleSaveToMemory(chat.id, chat.memory_saved); }}>🧠</span>
-                    <span onClick={(e) => { e.stopPropagation(); handleDeleteChat(chat.id); }}>🗑</span>
+                    <span onClick={() => { setRenameChatId(chat.id); setRenameValue(chat.title || ""); }}>✎</span>
+                    <span onClick={() => handlePinChat(chat.id, chat.pinned)}>📌</span>
+                    <span onClick={() => handleSaveToMemory(chat.id, chat.memory_saved)}>🧠</span>
+                    <span onClick={() => handleDeleteChat(chat.id)}>🗑</span>
                   </div>
-                </button>
+                </div>
               )) : <div className="sidebar-empty">Здесь пока пусто.</div>}
             </div>
           </>
@@ -389,7 +448,47 @@ export default function JarvisChatShell() {
         {activeSidebarTab === "projects" && (
           <>
             <div className="sidebar-section-title">Проекты</div>
-            <div className="sidebar-empty">Открой Code для работы с файлами проекта.</div>
+            <div className="sidebar-empty">Для работы с репозиторием используй режим Code.</div>
+          </>
+        )}
+
+        {activeSidebarTab === "settings" && (
+          <>
+            <div className="sidebar-section-title">Настройки</div>
+            <div className="settings-stack">
+              <label className="settings-row">
+                <span>Модель</span>
+                <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)} className="topbar-select full dark-select">
+                  {(modelOptions?.length ? modelOptions : [{ name: selectedModel }]).map((item) => (
+                    <option key={item.name || item} value={item.name || item}>
+                      {item.name || item}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="settings-row">
+                <span>Профиль</span>
+                <select value={profile} onChange={(e) => setProfile(e.target.value)} className="topbar-select full dark-select">
+                  {Object.keys(profileDescriptions).map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="content-card sidebar-help-card">
+                <div className="content-card-text">{profileDescriptions[profile] || ""}</div>
+              </div>
+
+              <label className="settings-row">
+                <span>Контекст</span>
+                <select value={contextWindow} onChange={(e) => setContextWindow(e.target.value)} className="topbar-select full dark-select">
+                  {[4096, 8192, 16384, 32768, 65536, 131072, 262144].map((v) => (
+                    <option key={v} value={String(v)}>{Math.round(v / 1024)}k</option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </>
         )}
 
@@ -414,7 +513,7 @@ export default function JarvisChatShell() {
                     <span onClick={(e) => { e.stopPropagation(); removeLibraryItem(item.id); }}>🗑</span>
                   </div>
                 </button>
-              )) : <div className="sidebar-empty">Сюда попадут файлы, загруженные через чат или библиотеку.</div>}
+              )) : <div className="sidebar-empty">Сюда попадут файлы, которые ты перетащишь в чат.</div>}
             </div>
           </>
         )}
@@ -423,9 +522,19 @@ export default function JarvisChatShell() {
       <main className="jarvis-main">
         <div className="jarvis-topbar slim">
           <div className="jarvis-brand">Jarvis</div>
+
+          <div className="topbar-status">
+            <div className="status-chip">Профиль: {profile}</div>
+            <div className="status-chip">Модель: {selectedModel}</div>
+          </div>
+
           <div className="topbar-tabs">
-            <button className={`soft-btn ${activeMainTab === "chat" ? "active" : ""}`} onClick={() => setActiveMainTab("chat")}>Chat</button>
-            <button className={`soft-btn ${activeMainTab === "code" ? "active" : ""}`} onClick={() => setActiveMainTab("code")}>Code</button>
+            <button className={`soft-btn ${activeMainTab === "chat" ? "active" : ""}`} onClick={() => setActiveMainTab("chat")}>
+              Chat
+            </button>
+            <button className={`soft-btn ${activeMainTab === "code" ? "active" : ""}`} onClick={() => setActiveMainTab("code")}>
+              Code
+            </button>
           </div>
         </div>
 
@@ -455,13 +564,17 @@ export default function JarvisChatShell() {
             <div className="content-card">
               <div className="content-card-title">Профили работы агента</div>
               <div className="content-card-text">
-                Универсальный — обычные ответы. Программист — код и исправления. Оркестратор — планирование и orchestration. Исследователь — факты и анализ источников. Аналитик — выводы и риски. Сократ — обучение через вопросы.
+                Универсальный — обычные ответы. Программист — код и исправления.
+                Оркестратор — планирование и orchestration. Исследователь — факты и анализ источников.
+                Аналитик — выводы и риски. Сократ — обучение через вопросы.
               </div>
             </div>
           ) : activeSidebarTab === "projects" ? (
             <div className="content-card">
               <div className="content-card-title">Проекты</div>
-              <div className="content-card-text">Для работы с кодом открой вкладку Code. В Code теперь используется snapshot из backend.</div>
+              <div className="content-card-text">
+                Для работы с репозиторием открой вкладку Code.
+              </div>
             </div>
           ) : activeSidebarTab === "library" ? (
             <div className="library-view">
@@ -479,27 +592,41 @@ export default function JarvisChatShell() {
                 ref={fileInputRef}
                 type="file"
                 multiple
-                className="hidden-file-input"
+                hidden
                 onChange={(e) => handleFilesSelected(e.target.files)}
               />
 
               {selectedLibraryItem ? (
                 <div className="content-card">
-                  <div className="content-card-title">{selectedLibraryItem.name}</div>
-                  <div className="content-card-text">
-                    Тип: {selectedLibraryItem.type}<br />
-                    Размер: {Math.round(selectedLibraryItem.size / 1024) || 0} KB
+                  <div className="library-head-row">
+                    <div>
+                      <div className="content-card-title">{selectedLibraryItem.name}</div>
+                      <div className="content-card-text">
+                        Тип: {selectedLibraryItem.type}<br />
+                        Размер: {Math.round(selectedLibraryItem.size / 1024) || 0} KB
+                      </div>
+                    </div>
+
+                    <label className="context-toggle">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedLibraryItem.use_in_context}
+                        onChange={(e) => toggleLibraryContext(selectedLibraryItem.id, e.target.checked)}
+                      />
+                      <span>Добавить в контекст чата</span>
+                    </label>
                   </div>
+
                   {selectedLibraryItem.preview ? (
                     <pre className="library-preview">{selectedLibraryItem.preview}</pre>
                   ) : (
-                    <div className="content-card-text">Для этого файла доступно только описание.</div>
+                    <div className="content-card-text">Для этого файла доступен только мета-описатель.</div>
                   )}
                 </div>
               ) : (
                 <div className="content-card">
                   <div className="content-card-title">Библиотека пуста</div>
-                  <div className="content-card-text">Загрузи файлы сюда или через кнопку «Загрузить файлы».</div>
+                  <div className="content-card-text">Загрузи файлы через drag and drop или кнопку загрузки.</div>
                 </div>
               )}
             </div>
@@ -514,6 +641,17 @@ export default function JarvisChatShell() {
             </div>
           ) : (
             <>
+              {currentContextFiles.length ? (
+                <div className="context-bar">
+                  <div className="context-bar-title">В контексте этого чата:</div>
+                  <div className="context-tags">
+                    {currentContextFiles.map((file) => (
+                      <span key={file.id} className="context-tag">{file.name}</span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               {messages.length === 0 && (
                 <div className="assistant-greeting">
                   Jarvis готов. Начни новый чат или напиши сообщение.
@@ -537,19 +675,21 @@ export default function JarvisChatShell() {
                 onDrop={onDrop}
               >
                 <button className="input-plus-btn" onClick={() => fileInputRef.current?.click()}>+</button>
+
                 <textarea
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   placeholder="Напиши задачу... Jarvis сам выберет режим"
                   className="chat-textarea"
                 />
+
                 <button className="send-btn" onClick={handleSend}>➤</button>
 
                 <input
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  className="hidden-file-input"
+                  hidden
                   onChange={(e) => handleFilesSelected(e.target.files)}
                 />
               </div>
