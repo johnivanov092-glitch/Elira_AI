@@ -1,3 +1,4 @@
+
 const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
 async function request(url, options = {}) {
@@ -23,6 +24,23 @@ async function request(url, options = {}) {
   return payload;
 }
 
+async function safeRequest(url, options, fallback) {
+  try {
+    return await request(url, options);
+  } catch {
+    return fallback();
+  }
+}
+
+function asArray(payload, key = "") {
+  if (Array.isArray(payload)) return payload;
+  if (key && Array.isArray(payload?.[key])) return payload[key];
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+}
+
 function loadLocal(key, fallback) {
   try {
     return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
@@ -40,41 +58,51 @@ function uid(prefix = "id") {
 }
 
 function getChatsLocal() {
-  return loadLocal("jarvis_launch_fix_chats", []);
+  return loadLocal("jarvis_profile_fix_chats", []);
 }
 
 function saveChatsLocal(chats) {
-  saveLocal("jarvis_launch_fix_chats", chats);
+  saveLocal("jarvis_profile_fix_chats", chats);
 }
 
 function getMessagesLocal(chatId) {
-  return loadLocal(`jarvis_launch_fix_messages_${chatId}`, []);
+  return loadLocal(`jarvis_profile_fix_messages_${chatId}`, []);
 }
 
 function saveMessagesLocal(chatId, messages) {
-  saveLocal(`jarvis_launch_fix_messages_${chatId}`, messages);
+  saveLocal(`jarvis_profile_fix_messages_${chatId}`, messages);
 }
 
-async function safeRequest(url, options, fallback) {
-  try {
-    return await request(url, options);
-  } catch {
-    return fallback();
-  }
-}
-
-function asArray(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.results)) return payload.results;
-  if (Array.isArray(payload?.data)) return payload.data;
-  return [];
-}
+const FALLBACK_PROFILES = [
+  {
+    name: "Универсальный",
+    description: "Простые и практичные ответы без лишней глубины.",
+  },
+  {
+    name: "Программист",
+    description: "Код, архитектура, исправления, рефакторинг.",
+  },
+  {
+    name: "Оркестратор",
+    description: "Планирование, multi-agent маршрут, orchestration flow.",
+  },
+  {
+    name: "Исследователь",
+    description: "Поиск фактов, сравнение источников, исследование.",
+  },
+  {
+    name: "Аналитик",
+    description: "Выводы, риски, структуры, практические рекомендации.",
+  },
+  {
+    name: "Сократ",
+    description: "Вопросы и направляющее рассуждение.",
+  },
+];
 
 export const api = {
   health: () => request("/health"),
 
-  // chat runtime
   listChats: async () =>
     safeRequest("/api/jarvis/chats/list", {}, async () => getChatsLocal()),
 
@@ -95,20 +123,11 @@ export const api = {
       return chat;
     }),
 
-  renameChat: async ({ id, title }) =>
-    safeRequest("/api/jarvis/chats/rename", { method: "POST", body: { id, title } }, async () => {
-      const chats = getChatsLocal().map((item) =>
-        item.id === id ? { ...item, title, updated_at: new Date().toISOString() } : item
-      );
-      saveChatsLocal(chats);
-      return { ok: true };
-    }),
-
   deleteChat: async ({ id }) =>
     safeRequest("/api/jarvis/chats/delete", { method: "POST", body: { id } }, async () => {
       const chats = getChatsLocal().filter((item) => item.id !== id);
       saveChatsLocal(chats);
-      localStorage.removeItem(`jarvis_launch_fix_messages_${id}`);
+      localStorage.removeItem(`jarvis_profile_fix_messages_${id}`);
       return { ok: true };
     }),
 
@@ -131,30 +150,48 @@ export const api = {
     }),
 
   getMessages: async ({ chatId }) =>
-    safeRequest(`/api/jarvis/chats/messages?chat_id=${encodeURIComponent(chatId)}`, {}, async () => {
-      return getMessagesLocal(chatId);
-    }),
+    safeRequest(`/api/jarvis/chats/messages?chat_id=${encodeURIComponent(chatId)}`, {}, async () => getMessagesLocal(chatId)),
 
   addMessage: async ({ chatId, role, content }) =>
     safeRequest("/api/jarvis/chats/messages/add", { method: "POST", body: { chat_id: chatId, role, content } }, async () => {
       const messages = getMessagesLocal(chatId);
-      const item = {
-        id: uid("msg"),
-        role,
-        content,
-        created_at: new Date().toISOString(),
-      };
+      const item = { id: uid("msg"), role, content, created_at: new Date().toISOString() };
       messages.push(item);
       saveMessagesLocal(chatId, messages);
       return item;
     }),
 
-  execute: async ({ chatId, message, mode = "chat", model = "qwen3:8b" }) =>
+  listProfiles: async () =>
+    safeRequest("/api/profiles", {}, async () => ({ profiles: FALLBACK_PROFILES, default_profile: "Универсальный" }))
+      .then((payload) => {
+        const profiles = asArray(payload, "profiles").map((item) => ({
+          name: item.name,
+          description: item.system_prompt_preview || item.description || "",
+        }));
+        return profiles.length ? profiles : FALLBACK_PROFILES;
+      }),
+
+  listOllamaModels: async () =>
+    safeRequest("/api/models", {}, async () => ({
+      models: [
+        { name: "qwen3:8b" },
+        { name: "qwen2.5-coder:7b" },
+        { name: "deepseek-r1:8b" },
+        { name: "mistral-nemo:latest" },
+      ],
+    })).then((payload) => {
+      const models = asArray(payload, "models");
+      return models.length ? models : [{ name: "qwen3:8b" }];
+    }),
+
+  listContextWindows: async () => [4096, 8192, 16384, 32768, 65536, 131072, 262144],
+
+  execute: async ({ chatId, message, profileName = "Универсальный", model = "qwen3:8b" }) =>
     safeRequest("/api/chat/send", {
       method: "POST",
       body: {
         model_name: model,
-        profile_name: "default",
+        profile_name: profileName,
         user_input: message,
         history: getMessagesLocal(chatId).map((m) => ({ role: m.role, content: m.content })),
         use_memory: true,
@@ -164,7 +201,7 @@ export const api = {
       const reply = {
         id: uid("msg"),
         role: "assistant",
-        content: `Echo (${mode}, ${model}): ${message}`,
+        content: `Echo (${profileName}, ${model}): ${message}`,
         created_at: new Date().toISOString(),
       };
       const messages = getMessagesLocal(chatId);
@@ -191,22 +228,13 @@ export const api = {
       return payload;
     }),
 
-  listOllamaModels: async () =>
-    safeRequest("/api/models", {}, async () => [
-      { name: "qwen3:8b", context_window: 32768 },
-      { name: "llama3.1:8b", context_window: 32768 },
-      { name: "qwen2.5-coder:7b", context_window: 32768 },
-      { name: "deepseek-r1:8b", context_window: 32768 },
-    ]),
-
-  listContextWindows: async () => [4096, 8192, 16384, 32768, 65536, 131072, 262144],
-
-  // code workspace
-  getProjectSnapshot: () => safeRequest("/snapshot", {}, async () => ({ files: [] })),
-  getProjectFile: (path) => request(`/file?path=${encodeURIComponent(path)}`),
+  getProjectSnapshot: () =>
+    safeRequest("/api/project-brain/snapshot", {}, async () => ({ files: [] })),
+  getProjectFile: (path) =>
+    request(`/api/project-brain/file?path=${encodeURIComponent(path)}`),
 
   previewPatch: ({ path, instruction, content }) =>
-    request("/agent/ollama/run", {
+    request("/api/project-brain/agent/ollama/run", {
       method: "POST",
       body: {
         mode: "code",
@@ -216,82 +244,4 @@ export const api = {
         project_files: [path],
       },
     }),
-
-  diffPatch: ({ path, original, updated }) =>
-    request("/api/jarvis/patch/diff", { method: "POST", body: { path, original, updated } }),
-  applyPatch: ({ path, content }) =>
-    request("/api/jarvis/patch/apply", { method: "POST", body: { path, content } }),
-  applyPatchBatch: (items) =>
-    request("/api/jarvis/patch/apply-batch", { method: "POST", body: { items } }),
-  rollbackPatch: ({ path }) =>
-    request("/api/jarvis/patch/rollback", { method: "POST", body: { path } }),
-  verifyPatch: ({ path, content }) =>
-    request("/api/jarvis/patch/verify", { method: "POST", body: { path, content } }),
-  verifyPatchBatch: (items) =>
-    request("/api/jarvis/patch/verify-batch", { method: "POST", body: { items } }),
-  listPatchHistory: async (path = "") =>
-    asArray(await safeRequest(`/api/jarvis/patch/history/list?path=${encodeURIComponent(path)}`, {}, async () => [])),
-  getPatchHistoryItem: (id) =>
-    request(`/api/jarvis/patch/history/get?id=${encodeURIComponent(id)}`),
-
-  getProjectMap: () =>
-    safeRequest("/api/jarvis/project/map", {}, async () => ({ items: [], count: 0 })),
-  createFile: ({ path, content }) =>
-    request("/api/jarvis/fs/create", { method: "POST", body: { path, content } }),
-  deleteFile: ({ path }) =>
-    request("/api/jarvis/fs/delete", { method: "POST", body: { path } }),
-  renameFile: ({ old_path, new_path }) =>
-    request("/api/jarvis/fs/rename", { method: "POST", body: { old_path, new_path } }),
-  patchPlan: ({ goal, current_path, current_content, staged_paths }) =>
-    request("/api/jarvis/patch/plan", {
-      method: "POST",
-      body: { goal, current_path, current_content, staged_paths },
-    }),
-
-  runTask: ({ goal, mode, current_path, staged_paths }) =>
-    safeRequest("/api/jarvis/task/run", { method: "POST", body: { goal, mode, current_path, staged_paths } }, async () => ({ ok: true })),
-  listTaskHistory: async () =>
-    asArray(await safeRequest("/api/jarvis/task/history/list", {}, async () => [])),
-  getTaskHistoryItem: (id) =>
-    request(`/api/jarvis/task/history/get?id=${encodeURIComponent(id)}`),
-
-  runSupervisor: ({ goal, mode, current_path, staged_paths, auto_apply }) =>
-    safeRequest("/api/jarvis/supervisor/run", { method: "POST", body: { goal, mode, current_path, staged_paths, auto_apply } }, async () => ({ ok: true })),
-  executeSupervisor: ({ goal, current_path, current_content, auto_apply }) =>
-    safeRequest("/api/jarvis/supervisor/execute", { method: "POST", body: { goal, current_path, current_content, auto_apply } }, async () => ({ ok: true })),
-  listSupervisorHistory: async () =>
-    asArray(await safeRequest("/api/jarvis/supervisor/history/list", {}, async () => [])),
-  getSupervisorHistoryItem: (id) =>
-    request(`/api/jarvis/supervisor/history/get?id=${encodeURIComponent(id)}`),
-
-  runPhase19: ({ goal, mode, selected_paths }) =>
-    safeRequest("/api/jarvis/phase19/run", { method: "POST", body: { goal, mode, selected_paths } }, async () => ({ ok: true })),
-  listPhase19History: async () =>
-    asArray(await safeRequest("/api/jarvis/phase19/history/list", {}, async () => [])),
-  getPhase19HistoryItem: (id) =>
-    request(`/api/jarvis/phase19/history/get?id=${encodeURIComponent(id)}`),
-
-  runPhase20: ({ goal, selected_paths }) =>
-    safeRequest("/api/jarvis/phase20/run", { method: "POST", body: { goal, selected_paths } }, async () => ({ ok: true })),
-  buildPhase20PreviewQueue: ({ goal, targets }) =>
-    safeRequest("/api/jarvis/phase20/preview-queue", { method: "POST", body: { goal, targets } }, async () => ({ items: [] })),
-  buildPhase20ExecutionState: ({ goal, queue_items, staged_paths }) =>
-    safeRequest("/api/jarvis/phase20/execution-state", { method: "POST", body: { goal, queue_items, staged_paths } }, async () => ({ checkpoints: [] })),
-  listPhase20History: async () =>
-    asArray(await safeRequest("/api/jarvis/phase20/history/list", {}, async () => [])),
-  getPhase20HistoryItem: (id) =>
-    request(`/api/jarvis/phase20/history/get?id=${encodeURIComponent(id)}`),
-
-  runPhase21: ({ goal, queue_items, execution_state }) =>
-    safeRequest("/api/jarvis/phase21/run", { method: "POST", body: { goal, queue_items, execution_state } }, async () => ({ ok: true })),
-  listPhase21History: async () =>
-    asArray(await safeRequest("/api/jarvis/phase21/history/list", {}, async () => [])),
-  getPhase21HistoryItem: (id) =>
-    request(`/api/jarvis/phase21/history/get?id=${encodeURIComponent(id)}`),
-
-  runStabilizationPreflight: ({ phase20_queue_items, phase20_execution_state, phase21_run, staged_paths }) =>
-    safeRequest("/api/jarvis/stabilization/preflight", {
-      method: "POST",
-      body: { phase20_queue_items, phase20_execution_state, phase21_run, staged_paths },
-    }, async () => ({ ready: true, checks: [], warnings: [] })),
 };

@@ -15,11 +15,12 @@ from app.api.routes.jarvis_phase20_state import router as jarvis_phase20_state_r
 from app.api.routes.jarvis_phase21 import router as jarvis_phase21_router
 from app.api.routes.jarvis_stabilization import router as jarvis_stabilization_router
 
-# legacy / chat-side routes that exist in repo but were not mounted
 from app.api.routes.chat import router as chat_router
 from app.api.routes.models import router as models_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.library import router as library_router
+from app.api.routes.profiles import router as profiles_router
+from app.api.routes.agents import router as agents_router
 
 app = FastAPI(title="Jarvis Work API")
 
@@ -49,6 +50,8 @@ app.include_router(chat_router)
 app.include_router(models_router)
 app.include_router(memory_router)
 app.include_router(library_router)
+app.include_router(profiles_router)
+app.include_router(agents_router)
 
 @app.get("/health")
 def health():
