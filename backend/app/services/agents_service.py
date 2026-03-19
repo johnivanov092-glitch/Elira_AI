@@ -54,9 +54,16 @@ def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
 
 
 def _build_prompt(user_input, context_bundle):
+    from datetime import datetime
+    days_ru = {"Monday": "понедельник", "Tuesday": "вторник", "Wednesday": "среда", "Thursday": "четверг", "Friday": "пятница", "Saturday": "суббота", "Sunday": "воскресенье"}
+    now = datetime.now()
+    day_name = days_ru.get(now.strftime("%A"), now.strftime("%A"))
+    time_line = f"Сейчас: {now.strftime('%d.%m.%Y, %H:%M')}, {day_name}."
+
     if not context_bundle.strip():
-        return user_input
+        return f"{time_line}\n\n{user_input}"
     return (
+        f"{time_line}\n\n"
         "Вот данные из интернета и других источников:\n\n"
         + context_bundle
         + "\n\n---\n\n"
