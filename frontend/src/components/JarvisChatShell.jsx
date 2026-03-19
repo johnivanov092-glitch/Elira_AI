@@ -124,10 +124,10 @@ export default function JarvisChatShell() {
   useEffect(() => { msgRef.current && (msgRef.current.scrollTop = msgRef.current.scrollHeight); }, [messages, chatId, streamText]);
   useEffect(() => { if (!taRef.current) return; taRef.current.style.height = "36px"; taRef.current.style.height = `${Math.min(120, taRef.current.scrollHeight)}px`; }, [input]);
 
-  // Sync library from SQLite backend on mount
+  // Sync library from SQLite backend on mount (optional)
   useEffect(() => {
-    fetch(`${API_URL}/api/lib/list`).then(r => r.json()).then(d => {
-      if (d.ok && d.items?.length) {
+    fetch(`${API_URL}/api/lib/list`).then(r => { if (!r.ok) return null; return r.json(); }).then(d => {
+      if (d?.ok && d.items?.length) {
         const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite"})), ...libraryFiles.filter(f => f.source !== "sqlite")];
         const seen = new Set();
         const unique = merged.filter(f => { const k = f.name + f.size; if (seen.has(k)) return false; seen.add(k); return true; });
@@ -150,8 +150,8 @@ export default function JarvisChatShell() {
       const [m, c] = await Promise.all([api.listOllamaModels(), api.listChats()]);
       const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
       setModelOpts(ml);
-      const pref = ml.find(i => (i.name || i) === "qwen3:8b");
-      setModel(pref ? (pref.name || pref) : ml.length ? (ml[0].name || ml[0]) : "qwen3:8b");
+      const pref = ml.find(i => (typeof i==="string"?i:(i.name||i.model||"")) === "qwen3:8b");
+      setModel(pref ? (typeof pref==="string"?pref:(pref.name||pref.model||"qwen3:8b")) : ml.length ? (typeof ml[0]==="string"?ml[0]:(ml[0].name||ml[0].model||"qwen3:8b")) : "qwen3:8b");
       if (c?.length) { setChats(c); }
       // Всегда новый чат при запуске
       const n = await newChat(true); if (n?.id) setMessages([]);
@@ -347,7 +347,7 @@ export default function JarvisChatShell() {
           {sideTab === "settings" ? (
             <div className="settings-main-card">
               <div className="settings-tile-grid">
-                <div className="settings-tile"><div className="settings-title">Модель</div><select value={model} onChange={e=>setModel(e.target.value)} className="topbar-select full dark-select">{(modelOpts?.length?modelOpts:[{name:model}]).map(i=><option key={i.name||i} value={i.name||i}>{i.name||i}</option>)}</select></div>
+                <div className="settings-tile"><div className="settings-title">Модель</div><select value={model} onChange={e=>setModel(e.target.value)} className="topbar-select full dark-select">{(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=typeof i==="string"?i:(i.name||i.model||"model");return <option key={n+idx} value={n}>{n}</option>})}</select></div>
                 <div className="settings-tile"><div className="settings-title">Профиль</div><select value={profile} onChange={e=>setProfile(e.target.value)} className="topbar-select full dark-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select><div className="settings-desc">{PROFILE_DESCRIPTIONS[profile]}</div></div>
               </div>
               <div style={{marginTop:18}}><div className="settings-title" style={{marginBottom:8}}>Skills</div><div className="settings-desc" style={{marginBottom:10}}>Включи / выключи возможности</div>
@@ -399,7 +399,7 @@ export default function JarvisChatShell() {
                   <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
                 </div>
                 <div className="composer-selectors">
-                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select">{(modelOpts?.length?modelOpts:[{name:model}]).map(i=><option key={i.name||i} value={i.name||i}>{i.name||i}</option>)}</select>
+                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select">{(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=typeof i==="string"?i:(i.name||i.model||"model");return <option key={n+idx} value={n}>{n}</option>})}</select>
                   <select value={profile} onChange={e=>setProfile(e.target.value)} className="composer-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select>
                   <button onClick={() => setMultiAgent(p => !p)} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (multiAgent ? "rgba(244,114,182,0.4)" : "var(--border)"),background:multiAgent ? "rgba(244,114,182,0.12)" : "transparent",color:multiAgent ? "#f472b6" : "var(--text-muted)",cursor:"pointer"}}>{multiAgent ? "🤖 Multi" : "🤖"}</button>
                 </div>

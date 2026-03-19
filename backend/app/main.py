@@ -25,6 +25,8 @@ from app.api.routes.files import router as files_router
 from app.api.routes.tools_exec import router as tools_exec_router
 from app.api.routes.smart_memory_routes import router as smart_memory_router
 from app.api.routes.file_ops import router as file_ops_router
+from app.api.routes.terminal import router as terminal_router
+from app.api.routes.library_sqlite import router as library_sqlite_router
 from app.api.routes.advanced_routes import router as advanced_router
 
 app = FastAPI(title="Jarvis Work API")
@@ -61,6 +63,8 @@ app.include_router(files_router)
 app.include_router(tools_exec_router)
 app.include_router(smart_memory_router)
 app.include_router(file_ops_router)
+app.include_router(terminal_router)
+app.include_router(library_sqlite_router)
 app.include_router(advanced_router)
 
 @app.get("/health")
