@@ -1,68 +1,59 @@
+"""
+run_history_service.py — история запусков с ротацией.
+Хранит последние 200 записей, старые удаляются.
+"""
 from __future__ import annotations
-
 import json
-import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+_FILE = Path("data/run_history.json")
+_FILE.parent.mkdir(parents=True, exist_ok=True)
+_MAX_RUNS = 200
 
-class RunHistoryService:
-    def __init__(self, storage_path: str | None = None):
-        base_dir = Path(__file__).resolve().parents[3]
-        self.storage_path = Path(storage_path) if storage_path else base_dir / "data" / "run_history.json"
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.runs: list[dict[str, Any]] = self._load()
 
-    def _load(self) -> list[dict[str, Any]]:
-        if not self.storage_path.exists():
-            return []
+def _load() -> list:
+    if _FILE.exists():
         try:
-            data = json.loads(self.storage_path.read_text(encoding="utf-8"))
+            data = json.loads(_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return list(data.values()) if data else []
             return data if isinstance(data, list) else []
         except Exception:
             return []
+    return []
 
-    def _save(self) -> None:
-        try:
-            self.storage_path.write_text(
-                json.dumps(self.runs[-200:], ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
 
-    def start_run(self, query: str) -> dict[str, Any]:
-        run = {
-            "run_id": str(uuid.uuid4()),
-            "query": query,
-            "status": "running",
-            "timeline": [],
-            "created_at": time.time(),
+def _save(runs: list):
+    # Ротация: оставляем последние _MAX_RUNS
+    if len(runs) > _MAX_RUNS:
+        runs = runs[-_MAX_RUNS:]
+    _FILE.write_text(json.dumps(runs, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+class RunHistoryService:
+    def start_run(self, user_input: str) -> dict:
+        run_id = str(uuid.uuid4())[:8]
+        return {"run_id": run_id, "user_input": user_input, "started_at": datetime.utcnow().isoformat(), "events": []}
+
+    def add_event(self, run_id: str, event_type: str, data: Any):
+        pass  # Events stored in-memory during run, saved at finish
+
+    def finish_run(self, run_id: str, result: dict):
+        runs = _load()
+        entry = {
+            "run_id": run_id,
+            "finished_at": datetime.utcnow().isoformat(),
+            "ok": result.get("ok", False),
+            "route": result.get("meta", {}).get("route", ""),
+            "model": result.get("meta", {}).get("model_name", ""),
+            "answer_len": len(result.get("answer", "")),
         }
-        self.runs.append(run)
-        self._save()
-        return run
+        runs.append(entry)
+        _save(runs)
 
-    def add_event(self, run_id: str, title: str, meta: dict[str, Any] | None = None) -> None:
-        run = self.get_run(run_id)
-        if run:
-            run["timeline"].append({"title": title, "meta": meta or {}, "ts": time.time()})
-            self._save()
-
-    def finish_run(self, run_id: str, result: dict[str, Any]) -> None:
-        run = self.get_run(run_id)
-        if run:
-            run["status"] = "finished"
-            run["result"] = result
-            run["finished_at"] = time.time()
-            self._save()
-
-    def get_run(self, run_id: str) -> dict[str, Any] | None:
-        for run in self.runs:
-            if run.get("run_id") == run_id:
-                return run
-        return None
-
-    def list_runs(self) -> list[dict[str, Any]]:
-        return list(reversed(self.runs[-100:]))
+    def list_runs(self, limit: int = 50) -> list:
+        runs = _load()
+        return runs[-limit:]

@@ -1,0 +1,50 @@
+[
+  {
+    "run_id": "23457e44",
+    "finished_at": "2026-03-19T22:03:59.389549",
+    "ok": true,
+    "route": "code",
+    "model": "qwen3:8b",
+    "answer_len": 885
+  },
+  {
+    "run_id": "c2c62b36",
+    "finished_at": "2026-03-19T22:14:50.661669",
+    "ok": true,
+    "route": "code",
+    "model": "qwen2.5-coder:7b",
+    "answer_len": 544
+  },
+  {
+    "run_id": "6723d568",
+    "finished_at": "2026-03-19T22:15:39.998657",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen2.5-coder:7b",
+    "answer_len": 2854
+  },
+  {
+    "run_id": "f6498a45",
+    "finished_at": "2026-03-19T22:26:45.675473",
+    "ok": true,
+    "route": "research",
+    "model": "qwen3:8b",
+    "answer_len": 4417
+  },
+  {
+    "run_id": "89e23aad",
+    "finished_at": "2026-03-19T22:35:37.387653",
+    "ok": true,
+    "route": "chat",
+    "model": "deepseek-r1:8b",
+    "answer_len": 2750
+  },
+  {
+    "run_id": "92f8ef67",
+    "finished_at": "2026-03-19T22:36:32.626421",
+    "ok": true,
+    "route": "chat",
+    "model": "deepseek-r1:8b",
+    "answer_len": 2223
+  }
+]

@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useMemo, useRef, useState } from "react";
+import TerminalPanel from "./TerminalPanel";
 
 const LIBRARY_KEY = "jarvis_library_files_v7";
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
@@ -66,6 +67,7 @@ export default function IdeWorkspaceShell({ messages = [], libraryFiles: propLib
   const [selectedId, setSelectedId] = useState("");
   const [copied, setCopied] = useState(false);
   const [tab, setTab] = useState("all"); // "all" | "code" | "files"
+  const [showTerminal, setShowTerminal] = useState(false);
 
   const libraryFiles = propLib || [];
   function setLibraryFiles(next) { if (propSetLib) propSetLib(next); saveJson(LIBRARY_KEY, next); }
@@ -131,8 +133,13 @@ export default function IdeWorkspaceShell({ messages = [], libraryFiles: propLib
             <button key={k} className={`soft-btn ${tab===k?"active":""}`} onClick={()=>setTab(k)} style={{fontSize:11,padding:"3px 10px"}}>{l}</button>
           ))}
         </div>
-        <div style={{marginLeft:"auto",fontSize:11,color:"var(--text-muted)"}}>
-          {codeBlocks.length} блоков кода · {libraryFiles.length} файлов
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:11,color:"var(--text-muted)"}}>
+            {codeBlocks.length} блоков кода · {libraryFiles.length} файлов
+          </span>
+          <button onClick={() => setShowTerminal(p => !p)} className="soft-btn" style={{border:"1px solid var(--border)",fontSize:11,padding:"3px 10px",background:showTerminal?"var(--bg-surface-active)":"transparent"}}>
+            {showTerminal ? "▼ Terminal" : "▶ Terminal"}
+          </button>
         </div>
       </div>
 
@@ -220,6 +227,13 @@ export default function IdeWorkspaceShell({ messages = [], libraryFiles: propLib
           )}
         </div>
       </div>
+
+      {/* Terminal panel */}
+      {showTerminal && (
+        <div style={{height:250,borderTop:"1px solid var(--border)",flexShrink:0}}>
+          <TerminalPanel />
+        </div>
+      )}
     </div>
   );
 }

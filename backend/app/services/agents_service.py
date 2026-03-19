@@ -19,6 +19,15 @@ from app.services.run_history_service import RunHistoryService
 from app.services.tool_service import run_tool
 from app.services.smart_memory import extract_and_save, get_relevant_context
 
+# RAG память (опционально — если embedding модель доступна)
+try:
+    from app.services.rag_memory_service import get_rag_context, add_to_rag
+    _HAS_RAG = True
+except ImportError:
+    _HAS_RAG = False
+    def get_rag_context(*a, **kw): return ""
+    def add_to_rag(*a, **kw): return {}
+
 logger = logging.getLogger(__name__)
 
 _HISTORY = RunHistoryService()
@@ -311,19 +320,40 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
                     parts.append(web_ctx)
 
             elif tool_name == "project_mode":
-                tree = run_tool("list_project_tree", {"max_depth": 3, "max_items": 200})
-                search = run_tool("search_project", {"query": user_input, "max_hits": 20})
-                tool_results.append({"tool": "project", "result": {"tree": tree.get("count", 0), "hits": search.get("count", 0)}})
-                _tl(timeline, "tool_project", "Проект", "done", str(tree.get("count", 0)) + " файлов")
-                snippets = search.get("items") or search.get("results") or []
-                if snippets:
-                    rendered = []
-                    for item in snippets[:10]:
-                        if isinstance(item, dict):
-                            rendered.append("- " + item.get("path", "") + ": " + (item.get("snippet", "") or item.get("preview", "")))
-                        else:
-                            rendered.append("- " + str(item))
-                    parts.append("Из проекта:\n" + "\n".join(rendered))
+                project_ctx = ""
+                # Попытка 1: старый project_service
+                try:
+                    tree = run_tool("list_project_tree", {"max_depth": 3, "max_items": 200})
+                    search = run_tool("search_project", {"query": user_input, "max_hits": 20})
+                    tool_results.append({"tool": "project", "result": {"tree": tree.get("count", 0), "hits": search.get("count", 0)}})
+                    snippets = search.get("items") or search.get("results") or []
+                    if snippets:
+                        rendered = ["- " + (item.get("path","") + ": " + (item.get("snippet","") or item.get("preview","")) if isinstance(item,dict) else str(item)) for item in snippets[:10]]
+                        project_ctx = "Из проекта:\n" + "\n".join(rendered)
+                except Exception:
+                    pass
+
+                # Попытка 2: advanced project API (если открыт через UI)
+                if not project_ctx:
+                    try:
+                        from app.api.routes.advanced_routes import _project_path
+                        if _project_path:
+                            from pathlib import Path
+                            root = Path(_project_path)
+                            if root.exists():
+                                file_list = []
+                                for f in sorted(root.rglob("*"))[:50]:
+                                    if f.is_file() and not any(b in str(f) for b in [".git","node_modules","__pycache__",".venv","dist"]):
+                                        file_list.append(str(f.relative_to(root)))
+                                project_ctx = f"Открыт проект: {root.name}\nФайлы ({len(file_list)}):\n" + "\n".join("- " + f for f in file_list[:30])
+                    except Exception:
+                        pass
+
+                if project_ctx:
+                    parts.append(project_ctx)
+                    _tl(timeline, "tool_project", "Проект", "done", "Контекст загружен")
+                else:
+                    _tl(timeline, "tool_project", "Проект", "skip", "Не открыт")
 
             elif tool_name == "python_executor":
                 _tl(timeline, "tool_python", "Python", "ready", "Выполнение по запросу")
@@ -362,9 +392,13 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
 
         ctx = _collect_context(profile_name=profile_name, user_input=user_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection)
 
-        # Умная память: добавляем релевантные воспоминания
+        # Умная память + RAG: добавляем релевантные воспоминания
         try:
             mem_ctx = get_relevant_context(user_input, max_items=5)
+            if _HAS_RAG:
+                rag_ctx = get_rag_context(user_input, max_items=3)
+                if rag_ctx:
+                    mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
             if mem_ctx:
                 ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
                 _tl(timeline, "memory_recall", "Память", "done", "Найдены воспоминания")
@@ -372,6 +406,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
             pass
 
         prompt = _build_prompt(user_input, ctx)
+        draft = run_chat(model_name=model_name, profile_name=profile_name, user_input=prompt, history=history)
         if not draft.get("ok"):
             raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
         answer = draft.get("answer", "")
@@ -419,9 +454,13 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
 
         ctx = _collect_context(profile_name=profile_name, user_input=user_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection)
 
-        # Умная память: добавляем воспоминания
+        # Умная память + RAG
         try:
             mem_ctx = get_relevant_context(user_input, max_items=5)
+            if _HAS_RAG:
+                rag_ctx = get_rag_context(user_input, max_items=3)
+                if rag_ctx:
+                    mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
             if mem_ctx:
                 ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
         except Exception:

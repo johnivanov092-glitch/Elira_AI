@@ -13,6 +13,7 @@ import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ArtifactPanel from "./ArtifactPanel";
 import MemoryPanel from "./MemoryPanel";
+import ProjectPanel from "./ProjectPanel";
 import "../styles/markdown.css";
 
 const LIBRARY_KEY = "jarvis_library_files_v7";
@@ -65,13 +66,14 @@ async function fileToLibraryRecord(file) {
   const API_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
   // Текстовые файлы — читаем на клиенте
-  const textExts = ["txt","md","json","js","jsx","ts","tsx","py","css","html","htm","yml","yaml","xml","csv","log","ini","toml","bas","vbs","vba","cls","frm","rsc","bat","cmd","ps1","sh","sql","rb","php","java","c","cpp","h","hpp","cs","go","rs","swift","kt","r","m","lua","pl","tcl","asm","cfg","conf","env"];
+  // UTF-8 файлы — читаем на клиенте
+  const textExts = ["txt","md","json","js","jsx","ts","tsx","py","css","html","htm","yml","yaml","xml","csv","log","ini","toml","bat","cmd","ps1","sh","sql","rb","php","java","c","cpp","h","hpp","cs","go","rs","swift","kt","r","m","lua","pl","tcl","asm","cfg","conf","env"];
   const isText = file.type.startsWith("text/") || textExts.includes(ext);
   if (isText) try { preview = (await file.text()).slice(0, 12000); } catch {}
 
-  // Бинарные файлы — отправляем на бекенд
-  const binaryExts = ["pdf","docx","doc","xlsx","xls","xlsm","zip"];
-  if (binaryExts.includes(ext)) try {
+  // Бинарные + файлы с другими кодировками → на бекенд
+  const serverExts = ["pdf","docx","doc","xlsx","xls","xlsm","zip","bas","vbs","vba","cls","frm","rsc"];
+  if (serverExts.includes(ext)) try {
     const fd = new FormData(); fd.append("file", file);
     const r = await fetch(`${API_URL}/api/files/extract-text`, { method: "POST", body: fd });
     if (r.ok) { const d = await r.json(); preview = (d.text || "").slice(0, 12000); }
@@ -114,10 +116,26 @@ export default function JarvisChatShell() {
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState("");
   const [showPanel, setShowPanel] = useState(false);
+  const [multiAgent, setMultiAgent] = useState(false);
+
+  const API_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
   useEffect(() => { init(); }, []);
   useEffect(() => { msgRef.current && (msgRef.current.scrollTop = msgRef.current.scrollHeight); }, [messages, chatId, streamText]);
   useEffect(() => { if (!taRef.current) return; taRef.current.style.height = "36px"; taRef.current.style.height = `${Math.min(120, taRef.current.scrollHeight)}px`; }, [input]);
+
+  // Sync library from SQLite backend on mount
+  useEffect(() => {
+    fetch(`${API_URL}/api/lib/list`).then(r => r.json()).then(d => {
+      if (d.ok && d.items?.length) {
+        const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite"})), ...libraryFiles.filter(f => f.source !== "sqlite")];
+        const seen = new Set();
+        const unique = merged.filter(f => { const k = f.name + f.size; if (seen.has(k)) return false; seen.add(k); return true; });
+        setLibraryFiles(unique);
+        saveLibraryFiles(unique);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Auto-open right panel when code blocks appear
   useEffect(() => {
@@ -161,6 +179,8 @@ export default function JarvisChatShell() {
       const userMsg = await api.addMessage({ chatId, role: "user", content: text });
       setMessages(prev => [...prev, userMsg]); setInput(""); await autoRename(text);
       const history = buildHistory(messages);
+
+      // Файлы библиотеки
       const cf = getActiveLibFiles(libraryFiles);
       const tl = text.toLowerCase();
       const wantsFiles = cf.length > 0 && (
@@ -170,8 +190,38 @@ export default function JarvisChatShell() {
         tl.includes("резюме") || tl.includes("отчёт") || tl.includes("отчет") ||
         tl.includes("что в ") || tl.includes("покажи содержимое") || tl.includes("проанализируй")
       );
-      const cp = wantsFiles ? "\n\nФайлы пользователя:\n" + cf.map(f => `=== ${f.name} ===\n${f.preview.slice(0, 1500)}`).join("\n\n") : "";
+      let cp = wantsFiles ? "\n\nФайлы пользователя:\n" + cf.map(f => `=== ${f.name} ===\n${f.preview.slice(0, 1500)}`).join("\n\n") : "";
 
+      // Контекст проекта (если открыт)
+      try {
+        const projInfo = await fetch(`${API_URL}/api/advanced/project/info`).then(r => r.json());
+        if (projInfo.ok) {
+          const projTree = await fetch(`${API_URL}/api/advanced/project/tree?max_depth=2&max_items=50`).then(r => r.json());
+          if (projTree.ok && projTree.items?.length) {
+            const fileList = projTree.items.filter(i => i.type === "file").map(i => i.path).join(", ");
+            cp += `\n\nОткрыт проект: ${projInfo.name} (${projTree.count} файлов)\nФайлы: ${fileList.slice(0, 800)}`;
+          }
+        }
+      } catch {}
+
+      // Multi-agent режим
+      if (multiAgent) {
+        setPhase("🤖 Multi-agent: Исследователь → Программист → Аналитик...");
+        try {
+          const resp = await fetch(`${API_URL}/api/advanced/multi-agent`, {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"] }),
+          });
+          const data = await resp.json();
+          const final = data.report || data.error || "Нет результата";
+          try { await api.addMessage({ chatId, role: "assistant", content: final }); } catch {}
+          setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]);
+          setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
+          return;
+        } catch (e) { setError(e.message); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); return; }
+      }
+
+      // Обычный стриминг
       let fullText = "";
       const ctrl = executeStream(
         { model_name: model, profile_name: profile, user_input: `${text}${cp}`, history, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection") },
@@ -200,7 +250,11 @@ export default function JarvisChatShell() {
 
   async function handleFiles(fl) {
     const files = Array.from(fl || []); if (!files.length) return;
-    const recs = []; for (const f of files) recs.push(await fileToLibraryRecord(f));
+    const recs = []; for (const f of files) {
+      recs.push(await fileToLibraryRecord(f));
+      // Сохраняем в SQLite бекенд
+      try { const fd = new FormData(); fd.append("file", f); fd.append("use_in_context", "true"); await fetch(`${API_URL}/api/lib/add`, { method: "POST", body: fd }); } catch {}
+    }
     const next = [...recs, ...libraryFiles]; setLibraryFiles(next); saveLibraryFiles(next); setSideTab("library"); setSelLibId(recs[0]?.id || "");
     if (chatId) { const map = loadChatContextMap(); map[chatId] = Array.from(new Set([...recs.map(r => r.id), ...(map[chatId] || [])])); saveChatContextMap(map); }
   }
@@ -241,7 +295,7 @@ export default function JarvisChatShell() {
       <aside className="jarvis-sidebar">
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>
         <div className="sidebar-nav">
-          {[["chats","☰ Чаты"],["memory","★ Память"],["settings","⚙ Настройки"],["library","📚 Файлы"]].map(([k,l]) => (
+          {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["settings","⚙ Настройки"]].map(([k,l]) => (
             <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => setSideTab(k)}>{l}</button>
           ))}
         </div>
@@ -261,6 +315,7 @@ export default function JarvisChatShell() {
         {sideTab === "memory" && <div className="chat-list" style={{flex:1}}>{memChats.length ? memChats.map(c => <button key={c.id} className={`chat-list-item simple ${chatId===c.id?"active":""}`} onClick={() => openChat(c.id)}><span className="chat-list-title truncate">{c.title||"Чат"}</span></button>) : <div className="sidebar-empty">Нет</div>}</div>}
         {sideTab === "settings" && <div className="sidebar-empty">→ Центральное окно</div>}
         {sideTab === "library" && <div className="sidebar-empty">→ Центральное окно</div>}
+        {sideTab === "project" && <div className="sidebar-empty">→ Центральное окно</div>}
       </aside>
 
       <main className="jarvis-main">
@@ -275,7 +330,7 @@ export default function JarvisChatShell() {
 
         <div className="chat-page">
           <div className="chat-header-row">
-            <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}</div>
+            <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}{sideTab==="project"&&"Проект"}</div>
             {sideTab === "chats" && chatId && (
               <div className="chat-header-actions icon-actions" style={{display:"flex"}}>
                 <div className={`working-chip ${working?"active":""}`}>{working ? (phase || "⏳ Работает") : "○ Готов"}</div>
@@ -317,6 +372,8 @@ export default function JarvisChatShell() {
             </div>
           ) : sideTab === "memory" ? (
             <MemoryPanel />
+          ) : sideTab === "project" ? (
+            <ProjectPanel />
           ) : (
             <>
               {ctxF.length > 0 && <div className="context-bar"><div className="context-bar-title">📎 {ctxF.length} файлов доступно (упомяни «файл» или «документ»)</div><div className="context-tags">{ctxF.map(f=><span key={f.id} className="context-tag">{f.name}</span>)}</div></div>}
@@ -344,6 +401,7 @@ export default function JarvisChatShell() {
                 <div className="composer-selectors">
                   <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select">{(modelOpts?.length?modelOpts:[{name:model}]).map(i=><option key={i.name||i} value={i.name||i}>{i.name||i}</option>)}</select>
                   <select value={profile} onChange={e=>setProfile(e.target.value)} className="composer-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select>
+                  <button onClick={() => setMultiAgent(p => !p)} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (multiAgent ? "rgba(244,114,182,0.4)" : "var(--border)"),background:multiAgent ? "rgba(244,114,182,0.12)" : "transparent",color:multiAgent ? "#f472b6" : "var(--text-muted)",cursor:"pointer"}}>{multiAgent ? "🤖 Multi" : "🤖"}</button>
                 </div>
               </div>
             </>
