@@ -92,6 +92,41 @@ def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
     return list(h[-limit:]) if len(h) > limit else list(h)
 
 
+_EXEC_TRIGGERS = ["запусти", "посчитай", "вычисли", "выполни", "рассчитай", "run", "execute", "calculate", "compute"]
+
+
+def _maybe_auto_exec_python(user_input, answer, timeline):
+    """Если пользователь просил выполнить и ответ содержит Python — запускаем."""
+    ql = user_input.lower()
+    if not any(t in ql for t in _EXEC_TRIGGERS):
+        return answer
+    import re as _re
+    match = _re.search(r"```python\n([\s\S]*?)```", answer)
+    if not match:
+        return answer
+    code = match.group(1).strip()
+    if not code or len(code) < 10:
+        return answer
+    try:
+        from app.services.python_runner import execute_python
+        result = execute_python(code)
+        _tl(timeline, "auto_exec", "Python exec", "done" if result.get("ok") else "error", "")
+        parts = ["\n\n**Результат выполнения:**"]
+        if result.get("ok"):
+            if result.get("stdout"):
+                parts.append("```\n" + result["stdout"].strip() + "\n```")
+            if result.get("locals"):
+                vars_str = ", ".join(f"{k}={v}" for k, v in result["locals"].items())
+                parts.append(f"Переменные: `{vars_str}`")
+            if not result.get("stdout") and not result.get("locals"):
+                parts.append("✓ Код выполнен без вывода")
+        else:
+            parts.append(f"❌ Ошибка: `{result.get('error', 'Unknown')}`")
+        return answer + "\n".join(parts)
+    except Exception:
+        return answer
+
+
 def _build_prompt(user_input, context_bundle):
     from datetime import datetime
     days_ru = {"Monday": "понедельник", "Tuesday": "вторник", "Wednesday": "среда", "Thursday": "четверг", "Friday": "пятница", "Saturday": "суббота", "Sunday": "воскресенье"}
@@ -482,6 +517,12 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
             if refined and refined != full_text:
                 full_text = refined
                 yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
+
+        # Авто-выполнение Python
+        try:
+            full_text = _maybe_auto_exec_python(user_input, full_text, timeline)
+        except Exception:
+            pass
 
         meta = {"model_name": model_name, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
         _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})

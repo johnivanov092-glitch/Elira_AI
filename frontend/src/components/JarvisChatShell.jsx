@@ -92,6 +92,7 @@ export default function JarvisChatShell() {
   const msgRef = useRef(null);
   const taRef = useRef(null);
   const streamRef = useRef(null);
+  const initRef = useRef(false);
 
   const [mainTab, setMainTab] = useState("chat");
   const [sideTab, setSideTab] = useState("chats");
@@ -146,6 +147,8 @@ export default function JarvisChatShell() {
   }, [messages]);
 
   async function init() {
+    if (initRef.current) return;
+    initRef.current = true;
     try {
       const [m, c] = await Promise.all([api.listOllamaModels(), api.listChats()]);
       const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];

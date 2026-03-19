@@ -46,5 +46,37 @@
     "route": "chat",
     "model": "deepseek-r1:8b",
     "answer_len": 2223
+  },
+  {
+    "run_id": "9c78f626",
+    "finished_at": "2026-03-19T23:10:15.279126",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 394
+  },
+  {
+    "run_id": "d10dddda",
+    "finished_at": "2026-03-19T23:10:55.567955",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 139
+  },
+  {
+    "run_id": "44a738dc",
+    "finished_at": "2026-03-19T23:14:03.336179",
+    "ok": true,
+    "route": "code",
+    "model": "qwen3:8b",
+    "answer_len": 801
+  },
+  {
+    "run_id": "d265fe11",
+    "finished_at": "2026-03-19T23:14:49.407668",
+    "ok": true,
+    "route": "code",
+    "model": "qwen3:8b",
+    "answer_len": 2182
   }
 ]
