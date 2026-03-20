@@ -222,11 +222,14 @@ export default function JarvisChatShell() {
 
       // Multi-agent режим
       if (multiAgent) {
-        setPhase("🤖 Multi-agent: Исследователь → Программист → Аналитик...");
+        const useOrch = profile === "Оркестратор";
+        const useRefl = skills.includes("reflection");
+        const modeLabel = [useOrch && "🎯 Оркестратор", "🔎→💻→📊 Агенты", useRefl && "🪞 Рефлексия"].filter(Boolean).join(" → ");
+        setPhase(`🤖 ${modeLabel}...`);
         try {
           const resp = await fetch(`${API_URL}/api/advanced/multi-agent`, {
             method: "POST", headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"] }),
+            body: JSON.stringify({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"], use_reflection: useRefl, use_orchestrator: useOrch }),
           });
           const data = await resp.json();
           const final = data.report || data.error || "Нет результата";

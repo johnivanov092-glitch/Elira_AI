@@ -21,6 +21,8 @@ class MultiAgentRequest(BaseModel):
     model_name: str = "qwen3:8b"
     context: str = ""
     agents: list[str] = ["researcher", "programmer", "analyst"]
+    use_reflection: bool = False
+    use_orchestrator: bool = False
 
 
 @router.post("/multi-agent")
@@ -31,6 +33,8 @@ def run_multi(payload: MultiAgentRequest):
         model_name=payload.model_name,
         context=payload.context,
         agents=payload.agents,
+        use_reflection=payload.use_reflection,
+        use_orchestrator=payload.use_orchestrator,
     )
 
 

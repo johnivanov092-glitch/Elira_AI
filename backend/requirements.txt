@@ -1,11 +1,44 @@
+# ═══ JARVIS — Python зависимости ═══
+# Установка: cd backend && .venv\Scripts\pip install -r requirements.txt
+
+# ── Обязательные (без них бекенд не запустится) ──
 fastapi
 uvicorn[standard]
 pydantic
 ollama
-pandas
-pypdf
-requests
-beautifulsoup4
-duckduckgo-search
+httpx
 python-multipart
 aiofiles
+
+# ── Основные скиллы ──
+duckduckgo-search        # 🌐 Веб-поиск
+requests                 # 🌐 HTTP/API запросы
+beautifulsoup4           # 🌐 Парсинг HTML
+pypdf                    # 📑 PDF (базовый)
+scikit-learn             # 🧠 TF-IDF (умная память)
+
+# ── Расширенные скиллы ──
+python-docx              # 📝 Word генерация
+openpyxl                 # 📝 Excel генерация/чтение
+pdfplumber               # 📑 PDF таблицы
+pandas                   # 📈 CSV анализ
+cryptography             # 🔐 AES шифрование
+
+# ── Генерация картинок (FLUX.1-schnell) ──
+# ~2GB скачивания. Модель (~12GB) скачается автоматически при первом запросе.
+torch
+diffusers
+transformers
+accelerate
+sentencepiece
+protobuf
+
+# ── OCR для сканированных PDF (опционально) ──
+# + нужен Poppler: https://github.com/oschwartz10612/poppler-windows/releases
+# + нужен Tesseract: https://github.com/UB-Mannheim/tesseract/wiki
+pytesseract
+pdf2image
+
+# ── Скриншоты сайтов (опционально) ──
+# После установки: playwright install chromium
+# playwright
