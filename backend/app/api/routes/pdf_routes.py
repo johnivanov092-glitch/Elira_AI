@@ -69,3 +69,15 @@ async def api_analyze(file: UploadFile = File(...)):
         return analyze_pdf(data)
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+
+@router.post("/preview")
+async def api_preview(file: UploadFile = File(...), pages: str = "1,2,3"):
+    """Рендерит страницы PDF как PNG картинки."""
+    try:
+        from app.services.pdf_pro import render_pdf_pages
+        data = await file.read()
+        page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
+        return render_pdf_pages(data, page_list or None)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})

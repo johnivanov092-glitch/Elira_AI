@@ -19,6 +19,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# torch импортируем на уровне модуля — безопасно
+try:
+    import torch
+    _HAS_TORCH = True
+except ImportError:
+    torch = None
+    _HAS_TORCH = False
+
 OUTPUT_DIR = Path("data/generated")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -33,7 +41,6 @@ def _get_pipe():
         return _pipe
 
     try:
-        import torch
         from diffusers import FluxPipeline
     except ImportError:
         raise ImportError("pip install diffusers transformers accelerate torch sentencepiece protobuf")
@@ -95,7 +102,8 @@ def generate_image(
     height = (height // 8) * 8
 
     try:
-        import torch
+        if not _HAS_TORCH:
+            return {"ok": False, "error": "torch не установлен: pip install torch"}
 
         pipe = _get_pipe()
 
@@ -127,7 +135,7 @@ def generate_image(
 
         # Очистка VRAM
         try:
-            if torch.cuda.is_available():
+            if _HAS_TORCH and torch.cuda.is_available():
                 torch.cuda.empty_cache()
             gc.collect()
         except Exception:
@@ -147,7 +155,10 @@ def generate_image(
             "download_url": f"/api/skills/download/{fname}",
         }
 
-    except torch.cuda.OutOfMemoryError:
+    except Exception as _oom_err:
+        if 'out of memory' not in str(_oom_err).lower() and 'CUDA' not in str(_oom_err):
+            _cleanup_vram()
+            return {"ok": False, "error": str(_oom_err)}
         _cleanup_vram()
         return {"ok": False, "error": f"Не хватает VRAM для {width}x{height}. Попробуй меньший размер (512x512)."}
     except Exception as e:
@@ -159,11 +170,10 @@ def _cleanup_vram():
     """Освобождает VRAM."""
     global _pipe
     try:
-        import torch
         del _pipe
         _pipe = None
         gc.collect()
-        if torch.cuda.is_available():
+        if _HAS_TORCH and torch.cuda.is_available():
             torch.cuda.empty_cache()
     except Exception:
         pass
@@ -181,8 +191,7 @@ def get_status() -> dict:
     info = {"ok": True, "model": _model_id, "loaded": loaded}
 
     try:
-        import torch
-        if torch.cuda.is_available():
+        if _HAS_TORCH and torch.cuda.is_available():
             info["gpu"] = torch.cuda.get_device_name(0)
             info["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_mem / 1024**2)
             info["vram_used_mb"] = round(torch.cuda.memory_allocated(0) / 1024**2)

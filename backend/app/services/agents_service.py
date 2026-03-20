@@ -147,9 +147,9 @@ def _run_auto_skills(user_input: str) -> str:
                 body_str = json.dumps(body, ensure_ascii=False, indent=2)[:3000] if isinstance(body, (dict, list)) else str(body)[:3000]
                 parts.append(f"HTTP {method} {url_match.group(1)} → статус {result.get('status')} ({result.get('elapsed_ms')}ms):\n{body_str}")
             else:
-                parts.append(f"HTTP ошибка: {result.get('error')}")
+                parts.append(f"SKILL_ERROR:🌐 HTTP ошибка: {result.get('error')}")
         except Exception as e:
-            parts.append(f"HTTP ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🌐 HTTP ошибка: {e}")
 
     # ─── 🗄 SQL ───
     sql_triggers = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу", "select ", "покажи записи", "покажи данные из"]
@@ -174,7 +174,7 @@ def _run_auto_skills(user_input: str) -> str:
                             lines.append(f"  📁 {db['name']} → {tbl} ({info['rows']} строк): {cols}")
                     parts.append("\n".join(lines))
         except Exception as e:
-            parts.append(f"SQL ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🗄 SQL ошибка: {e}")
 
     # ─── 🖼 Скриншот ───
     screenshot_triggers = ["скриншот", "screenshot", "покажи как выглядит", "сделай снимок"]
@@ -185,9 +185,9 @@ def _run_auto_skills(user_input: str) -> str:
             if result.get("ok"):
                 parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:Скриншот {result.get('title','')}")
             else:
-                parts.append(f"Скриншот ошибка: {result.get('error')}")
+                parts.append(f"SKILL_ERROR:🖼 Скриншот: {result.get('error')}")
         except Exception as e:
-            parts.append(f"Скриншот ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🖼 Скриншот: {e}")
 
     # ─── 🎨 Генерация картинок ───
     img_triggers = ["нарисуй", "нарисуй мне", "сгенерируй картинк", "сгенерируй изображен",
@@ -208,11 +208,11 @@ def _run_auto_skills(user_input: str) -> str:
             if result.get("ok"):
                 parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:{prompt}")
             else:
-                parts.append(f"Ошибка генерации: {result.get('error')}")
+                parts.append(f"SKILL_ERROR:🎨 Генерация: {result.get('error')}")
         except ImportError:
-            parts.append("Для картинок: pip install diffusers transformers accelerate torch sentencepiece protobuf")
+            parts.append("SKILL_ERROR:🎨 Для картинок установи: pip install diffusers transformers accelerate torch sentencepiece protobuf")
         except Exception as e:
-            parts.append(f"Ошибка генерации: {e}")
+            parts.append(f"SKILL_ERROR:🎨 Генерация: {e}")
 
     # ─── 📝 Word генерация ───
     word_triggers = ["создай документ", "создай отчёт", "создай отчет", "сделай документ", "сделай отчёт",
@@ -233,9 +233,9 @@ def _run_auto_skills(user_input: str) -> str:
             if result.get("ok"):
                 parts.append(f"FILE_GENERATED:word:{result.get('download_url','')}:{result.get('filename','')}")
             else:
-                parts.append(f"Word ошибка: {result.get('error')}")
+                parts.append(f"SKILL_ERROR:📝 Word: {result.get('error')}")
         except Exception as e:
-            parts.append(f"Word ошибка: {e}")
+            parts.append(f"SKILL_ERROR:📝 Word: {e}")
 
     # ─── 📝 Excel генерация ───
     excel_triggers = ["создай таблицу", "создай excel", "создай xlsx", "сделай таблицу",
@@ -258,7 +258,7 @@ def _run_auto_skills(user_input: str) -> str:
                     if result.get("ok"):
                         parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
             except Exception as e:
-                parts.append(f"Ошибка перевода: {e}")
+                parts.append(f"SKILL_ERROR:🌍 Перевод: {e}")
             break
 
     # ─── 🔐 Шифрование ───
@@ -276,7 +276,7 @@ def _run_auto_skills(user_input: str) -> str:
                 if result.get("ok"):
                     parts.append(f"🔐 Зашифровано:\n`{result.get('encrypted','')}`\n\nДля расшифровки скажи: расшифруй [токен]")
         except Exception as e:
-            parts.append(f"Ошибка шифрования: {e}")
+            parts.append(f"SKILL_ERROR:🔐 Шифрование: {e}")
 
     if any(t in ql for t in ["расшифруй", "дешифруй", "decrypt"]):
         try:
@@ -292,9 +292,9 @@ def _run_auto_skills(user_input: str) -> str:
                 if result.get("ok"):
                     parts.append(f"🔓 Расшифровано: {result.get('decrypted','')}")
                 else:
-                    parts.append(f"Ошибка: {result.get('error','')}")
+                    parts.append(f"SKILL_ERROR:🔓 Расшифровка: {result.get('error','')}")
         except Exception as e:
-            parts.append(f"Ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🔓 Ошибка: {e}")
 
     # ─── 📦 Архиватор ───
     zip_triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
@@ -312,9 +312,9 @@ def _run_auto_skills(user_input: str) -> str:
                 if result.get("ok"):
                     parts.append(f"FILE_GENERATED:zip:{result.get('download_url','')}:{result.get('filename','')}")
                 else:
-                    parts.append(f"Архив ошибка: {result.get('error')}")
+                    parts.append(f"SKILL_ERROR:📦 Архив: {result.get('error')}")
         except Exception as e:
-            parts.append(f"Архив ошибка: {e}")
+            parts.append(f"SKILL_ERROR:📦 Архив: {e}")
 
     unzip_triggers = ["распакуй", "разархивируй", "извлеки архив"]
     if any(t in ql for t in unzip_triggers):
@@ -331,7 +331,7 @@ def _run_auto_skills(user_input: str) -> str:
                 if result.get("ok"):
                     parts.append(f"📦 Распаковано в {result.get('dest','')}: {result.get('count',0)} файлов")
         except Exception as e:
-            parts.append(f"Распаковка ошибка: {e}")
+            parts.append(f"SKILL_ERROR:📦 Распаковка: {e}")
 
     # ─── 🔄 Конвертер ───
     convert_triggers = ["конвертируй", "преобразуй", "конвертировать", "convert "]
@@ -347,9 +347,9 @@ def _run_auto_skills(user_input: str) -> str:
                 if result.get("ok"):
                     parts.append(f"FILE_GENERATED:convert:{result.get('download_url','')}:{result.get('filename','')}")
                 else:
-                    parts.append(f"Конвертация ошибка: {result.get('error')}")
+                    parts.append(f"SKILL_ERROR:🔄 Конвертация: {result.get('error')}")
         except Exception as e:
-            parts.append(f"Конвертация ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🔄 Конвертация: {e}")
 
     # ─── 📐 Regex ───
     regex_triggers = ["проверь regex", "тест regex", "regex тест", "test regex", "регулярка", "регулярное выражение"]
@@ -367,7 +367,7 @@ def _run_auto_skills(user_input: str) -> str:
                     parts.append(f"📐 Regex `{match.group(1).strip()}`: {result.get('count',0)} совпадений\n" +
                                  "\n".join(f"  • `{m['match']}` (позиция {m['start']}-{m['end']})" for m in matches[:10]))
         except Exception as e:
-            parts.append(f"Regex ошибка: {e}")
+            parts.append(f"SKILL_ERROR:📐 Regex: {e}")
 
     # ─── 📈 CSV анализ ───
     csv_triggers = ["проанализируй csv", "анализ csv", "статистика csv", "analyze csv", "проанализируй файл", "покажи статистику"]
@@ -386,7 +386,7 @@ def _run_auto_skills(user_input: str) -> str:
                                  f"Пустые: {json.dumps(result.get('nulls',{}), ensure_ascii=False)}\n"
                                  f"Статистика: {json.dumps(desc, ensure_ascii=False, indent=2)[:2000]}")
         except Exception as e:
-            parts.append(f"CSV ошибка: {e}")
+            parts.append(f"SKILL_ERROR:📈 CSV: {e}")
 
     # ─── 📡 Webhook ───
     webhook_triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
@@ -403,7 +403,7 @@ def _run_auto_skills(user_input: str) -> str:
             else:
                 parts.append("📡 Вебхуки пусты. Отправь POST на /api/extra/webhook/{source}")
         except Exception as e:
-            parts.append(f"Webhook ошибка: {e}")
+            parts.append(f"SKILL_ERROR:📡 Webhook: {e}")
 
     # ─── 🔌 Плагины ───
     plugin_triggers = ["список плагинов", "покажи плагины", "plugins list"]
@@ -420,7 +420,7 @@ def _run_auto_skills(user_input: str) -> str:
             else:
                 parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
         except Exception as e:
-            parts.append(f"Плагины ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🔌 Плагины: {e}")
 
     run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
     if any(t in ql for t in run_plugin_triggers):
@@ -433,7 +433,7 @@ def _run_auto_skills(user_input: str) -> str:
                 result = run_plugin(name_match.group(1))
                 parts.append(f"🔌 Плагин {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
         except Exception as e:
-            parts.append(f"Плагин ошибка: {e}")
+            parts.append(f"SKILL_ERROR:🔌 Плагин: {e}")
 
     # ─── 📑 PDF Pro ───
     pdf_word_triggers = ["конвертируй pdf в word", "pdf в word", "pdf to word", "pdf в docx"]
@@ -515,6 +515,10 @@ def _build_prompt(user_input, context_bundle):
                     })
             elif line.startswith("SKILL_HINT:"):
                 clean_parts.append(line)  # подсказки для LLM оставляем
+            elif line.startswith("SKILL_ERROR:"):
+                # Ошибки скиллов НЕ идут в LLM — показываем пользователю напрямую
+                error_msg = line[len("SKILL_ERROR:"):]
+                _pending_attachments.append({"type": "error", "message": error_msg})
             else:
                 clean_parts.append(line)
         skill_results = "\n\n".join(clean_parts)
@@ -541,7 +545,7 @@ _pending_attachments: list[dict] = []
 
 
 def _get_and_clear_attachments() -> str:
-    """Возвращает markdown-блок с картинками/файлами и очищает очередь."""
+    """Возвращает markdown-блок с картинками/файлами/ошибками и очищает очередь."""
     if not _pending_attachments:
         return ""
     api_base = "http://127.0.0.1:8000"
@@ -555,6 +559,8 @@ def _get_and_clear_attachments() -> str:
             dl = att["download_url"] if att["download_url"].startswith("http") else f"{api_base}{att['download_url']}"
             icon = {"word": "📄", "zip": "📦", "convert": "🔄", "excel": "📊"}.get(att.get("file_type", ""), "📎")
             parts.append(f"\n\n{icon} **Файл создан:** [{att.get('filename', '')}]({dl})")
+        elif att["type"] == "error":
+            parts.append(f"\n\n⚠️ {att.get('message', 'Ошибка скилла')}")
     _pending_attachments.clear()
     return "\n".join(parts)
 

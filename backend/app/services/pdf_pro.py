@@ -343,3 +343,42 @@ def analyze_pdf(data: bytes) -> dict:
             for t in result.get("tables", [])[:10]
         ],
     }
+
+
+# ═══════════════════════════════════════════════════════════════
+# ВИЗУАЛЬНЫЙ ПРОСМОТР СТРАНИЦ PDF → PNG
+# ═══════════════════════════════════════════════════════════════
+
+def render_pdf_pages(data: bytes, pages: list = None, dpi: int = 150) -> dict:
+    """Рендерит страницы PDF как PNG изображения."""
+    try:
+        from pdf2image import convert_from_bytes
+    except ImportError:
+        return {"ok": False, "error": "pip install pdf2image (+ poppler для Windows: https://github.com/oschwartz10612/poppler-windows)"}
+
+    try:
+        total = _count_pages(data)
+        if pages:
+            images_to_render = pages
+        else:
+            images_to_render = list(range(1, min(total + 1, 11)))  # Макс 10 страниц
+
+        results = []
+        for page_num in images_to_render:
+            imgs = convert_from_bytes(data, dpi=dpi, first_page=page_num, last_page=page_num)
+            if imgs:
+                import time
+                fname = f"pdf_page_{page_num}_{int(time.time())}.png"
+                path = OUTPUT_DIR / fname
+                imgs[0].save(str(path), "PNG")
+                results.append({
+                    "page": page_num,
+                    "filename": fname,
+                    "size": path.stat().st_size,
+                    "view_url": f"/api/skills/view/{fname}",
+                    "download_url": f"/api/skills/download/{fname}",
+                })
+
+        return {"ok": True, "pages": results, "total_pages": total, "rendered": len(results)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}

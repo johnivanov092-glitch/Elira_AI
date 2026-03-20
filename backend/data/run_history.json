@@ -150,5 +150,21 @@
     "route": "chat",
     "model": "qwen3:8b",
     "answer_len": 751
+  },
+  {
+    "run_id": "ad3f6b2f",
+    "finished_at": "2026-03-20T00:35:39.354139",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 1006
+  },
+  {
+    "run_id": "afd64d1b",
+    "finished_at": "2026-03-20T00:42:35.124368",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 631
   }
 ]
