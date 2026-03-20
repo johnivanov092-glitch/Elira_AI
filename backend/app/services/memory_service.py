@@ -1,97 +1,61 @@
 from __future__ import annotations
 
-import json
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-DATA_DIR = BASE_DIR / "data"
-MEMORY_FILE = DATA_DIR / "memory_store.json"
+from app.services.smart_memory import (
+    add_memory as _sm_add_memory,
+    delete_memory as _sm_delete_memory,
+    get_relevant_context as _sm_get_relevant_context,
+    list_memories as _sm_list_memories,
+    search_memory as _sm_search_memory,
+)
 
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def _read_store() -> dict[str, list[dict[str, Any]]]:
-    if MEMORY_FILE.exists():
-        try:
-            return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
+_DEFAULT_PROFILE = "default"
 
 
-def _write_store(data: dict[str, list[dict[str, Any]]]) -> None:
-    MEMORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def _normalize_profile(profile: str | None) -> str:
+    p = (profile or "").strip()
+    return p or _DEFAULT_PROFILE
 
 
 def list_profiles() -> dict[str, Any]:
-    store = _read_store()
-    items = []
-    for profile, records in store.items():
-        items.append({
-            "name": profile,
-            "count": len(records),
-        })
-    items.sort(key=lambda x: x["name"].lower())
-    return {"ok": True, "profiles": items, "count": len(items)}
+    data = _sm_list_memories(limit=1)
+    count = 1 if data.get("count", 0) > 0 else 0
+    profiles = [{"name": _DEFAULT_PROFILE, "count": data.get("count", 0)}] if count else []
+    return {"ok": True, "profiles": profiles, "count": count}
 
 
 def list_memories(profile: str) -> dict[str, Any]:
-    store = _read_store()
-    records = list(reversed(store.get(profile, [])))
-    return {"ok": True, "profile": profile, "items": records, "count": len(records)}
+    normalized = _normalize_profile(profile)
+    result = _sm_list_memories(limit=500)
+    return {"ok": True, "profile": normalized, "items": result.get("items", []), "count": result.get("count", 0)}
 
 
 def add_memory(profile: str, text: str, source: str = "manual") -> dict[str, Any]:
-    store = _read_store()
-    record = {
-        "id": f"{profile}-{int(datetime.utcnow().timestamp() * 1000)}",
-        "text": text.strip(),
-        "source": source.strip() or "manual",
-        "created_at": datetime.utcnow().isoformat() + "Z",
-    }
-    store.setdefault(profile, []).append(record)
-    _write_store(store)
-    return {"ok": True, "profile": profile, "item": record}
+    normalized = _normalize_profile(profile)
+    result = _sm_add_memory(text=text, category="fact", source=source or "manual", importance=6)
+    result["profile"] = normalized
+    return result
 
 
 def delete_memory(profile: str, item_id: str) -> dict[str, Any]:
-    store = _read_store()
-    records = store.get(profile, [])
-    filtered = [r for r in records if r.get("id") != item_id]
-    store[profile] = filtered
-    _write_store(store)
-    return {"ok": True, "profile": profile, "deleted_id": item_id}
+    normalized = _normalize_profile(profile)
+    try:
+        mem_id = int(item_id)
+    except Exception:
+        return {"ok": False, "profile": normalized, "error": "Некорректный id памяти"}
+    result = _sm_delete_memory(mem_id)
+    result["profile"] = normalized
+    return result
 
 
 def search_memory(profile: str, query: str, limit: int = 10) -> dict[str, Any]:
-    q = query.strip().lower()
-    store = _read_store()
-    records = store.get(profile, [])
-
-    scored: list[tuple[int, dict[str, Any]]] = []
-    for rec in records:
-        text = str(rec.get("text", ""))
-        low = text.lower()
-        score = 0
-        for token in q.split():
-            if token and token in low:
-                score += 1
-        if score > 0:
-            scored.append((score, rec))
-
-    scored.sort(key=lambda x: (-x[0], x[1].get("created_at", "")), reverse=False)
-    items = [rec for _, rec in scored[: max(1, limit)]]
-    return {"ok": True, "profile": profile, "query": query, "items": items, "count": len(items)}
+    normalized = _normalize_profile(profile)
+    result = _sm_search_memory(query=query, limit=max(1, int(limit)))
+    result["profile"] = normalized
+    return result
 
 
 def build_memory_context(profile: str, query: str, limit: int = 5) -> str:
-    result = search_memory(profile, query, limit)
-    items = result.get("items", [])
-    if not items:
-        return ""
-    lines = []
-    for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item.get('text', '')}")
-    return "\n".join(lines)
+    _ = _normalize_profile(profile)
+    return _sm_get_relevant_context(query=query, max_items=max(1, int(limit)))

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 from app.services.web_service import research_web, search_web
@@ -17,22 +15,11 @@ from app.services.library_service import (
     list_library_files,
     build_library_context,
 )
+from app.services.smart_memory import search_memory as smart_search_memory
 from app.services.git_service import GitService
 from app.services.project_map_service import ProjectMapService
 from app.services.project_brain_loop_service import ProjectBrainLoopService
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-DATA_DIR = BASE_DIR / "data"
-MEMORY_STORE = DATA_DIR / "memory_store.json"
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
 
 
 def list_tools() -> dict[str, Any]:
@@ -67,28 +54,10 @@ def list_tools() -> dict[str, Any]:
 
 
 def search_memory_tool(profile: str, query: str, limit: int = 5) -> dict[str, Any]:
-    store = _read_json(MEMORY_STORE)
-    items = store.get(profile, [])
-    q = (query or "").lower().strip()
+    result = smart_search_memory(query=query, limit=max(1, int(limit)))
+    result["profile"] = str(profile or "default")
+    return result
 
-    scored = []
-    for item in items:
-        text = str(item.get("text", ""))
-        low = text.lower()
-        score = sum(1 for token in q.split() if token and token in low)
-        if score > 0:
-            scored.append((score, item))
-
-    scored.sort(key=lambda x: (-x[0], x[1].get("created_at", "")))
-    result_items = [item for _, item in scored[:limit]]
-
-    return {
-        "ok": True,
-        "profile": profile,
-        "query": query,
-        "items": result_items,
-        "count": len(result_items),
-    }
 
 
 def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
