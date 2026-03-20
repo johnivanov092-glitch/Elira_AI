@@ -339,7 +339,7 @@ export default function JarvisChatShell() {
 
       <main className="jarvis-main">
         <div className="jarvis-topbar slim">
-          <div className="jarvis-brand">Jarvis</div>
+          <div className="jarvis-brand"><svg width="22" height="22" viewBox="0 0 64 64" fill="none" style={{marginRight:7,verticalAlign:"middle",marginTop:-2}}><defs><linearGradient id="jg" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jg)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jg)"/></svg>Jarvis</div>
           <div className="topbar-tabs">
             <button className={`soft-btn ${mainTab==="chat"?"active":""}`} onClick={() => setMainTab("chat")}>Chat</button>
             <button className={`soft-btn ${mainTab==="code"?"active":""}`} onClick={() => setMainTab("code")}>Code</button>
@@ -396,7 +396,7 @@ export default function JarvisChatShell() {
           ) : (
             <>
               {ctxF.length > 0 && <div className="context-bar"><div className="context-bar-title">📎 {ctxF.length} файлов доступно (упомяни «файл» или «документ»)</div><div className="context-tags">{ctxF.map(f=><span key={f.id} className="context-tag">{f.name}</span>)}</div></div>}
-              {messages.length === 0 && !streaming && <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center",color:"var(--text-muted)"}}><div style={{fontSize:28,marginBottom:8,opacity:0.2}}>✺</div><div style={{fontSize:14}}>Чем могу помочь?</div></div></div>}
+              {messages.length === 0 && !streaming && <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center",color:"var(--text-muted)"}}><svg width="48" height="48" viewBox="0 0 64 64" fill="none" style={{marginBottom:12,opacity:0.4}}><defs><linearGradient id="jgw" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jgw)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jgw)"/></svg><div style={{fontSize:14}}>Чем могу помочь?</div></div></div>}
 
               <div className="message-stream compact-stream" ref={msgRef}>
                 {messages.map(msg => (

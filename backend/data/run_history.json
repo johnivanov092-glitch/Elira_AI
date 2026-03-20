@@ -310,5 +310,29 @@
     "route": "project",
     "model": "qwen3:8b",
     "answer_len": 3063
+  },
+  {
+    "run_id": "b43f4b56",
+    "finished_at": "2026-03-20T08:33:44.495238",
+    "ok": true,
+    "route": "research",
+    "model": "deepseek-r1:8b",
+    "answer_len": 1553
+  },
+  {
+    "run_id": "ed2056d7",
+    "finished_at": "2026-03-20T08:34:16.567332",
+    "ok": true,
+    "route": "research",
+    "model": "qwen3:8b",
+    "answer_len": 1012
+  },
+  {
+    "run_id": "ccad4a65",
+    "finished_at": "2026-03-20T08:45:51.271462",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 84
   }
 ]

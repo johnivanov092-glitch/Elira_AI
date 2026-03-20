@@ -229,7 +229,7 @@ def _run_auto_skills(user_input: str) -> str:
     ql = user_input.lower()
     parts = []
     url_match = _re.search(r"(https?://\S+)", user_input)
-    API_BASE = "http://127.0.0.1:8000"
+    API_BASE = ""  # relative URLs
 
     # ─── 🌐 HTTP/API ───
     http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
@@ -632,7 +632,7 @@ def _get_and_clear_attachments() -> str:
     """Возвращает markdown-блок с картинками/файлами/ошибками и очищает очередь."""
     if not _pending_attachments:
         return ""
-    api_base = "http://127.0.0.1:8000"
+    api_base = ""
     parts = []
     for att in _pending_attachments:
         if att["type"] == "image":
@@ -948,8 +948,9 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
         answer = draft.get("answer", "")
 
         # Reflection: для code/project ИЛИ если пользователь включил скилл
+        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
         should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
-        if should_reflect and answer.strip():
+        if should_reflect and answer.strip() and not has_generated_files:
             ref = run_reflection_loop(model_name=model_name, profile_name=profile_name, user_input=user_input, draft_text=answer, review_text="Улучши.", context=ctx)
             answer = ref.get("answer") or answer
 
@@ -1020,8 +1021,9 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
             full_text += token
             yield {"token": token, "done": False}
 
+        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
         should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
-        if should_reflect and full_text.strip():
+        if should_reflect and full_text.strip() and not has_generated_files:
             yield {"token": "", "done": False, "phase": "reflecting", "message": "Проверяю..."}
             ref = run_reflection_loop(model_name=model_name, profile_name=profile_name, user_input=user_input, draft_text=full_text, review_text="Улучши.", context=ctx)
             refined = ref.get("answer", "")

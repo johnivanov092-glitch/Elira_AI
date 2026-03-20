@@ -38,7 +38,7 @@ function parseInline(text, keyPrefix = "il") {
   const parts = [];
   let remaining = text;
   let idx = 0;
-  const API = "http://127.0.0.1:8000";
+  const API = `http://${window.location.hostname}:8000`;
   const isLocalDL = (url) => url.includes("/api/skills/download/") || url.includes("/api/skills/view/") || url.includes("/api/extra/");
 
   // Извлекает имя файла из URL: /api/skills/download/jarvis_123.docx → jarvis_123.docx
