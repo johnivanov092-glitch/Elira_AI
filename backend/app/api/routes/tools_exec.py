@@ -77,3 +77,15 @@ def analyze_code(payload: AnalyzeRequest):
     analysis["code_lines"] = analysis["total_lines"] - analysis["blank_lines"] - analysis["comment_lines"]
 
     return {"ok": True, "analysis": analysis}
+
+
+@router.get("/run-history")
+def get_run_history(limit: int = 50):
+    """История запусков агента — последние N записей."""
+    try:
+        from app.services.run_history_service import RunHistoryService
+        svc = RunHistoryService()
+        runs = svc.list_runs(limit=limit)
+        return {"ok": True, "runs": list(reversed(runs)), "count": len(runs)}
+    except Exception as e:
+        return {"ok": False, "runs": [], "error": str(e)}
