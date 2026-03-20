@@ -16,7 +16,7 @@ from app.services.library_service import (
     build_library_context,
 )
 from app.services.smart_memory import search_memory as smart_search_memory
-from app.services.git_service import GitService
+from app.services.git_service import git_status as _git_status_fn, git_commit as _git_commit_fn
 from app.services.project_map_service import ProjectMapService
 from app.services.project_brain_loop_service import ProjectBrainLoopService
 
@@ -188,12 +188,10 @@ def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, An
         )
 
     if tool_name == "git_status":
-        git = GitService()
-        return git.status()
+        return _git_status_fn()
 
     if tool_name == "git_commit_push":
-        git = GitService()
-        return git.commit_and_push(str(args.get("message", "AI update")))
+        return _git_commit_fn(message=str(args.get("message", "AI update")), add_all=True)
 
     if tool_name == "list_library":
         return list_library_files()
