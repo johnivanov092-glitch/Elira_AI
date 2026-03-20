@@ -40,7 +40,7 @@ def _call_llm(model: str, system: str, prompt: str, max_tokens: int = 1200) -> s
             ],
             options={"num_predict": max_tokens, "temperature": 0.5},
         )
-        return resp.get("message", {}).get("content", "")
+        return resp.message.content or ""
     except Exception as e:
         logger.warning(f"LLM call failed: {e}")
         return f"[Ошибка LLM: {e}]"
@@ -53,9 +53,10 @@ def _call_llm(model: str, system: str, prompt: str, max_tokens: int = 1200) -> s
 def _orchestrator_plan(query: str, context: str, model: str) -> dict:
     """Оркестратор: анализирует задачу и создаёт план для агентов."""
     system = AGENT_PROFILES.get("Оркестратор", "Ты планировщик задач.")
+    context_block = ("Контекст:\n" + context[:2000] + "\n\n") if context else ""
     prompt = (
         f"Задача: {query}\n\n"
-        f"{'Контекст:\n' + context[:2000] + chr(10) + chr(10) if context else ''}"
+        f"{context_block}"
         "Ты — Оркестратор. Проанализируй задачу и создай план.\n"
         "Ответь СТРОГО в формате:\n"
         "ЦЕЛЬ: [одно предложение]\n"

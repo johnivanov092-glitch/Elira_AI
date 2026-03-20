@@ -11,6 +11,21 @@
     "distDir": "../frontend/dist"
   },
   "tauri": {
+    "allowlist": {
+      "all": false,
+      "http": {
+        "all": true,
+        "request": true,
+        "scope": ["http://127.0.0.1:8000/**", "http://localhost:8000/**"]
+      },
+      "shell": {
+        "all": false,
+        "open": true
+      }
+    },
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:8000 ws://localhost:8000; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
+    },
     "bundle": {
       "active": true,
       "targets": ["nsis"],
