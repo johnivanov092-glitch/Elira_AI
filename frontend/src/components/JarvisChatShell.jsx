@@ -112,7 +112,7 @@ export default function JarvisChatShell() {
   const [model, setModel] = useState("qwen3:8b");
   const [modelOpts, setModelOpts] = useState([]);
   const [profile, setProfile] = useState("Универсальный");
-  const [skills, setSkills] = useState(["web_search", "file_context", "memory", "pdf_reader", "python_exec", "code_analysis", "file_gen", "translator", "converter", "archiver", "http_api", "screenshot"]);
+  const [skills, setSkills] = useState(["web_search", "file_context", "memory", "pdf_reader", "python_exec", "code_analysis", "file_gen", "translator", "converter", "archiver", "http_api", "screenshot", "image_gen"]);
   const [chats, setChats] = useState([]);
   const [chatId, setChatId] = useState("");
   const [messages, setMessages] = useState([]);
