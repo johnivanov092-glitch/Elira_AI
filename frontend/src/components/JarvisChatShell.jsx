@@ -72,6 +72,16 @@ function normalizeErrorMessage(e, fb = "Ошибка") {
   return String(v);
 }
 
+async function parseJsonSafe(resp) {
+  const raw = await resp.text();
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${raw || resp.statusText || "Ошибка backend"}`);
+    throw new Error(raw || "Backend вернул некорректный JSON");
+  }
+}
+
 async function fileToLibraryRecord(file) {
   let preview = "";
   const name = file.name || "";
@@ -251,13 +261,20 @@ export default function JarvisChatShell() {
             method: "POST", headers: {"Content-Type": "application/json"},
             body: JSON.stringify({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"], use_reflection: useRefl, use_orchestrator: useOrch }),
           });
-          const data = await resp.json();
-          const final = data.report || data.error || "Нет результата";
+          const data = await parseJsonSafe(resp);
+          if (!resp.ok || data?.ok === false) throw new Error(normalizeErrorMessage(data?.error || data?.detail || `HTTP ${resp.status}`));
+          const final = (data?.report || "").trim() || "Multi-agent не вернул результат";
           try { await api.addMessage({ chatId, role: "assistant", content: final }); } catch {}
           setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]);
+          setError("");
           setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
           return;
-        } catch (e) { setError(e.message); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); return; }
+        } catch (e) {
+          const msg = e?.message === "Failed to fetch"
+            ? "Multi-agent: backend недоступен или процесс упал во время выполнения. Проверь, жив ли FastAPI/Ollama."
+            : normalizeErrorMessage(e);
+          setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); return;
+        }
       }
 
       // Обычный стриминг

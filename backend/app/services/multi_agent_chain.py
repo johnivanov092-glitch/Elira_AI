@@ -18,7 +18,19 @@ from app.core.config import AGENT_PROFILES
 logger = logging.getLogger(__name__)
 
 
-def _call_llm(model: str, system: str, prompt: str, max_tokens: int = 2048) -> str:
+def _clip(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _is_llm_error(text: str) -> bool:
+    t = (text or "").strip()
+    return t.startswith("[Ошибка LLM:") or t.startswith("[LLM ERROR:")
+
+
+def _call_llm(model: str, system: str, prompt: str, max_tokens: int = 1200) -> str:
     try:
         resp = ollama.chat(
             model=model,
@@ -26,7 +38,7 @@ def _call_llm(model: str, system: str, prompt: str, max_tokens: int = 2048) -> s
                 {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-            options={"num_predict": max_tokens, "temperature": 0.7},
+            options={"num_predict": max_tokens, "temperature": 0.5},
         )
         return resp.get("message", {}).get("content", "")
     except Exception as e:
@@ -52,7 +64,7 @@ def _orchestrator_plan(query: str, context: str, model: str) -> dict:
         "АНАЛИТИК: [что проанализировать, какие риски]\n"
         "КРИТЕРИЙ УСПЕХА: [как понять что задача решена]"
     )
-    plan_text = _call_llm(model, system, prompt, max_tokens=800)
+    plan_text = _call_llm(model, system, prompt, max_tokens=700)
 
     plan = {"raw": plan_text, "researcher_task": "", "programmer_task": "", "analyst_task": ""}
     for line in plan_text.split("\n"):
@@ -74,7 +86,7 @@ def _researcher(query: str, context: str, model: str, task_hint: str = "") -> st
         prompt = f"Задание от Оркестратора: {task_hint}\n\nОригинальный запрос: {query}"
     if context:
         prompt = f"Контекст:\n{context[:2000]}\n\n---\n{prompt}\n\nПроанализируй данные и выдели ключевые факты."
-    return _call_llm(model, system, prompt)
+    return _call_llm(model, system, prompt, max_tokens=900)
 
 
 def _programmer(query: str, context: str, research: str, model: str, task_hint: str = "") -> str:
@@ -87,7 +99,7 @@ def _programmer(query: str, context: str, research: str, model: str, task_hint: 
     if context:
         parts.append(f"\nДополнительный контекст:\n{context[:1000]}")
     parts.append("\nНапиши код или техническое решение.")
-    return _call_llm(model, system, "\n".join(parts))
+    return _call_llm(model, system, "\n".join(parts), max_tokens=900)
 
 
 def _analyst(query: str, research: str, code: str, model: str, task_hint: str = "") -> str:
@@ -100,7 +112,7 @@ def _analyst(query: str, research: str, code: str, model: str, task_hint: str = 
     if code:
         parts.append(f"\nТехническое решение:\n{code[:1500]}")
     parts.append("\nИтоговый анализ: выводы, риски, рекомендации.")
-    return _call_llm(model, system, "\n".join(parts))
+    return _call_llm(model, system, "\n".join(parts), max_tokens=900)
 
 
 def _reflect_on_report(query: str, report: str, model: str) -> str:
@@ -116,7 +128,7 @@ def _reflect_on_report(query: str, report: str, model: str) -> str:
         "Если есть проблемы — укажи их и предложи исправления."
     )
     prompt = f"Запрос: {query}\n\nОтчёт:\n{report[:4000]}\n\nПроверь и оцени."
-    return _call_llm(model, system, prompt, max_tokens=2000)
+    return _call_llm(model, system, prompt, max_tokens=1100)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -132,72 +144,105 @@ def run_multi_agent(
     use_orchestrator: bool = False,
 ) -> dict[str, Any]:
     agents = agents or ["researcher", "programmer", "analyst"]
-    results = {}
-    timeline = []
+    results: dict[str, str] = {}
+    timeline: list[dict[str, Any]] = []
     plan = None
 
-    # Фаза 0: Оркестратор
-    if use_orchestrator:
-        timeline.append({"agent": "orchestrator", "status": "running", "label": "🎯 Оркестратор планирует..."})
-        plan = _orchestrator_plan(query, context, model_name)
-        results["orchestrator"] = plan["raw"]
-        timeline[-1]["status"] = "done"
-        timeline[-1]["length"] = len(plan["raw"])
+    try:
+        # Фаза 0: Оркестратор
+        if use_orchestrator:
+            timeline.append({"agent": "orchestrator", "status": "running", "label": "🎯 Оркестратор планирует..."})
+            plan = _orchestrator_plan(query, context, model_name)
+            results["orchestrator"] = plan["raw"]
+            timeline[-1]["status"] = "done"
+            timeline[-1]["length"] = len(plan["raw"] or "")
+            if _is_llm_error(plan["raw"]):
+                timeline[-1]["status"] = "error"
 
-    # Фаза 1: Исследователь
-    research = ""
-    if "researcher" in agents:
-        timeline.append({"agent": "researcher", "status": "running", "label": "🔎 Исследователь..."})
-        research = _researcher(query, context, model_name, task_hint=plan["researcher_task"] if plan else "")
-        results["researcher"] = research
-        timeline[-1]["status"] = "done"
-        timeline[-1]["length"] = len(research)
+        # Фаза 1: Исследователь
+        research = ""
+        if "researcher" in agents:
+            timeline.append({"agent": "researcher", "status": "running", "label": "🔎 Исследователь..."})
+            research = _researcher(query, context, model_name, task_hint=plan["researcher_task"] if plan else "")
+            results["researcher"] = research
+            timeline[-1]["status"] = "done"
+            timeline[-1]["length"] = len(research or "")
+            if _is_llm_error(research):
+                timeline[-1]["status"] = "error"
 
-    # Фаза 2: Программист
-    code = ""
-    if "programmer" in agents:
-        timeline.append({"agent": "programmer", "status": "running", "label": "💻 Программист..."})
-        code = _programmer(query, context, research, model_name, task_hint=plan["programmer_task"] if plan else "")
-        results["programmer"] = code
-        timeline[-1]["status"] = "done"
-        timeline[-1]["length"] = len(code)
+        # Фаза 2: Программист
+        code = ""
+        if "programmer" in agents:
+            timeline.append({"agent": "programmer", "status": "running", "label": "💻 Программист..."})
+            code = _programmer(query, context, _clip(research, 1200), model_name, task_hint=plan["programmer_task"] if plan else "")
+            results["programmer"] = code
+            timeline[-1]["status"] = "done"
+            timeline[-1]["length"] = len(code or "")
+            if _is_llm_error(code):
+                timeline[-1]["status"] = "error"
 
-    # Фаза 3: Аналитик
-    analysis = ""
-    if "analyst" in agents:
-        timeline.append({"agent": "analyst", "status": "running", "label": "📊 Аналитик..."})
-        analysis = _analyst(query, research, code, model_name, task_hint=plan["analyst_task"] if plan else "")
-        results["analyst"] = analysis
-        timeline[-1]["status"] = "done"
-        timeline[-1]["length"] = len(analysis)
+        # Фаза 3: Аналитик
+        analysis = ""
+        if "analyst" in agents:
+            timeline.append({"agent": "analyst", "status": "running", "label": "📊 Аналитик..."})
+            analysis = _analyst(query, _clip(research, 1200), _clip(code, 1200), model_name, task_hint=plan["analyst_task"] if plan else "")
+            results["analyst"] = analysis
+            timeline[-1]["status"] = "done"
+            timeline[-1]["length"] = len(analysis or "")
+            if _is_llm_error(analysis):
+                timeline[-1]["status"] = "error"
 
-    # Сборка отчёта
-    parts = []
-    if plan:
-        parts.append(f"## 🎯 План Оркестратора\n{plan['raw']}")
-    if research:
-        parts.append(f"## 🔎 Исследование\n{research}")
-    if code:
-        parts.append(f"## 💻 Техническое решение\n{code}")
-    if analysis:
-        parts.append(f"## 📊 Анализ\n{analysis}")
-    report = "\n\n---\n\n".join(parts)
+        # Сборка отчёта
+        parts = []
+        if plan and plan.get("raw"):
+            parts.append(f"## 🎯 План Оркестратора\n{_clip(plan['raw'], 2500)}")
+        if research:
+            parts.append(f"## 🔎 Исследование\n{_clip(research, 2500)}")
+        if code:
+            parts.append(f"## 💻 Техническое решение\n{_clip(code, 2500)}")
+        if analysis:
+            parts.append(f"## 📊 Анализ\n{_clip(analysis, 2500)}")
+        report = "\n\n---\n\n".join(parts).strip()
 
-    # Фаза 4: Рефлексия
-    if use_reflection and report.strip():
-        timeline.append({"agent": "reflection", "status": "running", "label": "🪞 Рефлексия проверяет..."})
-        reflection = _reflect_on_report(query, report, model_name)
-        results["reflection"] = reflection
-        timeline[-1]["status"] = "done"
-        timeline[-1]["length"] = len(reflection)
-        report += f"\n\n---\n\n## 🪞 Рефлексия\n{reflection}"
+        # Фаза 4: Рефлексия
+        if use_reflection and report:
+            timeline.append({"agent": "reflection", "status": "running", "label": "🪞 Рефлексия проверяет..."})
+            reflection = _reflect_on_report(query, report, model_name)
+            results["reflection"] = reflection
+            timeline[-1]["status"] = "done"
+            timeline[-1]["length"] = len(reflection or "")
+            if _is_llm_error(reflection):
+                timeline[-1]["status"] = "error"
+            report += f"\n\n---\n\n## 🪞 Рефлексия\n{_clip(reflection, 2500)}"
 
-    return {
-        "ok": True,
-        "report": report,
-        "results": results,
-        "timeline": timeline,
-        "agents_used": agents,
-        "orchestrator_used": use_orchestrator,
-        "reflection_used": use_reflection,
-    }
+        if not report:
+            return {
+                "ok": False,
+                "error": "Multi-agent не смог собрать отчёт. Проверь модель Ollama и доступность backend.",
+                "results": results,
+                "timeline": timeline,
+                "agents_used": agents,
+                "orchestrator_used": use_orchestrator,
+                "reflection_used": use_reflection,
+            }
+
+        return {
+            "ok": True,
+            "report": report,
+            "results": results,
+            "timeline": timeline,
+            "agents_used": agents,
+            "orchestrator_used": use_orchestrator,
+            "reflection_used": use_reflection,
+        }
+    except Exception as e:
+        logger.exception("run_multi_agent crashed")
+        return {
+            "ok": False,
+            "error": f"Multi-agent crashed: {e}",
+            "results": results,
+            "timeline": timeline,
+            "agents_used": agents,
+            "orchestrator_used": use_orchestrator,
+            "reflection_used": use_reflection,
+        }

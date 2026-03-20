@@ -7,9 +7,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Form
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import logging
 
 router = APIRouter(prefix="/api/advanced", tags=["advanced"])
+logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -28,14 +31,22 @@ class MultiAgentRequest(BaseModel):
 @router.post("/multi-agent")
 def run_multi(payload: MultiAgentRequest):
     from app.services.multi_agent_chain import run_multi_agent
-    return run_multi_agent(
-        query=payload.query,
-        model_name=payload.model_name,
-        context=payload.context,
-        agents=payload.agents,
-        use_reflection=payload.use_reflection,
-        use_orchestrator=payload.use_orchestrator,
-    )
+    try:
+        result = run_multi_agent(
+            query=payload.query,
+            model_name=payload.model_name,
+            context=payload.context,
+            agents=payload.agents,
+            use_reflection=payload.use_reflection,
+            use_orchestrator=payload.use_orchestrator,
+        )
+        if not isinstance(result, dict):
+            return JSONResponse(status_code=200, content={"ok": False, "error": "Multi-agent вернул некорректный результат."})
+        result.setdefault("ok", True)
+        return JSONResponse(status_code=200, content=result)
+    except Exception as e:
+        logger.exception("/api/advanced/multi-agent failed")
+        return JSONResponse(status_code=200, content={"ok": False, "error": f"Multi-agent error: {e}"})
 
 
 # ═══════════════════════════════════════════════════════════════

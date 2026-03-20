@@ -35,10 +35,20 @@ from app.api.routes.image_routes import router as image_router
 
 app = FastAPI(title="Jarvis Work API")
 
+# Для dev/Tauri важнее стабильный CORS, чем wildcard + credentials.
+# Консольная ошибка у тебя была из-за сочетания allow_credentials=True и "*".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+        "tauri://localhost",
+        "http://tauri.localhost",
+    ],
+    allow_origin_regex=r"https?://(127\.0\.0\.1|localhost)(:\d+)?$",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
