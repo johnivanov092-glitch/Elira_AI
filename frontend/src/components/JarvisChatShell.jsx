@@ -51,6 +51,7 @@ const SKILLS = [
   { id: "webhook", label: "📡 Webhook", desc: "Приём входящих вебхуков" },
   { id: "plugins", label: "🔌 Плагины", desc: "Пользовательские .py скрипты" },
   { id: "image_gen", label: "🎨 Картинки", desc: "FLUX.1 генерация изображений" },
+  { id: "git", label: "🔀 Git", desc: "Статус, log, diff репозитория" },
 ];
 
 // Tauri window controls
@@ -146,6 +147,9 @@ export default function JarvisChatShell() {
   const [renameVal, setRenameVal] = useState("");
   const [showPanel, setShowPanel] = useState(false);
   const [multiAgent, setMultiAgent] = useState(false);
+  const [lastInput, setLastInput] = useState("");
+  const [lastModel, setLastModel] = useState("");
+  const [chartData, setChartData] = useState(null);
 
   const API_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
@@ -204,11 +208,55 @@ export default function JarvisChatShell() {
   async function renameActive() { const t = renameVal.trim(); if (!t || !chatId) return; try { await api.renameChat({ id: chatId, title: t }); await loadChats(chatId); setRenaming(false); } catch (e) { setError(normalizeErrorMessage(e)); } }
   async function autoRename(text) { const a = chats.find(c => c.id === chatId); if (!chatId || !a || (a.title && a.title !== "Новый чат")) return; try { await api.renameChat({ id: chatId, title: deriveChatTitle(text) }); await loadChats(chatId); } catch {} }
 
+
+  function exportChat(fmt) {
+    if (!messages.length) return;
+    const title = chats.find(c => c.id === chatId)?.title || "Jarvis Chat";
+    const safe = title.slice(0,40).replace(/[^\w\u0400-\u04FF]/g,"_");
+    if (fmt === "md") {
+      const body = messages.map(m => (m.role==="user"?"**Вы**":"**Jarvis**") + "\n\n" + m.content).join("\n\n---\n\n");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob(["# "+title+"\n\n"+body],{type:"text/markdown"}));
+      a.download = safe + ".md"; a.click();
+    } else {
+      const body = messages.map(m => (m.role==="user"?"Вы: ":"Jarvis: ") + m.content).join("\n\n");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([body],{type:"text/plain"}));
+      a.download = safe + ".txt"; a.click();
+    }
+  }
+
+  function handleResend(withModel) {
+    if (!lastInput || working) return;
+    if (withModel) setModel(withModel);
+    setInput(lastInput);
+    setTimeout(() => { taRef.current?.focus(); }, 80);
+  }
+
+  function detectTableInText(text) {
+    const rows = (text||"").match(/\|.+\|/g);
+    if (!rows || rows.length < 3) return null;
+    const data = rows
+      .filter(r => !/^\s*\|[-:| ]+\|\s*$/.test(r))
+      .map(r => r.split("|").map(c=>c.trim()).filter(Boolean));
+    if (data.length < 2) return null;
+    const headers = data[0];
+    const numIdx = headers.findIndex((_,i) => data.slice(1).some(r => r[i] && !isNaN(parseFloat(r[i]))));
+    if (numIdx === -1) return null;
+    const labelIdx = numIdx === 0 ? 1 : 0;
+    return {
+      labels: data.slice(1).map(r => r[labelIdx]||""),
+      values: data.slice(1).map(r => parseFloat(r[numIdx])||0),
+      valueLabel: headers[numIdx]||"Значение",
+    };
+  }
+
   async function handleSend() {
     const text = input.trim();
     if (!text || !chatId || working) return;
     try {
       setWorking(true); setStreaming(true); setStreamText(""); setError(""); setPhase("");
+      setLastInput(text); setLastModel(model);
       const userMsg = await api.addMessage({ chatId, role: "user", content: text });
       const nextMessages = [...messages, userMsg];
       setMessages(nextMessages); setInput(""); await autoRename(text);
@@ -291,6 +339,7 @@ export default function JarvisChatShell() {
             const final = full_text || fullText;
             try { const p = await api.addMessage({ chatId, role: "assistant", content: final }); setMessages(prev => [...prev, p]); }
             catch { setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]); }
+            const _cd = detectTableInText(final); _cd ? setChartData(_cd) : setChartData(null);
             setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null;
           },
           onError(msg) { setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null; },
@@ -418,6 +467,8 @@ export default function JarvisChatShell() {
             {sideTab === "chats" && chatId && (
               <div className="chat-header-actions icon-actions" style={{display:"flex"}}>
                 <div className={`working-chip ${working?"active":""}`}>{working ? (phase || "⏳ Работает") : "○ Готов"}</div>
+                <button className="soft-btn icon-btn" title="Экспорт MD" onClick={()=>exportChat("md")}>📋</button>
+                <button className="soft-btn icon-btn" title="Экспорт TXT" onClick={()=>exportChat("txt")}>📄</button>
                 <button className="soft-btn icon-btn" onClick={() => saveToMemory(chatId, chats.find(c=>c.id===chatId)?.memory_saved)}>🧠</button>
                 <button className="soft-btn icon-btn" onClick={() => pinChat(chatId, chats.find(c=>c.id===chatId)?.pinned)}>📌</button>
                 <button className="soft-btn icon-btn" onClick={() => { setRenaming(true); setRenameVal(chats.find(c=>c.id===chatId)?.title||""); }}>✎</button>
@@ -474,6 +525,26 @@ export default function JarvisChatShell() {
               </div>
 
               {error && <div className="error-banner smaller-text">{error}</div>}
+              {!working && lastInput && (
+                <div style={{display:"flex",gap:6,padding:"4px 0 2px",flexWrap:"wrap"}}>
+                  <button className="soft-btn" style={{fontSize:10,padding:"2px 8px"}} onClick={()=>handleResend(null)}>🔁 Повтор</button>
+                  {modelOpts.filter(m=>{const n=typeof m==="string"?m:(m.name||m.model||"");return n&&n!==lastModel;}).slice(0,3).map((m,i)=>{const n=typeof m==="string"?m:(m.name||m.model||"");return <button key={i} className="soft-btn" style={{fontSize:10,padding:"2px 8px"}} onClick={()=>handleResend(n)} title={"Повтор с "+n}>🔁 {n.split(":")[0]}</button>})}
+                </div>
+              )}
+              {chartData && !working && (
+                <div style={{background:"var(--bg-surface)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 14px",marginTop:4}}>
+                  <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:6,display:"flex",justifyContent:"space-between"}}>
+                    <span>📊 {chartData.valueLabel}</span>
+                    <button className="soft-btn" style={{fontSize:10,padding:"1px 6px"}} onClick={()=>setChartData(null)}>✕</button>
+                  </div>
+                  <div style={{display:"flex",gap:3,alignItems:"flex-end",height:72}}>
+                    {chartData.values.map((v,i)=>{const mx=Math.max(...chartData.values)||1;return <div key={i} title={chartData.labels[i]+": "+v} style={{flex:1,minWidth:6,maxWidth:36,background:"var(--accent)",opacity:0.75,height:(v/mx*68)+"px",borderRadius:"3px 3px 0 0"}}></div>;})}
+                  </div>
+                  <div style={{display:"flex",gap:3,marginTop:2,overflow:"hidden"}}>
+                    {chartData.labels.map((l,i)=><div key={i} style={{flex:1,minWidth:6,maxWidth:36,fontSize:9,color:"var(--text-muted)",textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{l}</div>)}
+                  </div>
+                </div>
+              )}
 
               <div className="composer-wrap" onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
                 <div className={`chat-input-shell ${drag?"drag-active":""}`}>

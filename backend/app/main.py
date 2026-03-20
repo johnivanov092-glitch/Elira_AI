@@ -32,6 +32,7 @@ from app.api.routes.advanced_routes import router as advanced_router
 from app.api.routes.skills_routes import router as skills_router
 from app.api.routes.skills_extra_routes import router as skills_extra_router
 from app.api.routes.image_routes import router as image_router
+from app.api.routes.git_routes import router as git_router
 
 app = FastAPI(title="Jarvis Work API")
 
@@ -84,6 +85,7 @@ app.include_router(advanced_router)
 app.include_router(skills_router)
 app.include_router(skills_extra_router)
 app.include_router(image_router)
+app.include_router(git_router)
 
 @app.get("/health")
 def health():

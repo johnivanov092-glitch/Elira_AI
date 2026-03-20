@@ -549,6 +549,34 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     if any(t in ql for t in pdf_table_triggers):
         parts.append("SKILL_HINT: Чтобы извлечь таблицы из PDF — загрузи PDF через кнопку + и напиши 'извлеки таблицы'. Таблицы будут сохранены в Excel через /api/pdf/tables.")
 
+    # --- Git skill ---
+    _git_st = ['git status', 'статус git', 'что изменилось в git', 'покажи git', 'git изменения', 'ветка git']
+    if 'git' not in disabled and any(t in ql for t in _git_st):
+        try:
+            from app.services.git_service import format_git_context
+            parts.append(format_git_context())
+        except Exception as _e:
+            parts.append('SKILL_ERROR:Git: ' + str(_e))
+    _git_lg = ['git log', 'история коммитов', 'последние коммиты', 'покажи коммиты']
+    if 'git' not in disabled and any(t in ql for t in _git_lg):
+        try:
+            from app.services.git_service import git_log as _gl
+            _r = _gl(limit=10)
+            if _r.get('ok'):
+                _rows = ['Git log (' + _r['repo'] + '):'] + ['  ' + c['hash'] + ' - ' + c['message'] for c in _r.get('commits', [])]
+                parts.append(chr(10).join(_rows))
+        except Exception as _e:
+            parts.append('SKILL_ERROR:Git log: ' + str(_e))
+    _git_df = ['git diff', 'покажи diff', 'что я изменил', 'изменения в коде']
+    if 'git' not in disabled and any(t in ql for t in _git_df):
+        try:
+            from app.services.git_service import git_diff as _gdf
+            _r = _gdf()
+            if _r.get('ok'):
+                parts.append('Git diff:' + chr(10) + _r.get('stat','') + chr(10) + _r.get('diff','')[:3000])
+        except Exception as _e:
+            parts.append('SKILL_ERROR:Git diff: ' + str(_e))
+
     # ─── 🎨 GPU статус ───
     gpu_triggers = ["статус gpu", "gpu status", "сколько vram", "видеопамять"]
     if any(t in ql for t in gpu_triggers):
