@@ -95,8 +95,13 @@ async function fileToLibraryRecord(file) {
   return { id: makeId("lib"), name: file.name, size: file.size, type: file.type || ext || "unknown", uploaded_at: new Date().toISOString(), preview, use_in_context: true, source: "upload" };
 }
 
-/** All library files with use_in_context AND preview go to LLM context */
-function getActiveLibFiles(lib) { return lib.filter(i => (i.use_in_context !== false) && i.preview); }
+/** Files included in context only for the current chat */
+function getChatContextFiles(lib, chatId) {
+  if (!chatId) return [];
+  const map = loadChatContextMap();
+  const ids = new Set(map[chatId] || []);
+  return lib.filter(i => ids.has(i.id) && i.preview);
+}
 function buildHistory(msgs) { if (!msgs?.length) return []; const p = msgs.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ role: m.role, content: m.content || "" })); return p.length > MAX_HISTORY_PAIRS * 2 ? p.slice(-MAX_HISTORY_PAIRS * 2) : p; }
 
 
@@ -142,7 +147,9 @@ export default function JarvisChatShell() {
   useEffect(() => {
     fetch(`${API_URL}/api/lib/list`).then(r => { if (!r.ok) return null; return r.json(); }).then(d => {
       if (d?.ok && d.items?.length) {
-        const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite"})), ...libraryFiles.filter(f => f.source !== "sqlite")];
+        const ctxMap = loadChatContextMap();
+        const activeIds = new Set(Object.values(ctxMap).flat());
+        const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite", use_in_context: activeIds.has(`db-${i.id}`)})), ...libraryFiles.filter(f => f.source !== "sqlite")];
         const seen = new Set();
         const unique = merged.filter(f => { const k = f.name + f.size; if (seen.has(k)) return false; seen.add(k); return true; });
         setLibraryFiles(unique);
@@ -198,7 +205,7 @@ export default function JarvisChatShell() {
       const history = buildHistory(nextMessages);
 
       // Файлы библиотеки
-      const cf = getActiveLibFiles(libraryFiles);
+      const cf = getChatContextFiles(libraryFiles, chatId);
       const tl = text.toLowerCase();
       const wantsFiles = cf.length > 0 && (
         tl.includes("файл") || tl.includes("документ") || tl.includes("библиотек") ||
@@ -285,7 +292,7 @@ export default function JarvisChatShell() {
     const recs = []; for (const f of files) {
       recs.push(await fileToLibraryRecord(f));
       // Сохраняем в SQLite бекенд
-      try { const fd = new FormData(); fd.append("file", f); fd.append("use_in_context", "true"); await fetch(`${API_URL}/api/lib/add`, { method: "POST", body: fd }); } catch {}
+      try { const fd = new FormData(); fd.append("file", f); fd.append("use_in_context", "false"); await fetch(`${API_URL}/api/lib/add`, { method: "POST", body: fd }); } catch {}
     }
     const next = [...recs, ...libraryFiles]; setLibraryFiles(next); saveLibraryFiles(next); setSideTab("library"); setSelLibId(recs[0]?.id || "");
     if (chatId) { const map = loadChatContextMap(); map[chatId] = Array.from(new Set([...recs.map(r => r.id), ...(map[chatId] || [])])); saveChatContextMap(map); }
@@ -293,8 +300,31 @@ export default function JarvisChatShell() {
   function onDrop(e) { e.preventDefault(); e.stopPropagation(); setDrag(false); handleFiles(e.dataTransfer.files); }
   function onDragOver(e) { e.preventDefault(); e.stopPropagation(); setDrag(true); }
   function onDragLeave(e) { e.preventDefault(); e.stopPropagation(); setDrag(false); }
-  function removeLib(id) { const n = libraryFiles.filter(i => i.id !== id); setLibraryFiles(n); saveLibraryFiles(n); const m = loadChatContextMap(); saveChatContextMap(Object.fromEntries(Object.entries(m).map(([k,v]) => [k,(v||[]).filter(x=>x!==id)]))); if (selLibId === id) setSelLibId(n[0]?.id || ""); }
-  function toggleCtx(id, on) { const n = libraryFiles.map(i => i.id === id ? {...i, use_in_context: on} : i); setLibraryFiles(n); saveLibraryFiles(n); if (!chatId) return; const m = loadChatContextMap(); const s = new Set(m[chatId]||[]); on ? s.add(id) : s.delete(id); m[chatId] = Array.from(s); saveChatContextMap(m); }
+  async function removeLib(id) {
+    try {
+      if (String(id).startsWith("db-")) {
+        const dbId = String(id).slice(3);
+        await fetch(`${API_URL}/api/lib/${dbId}`, { method: "DELETE" });
+      }
+    } catch {}
+    const n = libraryFiles.filter(i => i.id !== id);
+    setLibraryFiles(n);
+    saveLibraryFiles(n);
+    const m = loadChatContextMap();
+    saveChatContextMap(Object.fromEntries(Object.entries(m).map(([k,v]) => [k,(v||[]).filter(x=>x!==id)])));
+    if (selLibId === id) setSelLibId(n[0]?.id || "");
+  }
+  function toggleCtx(id, on) {
+    const n = libraryFiles.map(i => i.id === id ? {...i, use_in_context: on} : i);
+    setLibraryFiles(n);
+    saveLibraryFiles(n);
+    if (!chatId) return;
+    const m = loadChatContextMap();
+    const s = new Set(m[chatId]||[]);
+    on ? s.add(id) : s.delete(id);
+    m[chatId] = Array.from(s);
+    saveChatContextMap(m);
+  }
   function toggleSkill(id) { setSkills(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]); }
   function handleStop() {
     if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
@@ -307,7 +337,12 @@ export default function JarvisChatShell() {
 
   function selectAllLib(on) {
     const next = libraryFiles.map(i => ({ ...i, use_in_context: on }));
-    setLibraryFiles(next); saveLibraryFiles(next);
+    setLibraryFiles(next);
+    saveLibraryFiles(next);
+    if (!chatId) return;
+    const m = loadChatContextMap();
+    m[chatId] = on ? libraryFiles.map(i => i.id) : [];
+    saveChatContextMap(m);
   }
 
   function handleKeyDown(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }
@@ -318,7 +353,7 @@ export default function JarvisChatShell() {
   const memChats = useMemo(() => chats.filter(c => c.memory_saved), [chats]);
   const fLib = useMemo(() => { const q = libSearch.trim().toLowerCase(); return q ? libraryFiles.filter(i => `${i.name} ${i.preview||""}`.toLowerCase().includes(q)) : libraryFiles; }, [libSearch, libraryFiles]);
   const selLib = useMemo(() => libraryFiles.find(i => i.id === selLibId) || libraryFiles[0] || null, [libraryFiles, selLibId]);
-  const ctxF = useMemo(() => getActiveLibFiles(libraryFiles), [libraryFiles]);
+  const ctxF = useMemo(() => getChatContextFiles(libraryFiles, chatId), [libraryFiles, chatId]);
 
   if (mainTab === "code") return <IdeWorkspaceShell messages={messages} libraryFiles={libraryFiles} setLibraryFiles={setLibraryFiles} onBackToChat={() => setMainTab("chat")} />;
 
@@ -398,7 +433,7 @@ export default function JarvisChatShell() {
               <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
               <div className="library-table">
                 <div className="library-table-row header"><div>Имя</div><div>Тип</div><div>Размер</div><div>Контекст</div><div></div></div>
-                {fLib.length ? fLib.map(i => <div key={i.id} className={`library-table-row ${selLibId===i.id?"active":""}`} onClick={()=>setSelLibId(i.id)}><div className="table-name">{i.name}</div><div>{i.type.split("/").pop()}</div><div>{Math.round(i.size/1024)||0}K</div><div><input type="checkbox" checked={i.use_in_context !== false} onChange={e=>{e.stopPropagation();toggleCtx(i.id,e.target.checked);}}/></div><div><button className="mini-icon-btn" onClick={e=>{e.stopPropagation();removeLib(i.id);}}>✕</button></div></div>) : <div className="sidebar-empty" style={{padding:10}}>Нет файлов</div>}
+                {fLib.length ? fLib.map(i => <div key={i.id} className={`library-table-row ${selLibId===i.id?"active":""}`} onClick={()=>setSelLibId(i.id)}><div className="table-name">{i.name}</div><div>{i.type.split("/").pop()}</div><div>{Math.round(i.size/1024)||0}K</div><div><input type="checkbox" checked={chatId ? ctxF.some(f => f.id === i.id) : (i.use_in_context !== false)} onChange={e=>{e.stopPropagation();toggleCtx(i.id,e.target.checked);}}/></div><div><button className="mini-icon-btn" onClick={e=>{e.stopPropagation();removeLib(i.id);}}>✕</button></div></div>) : <div className="sidebar-empty" style={{padding:10}}>Нет файлов</div>}
               </div>
               {selLib && <div className="content-card"><div className="content-card-title">{selLib.name}</div><div className="content-card-text">{selLib.type} · {Math.round(selLib.size/1024)||0} KB</div>{selLib.preview ? <pre className="library-preview">{selLib.preview}</pre> : <div className="content-card-text" style={{marginTop:6}}>Превью недоступно</div>}</div>}
             </div>

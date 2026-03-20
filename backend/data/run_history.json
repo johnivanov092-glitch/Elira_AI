@@ -582,5 +582,61 @@
     "route": "research",
     "model": "qwen3:8b",
     "answer_len": 2316
+  },
+  {
+    "run_id": "426ca528",
+    "finished_at": "2026-03-20T11:55:42.462010",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 2309
+  },
+  {
+    "run_id": "c6340d83",
+    "finished_at": "2026-03-20T11:56:35.368172",
+    "ok": true,
+    "route": "research",
+    "model": "qwen3:8b",
+    "answer_len": 1530
+  },
+  {
+    "run_id": "21280544",
+    "finished_at": "2026-03-20T11:57:08.149593",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 1392
+  },
+  {
+    "run_id": "098f7358",
+    "finished_at": "2026-03-20T12:07:23.705799",
+    "ok": true,
+    "route": "project",
+    "model": "qwen3:8b",
+    "answer_len": 3473
+  },
+  {
+    "run_id": "d41009cf",
+    "finished_at": "2026-03-20T12:07:54.431651",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 295
+  },
+  {
+    "run_id": "aa8ae57b",
+    "finished_at": "2026-03-20T12:08:42.509653",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 232
+  },
+  {
+    "run_id": "9bbb41d5",
+    "finished_at": "2026-03-20T12:13:32.529068",
+    "ok": true,
+    "route": "research",
+    "model": "qwen3:8b",
+    "answer_len": 516
   }
 ]
