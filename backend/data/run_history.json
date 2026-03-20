@@ -110,5 +110,45 @@
     "route": "research",
     "model": "qwen2.5-coder:7b",
     "answer_len": 1805
+  },
+  {
+    "run_id": "b0d33fa7",
+    "finished_at": "2026-03-20T00:09:50.614290",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 761
+  },
+  {
+    "run_id": "186c22d8",
+    "finished_at": "2026-03-20T00:18:18.269865",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 1196
+  },
+  {
+    "run_id": "26ea9d8b",
+    "finished_at": "2026-03-20T00:18:57.311461",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 1207
+  },
+  {
+    "run_id": "bece70dc",
+    "finished_at": "2026-03-20T00:19:37.064801",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 1528
+  },
+  {
+    "run_id": "de8d30a8",
+    "finished_at": "2026-03-20T00:21:06.494673",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 751
   }
 ]

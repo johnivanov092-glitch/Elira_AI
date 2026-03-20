@@ -42,6 +42,7 @@ function parseInline(text, keyPrefix = "il") {
     { re: /`([^`]+)`/, render: (m, k) => <code key={k} className="md-inline-code">{m[1]}</code> },
     { re: /\*\*(.+?)\*\*/, render: (m, k) => <strong key={k}>{m[1]}</strong> },
     { re: /\*(.+?)\*/, render: (m, k) => <em key={k}>{m[1]}</em> },
+    { re: /!\[([^\]]*)\]\(([^)]+)\)/, render: (m, k) => <img key={k} src={m[2]} alt={m[1]} style={{maxWidth:"100%",borderRadius:8,marginTop:8,marginBottom:8}} loading="lazy" /> },
     { re: /\[([^\]]+)\]\(([^)]+)\)/, render: (m, k) => <a key={k} href={m[2]} target="_blank" rel="noopener noreferrer" className="md-link">{m[1]}</a> },
   ];
   while (remaining.length > 0) {

@@ -128,13 +128,14 @@ def _maybe_auto_exec_python(user_input, answer, timeline):
 
 
 def _run_auto_skills(user_input: str) -> str:
-    """Авто-детект скиллов по ключевым словам. Возвращает результат для контекста."""
+    """Авто-детект ВСЕХ скиллов по ключевым словам в чате."""
     import re as _re
     ql = user_input.lower()
     parts = []
-
-    # HTTP/API: "GET https://...", "запрос к API ...", "fetch url ..."
     url_match = _re.search(r"(https?://\S+)", user_input)
+    API_BASE = "http://127.0.0.1:8000"
+
+    # ─── 🌐 HTTP/API ───
     http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
     if url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
         try:
@@ -150,48 +151,326 @@ def _run_auto_skills(user_input: str) -> str:
         except Exception as e:
             parts.append(f"HTTP ошибка: {e}")
 
-    # SQL: "покажи таблицы", "запрос к базе", "SELECT ..."
-    sql_triggers = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу", "select ", "покажи записи"]
+    # ─── 🗄 SQL ───
+    sql_triggers = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу", "select ", "покажи записи", "покажи данные из"]
     if any(t in ql for t in sql_triggers):
         try:
             from app.services.skills_service import list_databases, describe_db, run_sql
-            # Если есть SELECT — выполняем
             sql_match = _re.search(r"(SELECT\s+.+)", user_input, _re.IGNORECASE)
             if sql_match:
                 dbs = list_databases()
                 if dbs.get("databases"):
-                    db_path = dbs["databases"][0]["path"]
-                    result = run_sql(db_path, sql_match.group(1), max_rows=20)
+                    result = run_sql(dbs["databases"][0]["path"], sql_match.group(1), max_rows=20)
                     if result.get("ok"):
                         parts.append(f"SQL результат ({result.get('count',0)} строк):\n{json.dumps(result.get('rows',[]), ensure_ascii=False, indent=2)[:3000]}")
             else:
-                # Показываем список баз и таблиц
                 dbs = list_databases()
                 if dbs.get("databases"):
                     lines = ["Доступные базы данных:"]
                     for db in dbs["databases"]:
                         desc = describe_db(db["path"])
-                        tables = desc.get("tables", {})
-                        lines.append(f"\n📁 {db['name']} ({db['size']} байт):")
-                        for tbl, info in tables.items():
+                        for tbl, info in desc.get("tables", {}).items():
                             cols = ", ".join(c["name"] for c in info["columns"])
-                            lines.append(f"  • {tbl} ({info['rows']} строк): {cols}")
+                            lines.append(f"  📁 {db['name']} → {tbl} ({info['rows']} строк): {cols}")
                     parts.append("\n".join(lines))
         except Exception as e:
             parts.append(f"SQL ошибка: {e}")
 
-    # Скриншот: "скриншот сайта ...", "покажи как выглядит ..."
+    # ─── 🖼 Скриншот ───
     screenshot_triggers = ["скриншот", "screenshot", "покажи как выглядит", "сделай снимок"]
     if url_match and any(t in ql for t in screenshot_triggers):
         try:
             from app.services.skills_service import screenshot_url
             result = screenshot_url(url_match.group(1))
             if result.get("ok"):
-                parts.append(f"Скриншот {result.get('title','')}: {result.get('view_url','')}")
+                parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:Скриншот {result.get('title','')}")
             else:
                 parts.append(f"Скриншот ошибка: {result.get('error')}")
         except Exception as e:
             parts.append(f"Скриншот ошибка: {e}")
+
+    # ─── 🎨 Генерация картинок ───
+    img_triggers = ["нарисуй", "нарисуй мне", "сгенерируй картинк", "сгенерируй изображен",
+                    "создай картинк", "создай изображен", "generate image", "draw me",
+                    "сделай картинк", "покажи картинк", "нарисовать"]
+    if any(t in ql for t in img_triggers):
+        try:
+            from app.services.image_gen import generate_image
+            prompt = user_input
+            for t in img_triggers:
+                idx = ql.find(t)
+                if idx >= 0:
+                    prompt = user_input[idx + len(t):].strip().strip(":").strip()
+                    break
+            if not prompt or len(prompt) < 3:
+                prompt = user_input
+            result = generate_image(prompt=prompt, width=768, height=768, steps=4)
+            if result.get("ok"):
+                parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:{prompt}")
+            else:
+                parts.append(f"Ошибка генерации: {result.get('error')}")
+        except ImportError:
+            parts.append("Для картинок: pip install diffusers transformers accelerate torch sentencepiece protobuf")
+        except Exception as e:
+            parts.append(f"Ошибка генерации: {e}")
+
+    # ─── 📝 Word генерация ───
+    word_triggers = ["создай документ", "создай отчёт", "создай отчет", "сделай документ", "сделай отчёт",
+                     "напиши в word", "создай word", "создай docx", "сгенерируй документ",
+                     "сохрани в word", "экспортируй в word"]
+    if any(t in ql for t in word_triggers):
+        try:
+            from app.services.skills_service import generate_word
+            # Извлекаем содержимое после триггера
+            content = user_input
+            for t in word_triggers:
+                idx = ql.find(t)
+                if idx >= 0:
+                    content = user_input[idx + len(t):].strip().strip(":").strip()
+                    break
+            title = content.split("\n")[0][:80] if content else "Документ Jarvis"
+            result = generate_word(title, content)
+            if result.get("ok"):
+                parts.append(f"FILE_GENERATED:word:{result.get('download_url','')}:{result.get('filename','')}")
+            else:
+                parts.append(f"Word ошибка: {result.get('error')}")
+        except Exception as e:
+            parts.append(f"Word ошибка: {e}")
+
+    # ─── 📝 Excel генерация ───
+    excel_triggers = ["создай таблицу", "создай excel", "создай xlsx", "сделай таблицу",
+                      "сохрани в excel", "экспортируй в excel"]
+    if any(t in ql for t in excel_triggers):
+        parts.append("SKILL_HINT: Пользователь хочет Excel. Сгенерируй данные в формате таблицы, потом их можно экспортировать.")
+
+    # ─── 🌍 Переводчик ───
+    translate_triggers = ["переведи на ", "переведи в ", "translate to ", "перевод на ", "переведи текст"]
+    for t in translate_triggers:
+        if t in ql:
+            try:
+                after = user_input[ql.find(t) + len(t):].strip()
+                lang_text = after.split(":", 1) if ":" in after else after.split(" ", 1)
+                target_lang = lang_text[0].strip() if lang_text else "english"
+                text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
+                if text_to_translate and len(text_to_translate) > 2:
+                    from app.services.skills_extra import translate_text
+                    result = translate_text(text_to_translate, target_lang)
+                    if result.get("ok"):
+                        parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
+            except Exception as e:
+                parts.append(f"Ошибка перевода: {e}")
+            break
+
+    # ─── 🔐 Шифрование ───
+    if any(t in ql for t in ["зашифруй", "шифрование", "encrypt"]):
+        try:
+            from app.services.skills_extra import encrypt_text
+            text = user_input
+            for t in ["зашифруй:", "зашифруй ", "encrypt:", "encrypt "]:
+                idx = ql.find(t)
+                if idx >= 0:
+                    text = user_input[idx + len(t):].strip()
+                    break
+            if text and len(text) > 1:
+                result = encrypt_text(text)
+                if result.get("ok"):
+                    parts.append(f"🔐 Зашифровано:\n`{result.get('encrypted','')}`\n\nДля расшифровки скажи: расшифруй [токен]")
+        except Exception as e:
+            parts.append(f"Ошибка шифрования: {e}")
+
+    if any(t in ql for t in ["расшифруй", "дешифруй", "decrypt"]):
+        try:
+            from app.services.skills_extra import decrypt_text
+            token = user_input
+            for t in ["расшифруй:", "расшифруй ", "decrypt:", "decrypt ", "дешифруй "]:
+                idx = ql.find(t)
+                if idx >= 0:
+                    token = user_input[idx + len(t):].strip()
+                    break
+            if token:
+                result = decrypt_text(token)
+                if result.get("ok"):
+                    parts.append(f"🔓 Расшифровано: {result.get('decrypted','')}")
+                else:
+                    parts.append(f"Ошибка: {result.get('error','')}")
+        except Exception as e:
+            parts.append(f"Ошибка: {e}")
+
+    # ─── 📦 Архиватор ───
+    zip_triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
+    if any(t in ql for t in zip_triggers):
+        try:
+            from app.services.skills_extra import create_zip
+            path = user_input
+            for t in zip_triggers:
+                idx = ql.find(t)
+                if idx >= 0:
+                    path = user_input[idx + len(t):].strip().strip(":").strip()
+                    break
+            if path:
+                result = create_zip(path)
+                if result.get("ok"):
+                    parts.append(f"FILE_GENERATED:zip:{result.get('download_url','')}:{result.get('filename','')}")
+                else:
+                    parts.append(f"Архив ошибка: {result.get('error')}")
+        except Exception as e:
+            parts.append(f"Архив ошибка: {e}")
+
+    unzip_triggers = ["распакуй", "разархивируй", "извлеки архив"]
+    if any(t in ql for t in unzip_triggers):
+        try:
+            from app.services.skills_extra import extract_zip
+            path = user_input
+            for t in unzip_triggers:
+                idx = ql.find(t)
+                if idx >= 0:
+                    path = user_input[idx + len(t):].strip().strip(":").strip()
+                    break
+            if path:
+                result = extract_zip(path)
+                if result.get("ok"):
+                    parts.append(f"📦 Распаковано в {result.get('dest','')}: {result.get('count',0)} файлов")
+        except Exception as e:
+            parts.append(f"Распаковка ошибка: {e}")
+
+    # ─── 🔄 Конвертер ───
+    convert_triggers = ["конвертируй", "преобразуй", "конвертировать", "convert "]
+    if any(t in ql for t in convert_triggers):
+        try:
+            from app.services.skills_extra import convert_file
+            # Парсим: "конвертируй data.csv в xlsx"
+            match = _re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, _re.IGNORECASE)
+            if not match:
+                match = _re.search(r"(\S+\.\w+)\s+to\s+(\w+)", user_input, _re.IGNORECASE)
+            if match:
+                result = convert_file(match.group(1), match.group(2))
+                if result.get("ok"):
+                    parts.append(f"FILE_GENERATED:convert:{result.get('download_url','')}:{result.get('filename','')}")
+                else:
+                    parts.append(f"Конвертация ошибка: {result.get('error')}")
+        except Exception as e:
+            parts.append(f"Конвертация ошибка: {e}")
+
+    # ─── 📐 Regex ───
+    regex_triggers = ["проверь regex", "тест regex", "regex тест", "test regex", "регулярка", "регулярное выражение"]
+    if any(t in ql for t in regex_triggers):
+        try:
+            from app.services.skills_extra import test_regex
+            # Парсим: "проверь regex \d+ на строке abc123def"
+            match = _re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, _re.IGNORECASE)
+            if not match:
+                match = _re.search(r"регуляр\S*[:\s]+(.+?)\s+(?:на|в|for)[:\s]+(.+)", user_input, _re.IGNORECASE)
+            if match:
+                result = test_regex(match.group(1).strip(), match.group(2).strip())
+                if result.get("ok"):
+                    matches = result.get("matches", [])
+                    parts.append(f"📐 Regex `{match.group(1).strip()}`: {result.get('count',0)} совпадений\n" +
+                                 "\n".join(f"  • `{m['match']}` (позиция {m['start']}-{m['end']})" for m in matches[:10]))
+        except Exception as e:
+            parts.append(f"Regex ошибка: {e}")
+
+    # ─── 📈 CSV анализ ───
+    csv_triggers = ["проанализируй csv", "анализ csv", "статистика csv", "analyze csv", "проанализируй файл", "покажи статистику"]
+    if any(t in ql for t in csv_triggers):
+        try:
+            from app.services.skills_extra import analyze_csv
+            # Ищем имя файла
+            file_match = _re.search(r"(\S+\.csv)", user_input, _re.IGNORECASE)
+            if file_match:
+                result = analyze_csv(file_match.group(1))
+                if result.get("ok"):
+                    shape = result.get("shape", {})
+                    desc = result.get("describe", {})
+                    parts.append(f"📈 CSV: {result.get('filename','')} — {shape.get('rows',0)} строк × {shape.get('columns',0)} колонок\n"
+                                 f"Колонки: {', '.join(result.get('columns',[]))}\n"
+                                 f"Пустые: {json.dumps(result.get('nulls',{}), ensure_ascii=False)}\n"
+                                 f"Статистика: {json.dumps(desc, ensure_ascii=False, indent=2)[:2000]}")
+        except Exception as e:
+            parts.append(f"CSV ошибка: {e}")
+
+    # ─── 📡 Webhook ───
+    webhook_triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
+    if any(t in ql for t in webhook_triggers):
+        try:
+            from app.services.skills_extra import list_webhooks
+            result = list_webhooks(10)
+            items = result.get("items", [])
+            if items:
+                lines = [f"📡 Webhook ({len(items)} последних):"]
+                for w in items[-5:]:
+                    lines.append(f"  • [{w.get('source','')}] {w.get('received_at','')} — {json.dumps(w.get('data',{}), ensure_ascii=False)[:200]}")
+                parts.append("\n".join(lines))
+            else:
+                parts.append("📡 Вебхуки пусты. Отправь POST на /api/extra/webhook/{source}")
+        except Exception as e:
+            parts.append(f"Webhook ошибка: {e}")
+
+    # ─── 🔌 Плагины ───
+    plugin_triggers = ["список плагинов", "покажи плагины", "plugins list"]
+    if any(t in ql for t in plugin_triggers):
+        try:
+            from app.services.plugin_system import list_plugins
+            result = list_plugins()
+            plugins = result.get("plugins", [])
+            if plugins:
+                lines = [f"🔌 Плагины ({len(plugins)}):"]
+                for p in plugins:
+                    lines.append(f"  • {p['name']} — {p.get('description','')}")
+                parts.append("\n".join(lines))
+            else:
+                parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
+        except Exception as e:
+            parts.append(f"Плагины ошибка: {e}")
+
+    run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
+    if any(t in ql for t in run_plugin_triggers):
+        try:
+            from app.services.plugin_system import run_plugin
+            name_match = _re.search(r"плагин\s+(\S+)", user_input, _re.IGNORECASE)
+            if not name_match:
+                name_match = _re.search(r"plugin\s+(\S+)", user_input, _re.IGNORECASE)
+            if name_match:
+                result = run_plugin(name_match.group(1))
+                parts.append(f"🔌 Плагин {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
+        except Exception as e:
+            parts.append(f"Плагин ошибка: {e}")
+
+    # ─── 📑 PDF Pro ───
+    pdf_word_triggers = ["конвертируй pdf в word", "pdf в word", "pdf to word", "pdf в docx"]
+    if any(t in ql for t in pdf_word_triggers):
+        parts.append("SKILL_HINT: Для конвертации PDF→Word загрузи PDF файл и скажи 'конвертируй в word'. Или используй API: POST /api/pdf/to-word")
+
+    pdf_table_triggers = ["извлеки таблицы из pdf", "таблицы из pdf", "pdf таблицы в excel"]
+    if any(t in ql for t in pdf_table_triggers):
+        parts.append("SKILL_HINT: Для извлечения таблиц загрузи PDF файл. Или используй API: POST /api/pdf/tables")
+
+    # ─── 🎨 GPU статус ───
+    gpu_triggers = ["статус gpu", "gpu status", "сколько vram", "видеопамять"]
+    if any(t in ql for t in gpu_triggers):
+        try:
+            from app.services.image_gen import get_status
+            result = get_status()
+            parts.append(f"🖥 GPU: {result.get('gpu','?')}\n"
+                         f"VRAM: {result.get('vram_used_mb',0)} / {result.get('vram_total_mb',0)} MB\n"
+                         f"Модель загружена: {'да' if result.get('loaded') else 'нет'}")
+        except Exception as e:
+            parts.append(f"GPU: {e}")
+
+    # ─── 📊 Сгенерированные файлы ───
+    files_triggers = ["покажи файлы", "список файлов", "сгенерированные файлы", "мои файлы"]
+    if any(t in ql for t in files_triggers):
+        try:
+            from pathlib import Path as _P
+            gen_dir = _P("data/generated")
+            if gen_dir.exists():
+                files = sorted(gen_dir.iterdir())[-10:]
+                if files:
+                    lines = ["📊 Последние файлы:"]
+                    for f in files:
+                        lines.append(f"  • [{f.name}]({API_BASE}/api/skills/download/{f.name}) ({f.stat().st_size} байт)")
+                    parts.append("\n".join(lines))
+        except Exception:
+            pass
 
     return "\n\n".join(parts)
 
@@ -206,8 +485,40 @@ def _build_prompt(user_input, context_bundle):
     day_name = days_ru.get(now.strftime("%A"), now.strftime("%A"))
     time_line = f"Сейчас: {now.strftime('%d.%m.%Y, %H:%M')}, {day_name}."
 
-    # Авто-скиллы: добавляем результат если триггер сработал
+    # Авто-скиллы
     skill_results = _run_auto_skills(user_input)
+
+    # Отделяем картинки/файлы — они не идут в LLM контекст, а добавляются к ответу
+    _pending_attachments.clear()
+    if skill_results:
+        clean_parts = []
+        for line in skill_results.split("\n\n"):
+            if line.startswith("IMAGE_GENERATED:"):
+                # IMAGE_GENERATED:view_url:filename:prompt
+                p = line.split(":", 4)
+                if len(p) >= 4:
+                    _pending_attachments.append({
+                        "type": "image",
+                        "view_url": p[1] + ":" + p[2] if "http" in p[1] else p[1],
+                        "filename": p[2] if "http" not in p[1] else p[3],
+                        "prompt": p[-1],
+                    })
+            elif line.startswith("FILE_GENERATED:"):
+                # FILE_GENERATED:type:download_url:filename
+                p = line.split(":", 4)
+                if len(p) >= 4:
+                    _pending_attachments.append({
+                        "type": "file",
+                        "file_type": p[1],
+                        "download_url": p[2] + ":" + p[3] if "http" in p[2] else p[2],
+                        "filename": p[3] if "http" not in p[2] else p[4] if len(p) > 4 else p[3],
+                    })
+            elif line.startswith("SKILL_HINT:"):
+                clean_parts.append(line)  # подсказки для LLM оставляем
+            else:
+                clean_parts.append(line)
+        skill_results = "\n\n".join(clean_parts)
+
     if skill_results:
         context_bundle = (context_bundle + "\n\n" + skill_results) if context_bundle.strip() else skill_results
 
@@ -223,6 +534,29 @@ def _build_prompt(user_input, context_bundle):
         "Если в данных есть конкретные цифры, ссылки или факты — приведи их. "
         "Не говори что данных нет, если они есть выше."
     )
+
+
+# Хранилище для вложений (картинки, файлы) которые добавляются ПОСЛЕ ответа LLM
+_pending_attachments: list[dict] = []
+
+
+def _get_and_clear_attachments() -> str:
+    """Возвращает markdown-блок с картинками/файлами и очищает очередь."""
+    if not _pending_attachments:
+        return ""
+    api_base = "http://127.0.0.1:8000"
+    parts = []
+    for att in _pending_attachments:
+        if att["type"] == "image":
+            url = att["view_url"] if att["view_url"].startswith("http") else f"{api_base}{att['view_url']}"
+            dl = f"{api_base}/api/skills/download/{att.get('filename', '')}"
+            parts.append(f"\n\n🎨 **Сгенерировано:**\n\n![{att.get('prompt','')}]({url})\n\n📥 [Скачать]({dl})")
+        elif att["type"] == "file":
+            dl = att["download_url"] if att["download_url"].startswith("http") else f"{api_base}{att['download_url']}"
+            icon = {"word": "📄", "zip": "📦", "convert": "🔄", "excel": "📊"}.get(att.get("file_type", ""), "📎")
+            parts.append(f"\n\n{icon} **Файл создан:** [{att.get('filename', '')}]({dl})")
+    _pending_attachments.clear()
+    return "\n".join(parts)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -529,6 +863,11 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
             ref = run_reflection_loop(model_name=model_name, profile_name=profile_name, user_input=user_input, draft_text=answer, review_text="Улучши.", context=ctx)
             answer = ref.get("answer") or answer
 
+        # Добавляем вложения (картинки, файлы)
+        attachments = _get_and_clear_attachments()
+        if attachments:
+            answer += attachments
+
         result = {"ok": True, "answer": answer, "timeline": timeline, "tool_results": tool_results, "meta": {"model_name": model_name, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}}
         _HISTORY.finish_run(run["run_id"], result)
         return result
@@ -600,6 +939,11 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
             full_text = _maybe_auto_exec_python(user_input, full_text, timeline)
         except Exception:
             pass
+
+        # Добавляем вложения (картинки, файлы)
+        attachments = _get_and_clear_attachments()
+        if attachments:
+            full_text += attachments
 
         meta = {"model_name": model_name, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
         _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
