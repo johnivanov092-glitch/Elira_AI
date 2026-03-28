@@ -109,8 +109,11 @@ ALLOWED_DB_DIRS = [Path("data").resolve(), Path("backend/data").resolve()]
 def _safe_db(db_path: str) -> Path:
     p = Path(db_path).resolve()
     for d in ALLOWED_DB_DIRS:
-        if str(p).startswith(str(d)):
+        try:
+            p.relative_to(d)
             return p
+        except ValueError:
+            continue
     raise ValueError(f"Запрещено: {db_path}. Только data/")
 
 
@@ -166,8 +169,9 @@ def describe_db(db_path: str) -> dict:
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
         schema = {}
         for (tbl,) in tables:
-            cols = conn.execute(f"PRAGMA table_info({tbl})").fetchall()
-            cnt = conn.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+            safe_tbl = '"' + tbl.replace('"', '""') + '"'
+            cols = conn.execute(f"PRAGMA table_info({safe_tbl})").fetchall()
+            cnt = conn.execute(f"SELECT COUNT(*) FROM {safe_tbl}").fetchone()[0]
             schema[tbl] = {"columns": [{"name": c[1], "type": c[2], "pk": bool(c[5])} for c in cols], "rows": cnt}
         conn.close()
         return {"ok": True, "tables": schema}

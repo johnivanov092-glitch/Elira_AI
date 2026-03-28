@@ -162,6 +162,6 @@ Active development. Core features working. Architecture evolving.
 ## Author
 
 **Evgeny Ivanov** — Infrastructure & Automation Engineer  
-Almaty, Kazakhstan · [LinkedIn](https://linkedin.com/in/evgeny-ivanov-infra) · [GitHub](https://github.com/johnivanov092-glitch)
+Almaty, Kazakhstan · [LinkedIn](https://www.linkedin.com/in/evgeny-ivanov-infra/) · [GitHub](https://github.com/johnivanov092-glitch)
 
 > Open to remote international roles in infrastructure, platform engineering, automation, and AI infrastructure.

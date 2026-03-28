@@ -4,10 +4,11 @@
  */
 import { useState, useEffect } from "react";
 
-const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
 async function fetchJson(path, options = {}) {
   const resp = await fetch(`${API}${path}`, { headers: { "Content-Type": "application/json" }, ...options });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
 }
 
@@ -20,11 +21,12 @@ export default function ProjectPanel() {
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     fetchJson("/api/advanced/project/info").then(d => {
       if (d.ok) { setProject(d); loadTree(); }
-    }).catch(() => {});
+    }).catch((e) => { setError("Не удалось загрузить проект: " + (e.message || "")); });
   }, []);
 
   async function openProject() {
@@ -117,8 +119,8 @@ export default function ProjectPanel() {
           {searchResults.length > 0 ? (
             <div>
               <div style={{ padding: "4px 12px", fontSize: 10, color: "var(--text-muted)" }}>Результаты: {searchResults.length}</div>
-              {searchResults.map((r, i) => (
-                <button key={i} onClick={() => readFile(r.path)} style={treeItem(selectedFile === r.path)}>
+              {searchResults.map((r) => (
+                <button key={`${r.path}:${r.line}`} onClick={() => readFile(r.path)} style={treeItem(selectedFile === r.path)}>
                   <span style={{ fontSize: 10 }}>📍</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11 }}>{r.path}</div>
@@ -131,8 +133,8 @@ export default function ProjectPanel() {
           ) : (
             <>
               <div style={{ padding: "4px 12px", fontSize: 10, color: "var(--text-muted)" }}>{files.length} файлов, {dirs.length} папок</div>
-              {tree.map((item, i) => (
-                <button key={i} onClick={() => item.type === "file" && readFile(item.path)} style={treeItem(selectedFile === item.path)} disabled={item.type === "dir"}>
+              {tree.map((item) => (
+                <button key={item.path} onClick={() => item.type === "file" && readFile(item.path)} style={treeItem(selectedFile === item.path)} disabled={item.type === "dir"}>
                   <span style={{ fontSize: 10, opacity: 0.6 }}>{item.type === "dir" ? "📁" : iconFor(item.ext)}</span>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: item.type === "dir" ? "var(--text-muted)" : "var(--text-primary)", paddingLeft: item.path.split("/").length > 1 ? (item.path.split("/").length - 1) * 8 : 0 }}>{item.name}</span>
                 </button>

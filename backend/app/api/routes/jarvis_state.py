@@ -37,8 +37,9 @@ class ChatMessageRequest(BaseModel):
 
 class SettingsRequest(BaseModel):
     ollama_context: int = 8192
-    default_model: str = "qwen3:8b"
-    agent_profile: str = "Сбалансированный"
+    default_model: str = "gemma3:4b"
+    agent_profile: str = "Универсальный"
+    route_model_map: dict | None = None
 
 
 @router.on_event("startup")
@@ -64,6 +65,7 @@ def settings_put(payload: SettingsRequest):
         payload.ollama_context,
         payload.default_model,
         payload.agent_profile,
+        payload.route_model_map,
     )
 
 

@@ -34,19 +34,21 @@ def _conn():
 
 def _init():
     c = _conn()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS rag_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            text TEXT NOT NULL,
-            category TEXT DEFAULT 'fact',
-            embedding TEXT DEFAULT '',
-            importance INTEGER DEFAULT 5,
-            access_count INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    c.commit()
-    c.close()
+    try:
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS rag_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                category TEXT DEFAULT 'fact',
+                embedding TEXT DEFAULT '',
+                importance INTEGER DEFAULT 5,
+                access_count INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.commit()
+    finally:
+        c.close()
 
 _init()
 
@@ -98,13 +100,15 @@ def add_to_rag(text: str, category: str = "fact", importance: int = 5) -> dict:
     emb_json = json.dumps(embedding) if embedding else ""
 
     c = _conn()
-    cur = c.execute(
-        "INSERT INTO rag_items (text, category, embedding, importance) VALUES (?, ?, ?, ?)",
-        (text, category, emb_json, importance)
-    )
-    item_id = cur.lastrowid
-    c.commit()
-    c.close()
+    try:
+        cur = c.execute(
+            "INSERT INTO rag_items (text, category, embedding, importance) VALUES (?, ?, ?, ?)",
+            (text, category, emb_json, importance)
+        )
+        item_id = cur.lastrowid
+        c.commit()
+    finally:
+        c.close()
 
     return {"ok": True, "id": item_id, "has_embedding": bool(embedding)}
 
@@ -118,8 +122,10 @@ def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
     query_emb = _get_embedding(query)
 
     c = _conn()
-    rows = c.execute("SELECT * FROM rag_items ORDER BY importance DESC").fetchall()
-    c.close()
+    try:
+        rows = c.execute("SELECT * FROM rag_items ORDER BY importance DESC").fetchall()
+    finally:
+        c.close()
 
     if not rows:
         return {"ok": True, "items": [], "count": 0}
@@ -158,10 +164,12 @@ def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
     # Обновляем access_count
     if items:
         c = _conn()
-        for item in items:
-            c.execute("UPDATE rag_items SET access_count = access_count + 1 WHERE id = ?", (item["id"],))
-        c.commit()
-        c.close()
+        try:
+            for item in items:
+                c.execute("UPDATE rag_items SET access_count = access_count + 1 WHERE id = ?", (item["id"],))
+            c.commit()
+        finally:
+            c.close()
 
     return {"ok": True, "items": items, "count": len(items), "method": "embedding" if query_emb else "keyword"}
 
@@ -187,22 +195,28 @@ def get_rag_context(query: str, max_items: int = 5, max_chars: int = 2000) -> st
 
 def list_rag(limit: int = 50) -> dict:
     c = _conn()
-    rows = c.execute("SELECT id, text, category, importance, access_count, created_at FROM rag_items ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-    c.close()
+    try:
+        rows = c.execute("SELECT id, text, category, importance, access_count, created_at FROM rag_items ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        c.close()
     return {"ok": True, "items": [dict(r) for r in rows], "count": len(rows)}
 
 
 def delete_rag(item_id: int) -> dict:
     c = _conn()
-    c.execute("DELETE FROM rag_items WHERE id = ?", (item_id,))
-    c.commit()
-    c.close()
+    try:
+        c.execute("DELETE FROM rag_items WHERE id = ?", (item_id,))
+        c.commit()
+    finally:
+        c.close()
     return {"ok": True}
 
 
 def rag_stats() -> dict:
     c = _conn()
-    total = c.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0]
-    with_emb = c.execute("SELECT COUNT(*) FROM rag_items WHERE embedding != ''").fetchone()[0]
-    c.close()
+    try:
+        total = c.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0]
+        with_emb = c.execute("SELECT COUNT(*) FROM rag_items WHERE embedding != ''").fetchone()[0]
+    finally:
+        c.close()
     return {"ok": True, "total": total, "with_embeddings": with_emb, "model": EMBED_MODEL}

@@ -144,7 +144,7 @@ export async function execute(body = {}) {
   const response = await request("/api/chat/send", {
     method: "POST",
     body: {
-      model_name: body.model_name ?? body.model ?? "qwen3:8b",
+      model_name: body.model_name ?? body.model ?? "gemma3:4b",
       profile_name: body.profile_name ?? body.profile ?? "default",
       user_input: String(body.user_input ?? body.message ?? body.prompt ?? body.text ?? body.query ?? "").trim(),
       history: Array.isArray(body.history) ? body.history : [],
@@ -179,10 +179,11 @@ export function executeStream(body = {}, { onToken, onDone, onError, onPhase } =
   const controller = new AbortController();
 
   const payload = {
-    model_name: body.model_name ?? body.model ?? "qwen3:8b",
+    model_name: body.model_name ?? body.model ?? "gemma3:4b",
     profile_name: body.profile_name ?? body.profile ?? "default",
     user_input: String(body.user_input ?? body.message ?? "").trim(),
     history: Array.isArray(body.history) ? body.history : [],
+    num_ctx: body.num_ctx ?? 8192,
     use_memory: body.use_memory ?? true,
     use_library: body.use_library ?? true,
     use_reflection: body.use_reflection ?? false,
@@ -219,58 +220,62 @@ export function executeStream(body = {}, { onToken, onDone, onError, onPhase } =
       const decoder = new TextDecoder();
       let buffer = "";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(value, { stream: true });
 
-        // Парсим SSE-события из буфера
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || ""; // Неполная строка остаётся в буфере
+          // Парсим SSE-события из буфера
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // Неполная строка остаётся в буфере
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
 
-          try {
-            const event = JSON.parse(trimmed.slice(6));
+            try {
+              const event = JSON.parse(trimmed.slice(6));
 
-            if (event.error) {
-              onError?.(event.error);
-              return;
+              if (event.error) {
+                onError?.(event.error);
+                return;
+              }
+
+              if (event.phase && onPhase) {
+                onPhase(event);
+              }
+
+              // Reflection заменяет весь текст
+              if (event.phase === "reflection_replace" && event.full_text) {
+                onPhase?.(event);
+                continue;
+              }
+
+              if (event.token) {
+                onToken?.(event.token);
+              }
+
+              if (event.done) {
+                onDone?.({
+                  full_text: event.full_text || "",
+                  meta: event.meta || {},
+                  timeline: event.timeline || [],
+                });
+                return;
+              }
+            } catch (parseErr) {
+              console.warn("SSE parse error:", trimmed.slice(0, 100), parseErr);
             }
-
-            if (event.phase && onPhase) {
-              onPhase(event);
-            }
-
-            // Reflection заменяет весь текст
-            if (event.phase === "reflection_replace" && event.full_text) {
-              onPhase?.(event);
-              continue;
-            }
-
-            if (event.token) {
-              onToken?.(event.token);
-            }
-
-            if (event.done) {
-              onDone?.({
-                full_text: event.full_text || "",
-                meta: event.meta || {},
-                timeline: event.timeline || [],
-              });
-              return;
-            }
-          } catch {
-            // Пропускаем битые строки
           }
         }
-      }
 
-      // Если стрим закончился без done-пакета
-      onDone?.({ full_text: "", meta: {}, timeline: [] });
+        // Если стрим закончился без done-пакета
+        onDone?.({ full_text: "", meta: {}, timeline: [] });
+      } finally {
+        reader.cancel().catch(() => {});
+      }
     })
     .catch((err) => {
       if (err.name === "AbortError") return;
@@ -290,7 +295,9 @@ export async function listOllamaModels() {
 }
 
 export async function getSettings() { return safeRequest("/api/jarvis/settings", {}, {}); }
-export async function updateSettings(body = {}) { return request("/api/jarvis/settings", { method: "PUT", body }); }
+export async function updateSettings(body = {}) {
+  return request("/api/jarvis/settings", { method: "PUT", body });
+}
 export async function searchJarvis(query = "") { return normalizeArray(await safeRequest(`/api/jarvis/search?q=${encodeURIComponent(query)}`, {}, [])); }
 export async function listProjects() { return normalizeArray(await safeRequest("/api/jarvis/projects", {}, [])); }
 

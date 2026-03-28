@@ -7,7 +7,7 @@
  *   • Code tab работает как артефакты Claude
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { api, executeStream } from "../api/ide";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import MarkdownRenderer from "./MarkdownRenderer";
@@ -23,10 +23,9 @@ const MAX_HISTORY_PAIRS = 10;
 const PROFILE_DESCRIPTIONS = {
   "Универсальный": "Ясный, структурированный и профессиональный тон.",
   "Программист": "Код, исправления, архитектура, рефакторинг.",
-  "Оркестратор": "Планирование, multi-agent, пайплайны.",
   "Исследователь": "Факты, источники, web-поиск.",
   "Аналитик": "Выводы, риски, декомпозиция.",
-  "Сократ": "Обучение через вопросы.",
+  "Сократ": "Обучение через наводящие вопросы.",
 };
 
 const SKILLS = [
@@ -56,13 +55,21 @@ const SKILLS = [
 
 // Tauri window controls
 function loadJson(k, f) { try { return JSON.parse(localStorage.getItem(k) || JSON.stringify(f)); } catch { return f; } }
-function saveJson(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+function saveJson(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn("localStorage quota exceeded:", e); } }
 function loadLibraryFiles() { return loadJson(LIBRARY_KEY, []); }
 function saveLibraryFiles(i) { saveJson(LIBRARY_KEY, i); }
 function loadChatContextMap() { return loadJson(CHAT_CONTEXT_KEY, {}); }
 function saveChatContextMap(v) { saveJson(CHAT_CONTEXT_KEY, v); }
 function makeId(p = "id") { return `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
 function deriveChatTitle(t) { const c = String(t || "").trim().replace(/\s+/g, " "); return !c ? "Новый чат" : c.length > 28 ? `${c.slice(0, 28)}…` : c; }
+
+function shortModelName(name) {
+  if (!name) return "model";
+  // YandexGPT-5-Lite-8B-instruct-GGUF → YandexGPT
+  if (name.toLowerCase().includes("yandex")) return "YandexGPT";
+  // nemotron-mini → Nemotron Mini, etc.
+  return name;
+}
 
 function normalizeErrorMessage(e, fb = "Ошибка") {
   const v = e?.message ?? e?.detail ?? e;
@@ -87,7 +94,7 @@ async function fileToLibraryRecord(file) {
   let preview = "";
   const name = file.name || "";
   const ext = name.split(".").pop().toLowerCase();
-  const API_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+  const API_URL = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
   // Текстовые файлы — читаем на клиенте
   // UTF-8 файлы — читаем на клиенте
@@ -116,16 +123,28 @@ function getChatContextFiles(lib, chatId) {
 function buildHistory(msgs) { if (!msgs?.length) return []; const p = msgs.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ role: m.role, content: m.content || "" })); return p.length > MAX_HISTORY_PAIRS * 2 ? p.slice(-MAX_HISTORY_PAIRS * 2) : p; }
 
 
+// Мемоизированный компонент сообщения — не пере-рендерится при стриминге нового
+const MessageItem = React.memo(function MessageItem({ msg }) {
+  return (
+    <div className={`message-row ${msg.role}`}>
+      <div className="message-bubble smaller-text">
+        {msg.role === "assistant" ? <MarkdownRenderer content={msg.content}/> : msg.content}
+      </div>
+    </div>
+  );
+});
+
 export default function JarvisChatShell() {
   const fileRef = useRef(null);
   const msgRef = useRef(null);
   const taRef = useRef(null);
   const streamRef = useRef(null);
+  const stoppedRef = useRef(false);
   const initRef = useRef(false);
 
   const [mainTab, setMainTab] = useState("chat");
   const [sideTab, setSideTab] = useState("chats");
-  const [model, setModel] = useState("qwen3:8b");
+  const [model, setModel] = useState("gemma3:4b");
   const [modelOpts, setModelOpts] = useState([]);
   const [profile, setProfile] = useState("Универсальный");
   const [skills, setSkills] = useState(["web_search", "file_context", "memory", "pdf_reader", "python_exec", "code_analysis", "file_gen", "translator", "converter", "archiver", "http_api", "screenshot", "image_gen"]);
@@ -150,12 +169,47 @@ export default function JarvisChatShell() {
   const [lastInput, setLastInput] = useState("");
   const [lastModel, setLastModel] = useState("");
   const [chartData, setChartData] = useState(null);
+  const [ollamaContext, setOllamaContext] = useState(8192);
+  const [settingsModel, setSettingsModel] = useState("gemma3:4b");
+  const [settingsProfile, setSettingsProfile] = useState("Универсальный");
+  const [settingsContext, setSettingsContext] = useState(8192);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+  const [routeMap, setRouteMap] = useState({ code: [], project: [], research: [], chat: [] });
+  const [theme, setTheme] = useState(() => localStorage.getItem("jarvis_theme") || "dark");
 
-  const API_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+  const API_URL = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
-  useEffect(() => { init(); }, []);
-  useEffect(() => { msgRef.current && (msgRef.current.scrollTop = msgRef.current.scrollHeight); }, [messages, chatId, streamText]);
+  useEffect(() => { init(); return () => { if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; } }; }, []);
+  useEffect(() => { if (msgRef.current) msgRef.current.scrollTop = msgRef.current.scrollHeight; }, [messages, chatId]);
+  useEffect(() => { if (streaming && msgRef.current) { const id = requestAnimationFrame(() => { msgRef.current && (msgRef.current.scrollTop = msgRef.current.scrollHeight); }); return () => cancelAnimationFrame(id); } }, [streamText, streaming]);
   useEffect(() => { if (!taRef.current) return; taRef.current.style.height = "36px"; taRef.current.style.height = `${Math.min(120, taRef.current.scrollHeight)}px`; }, [input]);
+
+  // Тема: применяем к document
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("jarvis_theme", theme);
+  }, [theme]);
+
+  // Глобальные горячие клавиши
+  const workingRef = useRef(false);
+  workingRef.current = working;
+  useEffect(() => {
+    function onGlobalKey(e) {
+      // Ctrl+N — новый чат
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") { e.preventDefault(); newChat(false); }
+      // Escape — остановить стриминг
+      if (e.key === "Escape" && workingRef.current) {
+        e.preventDefault();
+        stoppedRef.current = true;
+        if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
+        setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
+      }
+      // Ctrl+Shift+T — переключить тему
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "T") { e.preventDefault(); setTheme(t => t === "dark" ? "light" : "dark"); }
+    }
+    window.addEventListener("keydown", onGlobalKey);
+    return () => window.removeEventListener("keydown", onGlobalKey);
+  }, []);
 
   // Sync library from SQLite backend on mount (optional)
   useEffect(() => {
@@ -163,11 +217,13 @@ export default function JarvisChatShell() {
       if (d?.ok && d.items?.length) {
         const ctxMap = loadChatContextMap();
         const activeIds = new Set(Object.values(ctxMap).flat());
-        const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite", use_in_context: activeIds.has(`db-${i.id}`)})), ...libraryFiles.filter(f => f.source !== "sqlite")];
-        const seen = new Set();
-        const unique = merged.filter(f => { const k = f.name + f.size; if (seen.has(k)) return false; seen.add(k); return true; });
-        setLibraryFiles(unique);
-        saveLibraryFiles(unique);
+        setLibraryFiles(prev => {
+          const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite", use_in_context: activeIds.has(`db-${i.id}`)})), ...prev.filter(f => f.source !== "sqlite")];
+          const seen = new Set();
+          const unique = merged.filter(f => { const k = f.name + f.size; if (seen.has(k)) return false; seen.add(k); return true; });
+          saveLibraryFiles(unique);
+          return unique;
+        });
       }
     }).catch(() => {});
   }, []);
@@ -184,15 +240,42 @@ export default function JarvisChatShell() {
     if (initRef.current) return;
     initRef.current = true;
     try {
-      const [m, c] = await Promise.all([api.listOllamaModels(), api.listChats()]);
+      const [m, c, settings] = await Promise.all([api.listOllamaModels(), api.listChats(), api.getSettings()]);
       const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
       setModelOpts(ml);
-      const pref = ml.find(i => (typeof i==="string"?i:(i.name||i.model||"")) === "qwen3:8b");
-      setModel(pref ? (typeof pref==="string"?pref:(pref.name||pref.model||"qwen3:8b")) : ml.length ? (typeof ml[0]==="string"?ml[0]:(ml[0].name||ml[0].model||"qwen3:8b")) : "qwen3:8b");
+
+      // Загружаем сохранённые настройки из backend
+      const savedModel = settings?.default_model || "gemma3:4b";
+      const savedProfile = settings?.agent_profile || "Универсальный";
+      const savedCtx = settings?.ollama_context || 8192;
+
+      // Устанавливаем модель из настроек (если доступна в Ollama)
+      const getName = i => typeof i === "string" ? i : (i.name || i.model || "");
+      const pref = ml.find(i => getName(i) === savedModel);
+      const chosenModel = pref ? getName(pref) : ml.length ? getName(ml[0]) : "gemma3:4b";
+      setModel(chosenModel);
+      setProfile(savedProfile);
+      setOllamaContext(savedCtx);
+
+      // Синхронизируем панель настроек
+      setSettingsModel(savedModel);
+      setSettingsProfile(savedProfile);
+      setSettingsContext(savedCtx);
+      if (settings?.route_model_map) setRouteMap(settings.route_model_map);
+
       if (c?.length) { setChats(c); }
       // Всегда новый чат при запуске
       const n = await newChat(true); if (n?.id) setMessages([]);
     } catch (e) { setError(normalizeErrorMessage(e)); }
+  }
+
+  async function refreshModels() {
+    try {
+      const m = await api.listOllamaModels();
+      const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
+      setModelOpts(ml);
+      return ml;
+    } catch { return []; }
   }
 
   async function loadChats(sel = "") { setChats(await api.listChats() || []); if (sel) setChatId(sel); }
@@ -255,7 +338,7 @@ export default function JarvisChatShell() {
     const text = input.trim();
     if (!text || !chatId || working) return;
     try {
-      setWorking(true); setStreaming(true); setStreamText(""); setError(""); setPhase("");
+      setWorking(true); setStreaming(true); setStreamText(""); setError(""); setPhase(""); stoppedRef.current = false;
       setLastInput(text); setLastModel(model);
       const userMsg = await api.addMessage({ chatId, role: "user", content: text });
       const nextMessages = [...messages, userMsg];
@@ -328,19 +411,23 @@ export default function JarvisChatShell() {
       // Обычный стриминг
       let fullText = "";
       const ctrl = executeStream(
-        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, history, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
+        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
           onToken(t) { fullText += t; setStreamText(fullText); setPhase(""); },
           onPhase(ev) {
             if (ev.phase === "reflection_replace" && ev.full_text) { fullText = ev.full_text; setStreamText(fullText); }
             else if (ev.message) { setPhase(ev.message); }
           },
-          async onDone({ full_text }) {
+          onDone({ full_text }) {
+            if (stoppedRef.current) return;
             const final = full_text || fullText;
-            try { const p = await api.addMessage({ chatId, role: "assistant", content: final }); setMessages(prev => [...prev, p]); }
-            catch { setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]); }
+            // Оптимистичное обновление — показываем сразу, сохраняем в фоне
+            const tempId = `a-${Date.now()}`;
+            setMessages(prev => [...prev, { id: tempId, role: "assistant", content: final }]);
             const _cd = detectTableInText(final); _cd ? setChartData(_cd) : setChartData(null);
             setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null;
+            // Фоновое сохранение в БД (не блокирует UI)
+            api.addMessage({ chatId, role: "assistant", content: final }).catch(() => {});
           },
           onError(msg) { setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null; },
         }
@@ -393,6 +480,7 @@ export default function JarvisChatShell() {
   }
   function toggleSkill(id) { setSkills(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]); }
   function handleStop() {
+    stoppedRef.current = true;
     if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
     if (streamText) {
       setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: streamText + "\n\n*[остановлено]*" }]);
@@ -429,7 +517,7 @@ export default function JarvisChatShell() {
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>
         <div className="sidebar-nav">
           {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["settings","⚙ Настройки"]].map(([k,l]) => (
-            <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => setSideTab(k)}>{l}</button>
+            <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => { setSideTab(k); if(k==="settings"){setSettingsModel(model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();} }}>{l}</button>
           ))}
         </div>
         <div className="sidebar-nav-item search-shell">
@@ -449,6 +537,10 @@ export default function JarvisChatShell() {
         {sideTab === "settings" && <div className="sidebar-empty">→ Центральное окно</div>}
         {sideTab === "library" && <div className="sidebar-empty">→ Центральное окно</div>}
         {sideTab === "project" && <div className="sidebar-empty">→ Центральное окно</div>}
+        <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <button onClick={()=>setTheme(t=>t==="dark"?"light":"dark")} style={{background:"none",border:"1px solid var(--border)",borderRadius:6,padding:"3px 8px",cursor:"pointer",color:"var(--text-muted)",fontSize:11}} title="Ctrl+Shift+T">{theme==="dark"?"☀ Светлая":"🌙 Тёмная"}</button>
+          <span style={{fontSize:9,color:"var(--text-muted)",opacity:0.5}}>Ctrl+N чат</span>
+        </div>
       </aside>
 
       <main className="jarvis-main">
@@ -466,7 +558,7 @@ export default function JarvisChatShell() {
             <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}{sideTab==="project"&&"Проект"}</div>
             {sideTab === "chats" && chatId && (
               <div className="chat-header-actions icon-actions" style={{display:"flex"}}>
-                <div className={`working-chip ${working?"active":""}`}>{working ? (phase || "⏳ Работает") : "○ Готов"}</div>
+                <div className={`working-chip ${working?"active":""}`}>{working ? (phase || "Думаю...") : "Готов"}</div>
                 <button className="soft-btn icon-btn" title="Экспорт MD" onClick={()=>exportChat("md")}>📋</button>
                 <button className="soft-btn icon-btn" title="Экспорт TXT" onClick={()=>exportChat("txt")}>📄</button>
                 <button className="soft-btn icon-btn" onClick={() => saveToMemory(chatId, chats.find(c=>c.id===chatId)?.memory_saved)}>🧠</button>
@@ -481,10 +573,89 @@ export default function JarvisChatShell() {
 
           {sideTab === "settings" ? (
             <div className="settings-main-card">
-              <div className="settings-tile-grid">
-                <div className="settings-tile"><div className="settings-title">Модель</div><select value={model} onChange={e=>setModel(e.target.value)} className="topbar-select full dark-select">{(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=typeof i==="string"?i:(i.name||i.model||"model");return <option key={n+idx} value={n}>{n}</option>})}</select></div>
-                <div className="settings-tile"><div className="settings-title">Профиль</div><select value={profile} onChange={e=>setProfile(e.target.value)} className="topbar-select full dark-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select><div className="settings-desc">{PROFILE_DESCRIPTIONS[profile]}</div></div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+                <div style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>Настройки по умолчанию</div>
+                <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={async()=>{const ml=await refreshModels();setError(ml.length?"":`Ollama недоступна`);}}>↻ Обновить модели ({modelOpts.length})</button>
               </div>
+              <div className="settings-desc" style={{marginBottom:14,fontSize:11}}>Сохранённые значения загружаются при каждом запуске Jarvis</div>
+              <div className="settings-tile-grid">
+                <div className="settings-tile">
+                  <div className="settings-title">Модель по умолчанию</div>
+                  <select value={settingsModel} onChange={e=>{setSettingsModel(e.target.value);setSettingsSaved(false);}} className="topbar-select full dark-select">
+                    {(modelOpts?.length?modelOpts:[{name:settingsModel}]).map((i,idx)=>{const n=typeof i==="string"?i:(i.name||i.model||"model");return <option key={n+idx} value={n}>{n}</option>})}
+                  </select>
+                </div>
+                <div className="settings-tile">
+                  <div className="settings-title">Контекст Ollama</div>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <input type="range" min={4096} max={262144} step={1024} value={settingsContext} onChange={e=>{setSettingsContext(Number(e.target.value));setSettingsSaved(false);}} style={{flex:1,accentColor:"var(--accent)"}}/>
+                    <span style={{fontSize:12,color:"var(--text-muted)",minWidth:50,textAlign:"right"}}>{settingsContext >= 1024 ? Math.round(settingsContext/1024)+"K" : settingsContext}</span>
+                  </div>
+                  <div className="settings-desc" style={{marginTop:4}}>Чем больше контекст — тем больше информации помещается, но медленнее генерация</div>
+                </div>
+                <div className="settings-tile">
+                  <div className="settings-title">Профиль по умолчанию</div>
+                  <select value={settingsProfile} onChange={e=>{setSettingsProfile(e.target.value);setSettingsSaved(false);}} className="topbar-select full dark-select">
+                    {Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <div className="settings-desc">{PROFILE_DESCRIPTIONS[settingsProfile]}</div>
+                </div>
+                <div className="settings-tile">
+                  <div className="settings-title">Тема оформления</div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button onClick={()=>setTheme("dark")} style={{flex:1,padding:"6px 12px",borderRadius:6,border:"1px solid "+(theme==="dark"?"var(--accent)":"var(--border)"),background:theme==="dark"?"var(--accent-dim)":"transparent",color:"var(--text-primary)",cursor:"pointer",fontSize:12}}>🌙 Тёмная</button>
+                    <button onClick={()=>setTheme("light")} style={{flex:1,padding:"6px 12px",borderRadius:6,border:"1px solid "+(theme==="light"?"var(--accent)":"var(--border)"),background:theme==="light"?"var(--accent-dim)":"transparent",color:"var(--text-primary)",cursor:"pointer",fontSize:12}}>☀️ Светлая</button>
+                  </div>
+                </div>
+                <div className="settings-tile" style={{gridColumn:"1 / -1"}}>
+                  <div className="settings-title">Оркестрация моделей</div>
+                  <div className="settings-desc" style={{marginBottom:8}}>Какая модель отвечает за какой тип задачи. Первая в списке — приоритетная.</div>
+                  {["code","project","research","chat"].map(route => {
+                    const routeLabels = {code:"Код",project:"Проект",research:"Исследование",chat:"Чат"};
+                    const routeDescs = {code:"Написание, review и отладка кода",project:"Работа с файлами проекта",research:"Поиск, анализ, факты",chat:"Обычные вопросы и диалог"};
+                    const current = routeMap[route] || [];
+                    const getName = i => typeof i === "string" ? i : (i.name || i.model || "");
+                    const allModels = (modelOpts?.length ? modelOpts : []).map(getName);
+                    return (
+                      <div key={route} style={{padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                          <div><span style={{fontWeight:600,fontSize:12}}>{routeLabels[route]}</span><span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{routeDescs[route]}</span></div>
+                        </div>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                          <select
+                            value={current[0] || ""}
+                            onChange={e=>{
+                              const val = e.target.value;
+                              const updated = {...routeMap, [route]: val ? [val, ...current.filter(m => m !== val)] : current};
+                              setRouteMap(updated);
+                              setSettingsSaved(false);
+                            }}
+                            className="topbar-select dark-select"
+                            style={{fontSize:11,padding:"3px 6px"}}
+                          >
+                            <option value="">— не задана —</option>
+                            {allModels.map(n=><option key={n} value={n}>{n}</option>)}
+                          </select>
+                          {current.length > 1 && <span style={{fontSize:10,color:"var(--text-muted)"}}>фоллбэк: {current.slice(1).join(" → ")}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="settings-desc" style={{marginTop:12,fontSize:10,color:"var(--text-muted)"}}>
+                Горячие клавиши: Ctrl+N новый чат · Escape стоп · Ctrl+Shift+T тема
+              </div>
+              <button
+                style={{marginTop:14,padding:"8px 24px",borderRadius:8,border:"1px solid var(--accent)",background:settingsSaved?"rgba(16,185,129,0.15)":"var(--accent)",color:settingsSaved?"#10b981":"#fff",cursor:"pointer",fontSize:13,fontWeight:600,transition:"all 0.2s"}}
+                onClick={async()=>{
+                  try {
+                    await api.updateSettings({ollama_context:settingsContext,default_model:settingsModel,agent_profile:settingsProfile,route_model_map:routeMap});
+                    setModel(settingsModel);setProfile(settingsProfile);setOllamaContext(settingsContext);
+                    setSettingsSaved(true);setTimeout(()=>setSettingsSaved(false),2000);
+                  } catch(e){setError(normalizeErrorMessage(e));}
+                }}
+              >{settingsSaved?"✓ Сохранено":"Сохранить"}</button>
               <div style={{marginTop:18}}><div className="settings-title" style={{marginBottom:8}}>Skills</div><div className="settings-desc" style={{marginBottom:10}}>Включи / выключи возможности</div>
                 <div className="skills-grid">{SKILLS.map(s=><button key={s.id} className={`skill-chip ${skills.includes(s.id)?"active":""}`} onClick={()=>toggleSkill(s.id)} title={s.desc}>{s.label}</button>)}</div>
               </div>
@@ -498,7 +669,6 @@ export default function JarvisChatShell() {
                 <button className="soft-btn" style={{fontSize:11,padding:"4px 10px",border:"1px solid var(--border)"}} onClick={()=>selectAllLib(false)}>✕ Убрать все</button>
                 <span style={{fontSize:10,color:"var(--text-muted)"}}>{ctxF.length} из {libraryFiles.length} в контексте</span>
               </div>
-              <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
               <div className="library-table">
                 <div className="library-table-row header"><div>Имя</div><div>Тип</div><div>Размер</div><div>Контекст</div><div></div></div>
                 {fLib.length ? fLib.map(i => <div key={i.id} className={`library-table-row ${selLibId===i.id?"active":""}`} onClick={()=>setSelLibId(i.id)}><div className="table-name">{i.name}</div><div>{i.type.split("/").pop()}</div><div>{Math.round(i.size/1024)||0}K</div><div><input type="checkbox" checked={chatId ? ctxF.some(f => f.id === i.id) : (i.use_in_context !== false)} onChange={e=>{e.stopPropagation();toggleCtx(i.id,e.target.checked);}}/></div><div><button className="mini-icon-btn" onClick={e=>{e.stopPropagation();removeLib(i.id);}}>✕</button></div></div>) : <div className="sidebar-empty" style={{padding:10}}>Нет файлов</div>}
@@ -515,23 +685,13 @@ export default function JarvisChatShell() {
               {messages.length === 0 && !streaming && <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center",color:"var(--text-muted)"}}><svg width="48" height="48" viewBox="0 0 64 64" fill="none" style={{marginBottom:12,opacity:0.4}}><defs><linearGradient id="jgw" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jgw)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jgw)"/></svg><div style={{fontSize:14}}>Чем могу помочь?</div></div></div>}
 
               <div className="message-stream compact-stream" ref={msgRef}>
-                {messages.map(msg => (
-                  <div key={msg.id} className={`message-row ${msg.role}`}>
-                    <div className="message-bubble smaller-text">{msg.role === "assistant" ? <MarkdownRenderer content={msg.content}/> : msg.content}</div>
-                  </div>
-                ))}
+                {messages.map(msg => <MessageItem key={msg.id} msg={msg} />)}
                 {streaming && streamText && <div className="message-row assistant"><div className="message-bubble smaller-text streaming-cursor"><MarkdownRenderer content={streamText}/></div></div>}
-                {streaming && !streamText && <div className="message-row assistant"><div className="message-bubble smaller-text phase-indicator">{phase || "Jarvis думает..."}</div></div>}
+                {streaming && !streamText && <div className="message-row assistant"><div className="message-bubble smaller-text phase-indicator">{phase || "Думаю..."}</div></div>}
               </div>
 
               {error && <div className="error-banner smaller-text">{error}</div>}
-              {!working && lastInput && (
-                <div style={{display:"flex",gap:6,padding:"4px 0 2px",flexWrap:"wrap"}}>
-                  <button className="soft-btn" style={{fontSize:10,padding:"2px 8px"}} onClick={()=>handleResend(null)}>🔁 Повтор</button>
-                  {modelOpts.filter(m=>{const n=typeof m==="string"?m:(m.name||m.model||"");return n&&n!==lastModel;}).slice(0,3).map((m,i)=>{const n=typeof m==="string"?m:(m.name||m.model||"");return <button key={i} className="soft-btn" style={{fontSize:10,padding:"2px 8px"}} onClick={()=>handleResend(n)} title={"Повтор с "+n}>🔁 {n.split(":")[0]}</button>})}
-                </div>
-              )}
-              {chartData && !working && (
+              {chartData?.values?.length > 0 && !working && (
                 <div style={{background:"var(--bg-surface)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 14px",marginTop:4}}>
                   <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:6,display:"flex",justifyContent:"space-between"}}>
                     <span>📊 {chartData.valueLabel}</span>
@@ -553,8 +713,8 @@ export default function JarvisChatShell() {
                   <button className="send-btn" onClick={working ? handleStop : handleSend} style={working ? {background:"rgba(255,70,70,0.15)",borderColor:"rgba(255,70,70,0.3)",color:"#ff9090"} : undefined}>{working?"■":"➤"}</button>
                   <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
                 </div>
-                <div className="composer-selectors">
-                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select">{(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=typeof i==="string"?i:(i.name||i.model||"model");return <option key={n+idx} value={n}>{n}</option>})}</select>
+                <div className="composer-selectors" style={{justifyContent:"center"}}>
+                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select">{(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=typeof i==="string"?i:(i.name||i.model||"model");return <option key={n+idx} value={n}>{shortModelName(n)}</option>})}</select>
                   <select value={profile} onChange={e=>setProfile(e.target.value)} className="composer-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select>
                   <button onClick={() => setMultiAgent(p => !p)} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (multiAgent ? "rgba(244,114,182,0.4)" : "var(--border)"),background:multiAgent ? "rgba(244,114,182,0.12)" : "transparent",color:multiAgent ? "#f472b6" : "var(--text-muted)",cursor:"pointer"}}>{multiAgent ? "🤖 Multi" : "🤖"}</button>
                 </div>

@@ -6,13 +6,14 @@
  */
 import { useEffect, useState, useMemo } from "react";
 
-const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
 async function fetchJson(path, options = {}) {
   const resp = await fetch(`${API}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return resp.json();
 }
 
@@ -40,7 +41,9 @@ export default function MemoryPanel() {
     try {
       const data = await fetchJson("/api/smart-memory/list?limit=100");
       setMemories(data.items || []);
-    } catch {}
+    } catch (e) {
+      console.warn("Failed to load memories:", e);
+    }
     setLoading(false);
   }
 

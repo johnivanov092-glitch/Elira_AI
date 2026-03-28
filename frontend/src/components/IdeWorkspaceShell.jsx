@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TerminalPanel from "./TerminalPanel";
 
 const LIBRARY_KEY = "jarvis_library_files_v7";
-const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
 function makeId(p="id"){return`${p}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;}
 function saveJson(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
@@ -62,14 +62,15 @@ function loadHljs(){
 
 function CodeView({code,lang}){
   const ref=useRef(null);
+  const safeCode = code || "";
   useEffect(()=>{
     let alive=true;
-    loadHljs().then(h=>{if(!h||!ref.current||!alive)return;ref.current.textContent=code;h.highlightElement(ref.current);});
+    loadHljs().then(h=>{if(!h||!ref.current||!alive)return;ref.current.textContent=safeCode;h.highlightElement(ref.current);});
     return()=>{alive=false;};
-  },[code,lang]);
+  },[safeCode,lang]);
   return(
     <pre style={{flex:1,margin:0,padding:16,overflow:"auto",fontFamily:"var(--font-mono)",fontSize:12,lineHeight:1.55,whiteSpace:"pre-wrap",wordBreak:"break-word",background:"rgba(0,0,0,0.18)"}}>
-      <code ref={ref} className={lang?`language-${lang}`:""} style={{fontFamily:"inherit",fontSize:"inherit",background:"transparent"}}>{code}</code>
+      <code ref={ref} className={lang?`language-${lang}`:""} style={{fontFamily:"inherit",fontSize:"inherit",background:"transparent"}}>{safeCode}</code>
     </pre>
   );
 }

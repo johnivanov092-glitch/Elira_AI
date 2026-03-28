@@ -19,6 +19,7 @@ class ChatRequest(BaseModel):
     profile_name: str = "default"
     user_input: str
     history: list[dict[str, Any]] = Field(default_factory=list)
+    num_ctx: int = 8192
     use_memory: bool = True
     use_library: bool = True
     use_reflection: bool = False
@@ -52,6 +53,7 @@ def chat_send(payload: ChatRequest):
             use_library=payload.use_library,
             use_reflection=payload.use_reflection,
             history=payload.history,
+            num_ctx=payload.num_ctx,
             use_web_search=payload.use_web_search,
             use_python_exec=payload.use_python_exec,
             use_image_gen=payload.use_image_gen,
@@ -114,6 +116,7 @@ def chat_stream(payload: ChatRequest):
                 use_library=payload.use_library,
                 use_reflection=payload.use_reflection,
                 history=payload.history,
+                num_ctx=payload.num_ctx,
                 use_web_search=payload.use_web_search,
                 use_python_exec=payload.use_python_exec,
                 use_image_gen=payload.use_image_gen,

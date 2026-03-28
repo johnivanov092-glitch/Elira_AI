@@ -8,9 +8,9 @@
  *   • Анализ кода (строки, функции, классы)
  *   • Copy / Download
  */
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 
-const API = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
 /** Извлекает блоки кода из markdown */
 function extractCodeBlocks(messages) {
@@ -74,11 +74,11 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
   const current = blocks[selectedIdx] || blocks[blocks.length - 1] || null;
 
   // Auto-select latest block
-  useMemo(() => {
+  useEffect(() => {
     if (blocks.length > 0 && selectedIdx >= blocks.length) {
       setSelectedIdx(blocks.length - 1);
     }
-  }, [blocks.length]);
+  }, [blocks.length, selectedIdx]);
 
   const handleCopy = useCallback(() => {
     if (!current) return;
@@ -110,6 +110,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: current.code }),
       });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       setOutput(data);
     } catch (e) {
@@ -128,6 +129,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: current.code, language: current.lang, filename: current.name }),
       });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       setAnalysis(data.analysis || data);
     } catch (e) {
@@ -153,6 +155,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: savePath.trim(), new_content: current.code }),
       });
+      if (!diffResp.ok) throw new Error(`Diff failed: HTTP ${diffResp.status}`);
       const diffData = await diffResp.json();
 
       // Write file
@@ -161,6 +164,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: savePath.trim(), content: current.code, create_dirs: true }),
       });
+      if (!resp.ok) throw new Error(`Save failed: HTTP ${resp.status}`);
       const data = await resp.json();
       setSaveResult({ ...data, diff: diffData.diff, stats: diffData.stats });
     } catch (e) {

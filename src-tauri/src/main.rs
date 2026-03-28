@@ -8,21 +8,56 @@ struct BackendState {
     child: Mutex<Option<Child>>,
 }
 
+/// Walk up from current working directory (and exe dir as fallback)
+/// until we find a directory that contains "backend/"
+fn find_project_root() -> Option<std::path::PathBuf> {
+    // Try 1: from current working directory
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(root) = walk_up_for_backend(&cwd) {
+            return Some(root);
+        }
+    }
+    // Try 2: from executable location
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if let Some(root) = walk_up_for_backend(&dir.to_path_buf()) {
+                return Some(root);
+            }
+        }
+    }
+    None
+}
+
+fn walk_up_for_backend(start: &std::path::PathBuf) -> Option<std::path::PathBuf> {
+    let mut dir = start.clone();
+    for _ in 0..10 {
+        if dir.join("backend").is_dir() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
 #[tauri::command]
-fn start_backend(app: tauri::AppHandle, state: tauri::State<BackendState>) -> Result<String, String> {
+fn start_backend(_app: tauri::AppHandle, state: tauri::State<BackendState>) -> Result<String, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(child) = guard.as_ref() {
         return Ok(format!("Backend already running with pid {}", child.id()));
     }
 
-    let project_dir = app
-        .path_resolver()
-        .resolve_resource(".")
-        .ok_or_else(|| "Failed to resolve project directory".to_string())?;
+    // Find project root by walking up from current_dir or exe path until we find "backend/"
+    let project_dir = find_project_root()
+        .ok_or_else(|| "Failed to find project root (no backend/ folder found)".to_string())?;
 
+    eprintln!("[Jarvis] Project root: {}", project_dir.display());
     let backend_dir = project_dir.join("backend");
 
     let python_candidates = vec![
+        backend_dir.join(".venv").join("Scripts").join("python.exe"),
+        backend_dir.join(".venv").join("bin").join("python"),
         project_dir.join(".venv").join("Scripts").join("python.exe"),
         project_dir.join(".venv").join("bin").join("python"),
     ];
@@ -65,6 +100,8 @@ fn stop_backend(state: tauri::State<BackendState>) -> Result<String, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(mut child) = guard.take() {
         child.kill().map_err(|e| format!("Failed to stop backend: {e}"))?;
+        // Wait for the process to fully exit to avoid zombies
+        let _ = child.wait();
         return Ok("Backend stopped".to_string());
     }
     Ok("Backend is not running".to_string())
@@ -111,8 +148,28 @@ fn main() {
         .setup(|app| {
             let handle = app.handle();
             let state: tauri::State<BackendState> = handle.state();
-            let _ = start_backend(handle.clone(), state);
+            match start_backend(handle.clone(), state) {
+                Ok(msg) => eprintln!("[Jarvis] {}", msg),
+                Err(e) => {
+                    eprintln!("[Jarvis] WARNING: Backend failed to start: {}", e);
+                    eprintln!("[Jarvis] Проверь: 1) backend/.venv/ существует  2) pip install -r requirements.txt  3) порт 8000 свободен");
+                }
+            }
             Ok(())
+        })
+        .on_window_event(|event| {
+            // Graceful shutdown: останавливаем backend при закрытии окна
+            if let tauri::WindowEvent::Destroyed = event.event() {
+                let state: tauri::State<BackendState> = event.window().state();
+                if let Ok(mut guard) = state.child.lock() {
+                    if let Some(mut child) = guard.take() {
+                        eprintln!("[Jarvis] Stopping backend (pid {})...", child.id());
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        eprintln!("[Jarvis] Backend stopped.");
+                    }
+                };
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

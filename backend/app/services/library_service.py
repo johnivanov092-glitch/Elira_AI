@@ -30,10 +30,12 @@ def _read_disk_preview(stored_path: str, max_chars: int) -> str:
 
 def list_library_files() -> dict[str, Any]:
     conn = _conn()
-    rows = conn.execute(
-        "SELECT id, name, size, use_in_context, stored_path, type, source, created_at FROM files ORDER BY created_at DESC, id DESC"
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT id, name, size, use_in_context, stored_path, type, source, created_at FROM files ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+    finally:
+        conn.close()
     files = []
     for row in rows:
         files.append(
@@ -54,25 +56,27 @@ def list_library_files() -> dict[str, Any]:
 
 def set_library_active(filename: str, active: bool) -> dict[str, Any]:
     conn = _conn()
-    row = conn.execute("SELECT id, name FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
-    if row:
-        conn.execute("UPDATE files SET use_in_context = ? WHERE id = ?", (1 if active else 0, row["id"]))
-        conn.commit()
+    try:
+        row = conn.execute("SELECT id, name FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
+        if row:
+            conn.execute("UPDATE files SET use_in_context = ? WHERE id = ?", (1 if active else 0, row["id"]))
+            conn.commit()
+            return {"ok": True, "filename": filename, "active": bool(active)}
+        return {"ok": False, "error": f"Файл не найден: {filename}"}
+    finally:
         conn.close()
-        return {"ok": True, "filename": filename, "active": bool(active)}
-    conn.close()
-    return {"ok": False, "error": f"Файл не найден: {filename}"}
 
 
 def delete_library_file(filename: str) -> dict[str, Any]:
     conn = _conn()
-    row = conn.execute("SELECT id, stored_path FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
-    if not row:
+    try:
+        row = conn.execute("SELECT id, stored_path FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
+        if not row:
+            return {"ok": False, "error": f"Файл не найден: {filename}"}
+        conn.execute("DELETE FROM files WHERE id = ?", (row["id"],))
+        conn.commit()
+    finally:
         conn.close()
-        return {"ok": False, "error": f"Файл не найден: {filename}"}
-    conn.execute("DELETE FROM files WHERE id = ?", (row["id"],))
-    conn.commit()
-    conn.close()
 
     stored_path = row["stored_path"] or ""
     if stored_path:

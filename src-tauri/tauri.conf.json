@@ -41,6 +41,7 @@
         "width": 1440,
         "height": 960,
         "resizable": true,
+        "center": true,
         "decorations": true,
         "theme": "Dark"
       }

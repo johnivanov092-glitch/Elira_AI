@@ -31,9 +31,9 @@ start /min "Jarvis Backend (LAN)" cmd /c "cd backend && .venv\Scripts\python.exe
 
 timeout /t 3 /nobreak > nul
 
-:: Запуск фронтенда на 0.0.0.0
+:: Запуск фронтенда на 0.0.0.0 с правильным API URL
 echo [INFO] Запускаю фронтенд...
-start "" cmd /c "npm --prefix frontend run dev -- --host 0.0.0.0"
+start "" cmd /c "set VITE_API_BASE_URL=http://%IP%:8000 && set VITE_HOST=0.0.0.0 && npm --prefix frontend run dev"
 
 echo.
 echo   ✓ Jarvis доступен по сети: http://%IP%:5173

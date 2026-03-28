@@ -70,19 +70,23 @@ def add_memory(text: str, category: str = "fact", source: str = "auto", importan
         if _similarity(text.lower(), item["text"].lower()) > 0.85:
             # Обновляем importance существующего
             c = _conn()
-            c.execute("UPDATE memories SET importance = MIN(importance + 1, 10), updated_at = CURRENT_TIMESTAMP WHERE id = ?", (item["id"],))
-            c.commit()
-            c.close()
+            try:
+                c.execute("UPDATE memories SET importance = MIN(importance + 1, 10), updated_at = CURRENT_TIMESTAMP WHERE id = ?", (item["id"],))
+                c.commit()
+            finally:
+                c.close()
             return {"ok": True, "action": "updated", "id": item["id"], "text": text}
 
     c = _conn()
-    cur = c.execute(
-        "INSERT INTO memories (text, category, source, importance) VALUES (?, ?, ?, ?)",
-        (text, category, source, importance)
-    )
-    mem_id = cur.lastrowid
-    c.commit()
-    c.close()
+    try:
+        cur = c.execute(
+            "INSERT INTO memories (text, category, source, importance) VALUES (?, ?, ?, ?)",
+            (text, category, source, importance)
+        )
+        mem_id = cur.lastrowid
+        c.commit()
+    finally:
+        c.close()
     return {"ok": True, "action": "created", "id": mem_id, "text": text, "category": category}
 
 
@@ -104,17 +108,21 @@ def list_memories(category: str = None, limit: int = 50) -> dict:
 
 def delete_memory(mem_id: int) -> dict:
     c = _conn()
-    c.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
-    c.commit()
-    c.close()
+    try:
+        c.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
+        c.commit()
+    finally:
+        c.close()
     return {"ok": True, "deleted_id": mem_id}
 
 
 def clear_all_memories() -> dict:
     c = _conn()
-    c.execute("DELETE FROM memories")
-    c.commit()
-    c.close()
+    try:
+        c.execute("DELETE FROM memories")
+        c.commit()
+    finally:
+        c.close()
     return {"ok": True}
 
 
@@ -196,10 +204,12 @@ def search_memory(query: str, limit: int = 10, min_score: float = 0.1) -> dict:
     # Обновляем access_count
     if items:
         c = _conn()
-        for item in items:
-            c.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (item["id"],))
-        c.commit()
-        c.close()
+        try:
+            for item in items:
+                c.execute("UPDATE memories SET access_count = access_count + 1 WHERE id = ?", (item["id"],))
+            c.commit()
+        finally:
+            c.close()
 
     return {"ok": True, "items": items, "count": len(items), "query": query}
 

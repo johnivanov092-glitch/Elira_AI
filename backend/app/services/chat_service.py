@@ -17,7 +17,7 @@ def normalize_profile(name: str):
     return name if name in AGENT_PROFILES else DEFAULT_PROFILE
 
 
-def run_chat(model_name: str, profile_name: str, user_input: str, history: list[dict] | None = None) -> dict[str, Any]:
+def run_chat(model_name: str, profile_name: str, user_input: str, history: list[dict] | None = None, num_ctx: int = 8192) -> dict[str, Any]:
     profile = normalize_profile(profile_name)
     system = AGENT_PROFILES.get(profile, AGENT_PROFILES[DEFAULT_PROFILE])
 
@@ -34,7 +34,7 @@ def run_chat(model_name: str, profile_name: str, user_input: str, history: list[
 
     try:
         client = ollama.Client()
-        resp = client.chat(model=model_name, messages=messages)
+        resp = client.chat(model=model_name, messages=messages, options={"num_ctx": num_ctx})
         text = resp.message.content or ""
         return {"ok": True, "answer": text, "warnings": [], "meta": {"profile": profile}}
     except Exception as e:
@@ -46,6 +46,7 @@ def run_chat_stream(
     profile_name: str,
     user_input: str,
     history: list[dict] | None = None,
+    num_ctx: int = 8192,
 ) -> Generator[str, None, None]:
     """Генератор токенов для стриминга. Каждый yield — один токен."""
     profile = normalize_profile(profile_name)
@@ -63,14 +64,14 @@ def run_chat_stream(
 
     try:
         client = ollama.Client()
-        stream = client.chat(model=model_name, messages=messages, stream=True)
+        stream = client.chat(model=model_name, messages=messages, stream=True, options={"num_ctx": num_ctx})
         for chunk in stream:
             token = chunk.message.content or ""
             if token:
                 yield token
     except Exception as e:
         # При ошибке стриминга — fallback на обычный вызов
-        result = run_chat(model_name, profile_name, user_input, history)
+        result = run_chat(model_name, profile_name, user_input, history, num_ctx=num_ctx)
         if result.get("ok") and result.get("answer"):
             yield result["answer"]
         else:

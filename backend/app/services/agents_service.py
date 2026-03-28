@@ -1,10 +1,11 @@
 """
-agents_service.py v7
+agents_service.py v8
 
-Главное:
-  • Глубокий веб-поиск: ddgs → берёт URL → заходит на сайт → вытаскивает текст
-  • Скиллы подключены: reflection toggle, python exec
-  • Промпт ставит данные ПЕРЕД вопросом
+Улучшения v8:
+  • Авто-выбор модели под задачу (route → лучшая модель)
+  • Кэширование ответов (SQLite, TTL 2 часа)
+  • Умная обрезка истории (релевантные сообщения, не просто последние N)
+  • Детальные фазы стриминга
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ from app.services.reflection_loop_service import run_reflection_loop
 from app.services.run_history_service import RunHistoryService
 from app.services.tool_service import run_tool
 from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
+from app.services.response_cache import get_cached, set_cached, should_cache
+from app.core.config import pick_model_for_route, DEFAULT_MODEL
 
 # RAG память (опционально — если embedding модель доступна)
 try:
@@ -87,9 +90,16 @@ def _tl(timeline, step, title, status, detail):
     timeline.append({"step": step, "title": title, "status": status, "detail": detail})
 
 def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
+    """Умная обрезка истории: оставляем первое сообщение (контекст) + последние N пар."""
     if not h: return []
     limit = max_pairs * 2
-    return list(h[-limit:]) if len(h) > limit else list(h)
+    if len(h) <= limit:
+        return list(h)
+    # Всегда сохраняем первые 2 сообщения (начальный контекст разговора)
+    # + последние (limit - 2) сообщений
+    first_pair = list(h[:2])
+    recent = list(h[-(limit - 2):])
+    return first_pair + recent
 
 
 def _strip_frontend_project_context(user_input: str) -> str:
@@ -977,7 +987,7 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
 # run_agent
 # ═══════════════════════════════════════════════════════════════
 
-def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_library=True, use_reflection=False, history=None, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
+def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
     history = _trim_history(history or [])
     _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
     _disabled_skills = {k for k, v in _skill_flags.items() if not v}
@@ -990,6 +1000,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
         plan = planner.plan(planner_input)
         _HISTORY.add_event(run["run_id"], "planner", plan)
         route = plan.get("route", "chat")
+        effective_model = pick_model_for_route(route, model_name)
         selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
         strict_web_only = route == "research" and _is_strict_web_only_query(planner_input)
         if strict_web_only:
@@ -1022,7 +1033,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
             pass
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
-        draft = run_chat(model_name=model_name, profile_name=profile_name, user_input=prompt, history=history)
+        draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx)
         if not draft.get("ok"):
             raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
         answer = draft.get("answer", "")
@@ -1031,7 +1042,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
         has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
         should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
         if should_reflect and answer.strip() and not has_generated_files:
-            ref = run_reflection_loop(model_name=model_name, profile_name=profile_name, user_input=raw_user_input, draft_text=answer, review_text="Улучши.", context=ctx)
+            ref = run_reflection_loop(model_name=effective_model, profile_name=profile_name, user_input=raw_user_input, draft_text=answer, review_text="Улучши.", context=ctx)
             answer = ref.get("answer") or answer
 
         # Добавляем вложения (картинки, файлы)
@@ -1044,7 +1055,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
         if post_files:
             answer += post_files
 
-        result = {"ok": True, "answer": answer, "timeline": timeline, "tool_results": tool_results, "meta": {"model_name": model_name, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}}
+        result = {"ok": True, "answer": answer, "timeline": timeline, "tool_results": tool_results, "meta": {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}}
         _HISTORY.finish_run(run["run_id"], result)
         return result
     except Exception as exc:
@@ -1057,7 +1068,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
 # run_agent_stream
 # ═══════════════════════════════════════════════════════════════
 
-def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, use_library=True, use_reflection=False, history=None, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
+def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
     history = _trim_history(history or [])
     _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
     _disabled_skills = {k for k, v in _skill_flags.items() if not v}
@@ -1067,10 +1078,32 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
     planner_input = _strip_frontend_project_context(user_input)
     run = _HISTORY.start_run(raw_user_input)
     try:
+        yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
+
         plan = planner.plan(planner_input)
         _HISTORY.add_event(run["run_id"], "planner", plan)
         route = plan.get("route", "chat")
         selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
+
+        # ═══ АВТО-ВЫБОР МОДЕЛИ (тихо, без UI) ═══
+        effective_model = pick_model_for_route(route, model_name)
+        if effective_model != model_name:
+            _tl(timeline, "auto_model", "Авто-модель", "ok", f"{model_name} → {effective_model} (route={route})")
+
+        # ═══ КЭШИРОВАНИЕ ═══
+        if should_cache(planner_input, route) and not history:
+            cached = get_cached(planner_input, effective_model, profile_name)
+            if cached:
+                _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
+                meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": [], "run_id": run["run_id"], "cached": True}
+                _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": cached, "meta": meta})
+                # Стримим кэшированный ответ по токенам (выглядит естественно)
+                words = cached.split(" ")
+                for i, word in enumerate(words):
+                    token = word if i == 0 else " " + word
+                    yield {"token": token, "done": False}
+                yield {"token": "", "done": True, "full_text": cached, "meta": meta, "timeline": timeline}
+                return
 
         # Умная память: извлекаем факты
         try:
@@ -1079,15 +1112,18 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
             pass
 
         if "web_search" in selected:
-            yield {"token": "", "done": False, "phase": "searching", "message": "Ищу в интернете и загружаю страницы..."}
+            yield {"token": "", "done": False, "phase": "searching", "message": "Ищу..."}
         elif selected:
-            yield {"token": "", "done": False, "phase": "tools", "message": "Подготовка..."}
+            yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
 
         ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection)
 
         # Умная память + RAG
+        mem_count = 0
         try:
             mem_ctx = get_relevant_context(planner_input, max_items=5)
+            if mem_ctx:
+                mem_count = mem_ctx.count("\n- ")
             if _HAS_RAG:
                 rag_ctx = get_rag_context(planner_input, max_items=3)
                 if rag_ctx:
@@ -1097,46 +1133,79 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
         except Exception:
             pass
 
-        yield {"token": "", "done": False, "phase": "thinking", "message": "Генерирую ответ..."}
+        yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
         full_text = ""
-        for token in run_chat_stream(model_name=model_name, profile_name=profile_name, user_input=prompt, history=history):
+        for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx):
             full_text += token
             yield {"token": token, "done": False}
 
-        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
-        should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
-        if should_reflect and full_text.strip() and not has_generated_files:
-            yield {"token": "", "done": False, "phase": "reflecting", "message": "Проверяю..."}
-            ref = run_reflection_loop(model_name=model_name, profile_name=profile_name, user_input=raw_user_input, draft_text=full_text, review_text="Улучши.", context=ctx)
-            refined = ref.get("answer", "")
-            if refined and refined != full_text:
-                full_text = refined
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
+        # Сохраняем в кэш если подходит
+        if should_cache(planner_input, route) and full_text.strip():
+            try:
+                set_cached(planner_input, effective_model, profile_name, full_text)
+            except Exception:
+                pass
 
-        # Авто-выполнение Python
-        try:
-            full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-        except Exception:
-            pass
-
-        # Добавляем вложения (картинки, файлы)
+        # Добавляем вложения (картинки, файлы) — быстрая операция
         attachments = _get_and_clear_attachments()
         if attachments:
             full_text += attachments
 
-        # POST-генерация: Word/Excel из ответа LLM
+        # Проверяем нужны ли тяжёлые пост-операции
+        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
+        should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
         ql_check = raw_user_input.lower()
-        if any(t in ql_check for t in _FILE_TRIGGERS_WORD + _FILE_TRIGGERS_EXCEL):
-            yield {"token": "", "done": False, "phase": "generating_file", "message": "📄 Создаю файл..."}
-        post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
-        if post_files:
-            full_text += post_files
+        needs_file_gen = any(t in ql_check for t in _FILE_TRIGGERS_WORD + _FILE_TRIGGERS_EXCEL)
 
-        meta = {"model_name": model_name, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
-        _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
-        yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
+        # Если нет тяжёлых операций — отправляем done СРАЗУ (быстрый путь)
+        if not should_reflect and not needs_file_gen:
+            # Авто-выполнение Python (лёгкое, только если есть код)
+            try:
+                full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
+            except Exception:
+                pass
+            post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
+            if post_files:
+                full_text += post_files
+            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
+            _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
+            yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
+        else:
+            # Тяжёлый путь — reflection и/или генерация файлов
+            if should_reflect and full_text.strip() and not has_generated_files:
+                yield {"token": "", "done": False, "phase": "reflecting", "message": "Проверяю..."}
+                try:
+                    ref = run_reflection_loop(model_name=effective_model, profile_name=profile_name, user_input=raw_user_input, draft_text=full_text, review_text="Улучши.", context=ctx)
+                    refined = ref.get("answer", "")
+                    if refined and refined != full_text:
+                        full_text = refined
+                        yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
+                except Exception:
+                    pass
+
+            try:
+                full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
+            except Exception:
+                pass
+
+            if needs_file_gen:
+                yield {"token": "", "done": False, "phase": "generating_file", "message": "Готовлю файл..."}
+            post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
+            if post_files:
+                full_text += post_files
+
+            # Кэшируем после всех пост-обработок
+            if should_cache(planner_input, route) and full_text.strip():
+                try:
+                    set_cached(planner_input, effective_model, profile_name, full_text)
+                except Exception:
+                    pass
+
+            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
+            _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
+            yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
     except Exception as exc:
         _HISTORY.finish_run(run["run_id"], {"ok": False, "error": str(exc)})
         yield {"token": "", "done": True, "error": str(exc), "full_text": ""}

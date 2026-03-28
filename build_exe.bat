@@ -18,10 +18,13 @@ cd /d "%~dp0"
 
 echo [1/3] Установка зависимостей...
 call npm install
+if errorlevel 1 ( echo [ERROR] npm install failed! & pause & exit /b 1 )
 cd frontend && call npm install && cd ..
+if errorlevel 1 ( echo [ERROR] frontend npm install failed! & pause & exit /b 1 )
 
 echo [2/3] Сборка Tauri (это займёт 2-5 минут)...
 call npm run tauri build
+if errorlevel 1 ( echo [ERROR] Tauri build failed! & pause & exit /b 1 )
 
 echo.
 echo [3/3] Готово!

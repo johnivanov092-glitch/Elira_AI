@@ -100,35 +100,34 @@ def _try_pdfplumber(data: bytes, max_chars: int) -> tuple:
         return "", [], 0
 
     try:
-        pdf = pdfplumber.open(io.BytesIO(data))
-        text_parts = []
-        all_tables = []
-        total = 0
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            text_parts = []
+            all_tables = []
+            total = 0
 
-        for i, page in enumerate(pdf.pages):
-            # Текст
-            page_text = page.extract_text() or ""
-            if page_text.strip():
-                if total + len(page_text) > max_chars:
-                    break
-                text_parts.append(f"--- Страница {i+1} ---\n{page_text}")
-                total += len(page_text)
+            for i, page in enumerate(pdf.pages):
+                # Текст
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    if total + len(page_text) > max_chars:
+                        break
+                    text_parts.append(f"--- Страница {i+1} ---\n{page_text}")
+                    total += len(page_text)
 
-            # Таблицы
-            tables = page.extract_tables()
-            for t_idx, table in enumerate(tables):
-                if table and len(table) > 0:
-                    all_tables.append({
-                        "page": i + 1,
-                        "index": t_idx,
-                        "headers": table[0] if table[0] else [],
-                        "rows": table[1:] if len(table) > 1 else [],
-                        "row_count": len(table) - 1,
-                    })
+                # Таблицы
+                tables = page.extract_tables()
+                for t_idx, table in enumerate(tables):
+                    if table and len(table) > 0:
+                        all_tables.append({
+                            "page": i + 1,
+                            "index": t_idx,
+                            "headers": table[0] if table[0] else [],
+                            "rows": table[1:] if len(table) > 1 else [],
+                            "row_count": len(table) - 1,
+                        })
 
-        page_count = len(pdf.pages)
-        pdf.close()
-        return "\n\n".join(text_parts), all_tables, page_count
+            page_count = len(pdf.pages)
+            return "\n\n".join(text_parts), all_tables, page_count
     except Exception as e:
         logger.warning(f"pdfplumber failed: {e}")
         return "", [], 0
@@ -181,27 +180,25 @@ def pdf_tables_to_excel(data: bytes, filename: str = "") -> dict:
         return {"ok": False, "error": "pip install pdfplumber openpyxl"}
 
     try:
-        pdf = pdfplumber.open(io.BytesIO(data))
-        wb = Workbook()
-        wb.remove(wb.active)
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            wb = Workbook()
+            wb.remove(wb.active)
 
-        table_count = 0
-        for i, page in enumerate(pdf.pages):
-            tables = page.extract_tables()
-            for t_idx, table in enumerate(tables):
-                if not table or len(table) < 2:
-                    continue
-                table_count += 1
-                ws = wb.create_sheet(title=f"P{i+1}_T{t_idx+1}")
+            table_count = 0
+            for i, page in enumerate(pdf.pages):
+                tables = page.extract_tables()
+                for t_idx, table in enumerate(tables):
+                    if not table or len(table) < 2:
+                        continue
+                    table_count += 1
+                    ws = wb.create_sheet(title=f"P{i+1}_T{t_idx+1}")
 
-                for r, row in enumerate(table, 1):
-                    for c, val in enumerate(row or [], 1):
-                        cell = ws.cell(row=r, column=c, value=val or "")
-                        if r == 1:
-                            cell.font = Font(bold=True)
-                            cell.fill = PatternFill(start_color="D5E8F0", end_color="D5E8F0", fill_type="solid")
-
-        pdf.close()
+                    for r, row in enumerate(table, 1):
+                        for c, val in enumerate(row or [], 1):
+                            cell = ws.cell(row=r, column=c, value=val or "")
+                            if r == 1:
+                                cell.font = Font(bold=True)
+                                cell.fill = PatternFill(start_color="D5E8F0", end_color="D5E8F0", fill_type="solid")
 
         if table_count == 0:
             return {"ok": False, "error": "Таблицы не найдены в PDF"}

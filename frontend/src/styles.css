@@ -3,11 +3,12 @@
    Claude-inspired dark theme. Compact sidebar, centered chat.
    ═══════════════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Fira+Code:wght@400;500&family=Source+Code+Pro:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-:root {
+/* ─── Тёмная тема (по умолчанию) ─── */
+:root, [data-theme="dark"] {
   --bg-root: #1a1a1e;
   --bg-sidebar: #141416;
   --bg-surface: rgba(255,255,255,0.03);
@@ -27,9 +28,38 @@
   --radius-lg: 16px;
   --radius-xl: 20px;
   --radius-full: 999px;
-  --font-body: 'Inter', 'DM Sans', 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'Source Code Pro', 'IBM Plex Mono', ui-monospace, monospace;
+  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
   --shadow-float: 0 4px 24px rgba(0,0,0,0.35);
+  --code-bg: rgba(0,0,0,0.35);
+  --msg-user-bg: rgba(124,159,255,0.08);
+  --msg-assistant-bg: transparent;
+  --scrollbar-thumb: rgba(255,255,255,0.1);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.2);
+}
+
+/* ─── Светлая тема ─── */
+[data-theme="light"] {
+  --bg-root: #f5f5f7;
+  --bg-sidebar: #eaeaed;
+  --bg-surface: rgba(0,0,0,0.02);
+  --bg-surface-hover: rgba(0,0,0,0.04);
+  --bg-surface-active: rgba(0,0,0,0.06);
+  --bg-input: rgba(0,0,0,0.03);
+  --border: rgba(0,0,0,0.1);
+  --border-light: rgba(0,0,0,0.06);
+  --border-focus: rgba(0,0,0,0.2);
+  --text-primary: #1d1d1f;
+  --text-secondary: #555568;
+  --text-muted: #8e8e9a;
+  --accent: #4a7aff;
+  --accent-dim: rgba(74,122,255,0.1);
+  --shadow-float: 0 4px 24px rgba(0,0,0,0.1);
+  --code-bg: rgba(0,0,0,0.04);
+  --msg-user-bg: rgba(74,122,255,0.06);
+  --msg-assistant-bg: transparent;
+  --scrollbar-thumb: rgba(0,0,0,0.15);
+  --scrollbar-thumb-hover: rgba(0,0,0,0.3);
 }
 
 html, body, #root {
@@ -565,6 +595,61 @@ select, option {
 }
 .file-preview-header { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 500; }
 .file-preview-body { padding: 12px; overflow: auto; flex: 1; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text-secondary); }
+
+/* ── CUSTOM SCROLLBAR ─────────────────────────────────────── */
+/* Тонкий, едва заметный скроллбар в цвет темы */
+.chat-list::-webkit-scrollbar,
+.message-stream::-webkit-scrollbar,
+.settings-main-card::-webkit-scrollbar,
+.library-table-view::-webkit-scrollbar,
+.file-list-body::-webkit-scrollbar,
+.file-preview-body::-webkit-scrollbar,
+.library-preview::-webkit-scrollbar {
+  width: 5px;
+}
+
+.chat-list::-webkit-scrollbar-track,
+.message-stream::-webkit-scrollbar-track,
+.settings-main-card::-webkit-scrollbar-track,
+.library-table-view::-webkit-scrollbar-track,
+.file-list-body::-webkit-scrollbar-track,
+.file-preview-body::-webkit-scrollbar-track,
+.library-preview::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-list::-webkit-scrollbar-thumb,
+.message-stream::-webkit-scrollbar-thumb,
+.settings-main-card::-webkit-scrollbar-thumb,
+.library-table-view::-webkit-scrollbar-thumb,
+.file-list-body::-webkit-scrollbar-thumb,
+.file-preview-body::-webkit-scrollbar-thumb,
+.library-preview::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 10px;
+}
+
+.chat-list::-webkit-scrollbar-thumb:hover,
+.message-stream::-webkit-scrollbar-thumb:hover,
+.settings-main-card::-webkit-scrollbar-thumb:hover,
+.library-table-view::-webkit-scrollbar-thumb:hover,
+.file-list-body::-webkit-scrollbar-thumb:hover,
+.file-preview-body::-webkit-scrollbar-thumb:hover,
+.library-preview::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, rgba(255,255,255,0.2));
+}
+
+/* Firefox scrollbar */
+.chat-list,
+.message-stream,
+.settings-main-card,
+.library-table-view,
+.file-list-body,
+.file-preview-body,
+.library-preview {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
 
 /* ── RESPONSIVE ────────────────────────────────────────────── */
 @media (max-width: 900px) {

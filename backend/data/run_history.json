@@ -1150,5 +1150,357 @@
     "route": "research",
     "model": "gemma3:4b",
     "answer_len": 2171
+  },
+  {
+    "run_id": "9869e112",
+    "finished_at": "2026-03-28T08:19:41.086127",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3:8b",
+    "answer_len": 78
+  },
+  {
+    "run_id": "3470bf15",
+    "finished_at": "2026-03-28T08:25:07.296572",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 172
+  },
+  {
+    "run_id": "9155e4a9",
+    "finished_at": "2026-03-28T08:26:25.103695",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 193
+  },
+  {
+    "run_id": "d8490714",
+    "finished_at": "2026-03-28T08:34:29.119193",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 213
+  },
+  {
+    "run_id": "bf6c09bc",
+    "finished_at": "2026-03-28T08:51:55.167066",
+    "ok": true,
+    "route": "code",
+    "model": "qwen3:8b",
+    "answer_len": 1415
+  },
+  {
+    "run_id": "9dc2d38c",
+    "finished_at": "2026-03-28T09:54:30.376636",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 664
+  },
+  {
+    "run_id": "9745a078",
+    "finished_at": "2026-03-28T09:55:02.691174",
+    "ok": true,
+    "route": "research",
+    "model": "gemma3:4b",
+    "answer_len": 2214
+  },
+  {
+    "run_id": "eb3ca28a",
+    "finished_at": "2026-03-28T09:56:19.597875",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1780
+  },
+  {
+    "run_id": "9fc0e148",
+    "finished_at": "2026-03-28T09:57:53.052971",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 2026
+  },
+  {
+    "run_id": "eb063809",
+    "finished_at": "2026-03-28T09:58:53.258620",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1346
+  },
+  {
+    "run_id": "25217df8",
+    "finished_at": "2026-03-28T09:59:55.926316",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1376
+  },
+  {
+    "run_id": "e3d71e63",
+    "finished_at": "2026-03-28T10:00:32.972098",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1732
+  },
+  {
+    "run_id": "b19fe138",
+    "finished_at": "2026-03-28T10:02:27.491058",
+    "ok": true,
+    "route": "research",
+    "model": "gemma3:4b",
+    "answer_len": 2904
+  },
+  {
+    "run_id": "85608302",
+    "finished_at": "2026-03-28T10:03:30.762092",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 733
+  },
+  {
+    "run_id": "9d0e6642",
+    "finished_at": "2026-03-28T10:04:11.619995",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1904
+  },
+  {
+    "run_id": "ce7589ef",
+    "finished_at": "2026-03-28T10:05:13.962622",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1808
+  },
+  {
+    "run_id": "8ec55313",
+    "finished_at": "2026-03-28T10:08:24.449624",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 2309
+  },
+  {
+    "run_id": "216654e9",
+    "finished_at": "2026-03-28T10:10:24.968052",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1702
+  },
+  {
+    "run_id": "285bc4fd",
+    "finished_at": "2026-03-28T10:12:24.357892",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1014
+  },
+  {
+    "run_id": "a4d39f15",
+    "finished_at": "2026-03-28T10:13:41.361891",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1461
+  },
+  {
+    "run_id": "6d2ffa9e",
+    "finished_at": "2026-03-28T10:15:28.595293",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 2328
+  },
+  {
+    "run_id": "5c357f32",
+    "finished_at": "2026-03-28T10:17:03.661113",
+    "ok": true,
+    "route": "research",
+    "model": "gemma3:4b",
+    "answer_len": 3082
+  },
+  {
+    "run_id": "ec0c8b32",
+    "finished_at": "2026-03-28T10:17:58.576547",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 721
+  },
+  {
+    "run_id": "97634ada",
+    "finished_at": "2026-03-28T10:18:25.392409",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 2059
+  },
+  {
+    "run_id": "2f733221",
+    "finished_at": "2026-03-28T10:19:17.520171",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 754
+  },
+  {
+    "run_id": "5483ba36",
+    "finished_at": "2026-03-28T10:20:18.792906",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 2778
+  },
+  {
+    "run_id": "5a143645",
+    "finished_at": "2026-03-28T10:21:01.484121",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 603
+  },
+  {
+    "run_id": "9fbe5517",
+    "finished_at": "2026-03-28T10:21:48.583265",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 578
+  },
+  {
+    "run_id": "7901865a",
+    "finished_at": "2026-03-28T10:22:08.436221",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1525
+  },
+  {
+    "run_id": "363e2c5d",
+    "finished_at": "2026-03-28T10:22:45.249310",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 978
+  },
+  {
+    "run_id": "3a62a9ea",
+    "finished_at": "2026-03-28T10:23:11.458430",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1584
+  },
+  {
+    "run_id": "d8b1066f",
+    "finished_at": "2026-03-28T10:24:25.079086",
+    "ok": true,
+    "route": "project",
+    "model": "gemma3:4b",
+    "answer_len": 1573
+  },
+  {
+    "run_id": "aca0d98f",
+    "finished_at": "2026-03-28T10:26:00.342387",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3.5:latest",
+    "answer_len": 1523
+  },
+  {
+    "run_id": "215cf8fb",
+    "finished_at": "2026-03-28T10:28:58.128440",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3.5:latest",
+    "answer_len": 2819
+  },
+  {
+    "run_id": "ffb6e94b",
+    "finished_at": "2026-03-28T10:34:46.549391",
+    "ok": true,
+    "route": "chat",
+    "model": "qwen3.5:latest",
+    "answer_len": 1728
+  },
+  {
+    "run_id": "0831a614",
+    "finished_at": "2026-03-28T10:49:30.957075",
+    "ok": true,
+    "route": "code",
+    "model": "qwen3.5:latest",
+    "answer_len": 1060
+  },
+  {
+    "run_id": "cf8d74e6",
+    "finished_at": "2026-03-28T10:55:45.479108",
+    "ok": true,
+    "route": "research",
+    "model": "qwen3.5:latest",
+    "answer_len": 1883
+  },
+  {
+    "run_id": "cac347e5",
+    "finished_at": "2026-03-28T11:29:04.244257",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 1111
+  },
+  {
+    "run_id": "f4bcabb7",
+    "finished_at": "2026-03-28T11:30:21.093246",
+    "ok": true,
+    "route": "research",
+    "model": "gemma3:4b",
+    "answer_len": 1704
+  },
+  {
+    "run_id": "427ceeaa",
+    "finished_at": "2026-03-28T11:47:43.271014",
+    "ok": true,
+    "route": "code",
+    "model": "qwen2.5-coder:7b",
+    "answer_len": 1738
+  },
+  {
+    "run_id": "88ff66ec",
+    "finished_at": "2026-03-28T11:48:40.785864",
+    "ok": true,
+    "route": "project",
+    "model": "qwen2.5-coder:7b",
+    "answer_len": 1291
+  },
+  {
+    "run_id": "3065d9b8",
+    "finished_at": "2026-03-28T12:12:31.823774",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 229
+  },
+  {
+    "run_id": "69641ef6",
+    "finished_at": "2026-03-28T12:31:43.420256",
+    "ok": true,
+    "route": "chat",
+    "model": "gemma3:4b",
+    "answer_len": 113
+  },
+  {
+    "run_id": "0b378070",
+    "finished_at": "2026-03-28T13:09:40.222221",
+    "ok": true,
+    "route": "research",
+    "model": "qwen3:8b",
+    "answer_len": 2841
   }
 ]
