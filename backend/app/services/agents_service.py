@@ -520,35 +520,48 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         except Exception as e:
             parts.append(f"SKILL_ERROR:📡 Webhook: {e}")
 
-    # ─── 🔌 Плагины ───
-    plugin_triggers = ["список плагинов", "покажи плагины", "plugins list"]
-    if "plugins" not in disabled and any(t in ql for t in plugin_triggers):
+    # ─── 🔌 Плагины v2 ───
+    if "plugins" not in disabled:
         try:
-            from app.services.plugin_system import list_plugins
-            result = list_plugins()
-            plugins = result.get("plugins", [])
-            if plugins:
-                lines = [f"🔌 Плагины ({len(plugins)}):"]
-                for p in plugins:
-                    lines.append(f"  • {p['name']} — {p.get('description','')}")
-                parts.append("\n".join(lines))
-            else:
-                parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
+            from app.services.plugin_system import list_plugins, run_plugin, run_triggered, fire_hook
+
+            # 1. Список плагинов
+            plugin_list_triggers = ["список плагинов", "покажи плагины", "plugins list", "мои плагины"]
+            if any(t in ql for t in plugin_list_triggers):
+                result = list_plugins()
+                plugins = result.get("plugins", [])
+                if plugins:
+                    lines = [f"🔌 Плагины ({len(plugins)}):"]
+                    for p in plugins:
+                        status = "✅" if p.get("enabled") else "⛔"
+                        lines.append(f"  {status} {p.get('icon','🔌')} {p['name']} v{p.get('version','1.0')} — {p.get('description','')}")
+                    parts.append("\n".join(lines))
+                else:
+                    parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
+
+            # 2. Запуск плагина вручную
+            run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
+            if any(t in ql for t in run_plugin_triggers):
+                name_match = _re.search(r"плагин\s+(\S+)", user_input, _re.IGNORECASE)
+                if not name_match:
+                    name_match = _re.search(r"plugin\s+(\S+)", user_input, _re.IGNORECASE)
+                if name_match:
+                    result = run_plugin(name_match.group(1), {"text": user_input})
+                    parts.append(f"🔌 {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
+
+            # 3. Авто-триггеры — плагины сами определяют на что реагировать
+            triggered = run_triggered(user_input)
+            for tr in triggered:
+                parts.append(f"🔌 [{tr['plugin']}]: {json.dumps(tr, ensure_ascii=False)[:2000]}")
+
+            # 4. on_message хук — каждый плагин может добавить контекст
+            hook_results = fire_hook("on_message", user_input)
+            for hr in hook_results:
+                if hr.get("result"):
+                    parts.append(f"🔌 [{hr['plugin']}]: {hr['result']}")
+
         except Exception as e:
             parts.append(f"SKILL_ERROR:🔌 Плагины: {e}")
-
-    run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
-    if "plugins" not in disabled and any(t in ql for t in run_plugin_triggers):
-        try:
-            from app.services.plugin_system import run_plugin
-            name_match = _re.search(r"плагин\s+(\S+)", user_input, _re.IGNORECASE)
-            if not name_match:
-                name_match = _re.search(r"plugin\s+(\S+)", user_input, _re.IGNORECASE)
-            if name_match:
-                result = run_plugin(name_match.group(1))
-                parts.append(f"🔌 Плагин {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:🔌 Плагин: {e}")
 
     # ─── 📑 PDF Pro ───
     pdf_word_triggers = ["конвертируй pdf в word", "pdf в word", "pdf to word", "pdf в docx"]

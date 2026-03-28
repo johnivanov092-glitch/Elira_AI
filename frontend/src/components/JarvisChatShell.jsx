@@ -167,6 +167,8 @@ export default function JarvisChatShell() {
   const [showPanel, setShowPanel] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [mobileSidebar, setMobileSidebar] = useState(false);
+  const [pluginList, setPluginList] = useState([]);
+  const [dashData, setDashData] = useState(null);
   const [multiAgent, setMultiAgent] = useState(false);
   const [lastInput, setLastInput] = useState("");
   const [lastModel, setLastModel] = useState("");
@@ -286,6 +288,14 @@ export default function JarvisChatShell() {
       setModelOpts(ml);
       return ml;
     } catch { return []; }
+  }
+
+  async function loadDashboard() {
+    try { const r = await fetch("/api/dashboard/stats"); setDashData(await r.json()); } catch {}
+  }
+
+  async function loadPluginList() {
+    try { const r = await fetch("/api/extra/plugins/list"); const d = await r.json(); setPluginList(d.plugins || []); } catch {}
   }
 
   async function loadChats(sel = "") { setChats(await api.listChats() || []); if (sel) setChatId(sel); }
@@ -545,8 +555,8 @@ export default function JarvisChatShell() {
       <aside className={`jarvis-sidebar ${mobileSidebar?"mobile-open":""}`}>
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>
         <div className="sidebar-nav">
-          {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["settings","⚙ Настройки"]].map(([k,l]) => (
-            <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => { setSideTab(k); setMobileSidebar(false); if(k==="settings"){setSettingsModel(model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();} }}>{l}</button>
+          {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["dashboard","📊 Dashboard"],["settings","⚙ Настройки"]].map(([k,l]) => (
+            <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => { setSideTab(k); setMobileSidebar(false); if(k==="settings"){setSettingsModel(model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();loadPluginList();}if(k==="dashboard"){loadDashboard();} }}>{l}</button>
           ))}
         </div>
         <div className="sidebar-nav-item search-shell">
@@ -585,7 +595,7 @@ export default function JarvisChatShell() {
 
         <div className="chat-page">
           <div className="chat-header-row">
-            <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}{sideTab==="project"&&"Проект"}</div>
+            <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}{sideTab==="project"&&"Проект"}{sideTab==="dashboard"&&"Dashboard"}</div>
             {sideTab === "chats" && chatId && (
               <div className="chat-header-actions icon-actions" style={{display:"flex"}}>
                 <div className="export-dropdown-wrap" style={{position:"relative"}}>
@@ -607,7 +617,93 @@ export default function JarvisChatShell() {
 
           {renaming && sideTab==="chats" && <div className="rename-bar"><input value={renameVal} onChange={e=>setRenameVal(e.target.value)} className="rename-input wide" placeholder="Название"/><button className="mini-btn" onClick={renameActive}>OK</button></div>}
 
-          {sideTab === "settings" ? (
+          {sideTab === "dashboard" ? (
+            <div className="settings-main-card" style={{overflow:"auto"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>📊 Dashboard</div>
+                <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={loadDashboard}>↻ Обновить</button>
+              </div>
+              {!dashData ? <div style={{color:"var(--text-muted)",fontSize:12}}>Загрузка...</div> : (
+                <>
+                  {/* Карточки статистики */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:16}}>
+                    {[
+                      {label:"Запросов",value:dashData.total_runs||0,icon:"💬"},
+                      {label:"Сегодня",value:dashData.today||0,icon:"📅"},
+                      {label:"За неделю",value:dashData.this_week||0,icon:"📆"},
+                      {label:"Успешность",value:`${dashData.success_rate||0}%`,icon:"✅"},
+                      {label:"Чатов",value:dashData.chats||0,icon:"💭"},
+                      {label:"Сообщений",value:dashData.messages||0,icon:"📨"},
+                      {label:"Ср. длина",value:dashData.avg_answer_length||0,icon:"📏"},
+                      {label:"Плагинов",value:dashData.plugins||0,icon:"🔌"},
+                    ].map(s=>(
+                      <div key={s.label} style={{padding:"12px",borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",textAlign:"center"}}>
+                        <div style={{fontSize:20,marginBottom:4}}>{s.icon}</div>
+                        <div style={{fontSize:18,fontWeight:700,color:"var(--text)"}}>{s.value}</div>
+                        <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2}}>{s.label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Активность по дням — мини-график */}
+                  {dashData.daily_activity && (
+                    <div style={{marginBottom:16}}>
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:8}}>Активность (14 дней)</div>
+                      <div style={{display:"flex",alignItems:"flex-end",gap:3,height:80,padding:"0 4px"}}>
+                        {dashData.daily_activity.map((d,i)=>{
+                          const max = Math.max(...dashData.daily_activity.map(x=>x.count),1);
+                          const h = Math.max(4, (d.count/max)*70);
+                          return <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                            <div style={{fontSize:8,color:"var(--text-muted)"}}>{d.count||""}</div>
+                            <div style={{width:"100%",height:h,borderRadius:3,background:d.count?"var(--accent)":"var(--border)",opacity:d.count?1:0.3,transition:"height .3s"}}/>
+                            <div style={{fontSize:7,color:"var(--text-muted)",whiteSpace:"nowrap"}}>{d.date}</div>
+                          </div>
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Топ моделей */}
+                  {dashData.top_models?.length > 0 && (
+                    <div style={{marginBottom:16}}>
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:6}}>Модели</div>
+                      {dashData.top_models.map(m=>{
+                        const pct = dashData.total_runs ? Math.round(m.count/dashData.total_runs*100) : 0;
+                        return <div key={m.model} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                          <div style={{fontSize:11,color:"var(--text)",minWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.model}</div>
+                          <div style={{flex:1,height:6,borderRadius:3,background:"var(--border)",overflow:"hidden"}}><div style={{width:`${pct}%`,height:"100%",borderRadius:3,background:"var(--accent)"}}/></div>
+                          <div style={{fontSize:10,color:"var(--text-muted)",minWidth:40,textAlign:"right"}}>{m.count} ({pct}%)</div>
+                        </div>
+                      })}
+                    </div>
+                  )}
+
+                  {/* Топ роутов */}
+                  {dashData.top_routes?.length > 0 && (
+                    <div style={{marginBottom:16}}>
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:6}}>Типы задач</div>
+                      {dashData.top_routes.map(r=>(
+                        <div key={r.route} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"3px 0",borderBottom:"1px solid var(--border)"}}>
+                          <span style={{color:"var(--text)"}}>{r.route || "—"}</span>
+                          <span style={{color:"var(--text-muted)"}}>{r.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Память */}
+                  {dashData.memory && typeof dashData.memory === "object" && (
+                    <div>
+                      <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:6}}>Память</div>
+                      <div style={{fontSize:11,color:"var(--text-muted)"}}>
+                        Всего: {dashData.memory.total || dashData.memory.count || 0} записей
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          ) : sideTab === "settings" ? (
             <div className="settings-main-card">
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
                 <div style={{fontSize:13,fontWeight:600,color:"var(--text)"}}>Настройки по умолчанию</div>
@@ -696,6 +792,25 @@ export default function JarvisChatShell() {
               >{settingsSaved?"✓ Сохранено":"Сохранить"}</button>
               <div style={{marginTop:18}}><div className="settings-title" style={{marginBottom:8}}>Skills</div><div className="settings-desc" style={{marginBottom:10}}>Включи / выключи возможности</div>
                 <div className="skills-grid">{SKILLS.map(s=><button key={s.id} className={`skill-chip ${skills.includes(s.id)?"active":""}`} onClick={()=>toggleSkill(s.id)} title={s.desc}>{s.label}</button>)}</div>
+              </div>
+              <div style={{marginTop:18}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                  <div className="settings-title">Плагины</div>
+                  <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={async()=>{try{const r=await fetch("/api/extra/plugins/reload",{method:"POST"});const d=await r.json();setPluginList(d.loaded?.map(n=>({name:n,enabled:true}))||[]);await loadPluginList()}catch{}}}>↻ Перезагрузить</button>
+                </div>
+                <div className="settings-desc" style={{marginBottom:10}}>Пользовательские .py скрипты в data/plugins/</div>
+                {pluginList.length===0 && <div style={{fontSize:11,color:"var(--text-muted)",padding:"8px 0"}}>Плагинов нет. Положи .py файлы в backend/data/plugins/</div>}
+                {pluginList.map(p=>(
+                  <div key={p.name} style={{padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                    <div>
+                      <span style={{fontSize:14,marginRight:6}}>{p.icon||"🔌"}</span>
+                      <span style={{fontWeight:600,fontSize:12}}>{p.name}</span>
+                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{p.description||""}</span>
+                      {p.version && <span style={{fontSize:9,color:"var(--text-muted)",marginLeft:6}}>v{p.version}</span>}
+                    </div>
+                    <button className={`skill-chip ${p.enabled?"active":""}`} style={{fontSize:10,padding:"2px 10px"}} onClick={async()=>{try{await fetch(`/api/extra/plugins/${p.enabled?"disable":"enable"}/${p.name}`,{method:"POST"});await loadPluginList()}catch{}}}>{p.enabled?"Вкл":"Выкл"}</button>
+                  </div>
+                ))}
               </div>
             </div>
           ) : sideTab === "library" ? (
