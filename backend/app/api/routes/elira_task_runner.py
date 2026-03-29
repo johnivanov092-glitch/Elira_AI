@@ -8,9 +8,9 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/api/jarvis/task", tags=["jarvis-task-runner"])
+router = APIRouter(prefix="/api/elira/task", tags=["elira-task-runner"])
 
-DB_PATH = Path("data/jarvis_state.db")
+DB_PATH = Path("data/elira_state.db")
 
 
 def ensure_db() -> None:

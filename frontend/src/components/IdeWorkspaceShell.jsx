@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TerminalPanel from "./TerminalPanel";
 
-const LIBRARY_KEY = "jarvis_library_files_v7";
+const LIBRARY_KEY = "elira_library_files_v7";
 const API = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
 function makeId(p="id"){return`${p}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;}

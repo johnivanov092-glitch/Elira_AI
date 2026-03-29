@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import List
 from datetime import datetime
 
-router = APIRouter(prefix="/api/jarvis/phase20", tags=["jarvis-phase20-queue"])
+router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20-queue"])
 
 
 class PreviewQueuePayload(BaseModel):

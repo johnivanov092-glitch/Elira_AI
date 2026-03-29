@@ -9,9 +9,9 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/api/jarvis/supervisor", tags=["jarvis-supervisor"])
+router = APIRouter(prefix="/api/elira/supervisor", tags=["elira-supervisor"])
 
-DB_PATH = Path("data/jarvis_state.db")
+DB_PATH = Path("data/elira_state.db")
 PROJECT_ROOT = Path(".").resolve()
 BLOCKED_PARTS = {
     ".git",

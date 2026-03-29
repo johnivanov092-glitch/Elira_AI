@@ -1,5 +1,5 @@
 /**
- * ide.js — API-слой Jarvis.
+ * ide.js — API-слой Elira AI.
  *
  * Изменения:
  *   • executeStream() — SSE-стриминг через fetch + ReadableStream
@@ -84,17 +84,17 @@ function extractAgentError(payload) {
 }
 
 export async function listChats() {
-  const payload = await safeRequest("/api/jarvis/chats", {}, []);
+  const payload = await safeRequest("/api/elira/chats", {}, []);
   return normalizeArray(payload).map(normalizeChat);
 }
 
 export async function createChat(body = {}) {
-  return normalizeChat(unwrapItem(await request("/api/jarvis/chats", { method: "POST", body })));
+  return normalizeChat(unwrapItem(await request("/api/elira/chats", { method: "POST", body })));
 }
 
 export async function renameChat(arg1, arg2) {
   const p = typeof arg1 === "object" && arg1 !== null ? arg1 : { id: arg1, title: arg2 };
-  return normalizeChat(unwrapItem(await request(`/api/jarvis/chats/${encodeURIComponent(p.id)}`, {
+  return normalizeChat(unwrapItem(await request(`/api/elira/chats/${encodeURIComponent(p.id)}`, {
     method: "PATCH",
     body: { title: p.title },
   })));
@@ -102,7 +102,7 @@ export async function renameChat(arg1, arg2) {
 
 export async function pinChat(arg1, arg2) {
   const p = typeof arg1 === "object" && arg1 !== null ? arg1 : { id: arg1, pinned: arg2 };
-  return normalizeChat(unwrapItem(await request(`/api/jarvis/chats/${encodeURIComponent(p.id)}/pin`, {
+  return normalizeChat(unwrapItem(await request(`/api/elira/chats/${encodeURIComponent(p.id)}/pin`, {
     method: "PATCH",
     body: { pinned: Boolean(p.pinned) },
   })));
@@ -110,7 +110,7 @@ export async function pinChat(arg1, arg2) {
 
 export async function saveChatToMemory(arg1, arg2) {
   const p = typeof arg1 === "object" && arg1 !== null ? arg1 : { id: arg1, saved: arg2 };
-  return normalizeChat(unwrapItem(await request(`/api/jarvis/chats/${encodeURIComponent(p.id)}/memory`, {
+  return normalizeChat(unwrapItem(await request(`/api/elira/chats/${encodeURIComponent(p.id)}/memory`, {
     method: "PATCH",
     body: { memory_saved: Boolean(p.saved) },
   })));
@@ -118,17 +118,17 @@ export async function saveChatToMemory(arg1, arg2) {
 
 export async function deleteChat(arg) {
   const id = typeof arg === "object" && arg !== null ? arg.id : arg;
-  return request(`/api/jarvis/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return request(`/api/elira/chats/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function getMessages(arg) {
   const chatId = typeof arg === "object" && arg !== null ? arg.chatId : arg;
-  const payload = await safeRequest(`/api/jarvis/chats/${encodeURIComponent(chatId)}/messages`, {}, []);
+  const payload = await safeRequest(`/api/elira/chats/${encodeURIComponent(chatId)}/messages`, {}, []);
   return normalizeArray(payload).map(normalizeMessage);
 }
 
 export async function addMessage(body = {}) {
-  return normalizeMessage(unwrapItem(await request("/api/jarvis/messages", {
+  return normalizeMessage(unwrapItem(await request("/api/elira/messages", {
     method: "POST",
     body: {
       chat_id: body.chatId ?? body.chat_id ?? null,
@@ -287,19 +287,19 @@ export function executeStream(body = {}, { onToken, onDone, onError, onPhase } =
 
 
 export async function listOllamaModels() {
-  const payload = await safeRequest("/api/jarvis/models", {}, []);
+  const payload = await safeRequest("/api/elira/models", {}, []);
   if (Array.isArray(payload?.models)) return { models: payload.models };
   if (Array.isArray(payload?.items)) return { models: payload.items };
   if (Array.isArray(payload)) return { models: payload };
   return { models: [] };
 }
 
-export async function getSettings() { return safeRequest("/api/jarvis/settings", {}, {}); }
+export async function getSettings() { return safeRequest("/api/elira/settings", {}, {}); }
 export async function updateSettings(body = {}) {
-  return request("/api/jarvis/settings", { method: "PUT", body });
+  return request("/api/elira/settings", { method: "PUT", body });
 }
-export async function searchJarvis(query = "") { return normalizeArray(await safeRequest(`/api/jarvis/search?q=${encodeURIComponent(query)}`, {}, [])); }
-export async function listProjects() { return normalizeArray(await safeRequest("/api/jarvis/projects", {}, [])); }
+export async function searchElira(query = "") { return normalizeArray(await safeRequest(`/api/elira/search?q=${encodeURIComponent(query)}`, {}, [])); }
+export async function listProjects() { return normalizeArray(await safeRequest("/api/elira/projects", {}, [])); }
 
 export async function getProjectSnapshot() {
   const payload = await request("/api/project-brain/snapshot");
@@ -312,24 +312,24 @@ export async function listPatchHistory({ path = "", limit = 20 } = {}) {
   const query = new URLSearchParams();
   if (path) query.set("path", path);
   if (limit) query.set("limit", String(limit));
-  const payload = await safeRequest(`/api/jarvis/patch/history/list${query.toString() ? `?${query.toString()}` : ""}`, {}, { items: [] });
+  const payload = await safeRequest(`/api/elira/patch/history/list${query.toString() ? `?${query.toString()}` : ""}`, {}, { items: [] });
   return { ...payload, items: normalizeArray(payload) };
 }
-export async function previewPatch(body = {}) { return request("/api/jarvis/patch/diff", { method: "POST", body }); }
-export async function applyPatch(body = {}) { return request("/api/jarvis/patch/apply", { method: "POST", body }); }
-export async function rollbackPatch(body = {}) { return request("/api/jarvis/patch/rollback", { method: "POST", body }); }
-export async function verifyPatch(body = {}) { return request("/api/jarvis/patch/verify", { method: "POST", body }); }
+export async function previewPatch(body = {}) { return request("/api/elira/patch/diff", { method: "POST", body }); }
+export async function applyPatch(body = {}) { return request("/api/elira/patch/apply", { method: "POST", body }); }
+export async function rollbackPatch(body = {}) { return request("/api/elira/patch/rollback", { method: "POST", body }); }
+export async function verifyPatch(body = {}) { return request("/api/elira/patch/verify", { method: "POST", body }); }
 export async function listRunHistory() {
-  const payload = await safeRequest("/api/jarvis/run-history/list", {}, { items: [] });
+  const payload = await safeRequest("/api/elira/run-history/list", {}, { items: [] });
   return { ...payload, items: normalizeArray(payload) };
 }
-export async function autocodeSuggest(body = {}) { return request("/api/jarvis/autocode/suggest", { method: "POST", body }); }
-export async function autocodeLoop(body = {}) { return request("/api/jarvis/autocode/loop", { method: "POST", body }); }
+export async function autocodeSuggest(body = {}) { return request("/api/elira/autocode/suggest", { method: "POST", body }); }
+export async function autocodeLoop(body = {}) { return request("/api/elira/autocode/loop", { method: "POST", body }); }
 
 export const api = {
   listChats, createChat, renameChat, pinChat, saveChatToMemory, deleteChat,
   getMessages, addMessage, sendMessage, execute, executeStream, listOllamaModels,
-  getSettings, updateSettings, searchJarvis, listProjects,
+  getSettings, updateSettings, searchElira, listProjects,
   getProjectSnapshot, getProjectFile, getProjectBrainStatus,
   listPatchHistory, previewPatch, applyPatch, rollbackPatch, verifyPatch,
   listRunHistory, autocodeSuggest, autocodeLoop,

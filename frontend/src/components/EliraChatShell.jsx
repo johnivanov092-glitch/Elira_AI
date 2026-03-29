@@ -1,5 +1,5 @@
 /**
- * JarvisChatShell.jsx — v3
+ * EliraChatShell.jsx — v3
  *
  * Фиксы:
  *   • Индикатор прогресса: "Поиск...", "Генерация...", "Проверка..."
@@ -16,8 +16,18 @@ import MemoryPanel from "./MemoryPanel";
 import ProjectPanel from "./ProjectPanel";
 import "../styles/markdown.css";
 
-const LIBRARY_KEY = "jarvis_library_files_v7";
-const CHAT_CONTEXT_KEY = "jarvis_chat_context_map_v7";
+const LIBRARY_KEY = "elira_library_files_v7";
+const CHAT_CONTEXT_KEY = "elira_chat_context_map_v7";
+
+// Миграция старых localStorage ключей
+["jarvis_library_files_v7", "jarvis_chat_context_map_v7", "jarvis_theme"].forEach(oldKey => {
+  const val = localStorage.getItem(oldKey);
+  if (val !== null) {
+    const newKey = oldKey.replace("jarvis_", "elira_");
+    if (!localStorage.getItem(newKey)) localStorage.setItem(newKey, val);
+    localStorage.removeItem(oldKey);
+  }
+});
 const MAX_HISTORY_PAIRS = 10;
 
 const PROFILE_DESCRIPTIONS = {
@@ -134,7 +144,7 @@ const MessageItem = React.memo(function MessageItem({ msg }) {
   );
 });
 
-export default function JarvisChatShell() {
+export default function EliraChatShell() {
   const fileRef = useRef(null);
   const msgRef = useRef(null);
   const taRef = useRef(null);
@@ -191,7 +201,7 @@ export default function JarvisChatShell() {
   const [settingsContext, setSettingsContext] = useState(8192);
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [routeMap, setRouteMap] = useState({ code: [], project: [], research: [], chat: [] });
-  const [theme, setTheme] = useState(() => localStorage.getItem("jarvis_theme") || "dark");
+  const [theme, setTheme] = useState(() => localStorage.getItem("elira_theme") || "dark");
 
   const API_URL = import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
 
@@ -211,7 +221,7 @@ export default function JarvisChatShell() {
   // Тема: применяем к document
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("jarvis_theme", theme);
+    localStorage.setItem("elira_theme", theme);
   }, [theme]);
 
   // Глобальные горячие клавиши
@@ -594,9 +604,9 @@ export default function JarvisChatShell() {
   if (mainTab === "code") return <IdeWorkspaceShell messages={messages} libraryFiles={libraryFiles} setLibraryFiles={setLibraryFiles} onBackToChat={() => setMainTab("chat")} onSendToChat={(txt) => { setMainTab("chat"); setTimeout(() => setInput(txt), 100); }} />;
 
   return (
-    <div className="jarvis-shell" style={showPanel && sideTab === "chats" ? {gridTemplateColumns: "200px 1fr auto"} : undefined}>
+    <div className="elira-shell" style={showPanel && sideTab === "chats" ? {gridTemplateColumns: "200px 1fr auto"} : undefined}>
       {mobileSidebar && <div className="mobile-overlay" onClick={()=>setMobileSidebar(false)}/>}
-      <aside className={`jarvis-sidebar ${mobileSidebar?"mobile-open":""}`}>
+      <aside className={`elira-sidebar ${mobileSidebar?"mobile-open":""}`}>
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>
         <div className="sidebar-nav">
           {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["tasks","📅 Задачи"],["dashboard","📊 Dashboard"],["pipelines","🔄 Pipelines"],["telegram","✈️ Telegram"],["settings","⚙ Настройки"]].map(([k,l]) => (
@@ -626,10 +636,10 @@ export default function JarvisChatShell() {
         </div>
       </aside>
 
-      <main className="jarvis-main">
-        <div className="jarvis-topbar slim">
+      <main className="elira-main">
+        <div className="elira-topbar slim">
           <button className="mobile-burger" onClick={()=>setMobileSidebar(v=>!v)}>☰</button>
-          <div className="jarvis-brand"><svg width="22" height="22" viewBox="0 0 64 64" fill="none" style={{marginRight:7,verticalAlign:"middle",marginTop:-2}}><defs><linearGradient id="jg" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jg)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jg)"/></svg>Elira AI</div>
+          <div className="elira-brand"><svg width="22" height="22" viewBox="0 0 64 64" fill="none" style={{marginRight:7,verticalAlign:"middle",marginTop:-2}}><defs><linearGradient id="jg" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jg)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jg)"/></svg>Elira AI</div>
           <div className="topbar-tabs">
             <button className={`soft-btn ${mainTab==="chat"?"active":""}`} onClick={() => setMainTab("chat")}>Chat</button>
             <button className={`soft-btn ${mainTab==="code"?"active":""}`} onClick={() => setMainTab("code")}>Code</button>
@@ -1242,7 +1252,7 @@ export default function JarvisChatShell() {
             <ProjectPanel />
           ) : (
             <>
-              {ctxF.length > 0 && <div className="context-bar"><div className="context-bar-title">📎 {ctxF.length} файлов доступно (упомяни «файл» или «документ»)</div><div className="context-tags">{ctxF.map(f=><span key={f.id} className="context-tag">{f.name}</span>)}</div></div>}
+              {ctxF.length > 0 && <div className="context-bar"><div className="context-bar-title">📎 {ctxF.length} файлов доступно (упомяни «файл» или «документ»)</div><div className="context-tags">{ctxF.map(f=><span key={f.id} className="context-tag">{f.name}<button className="context-tag-remove" onClick={()=>toggleCtx(f.id,false)} title="Убрать из контекста">✕</button></span>)}</div></div>}
               {messages.length === 0 && !streaming && <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}><div style={{textAlign:"center",color:"var(--text-muted)"}}><svg width="48" height="48" viewBox="0 0 64 64" fill="none" style={{marginBottom:12,opacity:0.4}}><defs><linearGradient id="jgw" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jgw)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jgw)"/></svg><div style={{fontSize:14}}>Чем могу помочь?</div></div></div>}
 
               <div className="message-stream compact-stream" ref={msgRef}>

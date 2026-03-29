@@ -1,19 +1,19 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes.jarvis_state import router as jarvis_state_router
+from app.api.routes.elira_state import router as elira_state_router
 from app.api.routes.project_brain import router as project_brain_router
-from app.api.routes.jarvis_execute import router as jarvis_execute_router
-from app.api.routes.jarvis_patch import router as jarvis_patch_router
-from app.api.routes.jarvis_devtools import router as jarvis_devtools_router
-from app.api.routes.jarvis_task_runner import router as jarvis_task_runner_router
-from app.api.routes.jarvis_supervisor import router as jarvis_supervisor_router
-from app.api.routes.jarvis_phase19 import router as jarvis_phase19_router
-from app.api.routes.jarvis_phase20 import router as jarvis_phase20_router
-from app.api.routes.jarvis_phase20_queue import router as jarvis_phase20_queue_router
-from app.api.routes.jarvis_phase20_state import router as jarvis_phase20_state_router
-from app.api.routes.jarvis_phase21 import router as jarvis_phase21_router
-from app.api.routes.jarvis_stabilization import router as jarvis_stabilization_router
+from app.api.routes.elira_execute import router as elira_execute_router
+from app.api.routes.elira_patch import router as elira_patch_router
+from app.api.routes.elira_devtools import router as elira_devtools_router
+from app.api.routes.elira_task_runner import router as elira_task_runner_router
+from app.api.routes.elira_supervisor import router as elira_supervisor_router
+from app.api.routes.elira_phase19 import router as elira_phase19_router
+from app.api.routes.elira_phase20 import router as elira_phase20_router
+from app.api.routes.elira_phase20_queue import router as elira_phase20_queue_router
+from app.api.routes.elira_phase20_state import router as elira_phase20_state_router
+from app.api.routes.elira_phase21 import router as elira_phase21_router
+from app.api.routes.elira_stabilization import router as elira_stabilization_router
 
 from app.api.routes.chat import router as chat_router
 from app.api.routes.models import router as models_router
@@ -59,19 +59,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(jarvis_state_router)
+app.include_router(elira_state_router)
 app.include_router(project_brain_router)
-app.include_router(jarvis_execute_router)
-app.include_router(jarvis_patch_router)
-app.include_router(jarvis_devtools_router)
-app.include_router(jarvis_task_runner_router)
-app.include_router(jarvis_supervisor_router)
-app.include_router(jarvis_phase19_router)
-app.include_router(jarvis_phase20_router)
-app.include_router(jarvis_phase20_queue_router)
-app.include_router(jarvis_phase20_state_router)
-app.include_router(jarvis_phase21_router)
-app.include_router(jarvis_stabilization_router)
+app.include_router(elira_execute_router)
+app.include_router(elira_patch_router)
+app.include_router(elira_devtools_router)
+app.include_router(elira_task_runner_router)
+app.include_router(elira_supervisor_router)
+app.include_router(elira_phase19_router)
+app.include_router(elira_phase20_router)
+app.include_router(elira_phase20_queue_router)
+app.include_router(elira_phase20_state_router)
+app.include_router(elira_phase21_router)
+app.include_router(elira_stabilization_router)
 
 app.include_router(chat_router)
 app.include_router(models_router)

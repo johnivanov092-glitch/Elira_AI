@@ -74,7 +74,7 @@ def execute_python_with_capture(
       - sys.exit() / os._exit() → не роняет Streamlit
       - импорт тяжёлых либ → отдельный процесс, не засоряет память
     """
-    with tempfile.TemporaryDirectory(prefix="jarvis_exec_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="elira_exec_") as tmp:
         tmp_path  = Path(tmp)
         code_file = tmp_path / "_run.py"
 
@@ -264,7 +264,7 @@ def run_build_loop(
         project_context, file_context, num_ctx,
     )
 
-    with tempfile.TemporaryDirectory(prefix="jarvis_build_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="elira_build_") as tmp:
         tmp_path    = Path(tmp)
         target_path = tmp_path / Path(target_file).name
 

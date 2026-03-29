@@ -9,9 +9,9 @@ from typing import List
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/api/jarvis/phase20", tags=["jarvis-phase20"])
+router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20"])
 
-DB_PATH = Path("data/jarvis_state.db")
+DB_PATH = Path("data/elira_state.db")
 PROJECT_ROOT = Path(".").resolve()
 BLOCKED_PARTS = {
     ".git", "node_modules", ".venv", "__pycache__", "dist", "build", "target"

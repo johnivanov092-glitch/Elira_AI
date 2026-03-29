@@ -43,7 +43,7 @@ EXCLUDED_PARTS = {
     "tmp",
     "temp",
     "logs",
-    ".jarvis_chat_uploads",
+    ".elira_chat_uploads",
     "data/chat_uploads_tmp",
 }
 TEXT_SUFFIXES = {
@@ -122,7 +122,7 @@ LEGACY_AGENT_CATALOG = [
         "id": "image_generation",
         "title": "Image generation",
         "kind": "media",
-        "description": "Наследуемый image-flow из старого Jarvis: routing и prompt prep для будущей генерации.",
+        "description": "Наследуемый image-flow из ранней версии Elira: routing и prompt prep для будущей генерации.",
     },
 ]
 
@@ -221,7 +221,7 @@ def _safe_filename(name: str) -> str:
 
 def _extract_text_from_docx(data: bytes) -> str:
     try:
-        with tempfile.TemporaryDirectory(prefix="jarvis_docx_") as tmp:
+        with tempfile.TemporaryDirectory(prefix="elira_docx_") as tmp:
             path = Path(tmp) / "file.docx"
             path.write_bytes(data)
             with zipfile.ZipFile(path, "r") as zf:

@@ -1,5 +1,5 @@
 """
-skills_service.py — 4 скилла Jarvis.
+skills_service.py — 4 скилла Elira AI.
 
 1. Генерация Word/Excel
 2. SQL запросы (SQLite)
@@ -54,7 +54,7 @@ def generate_word(title: str, content: str, filename: str = "") -> dict:
         else:
             doc.add_paragraph(line)
 
-    fname = filename or f"jarvis_{int(time.time())}.docx"
+    fname = filename or f"elira_{int(time.time())}.docx"
     if not fname.endswith(".docx"):
         fname += ".docx"
     path = OUTPUT_DIR / fname
@@ -91,7 +91,7 @@ def generate_excel(title: str, data: list, headers: list = None, filename: str =
         max_len = max((len(str(cell.value or "")) for cell in col), default=8)
         ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 50)
 
-    fname = filename or f"jarvis_{int(time.time())}.xlsx"
+    fname = filename or f"elira_{int(time.time())}.xlsx"
     if not fname.endswith(".xlsx"):
         fname += ".xlsx"
     path = OUTPUT_DIR / fname

@@ -85,11 +85,11 @@ def dashboard_stats():
     chat_count = 0
     message_count = 0
     try:
-        from app.services.jarvis_memory_sqlite import list_chats
+        from app.services.elira_memory_sqlite import list_chats
         chats = list_chats()
         chat_count = len(chats)
         # Считаем общее кол-во сообщений
-        from app.services.jarvis_memory_sqlite import get_messages
+        from app.services.elira_memory_sqlite import get_messages
         for c in chats[:50]:  # Лимитируем для скорости
             msgs = get_messages(c["id"])
             message_count += len(msgs) if msgs else 0

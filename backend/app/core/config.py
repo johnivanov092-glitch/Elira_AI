@@ -60,7 +60,7 @@ _FALLBACK_ROUTE_MAP: dict[str, list[str]] = {
 def _get_route_map() -> dict[str, list[str]]:
     """Загружает маппинг из БД. При ошибке — фоллбэк."""
     try:
-        from app.services.jarvis_settings_sqlite import get_route_model_map
+        from app.services.elira_settings_sqlite import get_route_model_map
         return get_route_model_map()
     except Exception:
         return _FALLBACK_ROUTE_MAP

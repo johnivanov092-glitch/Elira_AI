@@ -1,5 +1,5 @@
 """
-skills_extra.py — дополнительные скиллы Jarvis.
+skills_extra.py — дополнительные скиллы Elira AI.
 
 1. 🔐 Шифрование заметок (AES через Fernet)
 2. 📦 Архиватор (ZIP создание/распаковка)
@@ -35,7 +35,7 @@ BACKEND_UPLOADS = Path("data/uploads")
 # 1. ШИФРОВАНИЕ (Fernet = AES-128-CBC)
 # ═══════════════════════════════════════════════════════════════
 
-_KEY_FILE = Path("data/jarvis_secret.key")
+_KEY_FILE = Path("data/elira_secret.key")
 
 
 def _get_fernet():

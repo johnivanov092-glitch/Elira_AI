@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/api/jarvis", tags=["jarvis-devtools"])
+router = APIRouter(prefix="/api/elira", tags=["elira-devtools"])
 
 PROJECT_ROOT = Path(".").resolve()
 BLOCKED_PARTS = {

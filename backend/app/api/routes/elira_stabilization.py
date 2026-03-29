@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any
 from datetime import datetime
 
-router = APIRouter(prefix="/api/jarvis/stabilization", tags=["jarvis-stabilization"])
+router = APIRouter(prefix="/api/elira/stabilization", tags=["elira-stabilization"])
 
 
 class PreflightPayload(BaseModel):

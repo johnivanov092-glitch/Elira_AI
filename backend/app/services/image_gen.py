@@ -148,7 +148,7 @@ def generate_image(
         image = result.images[0]
 
         # Сохраняем
-        fname = filename or f"jarvis_img_{int(time.time())}.png"
+        fname = filename or f"elira_img_{int(time.time())}.png"
         if not fname.endswith(".png"):
             fname += ".png"
         path = OUTPUT_DIR / fname

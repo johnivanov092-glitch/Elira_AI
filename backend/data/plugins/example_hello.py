@@ -1,6 +1,6 @@
-"""Пример плагина Jarvis."""
+"""Пример плагина Elira AI."""
 DESCRIPTION = "Приветствие — пример плагина"
-AUTHOR = "Jarvis"
+AUTHOR = "Elira AI"
 VERSION = "1.0"
 
 def run(args: dict) -> dict:

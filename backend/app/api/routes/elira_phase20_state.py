@@ -8,9 +8,9 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import List
 
-router = APIRouter(prefix="/api/jarvis/phase20", tags=["jarvis-phase20-state"])
+router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20-state"])
 
-DB_PATH = Path("data/jarvis_state.db")
+DB_PATH = Path("data/elira_state.db")
 
 def ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)

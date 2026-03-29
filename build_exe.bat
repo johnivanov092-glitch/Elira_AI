@@ -1,12 +1,12 @@
 @echo off
 REM ═══════════════════════════════════════════════════
-REM Jarvis Build — собирает .exe установщик
+REM Elira AI Build — собирает .exe установщик
 REM Запускай из корня проекта
 REM ═══════════════════════════════════════════════════
 
 echo.
-echo   Jarvis Build - сборка установщика
-echo   ==================================
+echo   Elira AI Build - сборка установщика
+echo   =====================================
 echo.
 echo   Требования:
 echo     - Node.js 18+
@@ -29,8 +29,8 @@ if errorlevel 1 ( echo [ERROR] Tauri build failed! & pause & exit /b 1 )
 echo.
 echo [3/3] Готово!
 echo.
-echo   Установщик: src-tauri\target\release\bundle\nsis\Jarvis_0.2.0_x64-setup.exe
-echo   Портативный: src-tauri\target\release\Jarvis.exe
+echo   Установщик: src-tauri\target\release\bundle\nsis\Elira_0.2.0_x64-setup.exe
+echo   Портативный: src-tauri\target\release\Elira.exe
 echo.
 echo   ВАЖНО: .exe содержит только фронтенд.
 echo   Бекенд (Python + Ollama) нужно запускать отдельно:

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.jarvis_memory_sqlite import (
+from app.services.elira_memory_sqlite import (
     init_db,
     list_chats,
     create_chat,
@@ -13,10 +13,10 @@ from app.services.jarvis_memory_sqlite import (
     get_messages,
     add_message,
 )
-from app.services.jarvis_settings_sqlite import get_settings, save_settings
+from app.services.elira_settings_sqlite import get_settings, save_settings
 from app.services.ollama_runtime_service import list_ollama_models
 
-router = APIRouter(prefix="/api/jarvis", tags=["jarvis-state"])
+router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 
 
 class ChatCreateRequest(BaseModel):

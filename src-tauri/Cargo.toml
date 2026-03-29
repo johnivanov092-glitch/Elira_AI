@@ -1,8 +1,8 @@
 [package]
-name = "jarvis-desktop"
-version = "0.1.0"
-description = "Jarvis Work desktop shell"
-authors = ["OpenAI"]
+name = "elira-desktop"
+version = "0.2.0"
+description = "Elira AI desktop shell"
+authors = ["Elira AI"]
 edition = "2021"
 
 [build-dependencies]
