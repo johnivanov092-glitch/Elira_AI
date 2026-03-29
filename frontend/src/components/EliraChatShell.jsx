@@ -89,15 +89,22 @@ function humanizeValue(value) {
 
 function capabilityLabel(key) {
   return {
-    vector_memory: "Vector memory",
-    screenshot: "Screenshot",
+    vector_memory: "Векторная память",
+    screenshot: "Скриншоты",
   }[key] || humanizeValue(key);
 }
 
 function capabilityStateText(capability = {}) {
-  if (capability.available) return "Available";
+  if (capability.available) return "Доступно";
+  if (capability.reason === "optional_dependency_missing") return "Не хватает модулей";
   if (capability.reason) return humanizeValue(capability.reason);
-  return "Unavailable";
+  return "Недоступно";
+}
+
+function capabilityModeText(mode) {
+  return {
+    keyword_fallback: "Резервный поиск по ключевым словам",
+  }[mode] || humanizeValue(mode);
 }
 
 function PanelNotice({ title, message, onRetry, tone = "error" }) {
@@ -134,7 +141,7 @@ function PanelNotice({ title, message, onRetry, tone = "error" }) {
         </div>
         {onRetry && (
           <button className="soft-btn" style={{ fontSize: 10, padding: "3px 10px", border: "1px solid var(--border)", borderRadius: 6, flexShrink: 0 }} onClick={onRetry}>
-            Retry
+            Повторить
           </button>
         )}
       </div>
@@ -148,7 +155,7 @@ function CapabilityStatusSection({ status }) {
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Project Brain capabilities</div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Возможности Project Brain</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 8 }}>
         {entries.map(([key, capability]) => {
           const packages = Array.isArray(capability?.missing_packages) ? capability.missing_packages.filter(Boolean) : [];
@@ -162,22 +169,22 @@ function CapabilityStatusSection({ status }) {
               </div>
               {capability?.mode && (
                 <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>
-                  Mode: {humanizeValue(capability.mode)}
+                  Режим: {capabilityModeText(capability.mode)}
                 </div>
               )}
               {!available && capability?.reason && (
                 <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: packages.length || capability?.hint ? 4 : 0 }}>
-                  Reason: {humanizeValue(capability.reason)}
+                  Причина: {capabilityStateText(capability)}
                 </div>
               )}
               {packages.length > 0 && (
                 <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: capability?.hint ? 4 : 0 }}>
-                  Missing: <code style={{ fontSize: 10 }}>{packages.join(", ")}</code>
+                  Не хватает: <code style={{ fontSize: 10 }}>{packages.join(", ")}</code>
                 </div>
               )}
               {capability?.hint && (
                 <div style={{ fontSize: 10, color: "var(--text-muted)", wordBreak: "break-word" }}>
-                  Hint: <code style={{ fontSize: 10 }}>{capability.hint}</code>
+                  Подсказка: <code style={{ fontSize: 10 }}>{capability.hint}</code>
                 </div>
               )}
             </div>
@@ -508,7 +515,7 @@ export default function EliraChatShell() {
       ext = ".json";
     } else if (fmt === "html") {
       const msgs = messages.map(m => {
-        const who = m.role==="user" ? "??" : "Elira";
+        const who = m.role==="user" ? "Вы" : "Elira";
         const bg = m.role==="user" ? "#e3f2fd" : "#f5f5f5";
         const content = m.content.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
         return `<div style="margin:12px 0;padding:12px 16px;border-radius:10px;background:${bg}"><strong>${who}</strong><div style="margin-top:6px;white-space:pre-wrap">${content}</div></div>`;
@@ -606,7 +613,7 @@ export default function EliraChatShell() {
         const useOrch = profile === "Оркестратор";
         const useRefl = skills.includes("reflection");
         const modeLabel = [useOrch && "🎯 Оркестратор", "🔎→💻→📊 Агенты", useRefl && "🪞 Рефлексия"].filter(Boolean).join(" → ");
-        setPhase(`?? ${modeLabel}...`);
+        setPhase(`✨ ${modeLabel}...`);
         try {
           const data = await api.runAdvancedMultiAgent({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"], use_reflection: useRefl, use_orchestrator: useOrch });
           if (data?.ok === false) throw new Error(normalizeErrorMessage(data?.error || data?.detail || "HTTP error"));
@@ -958,13 +965,13 @@ export default function EliraChatShell() {
       <aside className={`elira-sidebar ${mobileSidebar?"mobile-open":""}`}>
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>
         <div className="sidebar-nav">
-          {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["tasks","📅 Задачи"],["dashboard","📊 Dashboard"],["pipelines","🔄 Pipelines"],["telegram","✈️ Telegram"],["settings","⚙ Настройки"]].map(([k,l]) => (
+          {[["chats","☰ Чаты"],["project","📂 Проекты"],["library","📚 Файлы"],["memory","★ Память"],["tasks","📅 Задачи"],["dashboard","📊 Панель"],["pipelines","🔄 Пайплайны"],["telegram","✈️ Telegram"],["settings","⚙ Настройки"]].map(([k,l]) => (
             <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => { setSideTab(k); setMobileSidebar(false); if(k==="settings"){setSettingsModel(model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();loadPluginList();}if(k==="dashboard"){loadDashboard();}if(k==="pipelines"){loadPipelines();}if(k==="tasks"){loadTasks();}if(k==="telegram"){loadTelegram();} }}>{l}</button>
           ))}
         </div>
         <div className="sidebar-nav-item search-shell">
-          <span style={{opacity:0.65,fontSize:10,fontWeight:700}}>FIND</span>
-          <input className="sidebar-search-input" value={sideSearch} onChange={e => setSideSearch(e.target.value)} placeholder="Search" />
+          <span style={{opacity:0.65,fontSize:10,fontWeight:700}}>⌕</span>
+          <input className="sidebar-search-input" value={sideSearch} onChange={e => setSideSearch(e.target.value)} placeholder="Поиск" />
         </div>
         {sideTab === "chats" && (
           <div className="chat-list" style={{flex:1,minHeight:0}}>
@@ -990,35 +997,35 @@ export default function EliraChatShell() {
           <button className="mobile-burger" onClick={()=>setMobileSidebar(v=>!v)}>☰</button>
           <div className="elira-brand"><svg width="22" height="22" viewBox="0 0 64 64" fill="none" style={{marginRight:7,verticalAlign:"middle",marginTop:-2}}><defs><linearGradient id="jg" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jg)" strokeWidth="3"/><circle cx="32" cy="32" r="6" fill="url(#jg)"/></svg>Elira AI</div>
           <div className="topbar-tabs">
-            <button className={`soft-btn ${mainTab==="chat"?"active":""}`} onClick={() => setMainTab("chat")}>Chat</button>
-            <button className={`soft-btn ${mainTab==="code"?"active":""}`} onClick={() => setMainTab("code")}>Code</button>
-            <button className={`soft-btn ${showPanel?"active":""}`} onClick={() => setShowPanel(p => !p)} title="Панель кода">◇</button>
+            <button className={`soft-btn ${mainTab==="chat"?"active":""}`} onClick={() => setMainTab("chat")}>Чат</button>
+            <button className={`soft-btn ${mainTab==="code"?"active":""}`} onClick={() => setMainTab("code")}>Код</button>
+            <button className={`soft-btn ${showPanel?"active":""}`} onClick={() => setShowPanel(p => !p)} title="Панель кода">⌘</button>
           </div>
         </div>
 
         <div className="chat-page">
           <div className="chat-header-row">
-            <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}{sideTab==="project"&&"Проект"}{sideTab==="dashboard"&&"Dashboard"}{sideTab==="pipelines"&&"Pipelines"}</div>
+            <div className="chat-page-title">{sideTab==="chats"&&"Чат"}{sideTab==="memory"&&"Память"}{sideTab==="settings"&&"Настройки"}{sideTab==="library"&&"Библиотека"}{sideTab==="project"&&"Проект"}{sideTab==="dashboard"&&"Панель"}{sideTab==="pipelines"&&"Пайплайны"}</div>
             {sideTab === "chats" && chatId && (
               <div className="chat-header-actions icon-actions" style={{display:"flex"}}>
                 <div className="export-dropdown-wrap" style={{position:"relative"}}>
-                  <button className="soft-btn icon-btn" title="Export chat" onClick={()=>setShowExportMenu(v=>!v)}>EXP</button>
+                  <button className="soft-btn icon-btn" title="Экспорт чата" onClick={()=>setShowExportMenu(v=>!v)}>⇪</button>
                   {showExportMenu && <div className="export-dropdown" style={{position:"absolute",top:"100%",right:0,zIndex:99,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:8,padding:"4px 0",minWidth:140,boxShadow:"0 4px 16px rgba(0,0,0,.18)"}}>
-                    <button className="export-item" onClick={()=>{exportChat("md");setShowExportMenu(false)}}>MD</button>
-                    <button className="export-item" onClick={()=>{exportChat("html");setShowExportMenu(false)}}>HTML</button>
-                    <button className="export-item" onClick={()=>{exportChat("json");setShowExportMenu(false)}}>JSON</button>
-                    <button className="export-item" onClick={()=>{exportChat("txt");setShowExportMenu(false)}}>TXT</button>
+                    <button className="export-item" onClick={()=>{exportChat("md");setShowExportMenu(false)}}>📝 Markdown</button>
+                    <button className="export-item" onClick={()=>{exportChat("html");setShowExportMenu(false)}}>🌐 HTML</button>
+                    <button className="export-item" onClick={()=>{exportChat("json");setShowExportMenu(false)}}>🧾 JSON</button>
+                    <button className="export-item" onClick={()=>{exportChat("txt");setShowExportMenu(false)}}>📄 Текст</button>
                   </div>}
                 </div>
-                <button className="soft-btn icon-btn" title="Save to memory" onClick={() => saveToMemory(chatId, chats.find(c=>c.id===chatId)?.memory_saved)}>MEM</button>
-                <button className="soft-btn icon-btn" title="Pin chat" onClick={() => pinChat(chatId, chats.find(c=>c.id===chatId)?.pinned)}>PIN</button>
-                <button className="soft-btn icon-btn" title="Rename chat" onClick={() => { setRenaming(true); setRenameVal(chats.find(c=>c.id===chatId)?.title||""); }}>EDIT</button>
-                <button className="soft-btn icon-btn" title="Delete chat" onClick={() => deleteChat(chatId)}>DEL</button>
+                <button className="soft-btn icon-btn" title="Сохранить в память" onClick={() => saveToMemory(chatId, chats.find(c=>c.id===chatId)?.memory_saved)}>🧠</button>
+                <button className="soft-btn icon-btn" title="Закрепить чат" onClick={() => pinChat(chatId, chats.find(c=>c.id===chatId)?.pinned)}>📌</button>
+                <button className="soft-btn icon-btn" title="Переименовать чат" onClick={() => { setRenaming(true); setRenameVal(chats.find(c=>c.id===chatId)?.title||""); }}>✏️</button>
+                <button className="soft-btn icon-btn" title="Удалить чат" onClick={() => deleteChat(chatId)}>🗑</button>
               </div>
             )}
           </div>
 
-          {renaming && sideTab==="chats" && <div className="rename-bar"><input value={renameVal} onChange={e=>setRenameVal(e.target.value)} className="rename-input wide" placeholder="Название"/><button className="mini-btn" onClick={renameActive}>OK</button></div>}
+          {renaming && sideTab==="chats" && <div className="rename-bar"><input value={renameVal} onChange={e=>setRenameVal(e.target.value)} className="rename-input wide" placeholder="Название"/><button className="mini-btn" onClick={renameActive}>Сохранить</button></div>}
 
           {sideTab === "tasks" ? (
             <div className="settings-main-card" style={{overflow:"auto"}}>
@@ -1026,14 +1033,14 @@ export default function EliraChatShell() {
                 <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>📅 Задачи</div>
                 <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={loadTasks}>↻</button>
               </div>
-              <PanelNotice title="Tasks are unavailable" message={tasksError} onRetry={() => loadTasks()} />
+              <PanelNotice title="Раздел задач временно недоступен" message={tasksError} onRetry={() => loadTasks()} />
 
               {/* Статистика */}
               {taskStats && (
                 <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
                   {[
                     {l:"Всего",v:taskStats.total,c:"var(--text)"},
-                    {l:"Todo",v:taskStats.by_status?.todo||0,c:"#5b9bd5"},
+                    {l:"К выполнению",v:taskStats.by_status?.todo||0,c:"#5b9bd5"},
                     {l:"В работе",v:taskStats.by_status?.in_progress||0,c:"#f5a623"},
                     {l:"Готово",v:taskStats.by_status?.done||0,c:"#4caf50"},
                     {l:"Просрочено",v:taskStats.overdue||0,c:"#f44336"},
@@ -1048,7 +1055,7 @@ export default function EliraChatShell() {
 
               {/* Фильтр */}
               <div style={{display:"flex",gap:4,marginBottom:12}}>
-                {[["active","Активные"],["todo","Todo"],["in_progress","В работе"],["done","Готовые"],["all","Все"]].map(([k,l])=>(
+                {[["active","Активные"],["todo","К выполнению"],["in_progress","В работе"],["done","Готовые"],["all","Все"]].map(([k,l])=>(
                   <button key={k} className="soft-btn" style={{fontSize:10,padding:"3px 10px",background:taskFilter===k?"var(--accent)":"transparent",color:taskFilter===k?"#fff":"var(--text)",border:"1px solid var(--border)",borderRadius:6}} onClick={()=>{setTaskFilter(k);loadTasks(k);}}>{l}</button>
                 ))}
               </div>
@@ -1060,7 +1067,7 @@ export default function EliraChatShell() {
                 <textarea placeholder="Описание (необязательно)" value={taskForm.description} onChange={e=>setTaskForm({...taskForm,description:e.target.value})} className="rename-input" style={{width:"100%",fontSize:11,padding:"5px 8px",marginBottom:6,minHeight:40,resize:"vertical",fontFamily:"inherit"}} rows={2}/>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
                   <select value={taskForm.priority} onChange={e=>setTaskForm({...taskForm,priority:e.target.value})} className="topbar-select dark-select" style={{fontSize:11}}>
-                    <option value="low">?? ??????</option>
+                    <option value="low">🟢 Низкий</option>
                     <option value="medium">🟡 Средний</option>
                     <option value="high">🟠 Высокий</option>
                     <option value="urgent">🔴 Срочный</option>
@@ -1108,7 +1115,7 @@ export default function EliraChatShell() {
                         <span style={{cursor:"pointer",fontSize:16}} title={t.status==="done"?"Вернуть":"Выполнено"} onClick={async()=>{
                           const newStatus = t.status==="done" ? "todo" : "done";
                           await updateTaskStatus(t.id, newStatus);
-                        }}>{t.status==="done"?"UNDO":"DONE"}</span>
+                          }}>{t.status==="done"?"↺":"✅"}</span>
                         <div style={{flex:1,minWidth:0}}>
                           <div style={{fontWeight:600,fontSize:12,color:"var(--text)",textDecoration:t.status==="done"?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</div>
                           {t.description && <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.description}</div>}
@@ -1119,18 +1126,18 @@ export default function EliraChatShell() {
                           <button className="soft-btn" style={{fontSize:9,padding:"2px 6px"}} title="В работу" onClick={async()=>{
                             const newS = t.status==="in_progress"?"todo":"in_progress";
                             await updateTaskStatus(t.id, newS);
-                          }}>{t.status==="in_progress"?"PAUSE":"START"}</button>
+                          }}>{t.status==="in_progress"?"⏸":"▶"}</button>
                         )}
                         <button className="soft-btn" style={{fontSize:9,padding:"2px 6px"}} title="Редактировать" onClick={()=>{setEditingTask(t.id);setTaskForm({title:t.title,description:t.description||"",category:t.category||"general",priority:t.priority||"medium",due_date:t.due_date||""});}}>✏️</button>
                         <button className="soft-btn" style={{fontSize:9,padding:"2px 6px",color:"#f44336"}} title="Удалить" onClick={() => deleteTaskItem(t.id)}>✕</button>
                       </div>
                     </div>
                     <div style={{display:"flex",gap:8,alignItems:"center",fontSize:10,color:"var(--text-muted)",marginTop:2}}>
-                      <span>{prioIcon} {t.priority}</span>
-                      <span>{catIcon} {t.category}</span>
+                      <span>{prioIcon} {({ urgent:"Срочный", high:"Высокий", medium:"Средний", low:"Низкий" }[t.priority] || t.priority)}</span>
+                      <span>{catIcon} {({ general:"Общее", work:"Работа", personal:"Личное", study:"Учёба", project:"Проект", idea:"Идея" }[t.category] || t.category)}</span>
                       {t.due_date && <span style={{color:isOverdue?"#f44336":"var(--text-muted)"}}>📅 {new Date(t.due_date).toLocaleDateString("ru-RU")}{isOverdue?" ⚠️ просрочено":""}</span>}
                       {t.status==="in_progress" && <span style={{color:"#f5a623"}}>⏳ в работе</span>}
-                      {t.status==="done" && t.completed_at && <span style={{color:"#4caf50"}}>Done {new Date(t.completed_at).toLocaleDateString("ru-RU")}</span>}
+                      {t.status==="done" && t.completed_at && <span style={{color:"#4caf50"}}>Готово {new Date(t.completed_at).toLocaleDateString("ru-RU")}</span>}
                     </div>
                   </div>
                 );
@@ -1139,10 +1146,10 @@ export default function EliraChatShell() {
           ) : sideTab === "telegram" ? (
             <div className="settings-main-card" style={{overflow:"auto"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>Telegram Bot</div>
+                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>Telegram-бот</div>
                 <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={loadTelegram}>↻</button>
               </div>
-              <PanelNotice title="Telegram panel is unavailable" message={telegramError} onRetry={loadTelegram} />
+              <PanelNotice title="Панель Telegram временно недоступна" message={telegramError} onRetry={loadTelegram} />
 
               {/* Внутренние табы */}
               <div style={{display:"flex",gap:4,marginBottom:14}}>
@@ -1168,7 +1175,7 @@ export default function EliraChatShell() {
                   <div style={{padding:12,borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:10}}>
                     <div style={{fontWeight:700,marginBottom:6}}>Шаг 2: Вставь токен</div>
                     <div>1. Перейди на вкладку <b>⚙ Настройка</b> выше</div>
-                    <div>2. Вставь токен в поле «Bot Token»</div>
+                    <div>2. Вставь токен в поле «Токен бота»</div>
                     <div>3. Нажми <b>💾 Сохранить токен</b></div>
                     <div>4. Нажми <b>🔍 Тест</b> — должно показать имя бота</div>
                   </div>
@@ -1224,7 +1231,7 @@ export default function EliraChatShell() {
 
                   {/* Токен */}
                   <div style={{padding:12,borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:12}}>
-                    <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>Bot Token</div>
+                    <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>Токен бота</div>
                     {tgConfig?.has_token && <div style={{fontSize:10,color:"var(--text-muted)",marginBottom:4}}>Текущий: {tgConfig.bot_token}</div>}
                     <div style={{display:"flex",gap:6}}>
                       <input type="password" placeholder="Вставь токен от @BotFather" value={tgTokenInput} onChange={e=>setTgTokenInput(e.target.value)} className="rename-input" style={{flex:1,fontSize:11,padding:"5px 8px"}}/>
@@ -1333,27 +1340,27 @@ export default function EliraChatShell() {
           ) : sideTab === "pipelines" ? (
             <div className="settings-main-card" style={{overflow:"auto"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
-                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>Autopipelines</div>
+                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>Пайплайны</div>
                 <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={loadPipelines}>↻ Обновить</button>
               </div>
-              <PanelNotice title="Pipelines are unavailable" message={pipelinesError} onRetry={loadPipelines} />
+              <PanelNotice title="Пайплайны временно недоступны" message={pipelinesError} onRetry={loadPipelines} />
               <div className="settings-desc" style={{marginBottom:12}}>Автоматические задачи по расписанию</div>
 
               {/* Форма создания */}
               <div style={{padding:12,borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:14}}>
-                <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:8}}>+ Новый pipeline</div>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:8}}>＋ Новый пайплайн</div>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
                   <input placeholder="Название" value={pipeForm.name} onChange={e=>setPipeForm({...pipeForm,name:e.target.value})} className="rename-input" style={{flex:1,minWidth:120,fontSize:11,padding:"4px 8px"}}/>
                   <select value={pipeForm.task_type} onChange={e=>setPipeForm({...pipeForm,task_type:e.target.value})} className="topbar-select dark-select" style={{fontSize:11}}>
-                    <option value="prompt">Prompt</option>
+                    <option value="prompt">Промпт</option>
                     <option value="web_search">🔍 Веб-поиск</option>
                     <option value="plugin">🔌 Плагин</option>
                     <option value="http">HTTP</option>
                   </select>
                   <select value={pipeForm.interval_minutes} onChange={e=>setPipeForm({...pipeForm,interval_minutes:+e.target.value})} className="topbar-select dark-select" style={{fontSize:11}}>
-                    <option value={5}>5 min</option>
-                    <option value={15}>15 min</option>
-                    <option value={30}>30 min</option>
+                    <option value={5}>5 мин</option>
+                    <option value={15}>15 мин</option>
+                    <option value={30}>30 мин</option>
                     <option value={60}>1 час</option>
                     <option value={180}>3 часа</option>
                     <option value={360}>6 часов</option>
@@ -1366,19 +1373,19 @@ export default function EliraChatShell() {
               </div>
 
               {/* РЎРїРёСЃРѕРє */}
-              {pipelinesList.length===0 && !pipelinesError && <div style={{fontSize:11,color:"var(--text-muted)",padding:"12px 0",textAlign:"center"}}>Нет pipelines</div>}
+              {pipelinesList.length===0 && !pipelinesError && <div style={{fontSize:11,color:"var(--text-muted)",padding:"12px 0",textAlign:"center"}}>Пайплайнов пока нет</div>}
               {pipelinesList.map(p=>(
                 <div key={p.id} style={{padding:"10px 12px",borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6}}>
                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
                     <div>
                       <span style={{fontWeight:600,fontSize:12,color:"var(--text)"}}>{p.name}</span>
-                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{p.task_type} • каждые {p.interval_minutes} мин</span>
+                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{({ prompt:"Промпт", web_search:"Веб-поиск", plugin:"Плагин", http:"HTTP" }[p.task_type] || p.task_type)} • каждые {p.interval_minutes} мин</span>
                       <span style={{fontSize:9,color:p.enabled?"#4caf50":"#f44336",marginLeft:6}}>{p.enabled?"● вкл":"○ выкл"}</span>
                     </div>
                     <div style={{display:"flex",gap:4}}>
-                      <button className="soft-btn" style={{fontSize:9,padding:"2px 8px"}} onClick={() => runPipelineNow(p.id)}>?</button>
-                      <button className="soft-btn" style={{fontSize:9,padding:"2px 8px"}} onClick={() => togglePipelineEnabled(p)}>{p.enabled?"OFF":"ON"}</button>
-                      <button className="soft-btn" style={{fontSize:9,padding:"2px 8px",color:"#f44336"}} onClick={() => deletePipeline(p.id)}>DEL</button>
+                      <button className="soft-btn" style={{fontSize:9,padding:"2px 8px"}} title="Запустить сейчас" onClick={() => runPipelineNow(p.id)}>▶</button>
+                      <button className="soft-btn" style={{fontSize:9,padding:"2px 8px"}} title={p.enabled?"Выключить":"Включить"} onClick={() => togglePipelineEnabled(p)}>{p.enabled?"⏸":"▶"}</button>
+                      <button className="soft-btn" style={{fontSize:9,padding:"2px 8px",color:"#f44336"}} title="Удалить" onClick={() => deletePipeline(p.id)}>🗑</button>
                     </div>
                   </div>
                   <div style={{fontSize:10,color:"var(--text-muted)"}}>
@@ -1393,10 +1400,10 @@ export default function EliraChatShell() {
           ) : sideTab === "dashboard" ? (
             <div className="settings-main-card" style={{overflow:"auto"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
-                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>Dashboard</div>
+                <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}>Панель</div>
                 <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={loadDashboard}>↻ Обновить</button>
               </div>
-              <PanelNotice title="Dashboard sync issue" message={dashboardError} onRetry={loadDashboard} tone={dashData || projectBrainStatus ? "warning" : "error"} />
+              <PanelNotice title="Проблема синхронизации панели" message={dashboardError} onRetry={loadDashboard} tone={dashData || projectBrainStatus ? "warning" : "error"} />
               <CapabilityStatusSection status={projectBrainStatus} />
               {!dashData && !dashboardError ? <div style={{color:"var(--text-muted)",fontSize:12}}>Загрузка...</div> : !dashData ? null : (
                 <>
@@ -1519,7 +1526,7 @@ export default function EliraChatShell() {
                   <div className="settings-desc" style={{marginBottom:8}}>Какая модель отвечает за какой тип задачи. Первая в списке — приоритетная.</div>
                   {["code","project","research","chat"].map(route => {
                     const routeLabels = {code:"Код",project:"Проект",research:"Исследование",chat:"Чат"};
-                    const routeDescs = {code:"Написание, review и отладка кода",project:"Работа с файлами проекта",research:"Поиск, анализ, факты",chat:"Обычные вопросы и диалог"};
+                    const routeDescs = {code:"Написание, ревью и отладка кода",project:"Работа с файлами проекта",research:"Поиск, анализ, факты",chat:"Обычные вопросы и диалог"};
                     const current = routeMap[route] || [];
                     const getName = i => typeof i === "string" ? i : (i.name || i.model || "");
                     const allModels = (modelOpts?.length ? modelOpts : []).map(getName);
@@ -1631,8 +1638,8 @@ export default function EliraChatShell() {
               {chartData?.values?.length > 0 && !working && (
                 <div style={{background:"var(--bg-surface)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 14px",marginTop:4}}>
                   <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:6,display:"flex",justifyContent:"space-between"}}>
-                    <span>?? {chartData.valueLabel}</span>
-                    <button className="soft-btn" style={{fontSize:10,padding:"1px 6px"}} onClick={()=>setChartData(null)}>X</button>
+                    <span>📊 {chartData.valueLabel}</span>
+                    <button className="soft-btn" style={{fontSize:10,padding:"1px 6px"}} onClick={()=>setChartData(null)}>✕</button>
                   </div>
                   <div style={{display:"flex",gap:3,alignItems:"flex-end",height:72}}>
                     {chartData.values.map((v,i)=>{const mx=Math.max(...chartData.values)||1;return <div key={i} title={chartData.labels[i]+": "+v} style={{flex:1,minWidth:6,maxWidth:36,background:"var(--accent)",opacity:0.75,height:(v/mx*68)+"px",borderRadius:"3px 3px 0 0"}}></div>;})}
@@ -1647,7 +1654,7 @@ export default function EliraChatShell() {
                 <div className={`chat-input-shell ${drag?"drag-active":""}`}>
                   <button className="input-plus-btn" onClick={()=>fileRef.current?.click()}>+</button>
                   <textarea ref={taRef} value={input} onChange={e=>setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="Напиши сообщение..." className="chat-textarea"/>
-                  <button className="send-btn" onClick={working ? handleStop : handleSend} style={working ? {background:"rgba(255,70,70,0.15)",borderColor:"rgba(255,70,70,0.3)",color:"#ff9090"} : undefined}>{working?"Stop":"Send"}</button>
+                  <button className="send-btn" onClick={working ? handleStop : handleSend} style={working ? {background:"rgba(255,70,70,0.15)",borderColor:"rgba(255,70,70,0.3)",color:"#ff9090"} : undefined}>{working?"Стоп":"Отправить"}</button>
                   <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
                 </div>
                 <div className="composer-selectors" style={{justifyContent:"center"}}>

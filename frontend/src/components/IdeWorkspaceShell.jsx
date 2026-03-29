@@ -187,12 +187,12 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
 
   const iconFor = (a) =>
     a.type === "code"
-      ? "◇"
+      ? "⌘"
       : /\.pdf$/i.test(a.name || "")
-        ? "PDF"
+        ? "📄"
         : /\.(js|jsx|ts|tsx|py|rs|go|java|c|cpp)$/i.test(a.name || "")
-          ? "⌘"
-          : "FILE";
+          ? "💻"
+          : "📁";
   const gitColor=s=>({M:"#e2b93d",A:"#4ade80",D:"#ff6b6b","?":"#888"}[s?.[0]]||"#aaa");
 
   return(
@@ -200,8 +200,8 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
 
       {/* Toolbar */}
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",borderBottom:"1px solid var(--border)",flexWrap:"wrap"}}>
-        <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)"}}>&lt; Chat</button>
-        <span style={{fontSize:13,fontWeight:600}}>Code</span>
+        <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)"}}>&lt; Чат</button>
+        <span style={{fontSize:13,fontWeight:600}}>Код</span>
         <div style={{display:"flex",gap:2,marginLeft:6}}>
           {[["artifacts","Артефакты"],["git","🔀 Git"],["filetree","📁 Файлы"],["history","📋 История"]].map(([k,l])=>(
             <button key={k} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k)} style={{fontSize:11,padding:"3px 9px"}}>{l}</button>
@@ -216,7 +216,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
         )}
         <div style={{marginLeft:"auto"}}>
           <button onClick={()=>setShowTerminal(p=>!p)} className="soft-btn" style={{border:"1px solid var(--border)",fontSize:11,padding:"3px 9px",background:showTerminal?"var(--bg-surface-active)":"transparent"}}>
-            {showTerminal?"Hide":"Show"} Terminal
+            {showTerminal ? "Скрыть" : "Показать"} терминал
           </button>
         </div>
       </div>
@@ -259,7 +259,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 12px",borderBottom:"1px solid var(--border)",flexWrap:"wrap",gap:5}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,flex:1}}>
                     <span style={{fontWeight:500,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{selected.name}</span>
-                    <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>{selected.lang} | {selected.content?.length||0} ch</span>
+                    <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>{selected.lang} | {selected.content?.length||0} симв.</span>
                     {saveStatus==="ok"&&<span style={{fontSize:10,color:"#4ade80"}}>✓ Сохранено</span>}
                     {saveStatus==="error"&&<span style={{fontSize:10,color:"#ff6b6b"}}>✕ Ошибка</span>}
                   </div>
@@ -272,7 +272,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                     {!editing?(
                       <>
                         <button onClick={startEdit} style={SB()}>✏️ Изменить</button>
-                        <button onClick={handleCopy} style={SB({borderColor:"var(--border)"})}>{copied?"✓ Скопировано":"⧉ Копировать"}</button>
+                      <button onClick={handleCopy} style={SB({borderColor:"var(--border)"})}>{copied?"✓ Скопировано":"⧉ Копировать"}</button>
                       </>
                     ):(
                       <>
@@ -335,7 +335,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                         style={{flex:1,padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:12,outline:"none"}}
                       />
                       <button onClick={doCommit} disabled={!commitMsg.trim()||gitLoading} style={{...SBG,padding:"6px 14px",opacity:(!commitMsg.trim()||gitLoading)?0.45:1}}>
-                        {gitLoading?"...":"OK"} Commit
+                        {gitLoading?"...":"✓"} Коммит
                       </button>
                     </div>
                     <div style={{fontSize:10,color:"var(--text-muted)",marginTop:5}}>git add -A && git commit</div>
@@ -384,7 +384,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
             )}
             {(fileTree||[]).map((item,i)=>(
               <button key={i} onClick={()=>openFtFile(item)} style={{display:"flex",alignItems:"center",gap:5,width:"100%",padding:`4px ${6+(item.path.split("/").length-1)*10}px`,border:"none",background:ftSelected===item.path?"var(--bg-surface-active)":"transparent",color:ftSelected===item.path?"var(--text-primary)":"var(--text-secondary)",cursor:item.type==="file"?"pointer":"default",textAlign:"left",fontSize:11,borderRadius:4}}>
-                <span style={{fontSize:11,opacity:0.4,flexShrink:0}}>{item.type==="dir"?"DIR":"FILE"}</span>
+                <span style={{fontSize:11,opacity:0.4,flexShrink:0}}>{item.type==="dir"?"📁":"📄"}</span>
                 <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{item.name}</span>
                 {item.type==="file"&&<span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>{item.ext}</span>}
               </button>
@@ -410,10 +410,10 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
             <div key={i} style={{padding:"10px 14px",marginBottom:6,borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-surface)"}}>
               <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                 <code style={{fontSize:10,fontFamily:"var(--font-mono)",color:"var(--accent)"}}>{r.run_id}</code>
-                <span style={{fontSize:10,padding:"1px 7px",borderRadius:20,background:r.ok?"rgba(74,222,128,0.15)":"rgba(255,107,107,0.15)",color:r.ok?"#4ade80":"#ff6b6b"}}>{r.ok?"OK":"Error"}</span>
-                {r.route&&<span style={{fontSize:10,color:"var(--text-muted)"}}>route: {r.route}</span>}
-                {r.model&&<span style={{fontSize:10,color:"var(--text-muted)"}}>model: {r.model}</span>}
-                {r.answer_len>0&&<span style={{fontSize:10,color:"var(--text-muted)"}}>{r.answer_len} chars</span>}
+                <span style={{fontSize:10,padding:"1px 7px",borderRadius:20,background:r.ok?"rgba(74,222,128,0.15)":"rgba(255,107,107,0.15)",color:r.ok?"#4ade80":"#ff6b6b"}}>{r.ok?"Готово":"Ошибка"}</span>
+                {r.route&&<span style={{fontSize:10,color:"var(--text-muted)"}}>маршрут: {r.route}</span>}
+                {r.model&&<span style={{fontSize:10,color:"var(--text-muted)"}}>модель: {r.model}</span>}
+                {r.answer_len>0&&<span style={{fontSize:10,color:"var(--text-muted)"}}>{r.answer_len} симв.</span>}
                 <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:"auto"}}>{(r.finished_at||"").replace("T"," ").slice(0,19)}</span>
               </div>
             </div>
