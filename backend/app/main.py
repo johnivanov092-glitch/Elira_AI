@@ -22,6 +22,7 @@ from app.api.routes.library import router as library_router
 from app.api.routes.profiles import router as profiles_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.files import router as files_router
+from app.api.routes.persona import router as persona_router
 from app.api.routes.pdf_routes import router as pdf_router
 from app.api.routes.tools_exec import router as tools_exec_router
 from app.api.routes.smart_memory_routes import router as smart_memory_router
@@ -80,6 +81,7 @@ app.include_router(library_router)
 app.include_router(profiles_router)
 app.include_router(agents_router)
 app.include_router(files_router)
+app.include_router(persona_router)
 app.include_router(pdf_router)
 app.include_router(tools_exec_router)
 app.include_router(smart_memory_router)

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 from typing import Any
+
+from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +30,7 @@ REQUIRED_PATHS = {
     "/api/telegram/config",
     "/api/elira/chats",
     "/api/project-brain/status",
+    "/api/persona/status",
 }
 
 DEAD_FRONTEND_ENDPOINTS = {
@@ -45,6 +49,16 @@ CODE_FILE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx"}
 RAW_RELATIVE_FETCH_RE = re.compile(r"fetch\s*\(\s*([\"'`])/api/")
 COMPONENT_ENDPOINT_LITERAL_RE = re.compile(r"[\"'`]/api/")
 CAPABILITY_REQUIRED_KEYS = {"feature", "available", "reason", "missing_packages", "hint"}
+PERSONA_STATUS_REQUIRED_KEYS = {
+    "ok",
+    "persona_name",
+    "active_version",
+    "status",
+    "last_evolution_at",
+    "quarantine_candidates",
+    "latest_traits",
+    "model_consistency",
+}
 
 
 def iter_frontend_code_files(root: Path) -> list[Path]:
@@ -116,17 +130,41 @@ def validate_capability_shape(name: str, status: Any) -> list[str]:
     return failures
 
 
+def validate_persona_status_shape(status: Any) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(status, dict):
+        return [f"persona_status: expected dict, got {type(status).__name__}"]
+
+    missing = sorted(PERSONA_STATUS_REQUIRED_KEYS - set(status))
+    if missing:
+        failures.append(f"persona_status: missing keys {', '.join(missing)}")
+
+    if not isinstance(status.get("active_version"), int):
+        failures.append("persona_status: 'active_version' must be int")
+    if not isinstance(status.get("quarantine_candidates"), int):
+        failures.append("persona_status: 'quarantine_candidates' must be int")
+    if not isinstance(status.get("latest_traits"), list):
+        failures.append("persona_status: 'latest_traits' must be a list")
+    if not isinstance(status.get("model_consistency"), list):
+        failures.append("persona_status: 'model_consistency' must be a list")
+
+    return failures
+
+
 def collect_failures() -> dict[str, Any]:
     schema = app.openapi()
     paths = set(schema.get("paths", {}))
+    client = TestClient(app)
 
     vector_status = vector_memory_capability_status()
     screenshot_status = screenshot_capability_status()
+    persona_status = client.get("/api/persona/status").json()
 
     return {
         "paths_count": len(paths),
         "vector_status": vector_status,
         "screenshot_status": screenshot_status,
+        "persona_status": persona_status,
         "missing_paths": sorted(REQUIRED_PATHS - paths),
         "raw_fetch_hits": find_raw_relative_fetches(),
         "dead_endpoint_hits": find_dead_endpoint_refs(),
@@ -135,6 +173,7 @@ def collect_failures() -> dict[str, Any]:
             *validate_capability_shape("vector_memory", vector_status),
             *validate_capability_shape("screenshot", screenshot_status),
         ],
+        "persona_failures": validate_persona_status_shape(persona_status),
     }
 
 
@@ -144,6 +183,7 @@ def main() -> int:
     print("OpenAPI paths:", results["paths_count"])
     print("Vector memory:", results["vector_status"])
     print("Screenshot:", results["screenshot_status"])
+    print("Persona status:", json.dumps(results["persona_status"], ensure_ascii=True))
 
     failed = False
     failure_sections = (
@@ -152,6 +192,7 @@ def main() -> int:
         ("Backend endpoint literals inside frontend components", results["component_literal_hits"]),
         ("Dead frontend endpoint references still present", results["dead_endpoint_hits"]),
         ("Capability status shape issues", results["capability_failures"]),
+        ("Persona status shape issues", results["persona_failures"]),
     )
 
     for title, items in failure_sections:

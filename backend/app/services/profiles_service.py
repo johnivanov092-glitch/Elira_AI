@@ -2,17 +2,23 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.core.config import AGENT_PROFILES, DEFAULT_PROFILE
+from app.core.persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS, PROFILE_UI
+from app.services.persona_service import build_persona_prompt
 
 
 def get_profiles() -> dict[str, Any]:
     profiles = []
-    for name, system_prompt in AGENT_PROFILES.items():
+    for name, overlay in PROFILE_MODE_OVERLAYS.items():
+        meta = PROFILE_UI.get(name, {})
         profiles.append(
             {
                 "name": name,
                 "is_default": name == DEFAULT_PROFILE,
-                "system_prompt_preview": system_prompt[:180],
+                "icon": meta.get("icon", ""),
+                "tags": meta.get("tags", []),
+                "short": meta.get("short", ""),
+                "mode_overlay_preview": overlay[:180],
+                "system_prompt_preview": build_persona_prompt(name)[:180],
             }
         )
 

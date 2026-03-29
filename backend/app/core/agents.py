@@ -2597,6 +2597,23 @@ def run_agent_v8(
     except Exception:
         pass
 
+    try:
+        from app.services.persona_service import observe_dialogue
+
+        persona_meta = observe_dialogue(
+            dialog_id=run_id,
+            session_id=run_id,
+            profile_name=memory_profile,
+            model_name=model_name,
+            user_input=task,
+            answer_text=state.get("answer", ""),
+            route=mode,
+            reflection=reflection,
+            outcome_ok=answer_ok,
+        )
+    except Exception:
+        persona_meta = None
+
     return {
         "run_id": run_id,
         "mode": mode,
@@ -2618,6 +2635,7 @@ def run_agent_v8(
         "working_context": state.get("working_context", ""),
         "tool_hint": state.get("tool_hint", ""),
         "latency_seconds": latency,
+        "persona": persona_meta,
     }
 
 
@@ -2806,6 +2824,23 @@ Reflection:
     except Exception:
         pass
 
+    try:
+        from app.services.persona_service import observe_dialogue
+
+        persona_meta = observe_dialogue(
+            dialog_id=run_id or f"self-improve-{memory_profile}",
+            session_id=run_id or f"self-improve-{memory_profile}",
+            profile_name=memory_profile,
+            model_name=model_name,
+            user_input=task,
+            answer_text=answer,
+            route="self_improve",
+            reflection=reflection if isinstance(reflection, dict) else {},
+            outcome_ok=bool(answer.strip()),
+        )
+    except Exception:
+        persona_meta = None
+
     return {
         "run_id": run_id,
         "base": base,
@@ -2820,5 +2855,6 @@ Reflection:
         "memory_context": base.get("memory_context", ""),
         "kb_context": base.get("kb_context", ""),
         "working_context": working_context or base.get("working_context", ""),
+        "persona": persona_meta,
     }
 

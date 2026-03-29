@@ -8,18 +8,27 @@ chat_service.py — обёртка над Ollama для чата.
 from typing import Any, Generator
 
 import ollama
-from app.core.config import AGENT_PROFILES, DEFAULT_PROFILE
+
+from app.core.persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
+from app.services.persona_service import build_persona_prompt
 
 
 def normalize_profile(name: str):
     if not name or name.lower() == "default":
         return DEFAULT_PROFILE
-    return name if name in AGENT_PROFILES else DEFAULT_PROFILE
+    return name if name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
 
 
-def run_chat(model_name: str, profile_name: str, user_input: str, history: list[dict] | None = None, num_ctx: int = 8192) -> dict[str, Any]:
+def run_chat(
+    model_name: str,
+    profile_name: str,
+    user_input: str,
+    history: list[dict] | None = None,
+    num_ctx: int = 8192,
+    task_context: str = "",
+) -> dict[str, Any]:
     profile = normalize_profile(profile_name)
-    system = AGENT_PROFILES.get(profile, AGENT_PROFILES[DEFAULT_PROFILE])
+    system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
 
     messages = [{"role": "system", "content": system}]
 
@@ -47,10 +56,11 @@ def run_chat_stream(
     user_input: str,
     history: list[dict] | None = None,
     num_ctx: int = 8192,
+    task_context: str = "",
 ) -> Generator[str, None, None]:
     """Генератор токенов для стриминга. Каждый yield — один токен."""
     profile = normalize_profile(profile_name)
-    system = AGENT_PROFILES.get(profile, AGENT_PROFILES[DEFAULT_PROFILE])
+    system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
 
     messages = [{"role": "system", "content": system}]
 
@@ -71,7 +81,7 @@ def run_chat_stream(
                 yield token
     except Exception as e:
         # При ошибке стриминга — fallback на обычный вызов
-        result = run_chat(model_name, profile_name, user_input, history, num_ctx=num_ctx)
+        result = run_chat(model_name, profile_name, user_input, history, num_ctx=num_ctx, task_context=task_context)
         if result.get("ok") and result.get("answer"):
             yield result["answer"]
         else:

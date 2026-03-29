@@ -15,6 +15,7 @@ from typing import Any, Generator
 
 from app.services.chat_service import run_chat, run_chat_stream
 from app.services.planner_v2_service import PlannerV2Service
+from app.services.persona_service import observe_dialogue
 from app.services.reflection_loop_service import run_reflection_loop
 from app.services.run_history_service import RunHistoryService
 from app.services.tool_service import run_tool
@@ -1049,7 +1050,7 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
 # run_agent
 # ═══════════════════════════════════════════════════════════════
 
-def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
+def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
     history = _trim_history(history or [])
     _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
     _disabled_skills = {k for k, v in _skill_flags.items() if not v}
@@ -1095,7 +1096,8 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
             pass
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
-        draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx)
+        task_context = f"Маршрут: {route}. Инструменты: {', '.join(selected) if selected else 'нет дополнительных инструментов'}."
+        draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context)
         if not draft.get("ok"):
             raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
         answer = draft.get("answer", "")
@@ -1117,7 +1119,17 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
         if post_files:
             answer += post_files
 
-        result = {"ok": True, "answer": answer, "timeline": timeline, "tool_results": tool_results, "meta": {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}}
+        persona_meta = observe_dialogue(
+            dialog_id=run["run_id"],
+            session_id=str(session_id or run["run_id"]),
+            profile_name=profile_name,
+            model_name=effective_model,
+            user_input=raw_user_input,
+            answer_text=answer,
+            route=route,
+            outcome_ok=True,
+        )
+        result = {"ok": True, "answer": answer, "timeline": timeline, "tool_results": tool_results, "meta": {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"], "persona": persona_meta}}
         _HISTORY.finish_run(run["run_id"], result)
         return result
     except Exception as exc:
@@ -1130,7 +1142,7 @@ def run_agent(*, model_name, profile_name, user_input, use_memory=True, use_libr
 # run_agent_stream
 # ═══════════════════════════════════════════════════════════════
 
-def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
+def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
     history = _trim_history(history or [])
     _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
     _disabled_skills = {k for k, v in _skill_flags.items() if not v}
@@ -1158,6 +1170,17 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
             if cached:
                 _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
                 meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": [], "run_id": run["run_id"], "cached": True}
+                persona_meta = observe_dialogue(
+                    dialog_id=run["run_id"],
+                    session_id=str(session_id or run["run_id"]),
+                    profile_name=profile_name,
+                    model_name=effective_model,
+                    user_input=raw_user_input,
+                    answer_text=cached,
+                    route=route,
+                    outcome_ok=True,
+                )
+                meta["persona"] = persona_meta
                 _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": cached, "meta": meta})
                 # Стримим кэшированный ответ по токенам (выглядит естественно)
                 words = cached.split(" ")
@@ -1199,7 +1222,8 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
         full_text = ""
-        for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx):
+        task_context = f"Маршрут: {route}. Инструменты: {', '.join(selected) if selected else 'нет дополнительных инструментов'}."
+        for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context):
             full_text += token
             yield {"token": token, "done": False}
 
@@ -1231,7 +1255,17 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
             post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
             if post_files:
                 full_text += post_files
-            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
+            persona_meta = observe_dialogue(
+                dialog_id=run["run_id"],
+                session_id=str(session_id or run["run_id"]),
+                profile_name=profile_name,
+                model_name=effective_model,
+                user_input=raw_user_input,
+                answer_text=full_text,
+                route=route,
+                outcome_ok=True,
+            )
+            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"], "persona": persona_meta}
             _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
         else:
@@ -1265,7 +1299,17 @@ def run_agent_stream(*, model_name, profile_name, user_input, use_memory=True, u
                 except Exception:
                     pass
 
-            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"]}
+            persona_meta = observe_dialogue(
+                dialog_id=run["run_id"],
+                session_id=str(session_id or run["run_id"]),
+                profile_name=profile_name,
+                model_name=effective_model,
+                user_input=raw_user_input,
+                answer_text=full_text,
+                route=route,
+                outcome_ok=True,
+            )
+            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"], "persona": persona_meta}
             _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
     except Exception as exc:

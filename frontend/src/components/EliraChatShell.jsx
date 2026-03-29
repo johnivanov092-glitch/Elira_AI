@@ -242,6 +242,74 @@ function CapabilityStatusSection({ status }) {
   );
 }
 
+function PersonaStatusSection({ status, busy = false, onRollback }) {
+  if (!status?.active_version) return null;
+
+  const traits = Array.isArray(status?.latest_traits) ? status.latest_traits : [];
+  const models = Array.isArray(status?.model_consistency) ? status.model_consistency : [];
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Личность Elira</div>
+      <div style={{ padding: 12, borderRadius: 10, border: "1px solid rgba(99,102,241,0.28)", background: "var(--bg-surface)" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>
+              Версия v{status.active_version}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+              Последняя эволюция: {status.last_evolution_at ? new Date(status.last_evolution_at).toLocaleString("ru-RU") : "—"}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+              Кандидатов в карантине: {status.quarantine_candidates ?? 0}
+            </div>
+          </div>
+          {status.previous_version ? (
+            <button
+              className="soft-btn"
+              style={{ fontSize: 10, padding: "4px 10px", border: "1px solid var(--border)", borderRadius: 6, flexShrink: 0 }}
+              onClick={() => onRollback?.(status.previous_version)}
+              disabled={busy}
+            >
+              {busy ? "Откат..." : `Откат к v${status.previous_version}`}
+            </button>
+          ) : null}
+        </div>
+
+        {traits.length ? (
+          <div style={{ marginBottom: models.length ? 10 : 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>Последние принятые черты</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {traits.map((trait) => (
+                <span key={`${trait.trait_key}-${trait.promoted_version || trait.last_seen}`} style={{ fontSize: 10, color: "var(--text)", padding: "4px 8px", borderRadius: 999, border: "1px solid var(--border)", background: "rgba(99,102,241,0.08)" }}>
+                  {trait.summary || trait.trait_key}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {models.length ? (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>Согласованность по моделям</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
+              {models.map((item) => (
+                <div key={`${item.model}-${item.version_id}`} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>{item.model}</div>
+                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Consistency: {item.consistency_score}</div>
+                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+                    Обновлено: {item.updated_at ? new Date(item.updated_at).toLocaleString("ru-RU") : "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 async function fileToLibraryRecord(file) {
   let preview = "";
   const name = file.name || "";
@@ -320,6 +388,8 @@ export default function EliraChatShell() {
   const [pluginList, setPluginList] = useState([]);
   const [dashData, setDashData] = useState(null);
   const [projectBrainStatus, setProjectBrainStatus] = useState(null);
+  const [personaStatus, setPersonaStatus] = useState(null);
+  const [personaBusy, setPersonaBusy] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [pipelinesList, setPipelinesList] = useState([]);
   const [pipelinesError, setPipelinesError] = useState("");
@@ -511,6 +581,7 @@ export default function EliraChatShell() {
       const data = await api.getDashboardOverview();
       setDashData(data.stats || null);
       setProjectBrainStatus(data.projectBrainStatus || null);
+      setPersonaStatus(data.personaStatus || null);
       const message = Array.isArray(data.errors) ? data.errors.filter(Boolean).join(" | ") : "";
       setDashboardError(message);
       setError(message ? `Dashboard: ${message}` : "");
@@ -518,8 +589,23 @@ export default function EliraChatShell() {
       const message = normalizeErrorMessage(e);
       setDashData(null);
       setProjectBrainStatus(null);
+      setPersonaStatus(null);
       setDashboardError(message);
       setError(`Dashboard: ${message}`);
+    }
+  }
+
+  async function handlePersonaRollback(version) {
+    if (!version) return;
+    setPersonaBusy(true);
+    try {
+      await api.rollbackPersona(version);
+      await loadDashboard();
+    } catch (e) {
+      setDashboardError(normalizeErrorMessage(e));
+      setError(`Dashboard: ${normalizeErrorMessage(e)}`);
+    } finally {
+      setPersonaBusy(false);
     }
   }
 
@@ -681,7 +767,7 @@ export default function EliraChatShell() {
       // Обычный стриминг
       let fullText = "";
       const ctrl = executeStream(
-        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
+        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, session_id: chatId || null, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
           onToken(t) { fullText += t; setStreamText(fullText); setPhase(""); },
           onPhase(ev) {
@@ -1465,6 +1551,7 @@ export default function EliraChatShell() {
               </div>
               <PanelNotice title="Проблема синхронизации панели" message={dashboardError} onRetry={loadDashboard} tone={dashData || projectBrainStatus ? "warning" : "error"} />
               <CapabilityStatusSection status={projectBrainStatus} />
+              <PersonaStatusSection status={personaStatus} busy={personaBusy} onRollback={handlePersonaRollback} />
               {!dashData && !dashboardError ? <div style={{color:"var(--text-muted)",fontSize:12}}>Загрузка...</div> : !dashData ? null : (
                 <>
                   {/* Карточки статистики */}

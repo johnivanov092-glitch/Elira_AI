@@ -135,6 +135,7 @@ export async function execute(body = {}) {
       model_name: body.model_name ?? body.model ?? "gemma3:4b",
       profile_name: body.profile_name ?? body.profile ?? "default",
       user_input: String(body.user_input ?? body.message ?? body.prompt ?? body.text ?? body.query ?? "").trim(),
+      session_id: body.session_id ?? body.chat_id ?? body.chatId ?? null,
       history: Array.isArray(body.history) ? body.history : [],
       use_memory: body.use_memory ?? true,
       use_library: body.use_library ?? true,
@@ -155,6 +156,7 @@ export function executeStream(body = {}, { onToken, onDone, onError, onPhase } =
     model_name: body.model_name ?? body.model ?? "gemma3:4b",
     profile_name: body.profile_name ?? body.profile ?? "default",
     user_input: String(body.user_input ?? body.message ?? "").trim(),
+    session_id: body.session_id ?? body.chat_id ?? body.chatId ?? null,
     history: Array.isArray(body.history) ? body.history : [],
     num_ctx: body.num_ctx ?? 8192,
     use_memory: body.use_memory ?? true,
@@ -274,15 +276,34 @@ export async function getProjectBrainStatus() {
   return safeRequest("/api/project-brain/status", {}, { status: "unknown" });
 }
 
+export async function getPersonaStatus() {
+  return safeRequest("/api/persona/status", {}, { ok: false, active_version: 1, quarantine_candidates: 0, latest_traits: [], model_consistency: [] });
+}
+
+export async function getPersonaVersion(version) {
+  return safeRequest(withParams("/api/persona/version", { version }), {}, { ok: false, item: null });
+}
+
+export async function listPersonaCandidates(limit = 20) {
+  const payload = await safeRequest(withParams("/api/persona/candidates", { limit }), {}, { items: [], count: 0 });
+  return { ...payload, items: normalizeArray(payload), count: payload?.count ?? normalizeArray(payload).length };
+}
+
+export async function rollbackPersona(version) {
+  return request(`/api/persona/rollback/${encodeURIComponent(version)}`, { method: "POST" });
+}
+
 export async function getDashboardOverview() {
-  const [statsResult, projectBrainStatusResult] = await Promise.allSettled([
+  const [statsResult, projectBrainStatusResult, personaStatusResult] = await Promise.allSettled([
     request("/api/dashboard/stats"),
     getProjectBrainStatus(),
+    getPersonaStatus(),
   ]);
 
   const errors = [];
   const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
   const projectBrainStatus = projectBrainStatusResult.status === "fulfilled" ? projectBrainStatusResult.value : null;
+  const personaStatus = personaStatusResult.status === "fulfilled" ? personaStatusResult.value : null;
 
   if (statsResult.status === "rejected") {
     errors.push(`dashboard stats: ${formatRequestError(statsResult.reason)}`);
@@ -290,11 +311,14 @@ export async function getDashboardOverview() {
   if (projectBrainStatusResult.status === "rejected") {
     errors.push(`project brain status: ${formatRequestError(projectBrainStatusResult.reason)}`);
   }
-  if (!stats && !projectBrainStatus && errors.length) {
+  if (personaStatusResult.status === "rejected") {
+    errors.push(`persona status: ${formatRequestError(personaStatusResult.reason)}`);
+  }
+  if (!stats && !projectBrainStatus && !personaStatus && errors.length) {
     throw new Error(errors.join(" | "));
   }
 
-  return { stats, projectBrainStatus, errors };
+  return { stats, projectBrainStatus, personaStatus, errors };
 }
 
 export async function listPatchHistory({ path = "", limit = 20 } = {}) {
@@ -581,6 +605,10 @@ export const api = {
   getProjectSnapshot,
   getProjectFile,
   getProjectBrainStatus,
+  getPersonaStatus,
+  getPersonaVersion,
+  listPersonaCandidates,
+  rollbackPersona,
   getDashboardOverview,
   listPatchHistory,
   previewPatch,

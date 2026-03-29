@@ -115,3 +115,30 @@ Live repair log for concrete backend/runtime fixes.
   `response_cache`,
   `library.db`,
   other services still using relative `data/...` paths outside this repair wave.
+
+### 10. Rooted Elira persona architecture
+- Status: completed
+- Scope: implemented one global Elira personality shared across all profiles and models, with versioning, quarantine-based learning, rollback, and dashboard visibility.
+- Start: profile prompts still duplicated full personalities, persona state did not exist as a first-class store, and no backend/UI contract exposed the active personality version.
+- Finish:
+  added [backend/app/core/persona_defaults.py](/D:/AIWork/Elira_AI/backend/app/core/persona_defaults.py) as the clean Elira core plus profile mode overlays;
+  added [backend/app/services/persona_service.py](/D:/AIWork/Elira_AI/backend/app/services/persona_service.py) with `persona_versions`, `persona_candidates`, `persona_learning_events`, `persona_model_calibrations`, and `persona_audit_log` inside `elira_state.db`;
+  wired prompt composition in [backend/app/services/chat_service.py](/D:/AIWork/Elira_AI/backend/app/services/chat_service.py) and [backend/app/core/llm.py](/D:/AIWork/Elira_AI/backend/app/core/llm.py) so system prompts are now built as `active persona snapshot -> profile overlay -> model calibration -> runtime constraints`;
+  connected runtime learning hooks in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) and [backend/app/core/agents.py](/D:/AIWork/Elira_AI/backend/app/core/agents.py);
+  added persona routes in [backend/app/api/routes/persona.py](/D:/AIWork/Elira_AI/backend/app/api/routes/persona.py) and registered them in [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py);
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) and [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so dashboard now shows `Личность Elira`, model consistency, quarantined candidates, and rollback action;
+  preserved compatibility for existing `agent_profile` and `route_model_map` settings while normalizing default profile handling in [backend/app/services/elira_memory_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_memory_sqlite.py) and [backend/app/services/elira_settings_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_settings_sqlite.py).
+- Result:
+  Elira now has one rooted personality per local installation;
+  profile switching changes mode, not identity;
+  all dialogs can teach the system, but promotions only happen through quarantine, thresholds, version creation, and rollback.
+
+### 11. Persona regression guards
+- Status: completed
+- Scope: added automated checks for the new persona API and lifecycle.
+- Finish:
+  extended [scripts/smoke_contract_check.py](/D:/AIWork/Elira_AI/scripts/smoke_contract_check.py) with `/api/persona/status` and shape validation;
+  updated [backend/tests/test_smoke_contract.py](/D:/AIWork/Elira_AI/backend/tests/test_smoke_contract.py);
+  added [backend/tests/test_persona_service.py](/D:/AIWork/Elira_AI/backend/tests/test_persona_service.py) to verify bootstrap, learning-driven promotion, calibration persistence, and rollback.
+- Result:
+  persona architecture is now guarded by both smoke and unit tests, not only by manual runtime checks.

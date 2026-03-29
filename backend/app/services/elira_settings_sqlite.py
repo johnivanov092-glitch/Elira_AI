@@ -2,6 +2,7 @@ import json
 import sqlite3
 
 from app.core.data_files import sqlite_data_file
+from app.core.persona_defaults import DEFAULT_PROFILE
 from app.services.elira_memory_sqlite import init_db as init_state_db
 
 
@@ -55,7 +56,7 @@ def get_settings():
         return {
             "ollama_context": 8192,
             "default_model": "gemma3:4b",
-            "agent_profile": "default",
+            "agent_profile": DEFAULT_PROFILE,
             "route_model_map": DEFAULT_ROUTE_MAP,
         }
 

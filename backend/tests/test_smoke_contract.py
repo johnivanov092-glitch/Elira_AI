@@ -22,6 +22,7 @@ class SmokeContractTest(unittest.TestCase):
         self.assertFalse(results["component_literal_hits"], f"Endpoint literals found in components: {results['component_literal_hits']}")
         self.assertFalse(results["dead_endpoint_hits"], f"Dead frontend endpoints still referenced: {results['dead_endpoint_hits']}")
         self.assertFalse(results["capability_failures"], f"Capability shape issues: {results['capability_failures']}")
+        self.assertFalse(results["persona_failures"], f"Persona status issues: {results['persona_failures']}")
 
 
 if __name__ == "__main__":

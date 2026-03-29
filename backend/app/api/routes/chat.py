@@ -18,6 +18,7 @@ class ChatRequest(BaseModel):
     model_name: str
     profile_name: str = "default"
     user_input: str
+    session_id: str | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
     num_ctx: int = 8192
     use_memory: bool = True
@@ -49,6 +50,7 @@ def chat_send(payload: ChatRequest):
             model_name=payload.model_name,
             profile_name=payload.profile_name,
             user_input=payload.user_input,
+            session_id=payload.session_id,
             use_memory=payload.use_memory,
             use_library=payload.use_library,
             use_reflection=payload.use_reflection,
@@ -112,6 +114,7 @@ def chat_stream(payload: ChatRequest):
                 model_name=payload.model_name,
                 profile_name=payload.profile_name,
                 user_input=payload.user_input,
+                session_id=payload.session_id,
                 use_memory=payload.use_memory,
                 use_library=payload.use_library,
                 use_reflection=payload.use_reflection,

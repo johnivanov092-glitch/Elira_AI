@@ -1,6 +1,7 @@
 import sqlite3
 
 from app.core.data_files import sqlite_data_file
+from app.core.persona_defaults import DEFAULT_PROFILE
 
 DB_PATH = sqlite_data_file("elira_state.db", key_tables=("chats", "messages"))
 
@@ -12,6 +13,7 @@ def _connect():
 
 
 _VALID_TABLES = {"chats", "messages", "settings"}
+
 
 def _ensure_column(conn, table: str, column: str, ddl: str):
     if table not in _VALID_TABLES:
@@ -56,12 +58,12 @@ def init_db():
             "id INTEGER PRIMARY KEY CHECK (id = 1), "
             "ollama_context INTEGER NOT NULL DEFAULT 8192, "
             "default_model TEXT NOT NULL DEFAULT 'gemma3:4b', "
-            "agent_profile TEXT NOT NULL DEFAULT 'РЈРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№'"
+            f"agent_profile TEXT NOT NULL DEFAULT '{DEFAULT_PROFILE}'"
             ")"
         )
         cur.execute(
             "INSERT OR IGNORE INTO settings(id, ollama_context, default_model, agent_profile) "
-            "VALUES(1, 8192, 'gemma3:4b', 'РЈРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№')"
+            f"VALUES(1, 8192, 'gemma3:4b', '{DEFAULT_PROFILE}')"
         )
 
         conn.commit()
@@ -89,13 +91,13 @@ def list_chats():
     return [dict(r) for r in rows]
 
 
-def create_chat(title="РќРѕРІС‹Р№ С‡Р°С‚"):
+def create_chat(title="Новый чат"):
     conn = _connect()
     try:
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO chats(title, pinned, memory_saved) VALUES (?, 0, 0)",
-            (title or "РќРѕРІС‹Р№ С‡Р°С‚",),
+            (title or "Новый чат",),
         )
         chat_id = cur.lastrowid
         row = _chat_row(conn, chat_id)
@@ -112,7 +114,7 @@ def update_chat(chat_id: int, title=None, pinned=None, memory_saved=None):
         if not current:
             return None
 
-        next_title = current["title"] if title is None else (title or "РќРѕРІС‹Р№ С‡Р°С‚")
+        next_title = current["title"] if title is None else (title or "Новый чат")
         next_pinned = current["pinned"] if pinned is None else int(bool(pinned))
         next_memory_saved = current["memory_saved"] if memory_saved is None else int(bool(memory_saved))
 
@@ -188,5 +190,3 @@ def add_message(chat_id, role, content):
 
 
 init_db()
-
-

@@ -20,7 +20,9 @@ import ollama
 
 from functools import lru_cache
 
-from .config import AGENT_PROFILES, MODEL_SAFE_CTX, DEFAULT_SAFE_CTX
+from .config import MODEL_SAFE_CTX, DEFAULT_SAFE_CTX
+from .persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
+from app.services.persona_service import build_persona_prompt
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -185,8 +187,9 @@ def build_system_prompt(
     use_memory: bool,
 ) -> str:
     """Собирает system prompt. Контексты уже обрезаны в budget_contexts()."""
+    normalized_profile = profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
     parts = [
-        AGENT_PROFILES[profile_name],
+        build_persona_prompt(normalized_profile),
         "Используй только релевантные данные. Если данных не хватает — скажи прямо. "
         "Если пользователь просит код — давай рабочий код и объясняй изменения.",
     ]
@@ -221,6 +224,7 @@ def ask_model(
     history: Optional[List[Dict]] = None,
     warning_callback=None,
 ) -> str:
+    profile_name = profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
     safe_ctx = get_safe_ctx(model_name, num_ctx)
     history  = list(history or []) if include_history else []
 
@@ -271,7 +275,7 @@ def ask_model(
     # Попытка 3 — аварийный режим: только профиль + вопрос, ctx=512
     try:
         msgs_min = [
-            {"role": "system", "content": AGENT_PROFILES[profile_name]},
+            {"role": "system", "content": build_persona_prompt(profile_name, model_name=model_name)},
             {"role": "user",   "content": user_input},
         ]
         resp = ollama.chat(
@@ -312,6 +316,7 @@ def ask_model_stream(
     warning_callback=None,
 ) -> Generator[str, None, None]:
     """Генератор токенов для st.write_stream(). При ctx-ошибке откатывается к ask_model."""
+    profile_name = profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
     safe_ctx = get_safe_ctx(model_name, num_ctx)
     history  = list(history or [])
 
