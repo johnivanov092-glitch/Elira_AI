@@ -1738,7 +1738,24 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
 # run_agent
 # ═══════════════════════════════════════════════════════════════
 
-def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
+def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id=None, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
+    import time as _time
+    _agent_start = _time.monotonic()
+
+    # Agent OS: если указан agent_id, загружаем определение из реестра
+    _registry_agent = None
+    if agent_id:
+        try:
+            from app.services.agent_registry import resolve_agent
+            _registry_agent = resolve_agent(agent_id=agent_id)
+            if _registry_agent:
+                if _registry_agent.get("system_prompt"):
+                    profile_name = _registry_agent.get("name_ru") or profile_name
+                if _registry_agent.get("model_preference"):
+                    model_name = _registry_agent["model_preference"]
+        except Exception:
+            pass
+
     history = _trim_history(history or [])
     _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
     _disabled_skills = {k for k, v in _skill_flags.items() if not v}
@@ -1846,10 +1863,46 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
             },
         }
         _HISTORY.finish_run(run["run_id"], result)
+
+        # Agent OS: записываем запуск в реестр
+        if agent_id or _registry_agent:
+            try:
+                from app.services.agent_registry import record_agent_run
+                record_agent_run({
+                    "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
+                    "run_id": run["run_id"],
+                    "input_summary": raw_user_input[:500],
+                    "output_summary": answer[:500],
+                    "ok": True,
+                    "route": route,
+                    "model_used": effective_model,
+                    "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
+                })
+            except Exception:
+                pass
+
         return result
     except Exception as exc:
         err = {"ok": False, "answer": "", "timeline": timeline + [{"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)}], "tool_results": tool_results, "meta": {"error": str(exc), "run_id": run["run_id"]}}
         _HISTORY.finish_run(run["run_id"], err)
+
+        # Agent OS: записываем ошибочный запуск
+        if agent_id or _registry_agent:
+            try:
+                from app.services.agent_registry import record_agent_run
+                record_agent_run({
+                    "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
+                    "run_id": run["run_id"],
+                    "input_summary": raw_user_input[:500] if 'raw_user_input' in dir() else user_input[:500],
+                    "output_summary": str(exc)[:500],
+                    "ok": False,
+                    "route": "",
+                    "model_used": model_name,
+                    "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
+                })
+            except Exception:
+                pass
+
         return err
 
 
