@@ -19,12 +19,13 @@ from __future__ import annotations
 import io
 import logging
 import time
-from pathlib import Path
 from typing import Any
+
+from app.core.config import GENERATED_DIR
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path("data/generated")
+OUTPUT_DIR = GENERATED_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

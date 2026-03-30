@@ -16,11 +16,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, UploadFile
 
-DB_PATH = Path("data/library.db")
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+from app.core.config import DATA_DIR, UPLOAD_DIR
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
-UPLOADS_DIR = PROJECT_ROOT / "data" / "uploads"
+DB_PATH = DATA_DIR / "library.db"
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR = UPLOAD_DIR
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 router = APIRouter(prefix="/api/lib", tags=["library-v2"])

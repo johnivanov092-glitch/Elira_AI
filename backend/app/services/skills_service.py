@@ -17,9 +17,11 @@ from typing import Any
 
 import requests as http_lib
 
+from app.core.config import DATA_DIR, GENERATED_DIR
+
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path("data/generated")
+OUTPUT_DIR = GENERATED_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -124,7 +126,7 @@ def generate_excel(title: str, data: list, headers: list = None, filename: str =
 # 2. SQL Р—РђРџР РћРЎР«
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-ALLOWED_DB_DIRS = [Path("data").resolve(), Path("backend/data").resolve()]
+ALLOWED_DB_DIRS = [DATA_DIR.resolve()]
 
 def _safe_db(db_path: str) -> Path:
     p = Path(db_path).resolve()

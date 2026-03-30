@@ -15,7 +15,8 @@ from __future__ import annotations
 import gc
 import logging
 import time
-from pathlib import Path
+
+from app.core.config import GENERATED_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ except ImportError:
     torch = None
     _HAS_TORCH = False
 
-OUTPUT_DIR = Path("data/generated")
+OUTPUT_DIR = GENERATED_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _pipe = None

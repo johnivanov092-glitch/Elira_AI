@@ -18,12 +18,13 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
+
+from app.core.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("data/autopipelines.db")
+DB_PATH = DATA_DIR / "autopipelines.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 _scheduler_thread: threading.Timer | None = None

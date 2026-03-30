@@ -123,3 +123,9 @@ backend/data/run_history.json
 backend/data/smart_memory.db
 backend/data/response_cache.db
 backend/data/rag_memory.db
+
+# local env / secrets
+.env
+.env.local
+backend/.env
+backend/.env.local

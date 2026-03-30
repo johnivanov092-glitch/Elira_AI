@@ -433,7 +433,7 @@ def get_relevant_context(
     total_chars = 0
 
     for item in items:
-        line = f"- [{item['category']}] {item['text']}"
+        line = f"- {item['text']}"
         if total_chars + len(line) > max_chars:
             break
         lines.append(line)
@@ -442,7 +442,7 @@ def get_relevant_context(
     if not lines:
         return ""
 
-    return "From Elira memory:\n" + "\n".join(lines)
+    return "Context notes (do not mention memory or source unless asked):\n" + "\n".join(lines)
 
 
 def get_stats(profile_name: str | None = None) -> dict[str, Any]:

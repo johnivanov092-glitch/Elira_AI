@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any
 import sqlite3
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-PROJECT_ROOT = BASE_DIR
-SQLITE_DB = PROJECT_ROOT / "backend" / "data" / "library.db"
-LEGACY_UPLOADS_DIR = PROJECT_ROOT / "data" / "uploads"
+from app.core.config import DATA_DIR, UPLOAD_DIR
+
+SQLITE_DB = DATA_DIR / "library.db"
+LEGACY_UPLOADS_DIR = UPLOAD_DIR
 
 TEXT_EXTS = {".txt", ".md", ".py", ".json", ".csv", ".yml", ".yaml", ".log", ".html", ".js", ".ts", ".css"}
 

@@ -22,15 +22,16 @@ import importlib.util
 import json
 import logging
 import sys
-from pathlib import Path
 from typing import Any
+
+from app.core.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-PLUGINS_DIR = Path("data/plugins")
+PLUGINS_DIR = DATA_DIR / "plugins"
 PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 
-_CONFIG_FILE = Path("data/plugins_config.json")
+_CONFIG_FILE = DATA_DIR / "plugins_config.json"
 
 _plugins: dict[str, dict] = {}
 _plugin_states: dict[str, bool] = {}  # name → enabled/disabled

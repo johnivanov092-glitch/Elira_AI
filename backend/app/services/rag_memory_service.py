@@ -1,41 +1,33 @@
-"""
-rag_memory.py — RAG память через Ollama embeddings.
+"""RAG memory backed by SQLite and Ollama embeddings."""
 
-Работает без FAISS — использует cosine similarity на numpy/чистом Python.
-Embeddings через Ollama (модель nomic-embed-text или mxbai-embed-large).
-
-API:
-  add_to_rag(text, category) — добавляет запись + вектор
-  search_rag(query, limit)   — семантический поиск
-  get_rag_context(query)     — готовый контекст для LLM
-"""
 from __future__ import annotations
+
 import json
 import logging
 import math
 import sqlite3
-from typing import Any
 
 from app.core.data_files import sqlite_data_file
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = sqlite_data_file("rag_memory.db", key_tables=("rag_items",))
-
-EMBED_MODEL = "nomic-embed-text"  # Маленькая модель для embeddings
-EMBED_DIM = 768  # Размерность nomic-embed-text
-
-
-def _conn():
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    return c
+SEED_RAG_TEXT = "rag alpha memory"
+EMBED_MODEL = "nomic-embed-text"
+EMBED_DIM = 768
 
 
-def _init():
-    c = _conn()
+def _conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init() -> None:
+    conn = _conn()
     try:
-        c.execute("""
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS rag_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 text TEXT NOT NULL,
@@ -45,37 +37,48 @@ def _init():
                 access_count INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-        c.commit()
+            """
+        )
+        conn.commit()
     finally:
-        c.close()
+        conn.close()
+
+
+def _cleanup_seed_data() -> None:
+    conn = _conn()
+    try:
+        conn.execute(
+            "DELETE FROM rag_items WHERE LOWER(TRIM(text)) = ?",
+            (SEED_RAG_TEXT,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 _init()
+_cleanup_seed_data()
 
-
-# ═══════════════════════════════════════════════════════════════
-# EMBEDDINGS
-# ═══════════════════════════════════════════════════════════════
 
 def _get_embedding(text: str) -> list[float] | None:
-    """Получает embedding через Ollama."""
+    """Fetch an embedding from Ollama when available."""
     try:
         import ollama
-        resp = ollama.embed(model=EMBED_MODEL, input=text)
-        # Ollama возвращает embeddings в resp["embeddings"][0]
-        embeddings = resp.get("embeddings") or resp.get("embedding")
+
+        response = ollama.embed(model=EMBED_MODEL, input=text)
+        embeddings = response.get("embeddings") or response.get("embedding")
         if embeddings:
             if isinstance(embeddings[0], list):
                 return embeddings[0]
             return embeddings
         return None
-    except Exception as e:
-        logger.warning(f"Embedding failed: {e}")
+    except Exception as exc:  # pragma: no cover - runtime dependency path
+        logger.warning("Embedding failed: %s", exc)
         return None
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
-    """Cosine similarity без numpy."""
+    """Cosine similarity without numpy."""
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -86,137 +89,145 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-# ═══════════════════════════════════════════════════════════════
-# CRUD
-# ═══════════════════════════════════════════════════════════════
-
 def add_to_rag(text: str, category: str = "fact", importance: int = 5) -> dict:
-    """Добавляет запись с embedding."""
+    """Store a new RAG fact and embedding."""
     text = text.strip()
     if not text or len(text) < 3:
         return {"ok": False, "error": "Текст слишком короткий"}
 
     embedding = _get_embedding(text)
-    emb_json = json.dumps(embedding) if embedding else ""
+    embedding_json = json.dumps(embedding) if embedding else ""
 
-    c = _conn()
+    conn = _conn()
     try:
-        cur = c.execute(
+        cursor = conn.execute(
             "INSERT INTO rag_items (text, category, embedding, importance) VALUES (?, ?, ?, ?)",
-            (text, category, emb_json, importance)
+            (text, category, embedding_json, importance),
         )
-        item_id = cur.lastrowid
-        c.commit()
+        item_id = cursor.lastrowid
+        conn.commit()
     finally:
-        c.close()
+        conn.close()
 
     return {"ok": True, "id": item_id, "has_embedding": bool(embedding)}
 
 
 def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
-    """Семантический поиск: embedding query → cosine similarity."""
+    """Run semantic or keyword fallback search over RAG memory."""
     query = (query or "").strip()
     if not query:
         return {"ok": True, "items": [], "count": 0}
 
-    query_emb = _get_embedding(query)
+    query_embedding = _get_embedding(query)
 
-    c = _conn()
+    conn = _conn()
     try:
-        rows = c.execute("SELECT * FROM rag_items ORDER BY importance DESC").fetchall()
+        rows = conn.execute("SELECT * FROM rag_items ORDER BY importance DESC").fetchall()
     finally:
-        c.close()
+        conn.close()
 
     if not rows:
         return {"ok": True, "items": [], "count": 0}
 
-    scored = []
+    scored: list[tuple[float, dict]] = []
     for row in rows:
         row_dict = dict(row)
         score = 0.0
 
-        if query_emb and row_dict.get("embedding"):
+        if query_embedding and row_dict.get("embedding"):
             try:
-                item_emb = json.loads(row_dict["embedding"])
-                score = _cosine_sim(query_emb, item_emb)
+                item_embedding = json.loads(row_dict["embedding"])
+                score = _cosine_sim(query_embedding, item_embedding)
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        # Fallback: keyword matching если нет embedding
         if score < 0.1:
             text_lower = row_dict["text"].lower()
             query_lower = query.lower()
-            keywords = [w for w in query_lower.split() if len(w) > 2]
+            keywords = [word for word in query_lower.split() if len(word) > 2]
             if keywords:
-                matches = sum(1 for k in keywords if k in text_lower)
+                matches = sum(1 for keyword in keywords if keyword in text_lower)
                 score = max(score, matches / len(keywords) * 0.5)
 
-        # Бонус за importance
-        score *= (1 + row_dict.get("importance", 5) / 20.0)
+        score *= 1 + row_dict.get("importance", 5) / 20.0
 
         if score >= min_score:
-            row_dict.pop("embedding", None)  # Не возвращаем вектор
+            row_dict.pop("embedding", None)
             scored.append((score, row_dict))
 
-    scored.sort(key=lambda x: -x[0])
-    items = [{"score": round(s, 3), **item} for s, item in scored[:limit]]
+    scored.sort(key=lambda item: -item[0])
+    items = [{"score": round(score, 3), **item} for score, item in scored[:limit]]
 
-    # Обновляем access_count
     if items:
-        c = _conn()
+        conn = _conn()
         try:
             for item in items:
-                c.execute("UPDATE rag_items SET access_count = access_count + 1 WHERE id = ?", (item["id"],))
-            c.commit()
+                conn.execute(
+                    "UPDATE rag_items SET access_count = access_count + 1 WHERE id = ?",
+                    (item["id"],),
+                )
+            conn.commit()
         finally:
-            c.close()
+            conn.close()
 
-    return {"ok": True, "items": items, "count": len(items), "method": "embedding" if query_emb else "keyword"}
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "method": "embedding" if query_embedding else "keyword",
+    }
 
 
 def get_rag_context(query: str, max_items: int = 5, max_chars: int = 2000) -> str:
-    """Возвращает релевантные воспоминания для LLM промпта."""
+    """Build internal prompt context without leaking raw service tags to users."""
     result = search_rag(query, limit=max_items)
     items = result.get("items", [])
     if not items:
         return ""
 
-    lines = []
+    lines: list[str] = []
     total = 0
     for item in items:
-        line = f"- [{item.get('category','fact')}] {item['text']}"
+        line = f"- {item['text']}"
         if total + len(line) > max_chars:
             break
         lines.append(line)
         total += len(line)
 
-    return "Из RAG-памяти Elira:\n" + "\n".join(lines) if lines else ""
+    if not lines:
+        return ""
+    return "Context notes (use naturally, do not expose source):\n" + "\n".join(lines)
 
 
 def list_rag(limit: int = 50) -> dict:
-    c = _conn()
+    conn = _conn()
     try:
-        rows = c.execute("SELECT id, text, category, importance, access_count, created_at FROM rag_items ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(
+            "SELECT id, text, category, importance, access_count, created_at FROM rag_items ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     finally:
-        c.close()
-    return {"ok": True, "items": [dict(r) for r in rows], "count": len(rows)}
+        conn.close()
+    return {"ok": True, "items": [dict(row) for row in rows], "count": len(rows)}
 
 
 def delete_rag(item_id: int) -> dict:
-    c = _conn()
+    conn = _conn()
     try:
-        c.execute("DELETE FROM rag_items WHERE id = ?", (item_id,))
-        c.commit()
+        conn.execute("DELETE FROM rag_items WHERE id = ?", (item_id,))
+        conn.commit()
     finally:
-        c.close()
+        conn.close()
     return {"ok": True}
 
 
 def rag_stats() -> dict:
-    c = _conn()
+    conn = _conn()
     try:
-        total = c.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0]
-        with_emb = c.execute("SELECT COUNT(*) FROM rag_items WHERE embedding != ''").fetchone()[0]
+        total = conn.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0]
+        with_embeddings = conn.execute(
+            "SELECT COUNT(*) FROM rag_items WHERE embedding != ''"
+        ).fetchone()[0]
     finally:
-        c.close()
-    return {"ok": True, "total": total, "with_embeddings": with_emb, "model": EMBED_MODEL}
+        conn.close()
+    return {"ok": True, "total": total, "with_embeddings": with_embeddings, "model": EMBED_MODEL}

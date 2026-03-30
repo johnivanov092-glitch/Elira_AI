@@ -9,6 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.core.config import GENERATED_DIR
 from app.services.skills_service import (
     generate_word, generate_excel,
     run_sql, list_databases, describe_db,
@@ -16,7 +17,7 @@ from app.services.skills_service import (
 )
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
-OUTPUT_DIR = Path("data/generated")
+OUTPUT_DIR = GENERATED_DIR
 
 
 # ── Генерация файлов ──

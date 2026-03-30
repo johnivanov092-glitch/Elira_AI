@@ -9,9 +9,11 @@ from typing import List
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from app.core.data_files import data_file
+
 router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20"])
 
-DB_PATH = Path("data/elira_state.db")
+DB_PATH = data_file("elira_state.db")
 PROJECT_ROOT = Path(".").resolve()
 BLOCKED_PARTS = {
     ".git", "node_modules", ".venv", "__pycache__", "dist", "build", "target"

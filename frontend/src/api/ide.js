@@ -13,6 +13,11 @@ function unwrapItem(payload) {
   return payload.item || payload.chat || payload.message || payload.data || payload;
 }
 
+function normalizeSessionId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  return typeof value === "string" ? value : String(value);
+}
+
 function normalizeChat(item = {}) {
   return {
     ...item,
@@ -114,18 +119,26 @@ export async function getMessages(arg) {
 }
 
 export async function addMessage(body = {}) {
-  return normalizeMessage(unwrapItem(await request("/api/elira/messages", {
+  const payload = await request("/api/elira/messages", {
     method: "POST",
     body: {
       chat_id: body.chatId ?? body.chat_id ?? null,
       role: body.role ?? "user",
       content: typeof body.content === "string" ? body.content : String(body.content ?? ""),
     },
-  })));
+  });
+  const message = normalizeMessage(unwrapItem(payload?.message ?? payload));
+  return {
+    ...message,
+    ...payload,
+    chat_id: payload?.chat_id ?? body.chatId ?? body.chat_id ?? null,
+    message,
+  };
 }
 
 export async function sendMessage(body = {}) {
-  return addMessage(body);
+  const payload = await addMessage(body);
+  return payload.message;
 }
 
 export async function execute(body = {}) {
@@ -135,7 +148,7 @@ export async function execute(body = {}) {
       model_name: body.model_name ?? body.model ?? "gemma3:4b",
       profile_name: body.profile_name ?? body.profile ?? "default",
       user_input: String(body.user_input ?? body.message ?? body.prompt ?? body.text ?? body.query ?? "").trim(),
-      session_id: body.session_id ?? body.chat_id ?? body.chatId ?? null,
+      session_id: normalizeSessionId(body.session_id ?? body.chat_id ?? body.chatId ?? null),
       history: Array.isArray(body.history) ? body.history : [],
       use_memory: body.use_memory ?? true,
       use_library: body.use_library ?? true,
@@ -156,7 +169,7 @@ export function executeStream(body = {}, { onToken, onDone, onError, onPhase } =
     model_name: body.model_name ?? body.model ?? "gemma3:4b",
     profile_name: body.profile_name ?? body.profile ?? "default",
     user_input: String(body.user_input ?? body.message ?? "").trim(),
-    session_id: body.session_id ?? body.chat_id ?? body.chatId ?? null,
+    session_id: normalizeSessionId(body.session_id ?? body.chat_id ?? body.chatId ?? null),
     history: Array.isArray(body.history) ? body.history : [],
     num_ctx: body.num_ctx ?? 8192,
     use_memory: body.use_memory ?? true,
@@ -280,6 +293,20 @@ export async function getPersonaStatus() {
   return safeRequest("/api/persona/status", {}, { ok: false, active_version: 1, quarantine_candidates: 0, latest_traits: [], model_consistency: [] });
 }
 
+export async function getRuntimeStatus() {
+  return safeRequest("/api/runtime/status", {}, {
+    ok: false,
+    storage_mode: "unknown",
+    active_chat_count: 0,
+    primary_engine: "",
+    fallback_engines: [],
+    available_engines: [],
+    api_keys_present: { tavily: false },
+    degraded_mode: false,
+    web_warnings: [],
+  });
+}
+
 export async function getPersonaVersion(version) {
   return safeRequest(withParams("/api/persona/version", { version }), {}, { ok: false, item: null });
 }
@@ -294,16 +321,18 @@ export async function rollbackPersona(version) {
 }
 
 export async function getDashboardOverview() {
-  const [statsResult, projectBrainStatusResult, personaStatusResult] = await Promise.allSettled([
+  const [statsResult, projectBrainStatusResult, personaStatusResult, runtimeStatusResult] = await Promise.allSettled([
     request("/api/dashboard/stats"),
     getProjectBrainStatus(),
     getPersonaStatus(),
+    getRuntimeStatus(),
   ]);
 
   const errors = [];
   const stats = statsResult.status === "fulfilled" ? statsResult.value : null;
   const projectBrainStatus = projectBrainStatusResult.status === "fulfilled" ? projectBrainStatusResult.value : null;
   const personaStatus = personaStatusResult.status === "fulfilled" ? personaStatusResult.value : null;
+  const runtimeStatus = runtimeStatusResult.status === "fulfilled" ? runtimeStatusResult.value : null;
 
   if (statsResult.status === "rejected") {
     errors.push(`dashboard stats: ${formatRequestError(statsResult.reason)}`);
@@ -314,11 +343,14 @@ export async function getDashboardOverview() {
   if (personaStatusResult.status === "rejected") {
     errors.push(`persona status: ${formatRequestError(personaStatusResult.reason)}`);
   }
-  if (!stats && !projectBrainStatus && !personaStatus && errors.length) {
+  if (runtimeStatusResult.status === "rejected") {
+    errors.push(`runtime status: ${formatRequestError(runtimeStatusResult.reason)}`);
+  }
+  if (!stats && !projectBrainStatus && !personaStatus && !runtimeStatus && errors.length) {
     throw new Error(errors.join(" | "));
   }
 
-  return { stats, projectBrainStatus, personaStatus, errors };
+  return { stats, projectBrainStatus, personaStatus, runtimeStatus, errors };
 }
 
 export async function listPatchHistory({ path = "", limit = 20 } = {}) {
@@ -606,6 +638,7 @@ export const api = {
   getProjectFile,
   getProjectBrainStatus,
   getPersonaStatus,
+  getRuntimeStatus,
   getPersonaVersion,
   listPersonaCandidates,
   rollbackPersona,

@@ -22,20 +22,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-OUTPUT_DIR = Path("data/generated")
+from app.core.config import DATA_DIR, GENERATED_DIR, UPLOAD_DIR
+
+OUTPUT_DIR = GENERATED_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-WORKSPACE = Path("data/workspace")
+WORKSPACE = DATA_DIR / "workspace"
 WORKSPACE.mkdir(parents=True, exist_ok=True)
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_UPLOADS = PROJECT_ROOT / "data" / "uploads"
-BACKEND_UPLOADS = Path("data/uploads")
+BACKEND_UPLOADS = UPLOAD_DIR
 
 
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 # 1. РЁРР¤Р РћР’РђРќРР• (Fernet = AES-128-CBC)
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-_KEY_FILE = Path("data/elira_secret.key")
+_KEY_FILE = DATA_DIR / "elira_secret.key"
 
 
 def _get_fernet():
@@ -126,8 +126,6 @@ def convert_file(source_path: str, target_format: str) -> dict:
         src = WORKSPACE / source_path
         if not src.exists():
             src = BACKEND_UPLOADS / source_path
-            if not src.exists():
-                src = LEGACY_UPLOADS / source_path
     if not src.exists():
         return {"ok": False, "error": f"РќРµ РЅР°Р№РґРµРЅ: {source_path}"}
 
@@ -284,8 +282,6 @@ def analyze_csv(file_path: str, query: str = "") -> dict:
         fp = WORKSPACE / file_path
         if not fp.exists():
             fp = BACKEND_UPLOADS / file_path
-            if not fp.exists():
-                fp = LEGACY_UPLOADS / file_path
     if not fp.exists():
         return {"ok": False, "error": f"РќРµ РЅР°Р№РґРµРЅ: {file_path}"}
 

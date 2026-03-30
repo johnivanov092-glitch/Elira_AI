@@ -14,10 +14,13 @@ import logging
 from typing import Any, Generator
 
 from app.services.chat_service import run_chat, run_chat_stream
+from app.services.identity_guard import guard_identity_response
 from app.services.planner_v2_service import PlannerV2Service
 from app.services.persona_service import observe_dialogue
+from app.services.provenance_guard import guard_provenance_response
 from app.services.reflection_loop_service import run_reflection_loop
 from app.services.run_history_service import RunHistoryService
+from app.services.temporal_intent import detect_temporal_intent
 from app.services.tool_service import run_tool
 from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
 from app.services.response_cache import get_cached, set_cached, should_cache
@@ -59,9 +62,9 @@ def _clean_query(query):
     is_weather = "погода" in ql
 
     # Добавляем год если нет
-    if (is_news or is_price or is_weather):
-        if not any(y in q for y in ["2024", "2025", "2026"]):
-            q += " " + str(datetime.now().year)
+    temporal = detect_temporal_intent(q)
+    if (is_news or is_price or is_weather) and not temporal.get("years"):
+        q += " " + str(datetime.now().year)
 
     # Раскрываем короткие даты: "19.03" → "19 марта 2025"
     date_match = re.search(r"(\d{1,2})\.(\d{2})(?:\.\d{2,4})?", q)
@@ -89,6 +92,61 @@ def _short(v, limit=600):
 
 def _tl(timeline, step, title, status, detail):
     timeline.append({"step": step, "title": title, "status": status, "detail": detail})
+
+
+def _apply_identity_guard(user_input: str, answer_text: str, timeline: list[dict[str, Any]]):
+    guard = guard_identity_response(user_input, answer_text, persona_name="Elira")
+    if guard.get("changed"):
+        _tl(timeline, "identity_guard", "Идентичность Elira", "done", guard.get("reason", "identity_rewrite"))
+    return guard
+
+def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[dict[str, Any]]):
+    guard = guard_provenance_response(user_input, answer_text)
+    if guard.get("changed"):
+        _tl(timeline, "provenance_guard", "Ответ без служебных источников", "done", guard.get("reason", "source_hidden"))
+    return guard
+
+
+def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
+    temporal = temporal or {}
+    mode = temporal.get("mode", "none")
+    freshness_sensitive = bool(temporal.get("freshness_sensitive"))
+    years = ", ".join(str(year) for year in temporal.get("years", [])) or "нет"
+    reasoning_depth = temporal.get("reasoning_depth", "none")
+    return (
+        "\n\nПРАВИЛА ФИНАЛЬНОГО ОТВЕТА:\n"
+        "1. Отвечай естественно, как живой человек, а не как поисковая система.\n"
+        "2. Если выше есть веб-данные, используй их как рабочую базу, но не вставляй ссылки без прямой просьбы пользователя.\n"
+        "3. Не показывай служебные маркеры, внутренние заметки, память, RAG, hidden context или raw tags.\n"
+        "4. Если свежесть данных не подтверждена, скажи об этом простыми словами.\n"
+        "5. Если пользователь спросит об источниках, тогда объясни их естественно и без технических терминов.\n"
+        f"6. Temporal mode: {mode}; explicit years: {years}; reasoning depth: {reasoning_depth}; freshness sensitive: {freshness_sensitive}."
+    )
+
+
+_DIRECT_PERSONAL_MEMORY_RE = re.compile(
+    r"(?iu)^\s*(?:как\s+меня\s+зовут|ты\s+знаешь\s+как\s+меня\s+зовут|what\s+is\s+my\s+name|do\s+you\s+know\s+my\s+name)\s*\??\s*$"
+)
+
+
+def _is_direct_personal_memory_query(user_input: str) -> bool:
+    return bool(_DIRECT_PERSONAL_MEMORY_RE.search(user_input or ""))
+
+
+def _should_recall_memory_context(user_input: str, route: str, temporal: dict[str, Any] | None) -> bool:
+    temporal = temporal or {}
+    if is_memory_command(user_input):
+        return False
+    if route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive"):
+        return False
+    return True
+
+
+def _get_memory_recall_limits(user_input: str) -> tuple[int, int]:
+    if _is_direct_personal_memory_query(user_input):
+        return (1, 0)
+    return (5, 3)
+
 
 def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
     """Умная обрезка истории: оставляем первое сообщение (контекст) + последние N пар."""
@@ -617,8 +675,7 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     files_triggers = ["покажи файлы", "список файлов", "сгенерированные файлы", "мои файлы"]
     if any(t in ql for t in files_triggers):
         try:
-            from pathlib import Path as _P
-            gen_dir = _P("data/generated")
+            from app.core.config import GENERATED_DIR as gen_dir
             if gen_dir.exists():
                 files = sorted(gen_dir.iterdir())[-10:]
                 if files:
@@ -716,13 +773,148 @@ def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: s
         "1. ОБЯЗАТЕЛЬНО используй данные выше для ответа — они собраны из нескольких поисковиков.\n"
         "2. Если есть секция «СОДЕРЖИМОЕ ВЕБ-СТРАНИЦ» — это ГЛАВНЫЙ источник, цитируй оттуда.\n"
         "3. Если есть «СВЕЖИЕ НОВОСТИ» — упомяни актуальные события по теме.\n"
-        "4. Приводи конкретные цифры, даты, ссылки и факты из данных.\n"
-        "5. Указывай источники (URL) когда цитируешь факты.\n"
-        "6. Не говори что данных нет, если они есть выше."
+        "4. Приводи конкретные факты, даты и цифры из данных выше, но без служебных маркеров и внутреннего контекста.\n"
+        "5. Не вставляй URL и список источников, если пользователь прямо не попросил ссылки или источники.\n"
+        "6. Если свежесть данных под вопросом, честно скажи об этом простыми словами.\n"
+        "7. Не говори что данных нет, если они есть выше."
     )
 
 
 # Хранилище для вложений (картинки, файлы) которые добавляются ПОСЛЕ ответа LLM
+def _wants_explicit_datetime_answer(user_input: str) -> bool:
+    q = (user_input or "").strip().lower()
+    if not q:
+        return False
+
+    explicit_phrases = (
+        "какая сегодня дата",
+        "сегодня какая дата",
+        "какое сегодня число",
+        "сегодня какое число",
+        "какой сегодня день",
+        "какой сегодня день недели",
+        "какая дата сегодня",
+        "который час",
+        "сколько времени",
+        "сколько сейчас времени",
+        "какое сейчас время",
+        "текущее время",
+        "текущая дата",
+        "what date is it",
+        "what time is it",
+        "current date",
+        "current time",
+        "today's date",
+    )
+    if any(phrase in q for phrase in explicit_phrases):
+        return True
+
+    explicit_patterns = (
+        r"\bкотор(?:ый|ое)\s+час\b",
+        r"\bсколько\s+(?:сейчас\s+)?времени\b",
+        r"\bкакая\s+(?:сегодня\s+)?дата\b",
+        r"\bкакое\s+(?:сегодня\s+)?число\b",
+        r"\bкакой\s+(?:сегодня\s+)?день(?:\s+недели)?\b",
+        r"\bwhat\s+date\b",
+        r"\bwhat\s+time\b",
+    )
+    return any(re.search(pattern, q, flags=re.IGNORECASE) for pattern in explicit_patterns)
+
+
+def _build_runtime_datetime_context(user_input: str) -> str:
+    from datetime import datetime
+
+    days_ru = {
+        "Monday": "понедельник",
+        "Tuesday": "вторник",
+        "Wednesday": "среда",
+        "Thursday": "четверг",
+        "Friday": "пятница",
+        "Saturday": "суббота",
+        "Sunday": "воскресенье",
+    }
+    now = datetime.now()
+    day_name = days_ru.get(now.strftime("%A"), now.strftime("%A"))
+    runtime_stamp = f"{now.strftime('%d.%m.%Y, %H:%M')}, {day_name}"
+
+    if _wants_explicit_datetime_answer(user_input):
+        return (
+            "ВНУТРЕННИЙ RUNTIME-КОНТЕКСТ:\n"
+            f"- Текущая локальная дата и время: {runtime_stamp}\n"
+            "- Пользователь прямо спросил о дате или времени. Ответь естественно и используй эти данные точно.\n"
+            "- Не добавляй лишние технические пояснения."
+        )
+
+    return (
+        "ВНУТРЕННИЙ RUNTIME-КОНТЕКСТ:\n"
+        f"- Текущая локальная дата и время: {runtime_stamp}\n"
+        "- Ты всегда знаешь текущие дату и время внутренне.\n"
+        "- НЕ упоминай дату, время, день недели или фразы вида "
+        "\"Сегодня ... и сейчас ...\" в обычном ответе, если пользователь прямо об этом не спросил.\n"
+        "- Используй эти данные молча только когда они действительно нужны для логики ответа."
+    )
+
+
+def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
+    runtime_context = _build_runtime_datetime_context(user_input)
+
+    skill_results = _run_auto_skills(user_input, disabled=disabled_skills or set())
+
+    _pending_attachments.clear()
+    if skill_results:
+        clean_parts = []
+        for line in skill_results.split("\n\n"):
+            if line.startswith("IMAGE_GENERATED:"):
+                p = line.split(":", 4)
+                if len(p) >= 4:
+                    _pending_attachments.append({
+                        "type": "image",
+                        "view_url": p[1] + ":" + p[2] if "http" in p[1] else p[1],
+                        "filename": p[2] if "http" not in p[1] else p[3],
+                        "prompt": p[-1],
+                    })
+            elif line.startswith("FILE_GENERATED:"):
+                p = line.split(":", 4)
+                if len(p) >= 4:
+                    _pending_attachments.append({
+                        "type": "file",
+                        "file_type": p[1],
+                        "download_url": p[2] + ":" + p[3] if "http" in p[2] else p[2],
+                        "filename": p[3] if "http" not in p[2] else p[4] if len(p) > 4 else p[3],
+                    })
+            elif line.startswith("SKILL_HINT:"):
+                clean_parts.append(line)
+            elif line.startswith("SKILL_ERROR:"):
+                error_msg = line[len("SKILL_ERROR:"):]
+                _pending_attachments.append({"type": "error", "message": error_msg})
+            else:
+                clean_parts.append(line)
+        skill_results = "\n\n".join(clean_parts)
+
+    if skill_results:
+        context_bundle = (context_bundle + "\n\n" + skill_results) if context_bundle.strip() else skill_results
+
+    if not context_bundle.strip():
+        return f"{runtime_context}\n\nВопрос пользователя: {user_input}"
+
+    return (
+        f"{runtime_context}\n\n"
+        "Вот данные из интернета и других источников:\n\n"
+        + context_bundle
+        + "\n\n---\n\n"
+        "Вопрос пользователя: " + user_input + "\n\n"
+        "ПРАВИЛА ОТВЕТА:\n"
+        "1. Обязательно используй данные выше для ответа.\n"
+        "2. Если есть содержимое веб-страниц или свежие новости, опирайся на них как на главный источник.\n"
+        "3. Приводи конкретные факты, даты и цифры, но без служебных маркеров и внутреннего контекста.\n"
+        "4. Не вставляй URL и список источников, если пользователь прямо не попросил ссылки или источники.\n"
+        "5. Если свежесть данных под вопросом, честно скажи об этом простыми словами.\n"
+        "6. Не говори, что данных нет, если они есть выше.\n"
+        "7. Не упоминай текущую дату или время, если пользователь прямо об этом не спросил. "
+        "Если спросил — отвечай точно и естественно."
+    )
+
+
 _pending_attachments: list[dict] = []
 
 
@@ -830,8 +1022,10 @@ def _do_web_search(query, timeline, tool_results):
     search_results = []
     engines_used = []
     try:
-        from app.core.web import search_web as multi_search, fetch_page_text as core_fetch
-        raw = multi_search(search_query, max_results=12, engines=("duckduckgo", "searxng", "wikipedia", "bing", "google"))
+        from app.core.web import fetch_page_text as core_fetch
+        from app.core.web import search_news as core_search_news
+        from app.core.web import search_web as multi_search
+        raw = multi_search(search_query, max_results=12)
         for r in raw:
             href = r.get("href", "")
             if href and href.startswith("http"):
@@ -841,9 +1035,9 @@ def _do_web_search(query, timeline, tool_results):
                     "snippet": r.get("body", ""),
                     "engine": r.get("engine", ""),
                 })
-        engines_used = list({r.get("engine", "") for r in raw if r.get("engine")})
+        engines_used = sorted({r.get("engine", "") for r in raw if r.get("engine")})
     except Exception as e:
-        logger.warning(f"Multi-search failed, falling back to DDG: {e}")
+        logger.warning(f"Web search failed: {e}")
 
     # Fallback: только DDG если мульти-поиск упал
     if not search_results:
@@ -866,15 +1060,9 @@ def _do_web_search(query, timeline, tool_results):
     # ═══ Шаг 1.5: DDG News (свежие новости) ═══
     news_results = []
     try:
-        DDGS = None
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            news_raw = list(ddgs.news(search_query, max_results=5))
+        news_raw = core_search_news(search_query, max_results=5)
         for n in news_raw:
-            url = n.get("url") or n.get("href") or ""
+            url = n.get("href") or n.get("url") or ""
             if url and url.startswith("http"):
                 news_results.append({
                     "title": n.get("title", ""),
@@ -883,7 +1071,7 @@ def _do_web_search(query, timeline, tool_results):
                     "date": n.get("date", ""),
                     "source": n.get("source", ""),
                 })
-        if news_results:
+        if news_results and "ddg-news" not in engines_used:
             engines_used.append("ddg-news")
     except Exception:
         pass  # Новости — бонус, не критично
@@ -915,12 +1103,12 @@ def _do_web_search(query, timeline, tool_results):
     if targets:
         page_results = {}  # url → text
         with ThreadPoolExecutor(max_workers=min(len(targets), 4)) as executor:
-            future_map = {executor.submit(_fetch_page_text, t["url"], 3000): t for t in targets}
+            future_map = {executor.submit(core_fetch, t["url"]): t for t in targets}
             for future in as_completed(future_map):
                 item = future_map[future]
                 try:
-                    text = future.result()
-                    if text and len(text) > 100:
+                    text = (future.result() or "")[:3000]
+                    if text and len(text) > 100 and not text.lower().startswith("рћс€рёр±рєр°"):
                         page_results[item["url"]] = (item, text)
                 except Exception:
                     pass
@@ -931,7 +1119,6 @@ def _do_web_search(query, timeline, tool_results):
                 item, text = page_results[t["url"]]
                 deep_content.append(
                     "--- " + item["title"] + " ---\n"
-                    "URL: " + item["url"] + "\n"
                     + text
                 )
                 fetched_urls.add(item["url"])
@@ -962,13 +1149,13 @@ def _do_web_search(query, timeline, tool_results):
         for n in news_results[:5]:
             date_str = f" [{n['date']}]" if n.get("date") else ""
             source_str = f" ({n['source']})" if n.get("source") else ""
-            news_lines.append(f"- {n['title']}{date_str}{source_str}: {n['snippet']} ({n['url']})")
+            news_lines.append(f"- {n['title']}{date_str}{source_str}: {n['snippet']}")
         parts.append("══ СВЕЖИЕ НОВОСТИ ══\n" + "\n".join(news_lines))
 
     # Сниппеты остальных результатов (исключаем уже загруженные)
     remaining = [s for s in search_results if s["url"] not in fetched_urls][:5]
     if remaining:
-        snippet_lines = [f"- [{s.get('engine','')}] {s['title']}: {s['snippet']} ({s['url']})" for s in remaining]
+        snippet_lines = [f"- {s['title']}: {s['snippet']}" for s in remaining]
         parts.append("══ ДРУГИЕ РЕЗУЛЬТАТЫ ══\n" + "\n".join(snippet_lines))
 
     return "\n\n".join(parts)
@@ -978,7 +1165,70 @@ def _do_web_search(query, timeline, tool_results):
 # КОНТЕКСТ
 # ═══════════════════════════════════════════════════════════════
 
-def _collect_context(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False):
+def _do_temporal_web_search(query, timeline, tool_results, temporal=None):
+    temporal = temporal or {}
+    context = _do_web_search(query, timeline, tool_results)
+    web_result = _get_web_search_result(tool_results)
+    found = int(web_result.get("found", 0) or 0)
+    fetched_pages = int(web_result.get("fetched_pages", 0) or 0)
+    news_count = int(web_result.get("news", 0) or 0)
+    engines_used = set(web_result.get("engines", []) or [])
+    current_evidence_engines = {"tavily", "duckduckgo", "ddg-news"}
+    has_current_evidence = bool(engines_used & current_evidence_engines) or news_count > 0
+    deeper_search = False
+
+    if temporal.get("requires_web") and temporal.get("reasoning_depth") == "deep":
+        weak_coverage = found < 4 or fetched_pages < 2 or (temporal.get("freshness_sensitive") and not has_current_evidence)
+        if weak_coverage:
+            try:
+                from app.core.web import research_web
+                deep_engines = ("wikipedia", "tavily", "duckduckgo") if temporal.get("stable_historical") else ("tavily", "duckduckgo", "wikipedia")
+
+                deep_context = research_web(
+                    _clean_query(query),
+                    max_results=8,
+                    pages_to_read=4,
+                    engines=deep_engines,
+                )
+                if deep_context:
+                    deeper_search = True
+                    context = (
+                        context + "\n\nДополнительный углубленный веб-поиск:\n" + deep_context
+                        if context
+                        else deep_context
+                    )
+                    _tl(timeline, "tool_web_deep", "Углубленный веб-поиск", "done", "Дополнительная проверка источников")
+            except Exception as exc:
+                _tl(timeline, "tool_web_deep", "Углубленный веб-поиск", "error", str(exc))
+
+    if temporal.get("freshness_sensitive"):
+        freshness_state = "fresh_checked" if has_current_evidence and (news_count > 0 or fetched_pages >= 2 or deeper_search) else "unverified_current"
+        freshness_note = (
+            "Freshness status: fresh_checked. Use current web findings as the main evidence."
+            if freshness_state == "fresh_checked"
+            else "Freshness status: unverified_current. If confidence is limited, say that the data may be outdated or not fully verified."
+        )
+    elif temporal.get("stable_historical"):
+        freshness_state = "historical_or_stable"
+        freshness_note = "Freshness status: historical_or_stable. Treat this as a mostly stable historical topic."
+    else:
+        freshness_state = "standard_web"
+        freshness_note = "Freshness status: standard_web. Use the web findings naturally without exposing internal formatting."
+
+    if tool_results and tool_results[-1].get("tool") == "web_search":
+        result = tool_results[-1].setdefault("result", {})
+        if isinstance(result, dict):
+            result["freshness_state"] = freshness_state
+            result["deeper_search"] = deeper_search
+            result["temporal_mode"] = temporal.get("mode", "none")
+            result["has_current_evidence"] = has_current_evidence
+
+    if context:
+        context += "\n\n" + freshness_note
+    return context
+
+
+def _collect_context(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None):
     parts = []
     for tool_name in tools:
         try:
@@ -994,7 +1244,7 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
                 _tl(timeline, "tool_library", "Библиотека", "skip", "Фронтенд")
 
             elif tool_name == "web_search":
-                web_ctx = _do_web_search(user_input, timeline, tool_results)
+                web_ctx = _do_temporal_web_search(user_input, timeline, tool_results, temporal=temporal)
                 if web_ctx:
                     parts.append(web_ctx)
 
@@ -1063,13 +1313,15 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
         plan = planner.plan(planner_input)
         _HISTORY.add_event(run["run_id"], "planner", plan)
         route = plan.get("route", "chat")
+        temporal = plan.get("temporal", {})
         effective_model = pick_model_for_route(route, model_name)
         selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
-        strict_web_only = route == "research" and _is_strict_web_only_query(planner_input)
+        if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
+            selected.append("web_search")
+        strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
         if strict_web_only:
             selected = [t for t in selected if t != "memory_search"]
-        strict_web_only = route == "research" and _is_strict_web_only_query(planner_input)
-        if strict_web_only:
+        if is_memory_command(planner_input):
             selected = [t for t in selected if t != "memory_search"]
 
         # Умная память: извлекаем факты из сообщения
@@ -1080,22 +1332,24 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
         except Exception:
             pass
 
-        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection)
+        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal)
 
-        # Умная память + RAG: добавляем релевантные воспоминания
-        try:
-            mem_ctx = get_relevant_context(planner_input, max_items=5)
-            if _HAS_RAG:
-                rag_ctx = get_rag_context(planner_input, max_items=3)
-                if rag_ctx:
-                    mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-            if mem_ctx:
-                ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-                _tl(timeline, "memory_recall", "Память", "done", "Найдены воспоминания")
-        except Exception:
-            pass
+        # Умная память + RAG: добавляем релевантные воспоминания только когда это реально нужно
+        if _should_recall_memory_context(planner_input, route, temporal):
+            try:
+                mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
+                mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
+                if _HAS_RAG and rag_limit > 0:
+                    rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
+                    if rag_ctx:
+                        mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
+                if mem_ctx:
+                    ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
+                    _tl(timeline, "memory_recall", "Память", "done", "Найдены релевантные заметки")
+            except Exception:
+                pass
 
-        prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
+        prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
         task_context = f"Маршрут: {route}. Инструменты: {', '.join(selected) if selected else 'нет дополнительных инструментов'}."
         draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context)
         if not draft.get("ok"):
@@ -1119,6 +1373,11 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
         if post_files:
             answer += post_files
 
+        identity_guard = _apply_identity_guard(raw_user_input, answer, timeline)
+        answer = identity_guard.get("text", answer)
+        provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
+        answer = provenance_guard.get("text", answer)
+
         persona_meta = observe_dialogue(
             dialog_id=run["run_id"],
             session_id=str(session_id or run["run_id"]),
@@ -1129,7 +1388,23 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
             route=route,
             outcome_ok=True,
         )
-        result = {"ok": True, "answer": answer, "timeline": timeline, "tool_results": tool_results, "meta": {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"], "persona": persona_meta}}
+        result = {
+            "ok": True,
+            "answer": answer,
+            "timeline": timeline,
+            "tool_results": tool_results,
+            "meta": {
+                "model_name": effective_model,
+                "profile_name": profile_name,
+                "route": route,
+                "tools": selected,
+                "run_id": run["run_id"],
+                "persona": persona_meta,
+                "temporal": temporal,
+                "identity_guard": identity_guard if identity_guard.get("changed") else None,
+                "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+            },
+        }
         _HISTORY.finish_run(run["run_id"], result)
         return result
     except Exception as exc:
@@ -1157,7 +1432,15 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         plan = planner.plan(planner_input)
         _HISTORY.add_event(run["run_id"], "planner", plan)
         route = plan.get("route", "chat")
+        temporal = plan.get("temporal", {})
         selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
+        if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
+            selected.append("web_search")
+        strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
+        if strict_web_only:
+            selected = [t for t in selected if t != "memory_search"]
+        if is_memory_command(planner_input):
+            selected = [t for t in selected if t != "memory_search"]
 
         # ═══ АВТО-ВЫБОР МОДЕЛИ (тихо, без UI) ═══
         effective_model = pick_model_for_route(route, model_name)
@@ -1169,7 +1452,21 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             cached = get_cached(planner_input, effective_model, profile_name)
             if cached:
                 _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
-                meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": [], "run_id": run["run_id"], "cached": True}
+                identity_guard = _apply_identity_guard(raw_user_input, cached, timeline)
+                cached = identity_guard.get("text", cached)
+                provenance_guard = _apply_provenance_guard(raw_user_input, cached, timeline)
+                cached = provenance_guard.get("text", cached)
+                meta = {
+                    "model_name": effective_model,
+                    "profile_name": profile_name,
+                    "route": route,
+                    "tools": [],
+                    "run_id": run["run_id"],
+                    "cached": True,
+                    "temporal": temporal,
+                    "identity_guard": identity_guard if identity_guard.get("changed") else None,
+                    "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+                }
                 persona_meta = observe_dialogue(
                     dialog_id=run["run_id"],
                     session_id=str(session_id or run["run_id"]),
@@ -1201,38 +1498,33 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         elif selected:
             yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
 
-        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection)
+        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal)
 
         # Умная память + RAG
         mem_count = 0
-        try:
-            mem_ctx = get_relevant_context(planner_input, max_items=5)
-            if mem_ctx:
-                mem_count = mem_ctx.count("\n- ")
-            if _HAS_RAG:
-                rag_ctx = get_rag_context(planner_input, max_items=3)
-                if rag_ctx:
-                    mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-            if mem_ctx:
-                ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-        except Exception:
-            pass
+        if _should_recall_memory_context(planner_input, route, temporal):
+            try:
+                mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
+                mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
+                if mem_ctx:
+                    mem_count = mem_ctx.count("\n- ")
+                if _HAS_RAG and rag_limit > 0:
+                    rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
+                    if rag_ctx:
+                        mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
+                if mem_ctx:
+                    ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
+            except Exception:
+                pass
 
         yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
 
-        prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
+        prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
         full_text = ""
         task_context = f"Маршрут: {route}. Инструменты: {', '.join(selected) if selected else 'нет дополнительных инструментов'}."
         for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context):
             full_text += token
             yield {"token": token, "done": False}
-
-        # Сохраняем в кэш если подходит
-        if should_cache(planner_input, route) and full_text.strip():
-            try:
-                set_cached(planner_input, effective_model, profile_name, full_text)
-            except Exception:
-                pass
 
         # Добавляем вложения (картинки, файлы) — быстрая операция
         attachments = _get_and_clear_attachments()
@@ -1255,6 +1547,18 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
             if post_files:
                 full_text += post_files
+            identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
+            guarded_text = identity_guard.get("text", full_text)
+            provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
+            guarded_text = provenance_guard.get("text", guarded_text)
+            if guarded_text != full_text:
+                full_text = guarded_text
+                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
+            if should_cache(planner_input, route) and full_text.strip():
+                try:
+                    set_cached(planner_input, effective_model, profile_name, full_text)
+                except Exception:
+                    pass
             persona_meta = observe_dialogue(
                 dialog_id=run["run_id"],
                 session_id=str(session_id or run["run_id"]),
@@ -1265,7 +1569,17 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 route=route,
                 outcome_ok=True,
             )
-            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"], "persona": persona_meta}
+            meta = {
+                "model_name": effective_model,
+                "profile_name": profile_name,
+                "route": route,
+                "tools": selected,
+                "run_id": run["run_id"],
+                "persona": persona_meta,
+                "temporal": temporal,
+                "identity_guard": identity_guard if identity_guard.get("changed") else None,
+                "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+            }
             _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
         else:
@@ -1292,6 +1606,14 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             if post_files:
                 full_text += post_files
 
+            identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
+            guarded_text = identity_guard.get("text", full_text)
+            provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
+            guarded_text = provenance_guard.get("text", guarded_text)
+            if guarded_text != full_text:
+                full_text = guarded_text
+                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
+
             # Кэшируем после всех пост-обработок
             if should_cache(planner_input, route) and full_text.strip():
                 try:
@@ -1309,7 +1631,17 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 route=route,
                 outcome_ok=True,
             )
-            meta = {"model_name": effective_model, "profile_name": profile_name, "route": route, "tools": selected, "run_id": run["run_id"], "persona": persona_meta}
+            meta = {
+                "model_name": effective_model,
+                "profile_name": profile_name,
+                "route": route,
+                "tools": selected,
+                "run_id": run["run_id"],
+                "persona": persona_meta,
+                "temporal": temporal,
+                "identity_guard": identity_guard if identity_guard.get("changed") else None,
+                "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+            }
             _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
     except Exception as exc:

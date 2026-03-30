@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.data_files import data_file
+
 router = APIRouter(prefix="/api/elira/task", tags=["elira-task-runner"])
 
-DB_PATH = Path("data/elira_state.db")
+DB_PATH = data_file("elira_state.db")
 
 
 def ensure_db() -> None:

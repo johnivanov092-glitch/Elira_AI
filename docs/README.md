@@ -6,6 +6,7 @@ This folder now keeps only the current working documentation at the top level.
 
 - `ACTUAL_WORK.md`
   Live work log: what was repaired, what was upgraded, what was verified, and what is queued next.
+  Also includes the current Tavily/DuckDuckGo/Wikipedia web stack, local key wiring, failover behavior, hidden internal time awareness, and current chat UX behavior such as draft-first chat creation.
 
 - `ROADMAP_STABILIZATION_2026-03-29.md`
   Current stabilization roadmap: what is done, what is left, logging follow-up, and next priorities.

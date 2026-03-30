@@ -13,10 +13,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
 
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.services.identity_guard import guard_identity_response  # noqa: E402
+
 
 class PersonaServiceTest(unittest.TestCase):
+    def test_identity_guard_blocks_model_self_identification(self) -> None:
+        guarded = guard_identity_response(
+            "Как тебя зовут? кто ты?",
+            "Меня зовут Gemma. Я большая языковая модель, разработанная компанией Google DeepMind.",
+        )
+
+        self.assertTrue(guarded["changed"])
+        self.assertIn("Elira", guarded["text"])
+        self.assertNotIn("Gemma", guarded["text"])
+        self.assertNotIn("Google DeepMind", guarded["text"])
+        self.assertNotIn("языковая модель", guarded["text"].lower())
+
     def test_bootstrap_promotion_and_rollback(self) -> None:
-        with tempfile.TemporaryDirectory() as data_dir, tempfile.TemporaryDirectory() as legacy_dir:
+        with tempfile.TemporaryDirectory() as data_dir:
             script = textwrap.dedent(
                 f"""
                 import json
@@ -61,7 +78,6 @@ class PersonaServiceTest(unittest.TestCase):
 
             env = os.environ.copy()
             env["ELIRA_DATA_DIR"] = data_dir
-            env["ELIRA_LEGACY_DATA_DIR"] = legacy_dir
 
             proc = subprocess.run(
                 [sys.executable, "-c", script],

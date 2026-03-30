@@ -27,7 +27,7 @@ class FetchRequest(BaseModel):
 async def web_search(req: SearchRequest):
     """Мульти-поиск: DDG + Bing + Google (с дедупликацией)."""
     from app.services.web_multisearch_service import multi_search
-    engines = tuple(req.engines) if req.engines else ("duckduckgo", "searxng", "wikipedia", "bing", "google")
+    engines = tuple(req.engines) if req.engines else ("tavily", "duckduckgo", "wikipedia")
     return multi_search(req.query, engines=engines, max_results=req.max_results)
 
 
@@ -35,7 +35,7 @@ async def web_search(req: SearchRequest):
 async def web_deep_search(req: DeepSearchRequest):
     """Поиск + параллельная загрузка содержимого страниц."""
     from app.services.web_multisearch_service import deep_search
-    engines = tuple(req.engines) if req.engines else ("duckduckgo", "searxng", "wikipedia", "bing", "google")
+    engines = tuple(req.engines) if req.engines else ("tavily", "duckduckgo", "wikipedia")
     return deep_search(req.query, engines=engines, max_results=req.max_results, pages_to_read=req.pages_to_read)
 
 
@@ -58,12 +58,9 @@ async def list_engines():
     """Список доступных поисковых движков."""
     return {
         "engines": [
+            {"id": "tavily", "name": "Tavily", "type": "research-api", "status": "active"},
             {"id": "duckduckgo", "name": "DuckDuckGo", "type": "search", "status": "active"},
-            {"id": "searxng", "name": "SearXNG", "type": "meta-search", "status": "active"},
             {"id": "wikipedia", "name": "Wikipedia", "type": "encyclopedia", "status": "active"},
-            {"id": "bing", "name": "Bing", "type": "search", "status": "active"},
-            {"id": "google", "name": "Google", "type": "search", "status": "active"},
-            {"id": "yandex", "name": "Yandex", "type": "search", "status": "active"},
         ],
-        "default": ["duckduckgo", "searxng", "wikipedia", "bing", "google"],
+        "default": ["tavily", "duckduckgo", "wikipedia"],
     }

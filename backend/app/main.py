@@ -23,6 +23,7 @@ from app.api.routes.profiles import router as profiles_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.files import router as files_router
 from app.api.routes.persona import router as persona_router
+from app.api.routes.runtime import router as runtime_router
 from app.api.routes.pdf_routes import router as pdf_router
 from app.api.routes.tools_exec import router as tools_exec_router
 from app.api.routes.smart_memory_routes import router as smart_memory_router
@@ -39,6 +40,7 @@ from app.api.routes.dashboard_routes import router as dashboard_router
 from app.api.routes.autopipeline_routes import router as autopipeline_router
 from app.api.routes.task_planner_routes import router as task_planner_router
 from app.api.routes.telegram_routes import router as telegram_router
+from app.services.runtime_service import init_runtime_state
 
 app = FastAPI(title="Elira AI API")
 
@@ -82,6 +84,7 @@ app.include_router(profiles_router)
 app.include_router(agents_router)
 app.include_router(files_router)
 app.include_router(persona_router)
+app.include_router(runtime_router)
 app.include_router(pdf_router)
 app.include_router(tools_exec_router)
 app.include_router(smart_memory_router)
@@ -98,6 +101,8 @@ app.include_router(dashboard_router)
 app.include_router(autopipeline_router)
 app.include_router(task_planner_router)
 app.include_router(telegram_router)
+
+init_runtime_state()
 
 @app.get("/health")
 def health():

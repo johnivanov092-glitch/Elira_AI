@@ -141,6 +141,24 @@ function capabilityModeText(mode) {
   }[mode] || humanizeValue(mode);
 }
 
+function runtimeStorageModeText(mode) {
+  return {
+    rooted_sqlite: "Корневой data/",
+    rooted_sqlite_with_legacy_archive: "Корневой data/ + legacy archive",
+    custom_data_dir: "Пользовательский data dir",
+    unknown: "Неизвестно",
+  }[mode] || humanizeValue(mode);
+}
+
+function engineListText(items) {
+  if (!Array.isArray(items) || !items.length) return "—";
+  return items.map((item) => humanizeValue(item)).join(", ");
+}
+
+function yesNoText(value) {
+  return value ? "Да" : "Нет";
+}
+
 function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }) {
   return <Icon size={size} strokeWidth={strokeWidth} style={{ display: "block", flexShrink: 0, ...style }} aria-hidden="true" />;
 }
@@ -310,6 +328,56 @@ function PersonaStatusSection({ status, busy = false, onRollback }) {
   );
 }
 
+function RuntimeStatusSection({ status }) {
+  if (!status?.ok) return null;
+
+  const warning = status?.warning || "";
+  const webWarnings = Array.isArray(status?.web_warnings) ? status.web_warnings.filter(Boolean) : [];
+  const rows = [
+    { label: "Data dir", value: status.data_dir || "—" },
+    { label: "Режим хранения", value: runtimeStorageModeText(status.storage_mode) },
+    { label: "Активных чатов", value: status.active_chat_count ?? 0 },
+    { label: "Persona v", value: status.persona_version ?? "—" },
+    { label: "Web primary", value: humanizeValue(status.primary_engine || "") || "—" },
+    { label: "Web fallback", value: engineListText(status.fallback_engines) },
+    { label: "Available engines", value: engineListText(status.available_engines) },
+    { label: "Tavily key", value: yesNoText(Boolean(status.api_keys_present?.tavily)) },
+    { label: "Degraded mode", value: yesNoText(Boolean(status.degraded_mode)) },
+    { label: "Python", value: status.python_executable || "—" },
+    { label: "Backend origin", value: status.backend_origin || status.cwd || "—" },
+  ];
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Runtime</div>
+      <div style={{ padding: 12, borderRadius: 10, border: `1px solid ${warning ? "rgba(245,166,35,0.35)" : "rgba(99,102,241,0.28)"}`, background: "var(--bg-surface)" }}>
+        {warning ? (
+          <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(245,166,35,0.35)", background: "rgba(245,166,35,0.08)", fontSize: 10, color: "var(--text)" }}>
+            {warning}
+          </div>
+        ) : null}
+        {webWarnings.length ? (
+          <div style={{ marginBottom: 10, display: "grid", gap: 6 }}>
+            {webWarnings.map((item, index) => (
+              <div key={`${item}-${index}`} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(99,102,241,0.25)", background: "rgba(99,102,241,0.08)", fontSize: 10, color: "var(--text)" }}>
+                {item}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 8 }}>
+          {rows.map((row) => (
+            <div key={row.label} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>{row.label}</div>
+              <div style={{ fontSize: 11, color: "var(--text)", wordBreak: "break-word" }}>{row.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 async function fileToLibraryRecord(file) {
   let preview = "";
   const name = file.name || "";
@@ -389,6 +457,7 @@ export default function EliraChatShell() {
   const [dashData, setDashData] = useState(null);
   const [projectBrainStatus, setProjectBrainStatus] = useState(null);
   const [personaStatus, setPersonaStatus] = useState(null);
+  const [runtimeStatus, setRuntimeStatus] = useState(null);
   const [personaBusy, setPersonaBusy] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [pipelinesList, setPipelinesList] = useState([]);
@@ -419,7 +488,7 @@ export default function EliraChatShell() {
   const [theme, setTheme] = useState(() => localStorage.getItem("elira_theme") || "dark");
 
 
-  useEffect(() => { init(); return () => { if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; } }; }, []);
+  useEffect(() => { bootstrapApp(); return () => { if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; } }; }, []);
   useEffect(() => { if (msgRef.current) msgRef.current.scrollTop = msgRef.current.scrollHeight; }, [messages, chatId]);
   useEffect(() => {
     if (!error) return;
@@ -490,6 +559,41 @@ export default function EliraChatShell() {
       setShowPanel(true);
     }
   }, [messages]);
+
+  async function bootstrapApp() {
+    if (initRef.current) return;
+    initRef.current = true;
+    try {
+      const [m, c, settings] = await Promise.all([api.listOllamaModels(), api.listChats(), api.getSettings()]);
+      const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
+      const savedModel = settings?.default_model || "gemma3:4b";
+      const savedProfile = settings?.agent_profile || "РЈРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№";
+      const savedCtx = settings?.ollama_context || 8192;
+      const getName = (item) => typeof item === "string" ? item : (item.name || item.model || "");
+      const preferred = ml.find((item) => getName(item) === savedModel);
+      const chosenModel = preferred ? getName(preferred) : ml.length ? getName(ml[0]) : "gemma3:4b";
+
+      setModelOpts(ml);
+      setModel(chosenModel);
+      setProfile(savedProfile);
+      setOllamaContext(savedCtx);
+      setSettingsModel(savedModel);
+      setSettingsProfile(savedProfile);
+      setSettingsContext(savedCtx);
+      if (settings?.route_model_map) setRouteMap(settings.route_model_map);
+
+      setChats(c || []);
+      setChatId("");
+      setMessages([]);
+      setInput("");
+      setRenaming(false);
+      setStreamText("");
+      setStreaming(false);
+      setPhase("");
+    } catch (e) {
+      setError(normalizeErrorMessage(e));
+    }
+  }
 
   async function init() {
     if (initRef.current) return;
@@ -582,6 +686,7 @@ export default function EliraChatShell() {
       setDashData(data.stats || null);
       setProjectBrainStatus(data.projectBrainStatus || null);
       setPersonaStatus(data.personaStatus || null);
+      setRuntimeStatus(data.runtimeStatus || null);
       const message = Array.isArray(data.errors) ? data.errors.filter(Boolean).join(" | ") : "";
       setDashboardError(message);
       setError(message ? `Dashboard: ${message}` : "");
@@ -590,6 +695,7 @@ export default function EliraChatShell() {
       setDashData(null);
       setProjectBrainStatus(null);
       setPersonaStatus(null);
+      setRuntimeStatus(null);
       setDashboardError(message);
       setError(`Dashboard: ${message}`);
     }
@@ -618,7 +724,26 @@ export default function EliraChatShell() {
     }
   }
 
-  async function loadChats(sel = "") { setChats(await api.listChats() || []); if (sel) setChatId(sel); }
+  async function loadChats(sel = "") {
+    const next = await api.listChats() || [];
+    setChats(next);
+    if (sel) setChatId(sel);
+    return next;
+  }
+  function resetDraftChat(clearError = false) {
+    streamRef.current?.abort();
+    streamRef.current = null;
+    setChatId("");
+    setMessages([]);
+    setInput("");
+    setRenaming(false);
+    setStreamText("");
+    setStreaming(false);
+    setWorking(false);
+    setPhase("");
+    setShowExportMenu(false);
+    if (clearError) setError("");
+  }
   async function newChat(silent = false) {
     try { setMessages([]); setInput(""); setRenaming(false); setStreamText(""); setStreaming(false); setPhase("");
       const c = await api.createChat({ title: "Новый чат", clean: true }); await loadChats(c.id); setChatId(c.id); setSideTab("chats"); if (!silent) setError(""); return c;
@@ -631,6 +756,15 @@ export default function EliraChatShell() {
   async function renameActive() { const t = renameVal.trim(); if (!t || !chatId) return; try { await api.renameChat({ id: chatId, title: t }); await loadChats(chatId); setRenaming(false); } catch (e) { setError(normalizeErrorMessage(e)); } }
   async function autoRename(text) { const a = chats.find(c => c.id === chatId); if (!chatId || !a || (a.title && a.title !== "Новый чат")) return; try { await api.renameChat({ id: chatId, title: deriveChatTitle(text) }); await loadChats(chatId); } catch {} }
 
+
+  async function autoRenameChat(targetChatId, text, chatList = chats) {
+    const a = chatList.find(c => String(c.id) === String(targetChatId));
+    if (!targetChatId || !a || (a.title && a.title !== "РќРѕРІС‹Р№ С‡Р°С‚")) return;
+    try {
+      await api.renameChat({ id: targetChatId, title: deriveChatTitle(text) });
+      await loadChats(targetChatId);
+    } catch {}
+  }
 
   function exportChat(fmt) {
     if (!messages.length) return;
@@ -696,17 +830,25 @@ export default function EliraChatShell() {
 
   async function handleSend() {
     const text = input.trim();
-    if (!text || !chatId || working) return;
+    if (!text || working) return;
     try {
       setWorking(true); setStreaming(true); setStreamText(""); setError(""); setPhase(""); stoppedRef.current = false;
       setLastInput(text); setLastModel(model);
-      const userMsg = await api.addMessage({ chatId, role: "user", content: text });
+      let activeChatId = chatId;
+      const created = await api.addMessage({ chatId: activeChatId || null, role: "user", content: text });
+      const userMsg = created?.message || created;
+      activeChatId = String(created?.chat_id ?? activeChatId ?? "");
+      let currentChats = chats;
+      if (!chatId && activeChatId) {
+        currentChats = await loadChats(activeChatId);
+        setChatId(activeChatId);
+      }
       const nextMessages = [...messages, userMsg];
-      setMessages(nextMessages); setInput(""); await autoRename(text);
+      setMessages(nextMessages); setInput(""); await autoRenameChat(activeChatId, text, currentChats);
       const history = buildHistory(nextMessages);
 
       // Файлы библиотеки
-      const cf = getChatContextFiles(libraryFiles, chatId);
+      const cf = getChatContextFiles(libraryFiles, activeChatId);
       const tl = text.toLowerCase();
       const wantsFiles = cf.length > 0 && (
         tl.includes("файл") || tl.includes("документ") || tl.includes("библиотек") ||
@@ -751,7 +893,7 @@ export default function EliraChatShell() {
           const data = await api.runAdvancedMultiAgent({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"], use_reflection: useRefl, use_orchestrator: useOrch });
           if (data?.ok === false) throw new Error(normalizeErrorMessage(data?.error || data?.detail || "HTTP error"));
           const final = (data?.report || "").trim() || "Multi-agent не вернул результат";
-          try { await api.addMessage({ chatId, role: "assistant", content: final }); } catch {}
+          try { await api.addMessage({ chatId: activeChatId, role: "assistant", content: final }); } catch {}
           setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]);
           setError("");
           setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
@@ -767,7 +909,7 @@ export default function EliraChatShell() {
       // Обычный стриминг
       let fullText = "";
       const ctrl = executeStream(
-        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, session_id: chatId || null, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
+        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, session_id: activeChatId || null, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
           onToken(t) { fullText += t; setStreamText(fullText); setPhase(""); },
           onPhase(ev) {
@@ -783,7 +925,7 @@ export default function EliraChatShell() {
             const _cd = detectTableInText(final); _cd ? setChartData(_cd) : setChartData(null);
             setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null;
             // Фоновое сохранение в БД (не блокирует UI)
-            api.addMessage({ chatId, role: "assistant", content: final }).catch(() => {});
+            api.addMessage({ chatId: activeChatId, role: "assistant", content: final }).catch(() => {});
           },
           onError(msg) { setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null; },
         }
@@ -792,7 +934,7 @@ export default function EliraChatShell() {
     } catch (e) { setError(normalizeErrorMessage(e)); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); }
   }
 
-  async function deleteChat(id) { try { await api.deleteChat({ id }); const next = chats.filter(c => c.id !== id); setChats(next); if (chatId === id) { if (next.length) await openChat(next[0].id); else { const c = await newChat(true); if (c?.id) await openChat(c.id); } } } catch (e) { setError(normalizeErrorMessage(e)); } }
+  async function deleteChat(id) { try { await api.deleteChat({ id }); const next = chats.filter(c => c.id !== id); setChats(next); if (chatId === id) { if (next.length) await openChat(next[0].id); else resetDraftChat(); } } catch (e) { setError(normalizeErrorMessage(e)); } }
   async function pinChat(id, p) { try { await api.pinChat({ id, pinned: !p }); await loadChats(chatId); } catch (e) { setError(normalizeErrorMessage(e)); } }
   async function saveToMemory(id, s) { try { await api.saveChatToMemory({ id, saved: !s }); await loadChats(chatId); } catch (e) { setError(normalizeErrorMessage(e)); } }
 
@@ -1550,6 +1692,7 @@ export default function EliraChatShell() {
                 <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}} onClick={loadDashboard}><UiIcon icon={RefreshCw} size={13} />Обновить</button>
               </div>
               <PanelNotice title="Проблема синхронизации панели" message={dashboardError} onRetry={loadDashboard} tone={dashData || projectBrainStatus ? "warning" : "error"} />
+              <RuntimeStatusSection status={runtimeStatus} />
               <CapabilityStatusSection status={projectBrainStatus} />
               <PersonaStatusSection status={personaStatus} busy={personaBusy} onRollback={handlePersonaRollback} />
               {!dashData && !dashboardError ? <div style={{color:"var(--text-muted)",fontSize:12}}>Загрузка...</div> : !dashData ? null : (
@@ -1728,7 +1871,7 @@ export default function EliraChatShell() {
 <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}} onClick={reloadPlugins}><UiIcon icon={RefreshCw} size={12} />Перезагрузить</button>
                 </div>
                 <div className="settings-desc" style={{marginBottom:10}}>Пользовательские .py скрипты в data/plugins/</div>
-                {pluginList.length===0 && <div style={{fontSize:11,color:"var(--text-muted)",padding:"8px 0"}}>Плагинов нет. Положи .py файлы в backend/data/plugins/</div>}
+                {pluginList.length===0 && <div style={{fontSize:11,color:"var(--text-muted)",padding:"8px 0"}}>Плагинов нет. Положи .py файлы в data/plugins/</div>}
                 {pluginList.map(p=>(
                   <div key={p.name} style={{padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
                     <div>

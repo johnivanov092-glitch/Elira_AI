@@ -16,14 +16,15 @@ import threading
 import time
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import requests
 
+from app.core.config import DATA_DIR
+
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("data/integrations.db")
+DB_PATH = DATA_DIR / "integrations.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 _bot_thread: threading.Thread | None = None

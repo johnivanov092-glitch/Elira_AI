@@ -11,11 +11,12 @@ import logging
 import sqlite3
 import uuid
 from datetime import datetime
-from pathlib import Path
+
+from app.core.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("data/task_planner.db")
+DB_PATH = DATA_DIR / "task_planner.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 

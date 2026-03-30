@@ -23,10 +23,12 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.config import DATA_DIR
+
 router = APIRouter(prefix="/api/file-ops", tags=["file-ops"])
 
 # Workspace — безопасная папка для пользовательских файлов
-WORKSPACE = Path("data/workspace")
+WORKSPACE = DATA_DIR / "workspace"
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 BLOCKED = {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}

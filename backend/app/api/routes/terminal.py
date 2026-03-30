@@ -12,9 +12,11 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from app.core.config import DATA_DIR
+
 router = APIRouter(prefix="/api/terminal", tags=["terminal"])
 
-WORKSPACE = Path("data/workspace").resolve()
+WORKSPACE = (DATA_DIR / "workspace").resolve()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 _cwd = str(WORKSPACE)

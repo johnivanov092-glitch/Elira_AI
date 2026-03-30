@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime
-from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
+from app.core.data_files import data_file
+
 router = APIRouter(prefix="/api/elira/phase21", tags=["elira-phase21"])
 
-DB_PATH = Path("data/elira_state.db")
+DB_PATH = data_file("elira_state.db")
 
 def ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)

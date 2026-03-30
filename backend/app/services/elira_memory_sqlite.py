@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import sqlite3
+from pathlib import Path
 
 from app.core.data_files import sqlite_data_file
 from app.core.persona_defaults import DEFAULT_PROFILE
 
+
 DB_PATH = sqlite_data_file("elira_state.db", key_tables=("chats", "messages"))
 
 
-def _connect():
-    conn = sqlite3.connect(DB_PATH)
+def _connect(path: str | Path | None = None):
+    conn = sqlite3.connect(str(path or DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -25,6 +29,14 @@ def _ensure_column(conn, table: str, column: str, ddl: str):
     }
     if column not in columns:
         conn.execute(f"ALTER TABLE {safe_table} ADD COLUMN {ddl}")
+
+
+def _table_exists(conn, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return bool(row)
 
 
 def init_db():
@@ -65,8 +77,27 @@ def init_db():
             "INSERT OR IGNORE INTO settings(id, ollama_context, default_model, agent_profile) "
             f"VALUES(1, 8192, 'gemma3:4b', '{DEFAULT_PROFILE}')"
         )
-
         conn.commit()
+    finally:
+        conn.close()
+
+
+def count_chats(path: str | Path | None = None) -> int:
+    conn = _connect(path)
+    try:
+        if not _table_exists(conn, "chats"):
+            return 0
+        return int(conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def count_messages(path: str | Path | None = None) -> int:
+    conn = _connect(path)
+    try:
+        if not _table_exists(conn, "messages"):
+            return 0
+        return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
     finally:
         conn.close()
 
