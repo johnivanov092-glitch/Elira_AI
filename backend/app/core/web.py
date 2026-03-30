@@ -37,6 +37,24 @@ ENGINE_LABELS = {
     "ddg-news": "DDG News",
 }
 
+KZ_LOCAL_NEWS_DOMAINS = (
+    "nur.kz",
+    "tengrinews.kz",
+    "zakon.kz",
+    "sputnik.kz",
+    "informburo.kz",
+    "kazinform.kz",
+)
+
+FINANCE_HIGH_CONFIDENCE_DOMAINS = (
+    "nationalbank.kz",
+    "prodengi.kz",
+    "bcc.kz",
+    "halykbank.kz",
+    "investing.com",
+    "wise.com",
+)
+
 
 def _session() -> requests.Session:
     session = requests.Session()
@@ -64,18 +82,104 @@ def _clean_url(url: str) -> str:
     return unquote(url)
 
 
-def _dedupe_results(results: Iterable[Dict[str, str]], max_results: int) -> List[Dict[str, str]]:
-    ordered = sorted(
-        results,
+def _extract_domain(url: str) -> str:
+    try:
+        return urlparse(_clean_url(url)).netloc.lower().removeprefix("www.")
+    except Exception:
+        return ""
+
+
+def _domain_matches(domain: str, expected: Iterable[str]) -> bool:
+    return any(domain == item or domain.endswith("." + item) for item in expected)
+
+
+def _result_score(
+    item: Dict[str, str],
+    *,
+    intent_kind: str = "",
+    geo_scope: str = "",
+    local_first: bool = False,
+    preferred_domains: Iterable[str] | None = None,
+) -> int:
+    preferred = tuple(preferred_domains or ())
+    href = item.get("href", "")
+    domain = _extract_domain(href)
+    title = (item.get("title", "") or "").lower()
+    body = (item.get("body", "") or "").lower()
+    engine = (item.get("engine", "") or "").strip()
+    haystack = f"{title} {body}".strip()
+    score = 0
+
+    if preferred and _domain_matches(domain, preferred):
+        score += 120
+
+    if intent_kind == "geo_news":
+        if local_first and _domain_matches(domain, KZ_LOCAL_NEWS_DOMAINS):
+            score += 90
+        if engine == "ddg-news":
+            score += 35
+        if engine == "wikipedia":
+            score -= 140
+        if geo_scope and geo_scope.lower() in haystack:
+            score += 18
+        if any(token in haystack for token in ("происшеств", "кримин", "алматы", "астан", "казахстан")):
+            score += 16
+
+    elif intent_kind == "finance":
+        if _domain_matches(domain, FINANCE_HIGH_CONFIDENCE_DOMAINS):
+            score += 95
+        if engine == "wikipedia":
+            score -= 160
+        if any(token in haystack for token in ("usd", "kzt", "тенге", "доллар", "курс", "валют")):
+            score += 18
+
+    elif intent_kind == "historical":
+        if engine == "wikipedia":
+            score += 50
+
+    if engine == "tavily":
+        score += 8
+    elif engine == "duckduckgo":
+        score += 4
+
+    return score
+
+
+def _rerank_results(
+    results: Iterable[Dict[str, str]],
+    *,
+    intent_kind: str = "",
+    geo_scope: str = "",
+    local_first: bool = False,
+    preferred_domains: Iterable[str] | None = None,
+) -> List[Dict[str, str]]:
+    return sorted(
+        list(results),
         key=lambda item: (
+            -_result_score(
+                item,
+                intent_kind=intent_kind,
+                geo_scope=geo_scope,
+                local_first=local_first,
+                preferred_domains=preferred_domains,
+            ),
             ENGINE_PRIORITY.get(str(item.get("engine", "")).strip(), 99),
             str(item.get("title", "")).strip().lower(),
         ),
     )
 
+
+def count_preferred_domain_hits(results: Iterable[Dict[str, str]], preferred_domains: Iterable[str] | None = None) -> int:
+    preferred = tuple(preferred_domains or ())
+    if not preferred:
+        return 0
+    return sum(1 for item in results if _domain_matches(_extract_domain(item.get("href", "")), preferred))
+
+
+def _dedupe_results(results: Iterable[Dict[str, str]], max_results: int | None = None) -> List[Dict[str, str]]:
     unique: list[Dict[str, str]] = []
     seen = set()
-    for item in ordered:
+    for item in results:
         href = _clean_url(item.get("href", ""))
         title = (item.get("title", "") or "").strip()
         body = (item.get("body", "") or "").strip()
@@ -92,7 +196,7 @@ def _dedupe_results(results: Iterable[Dict[str, str]], max_results: int) -> List
                 "engine": engine,
             }
         )
-        if len(unique) >= max_results:
+        if max_results is not None and len(unique) >= max_results:
             break
     return unique
 
@@ -258,7 +362,15 @@ ENGINE_FUNCS = {
 }
 
 
-def search_news(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+def search_news(
+    query: str,
+    max_results: int = 5,
+    *,
+    intent_kind: str = "",
+    geo_scope: str = "",
+    local_first: bool = False,
+    preferred_domains: Iterable[str] | None = None,
+) -> List[Dict[str, str]]:
     results: list[Dict[str, str]] = []
     try:
         with DDGS() as ddgs:
@@ -278,7 +390,15 @@ def search_news(query: str, max_results: int = 5) -> List[Dict[str, str]]:
                 )
     except Exception:
         return []
-    return results
+    deduped = _dedupe_results(results, max_results=None)
+    reranked = _rerank_results(
+        deduped,
+        intent_kind=intent_kind,
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+    )
+    return reranked[:max_results]
 
 
 def search_web(
@@ -286,6 +406,11 @@ def search_web(
     max_results: int = 5,
     engines: Iterable[str] | None = None,
     per_engine: int | None = None,
+    *,
+    intent_kind: str = "",
+    geo_scope: str = "",
+    local_first: bool = False,
+    preferred_domains: Iterable[str] | None = None,
 ) -> List[Dict[str, str]]:
     engine_list = list(resolve_search_engines(engines))
     per_engine = per_engine or max(3, max_results)
@@ -305,8 +430,16 @@ def search_web(
                 exc,
             )
 
-    merged = _dedupe_results(combined, max_results=max_results)
-    return merged[:max_results]
+    dedupe_limit = max(max_results, per_engine * max(1, len(engine_list)))
+    merged = _dedupe_results(combined, max_results=dedupe_limit)
+    reranked = _rerank_results(
+        merged,
+        intent_kind=intent_kind,
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+    )
+    return reranked[:max_results]
 
 
 def format_search_results(results: List[Dict[str, str]]) -> str:
@@ -349,6 +482,11 @@ def research_web(
     max_results: int = 5,
     pages_to_read: int = 3,
     engines: Iterable[str] | None = None,
+    *,
+    intent_kind: str = "",
+    geo_scope: str = "",
+    local_first: bool = False,
+    preferred_domains: Iterable[str] | None = None,
 ) -> str:
     engine_list = list(resolve_search_engines(engines))
     advanced_items: list[Dict[str, str]] = []
@@ -356,9 +494,27 @@ def research_web(
         advanced_items = _tavily_research(query, max_results=min(max_results, pages_to_read))
 
     merged_results = _dedupe_results(
-        [*advanced_items, *search_web(query, max_results=max_results, engines=engine_list)],
-        max_results=max_results,
+        [
+            *advanced_items,
+            *search_web(
+                query,
+                max_results=max_results,
+                engines=engine_list,
+                intent_kind=intent_kind,
+                geo_scope=geo_scope,
+                local_first=local_first,
+                preferred_domains=preferred_domains,
+            ),
+        ],
+        max_results=max(max_results, pages_to_read * max(1, len(engine_list))),
     )
+    merged_results = _rerank_results(
+        merged_results,
+        intent_kind=intent_kind,
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+    )[:max_results]
     to_fetch = [item for item in merged_results[:pages_to_read] if item.get("href")]
 
     page_texts: Dict[str, str] = {}

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.temporal_intent import detect_temporal_intent
+from app.services.web_query_planner import plan_web_query
 
 
 _RESEARCH_WORDS = {
@@ -269,6 +270,7 @@ class PlannerV2Service:
                 "query": query,
                 "strategy": "planner_v4_empty",
                 "temporal": detect_temporal_intent(query),
+                "web_plan": {"is_multi_intent": False, "subqueries": []},
             }
 
         temporal = detect_temporal_intent(query)
@@ -316,6 +318,7 @@ class PlannerV2Service:
             tools.append("library_context")
 
         tools = list(dict.fromkeys(tools))
+        web_plan = plan_web_query(query, temporal) if "web_search" in tools else {"is_multi_intent": False, "subqueries": []}
 
         return {
             "route": route,
@@ -324,4 +327,5 @@ class PlannerV2Service:
             "strategy": "planner_v4",
             "scores": scores,
             "temporal": temporal,
+            "web_plan": web_plan,
         }

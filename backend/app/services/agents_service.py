@@ -1010,6 +1010,171 @@ def _fetch_page_text(url, max_chars=4000):
         return ""
 
 
+_WEB_SKIP_FETCH_DOMAINS = [
+    "youtube.com", "youtu.be", "facebook.com", "instagram.com", "tiktok.com",
+    "twitter.com", "x.com", "vk.com", "t.me", "pinterest.com",
+]
+
+
+def _count_hits_for_domains(items, preferred_domains):
+    try:
+        from app.core.web import count_preferred_domain_hits
+        return count_preferred_domain_hits(items, preferred_domains)
+    except Exception:
+        return 0
+
+
+def _build_single_web_subquery_context(subquery):
+    from app.core.web import fetch_page_text as core_fetch
+    from app.core.web import research_web, search_news as core_search_news, search_web as core_search
+
+    query = subquery.get("query", "")
+    label = subquery.get("label", "Поиск")
+    intent_kind = subquery.get("intent_kind", "")
+    geo_scope = subquery.get("geo_scope", "")
+    local_first = bool(subquery.get("local_first"))
+    needs_news_feed = bool(subquery.get("needs_news_feed"))
+    needs_deep_search = bool(subquery.get("needs_deep_search"))
+    preferred_domains = tuple(subquery.get("preferred_domains", []) or [])
+
+    search_results = core_search(
+        query,
+        max_results=6,
+        intent_kind=intent_kind,
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+    )
+    normalized_search = [
+        {
+            "title": item.get("title", ""),
+            "url": item.get("href", ""),
+            "snippet": item.get("body", ""),
+            "engine": item.get("engine", ""),
+        }
+        for item in search_results
+        if item.get("href", "").startswith("http")
+    ]
+
+    news_results = []
+    if needs_news_feed:
+        raw_news = core_search_news(
+            query,
+            max_results=5,
+            intent_kind=intent_kind,
+            geo_scope=geo_scope,
+            local_first=local_first,
+            preferred_domains=preferred_domains,
+        )
+        for item in raw_news:
+            href = item.get("href") or item.get("url") or ""
+            if href.startswith("http"):
+                news_results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "url": href,
+                        "snippet": item.get("body", ""),
+                        "date": item.get("date", ""),
+                        "source": item.get("source", ""),
+                        "engine": item.get("engine", "ddg-news"),
+                    }
+                )
+
+    fetch_candidates = []
+    seen_urls = set()
+    for item in normalized_search:
+        url = item["url"]
+        if not url or url in seen_urls or any(domain in url for domain in _WEB_SKIP_FETCH_DOMAINS):
+            continue
+        seen_urls.add(url)
+        fetch_candidates.append(item)
+        if len(fetch_candidates) >= 4:
+            break
+
+    deep_content = []
+    fetched_urls = set()
+    for item in fetch_candidates[:2]:
+        text = (core_fetch(item["url"]) or "")[:3000]
+        if text and len(text) > 100:
+            deep_content.append("--- " + item["title"] + " ---\n" + text)
+            fetched_urls.add(item["url"])
+
+    local_source_hits = _count_hits_for_domains(
+        [{"href": item.get("url", "")} for item in normalized_search + news_results],
+        preferred_domains,
+    )
+    weak_coverage = (
+        len(normalized_search) < 3
+        or (needs_news_feed and not news_results)
+        or (local_first and preferred_domains and local_source_hits == 0)
+    )
+
+    deeper_search = False
+    deep_context = ""
+    if needs_deep_search and weak_coverage:
+        deep_engines = ("wikipedia", "tavily", "duckduckgo") if intent_kind == "historical" else ("tavily", "duckduckgo", "wikipedia")
+        deep_context = research_web(
+            query,
+            max_results=6,
+            pages_to_read=3,
+            engines=deep_engines,
+            intent_kind=intent_kind,
+            geo_scope=geo_scope,
+            local_first=local_first,
+            preferred_domains=preferred_domains,
+        )
+        deeper_search = bool(deep_context)
+
+    parts = [f"=== ПОДТЕМА: {label} ===", f"Запрос: {query}"]
+
+    if deep_content:
+        parts.append("СОДЕРЖИМОЕ ВЕБ-СТРАНИЦ:\n" + "\n\n".join(deep_content))
+
+    if news_results:
+        lines = []
+        for item in news_results[:5]:
+            date_str = f" [{item['date']}]" if item.get("date") else ""
+            source_str = f" ({item['source']})" if item.get("source") else ""
+            lines.append(f"- {item['title']}{date_str}{source_str}: {item['snippet']}")
+        parts.append("СВЕЖИЕ НОВОСТИ:\n" + "\n".join(lines))
+
+    remaining = [item for item in normalized_search if item["url"] not in fetched_urls][:4]
+    if remaining:
+        lines = [f"- {item['title']}: {item['snippet']}" for item in remaining]
+        parts.append("ОСТАЛЬНЫЕ РЕЗУЛЬТАТЫ:\n" + "\n".join(lines))
+
+    if deep_context:
+        parts.append("УГЛУБЛЕННЫЙ ПОИСК:\n" + deep_context)
+
+    if not normalized_search and not news_results and not deep_context:
+        parts.append("Недостаточно свежих подтвержденных данных по этой подтеме.")
+
+    engines_used = sorted(
+        {
+            item.get("engine", "")
+            for item in normalized_search + news_results
+            if item.get("engine")
+        }
+    )
+
+    return {
+        "context": "\n\n".join(part for part in parts if part.strip()),
+        "debug": {
+            "label": label,
+            "query": query,
+            "intent_kind": intent_kind,
+            "geo_scope": geo_scope,
+            "found": len(normalized_search),
+            "news_hits": len(news_results),
+            "fetched_pages": len(deep_content),
+            "engines": engines_used,
+            "local_source_hits": local_source_hits,
+            "deeper_search_used": deeper_search,
+            "coverage": "strong" if (len(normalized_search) >= 3 or news_results or deep_content) else "weak",
+        },
+    }
+
+
 def _do_web_search(query, timeline, tool_results):
     """
     Multi-engine поиск: DDG + Bing + Google + Yandex + DDG News.
@@ -1228,7 +1393,255 @@ def _do_temporal_web_search(query, timeline, tool_results, temporal=None):
     return context
 
 
-def _collect_context(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None):
+def _do_web_search(query, timeline, tool_results, web_plan=None):
+    search_query = _clean_query(query)
+    plan = web_plan or {
+        "is_multi_intent": False,
+        "subqueries": [
+            {
+                "label": "Web search",
+                "query": search_query,
+                "intent_kind": "general_web",
+                "geo_scope": "",
+                "freshness_class": "stable",
+                "local_first": False,
+                "needs_news_feed": False,
+                "needs_deep_search": False,
+                "preferred_domains": [],
+            }
+        ],
+    }
+
+    raw_subqueries = list(plan.get("subqueries") or [])[:6]
+    if not raw_subqueries:
+        raw_subqueries = [
+            {
+                "label": "Web search",
+                "query": search_query,
+                "intent_kind": "general_web",
+                "geo_scope": "",
+                "freshness_class": "stable",
+                "local_first": False,
+                "needs_news_feed": False,
+                "needs_deep_search": False,
+                "preferred_domains": [],
+                "priority": 0,
+            }
+        ]
+
+    passes = list(plan.get("passes") or [])
+    if not passes:
+        passes = [
+            {
+                "name": f"pass_{pass_index + 1}",
+                "subqueries": raw_subqueries[offset : offset + 3],
+            }
+            for pass_index, offset in enumerate(range(0, len(raw_subqueries), 3))
+        ]
+
+    sections = []
+    debug_rows = []
+    pass_summaries = []
+    engines_used = set()
+    total_found = 0
+    total_news = 0
+    total_fetched = 0
+    total_local_hits = 0
+    deeper_search_used = False
+    uncovered_subqueries = list(plan.get("uncovered_subqueries") or [])
+
+    for pass_index, pass_spec in enumerate(passes, start=1):
+        pass_name = str(pass_spec.get("name") or f"pass_{pass_index}")
+        pass_found = 0
+        pass_news = 0
+        pass_pages = 0
+        pass_engines = set()
+        pass_queries = []
+        pass_uncovered = []
+
+        for subquery in list(pass_spec.get("subqueries") or [])[:3]:
+            subquery_result = _build_single_web_subquery_context(subquery)
+            context = (subquery_result.get("context") or "").strip()
+            debug = dict(subquery_result.get("debug") or {})
+            debug["pass_name"] = pass_name
+            debug_rows.append(debug)
+            pass_queries.append(debug.get("query", ""))
+
+            if context:
+                sections.append(context)
+
+            found = int(debug.get("found", 0) or 0)
+            news_hits = int(debug.get("news_hits", 0) or 0)
+            fetched_pages = int(debug.get("fetched_pages", 0) or 0)
+            local_hits = int(debug.get("local_source_hits", 0) or 0)
+            coverage = str(debug.get("coverage", "weak") or "weak")
+
+            total_found += found
+            total_news += news_hits
+            total_fetched += fetched_pages
+            total_local_hits += local_hits
+            deeper_search_used = deeper_search_used or bool(debug.get("deeper_search_used"))
+            engines_used.update(debug.get("engines", []) or [])
+
+            pass_found += found
+            pass_news += news_hits
+            pass_pages += fetched_pages
+            pass_engines.update(debug.get("engines", []) or [])
+
+            if coverage != "strong":
+                pass_uncovered.append(debug.get("query", ""))
+                uncovered_subqueries.append(debug.get("query", ""))
+
+            if found or news_hits or fetched_pages:
+                _tl(
+                    timeline,
+                    f"tool_web_{pass_name}_{len(pass_queries)}",
+                    f"Веб-поиск {pass_name}",
+                    "done",
+                    f"{debug.get('query', '')}: found={found}, news={news_hits}, pages={fetched_pages}",
+                )
+            else:
+                _tl(
+                    timeline,
+                    f"tool_web_{pass_name}_{len(pass_queries)}",
+                    f"Веб-поиск {pass_name}",
+                    "error",
+                    f"{debug.get('query', '')}: no confirmed results",
+                )
+
+        pass_summaries.append(
+            {
+                "name": pass_name,
+                "subqueries": pass_queries,
+                "found": pass_found,
+                "news_hits": pass_news,
+                "fetched_pages": pass_pages,
+                "engines": sorted(pass_engines),
+                "uncovered_subqueries": [item for item in pass_uncovered if item],
+            }
+        )
+        _tl(
+            timeline,
+            f"tool_web_{pass_name}",
+            f"Веб-проход {pass_index}",
+            "done",
+            f"{len(pass_queries)} подтем, found={pass_found}, news={pass_news}, pages={pass_pages}",
+        )
+
+    unique_uncovered = list(dict.fromkeys(item for item in uncovered_subqueries if item))
+    result_payload = {
+        "query": search_query,
+        "count": total_found,
+        "found": total_found,
+        "news": total_news,
+        "fetched_pages": total_fetched,
+        "engines": sorted(engines_used),
+        "subqueries": [debug.get("query", "") for debug in debug_rows],
+        "coverage_by_subquery": {
+            debug.get("query", f"subquery_{idx + 1}"): debug.get("coverage", "weak")
+            for idx, debug in enumerate(debug_rows)
+        },
+        "engines_by_subquery": {
+            debug.get("query", f"subquery_{idx + 1}"): debug.get("engines", [])
+            for idx, debug in enumerate(debug_rows)
+        },
+        "local_source_hits": total_local_hits,
+        "news_hits": total_news,
+        "deeper_search_used": deeper_search_used,
+        "is_multi_intent": bool(plan.get("is_multi_intent")),
+        "passes": pass_summaries,
+        "pass_count": len(pass_summaries),
+        "total_subqueries": len(raw_subqueries),
+        "overflow_applied": bool(plan.get("overflow_applied") or len(raw_subqueries) > 3),
+        "uncovered_subqueries": unique_uncovered,
+    }
+    tool_results.append({"tool": "web_search", "result": result_payload})
+
+    if not sections:
+        _tl(timeline, "tool_web", "Веб-поиск", "error", "Нет подтвержденных результатов")
+        return "[Поиск не дал результатов]"
+
+    _tl(
+        timeline,
+        "tool_web",
+        "Веб-поиск",
+        "done",
+        f"{total_found} найдено, {total_news} новостей, {total_fetched} страниц, {len(raw_subqueries)} подтем, {len(pass_summaries)} проходов",
+    )
+    return "\n\n".join(section for section in sections if section.strip())
+
+
+def _do_temporal_web_search(query, timeline, tool_results, temporal=None, web_plan=None):
+    temporal = temporal or {}
+    context = _do_web_search(query, timeline, tool_results, web_plan=web_plan)
+    web_result = _get_web_search_result(tool_results)
+    found = int(web_result.get("found", 0) or 0)
+    fetched_pages = int(web_result.get("fetched_pages", 0) or 0)
+    news_count = int(web_result.get("news", 0) or 0)
+    subquery_count = int(web_result.get("total_subqueries", len(web_result.get("subqueries", []) or [])) or 0)
+    engines_used = set(web_result.get("engines", []) or [])
+    current_evidence_engines = {"tavily", "duckduckgo", "ddg-news"}
+    has_current_evidence = bool(engines_used & current_evidence_engines) or news_count > 0
+    deeper_search = bool(web_result.get("deeper_search_used"))
+
+    if temporal.get("requires_web") and temporal.get("reasoning_depth") == "deep":
+        weak_coverage = (
+            found < max(4, subquery_count * 2)
+            or fetched_pages < max(2, subquery_count)
+            or (temporal.get("freshness_sensitive") and not has_current_evidence)
+        )
+        if weak_coverage:
+            try:
+                from app.core.web import research_web
+
+                deep_engines = ("wikipedia", "tavily", "duckduckgo") if temporal.get("stable_historical") else ("tavily", "duckduckgo", "wikipedia")
+
+                deep_context = research_web(
+                    _clean_query(query),
+                    max_results=8,
+                    pages_to_read=4,
+                    engines=deep_engines,
+                    intent_kind="historical" if temporal.get("stable_historical") else "general_web",
+                )
+                if deep_context:
+                    deeper_search = True
+                    context = (
+                        context + "\n\nДополнительный углубленный веб-поиск:\n" + deep_context
+                        if context
+                        else deep_context
+                    )
+                    _tl(timeline, "tool_web_deep", "Углубленный веб-поиск", "done", "Дополнительная проверка источников")
+            except Exception as exc:
+                _tl(timeline, "tool_web_deep", "Углубленный веб-поиск", "error", str(exc))
+
+    if temporal.get("freshness_sensitive"):
+        freshness_state = "fresh_checked" if has_current_evidence and (news_count > 0 or fetched_pages >= 2 or deeper_search) else "unverified_current"
+        freshness_note = (
+            "Freshness status: fresh_checked. Use current web findings as the main evidence."
+            if freshness_state == "fresh_checked"
+            else "Freshness status: unverified_current. If confidence is limited, say that the data may be outdated or not fully verified."
+        )
+    elif temporal.get("stable_historical"):
+        freshness_state = "historical_or_stable"
+        freshness_note = "Freshness status: historical_or_stable. Treat this as a mostly stable historical topic."
+    else:
+        freshness_state = "standard_web"
+        freshness_note = "Freshness status: standard_web. Use the web findings naturally without exposing internal formatting."
+
+    if tool_results and tool_results[-1].get("tool") == "web_search":
+        result = tool_results[-1].setdefault("result", {})
+        if isinstance(result, dict):
+            result["freshness_state"] = freshness_state
+            result["deeper_search"] = deeper_search
+            result["temporal_mode"] = temporal.get("mode", "none")
+            result["has_current_evidence"] = has_current_evidence
+
+    if context:
+        context += "\n\n" + freshness_note
+    return context
+
+
+def _collect_context(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None, web_plan=None):
     parts = []
     for tool_name in tools:
         try:
@@ -1244,7 +1657,7 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
                 _tl(timeline, "tool_library", "Библиотека", "skip", "Фронтенд")
 
             elif tool_name == "web_search":
-                web_ctx = _do_temporal_web_search(user_input, timeline, tool_results, temporal=temporal)
+                web_ctx = _do_temporal_web_search(user_input, timeline, tool_results, temporal=temporal, web_plan=web_plan)
                 if web_ctx:
                     parts.append(web_ctx)
 
@@ -1314,6 +1727,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
         _HISTORY.add_event(run["run_id"], "planner", plan)
         route = plan.get("route", "chat")
         temporal = plan.get("temporal", {})
+        web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
         effective_model = pick_model_for_route(route, model_name)
         selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
         if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
@@ -1332,7 +1746,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
         except Exception:
             pass
 
-        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal)
+        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
 
         # Умная память + RAG: добавляем релевантные воспоминания только когда это реально нужно
         if _should_recall_memory_context(planner_input, route, temporal):
@@ -1401,6 +1815,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, use_memo
                 "run_id": run["run_id"],
                 "persona": persona_meta,
                 "temporal": temporal,
+                "web_plan": web_plan,
                 "identity_guard": identity_guard if identity_guard.get("changed") else None,
                 "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
             },
@@ -1433,6 +1848,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         _HISTORY.add_event(run["run_id"], "planner", plan)
         route = plan.get("route", "chat")
         temporal = plan.get("temporal", {})
+        web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
         selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
         if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
             selected.append("web_search")
@@ -1464,6 +1880,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                     "run_id": run["run_id"],
                     "cached": True,
                     "temporal": temporal,
+                    "web_plan": web_plan,
                     "identity_guard": identity_guard if identity_guard.get("changed") else None,
                     "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
                 }
@@ -1498,7 +1915,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         elif selected:
             yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
 
-        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal)
+        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
 
         # Умная память + RAG
         mem_count = 0
@@ -1577,6 +1994,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 "run_id": run["run_id"],
                 "persona": persona_meta,
                 "temporal": temporal,
+                "web_plan": web_plan,
                 "identity_guard": identity_guard if identity_guard.get("changed") else None,
                 "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
             }
@@ -1639,6 +2057,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 "run_id": run["run_id"],
                 "persona": persona_meta,
                 "temporal": temporal,
+                "web_plan": web_plan,
                 "identity_guard": identity_guard if identity_guard.get("changed") else None,
                 "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
             }

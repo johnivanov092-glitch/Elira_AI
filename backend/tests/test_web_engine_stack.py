@@ -15,7 +15,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, get_web_engine_status, resolve_search_engines, search_web  # noqa: E402
+from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, _rerank_results, get_web_engine_status, resolve_search_engines, search_web  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -85,6 +85,72 @@ class WebEngineStackTest(unittest.TestCase):
         engine_ids = tuple(item["id"] for item in payload["engines"])
         self.assertEqual(engine_ids, EXPECTED)
         self.assertEqual(tuple(payload["default"]), EXPECTED)
+
+    def test_geo_news_rerank_boosts_local_kz_sources(self) -> None:
+        results = [
+            {
+                "title": "Wikipedia overview",
+                "href": "https://ru.wikipedia.org/wiki/Алматы",
+                "body": "Общая статья про город",
+                "engine": "wikipedia",
+            },
+            {
+                "title": "Generic result",
+                "href": "https://example.com/almaty",
+                "body": "Что-то про Алматы",
+                "engine": "duckduckgo",
+            },
+            {
+                "title": "NUR news",
+                "href": "https://www.nur.kz/incident",
+                "body": "Происшествие в Алматы сегодня",
+                "engine": "tavily",
+            },
+        ]
+
+        reranked = _rerank_results(
+            results,
+            intent_kind="geo_news",
+            geo_scope="алматы",
+            local_first=True,
+            preferred_domains=("nur.kz", "tengrinews.kz"),
+        )
+
+        self.assertEqual(reranked[0]["href"], "https://www.nur.kz/incident")
+        self.assertNotEqual(reranked[0]["engine"], "wikipedia")
+
+    def test_finance_rerank_boosts_high_confidence_domains(self) -> None:
+        results = [
+            {
+                "title": "Wikipedia KZT",
+                "href": "https://en.wikipedia.org/wiki/Kazakhstani_tenge",
+                "body": "Reference page",
+                "engine": "wikipedia",
+            },
+            {
+                "title": "Generic rate page",
+                "href": "https://example.com/rates",
+                "body": "USD KZT rate today",
+                "engine": "duckduckgo",
+            },
+            {
+                "title": "National bank rate",
+                "href": "https://nationalbank.kz/rates",
+                "body": "Курс USD KZT на сегодня",
+                "engine": "tavily",
+            },
+        ]
+
+        reranked = _rerank_results(
+            results,
+            intent_kind="finance",
+            geo_scope="kazakhstan",
+            local_first=True,
+            preferred_domains=("nationalbank.kz", "wise.com"),
+        )
+
+        self.assertEqual(reranked[0]["href"], "https://nationalbank.kz/rates")
+        self.assertNotEqual(reranked[0]["engine"], "wikipedia")
 
 
 if __name__ == "__main__":

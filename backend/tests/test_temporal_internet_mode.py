@@ -47,6 +47,14 @@ class TemporalInternetModeTest(unittest.TestCase):
         self.assertFalse(plan["temporal"]["requires_web"])
         self.assertNotIn("web_search", plan["tools"])
 
+    def test_multi_intent_current_world_query_builds_web_plan(self) -> None:
+        plan = self.planner.plan("курс доллара к тенге на сегодня и новости происшествия Алматы за 2 дня")
+
+        self.assertIn("web_search", plan["tools"])
+        self.assertTrue(plan["temporal"]["requires_web"])
+        self.assertTrue(plan["web_plan"]["is_multi_intent"])
+        self.assertEqual(len(plan["web_plan"]["subqueries"]), 2)
+
     def test_temporal_queries_are_not_cacheable(self) -> None:
         self.assertFalse(should_cache("Что с рынком в 2027 году?", "chat"))
         self.assertFalse(should_cache("Какая сегодня цена нефти?", "research"))
