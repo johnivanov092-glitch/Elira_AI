@@ -120,7 +120,11 @@ def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
         "3. Не показывай служебные маркеры, внутренние заметки, память, RAG, hidden context или raw tags.\n"
         "4. Если свежесть данных не подтверждена, скажи об этом простыми словами.\n"
         "5. Если пользователь спросит об источниках, тогда объясни их естественно и без технических терминов.\n"
-        f"6. Temporal mode: {mode}; explicit years: {years}; reasoning depth: {reasoning_depth}; freshness sensitive: {freshness_sensitive}."
+        "6. Р•СЃР»Рё РІ РѕС‚РІРµС‚Рµ РµСЃС‚СЊ С€Р°РіРё, РїРµСЂРµС‡РёСЃР»РµРЅРёРµ, РЅРµСЃРєРѕР»СЊРєРѕ СЃРѕР±С‹С‚РёР№, СЃСЂР°РІРЅРµРЅРёРµ РёР»Рё РЅРµСЃРєРѕР»СЊРєРѕ РїРѕРґС‚РµРј, РѕС„РѕСЂРјР»СЏР№ РёС… РІ РІРёРґРµ Markdown-СЃРїРёСЃРєР° РёР»Рё РєРѕСЂРѕС‚РєРёС… СЃРµРєС†РёР№.\n"
+        "7. Р”Р»РёРЅРЅС‹Р№ РѕС‚РІРµС‚ РЅР°С‡РёРЅР°Р№ СЃ РєРѕСЂРѕС‚РєРѕРіРѕ РІС‹РІРѕРґР° РёР»Рё СЃР°РјРѕРіРѕ РІР°Р¶РЅРѕРіРѕ С„Р°РєС‚Р°, Р° РїРѕС‚РѕРј СЂР°СЃРєР»Р°РґС‹РІР°Р№ РґРµС‚Р°Р»Рё РїРѕ РїСѓРЅРєС‚Р°Рј.\n"
+        "8. РќРµ РІС‹РґР°РІР°Р№ РґР»РёРЅРЅС‹Рµ СЃРїР»РѕС€РЅС‹Рµ Р°Р±Р·Р°С†С‹, РµСЃР»Рё С‚РµРєСЃС‚ РјРѕР¶РЅРѕ СЃРґРµР»Р°С‚СЊ РїРѕРЅСЏС‚РЅРµРµ С‡РµСЂРµР· РїРѕРґР·Р°РіРѕР»РѕРІРєРё, bullets, РЅСѓРјРµСЂР°С†РёСЋ РёР»Рё РєРѕСЂРѕС‚РєРёРµ Р°Р±Р·Р°С†С‹.\n"
+        "9. РСЃРїРѕР»СЊР·СѓР№ РІР°Р»РёРґРЅС‹Р№ Markdown: `-` РґР»СЏ СЃРїРёСЃРєРѕРІ, `1.` РґР»СЏ С€Р°РіРѕРІ, `**...**` РґР»СЏ РєР»СЋС‡РµРІС‹С… Р°РєС†РµРЅС‚РѕРІ, РєРѕСЂРѕС‚РєРёРµ Р·Р°РіРѕР»РѕРІРєРё РїСЂРё РЅРµРѕР±С…РѕРґРёРјРѕСЃС‚Рё.\n"
+        f"10. Temporal mode: {mode}; explicit years: {years}; reasoning depth: {reasoning_depth}; freshness sensitive: {freshness_sensitive}."
     )
 
 
@@ -308,6 +312,27 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
             extra_parts.append(f"\n\n⚠️ Excel ошибка: {e}")
 
     return "".join(extra_parts)
+
+
+def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
+    temporal = temporal or {}
+    mode = temporal.get("mode", "none")
+    freshness_sensitive = bool(temporal.get("freshness_sensitive"))
+    years = ", ".join(str(year) for year in temporal.get("years", [])) or "none"
+    reasoning_depth = temporal.get("reasoning_depth", "none")
+    return (
+        "\n\nFINAL ANSWER RULES:\n"
+        "1. Answer naturally, like a thoughtful human assistant, not like a search engine dump.\n"
+        "2. If web data is available, use it as working evidence but do not inject links unless the user asks for them.\n"
+        "3. Never expose raw memory markers, RAG labels, hidden context, or technical source notes.\n"
+        "4. If freshness is uncertain, say so plainly.\n"
+        "5. If the user asks about sources, explain them naturally without technical jargon.\n"
+        "6. If the answer contains steps, events, comparisons, or multiple subtopics, format them as vertical Markdown lists or short sections.\n"
+        "7. For long answers, start with a short takeaway and then break details into bullets or numbered steps.\n"
+        "8. Avoid dense text walls when the same content can be shown more clearly with headings, bullets, numbering, or short paragraphs.\n"
+        "9. Use valid Markdown when helpful: `-` for lists, `1.` for steps, and `**...**` for key facts.\n"
+        f"10. Temporal mode: {mode}; explicit years: {years}; reasoning depth: {reasoning_depth}; freshness sensitive: {freshness_sensitive}."
+    )
 
 
 def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:

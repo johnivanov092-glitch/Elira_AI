@@ -413,7 +413,7 @@ function buildHistory(msgs) { if (!msgs?.length) return []; const p = msgs.filte
 const MessageItem = React.memo(function MessageItem({ msg }) {
   return (
     <div className={`message-row ${msg.role}`}>
-      <div className="message-bubble smaller-text">
+      <div className={`message-bubble smaller-text ${msg.role === "assistant" ? "assistant-bubble" : "user-bubble"}`}>
         {msg.role === "assistant" ? <MarkdownRenderer content={msg.content}/> : msg.content}
       </div>
     </div>
@@ -1911,10 +1911,10 @@ export default function EliraChatShell() {
 
               <div className="message-stream compact-stream" ref={msgRef}>
                 {messages.map(msg => <MessageItem key={msg.id} msg={msg} />)}
-                {streaming && streamText && <div className="message-row assistant"><div className="message-bubble smaller-text streaming-active"><MarkdownRenderer content={streamText}/><span className="typing-cursor"/></div></div>}
+                {streaming && streamText && <div className="message-row assistant"><div className="message-bubble smaller-text assistant-bubble streaming-active"><MarkdownRenderer content={streamText}/><span className="typing-cursor"/></div></div>}
                 {streaming && !streamText && (
                   <div className="message-row assistant">
-                    <div className="message-bubble smaller-text thinking-bubble">
+                    <div className="message-bubble smaller-text assistant-bubble thinking-bubble">
                       <div className="thinking-indicator">
                         <div className="thinking-dots"><span/><span/><span/></div>
                         <span className="thinking-text">{phase || "Думаю..."}</span>

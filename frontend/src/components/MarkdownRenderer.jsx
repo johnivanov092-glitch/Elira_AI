@@ -60,6 +60,31 @@ const HR_RE = /^[-*_]{3,}\s*$/;
 const HEADING_RE = /^(#{1,4})\s+(.+)/;
 const UL_RE = /^\s*[-*+]\s/;
 const OL_RE = /^\s*\d+[.)]\s/;
+const CODE_FENCE_SPLIT_RE = /(```[\s\S]*?```)/g;
+const DOUBLE_NEWLINE_RE = /\n{2,}/;
+
+function normalizeInlineEnumerations(block) {
+  if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
+  const markers = block.match(/\d+[.)]\s/g) || [];
+  if (markers.length < 2) return block;
+
+  let normalized = block;
+  normalized = normalized.replace(/:\s+(?=\d+[.)]\s)/g, ":\n");
+  normalized = normalized.replace(/([.!?])\s+(?=\d+[.)]\s)/g, "$1\n");
+  normalized = normalized.replace(/\s+(?=\d+[.)]\s)/g, "\n");
+  return normalized;
+}
+
+function normalizeStructuredMarkdown(text) {
+  const parts = String(text || "").split(CODE_FENCE_SPLIT_RE);
+  return parts.map((part, index) => {
+    if (index % 2 === 1) return part;
+    return part
+      .split("\n\n")
+      .map(normalizeInlineEnumerations)
+      .join("\n\n");
+  }).join("");
+}
 
 // ─── Компоненты (мемоизированы) ─────────────────────────────────
 const CopyButton = React.memo(function CopyButton({ text }) {
@@ -117,7 +142,7 @@ function stripOuterCodeFence(text) {
 function MarkdownRendererInner({ content }) {
   if (!content) return null;
 
-  const text = stripOuterCodeFence(String(content));
+  const text = normalizeStructuredMarkdown(stripOuterCodeFence(String(content)));
   if (!text) return null;
 
   const elements = [];
