@@ -1540,7 +1540,7 @@ def _browser_runtime_hint_frozen(exc: Exception | str) -> str:
     return text
 
 
-def _goal_keywords(goal: str) -> List[str]:
+def _goal_keywords_frozen(goal: str) -> List[str]:
     words = re.findall(r"[\wР°-СЏРђ-РЇС‘РЃ-]+", (goal or "").lower())
     stop = {
         "Рё", "РёР»Рё", "РІ", "РЅР°", "СЃ", "РїРѕ", "РґР»СЏ", "Рѕ", "РѕР±", "РЅРµ", "СЌС‚Рѕ", "РєР°Рє", "С‡С‚Рѕ",
@@ -1550,7 +1550,7 @@ def _goal_keywords(goal: str) -> List[str]:
     return [w for w in words if len(w) >= 3 and w not in stop][:12]
 
 
-def _extract_page_payload(page, max_chars: int = 9000) -> str:
+def _extract_page_payload_frozen(page, max_chars: int = 9000) -> str:
     title = ""
     try:
         title = page.title()
@@ -1582,7 +1582,7 @@ def _extract_page_payload(page, max_chars: int = 9000) -> str:
     return "\n\n".join(lines)
 
 
-def _collect_links(page, base_url: str) -> List[Dict[str, Any]]:
+def _collect_links_frozen(page, base_url: str) -> List[Dict[str, Any]]:
     try:
         links = page.locator("a").evaluate_all(
             """els => els.slice(0,150).map(a => ({
@@ -1617,7 +1617,7 @@ def _collect_links(page, base_url: str) -> List[Dict[str, Any]]:
     return cleaned
 
 
-def _score_link(link: Dict[str, Any], goal_keywords: List[str]) -> int:
+def _score_link_frozen(link: Dict[str, Any], goal_keywords: List[str]) -> int:
     bag = f"{link.get('text', '')} {link.get('title', '')} {link.get('href', '')}".lower()
     score = 0
     if link.get("same_domain"):
@@ -1634,11 +1634,11 @@ def _score_link(link: Dict[str, Any], goal_keywords: List[str]) -> int:
     return score
 
 
-def _rank_links(links: List[Dict[str, Any]], goal: str, limit: int) -> List[Dict[str, Any]]:
-    keywords = _goal_keywords(goal)
+def _rank_links_frozen(links: List[Dict[str, Any]], goal: str, limit: int) -> List[Dict[str, Any]]:
+    keywords = _goal_keywords_frozen(goal)
     ranked = []
     for link in links:
-        ranked.append({**link, "score": _score_link(link, keywords)})
+        ranked.append({**link, "score": _score_link_frozen(link, keywords)})
     ranked.sort(
         key=lambda x: (x["score"], x.get("same_domain", False), len(x.get("text", ""))),
         reverse=True,
@@ -1647,7 +1647,7 @@ def _rank_links(links: List[Dict[str, Any]], goal: str, limit: int) -> List[Dict
     return (positives or ranked)[:limit]
 
 
-def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str, Any]:
+def run_browser_agent_frozen(start_url: str, goal: str, max_pages: int = 3) -> Dict[str, Any]:
     trace = []
     if sync_playwright is None:
         return {
@@ -1664,9 +1664,9 @@ def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str
             page.wait_for_timeout(1200)
 
             trace.append({"step": 1, "action": "open", "url": page.url, "title": page.title()})
-            collected = ["=== РЎС‚СЂР°РЅРёС†Р° 1 ===\n" + _extract_page_payload(page, max_chars=10000)]
+            collected = ["=== РЎС‚СЂР°РЅРёС†Р° 1 ===\n" + _extract_page_payload_frozen(page, max_chars=10000)]
 
-            ranked_links = _rank_links(_collect_links(page, page.url), goal, limit=max(0, max_pages - 1))
+            ranked_links = _rank_links_frozen(_collect_links_frozen(page, page.url), goal, limit=max(0, max_pages - 1))
             visited = {page.url}
 
             for idx, link in enumerate(ranked_links, start=2):
@@ -1679,7 +1679,7 @@ def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str
                     sub = context.new_page()
                     sub.goto(href, wait_until="load", timeout=25000)
                     sub.wait_for_timeout(1000)
-                    collected.append("\n\n=== РЎС‚СЂР°РЅРёС†Р° {idx} ===\n".format(idx=idx) + _extract_page_payload(sub, max_chars=8000))
+                    collected.append("\n\n=== РЎС‚СЂР°РЅРёС†Р° {idx} ===\n".format(idx=idx) + _extract_page_payload_frozen(sub, max_chars=8000))
                     trace.append({
                         "step": idx,
                         "action": "open_link",
@@ -1706,7 +1706,49 @@ def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str
             browser.close()
             return {"ok": True, "text": truncate_text("\n".join(collected), 30000), "trace": trace}
     except Exception as e:
-        return {"ok": False, "text": _browser_runtime_hint(e), "trace": trace}
+        return {"ok": False, "text": _browser_runtime_hint_frozen(e), "trace": trace}
+
+
+def _goal_keywords(goal: str) -> List[str]:
+    """Facade — delegates to domain.tools.browser_agent_tool."""
+    from app.domain.tools.browser_agent_tool import goal_keywords as _goal_keywords_impl
+
+    return _goal_keywords_impl(goal)
+
+
+def _extract_page_payload(page, max_chars: int = 9000) -> str:
+    """Facade — delegates to domain.tools.browser_agent_tool."""
+    from app.domain.tools.browser_agent_tool import extract_page_payload as _extract_page_payload_impl
+
+    return _extract_page_payload_impl(page, max_chars=max_chars)
+
+
+def _collect_links(page, base_url: str) -> List[Dict[str, Any]]:
+    """Facade — delegates to domain.tools.browser_agent_tool."""
+    from app.domain.tools.browser_agent_tool import collect_links as _collect_links_impl
+
+    return _collect_links_impl(page, base_url)
+
+
+def _score_link(link: Dict[str, Any], goal_keywords: List[str]) -> int:
+    """Facade — delegates to domain.tools.browser_agent_tool."""
+    from app.domain.tools.browser_agent_tool import score_link as _score_link_impl
+
+    return _score_link_impl(link, goal_keywords)
+
+
+def _rank_links(links: List[Dict[str, Any]], goal: str, limit: int) -> List[Dict[str, Any]]:
+    """Facade — delegates to domain.tools.browser_agent_tool."""
+    from app.domain.tools.browser_agent_tool import rank_links as _rank_links_impl
+
+    return _rank_links_impl(links, goal, limit)
+
+
+def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str, Any]:
+    """Facade — delegates to domain.tools.browser_agent_tool."""
+    from app.domain.tools.browser_agent_tool import run_browser_agent as _run_browser_agent
+
+    return _run_browser_agent(start_url, goal, max_pages=max_pages)
 
 
 def _sanitize_browser_actions_frozen(actions: List[dict]) -> List[dict]:
