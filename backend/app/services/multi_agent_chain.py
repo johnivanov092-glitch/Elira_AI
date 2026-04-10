@@ -7,6 +7,8 @@ multi_agent_chain.py v2 — мульти-агентный пайплайн.
   3. + Оркестратор: План → агенты → отчёт (4 вызова)
   4. Все три: Оркестратор → агенты → рефлексия (5 вызовов)
 """
+# Legacy monolith: the workflow-engine delegate below is the active public
+# entrypoint. Keep the older in-file orchestration as reference only.
 from __future__ import annotations
 import logging
 from typing import Any
@@ -136,7 +138,7 @@ def _reflect_on_report(query: str, report: str, model: str) -> str:
 # Главная функция
 # ═══════════════════════════════════════════════════════════════
 
-def run_multi_agent(
+def _run_multi_agent_legacy_report(
     query: str,
     model_name: str = "qwen3:8b",
     context: str = "",

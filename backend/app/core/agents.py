@@ -8,6 +8,8 @@ agents.py вЂ” РІСЃРµ Р°РіРµРЅС‚РЅС‹Рµ РјРѕРґС
   вЂў run_multi_agent              вЂ” РїСЂРѕРіСЂРµСЃСЃ-Р±Р°СЂ, РЅР°РґС‘Р¶РЅС‹Р№ fallback РїР»Р°РЅР°
   вЂў Browser / Terminal           вЂ” Р±РµР· РёР·РјРµРЅРµРЅРёР№
 """
+# Legacy monolith: keep behavior stable and prefer extraction into
+# smaller modules over new feature work in this file.
 import io
 import json
 import os
@@ -343,7 +345,7 @@ def _run_in_dir(cmd: str, cwd: Path, timeout: int = 60) -> str:
 # MULTI-AGENT ORCHESTRATOR
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-def run_multi_agent(
+def _run_multi_agent_legacy_pipeline(
     task: str,
     model_name: str,
     memory_profile: str,

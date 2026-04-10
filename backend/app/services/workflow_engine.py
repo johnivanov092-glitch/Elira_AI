@@ -1,3 +1,4 @@
+"""Legacy workflow-engine monolith kept for compatibility during extraction."""
 from __future__ import annotations
 
 import json
@@ -10,6 +11,7 @@ from string import Formatter
 from typing import Any, Callable
 
 from app.core.data_files import sqlite_data_file
+from app.infrastructure.db.connection import connect_sqlite
 from app.services.agent_monitor import (
     WORKFLOW_ENGINE_AGENT_ID,
     record_resource_usage,
@@ -79,10 +81,7 @@ def _now() -> str:
 
 
 def _conn() -> sqlite3.Connection:
-    con = sqlite3.connect(str(DB_PATH), timeout=5)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
-    return con
+    return connect_sqlite(DB_PATH)
 
 
 def _init_db() -> None:
