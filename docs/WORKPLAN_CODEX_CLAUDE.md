@@ -114,6 +114,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-10 14:26:00 +05:00` | `DONE` | Added `backend/app/infrastructure/search/web_search.py` and moved active web-search execution, subquery context building, and temporal freshness enrichment into the infrastructure layer. |
 | `2026-04-10 14:26:00 +05:00` | `DONE` | Switched active web-search entrypoints in `agents_service.py` to thin facades over the new infrastructure search module while leaving legacy inline code as frozen reference. |
 | `2026-04-10 14:26:00 +05:00` | `NEXT` | Extract the next lowest-risk slice from `agents_service.py` or `core/agents.py`: monitoring/finalization emission, router selection, or planner/task-graph orchestration depending on conflict risk. |
+| `2026-04-10 14:42:00 +05:00` | `DONE` | Integrated the next `core/agents.py` refactor wave into this branch: routing and strategy selection extracted into `backend/app/domain/agents/router.py` with thin facades left in `core/agents.py`. |
+| `2026-04-10 14:42:00 +05:00` | `DONE` | Integrated planner/task-graph extraction into `backend/app/domain/agents/planner.py`; `core/agents.py` now delegates active planner and task-graph entrypoints through compatibility facades. |
+| `2026-04-10 14:42:00 +05:00` | `NEXT` | Extract the next bounded slice after router/planner: finalize remaining orchestration helpers in `core/agents.py` or move monitoring/finalization emission out of `agents_service.py`. |
 
 ## 8. Commit Ledger
 
@@ -153,7 +156,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after the web-search move | `codex/refactor-arch-foundation` | Prefer monitoring/finalization emission, router selection, or planner/task-graph wiring; keep the legacy facade thin |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after router/planner extraction | `codex/refactor-arch-foundation` | Prefer monitoring/finalization emission or remaining orchestration helpers while keeping the legacy facades thin |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
