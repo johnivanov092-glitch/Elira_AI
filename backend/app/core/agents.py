@@ -534,44 +534,21 @@ def reflect_and_improve_answer(
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
 def _extract_first_url(text: str) -> str:
-    if not text:
-        return ""
-    m = re.search(r'https?://[^\s<>"\'\]]+', text)
-    return m.group(0).rstrip('.,);]') if m else ""
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import extract_first_url
+    return extract_first_url(text)
 
 
 def _planner_safe_terminal_command(cmd: str) -> bool:
-    low = (cmd or "").strip().lower()
-    if not low or is_dangerous_command(low):
-        return False
-    allowed_prefixes = (
-        "dir", "ls", "pwd", "where python", "python --version", "python -v",
-        "pip list", "git status", "git branch", "git log --oneline",
-        "type ", "cat "
-    )
-    return low.startswith(allowed_prefixes)
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import planner_safe_terminal_command
+    return planner_safe_terminal_command(cmd)
 
 
 def _planner_default_steps(task: str) -> List[dict]:
-    url = _extract_first_url(task)
-    steps: List[dict] = []
-    if url:
-        steps.append({
-            "tool": "browser",
-            "goal": "РџСЂРѕС‡РёС‚Р°Р№ СЃС‚СЂР°РЅРёС†Сѓ Рё РёР·РІР»РµРєРё С„Р°РєС‚С‹, РїРѕР»РµР·РЅС‹Рµ РґР»СЏ РёСЃС…РѕРґРЅРѕР№ Р·Р°РґР°С‡Рё.",
-            "url": url,
-        })
-    elif any(word in task.lower() for word in ["РЅР°Р№РґРё", "РїРѕРёСЃРє", "РІРµР±", "СЃР°Р№С‚", "РґРѕРєСѓРјРµРЅС‚Р°С†", "РёРЅС‚РµСЂРЅРµС‚", "СЃС‚СЂР°РЅРёС†"]):
-        steps.append({
-            "tool": "browser",
-            "goal": task[:400],
-            "url": f"https://duckduckgo.com/?q={quote_plus(task[:200])}",
-        })
-    steps.append({
-        "tool": "reasoning",
-        "goal": "РЎРѕР±РµСЂРё РІС‹РІРѕРґ Рё РїСЂР°РєС‚РёС‡РµСЃРєРёРµ С€Р°РіРё РЅР° РѕСЃРЅРѕРІРµ РґРѕСЃС‚СѓРїРЅРѕРіРѕ РєРѕРЅС‚РµРєСЃС‚Р°.",
-    })
-    return steps[:4]
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import planner_default_steps
+    return planner_default_steps(task)
 
 
 def run_planner_agent(
@@ -581,6 +558,19 @@ def run_planner_agent(
     num_ctx: int = 4096,
     progress_callback=None,
 ) -> Dict[str, Any]:
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import run_planner_agent as _run
+    return _run(task, model_name, memory_profile, num_ctx=num_ctx, progress_callback=progress_callback)
+
+
+def _run_planner_agent_frozen(
+    task: str,
+    model_name: str,
+    memory_profile: str,
+    num_ctx: int = 4096,
+    progress_callback=None,
+) -> Dict[str, Any]:
+    """Original inline implementation — frozen, will be removed."""
     from .memory import build_memory_context
 
     total_steps = 3
@@ -743,6 +733,13 @@ def run_planner_agent(
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
 def _task_graph_default(task: str) -> List[dict]:
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import task_graph_default
+    return task_graph_default(task)
+
+
+def _task_graph_default_frozen(task: str) -> List[dict]:
+    """Original inline implementation — frozen, will be removed."""
     url = _extract_first_url(task)
     nodes: List[dict] = []
 
@@ -781,6 +778,13 @@ def _task_graph_default(task: str) -> List[dict]:
 
 
 def _normalize_task_graph(raw_graph: Any, task: str) -> List[dict]:
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import normalize_task_graph
+    return normalize_task_graph(raw_graph, task)
+
+
+def _normalize_task_graph_frozen(raw_graph: Any, task: str) -> List[dict]:
+    """Original inline implementation — frozen, will be removed."""
     if not isinstance(raw_graph, list):
         return _task_graph_default(task)
 
@@ -840,6 +844,18 @@ def make_task_graph(
     memory_profile: str,
     num_ctx: int = 4096,
 ) -> List[dict]:
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import make_task_graph as _make
+    return _make(task, model_name, memory_profile, num_ctx=num_ctx)
+
+
+def _make_task_graph_frozen(
+    task: str,
+    model_name: str,
+    memory_profile: str,
+    num_ctx: int = 4096,
+) -> List[dict]:
+    """Original inline implementation — frozen, will be removed."""
     from .memory import build_memory_context
 
     memory_context = build_memory_context(task, memory_profile, top_k=8)
@@ -875,14 +891,9 @@ def make_task_graph(
 
 
 def _task_graph_context_from_deps(node: dict, node_results: Dict[str, dict]) -> str:
-    parts = []
-    for dep in node.get("depends_on", []):
-        res = node_results.get(dep)
-        if not res:
-            continue
-        snippet = truncate_text(str(res.get("output", "")), 6000)
-        parts.append(f"[{dep} В· {res.get('tool', '')}]\n{snippet}")
-    return "\n\n".join(parts)
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import task_graph_context_from_deps
+    return task_graph_context_from_deps(node, node_results)
 
 
 def run_task_graph(
@@ -892,6 +903,19 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback=None,
 ) -> Dict[str, Any]:
+    """Facade — delegates to domain.agents.planner."""
+    from app.domain.agents.planner import run_task_graph as _run
+    return _run(task, model_name, memory_profile, num_ctx=num_ctx, progress_callback=progress_callback)
+
+
+def _run_task_graph_frozen(
+    task: str,
+    model_name: str,
+    memory_profile: str,
+    num_ctx: int = 4096,
+    progress_callback=None,
+) -> Dict[str, Any]:
+    """Original inline implementation — frozen, will be removed."""
     from .memory import build_memory_context
 
     memory_context = build_memory_context(task, memory_profile, top_k=8)
