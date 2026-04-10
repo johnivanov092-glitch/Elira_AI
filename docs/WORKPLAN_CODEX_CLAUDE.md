@@ -121,6 +121,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-10 21:16:32 +05:00` | `DONE` | Left `core/agents.py` on thin compatibility facades for `is_dangerous_command` and `run_terminal`, keeping the public entrypoints stable while freezing the old inline implementation. |
 | `2026-04-10 21:16:32 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/domain/tools/terminal_tool.py` and the updated `core/agents.py` facade path. |
 | `2026-04-10 21:16:32 +05:00` | `NEXT` | Extract the next lowest-risk helper slice from `core/agents.py` or `agents_service.py`: browser/read-only tooling helpers or monitoring/finalization emission, whichever stays compatibility-safe. |
+| `2026-04-10 21:20:25 +05:00` | `DONE` | Added `backend/app/application/memory/web_knowledge.py` and moved browser text normalization, browser RAG record building, and web-knowledge record assembly out of `core/agents.py`. |
+| `2026-04-10 21:20:25 +05:00` | `DONE` | Left `core/agents.py` on thin compatibility facades for `_clean_browser_text`, `_chunk_browser_text`, `build_browser_rag_records`, and `build_web_knowledge_records` while freezing the old inline implementations. |
+| `2026-04-10 21:20:25 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/web_knowledge.py` and the updated `core/agents.py` browser knowledge path. |
+| `2026-04-10 21:20:25 +05:00` | `NEXT` | Extract the next lowest-risk slice from `core/agents.py` or `agents_service.py`: browser action execution helpers, browser agent traversal helpers, or monitoring/finalization emission. |
 
 ## 8. Commit Ledger
 
@@ -160,7 +164,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after terminal tool extraction | `codex/refactor-arch-foundation` | Prefer browser/read-only tooling helpers or monitoring/finalization emission while keeping the legacy facades thin |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after browser web-knowledge extraction | `codex/refactor-arch-foundation` | Prefer browser action/traversal helpers or monitoring/finalization emission while keeping the legacy facades thin |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

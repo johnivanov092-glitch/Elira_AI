@@ -1849,7 +1849,7 @@ def sync_playwright_available() -> bool:
 # Browser в†’ RAG helpers
 # ================================
 
-def _clean_browser_text(text: str) -> str:
+def _clean_browser_text_frozen(text: str) -> str:
     if not text:
         return ""
     text = text.replace("\r", " ")
@@ -1859,9 +1859,9 @@ def _clean_browser_text(text: str) -> str:
     return text.strip()
 
 
-def _chunk_browser_text(text: str, size: int = 1200):
+def _chunk_browser_text_frozen(text: str, size: int = 1200):
     chunks = []
-    text = _clean_browser_text(text)
+    text = _clean_browser_text_frozen(text)
 
     start = 0
     while start < len(text):
@@ -1873,11 +1873,11 @@ def _chunk_browser_text(text: str, size: int = 1200):
     return chunks
 
 
-def build_browser_rag_records(url: str, goal: str, summary: str, page_text: str):
+def build_browser_rag_records_frozen(url: str, goal: str, summary: str, page_text: str):
     records = []
 
-    summary = _clean_browser_text(summary)
-    page_text = _clean_browser_text(page_text)
+    summary = _clean_browser_text_frozen(summary)
+    page_text = _clean_browser_text_frozen(page_text)
 
     if summary:
         records.append({
@@ -1887,7 +1887,7 @@ def build_browser_rag_records(url: str, goal: str, summary: str, page_text: str)
             "content": summary
         })
 
-    for chunk in _chunk_browser_text(page_text):
+    for chunk in _chunk_browser_text_frozen(page_text):
         records.append({
             "type": "browser_page",
             "url": url,
@@ -1898,10 +1898,10 @@ def build_browser_rag_records(url: str, goal: str, summary: str, page_text: str)
     return records
 
 
-def build_web_knowledge_records(query: str, web_context: str, source_kind: str = "web_search", max_chars: int = 14000):
+def build_web_knowledge_records_frozen(query: str, web_context: str, source_kind: str = "web_search", max_chars: int = 14000):
     records = []
     clean_query = (query or "").strip()
-    clean_text = _clean_browser_text(truncate_text(web_context or "", max_chars))
+    clean_text = _clean_browser_text_frozen(truncate_text(web_context or "", max_chars))
     if not clean_text:
         return records
 
@@ -1914,7 +1914,7 @@ def build_web_knowledge_records(query: str, web_context: str, source_kind: str =
         "source_kind": source_kind,
     })
 
-    for chunk in _chunk_browser_text(clean_text, size=1200):
+    for chunk in _chunk_browser_text_frozen(clean_text, size=1200):
         records.append({
             "type": "web_chunk",
             "url": "",
@@ -1925,6 +1925,39 @@ def build_web_knowledge_records(query: str, web_context: str, source_kind: str =
         })
 
     return records
+
+
+def _clean_browser_text(text: str) -> str:
+    """Facade — delegates to application.memory.web_knowledge."""
+    from app.application.memory.web_knowledge import clean_browser_text as _clean_text
+
+    return _clean_text(text)
+
+
+def _chunk_browser_text(text: str, size: int = 1200):
+    """Facade — delegates to application.memory.web_knowledge."""
+    from app.application.memory.web_knowledge import chunk_browser_text as _chunk_text
+
+    return _chunk_text(text, size=size)
+
+
+def build_browser_rag_records(url: str, goal: str, summary: str, page_text: str):
+    """Facade — delegates to application.memory.web_knowledge."""
+    from app.application.memory.web_knowledge import build_browser_rag_records as _build_browser_rag_records
+
+    return _build_browser_rag_records(url=url, goal=goal, summary=summary, page_text=page_text)
+
+
+def build_web_knowledge_records(query: str, web_context: str, source_kind: str = "web_search", max_chars: int = 14000):
+    """Facade — delegates to application.memory.web_knowledge."""
+    from app.application.memory.web_knowledge import build_web_knowledge_records as _build_web_knowledge_records
+
+    return _build_web_knowledge_records(
+        query=query,
+        web_context=web_context,
+        source_kind=source_kind,
+        max_chars=max_chars,
+    )
 
 
 def persist_web_knowledge(
