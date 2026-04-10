@@ -1523,7 +1523,7 @@ def generate_image_flux_schnell(
 # BROWSER AGENT
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-def _browser_runtime_hint(exc: Exception | str) -> str:
+def _browser_runtime_hint_frozen(exc: Exception | str) -> str:
     text = str(exc or "")
     low = text.lower()
     if isinstance(exc, NotImplementedError) or "_make_subprocess_transport" in low or "notimplementederror" in low:
@@ -1709,7 +1709,7 @@ def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str
         return {"ok": False, "text": _browser_runtime_hint(e), "trace": trace}
 
 
-def _sanitize_browser_actions(actions: List[dict]) -> List[dict]:
+def _sanitize_browser_actions_frozen(actions: List[dict]) -> List[dict]:
     allowed = {"open", "click", "fill", "extract", "wait"}
     cleaned = []
     for item in actions or []:
@@ -1732,7 +1732,7 @@ def _sanitize_browser_actions(actions: List[dict]) -> List[dict]:
     return cleaned[:12]
 
 
-def browser_actions_from_goal(goal: str, model_name: str) -> List[dict]:
+def browser_actions_from_goal_frozen(goal: str, model_name: str) -> List[dict]:
     prompt = (
         "РЎРѕСЃС‚Р°РІСЊ РїР»Р°РЅ РґРµР№СЃС‚РІРёР№ Р±СЂР°СѓР·РµСЂР° РІ JSON-РјР°СЃСЃРёРІРµ.\n"
         "Р Р°Р·СЂРµС€С‘РЅРЅС‹Рµ РґРµР№СЃС‚РІРёСЏ: open, click, fill, extract, wait.\n"
@@ -1753,14 +1753,14 @@ def browser_actions_from_goal(goal: str, model_name: str) -> List[dict]:
     )
     raw = clean_code_fence(re.sub(r"^```json\s*", "", raw.strip()))
     data = safe_json_parse(raw)
-    return _sanitize_browser_actions(data if isinstance(data, list) else [])
+    return _sanitize_browser_actions_frozen(data if isinstance(data, list) else [])
 
 
-def run_browser_actions(start_url: str, actions: List[dict]) -> Dict[str, Any]:
+def run_browser_actions_frozen(start_url: str, actions: List[dict]) -> Dict[str, Any]:
     trace, extracted = [], []
     if sync_playwright is None:
         return {"ok": False, "text": "Playwright РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ.", "trace": []}
-    actions = _sanitize_browser_actions(actions)
+    actions = _sanitize_browser_actions_frozen(actions)
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -1801,7 +1801,7 @@ def run_browser_actions(start_url: str, actions: List[dict]) -> Dict[str, Any]:
                 "trace": trace,
             }
     except Exception as e:
-        return {"ok": False, "text": _browser_runtime_hint(e), "trace": trace}
+        return {"ok": False, "text": _browser_runtime_hint_frozen(e), "trace": trace}
 
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 # РўР•Р РњРРќРђР›
@@ -1840,8 +1840,43 @@ def run_terminal(cmd: str, timeout: int = 25) -> str:
     return _run_terminal(cmd, timeout=timeout)
 
 
-def sync_playwright_available() -> bool:
+def sync_playwright_available_frozen() -> bool:
     return sync_playwright is not None
+
+
+def _browser_runtime_hint(exc: Exception | str) -> str:
+    """Facade — delegates to domain.tools.browser_action_tool."""
+    from app.domain.tools.browser_action_tool import browser_runtime_hint as _runtime_hint
+
+    return _runtime_hint(exc)
+
+
+def _sanitize_browser_actions(actions: List[dict]) -> List[dict]:
+    """Facade — delegates to domain.tools.browser_action_tool."""
+    from app.domain.tools.browser_action_tool import sanitize_browser_actions as _sanitize_actions
+
+    return _sanitize_actions(actions)
+
+
+def browser_actions_from_goal(goal: str, model_name: str) -> List[dict]:
+    """Facade — delegates to domain.tools.browser_action_tool."""
+    from app.domain.tools.browser_action_tool import browser_actions_from_goal as _browser_actions_from_goal
+
+    return _browser_actions_from_goal(goal, model_name=model_name)
+
+
+def run_browser_actions(start_url: str, actions: List[dict]) -> Dict[str, Any]:
+    """Facade — delegates to domain.tools.browser_action_tool."""
+    from app.domain.tools.browser_action_tool import run_browser_actions as _run_browser_actions
+
+    return _run_browser_actions(start_url, actions)
+
+
+def sync_playwright_available() -> bool:
+    """Facade — delegates to domain.tools.browser_action_tool."""
+    from app.domain.tools.browser_action_tool import sync_playwright_available as _sync_playwright_available
+
+    return _sync_playwright_available()
 
 
 

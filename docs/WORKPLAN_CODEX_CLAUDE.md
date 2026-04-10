@@ -125,6 +125,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-10 21:20:25 +05:00` | `DONE` | Left `core/agents.py` on thin compatibility facades for `_clean_browser_text`, `_chunk_browser_text`, `build_browser_rag_records`, and `build_web_knowledge_records` while freezing the old inline implementations. |
 | `2026-04-10 21:20:25 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/web_knowledge.py` and the updated `core/agents.py` browser knowledge path. |
 | `2026-04-10 21:20:25 +05:00` | `NEXT` | Extract the next lowest-risk slice from `core/agents.py` or `agents_service.py`: browser action execution helpers, browser agent traversal helpers, or monitoring/finalization emission. |
+| `2026-04-10 21:23:47 +05:00` | `DONE` | Added `backend/app/domain/tools/browser_action_tool.py` and moved browser runtime hints, Playwright availability checks, action sanitization, browser action planning, and action execution out of `core/agents.py`. |
+| `2026-04-10 21:23:47 +05:00` | `DONE` | Left `core/agents.py` on thin compatibility facades for `_browser_runtime_hint`, `_sanitize_browser_actions`, `browser_actions_from_goal`, `run_browser_actions`, and `sync_playwright_available` while freezing the old inline implementations. |
+| `2026-04-10 21:23:47 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/domain/tools/browser_action_tool.py` and the updated `core/agents.py` browser action path. |
+| `2026-04-10 21:23:47 +05:00` | `NEXT` | Extract the next bounded slice from `core/agents.py` or `agents_service.py`: browser agent traversal helpers or monitoring/finalization emission, whichever remains lowest-risk. |
 
 ## 8. Commit Ledger
 
@@ -164,7 +168,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after browser web-knowledge extraction | `codex/refactor-arch-foundation` | Prefer browser action/traversal helpers or monitoring/finalization emission while keeping the legacy facades thin |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after browser action extraction | `codex/refactor-arch-foundation` | Prefer browser traversal helpers or monitoring/finalization emission while keeping the legacy facades thin |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
