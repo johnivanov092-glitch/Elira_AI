@@ -1807,12 +1807,12 @@ def run_browser_actions(start_url: str, actions: List[dict]) -> Dict[str, Any]:
 # РўР•Р РњРРќРђР›
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-def is_dangerous_command(cmd: str) -> bool:
+def is_dangerous_command_frozen(cmd: str) -> bool:
     low = cmd.lower().strip()
     return any(b in low for b in TERMINAL_BLOCKED)
 
 
-def run_terminal(cmd: str, timeout: int = 25) -> str:
+def run_terminal_frozen(cmd: str, timeout: int = 25) -> str:
     try:
         proc = subprocess.run(
             cmd, shell=True, capture_output=True, text=True,
@@ -1826,6 +1826,20 @@ def run_terminal(cmd: str, timeout: int = 25) -> str:
 
 
 # в”Ђв”Ђ Playwright sync helper в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+def is_dangerous_command(cmd: str) -> bool:
+    """Facade — delegates to domain.tools.terminal_tool."""
+    from app.domain.tools.terminal_tool import is_dangerous_command as _is_dangerous_command
+
+    return _is_dangerous_command(cmd)
+
+
+def run_terminal(cmd: str, timeout: int = 25) -> str:
+    """Facade — delegates to domain.tools.terminal_tool."""
+    from app.domain.tools.terminal_tool import run_terminal as _run_terminal
+
+    return _run_terminal(cmd, timeout=timeout)
+
+
 def sync_playwright_available() -> bool:
     return sync_playwright is not None
 
