@@ -7,12 +7,18 @@ agents_service.py v8
   • Умная обрезка истории (релевантные сообщения, не просто последние N)
   • Детальные фазы стриминга
 """
+# Legacy monolith: keep behavior stable and prefer extraction into
+# application/domain/infrastructure modules over new feature work here.
 from __future__ import annotations
 
 import re
 import logging
 from typing import Any, Generator
 
+from app.application.chat.context_builder import (
+    collect_context as build_chat_context,
+    strip_frontend_project_context as build_strip_frontend_project_context,
+)
 from app.services.agent_monitor import record_agent_run_metric
 from app.services.agent_sandbox import (
     SandboxPolicyError,
@@ -216,7 +222,7 @@ def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
     return first_pair + recent
 
 
-def _strip_frontend_project_context(user_input: str) -> str:
+def _strip_frontend_project_context_legacy(user_input: str) -> str:
     """Убирает project-context, который фронт может дописывать к запросу.
 
     Секцию "Файлы пользователя" не трогаем, чтобы не ломать анализ
@@ -1251,7 +1257,7 @@ def _build_single_web_subquery_context(subquery):
     }
 
 
-def _do_web_search(query, timeline, tool_results):
+def _do_web_search_legacy(query, timeline, tool_results):
     """
     Multi-engine поиск: DDG + Bing + Google + Yandex + DDG News.
     Параллельный fetch top-3 страниц через BeautifulSoup.
@@ -1406,9 +1412,9 @@ def _do_web_search(query, timeline, tool_results):
 # КОНТЕКСТ
 # ═══════════════════════════════════════════════════════════════
 
-def _do_temporal_web_search(query, timeline, tool_results, temporal=None):
+def _do_temporal_web_search_legacy(query, timeline, tool_results, temporal=None):
     temporal = temporal or {}
-    context = _do_web_search(query, timeline, tool_results)
+    context = _do_web_search_legacy(query, timeline, tool_results)
     web_result = _get_web_search_result(tool_results)
     found = int(web_result.get("found", 0) or 0)
     fetched_pages = int(web_result.get("fetched_pages", 0) or 0)
@@ -1717,7 +1723,7 @@ def _do_temporal_web_search(query, timeline, tool_results, temporal=None, web_pl
     return context
 
 
-def _collect_context(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None, web_plan=None):
+def _collect_context_legacy(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None, web_plan=None):
     parts = []
     for tool_name in tools:
         try:
@@ -1786,6 +1792,18 @@ def _collect_context(*, profile_name, user_input, tools, tool_results, timeline,
 
 
 # ═══════════════════════════════════════════════════════════════
+def _strip_frontend_project_context(user_input: str) -> str:
+    return build_strip_frontend_project_context(user_input)
+
+
+def _collect_context(**kwargs):
+    return build_chat_context(
+        run_tool_func=run_tool,
+        append_timeline=_tl,
+        temporal_web_search_func=_do_temporal_web_search,
+        **kwargs,
+    )
+
 # run_agent
 # ═══════════════════════════════════════════════════════════════
 
