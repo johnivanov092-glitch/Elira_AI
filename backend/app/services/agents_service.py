@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import logging
+from functools import partial
 from typing import Any, Generator
 
 from app.application.chat.context_builder import (
@@ -28,6 +29,16 @@ from app.application.chat.stream_service import (
     build_chat_meta,
     build_stream_done_event,
     iter_text_stream_events,
+)
+from app.infrastructure.search.web_search import (
+    build_single_web_subquery_context as _infra_build_single_web_subquery_context,
+    clean_query as _infra_clean_query,
+    do_temporal_web_search as _infra_do_temporal_web_search,
+    do_temporal_web_search_legacy as _infra_do_temporal_web_search_legacy,
+    do_web_search as _infra_do_web_search,
+    do_web_search_legacy as _infra_do_web_search_legacy,
+    get_web_search_result as _infra_get_web_search_result,
+    is_strict_web_only_query as _infra_is_strict_web_only_query,
 )
 from app.services.agent_monitor import record_agent_run_metric
 from app.services.agent_sandbox import (
@@ -1731,6 +1742,16 @@ def _do_temporal_web_search(query, timeline, tool_results, temporal=None, web_pl
     if context:
         context += "\n\n" + freshness_note
     return context
+
+
+_clean_query = _infra_clean_query
+_is_strict_web_only_query = _infra_is_strict_web_only_query
+_get_web_search_result = _infra_get_web_search_result
+_build_single_web_subquery_context = _infra_build_single_web_subquery_context
+_do_web_search_legacy = partial(_infra_do_web_search_legacy, tl=_tl)
+_do_temporal_web_search_legacy = partial(_infra_do_temporal_web_search_legacy, tl=_tl)
+_do_web_search = partial(_infra_do_web_search, tl=_tl)
+_do_temporal_web_search = partial(_infra_do_temporal_web_search, tl=_tl)
 
 
 def _collect_context_legacy(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None, web_plan=None):
