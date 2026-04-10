@@ -19,6 +19,15 @@ from app.application.chat.context_builder import (
     collect_context as build_chat_context,
     strip_frontend_project_context as build_strip_frontend_project_context,
 )
+from app.infrastructure.search.web_search import (
+    clean_query as _infra_clean_query,
+    do_temporal_web_search as _infra_do_temporal_web_search,
+    do_temporal_web_search_legacy as _infra_do_temporal_web_search_legacy,
+    do_web_search as _infra_do_web_search,
+    do_web_search_legacy as _infra_do_web_search_legacy,
+    get_web_search_result as _infra_get_web_search_result,
+    is_strict_web_only_query as _infra_is_strict_web_only_query,
+)
 from app.services.agent_monitor import record_agent_run_metric
 from app.services.agent_sandbox import (
     SandboxPolicyError,
@@ -53,50 +62,9 @@ _HISTORY = RunHistoryService()
 _REFLECTION_ROUTES = {"code", "project"}
 _MAX_HISTORY_PAIRS = 10
 
-_QUERY_NOISE = [
-    r"^(дай|дай мне|покажи|скажи|расскажи|найди|покажи мне)\s+",
-    r"\s+(пожалуйста|плиз|please)$",
-]
-
-
 def _clean_query(query):
-    """Очищает и УЛУЧШАЕТ запрос для поисковика."""
-    from datetime import datetime
-    q = query.strip()
-    for p in _QUERY_NOISE:
-        q = re.sub(p, "", q, flags=re.IGNORECASE).strip()
-
-    ql = q.lower()
-
-    # Определяем тип запроса
-    is_news = any(w in ql for w in ["новости", "новость", "события", "произошло", "случилось", "происшеств"])
-    is_price = any(w in ql for w in ["курс", "цена", "стоимость"])
-    is_weather = "погода" in ql
-
-    # Добавляем год если нет
-    temporal = detect_temporal_intent(q)
-    if (is_news or is_price or is_weather) and not temporal.get("years"):
-        q += " " + str(datetime.now().year)
-
-    # Раскрываем короткие даты: "19.03" → "19 марта 2025"
-    date_match = re.search(r"(\d{1,2})\.(\d{2})(?:\.\d{2,4})?", q)
-    if date_match and is_news:
-        day = date_match.group(1)
-        month_num = int(date_match.group(2))
-        months = {1:"января",2:"февраля",3:"марта",4:"апреля",5:"мая",6:"июня",
-                  7:"июля",8:"августа",9:"сентября",10:"октября",11:"ноября",12:"декабря"}
-        month_name = months.get(month_num, "")
-        if month_name:
-            q = re.sub(r"\d{1,2}\.\d{2}(?:\.\d{2,4})?", f"{day} {month_name}", q)
-
-    # Добавляем "Казахстан" для новостей без указания страны
-    if is_news and not any(w in ql for w in ["россия", "украина", "сша", "мир", "казахстан", "кз"]):
-        # Если есть город КЗ — добавляем "Казахстан"
-        kz_cities = ["алматы", "астана", "шымкент", "караганд", "актау", "атырау", "павлодар", "семей", "тараз"]
-        if any(c in ql for c in kz_cities):
-            q += " Казахстан"
-
-    return q or query
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_clean_query(query)
 
 
 def _short(v, limit=600):
@@ -775,23 +743,13 @@ import json
 
 
 def _is_strict_web_only_query(user_input: str) -> bool:
-    q = (user_input or "").lower()
-    hard_terms = (
-        "новост", "news", "курс", "доллар", "евро", "рубл", "тенге",
-        "usd", "eur", "kzt", "погод", "weather", "сегодня", "today",
-        "сейчас", "current", "актуальн", "latest", "последние"
-    )
-    return any(term in q for term in hard_terms)
-
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_is_strict_web_only_query(user_input)
 
 
 def _get_web_search_result(tool_results):
-    for item in reversed(tool_results or []):
-        if item.get("tool") == "web_search":
-            result = item.get("result") or {}
-            if isinstance(result, dict):
-                return result
-    return {}
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_get_web_search_result(tool_results)
 
 
 
@@ -1022,91 +980,18 @@ def _get_and_clear_attachments() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# ГЛУБОКИЙ ВЕБ-ПОИСК: поиск → заход на сайты → извлечение текста
+# WEB SEARCH — delegated to infrastructure/search/web_search.py
+# Legacy facades kept for compatibility with _collect_context_legacy.
 # ═══════════════════════════════════════════════════════════════
 
-def _fetch_page_text(url, max_chars=4000):
-    """Заходит на сайт и извлекает основной текст. Улучшенная версия."""
-    try:
-        import requests
-        from bs4 import BeautifulSoup
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "ru,en;q=0.9",
-        }
-        resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
-        if resp.status_code != 200:
-            return ""
-
-        # Пробуем определить кодировку
-        if resp.encoding and resp.encoding.lower() != "utf-8":
-            resp.encoding = resp.apparent_encoding or "utf-8"
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Удаляем мусор
-        for tag in soup(["script", "style", "nav", "header", "footer", "aside",
-                         "form", "button", "iframe", "noscript", "svg", "img",
-                         "menu", "advertisement", "ad", "banner"]):
-            tag.decompose()
-
-        # Удаляем элементы с рекламными классами
-        for el in soup.select("[class*='advert'], [class*='banner'], [class*='cookie'], [class*='popup'], [class*='modal'], [id*='advert'], [id*='banner']"):
-            el.decompose()
-
-        # Ищем основной контент (приоритет по порядку)
-        content_selectors = [
-            "article", "main", "[role='main']",
-            ".article-body", ".article-content", ".post-content", ".entry-content",
-            ".news-body", ".story-body", ".text-content",
-            ".content", "#content", "#main-content",
-        ]
-        main_el = None
-        for sel in content_selectors:
-            main_el = soup.select_one(sel)
-            if main_el and len(main_el.get_text(strip=True)) > 100:
-                break
-            main_el = None
-
-        if main_el:
-            text = main_el.get_text(separator="\n", strip=True)
-        else:
-            # Fallback: берём body, но убираем короткие строки (навигация)
-            body = soup.find("body")
-            if body:
-                text = body.get_text(separator="\n", strip=True)
-            else:
-                text = soup.get_text(separator="\n", strip=True)
-
-        # Убираем пустые и слишком короткие строки (навигация, кнопки)
-        lines = []
-        for line in text.split("\n"):
-            line = line.strip()
-            if len(line) > 20:  # Пропускаем "Главная", "Меню", "Войти" и т.д.
-                lines.append(line)
-
-        text = "\n".join(lines)
-        return text[:max_chars] if text else ""
-    except Exception as e:
-        return ""
-
-
-_WEB_SKIP_FETCH_DOMAINS = [
-    "youtube.com", "youtu.be", "facebook.com", "instagram.com", "tiktok.com",
-    "twitter.com", "x.com", "vk.com", "t.me", "pinterest.com",
-]
-
-
-def _count_hits_for_domains(items, preferred_domains):
-    try:
-        from app.core.web import count_preferred_domain_hits
-        return count_preferred_domain_hits(items, preferred_domains)
-    except Exception:
-        return 0
-
-
 def _build_single_web_subquery_context(subquery):
+    """Facade — delegates to infrastructure.search.web_search."""
+    from app.infrastructure.search.web_search import build_single_web_subquery_context
+    return build_single_web_subquery_context(subquery)
+
+
+def _build_single_web_subquery_context_legacy(subquery):
+    """Original inline implementation — frozen, will be removed."""
     from app.core.web import fetch_page_text as core_fetch
     from app.core.web import research_web, search_news as core_search_news, search_web as core_search
 
@@ -1258,7 +1143,12 @@ def _build_single_web_subquery_context(subquery):
 
 
 def _do_web_search_legacy(query, timeline, tool_results):
-    """
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_do_web_search_legacy(query, timeline, tool_results, tl=_tl)
+
+
+def _do_web_search_legacy_frozen(query, timeline, tool_results):
+    """Original inline implementation — frozen, will be removed.
     Multi-engine поиск: DDG + Bing + Google + Yandex + DDG News.
     Параллельный fetch top-3 страниц через BeautifulSoup.
     Использует core/web.py для мульти-поиска.
@@ -1413,8 +1303,14 @@ def _do_web_search_legacy(query, timeline, tool_results):
 # ═══════════════════════════════════════════════════════════════
 
 def _do_temporal_web_search_legacy(query, timeline, tool_results, temporal=None):
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_do_temporal_web_search_legacy(query, timeline, tool_results, temporal=temporal, tl=_tl)
+
+
+def _do_temporal_web_search_legacy_frozen(query, timeline, tool_results, temporal=None):
+    """Original inline implementation — frozen, will be removed."""
     temporal = temporal or {}
-    context = _do_web_search_legacy(query, timeline, tool_results)
+    context = _do_web_search_legacy_frozen(query, timeline, tool_results)
     web_result = _get_web_search_result(tool_results)
     found = int(web_result.get("found", 0) or 0)
     fetched_pages = int(web_result.get("fetched_pages", 0) or 0)
@@ -1476,6 +1372,12 @@ def _do_temporal_web_search_legacy(query, timeline, tool_results, temporal=None)
 
 
 def _do_web_search(query, timeline, tool_results, web_plan=None):
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_do_web_search(query, timeline, tool_results, web_plan=web_plan, tl=_tl)
+
+
+def _do_web_search_frozen(query, timeline, tool_results, web_plan=None):
+    """Original inline implementation — frozen, will be removed."""
     search_query = _clean_query(query)
     plan = web_plan or {
         "is_multi_intent": False,
@@ -1654,8 +1556,14 @@ def _do_web_search(query, timeline, tool_results, web_plan=None):
 
 
 def _do_temporal_web_search(query, timeline, tool_results, temporal=None, web_plan=None):
+    """Facade — delegates to infrastructure.search.web_search."""
+    return _infra_do_temporal_web_search(query, timeline, tool_results, temporal=temporal, web_plan=web_plan, tl=_tl)
+
+
+def _do_temporal_web_search_frozen(query, timeline, tool_results, temporal=None, web_plan=None):
+    """Original inline implementation — frozen, will be removed."""
     temporal = temporal or {}
-    context = _do_web_search(query, timeline, tool_results, web_plan=web_plan)
+    context = _do_web_search_frozen(query, timeline, tool_results, web_plan=web_plan)
     web_result = _get_web_search_result(tool_results)
     found = int(web_result.get("found", 0) or 0)
     fetched_pages = int(web_result.get("fetched_pages", 0) or 0)
