@@ -105,6 +105,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-10 13:27:00 +05:00` | `DONE` | Added `backend/app/application/chat/context_builder.py` and switched `agents_service.py` to use it for frontend-project stripping and tool-driven context assembly. |
 | `2026-04-10 13:27:00 +05:00` | `DONE` | Renamed the old local `_strip_frontend_project_context` and `_collect_context` implementations to legacy-only names, keeping the monolith as a compatibility facade instead of a duplicate source of truth. |
 | `2026-04-10 13:27:00 +05:00` | `NEXT` | Extract the next smallest chat slice from `agents_service.py`: request/stream orchestration or web-search helper wiring, whichever keeps the public contract stable. |
+| `2026-04-10 13:46:00 +05:00` | `DONE` | Added `backend/app/application/chat/service.py` for shared chat planning/tool-selection preparation and task-context assembly. |
+| `2026-04-10 13:46:00 +05:00` | `DONE` | Switched both `run_agent` and `run_agent_stream` in `agents_service.py` to the new application-layer prep helpers while keeping the legacy API surface intact. |
+| `2026-04-10 13:46:00 +05:00` | `NEXT` | Extract the next chat slice from `agents_service.py`: streaming finalization/cached-stream helpers or web-search enrichment, whichever stays below the current risk threshold. |
 
 ## 8. Commit Ledger
 
@@ -144,7 +147,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest chat slice out of `services/agents_service.py` after the context-builder move | `codex/refactor-arch-foundation` | Prefer request/stream orchestration or web-search helper wiring; keep the legacy facade thin |
+| `2` | Extract the next smallest chat slice out of `services/agents_service.py` after the planning/service move | `codex/refactor-arch-foundation` | Prefer streaming finalization/cached-stream helpers or web-search helper wiring; keep the legacy facade thin |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

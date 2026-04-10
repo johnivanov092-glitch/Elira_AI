@@ -19,6 +19,11 @@ from app.application.chat.context_builder import (
     collect_context as build_chat_context,
     strip_frontend_project_context as build_strip_frontend_project_context,
 )
+from app.application.chat.service import (
+    build_disabled_skills,
+    build_task_context,
+    prepare_chat_plan,
+)
 from app.services.agent_monitor import record_agent_run_metric
 from app.services.agent_sandbox import (
     SandboxPolicyError,
@@ -1831,8 +1836,23 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         registry_agent=_registry_agent,
     )
     history = _trim_history(history or [])
-    _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
-    _disabled_skills = {k for k, v in _skill_flags.items() if not v}
+    _disabled_skills = build_disabled_skills(
+        use_web_search=use_web_search,
+        use_python_exec=use_python_exec,
+        use_image_gen=use_image_gen,
+        use_file_gen=use_file_gen,
+        use_http_api=use_http_api,
+        use_sql=use_sql,
+        use_screenshot=use_screenshot,
+        use_encrypt=use_encrypt,
+        use_archiver=use_archiver,
+        use_converter=use_converter,
+        use_regex=use_regex,
+        use_translator=use_translator,
+        use_csv=use_csv,
+        use_webhook=use_webhook,
+        use_plugins=use_plugins,
+    )
     timeline, tool_results = [], []
     planner = PlannerV2Service()
     raw_user_input = user_input
@@ -1851,20 +1871,23 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         },
     )
     try:
-        plan = planner.plan(planner_input)
+        chat_plan = prepare_chat_plan(
+            planner_input=planner_input,
+            model_name=model_name,
+            plan_runner=planner.plan,
+            use_memory=use_memory,
+            use_library=use_library,
+            use_web_search=use_web_search,
+            is_memory_command_func=is_memory_command,
+            pick_model_for_route_func=pick_model_for_route,
+        )
+        plan = chat_plan.plan
         _HISTORY.add_event(run["run_id"], "planner", plan)
-        route = plan.get("route", "chat")
-        temporal = plan.get("temporal", {})
-        web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
-        effective_model = pick_model_for_route(route, model_name)
-        selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
-        if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
-            selected.append("web_search")
-        strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
-        if strict_web_only:
-            selected = [t for t in selected if t != "memory_search"]
-        if is_memory_command(planner_input):
-            selected = [t for t in selected if t != "memory_search"]
+        route = chat_plan.route
+        temporal = chat_plan.temporal
+        web_plan = chat_plan.web_plan
+        effective_model = chat_plan.effective_model
+        selected = chat_plan.selected_tools
 
         # Умная память: извлекаем факты из сообщения
         try:
@@ -1901,7 +1924,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
                 pass
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
-        task_context = f"Маршрут: {route}. Инструменты: {', '.join(selected) if selected else 'нет дополнительных инструментов'}."
+        task_context = build_task_context(route, selected)
         draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context)
         if not draft.get("ok"):
             raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
@@ -2106,8 +2129,23 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
     _agent_start = _time.monotonic()
     _effective_agent_id = resolve_effective_agent_id(profile_name=profile_name)
     history = _trim_history(history or [])
-    _skill_flags = {"web_search": use_web_search, "python_exec": use_python_exec, "image_gen": use_image_gen, "file_gen": use_file_gen, "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot, "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter, "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv, "webhook": use_webhook, "plugins": use_plugins}
-    _disabled_skills = {k for k, v in _skill_flags.items() if not v}
+    _disabled_skills = build_disabled_skills(
+        use_web_search=use_web_search,
+        use_python_exec=use_python_exec,
+        use_image_gen=use_image_gen,
+        use_file_gen=use_file_gen,
+        use_http_api=use_http_api,
+        use_sql=use_sql,
+        use_screenshot=use_screenshot,
+        use_encrypt=use_encrypt,
+        use_archiver=use_archiver,
+        use_converter=use_converter,
+        use_regex=use_regex,
+        use_translator=use_translator,
+        use_csv=use_csv,
+        use_webhook=use_webhook,
+        use_plugins=use_plugins,
+    )
     timeline, tool_results = [], []
     planner = PlannerV2Service()
     raw_user_input = user_input
@@ -2127,22 +2165,23 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
     try:
         yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
 
-        plan = planner.plan(planner_input)
+        chat_plan = prepare_chat_plan(
+            planner_input=planner_input,
+            model_name=model_name,
+            plan_runner=planner.plan,
+            use_memory=use_memory,
+            use_library=use_library,
+            use_web_search=use_web_search,
+            is_memory_command_func=is_memory_command,
+            pick_model_for_route_func=pick_model_for_route,
+        )
+        plan = chat_plan.plan
         _HISTORY.add_event(run["run_id"], "planner", plan)
-        route = plan.get("route", "chat")
-        temporal = plan.get("temporal", {})
-        web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
-        selected = [t for t in plan.get("tools", []) if not (t == "memory_search" and not use_memory) and not (t == "library_context" and not use_library) and not (t == "web_search" and not use_web_search)]
-        if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
-            selected.append("web_search")
-        strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
-        if strict_web_only:
-            selected = [t for t in selected if t != "memory_search"]
-        if is_memory_command(planner_input):
-            selected = [t for t in selected if t != "memory_search"]
-
-        # ═══ АВТО-ВЫБОР МОДЕЛИ (тихо, без UI) ═══
-        effective_model = pick_model_for_route(route, model_name)
+        route = chat_plan.route
+        temporal = chat_plan.temporal
+        web_plan = chat_plan.web_plan
+        selected = chat_plan.selected_tools
+        effective_model = chat_plan.effective_model
         preflight_or_raise(
             agent_id=_effective_agent_id,
             num_ctx=num_ctx,
@@ -2254,7 +2293,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
         full_text = ""
-        task_context = f"Маршрут: {route}. Инструменты: {', '.join(selected) if selected else 'нет дополнительных инструментов'}."
+        task_context = build_task_context(route, selected)
         for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context):
             full_text += token
             yield {"token": token, "done": False}
