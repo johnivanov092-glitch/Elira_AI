@@ -1941,34 +1941,13 @@ def persist_web_knowledge(
 
 
 def route_task(user_text: str, model_name: str = "", memory_profile: str = "", num_ctx: int = 4096) -> dict:
-    """
-    РЎРѕРІРјРµСЃС‚РёРјС‹Р№ router РґР»СЏ V8.
-    Р’РѕР·РІСЂР°С‰Р°РµС‚ mode / agent / use_graph / confidence / source / reason.
-    """
-    t = (user_text or "").lower()
-
-    if any(x in t for x in ["pdf", "docx", "txt", "csv", "excel", "xlsx", "С„Р°Р№Р»", "РґРѕРєСѓРјРµРЅС‚", "С‚Р°Р±Р»РёС†Р°"]):
-        return {"mode": "file", "agent": "file_agent", "use_graph": True, "confidence": 0.86, "source": "keyword", "reason": "file markers"}
-
-    if any(x in t for x in ["РЅР°Р№РґРё", "РїРѕРёС‰Рё", "РёСЃСЃР»РµРґСѓР№", "research", "browser", "web", "РІРµР±", "РґРѕРєСѓРјРµРЅС‚Р°С†", "СЃР°Р№С‚"]):
-        return {"mode": "research", "agent": "browser_agent", "use_graph": True, "confidence": 0.84, "source": "keyword", "reason": "research markers"}
-
-    if any(x in t for x in ["python", "РєРѕРґ", "fastapi", "api", "streamlit", "bug", "РѕС€РёР±РєР°", "СЂРµС„Р°РєС‚РѕСЂ", "СЃРєСЂРёРїС‚"]):
-        return {"mode": "code", "agent": "coder_agent", "use_graph": True, "confidence": 0.85, "source": "keyword", "reason": "code markers"}
-
-    if any(x in t for x in ["РїР»Р°РЅ", "РїРѕ С€Р°РіР°Рј", "Р°СЂС…РёС‚РµРєС‚СѓСЂ", "pipeline", "СЃС‚СЂР°С‚РµРі", "roadmap"]):
-        return {"mode": "multi_step", "agent": "planner_agent", "use_graph": True, "confidence": 0.78, "source": "keyword", "reason": "planner markers"}
-
-    return {"mode": "chat", "agent": "chat_agent", "use_graph": False, "confidence": 0.55, "source": "fallback", "reason": "default chat"}
+    """Facade — delegates to domain.agents.router."""
+    from app.domain.agents.router import route_task as _route
+    return _route(user_text, model_name=model_name, memory_profile=memory_profile, num_ctx=num_ctx)
 
 
-TASK_GRAPH_TEMPLATES_V8 = {
-    "chat": ["retrieve_memory", "finalize"],
-    "research": ["retrieve_memory", "retrieve_kb", "tool_hint", "task_graph", "reflection_v2", "finalize"],
-    "code": ["retrieve_memory", "retrieve_kb", "tool_hint", "task_graph", "reflection_v2", "finalize"],
-    "file": ["retrieve_memory", "retrieve_kb", "tool_hint", "task_graph", "reflection_v2", "finalize"],
-    "multi_step": ["retrieve_memory", "retrieve_kb", "tool_hint", "planner", "reflection_v2", "finalize"],
-}
+# Facade — canonical definition in domain.agents.router
+from app.domain.agents.router import TASK_GRAPH_TEMPLATES_V8  # noqa: E402
 
 
 def _safe_json_object(text: str) -> dict:
@@ -2139,6 +2118,23 @@ def choose_v8_strategy(
     num_ctx: int = 4096,
     force_strategy: str | None = None,
 ) -> dict:
+    """Facade — delegates to domain.agents.router."""
+    from app.domain.agents.router import choose_v8_strategy as _choose
+    return _choose(
+        task, route, model_name, memory_profile,
+        num_ctx=num_ctx, force_strategy=force_strategy,
+    )
+
+
+def _choose_v8_strategy_legacy(
+    task: str,
+    route: dict,
+    model_name: str,
+    memory_profile: str,
+    num_ctx: int = 4096,
+    force_strategy: str | None = None,
+) -> dict:
+    """Original inline implementation — frozen, will be removed."""
     from .memory import get_v8_strategy_preferences
 
     if force_strategy:
