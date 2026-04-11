@@ -60,3 +60,38 @@ def record_agent_os_monitoring(
         )
     except Exception:
         logger.debug("agent_monitor_record_failed", exc_info=True)
+
+
+def record_registry_agent_run(
+    *,
+    agent_id: str | None,
+    registry_agent: dict[str, Any] | None,
+    run_id: str,
+    input_summary: str,
+    output_summary: str,
+    ok: bool,
+    route: str,
+    model_name: str,
+    duration_ms: int,
+) -> None:
+    resolved_agent_id = str(agent_id or (registry_agent or {}).get("id") or "")
+    if not resolved_agent_id:
+        return
+
+    try:
+        from app.services.agent_registry import record_agent_run
+
+        record_agent_run(
+            {
+                "agent_id": resolved_agent_id,
+                "run_id": run_id,
+                "input_summary": input_summary[:500],
+                "output_summary": output_summary[:500],
+                "ok": ok,
+                "route": route,
+                "model_used": model_name,
+                "duration_ms": duration_ms,
+            }
+        )
+    except Exception:
+        logger.debug("agent_registry_record_failed", exc_info=True)

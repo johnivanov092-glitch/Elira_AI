@@ -47,6 +47,7 @@ from app.application.chat.post_processing import (
 from app.application.chat.agent_os import (
     emit_agent_os_event as _app_emit_agent_os_event,
     record_agent_os_monitoring as _app_record_agent_os_monitoring,
+    record_registry_agent_run as _app_record_registry_agent_run,
     resolve_agent_os_source_id as _app_resolve_agent_os_source_id,
 )
 from app.application.chat.finalization import (
@@ -164,6 +165,31 @@ def _record_agent_os_monitoring(
         streaming=streaming,
         num_ctx=num_ctx,
         selected_tools=selected_tools,
+    )
+
+
+def _record_registry_agent_run(
+    *,
+    agent_id: str | None,
+    registry_agent: dict[str, Any] | None,
+    run_id: str,
+    input_summary: str,
+    output_summary: str,
+    ok: bool,
+    route: str,
+    model_name: str,
+    duration_ms: int,
+) -> None:
+    _app_record_registry_agent_run(
+        agent_id=agent_id,
+        registry_agent=registry_agent,
+        run_id=run_id,
+        input_summary=input_summary,
+        output_summary=output_summary,
+        ok=ok,
+        route=route,
+        model_name=model_name,
+        duration_ms=duration_ms,
     )
 
 
@@ -454,22 +480,17 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             "meta": meta,
         }
 
-        # Agent OS: записываем запуск в реестр
-        if agent_id or _registry_agent:
-            try:
-                from app.services.agent_registry import record_agent_run
-                record_agent_run({
-                    "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-                    "run_id": run["run_id"],
-                    "input_summary": raw_user_input[:500],
-                    "output_summary": answer[:500],
-                    "ok": True,
-                    "route": route,
-                    "model_used": effective_model,
-                    "duration_ms": _duration_ms,
-                })
-            except Exception:
-                pass
+        _record_registry_agent_run(
+            agent_id=agent_id,
+            registry_agent=_registry_agent,
+            run_id=run["run_id"],
+            input_summary=raw_user_input,
+            output_summary=answer,
+            ok=True,
+            route=route,
+            model_name=effective_model,
+            duration_ms=_duration_ms,
+        )
         return result
     except SandboxPolicyError as exc:
         err = {
@@ -522,21 +543,17 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             selected_tools=locals().get("selected", []),
             history_payload=err,
         )
-        if agent_id or _registry_agent:
-            try:
-                from app.services.agent_registry import record_agent_run
-                record_agent_run({
-                    "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-                    "run_id": run["run_id"],
-                    "input_summary": raw_user_input[:500] if 'raw_user_input' in dir() else user_input[:500],
-                    "output_summary": str(exc)[:500],
-                    "ok": False,
-                    "route": "",
-                    "model_used": model_name,
-                    "duration_ms": _duration_ms,
-                })
-            except Exception:
-                pass
+        _record_registry_agent_run(
+            agent_id=agent_id,
+            registry_agent=_registry_agent,
+            run_id=run["run_id"],
+            input_summary=raw_user_input if 'raw_user_input' in dir() else user_input,
+            output_summary=str(exc),
+            ok=False,
+            route="",
+            model_name=model_name,
+            duration_ms=_duration_ms,
+        )
 
         return err
 

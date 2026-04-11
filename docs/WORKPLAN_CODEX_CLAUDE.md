@@ -209,6 +209,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 16:47:36 +05:00` | `DONE` | Switched both fast and heavy completion branches in `services/agents_service.py` to reuse the shared stream-completion helper while preserving existing guard output, cache policy, and streamed payload keys. |
 | `2026-04-11 16:47:36 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/stream_service.py` and the updated `services/agents_service.py` stream-completion path. |
 | `2026-04-11 16:47:36 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer non-stream agent-run recording/error assembly or another small completion helper before attempting a broader control-flow refactor. |
+| `2026-04-11 16:48:54 +05:00` | `DONE` | Extended `backend/app/application/chat/agent_os.py` with `record_registry_agent_run` so the registry-run logging path for explicit agents now lives next to the other Agent OS helper functions. |
+| `2026-04-11 16:48:54 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse the shared registry-run helper for both non-stream success and non-stream error completion while preserving the current payload fields and `no-op` behavior when no registry agent is active. |
+| `2026-04-11 16:48:54 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/agent_os.py` and the updated `services/agents_service.py` registry-run recording path. |
+| `2026-04-11 16:48:54 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer non-stream error payload assembly or another small finalization helper before attempting a broader control-flow refactor. |
 
 ## 8. Commit Ledger
 
@@ -255,7 +259,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` after stream-completion extraction | `codex/refactor-arch-foundation` | Prefer non-stream agent-run recording/error assembly or another small completion helper from the current shared-branch tip |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` after registry-run helper extraction | `codex/refactor-arch-foundation` | Prefer non-stream error payload assembly or another small finalization helper from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
