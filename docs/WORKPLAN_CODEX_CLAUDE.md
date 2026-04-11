@@ -155,6 +155,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 11:22:04 +05:00` | `DONE` | Left `core/agents.py` on a thin compatibility facade for `persist_web_knowledge` while freezing the old inline implementation as `persist_web_knowledge_frozen`. |
 | `2026-04-11 11:22:04 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/persistence.py`, `backend/app/application/memory/web_knowledge.py`, and the updated `core/agents.py` persistence path. |
 | `2026-04-11 11:22:04 +05:00` | `NEXT` | Extract the next bounded runtime cluster from `core/agents.py`: prefer image-generation helpers first, then `python lab` if the dependency surface stays manageable. |
+| `2026-04-11 11:39:18 +05:00` | `DONE` | Added `backend/app/application/media/image_generation.py` and moved prompt preparation, Ollama unload handling, SDXL Turbo generation, and FLUX.1-schnell generation helpers out of `core/agents.py`. |
+| `2026-04-11 11:39:18 +05:00` | `DONE` | Left `core/agents.py` on thin compatibility facades for `_torch_gc`, `_strip_ansi`, `_contains_cyrillic`, `prepare_image_prompt`, `stop_ollama_model`, `_hf_access_hint`, `generate_image_sdxl_turbo`, and `generate_image_flux_schnell`; frozen inline implementations remain for rollback/reference. |
+| `2026-04-11 11:39:18 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/media/image_generation.py` and the updated `core/agents.py` image-generation path. |
+| `2026-04-11 11:39:18 +05:00` | `NEXT` | Extract the remaining `python lab` cluster from `core/agents.py` (`execute_python_with_capture`, `self_heal_python_code`, `generate_file_code`, `run_build_loop`) if Claude does not land overlapping changes first. |
 
 ## 8. Commit Ledger
 
@@ -197,7 +201,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `core/agents.py` after web-knowledge persistence extraction | `codex/refactor-arch-foundation` | Prefer image-generation helpers first, then the `python lab` cluster if the dependency surface remains compatibility-safe |
+| `2` | Extract the next smallest slice out of `core/agents.py` after image-generation extraction | `codex/refactor-arch-foundation` | Prefer the `python lab` cluster next if the dependency surface remains compatibility-safe |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

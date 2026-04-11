@@ -1090,7 +1090,7 @@ def _run_task_graph_frozen(
 # IMAGE GENERATION вЂ” SDXL Turbo
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-def _torch_gc():
+def _torch_gc_frozen():
     try:
         import gc
         gc.collect()
@@ -1106,16 +1106,16 @@ def _torch_gc():
         pass
 
 
-def _strip_ansi(text: str) -> str:
+def _strip_ansi_frozen(text: str) -> str:
     text = text or ""
     return re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", text).strip()
 
 
-def _contains_cyrillic(text: str) -> bool:
+def _contains_cyrillic_frozen(text: str) -> bool:
     return bool(re.search(r"[Рђ-РЇР°-СЏРЃС‘]", text or ""))
 
 
-def prepare_image_prompt(
+def prepare_image_prompt_frozen(
     prompt: str,
     model_name: str,
     auto_translate: bool = True,
@@ -1192,7 +1192,7 @@ def prepare_image_prompt(
         }
 
 
-def stop_ollama_model(model_name: str) -> Dict[str, Any]:
+def stop_ollama_model_frozen(model_name: str) -> Dict[str, Any]:
     """РџС‹С‚Р°РµС‚СЃСЏ РІС‹РіСЂСѓР·РёС‚СЊ Р»РѕРєР°Р»СЊРЅСѓСЋ РјРѕРґРµР»СЊ Ollama РёР· VRAM РїРµСЂРµРґ РіРµРЅРµСЂР°С†РёРµР№."""
     name = (model_name or "").strip()
     if not name:
@@ -1218,7 +1218,7 @@ def stop_ollama_model(model_name: str) -> Dict[str, Any]:
         return {"ok": False, "message": str(e)}
 
 
-def generate_image_sdxl_turbo(
+def generate_image_sdxl_turbo_frozen(
     prompt: str,
     negative_prompt: str = "",
     model_name_to_unload: str = "",
@@ -1329,7 +1329,7 @@ def generate_image_sdxl_turbo(
         _torch_gc()
 
 
-def _hf_access_hint(exc_text: str) -> str:
+def _hf_access_hint_frozen(exc_text: str) -> str:
     low = (exc_text or "").lower()
     if any(x in low for x in ["gated", "401", "403", "access to model", "accept the conditions", "must be logged in"]):
         return (
@@ -1339,7 +1339,7 @@ def _hf_access_hint(exc_text: str) -> str:
     return ""
 
 
-def generate_image_flux_schnell(
+def generate_image_flux_schnell_frozen(
     prompt: str,
     negative_prompt: str = "",
     model_name_to_unload: str = "",
@@ -1474,6 +1474,118 @@ def generate_image_flux_schnell(
         except Exception:
             pass
         _torch_gc()
+
+
+def _torch_gc():
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import torch_gc as _app_torch_gc
+
+    return _app_torch_gc()
+
+
+def _strip_ansi(text: str) -> str:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import strip_ansi as _app_strip_ansi
+
+    return _app_strip_ansi(text)
+
+
+def _contains_cyrillic(text: str) -> bool:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import contains_cyrillic as _app_contains_cyrillic
+
+    return _app_contains_cyrillic(text)
+
+
+def prepare_image_prompt(
+    prompt: str,
+    model_name: str,
+    auto_translate: bool = True,
+    num_ctx: int = 2048,
+) -> Dict[str, str]:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import prepare_image_prompt as _app_prepare_image_prompt
+
+    return _app_prepare_image_prompt(
+        prompt=prompt,
+        model_name=model_name,
+        auto_translate=auto_translate,
+        num_ctx=num_ctx,
+    )
+
+
+def stop_ollama_model(model_name: str) -> Dict[str, Any]:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import stop_ollama_model as _app_stop_ollama_model
+
+    return _app_stop_ollama_model(model_name)
+
+
+def generate_image_sdxl_turbo(
+    prompt: str,
+    negative_prompt: str = "",
+    model_name_to_unload: str = "",
+    seed: int | None = None,
+    width: int = 512,
+    height: int = 512,
+    num_inference_steps: int = 4,
+    guidance_scale: float = 0.0,
+    output_path: str | None = None,
+    model_id: str | None = None,
+) -> Dict[str, Any]:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import generate_image_sdxl_turbo as _app_generate_image_sdxl_turbo
+
+    return _app_generate_image_sdxl_turbo(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        model_name_to_unload=model_name_to_unload,
+        seed=seed,
+        width=width,
+        height=height,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        output_path=output_path,
+        model_id=model_id,
+    )
+
+
+def _hf_access_hint(exc_text: str) -> str:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import hf_access_hint as _app_hf_access_hint
+
+    return _app_hf_access_hint(exc_text)
+
+
+def generate_image_flux_schnell(
+    prompt: str,
+    negative_prompt: str = "",
+    model_name_to_unload: str = "",
+    seed: int | None = None,
+    width: int = 896,
+    height: int = 512,
+    num_inference_steps: int = 4,
+    guidance_scale: float = 0.0,
+    output_path: str | None = None,
+    model_id: str | None = None,
+    max_sequence_length: int = 160,
+) -> Dict[str, Any]:
+    """Facade — delegates to application.media.image_generation."""
+    from app.application.media.image_generation import generate_image_flux_schnell as _app_generate_image_flux_schnell
+
+    return _app_generate_image_flux_schnell(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        model_name_to_unload=model_name_to_unload,
+        seed=seed,
+        width=width,
+        height=height,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        output_path=output_path,
+        model_id=model_id,
+        max_sequence_length=max_sequence_length,
+    )
 
 
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
