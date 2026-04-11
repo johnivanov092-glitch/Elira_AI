@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Iterator
+
+
+@dataclass(frozen=True)
+class CachedStreamHit:
+    full_text: str
+    done_event: dict[str, Any]
 
 
 def build_chat_meta(
@@ -54,3 +61,58 @@ def build_stream_done_event(
         "meta": meta,
         "timeline": timeline,
     }
+
+
+def prepare_cached_stream_hit(
+    *,
+    cached_text: str,
+    raw_user_input: str,
+    timeline: list[dict[str, Any]],
+    append_timeline_func: Any,
+    apply_identity_guard_func: Any,
+    apply_provenance_guard_func: Any,
+    finalize_stream_success_func: Any,
+    history_service: Any,
+    run_id: str,
+    session_id: str,
+    profile_name: str,
+    model_name: str,
+    route: str,
+    temporal: dict[str, Any],
+    web_plan: dict[str, Any],
+    num_ctx: int,
+    agent_id: str,
+    source_agent_id: str,
+    selected_tools: list[str],
+    started_at: float,
+    monotonic_now_func: Any,
+) -> CachedStreamHit:
+    append_timeline_func(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
+    identity_guard = apply_identity_guard_func(raw_user_input, cached_text, timeline)
+    full_text = identity_guard.get("text", cached_text)
+    provenance_guard = apply_provenance_guard_func(raw_user_input, full_text, timeline)
+    full_text = provenance_guard.get("text", full_text)
+    duration_ms = int((monotonic_now_func() - started_at) * 1000)
+    done_event = finalize_stream_success_func(
+        history_service=history_service,
+        run_id=run_id,
+        session_id=session_id,
+        profile_name=profile_name,
+        model_name=model_name,
+        route=route,
+        user_input=raw_user_input,
+        full_text=full_text,
+        tools=[],
+        temporal=temporal,
+        web_plan=web_plan,
+        identity_guard=identity_guard,
+        provenance_guard=provenance_guard,
+        duration_ms=duration_ms,
+        num_ctx=num_ctx,
+        agent_id=agent_id,
+        source_agent_id=source_agent_id,
+        timeline=timeline,
+        selected_tools=selected_tools,
+        cached=True,
+    )
+    return CachedStreamHit(full_text=full_text, done_event=done_event)

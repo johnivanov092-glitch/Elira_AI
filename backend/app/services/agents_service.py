@@ -56,6 +56,7 @@ from app.application.chat.finalization import (
 )
 from app.application.chat.stream_service import (
     iter_text_stream_events,
+    prepare_cached_stream_hit,
 )
 from app.infrastructure.search.web_search import (
     build_single_web_subquery_context as _infra_build_single_web_subquery_context,
@@ -608,38 +609,32 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         if should_cache(planner_input, route) and not history:
             cached = get_cached(planner_input, effective_model, profile_name)
             if cached:
-                _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
-                identity_guard = _apply_identity_guard(raw_user_input, cached, timeline)
-                cached = identity_guard.get("text", cached)
-                provenance_guard = _apply_provenance_guard(raw_user_input, cached, timeline)
-                cached = provenance_guard.get("text", cached)
-                _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-                done_event = _app_finalize_stream_success(
+                cached_hit = prepare_cached_stream_hit(
+                    cached_text=cached,
+                    raw_user_input=raw_user_input,
+                    timeline=timeline,
+                    append_timeline_func=_tl,
+                    apply_identity_guard_func=_apply_identity_guard,
+                    apply_provenance_guard_func=_apply_provenance_guard,
+                    finalize_stream_success_func=_app_finalize_stream_success,
                     history_service=_HISTORY,
                     run_id=run["run_id"],
                     session_id=str(session_id or ""),
                     profile_name=profile_name,
                     model_name=effective_model,
                     route=route,
-                    user_input=raw_user_input,
-                    full_text=cached,
-                    tools=[],
                     temporal=temporal,
                     web_plan=web_plan,
-                    identity_guard=identity_guard,
-                    provenance_guard=provenance_guard,
-                    duration_ms=_duration_ms,
                     num_ctx=num_ctx,
                     agent_id=_effective_agent_id,
                     source_agent_id=_effective_agent_id,
-                    timeline=timeline,
                     selected_tools=selected,
-                    cached=True,
+                    started_at=_agent_start,
+                    monotonic_now_func=_time.monotonic,
                 )
-                # Стримим кэшированный ответ по токенам (выглядит естественно)
-                for token_event in iter_text_stream_events(cached):
+                for token_event in iter_text_stream_events(cached_hit.full_text):
                     yield token_event
-                yield done_event
+                yield cached_hit.done_event
                 return
 
         if "web_search" in selected:
