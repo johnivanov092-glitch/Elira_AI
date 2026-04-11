@@ -177,6 +177,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 15:58:45 +05:00` | `DONE` | Added `backend/app/application/chat/prompting.py` and moved prompt-building, runtime datetime context, human-style answer rules, skill-result attachment parsing, and attachment rendering out of `services/agents_service.py`. |
 | `2026-04-11 15:58:45 +05:00` | `DONE` | Left `services/agents_service.py` on thin compatibility facades for `_compose_human_style_rules`, `_wants_explicit_datetime_answer`, `_build_runtime_datetime_context`, `_build_prompt`, and `_get_and_clear_attachments`; generated-file detection now reads from application-layer attachment state. |
 | `2026-04-11 15:58:45 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer response guards / memory recall helpers or DRY-refactor shared `run_agent`/`run_agent_stream` initialization before touching broader orchestration. |
+| `2026-04-11 16:12:18 +05:00` | `DONE` | Added `backend/app/application/chat/memory_policy.py` and moved direct-personal-memory detection, recall gating, recall limits, history trimming, and shared memory/RAG context enrichment out of `services/agents_service.py`. |
+| `2026-04-11 16:12:18 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse the shared memory-policy helpers for both `run_agent` and `run_agent_stream`; the duplicated recall block is now centralized and non-stream still preserves the `memory_recall` timeline event. |
+| `2026-04-11 16:12:18 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/memory_policy.py` and the updated `services/agents_service.py` recall path. |
+| `2026-04-11 16:12:18 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer response guards / auto-exec helpers or shared `run_agent`/`run_agent_stream` initialization after the memory-policy consolidation. |
 
 ## 8. Commit Ledger
 
@@ -223,7 +227,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` after prompt/runtime extraction | `codex/refactor-arch-foundation` | Prefer response guards, memory recall helpers, or shared `run_agent`/`run_agent_stream` initialization from the current shared-branch tip |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` after memory-policy extraction | `codex/refactor-arch-foundation` | Prefer response guards, auto-exec helpers, or shared `run_agent`/`run_agent_stream` initialization from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

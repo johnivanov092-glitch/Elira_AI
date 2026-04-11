@@ -11,7 +11,6 @@ agents_service.py v8
 # application/domain/infrastructure modules over new feature work here.
 from __future__ import annotations
 
-import re
 import logging
 from functools import partial
 from typing import Any, Generator
@@ -32,6 +31,13 @@ from app.application.chat.prompting import (
     get_and_clear_attachments as _app_get_and_clear_attachments,
     has_generated_file_attachments as _app_has_generated_file_attachments,
     wants_explicit_datetime_answer as _app_wants_explicit_datetime_answer,
+)
+from app.application.chat.memory_policy import (
+    enrich_context_with_memory as _app_enrich_context_with_memory,
+    get_memory_recall_limits as _app_get_memory_recall_limits,
+    is_direct_personal_memory_query as _app_is_direct_personal_memory_query,
+    should_recall_memory_context as _app_should_recall_memory_context,
+    trim_history as _app_trim_history,
 )
 from app.application.chat.agent_os import (
     emit_agent_os_event as _app_emit_agent_os_event,
@@ -150,41 +156,25 @@ def _record_agent_os_monitoring(
     )
 
 
-_DIRECT_PERSONAL_MEMORY_RE = re.compile(
-    r"(?iu)^\s*(?:как\s+меня\s+зовут|ты\s+знаешь\s+как\s+меня\s+зовут|what\s+is\s+my\s+name|do\s+you\s+know\s+my\s+name)\s*\??\s*$"
-)
-
-
 def _is_direct_personal_memory_query(user_input: str) -> bool:
-    return bool(_DIRECT_PERSONAL_MEMORY_RE.search(user_input or ""))
+    return _app_is_direct_personal_memory_query(user_input)
 
 
 def _should_recall_memory_context(user_input: str, route: str, temporal: dict[str, Any] | None) -> bool:
-    temporal = temporal or {}
-    if is_memory_command(user_input):
-        return False
-    if route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive"):
-        return False
-    return True
+    return _app_should_recall_memory_context(
+        user_input,
+        route,
+        temporal,
+        is_memory_command_func=is_memory_command,
+    )
 
 
 def _get_memory_recall_limits(user_input: str) -> tuple[int, int]:
-    if _is_direct_personal_memory_query(user_input):
-        return (1, 0)
-    return (5, 3)
+    return _app_get_memory_recall_limits(user_input)
 
 
 def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
-    """Умная обрезка истории: оставляем первое сообщение (контекст) + последние N пар."""
-    if not h: return []
-    limit = max_pairs * 2
-    if len(h) <= limit:
-        return list(h)
-    # Всегда сохраняем первые 2 сообщения (начальный контекст разговора)
-    # + последние (limit - 2) сообщений
-    first_pair = list(h[:2])
-    recent = list(h[-(limit - 2):])
-    return first_pair + recent
+    return _app_trim_history(h, max_pairs=max_pairs)
 
 
 
@@ -403,20 +393,18 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
 
         ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
 
-        # Умная память + RAG: добавляем релевантные воспоминания только когда это реально нужно
-        if _should_recall_memory_context(planner_input, route, temporal):
-            try:
-                mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
-                mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
-                if _HAS_RAG and rag_limit > 0:
-                    rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
-                    if rag_ctx:
-                        mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-                if mem_ctx:
-                    ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-                    _tl(timeline, "memory_recall", "Память", "done", "Найдены релевантные заметки")
-            except Exception:
-                pass
+        ctx, _ = _app_enrich_context_with_memory(
+            planner_input=planner_input,
+            route=route,
+            temporal=temporal,
+            context=ctx,
+            has_rag=_HAS_RAG,
+            is_memory_command_func=is_memory_command,
+            get_relevant_context_func=get_relevant_context,
+            get_rag_context_func=get_rag_context,
+            append_timeline_func=_tl,
+            timeline=timeline,
+        )
 
         prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
         task_context = build_task_context(route, selected)
@@ -688,22 +676,16 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
 
         ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
 
-        # Умная память + RAG
-        mem_count = 0
-        if _should_recall_memory_context(planner_input, route, temporal):
-            try:
-                mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
-                mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
-                if mem_ctx:
-                    mem_count = mem_ctx.count("\n- ")
-                if _HAS_RAG and rag_limit > 0:
-                    rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
-                    if rag_ctx:
-                        mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-                if mem_ctx:
-                    ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-            except Exception:
-                pass
+        ctx, _ = _app_enrich_context_with_memory(
+            planner_input=planner_input,
+            route=route,
+            temporal=temporal,
+            context=ctx,
+            has_rag=_HAS_RAG,
+            is_memory_command_func=is_memory_command,
+            get_relevant_context_func=get_relevant_context,
+            get_rag_context_func=get_rag_context,
+        )
 
         yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
 
