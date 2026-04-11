@@ -15,6 +15,15 @@ from app.application.workflows.execution import (
     workflow_duration_ms as _app_workflow_duration_ms,
     workflow_step_index as _app_workflow_step_index,
 )
+from app.application.workflows.lifecycle import (
+    advance_to_next_step as _app_advance_to_next_step,
+    cancel_run as _app_cancel_run,
+    complete_after_step as _app_complete_after_step,
+    fail_missing_step as _app_fail_missing_step,
+    fail_step_and_finish as _app_fail_step_and_finish,
+    merge_resumed_context as _app_merge_resumed_context,
+    pause_after_step as _app_pause_after_step,
+)
 from app.application.workflows.store import (
     create_workflow_run_record as _app_create_workflow_run_record,
     create_workflow_template as _app_create_workflow_template,
@@ -275,18 +284,15 @@ def _execute_workflow_run(
     while current_step_id:
         step = steps_by_id.get(current_step_id)
         if not step:
-            error = {"message": f"Workflow step '{current_step_id}' not found"}
-            failed_run = _update_workflow_run(
-                run_id,
-                status="failed",
+            return _app_fail_missing_step(
+                run_id=run_id,
+                workflow_id=run["workflow_id"],
                 current_step_id=current_step_id,
-                error=error,
-                finished_at=_now(),
+                update_workflow_run=_update_workflow_run,
+                record_workflow_run_state=_record_workflow_run_state,
+                emit_workflow_event=_emit_workflow_event,
+                now_func=_now,
             )
-            _record_workflow_run_state(failed_run, status="failed", details={"current_step_id": current_step_id, "reason": "step_not_found"})
-            _emit_workflow_event("workflow.step.failed", run["workflow_id"], run_id, payload={"step_id": current_step_id, "error": error["message"]})
-            _emit_workflow_event("workflow.run.completed", run["workflow_id"], run_id, payload={"ok": False, "status": "failed"})
-            return failed_run
 
         step_index = _workflow_step_index(current_step_id, ordered_ids, step_results)
         step_label = _step_label(step)
@@ -343,60 +349,60 @@ def _execute_workflow_run(
 
         should_pause = bool(step.get("pause_after")) or bool(step_result.get("pause_requested"))
         if should_pause and success and next_step_id:
-            paused_run = _update_workflow_run(
-                run_id,
-                status="paused",
-                current_step_id=next_step_id,
+            return _app_pause_after_step(
+                run_id=run_id,
+                workflow_id=run["workflow_id"],
+                current_step_id=current_step_id,
+                next_step_id=next_step_id,
                 step_results=step_results,
-                pending_steps=[next_step_id],
-                requested_pause=False,
+                update_workflow_run=_update_workflow_run,
+                record_workflow_run_state=_record_workflow_run_state,
+                emit_workflow_event=_emit_workflow_event,
             )
-            _record_workflow_run_state(paused_run, status="paused", details={"current_step_id": next_step_id, "after_step_id": current_step_id})
-            _emit_workflow_event("workflow.run.paused", run["workflow_id"], run_id, payload={"current_step_id": next_step_id})
-            return paused_run
 
         if not success and not next_step_id:
-            failed_run = _update_workflow_run(
-                run_id,
-                status="failed",
+            return _app_fail_step_and_finish(
+                run_id=run_id,
+                workflow_id=run["workflow_id"],
                 current_step_id=current_step_id,
                 step_results=step_results,
-                pending_steps=[],
-                error={"step_id": current_step_id, "message": step_result.get("error", "step failed")},
-                finished_at=_now(),
+                error_message=str(step_result.get("error", "step failed")),
+                update_workflow_run=_update_workflow_run,
+                record_workflow_run_state=_record_workflow_run_state,
+                emit_workflow_event=_emit_workflow_event,
+                now_func=_now,
             )
-            _record_workflow_run_state(failed_run, status="failed", details={"current_step_id": current_step_id})
-            _emit_workflow_event("workflow.run.completed", run["workflow_id"], run_id, payload={"ok": False, "status": "failed", "step_id": current_step_id})
-            return failed_run
 
         if not next_step_id:
-            completed_run = _update_workflow_run(
-                run_id,
-                status="completed",
-                current_step_id="",
+            return _app_complete_after_step(
+                run_id=run_id,
+                workflow_id=run["workflow_id"],
+                completed_from_step_id=current_step_id,
                 step_results=step_results,
-                pending_steps=[],
-                error={},
-                finished_at=_now(),
+                update_workflow_run=_update_workflow_run,
+                record_workflow_run_state=_record_workflow_run_state,
+                emit_workflow_event=_emit_workflow_event,
+                now_func=_now,
             )
-            _record_workflow_run_state(completed_run, status="completed", details={"completed_from_step_id": current_step_id})
-            _emit_workflow_event("workflow.run.completed", run["workflow_id"], run_id, payload={"ok": True, "status": "completed"})
-            return completed_run
 
         current_step_id = next_step_id
-        _update_workflow_run(
-            run_id,
-            status="running",
-            current_step_id=current_step_id,
+        _app_advance_to_next_step(
+            run_id=run_id,
+            next_step_id=current_step_id,
             step_results=step_results,
-            pending_steps=[current_step_id],
-            error={},
+            update_workflow_run=_update_workflow_run,
         )
 
-    completed_run = _update_workflow_run(run_id, status="completed", current_step_id="", pending_steps=[], finished_at=_now())
-    _record_workflow_run_state(completed_run, status="completed", details={"completed_from_step_id": ""})
-    _emit_workflow_event("workflow.run.completed", run["workflow_id"], run_id, payload={"ok": True, "status": "completed"})
-    return completed_run
+    return _app_complete_after_step(
+        run_id=run_id,
+        workflow_id=run["workflow_id"],
+        completed_from_step_id="",
+        step_results=step_results,
+        update_workflow_run=_update_workflow_run,
+        record_workflow_run_state=_record_workflow_run_state,
+        emit_workflow_event=_emit_workflow_event,
+        now_func=_now,
+    )
 
 
 def start_workflow_run(
@@ -428,8 +434,7 @@ def resume_workflow_run(
     if run["status"] != "paused":
         raise ValueError("Only paused workflow runs can be resumed")
 
-    merged_context = dict(run.get("context", {}))
-    merged_context.update(context_patch or {})
+    merged_context = _app_merge_resumed_context(run, context_patch)
     _update_workflow_run(run_id, status="running", context=merged_context, error={}, requested_pause=False)
     return _execute_workflow_run(run_id, resume_event=True, progress_callback=progress_callback)
 
@@ -441,10 +446,14 @@ def cancel_workflow_run(run_id: str) -> dict[str, Any]:
     if run["status"] in {"completed", "failed", "cancelled"}:
         raise ValueError("Terminal workflow runs cannot be cancelled")
 
-    cancelled = _update_workflow_run(run_id, status="cancelled", pending_steps=[], finished_at=_now())
-    _record_workflow_run_state(cancelled, status="cancelled", details={"current_step_id": cancelled.get("current_step_id", "")})
-    _emit_workflow_event("workflow.run.cancelled", cancelled["workflow_id"], run_id, payload={"status": "cancelled"})
-    return cancelled
+    return _app_cancel_run(
+        run_id=run_id,
+        run=run,
+        update_workflow_run=_update_workflow_run,
+        record_workflow_run_state=_record_workflow_run_state,
+        emit_workflow_event=_emit_workflow_event,
+        now_func=_now,
+    )
 
 
 

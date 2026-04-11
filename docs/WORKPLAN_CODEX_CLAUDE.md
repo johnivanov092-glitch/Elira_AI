@@ -243,6 +243,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 21:23:08 +05:00` | `DONE` | Left `services/workflow_engine.py` on thin compatibility facades for `_parse_dt`, `_workflow_duration_ms`, `_record_workflow_run_state`, `_run_state_for_execution`, and the new execution bookkeeping wrappers while preserving `step_executor.py` imports and the existing workflow event payloads. |
 | `2026-04-11 21:23:08 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/workflows/execution.py`, `backend/app/services/workflow_engine.py`, and `backend/app/domain/workflows/step_executor.py`; the control flow of `_execute_workflow_run` is unchanged apart from delegating bookkeeping. |
 | `2026-04-11 21:23:08 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer terminal-state update helpers and resume/cancel bookkeeping before attempting to split the remaining `_execute_workflow_run` control loop. |
+| `2026-04-11 21:27:39 +05:00` | `DONE` | Added `backend/app/application/workflows/lifecycle.py` and moved workflow terminal-state transitions plus resume/cancel context bookkeeping out of `services/workflow_engine.py`. |
+| `2026-04-11 21:27:39 +05:00` | `DONE` | Switched `services/workflow_engine.py` to delegate directly to the lifecycle helpers for pause/fail/complete/cancel transitions and resume-context merging; the remaining engine core stays focused on orchestration and is down to 473 lines. |
+| `2026-04-11 21:27:39 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer step-result normalization / exception shaping or the remaining start/resume validation helpers before splitting the inner control loop. |
 
 ## 8. Commit Ledger
 
@@ -293,7 +296,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after workflow-execution extraction | `codex/refactor-arch-foundation` | Prefer terminal-state update helpers and resume/cancel bookkeeping before splitting the remaining control loop |
+| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after workflow-lifecycle extraction | `codex/refactor-arch-foundation` | Prefer step-result normalization / exception shaping or the remaining start/resume validation helpers before splitting the remaining control loop |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
