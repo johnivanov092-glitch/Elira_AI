@@ -15,6 +15,11 @@ from app.application.memory.context import (
     build_memory_context as _app_build_memory_context,
     search_memories_weighted as _app_search_memories_weighted,
 )
+from app.application.memory.search import (
+    keyword_search_memory as _app_keyword_search_memory,
+    semantic_search_memory as _app_semantic_search_memory,
+    vector_memory_capability_status as _app_vector_memory_capability_status,
+)
 from .config import DB_PATH, SETTINGS_PATH
 
 
@@ -47,52 +52,8 @@ def save_settings(settings: dict):
     except Exception:
         pass
 
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
-
-_EMBEDDER = None
-_FAISS_CACHE: Dict[str, Any] = {}
-
-
-def _get_embedder():
-    global _EMBEDDER
-    if SentenceTransformer is None:
-        return None
-    if _EMBEDDER is None:
-        _EMBEDDER = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
-    return _EMBEDDER
-
-try:
-    import faiss
-except Exception:
-    faiss = None
-
-try:
-    import numpy as np
-except Exception:
-    np = None
-
-
 def vector_memory_capability_status() -> Dict[str, Any]:
-    missing: List[str] = []
-    if SentenceTransformer is None:
-        missing.append("sentence-transformers")
-    if faiss is None:
-        missing.append("faiss-cpu")
-    if np is None:
-        missing.append("numpy")
-
-    available = not missing
-    return {
-        "feature": "vector_memory",
-        "available": available,
-        "mode": "vector" if available else "keyword_fallback",
-        "reason": None if available else "optional_dependency_missing",
-        "missing_packages": missing,
-        "hint": None if available else "pip install -r requirements-optional.txt",
-    }
+    return _app_vector_memory_capability_status()
 
 
 # ── Дедупликация ──────────────────────────────────────────────────────────────
@@ -411,58 +372,21 @@ from app.domain.memory.knowledge_base import (  # noqa: E402
 
 # ── Поиск ─────────────────────────────────────────────────────────────────────
 def keyword_search_memory(query: str, top_k: int = 10, profile_name: str = "") -> List[str]:
-    rows = load_memories(2000, profile_name=profile_name)
-    if not query.strip():
-        return []
-    q_words = query.lower().split()
-    scored = []
-    for _, text, *_ in rows:
-        low = text.lower()
-        score = sum(2 for w in q_words if w in low)
-        if query.lower() in low:
-            score += 5
-        if score > 0:
-            scored.append((score, text))
-    scored.sort(reverse=True)
-    return [t for _, t in scored[:top_k]]
+    return _app_keyword_search_memory(
+        query=query,
+        top_k=top_k,
+        profile_name=profile_name,
+        load_memories_func=load_memories,
+    )
 
 
 def semantic_search_memory(query: str, top_k: int = 5, profile_name: str = "") -> List[str]:
-    rows = load_memories(1000, profile_name=profile_name)
-    texts = [r[1] for r in rows]
-    if not query or not texts:
-        return []
-
-    # Fallback если нет FAISS/SentenceTransformer
-    if not vector_memory_capability_status()["available"]:
-        scored = [(sum(1 for w in query.lower().split() if w in t.lower()), t) for t in texts]
-        scored.sort(reverse=True)
-        return [t for s, t in scored[:top_k] if s > 0]
-
-    model = _get_embedder()
-    if model is None:
-        return []
-
-    # Инкрементальный кеш: пересоздаём индекс только при изменении данных
-    try:
-        texts_key = hashlib.md5(("||".join(texts)).encode()).hexdigest()
-        global _FAISS_CACHE
-
-        if _FAISS_CACHE.get("key") == texts_key and _FAISS_CACHE.get("index") is not None:
-            index = _FAISS_CACHE["index"]
-        else:
-            emb = np.array(model.encode(texts, normalize_embeddings=True), dtype="float32")
-            index = faiss.IndexFlatIP(emb.shape[1])
-            index.add(emb)
-            _FAISS_CACHE = {"key": texts_key, "index": index}
-    except Exception:
-        emb = np.array(model.encode(texts, normalize_embeddings=True), dtype="float32")
-        index = faiss.IndexFlatIP(emb.shape[1])
-        index.add(emb)
-
-    qv = np.array(model.encode([query], normalize_embeddings=True), dtype="float32")
-    _, ids = index.search(qv, min(top_k, len(texts)))
-    return [texts[i] for i in ids[0] if i != -1]
+    return _app_semantic_search_memory(
+        query=query,
+        top_k=top_k,
+        profile_name=profile_name,
+        load_memories_func=load_memories,
+    )
 
 
 def search_memories_weighted(query: str, profile_name: str = "", top_k: int = 8) -> List[Dict[str, Any]]:

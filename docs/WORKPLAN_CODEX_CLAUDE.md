@@ -223,6 +223,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 21:02:12 +05:00` | `DONE` | Left `core/memory.py` on thin compatibility facades for `search_memories_weighted` and `build_memory_context` while preserving the current callback-driven search behavior and domain memory context sources. |
 | `2026-04-11 21:02:12 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/context.py` and the updated `backend/app/core/memory.py` memory-context path. |
 | `2026-04-11 21:02:12 +05:00` | `NEXT` | Extract the next bounded slice from `core/memory.py`: prefer memory/profile CRUD or semantic/keyword search plumbing before attempting a broader workflow-engine execution refactor. |
+| `2026-04-11 21:07:05 +05:00` | `DONE` | Added `backend/app/application/memory/search.py` and moved optional vector dependency handling, embedder/index caching, keyword search, semantic search, and vector-memory capability reporting out of `core/memory.py`. |
+| `2026-04-11 21:07:05 +05:00` | `DONE` | Left `core/memory.py` on thin compatibility facades for `vector_memory_capability_status`, `keyword_search_memory`, and `semantic_search_memory` while preserving the existing callback-based memory loading behavior. |
+| `2026-04-11 21:07:05 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/search.py` and the updated `backend/app/core/memory.py` search path; full `project_brain.py` import smoke remains blocked locally by missing `fastapi`, not by this refactor. |
+| `2026-04-11 21:07:05 +05:00` | `NEXT` | Extract the next bounded slice from `core/memory.py`: prefer memory/profile CRUD or settings/init helpers before attempting a broader workflow-engine execution refactor. |
 
 ## 8. Commit Ledger
 
@@ -273,7 +277,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `core/memory.py` after memory-context extraction | `codex/refactor-arch-foundation` | Prefer memory/profile CRUD or semantic/keyword search plumbing from the current shared-branch tip |
+| `2` | Extract the next smallest slice out of `core/memory.py` after memory-search extraction | `codex/refactor-arch-foundation` | Prefer memory/profile CRUD or settings/init helpers from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
