@@ -197,6 +197,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 16:58:11 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse the shared cached-stream helper while preserving the exact token-streaming contract for cache hits. |
 | `2026-04-11 16:58:11 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/stream_service.py` and the updated `services/agents_service.py` cached-stream path. |
 | `2026-04-11 16:58:11 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer tool/phase announcement or another small orchestration helper before attempting a broader control-flow refactor. |
+| `2026-04-11 16:42:44 +05:00` | `DONE` | Extended `backend/app/application/chat/service.py` with `ChatPromptPreparation` and `prepare_chat_prompt` so the shared prompt-prep path now owns context collection, memory enrichment, prompt assembly, and task-context construction outside `services/agents_service.py`. |
+| `2026-04-11 16:42:44 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse the shared prompt-prep helper for both non-stream and stream execution while preserving the non-stream `memory_recall` timeline emission and the current stream phase order. |
+| `2026-04-11 16:42:44 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/service.py` and the updated `services/agents_service.py` shared prompt/context path. |
+| `2026-04-11 16:42:44 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer stream phase/announcement handling or another small completion helper before attempting a broader control-flow refactor. |
 
 ## 8. Commit Ledger
 
@@ -243,7 +247,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` after cached-stream extraction | `codex/refactor-arch-foundation` | Prefer tool/phase announcement or another small orchestration helper from the current shared-branch tip |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` after shared prompt/context preparation | `codex/refactor-arch-foundation` | Prefer stream phase/announcement handling or another small completion helper from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

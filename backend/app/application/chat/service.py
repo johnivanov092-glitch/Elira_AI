@@ -13,6 +13,10 @@ PlannerFactory = Callable[[], Any]
 RunStarter = Callable[[str], dict[str, Any]]
 EventEmitter = Callable[..., None]
 TimelineAppender = Callable[[list[dict[str, Any]], str, str, str, str], None]
+ContextCollector = Callable[..., str]
+MemoryContextEnricher = Callable[..., tuple[str, int]]
+PromptBuilder = Callable[..., str]
+TaskContextBuilder = Callable[[str, list[str]], str]
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,13 @@ class ChatExecutionPreparation:
     selected_tools: list[str]
     effective_model: str
     saved_memory_items: int
+
+
+@dataclass(frozen=True)
+class ChatPromptPreparation:
+    context_bundle: str
+    prompt: str
+    task_context: str
 
 
 def build_disabled_skills(
@@ -299,6 +310,64 @@ def prepare_chat_execution(
         selected_tools=chat_plan.selected_tools,
         effective_model=chat_plan.effective_model,
         saved_memory_items=saved_memory_items,
+    )
+
+
+def prepare_chat_prompt(
+    *,
+    profile_name: str,
+    raw_user_input: str,
+    planner_input: str,
+    route: str,
+    selected_tools: list[str],
+    tool_results: list[dict[str, Any]],
+    timeline: list[dict[str, Any]],
+    use_reflection: bool,
+    temporal: dict[str, Any] | None,
+    web_plan: dict[str, Any] | None,
+    disabled_skills: set[str],
+    has_rag: bool,
+    is_memory_command_func: MemoryCommandChecker,
+    get_relevant_context_func: Callable[..., str],
+    get_rag_context_func: Callable[..., str],
+    collect_context_func: ContextCollector,
+    enrich_context_with_memory_func: MemoryContextEnricher,
+    build_prompt_func: PromptBuilder,
+    build_task_context_func: TaskContextBuilder,
+    append_timeline_func: TimelineAppender | None = None,
+) -> ChatPromptPreparation:
+    context_bundle = collect_context_func(
+        profile_name=profile_name,
+        user_input=planner_input,
+        tools=selected_tools,
+        tool_results=tool_results,
+        timeline=timeline,
+        use_reflection=use_reflection,
+        temporal=temporal,
+        web_plan=web_plan,
+    )
+
+    enrich_kwargs: dict[str, Any] = {
+        "planner_input": planner_input,
+        "route": route,
+        "temporal": temporal,
+        "context": context_bundle,
+        "has_rag": has_rag,
+        "is_memory_command_func": is_memory_command_func,
+        "get_relevant_context_func": get_relevant_context_func,
+        "get_rag_context_func": get_rag_context_func,
+    }
+    if append_timeline_func is not None:
+        enrich_kwargs["append_timeline_func"] = append_timeline_func
+        enrich_kwargs["timeline"] = timeline
+
+    context_bundle, _ = enrich_context_with_memory_func(**enrich_kwargs)
+    prompt = build_prompt_func(raw_user_input, context_bundle, disabled_skills=disabled_skills)
+    task_context = build_task_context_func(route, selected_tools)
+    return ChatPromptPreparation(
+        context_bundle=context_bundle,
+        prompt=prompt,
+        task_context=task_context,
     )
 
 

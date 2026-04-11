@@ -21,8 +21,8 @@ from app.application.chat.context_builder import (
 )
 from app.application.chat.service import (
     bootstrap_chat_run,
-    build_task_context,
     prepare_chat_execution,
+    prepare_chat_prompt,
 )
 from app.application.chat.prompting import (
     build_prompt as _app_build_prompt,
@@ -368,23 +368,32 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         effective_model = execution.effective_model
         selected = execution.selected_tools
 
-        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
-
-        ctx, _ = _app_enrich_context_with_memory(
+        prompt_bundle = prepare_chat_prompt(
+            profile_name=profile_name,
+            raw_user_input=raw_user_input,
             planner_input=planner_input,
             route=route,
+            selected_tools=selected,
+            tool_results=tool_results,
+            timeline=timeline,
+            use_reflection=use_reflection,
             temporal=temporal,
-            context=ctx,
+            web_plan=web_plan,
+            disabled_skills=_disabled_skills,
             has_rag=_HAS_RAG,
             is_memory_command_func=is_memory_command,
             get_relevant_context_func=get_relevant_context,
             get_rag_context_func=get_rag_context,
+            collect_context_func=_collect_context,
+            enrich_context_with_memory_func=_app_enrich_context_with_memory,
+            build_prompt_func=_build_prompt,
+            build_task_context_func=build_task_context,
             append_timeline_func=_tl,
-            timeline=timeline,
         )
 
-        prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
-        task_context = build_task_context(route, selected)
+        ctx = prompt_bundle.context_bundle
+        prompt = prompt_bundle.prompt + _compose_human_style_rules(temporal)
+        task_context = prompt_bundle.task_context
         draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context)
         if not draft.get("ok"):
             raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
@@ -642,24 +651,34 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         elif selected:
             yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
 
-        ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
+        yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
 
-        ctx, _ = _app_enrich_context_with_memory(
+        prompt_bundle = prepare_chat_prompt(
+            profile_name=profile_name,
+            raw_user_input=raw_user_input,
             planner_input=planner_input,
             route=route,
+            selected_tools=selected,
+            tool_results=tool_results,
+            timeline=timeline,
+            use_reflection=use_reflection,
             temporal=temporal,
-            context=ctx,
+            web_plan=web_plan,
+            disabled_skills=_disabled_skills,
             has_rag=_HAS_RAG,
             is_memory_command_func=is_memory_command,
             get_relevant_context_func=get_relevant_context,
             get_rag_context_func=get_rag_context,
+            collect_context_func=_collect_context,
+            enrich_context_with_memory_func=_app_enrich_context_with_memory,
+            build_prompt_func=_build_prompt,
+            build_task_context_func=build_task_context,
         )
 
-        yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
-
-        prompt = _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills) + _compose_human_style_rules(temporal)
+        ctx = prompt_bundle.context_bundle
+        prompt = prompt_bundle.prompt + _compose_human_style_rules(temporal)
         full_text = ""
-        task_context = build_task_context(route, selected)
+        task_context = prompt_bundle.task_context
         for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context):
             full_text += token
             yield {"token": token, "done": False}
