@@ -231,6 +231,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 21:11:05 +05:00` | `DONE` | Left `core/memory.py` on thin compatibility facades for `list_mem_profiles`, `create_mem_profile`, `delete_mem_profile`, `add_memory`, `load_memories`, `delete_memory`, `clear_memories`, `set_memory_pin`, `export_memories`, and `import_memories_from_json` while preserving existing service/route signatures. |
 | `2026-04-11 21:11:05 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/store.py`, `backend/app/core/memory.py`, `backend/app/services/profile_service.py`, and `backend/app/domain/memory/working_memory.py`. |
 | `2026-04-11 21:11:05 +05:00` | `NEXT` | Extract the next bounded slice from `core/memory.py`: prefer settings/init helpers before switching focus back to the remaining `workflow_engine.py` execution core. |
+| `2026-04-11 21:13:56 +05:00` | `DONE` | Added `backend/app/application/memory/bootstrap.py` and moved memory settings loading/saving plus memory DB initialization out of `core/memory.py`. |
+| `2026-04-11 21:13:56 +05:00` | `DONE` | Left `core/memory.py` on thin compatibility facades for `load_settings`, `save_settings`, and `init_db` while preserving existing route/service call sites. |
+| `2026-04-11 21:13:56 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/bootstrap.py` and the updated `backend/app/core/memory.py`; one failed smoke check was due to an incorrect `runtime_service` symbol name, not this refactor. |
+| `2026-04-11 21:13:56 +05:00` | `NEXT` | Shift the next bounded slice to `workflow_engine.py`: prefer data-mapping / template-run store helpers before touching the remaining execution loop. |
 
 ## 8. Commit Ledger
 
@@ -281,7 +285,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `core/memory.py` after memory-store extraction | `codex/refactor-arch-foundation` | Prefer settings/init helpers from the current shared-branch tip before returning to workflow execution |
+| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after memory-bootstrap extraction | `codex/refactor-arch-foundation` | Prefer data-mapping / template-run store helpers before touching the execution loop |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

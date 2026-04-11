@@ -6,11 +6,14 @@
   • Инкрементальный FAISS-кеш (пересоздаётся только при изменении данных)
 """
 import hashlib
-import json
-import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any
 
+from app.application.memory.bootstrap import (
+    init_db as _app_init_db,
+    load_settings as _app_load_settings,
+    save_settings as _app_save_settings,
+)
 from app.application.memory.context import (
     build_memory_context as _app_build_memory_context,
     search_memories_weighted as _app_search_memories_weighted,
@@ -35,34 +38,12 @@ from app.application.memory.search import (
 from .config import DB_PATH, SETTINGS_PATH
 
 
-# ── Настройки устройства (settings.json) ─────────────────────────────────────
-_SETTINGS_DEFAULTS = {
-    "active_mem_profile": "default",
-    "model":              "qwen3:8b",
-}
-
-
 def load_settings() -> dict:
-    """Читает settings.json. Возвращает дефолты если файл не существует."""
-    try:
-        if SETTINGS_PATH.exists():
-            data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            # Заполняем отсутствующие ключи дефолтами
-            return {**_SETTINGS_DEFAULTS, **data}
-    except Exception:
-        pass
-    return dict(_SETTINGS_DEFAULTS)
+    return _app_load_settings(settings_path=SETTINGS_PATH)
 
 
 def save_settings(settings: dict):
-    """Сохраняет settings.json атомарно."""
-    try:
-        SETTINGS_PATH.write_text(
-            json.dumps(settings, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except Exception:
-        pass
+    _app_save_settings(settings_path=SETTINGS_PATH, settings=settings)
 
 def vector_memory_capability_status() -> Dict[str, Any]:
     return _app_vector_memory_capability_status()
@@ -76,161 +57,10 @@ def _content_hash(text: str) -> str:
 
 # ── Инициализация БД ─────────────────────────────────────────────────────────
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS memories (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                content      TEXT    NOT NULL,
-                source       TEXT,
-                created_at   TEXT    NOT NULL,
-                pinned       INTEGER DEFAULT 0,
-                memory_type  TEXT    DEFAULT 'general',
-                profile_name TEXT    DEFAULT '',
-                content_hash TEXT    DEFAULT ''
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS mem_profiles (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                name       TEXT NOT NULL UNIQUE,
-                emoji      TEXT DEFAULT '👤',
-                created_at TEXT NOT NULL
-            )
-        """)
-        # миграции для старых БД
-        for sql in [
-            "ALTER TABLE memories ADD COLUMN pinned INTEGER DEFAULT 0",
-            "ALTER TABLE memories ADD COLUMN memory_type TEXT DEFAULT 'general'",
-            "ALTER TABLE memories ADD COLUMN profile_name TEXT DEFAULT ''",
-            "ALTER TABLE memories ADD COLUMN content_hash TEXT DEFAULT ''",
-        ]:
-            try:
-                conn.execute(sql)
-            except Exception:
-                pass
-        conn.execute(
-            "INSERT OR IGNORE INTO mem_profiles (name, emoji, created_at) VALUES (?, ?, ?)",
-            ("default", "👤", datetime.now().isoformat(timespec="seconds")),
-        )
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS tool_usage (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                tool_name    TEXT NOT NULL,
-                task_hint    TEXT DEFAULT '',
-                ok           INTEGER DEFAULT 1,
-                score        REAL DEFAULT 1.0,
-                notes        TEXT DEFAULT '',
-                created_at   TEXT NOT NULL,
-                profile_name TEXT DEFAULT ''
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS knowledge_chunks (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                title        TEXT DEFAULT '',
-                url          TEXT DEFAULT '',
-                content      TEXT NOT NULL,
-                source       TEXT DEFAULT '',
-                chunk_type   TEXT DEFAULT 'note',
-                created_at   TEXT NOT NULL,
-                profile_name TEXT DEFAULT '',
-                content_hash TEXT DEFAULT ''
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS task_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                profile_name TEXT,
-                task_text TEXT,
-                route_mode TEXT,
-                graph_used TEXT,
-                final_status TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS reflections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                profile_name TEXT,
-                task_text TEXT,
-                answer_text TEXT,
-                answered INTEGER,
-                grounded INTEGER,
-                complete INTEGER,
-                actionable INTEGER,
-                safe INTEGER,
-                notes TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS working_memory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id TEXT,
-                profile_name TEXT,
-                step_name TEXT,
-                fact_type TEXT,
-                content TEXT,
-                score REAL DEFAULT 1.0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS self_improve_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                profile_name TEXT,
-                task_text TEXT,
-                iteration INTEGER,
-                answer_text TEXT,
-                critique_json TEXT,
-                reflection_json TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS v8_strategy_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                strategy TEXT NOT NULL,
-                route_mode TEXT DEFAULT '',
-                task_hint TEXT DEFAULT '',
-                ok INTEGER DEFAULT 1,
-                score REAL DEFAULT 1.0,
-                latency REAL DEFAULT 0.0,
-                notes TEXT DEFAULT '',
-                created_at TEXT NOT NULL,
-                profile_name TEXT DEFAULT ''
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS web_learning_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                query TEXT DEFAULT '',
-                url TEXT DEFAULT '',
-                title TEXT DEFAULT '',
-                source_kind TEXT DEFAULT 'web',
-                ok INTEGER DEFAULT 1,
-                saved_kb INTEGER DEFAULT 0,
-                saved_memory INTEGER DEFAULT 0,
-                notes TEXT DEFAULT '',
-                created_at TEXT NOT NULL,
-                profile_name TEXT DEFAULT ''
-            )
-        """)
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS memory_compaction_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                profile_name TEXT,
-                source_count INTEGER DEFAULT 0,
-                summary_count INTEGER DEFAULT 0,
-                deleted_count INTEGER DEFAULT 0,
-                notes TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
+    _app_init_db(
+        db_path=DB_PATH,
+        now_iso_func=lambda: datetime.now().isoformat(timespec="seconds"),
+    )
 
 
 # ── Профили памяти ────────────────────────────────────────────────────────────
