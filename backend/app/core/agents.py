@@ -1994,7 +1994,7 @@ def build_web_knowledge_records(query: str, web_context: str, source_kind: str =
     )
 
 
-def persist_web_knowledge(
+def persist_web_knowledge_frozen(
     query: str,
     web_context: str,
     profile_name: str,
@@ -2041,6 +2041,27 @@ def persist_web_knowledge(
         profile_name=profile_name,
     )
     return {"saved_memory": saved_memory, "saved_kb": saved_kb, "records": len(records)}
+
+
+def persist_web_knowledge(
+    query: str,
+    web_context: str,
+    profile_name: str,
+    source_kind: str = "web_search",
+    url: str = "",
+    title: str = "",
+):
+    """Facade — delegates to application.memory.persistence."""
+    from app.application.memory.persistence import persist_web_knowledge as _persist_web_knowledge
+
+    return _persist_web_knowledge(
+        query=query,
+        web_context=web_context,
+        profile_name=profile_name,
+        source_kind=source_kind,
+        url=url,
+        title=title,
+    )
 
 
 
