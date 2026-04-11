@@ -61,7 +61,7 @@ atexit.register(_save_all_figures)
 """)
 
 
-def execute_python_with_capture(
+def execute_python_with_capture_frozen(
     code: str,
     extra_globals: dict = None,
     timeout: int = _PYTHON_EXEC_TIMEOUT,
@@ -148,7 +148,7 @@ def execute_python_with_capture(
             }
 
 
-def self_heal_python_code(
+def self_heal_python_code_frozen(
     generated_code: str,
     task: str,
     file_path: str,
@@ -205,7 +205,7 @@ def self_heal_python_code(
 # CODE BUILDER LOOP вЂ” РёР·РѕР»РёСЂРѕРІР°РЅРЅР°СЏ temp-РґРёСЂРµРєС‚РѕСЂРёСЏ
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 
-def generate_file_code(
+def generate_file_code_frozen(
     target_file: str, task: str, model_name: str,
     project_context: str, file_context: str, num_ctx: int = 4096,
 ) -> str:
@@ -224,7 +224,7 @@ def generate_file_code(
     return clean_code_fence(code)
 
 
-def _ok_check(stdout: str, stderr: str, returncode: int) -> bool:
+def _ok_check_frozen(stdout: str, stderr: str, returncode: int) -> bool:
     """
     РЎС‡РёС‚Р°РµС‚ Р·Р°РїСѓСЃРє СѓСЃРїРµС€РЅС‹Рј РµСЃР»Рё:
       - returncode == 0
@@ -242,7 +242,7 @@ def _ok_check(stdout: str, stderr: str, returncode: int) -> bool:
     return len(error_lines) == 0
 
 
-def run_build_loop(
+def run_build_loop_frozen(
     target_file: str,
     task: str,
     run_command: str,
@@ -327,7 +327,7 @@ def run_build_loop(
     return code, history[-1]["run_output"] if history else "", history
 
 
-def _run_in_dir(cmd: str, cwd: Path, timeout: int = 60) -> str:
+def _run_in_dir_frozen(cmd: str, cwd: Path, timeout: int = 60) -> str:
     """Р—Р°РїСѓСЃРєР°РµС‚ РєРѕРјР°РЅРґСѓ РІ СѓРєР°Р·Р°РЅРЅРѕР№ РґРёСЂРµРєС‚РѕСЂРёРё."""
     try:
         proc = subprocess.run(
@@ -339,6 +339,104 @@ def _run_in_dir(cmd: str, cwd: Path, timeout: int = 60) -> str:
         return f"$ {cmd}\n\nРљРѕРјР°РЅРґР° РѕСЃС‚Р°РЅРѕРІР»РµРЅР° РїРѕ С‚Р°Р№РјР°СѓС‚Сѓ ({timeout} СЃРµРє.)"
     except Exception as e:
         return f"РћС€РёР±РєР° Р·Р°РїСѓСЃРєР°: {e}"
+
+
+def execute_python_with_capture(
+    code: str,
+    extra_globals: dict = None,
+    timeout: int = _PYTHON_EXEC_TIMEOUT,
+) -> Dict[str, Any]:
+    """Facade — delegates to application.code_agent.python_lab."""
+    from app.application.code_agent.python_lab import execute_python_with_capture as _execute_python_with_capture
+
+    return _execute_python_with_capture(
+        code=code,
+        extra_globals=extra_globals,
+        timeout=timeout,
+    )
+
+
+def self_heal_python_code(
+    generated_code: str,
+    task: str,
+    file_path: str,
+    schema_text: str,
+    model_name: str,
+    max_retries: int = 2,
+    num_ctx: int = 4096,
+) -> Tuple[str, Dict, List]:
+    """Facade — delegates to application.code_agent.python_lab."""
+    from app.application.code_agent.python_lab import self_heal_python_code as _self_heal_python_code
+
+    return _self_heal_python_code(
+        generated_code=generated_code,
+        task=task,
+        file_path=file_path,
+        schema_text=schema_text,
+        model_name=model_name,
+        max_retries=max_retries,
+        num_ctx=num_ctx,
+    )
+
+
+def generate_file_code(
+    target_file: str,
+    task: str,
+    model_name: str,
+    project_context: str,
+    file_context: str,
+    num_ctx: int = 4096,
+) -> str:
+    """Facade — delegates to application.code_agent.python_lab."""
+    from app.application.code_agent.python_lab import generate_file_code as _generate_file_code
+
+    return _generate_file_code(
+        target_file=target_file,
+        task=task,
+        model_name=model_name,
+        project_context=project_context,
+        file_context=file_context,
+        num_ctx=num_ctx,
+    )
+
+
+def _ok_check(stdout: str, stderr: str, returncode: int) -> bool:
+    """Facade — delegates to application.code_agent.python_lab."""
+    from app.application.code_agent.python_lab import ok_check as _ok_check_impl
+
+    return _ok_check_impl(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def run_build_loop(
+    target_file: str,
+    task: str,
+    run_command: str,
+    model_name: str,
+    max_retries: int,
+    project_context: str,
+    file_context: str,
+    num_ctx: int = 4096,
+) -> Tuple[str, str, List]:
+    """Facade — delegates to application.code_agent.python_lab."""
+    from app.application.code_agent.python_lab import run_build_loop as _run_build_loop
+
+    return _run_build_loop(
+        target_file=target_file,
+        task=task,
+        run_command=run_command,
+        model_name=model_name,
+        max_retries=max_retries,
+        project_context=project_context,
+        file_context=file_context,
+        num_ctx=num_ctx,
+    )
+
+
+def _run_in_dir(cmd: str, cwd: Path, timeout: int = 60) -> str:
+    """Facade — delegates to application.code_agent.python_lab."""
+    from app.application.code_agent.python_lab import run_in_dir as _run_in_dir_impl
+
+    return _run_in_dir_impl(cmd=cmd, cwd=cwd, timeout=timeout)
 
 
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
