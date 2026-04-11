@@ -10,6 +10,28 @@ class CachedStreamHit:
     done_event: dict[str, Any]
 
 
+def build_stream_phase_event(
+    *,
+    phase: str,
+    message: str | None = None,
+    full_text: str | None = None,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {"token": "", "done": False, "phase": phase}
+    if message is not None:
+        event["message"] = message
+    if full_text is not None:
+        event["full_text"] = full_text
+    return event
+
+
+def build_selected_tools_phase_event(selected_tools: list[str]) -> dict[str, Any] | None:
+    if "web_search" in selected_tools:
+        return build_stream_phase_event(phase="searching", message="Ищу...")
+    if selected_tools:
+        return build_stream_phase_event(phase="tools", message="Собираю контекст...")
+    return None
+
+
 def build_chat_meta(
     *,
     model_name: str,

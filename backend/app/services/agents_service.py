@@ -55,6 +55,8 @@ from app.application.chat.finalization import (
     finalize_stream_success as _app_finalize_stream_success,
 )
 from app.application.chat.stream_service import (
+    build_selected_tools_phase_event,
+    build_stream_phase_event,
     iter_text_stream_events,
     prepare_cached_stream_hit,
 )
@@ -585,7 +587,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
     planner_input = bootstrap.planner_input
     run = bootstrap.run
     try:
-        yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
+        yield build_stream_phase_event(phase="planning", message="Думаю...")
 
         execution = prepare_chat_execution(
             planner_input=planner_input,
@@ -646,12 +648,11 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 yield cached_hit.done_event
                 return
 
-        if "web_search" in selected:
-            yield {"token": "", "done": False, "phase": "searching", "message": "Ищу..."}
-        elif selected:
-            yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
+        selected_tools_phase = build_selected_tools_phase_event(selected)
+        if selected_tools_phase:
+            yield selected_tools_phase
 
-        yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
+        yield build_stream_phase_event(phase="thinking", message="Пишу ответ...")
 
         prompt_bundle = prepare_chat_prompt(
             profile_name=profile_name,
@@ -710,7 +711,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             guarded_text = provenance_guard.get("text", guarded_text)
             if guarded_text != full_text:
                 full_text = guarded_text
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
+                yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
             if should_cache(planner_input, route) and full_text.strip():
                 try:
                     set_cached(planner_input, effective_model, profile_name, full_text)
@@ -741,13 +742,13 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         else:
             # Тяжёлый путь — reflection и/или генерация файлов
             if should_reflect and full_text.strip() and not has_generated_files:
-                yield {"token": "", "done": False, "phase": "reflecting", "message": "Проверяю..."}
+                yield build_stream_phase_event(phase="reflecting", message="Проверяю...")
                 try:
                     ref = run_reflection_loop(model_name=effective_model, profile_name=profile_name, user_input=raw_user_input, draft_text=full_text, review_text="Улучши.", context=ctx)
                     refined = ref.get("answer", "")
                     if refined and refined != full_text:
                         full_text = refined
-                        yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
+                        yield build_stream_phase_event(phase="reflection_replace", full_text=refined)
                 except Exception:
                     pass
 
@@ -757,7 +758,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 pass
 
             if needs_file_gen:
-                yield {"token": "", "done": False, "phase": "generating_file", "message": "Готовлю файл..."}
+                yield build_stream_phase_event(phase="generating_file", message="Готовлю файл...")
             post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
             if post_files:
                 full_text += post_files
@@ -768,7 +769,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             guarded_text = provenance_guard.get("text", guarded_text)
             if guarded_text != full_text:
                 full_text = guarded_text
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
+                yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
 
             # Кэшируем после всех пост-обработок
             if should_cache(planner_input, route) and full_text.strip():
