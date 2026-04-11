@@ -239,6 +239,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 21:18:45 +05:00` | `DONE` | Left `services/workflow_engine.py` on thin compatibility facades for `_init_db`, `_normalize_graph`, `_upsert_workflow_template`, `create/get/list/update/delete_workflow_template`, `get/list_workflow_run`, `_update_workflow_run`, and `_create_workflow_run_record` while preserving override-able `DB_PATH` for tests. |
 | `2026-04-11 21:18:45 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/workflows/store.py`, `backend/app/services/workflow_engine.py`, and `backend/app/application/workflows/multi_agent.py`; dynamic imports from `multi_agent.py` still resolve through the workflow-engine facade layer. |
 | `2026-04-11 21:18:45 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer run-state / execution bookkeeping helpers around `_execute_workflow_run` before touching the inner step loop itself. |
+| `2026-04-11 21:23:08 +05:00` | `DONE` | Added `backend/app/application/workflows/execution.py` and moved workflow execution-state assembly, run-duration parsing, run metrics, total-step accounting, and step bookkeeping helpers out of `services/workflow_engine.py`. |
+| `2026-04-11 21:23:08 +05:00` | `DONE` | Left `services/workflow_engine.py` on thin compatibility facades for `_parse_dt`, `_workflow_duration_ms`, `_record_workflow_run_state`, `_run_state_for_execution`, and the new execution bookkeeping wrappers while preserving `step_executor.py` imports and the existing workflow event payloads. |
+| `2026-04-11 21:23:08 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/workflows/execution.py`, `backend/app/services/workflow_engine.py`, and `backend/app/domain/workflows/step_executor.py`; the control flow of `_execute_workflow_run` is unchanged apart from delegating bookkeeping. |
+| `2026-04-11 21:23:08 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer terminal-state update helpers and resume/cancel bookkeeping before attempting to split the remaining `_execute_workflow_run` control loop. |
 
 ## 8. Commit Ledger
 
@@ -289,7 +293,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after workflow-store extraction | `codex/refactor-arch-foundation` | Prefer run-state / execution-bookkeeping helpers around `_execute_workflow_run` before touching the inner loop |
+| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after workflow-execution extraction | `codex/refactor-arch-foundation` | Prefer terminal-state update helpers and resume/cancel bookkeeping before splitting the remaining control loop |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
