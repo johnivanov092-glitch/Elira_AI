@@ -147,58 +147,13 @@ def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[di
     return guard
 
 
-def _resolve_agent_os_source_id_frozen(agent_id: str | None, registry_agent: dict[str, Any] | None) -> str:
-    return str(agent_id or (registry_agent or {}).get("id") or "")
-
-
-def _emit_agent_os_event_frozen(*, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None) -> None:
-    try:
-        from app.services.event_bus import emit_event
-
-        emit_event(
-            event_type=event_type,
-            source_agent_id=source_agent_id,
-            payload=payload or {},
-        )
-    except Exception:
-        logger.debug("event_bus_emit_failed", exc_info=True)
-
-
-def _record_agent_os_monitoring_frozen(
-    *,
-    agent_id: str,
-    run_id: str,
-    route: str,
-    model_name: str,
-    ok: bool,
-    duration_ms: int,
-    streaming: bool,
-    num_ctx: int,
-    selected_tools: list[str] | None,
-) -> None:
-    try:
-        record_agent_run_metric(
-            agent_id=agent_id,
-            run_id=run_id,
-            route=route,
-            model_name=model_name,
-            ok=ok,
-            duration_ms=duration_ms,
-            streaming=streaming,
-            num_ctx=int(num_ctx or 0),
-            tools=list(selected_tools or []),
-        )
-    except Exception:
-        logger.debug("agent_monitor_record_failed", exc_info=True)
-
-
 def _resolve_agent_os_source_id(agent_id: str | None, registry_agent: dict[str, Any] | None) -> str:
-    """Facade — delegates to application.chat.agent_os."""
+    """Facade -- delegates to application.chat.agent_os."""
     return _app_resolve_agent_os_source_id(agent_id, registry_agent)
 
 
 def _emit_agent_os_event(*, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None) -> None:
-    """Facade — delegates to application.chat.agent_os."""
+    """Facade -- delegates to application.chat.agent_os."""
     _app_emit_agent_os_event(
         event_type=event_type,
         source_agent_id=source_agent_id,
@@ -218,7 +173,7 @@ def _record_agent_os_monitoring(
     num_ctx: int,
     selected_tools: list[str] | None,
 ) -> None:
-    """Facade — delegates to application.chat.agent_os."""
+    """Facade -- delegates to application.chat.agent_os."""
     _app_record_agent_os_monitoring(
         agent_id=agent_id,
         run_id=run_id,
