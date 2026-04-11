@@ -15,6 +15,18 @@ from app.application.memory.context import (
     build_memory_context as _app_build_memory_context,
     search_memories_weighted as _app_search_memories_weighted,
 )
+from app.application.memory.store import (
+    add_memory as _app_add_memory,
+    clear_memories as _app_clear_memories,
+    create_mem_profile as _app_create_mem_profile,
+    delete_mem_profile as _app_delete_mem_profile,
+    delete_memory as _app_delete_memory,
+    export_memories as _app_export_memories,
+    import_memories_from_json as _app_import_memories_from_json,
+    list_mem_profiles as _app_list_mem_profiles,
+    load_memories as _app_load_memories,
+    set_memory_pin as _app_set_memory_pin,
+)
 from app.application.memory.search import (
     keyword_search_memory as _app_keyword_search_memory,
     semantic_search_memory as _app_semantic_search_memory,
@@ -223,132 +235,73 @@ def init_db():
 
 # ── Профили памяти ────────────────────────────────────────────────────────────
 def list_mem_profiles() -> List[Dict[str, Any]]:
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute(
-            "SELECT id, name, emoji, created_at FROM mem_profiles ORDER BY id ASC"
-        ).fetchall()
-    return [{"id": r[0], "name": r[1], "emoji": r[2], "created_at": r[3]} for r in rows]
+    return _app_list_mem_profiles(db_path=str(DB_PATH))
 
 
 def create_mem_profile(name: str, emoji: str = "👤") -> bool:
-    name = name.strip()
-    if not name or len(name) > 40:
-        return False
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO mem_profiles (name, emoji, created_at) VALUES (?, ?, ?)",
-                (name, emoji, datetime.now().isoformat(timespec="seconds")),
-            )
-            conn.commit()
-        return True
-    except Exception:
-        return False
+    return _app_create_mem_profile(
+        db_path=str(DB_PATH),
+        name=name,
+        emoji=emoji,
+        now_iso_func=lambda: datetime.now().isoformat(timespec="seconds"),
+    )
 
 
 def delete_mem_profile(name: str):
-    if name == "default":
-        return
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM mem_profiles WHERE name = ?", (name,))
-        conn.execute("DELETE FROM memories WHERE profile_name = ?", (name,))
-        conn.commit()
+    _app_delete_mem_profile(db_path=str(DB_PATH), name=name)
 
 
 # ── CRUD памяти ───────────────────────────────────────────────────────────────
 def add_memory(content: str, source: str = "manual", pinned: bool = False,
                memory_type: str = "general", profile_name: str = "",
                deduplicate: bool = True) -> bool:
-    """Добавляет запись в память. Возвращает True если добавлено, False если дубликат/пусто."""
-    content = (content or "").strip()
-    if not content:
-        return False
-
-    h = _content_hash(content)
-
-    with sqlite3.connect(DB_PATH) as conn:
-        # Проверка дубликата по хешу
-        if deduplicate:
-            existing = conn.execute(
-                "SELECT id FROM memories WHERE content_hash = ? AND profile_name = ? LIMIT 1",
-                (h, profile_name),
-            ).fetchone()
-            if existing:
-                return False
-
-        conn.execute(
-            "INSERT INTO memories (content, source, created_at, pinned, memory_type, profile_name, content_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (content, source, datetime.now().isoformat(timespec="seconds"),
-             int(pinned), memory_type, profile_name, h),
-        )
-        conn.commit()
-    return True
+    return _app_add_memory(
+        db_path=str(DB_PATH),
+        content_hash_func=_content_hash,
+        now_iso_func=lambda: datetime.now().isoformat(timespec="seconds"),
+        content=content,
+        source=source,
+        pinned=pinned,
+        memory_type=memory_type,
+        profile_name=profile_name,
+        deduplicate=deduplicate,
+    )
 
 
 def load_memories(limit: int = 500, only_pinned: bool = False, profile_name: str = ""):
-    with sqlite3.connect(DB_PATH) as conn:
-        sql = "SELECT id, content, source, created_at, pinned, memory_type, profile_name FROM memories"
-        clauses, params = [], []
-        if only_pinned:
-            clauses.append("pinned = 1")
-        if profile_name:
-            clauses.append("profile_name = ?")
-            params.append(profile_name)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-        return conn.execute(sql, tuple(params)).fetchall()
+    return _app_load_memories(
+        db_path=str(DB_PATH),
+        limit=limit,
+        only_pinned=only_pinned,
+        profile_name=profile_name,
+    )
 
 
 def delete_memory(memory_id: int):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        conn.commit()
+    _app_delete_memory(db_path=str(DB_PATH), memory_id=memory_id)
 
 
 def clear_memories(profile_name: str = ""):
-    with sqlite3.connect(DB_PATH) as conn:
-        if profile_name:
-            conn.execute("DELETE FROM memories WHERE profile_name = ?", (profile_name,))
-        else:
-            conn.execute("DELETE FROM memories")
-        conn.commit()
+    _app_clear_memories(db_path=str(DB_PATH), profile_name=profile_name)
 
 
 def set_memory_pin(memory_id: int, pinned: bool):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("UPDATE memories SET pinned = ? WHERE id = ?", (int(pinned), memory_id))
-        conn.commit()
+    _app_set_memory_pin(db_path=str(DB_PATH), memory_id=memory_id, pinned=pinned)
 
 
 def export_memories(profile_name: str = "") -> str:
-    rows = load_memories(5000, profile_name=profile_name)
-    payload = [
-        {"id": rid, "content": content, "source": source, "created_at": created_at,
-         "pinned": pinned, "memory_type": memory_type, "profile_name": prof}
-        for rid, content, source, created_at, pinned, memory_type, prof in rows
-    ]
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return _app_export_memories(
+        profile_name=profile_name,
+        load_memories_func=load_memories,
+    )
 
 
 def import_memories_from_json(text: str, max_items: int = 2000):
-    data = json.loads(text)
-    if not isinstance(data, list):
-        raise ValueError("JSON должен быть списком объектов")
-    if len(data) > max_items:
-        raise ValueError(f"Слишком много записей: {len(data)} > {max_items}")
-    for item in data:
-        content = str(item.get("content", "")).strip()[:10000]
-        if content:
-            add_memory(
-                content=content,
-                source=str(item.get("source", "import"))[:64],
-                pinned=bool(item.get("pinned", False)),
-                memory_type=str(item.get("memory_type", "general"))[:32],
-                profile_name=str(item.get("profile_name", ""))[:64],
-            )
+    _app_import_memories_from_json(
+        text=text,
+        add_memory_func=add_memory,
+        max_items=max_items,
+    )
 
 
 
