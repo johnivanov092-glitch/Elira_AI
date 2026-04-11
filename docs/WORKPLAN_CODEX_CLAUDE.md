@@ -133,11 +133,17 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-10 21:31:17 +05:00` | `DONE` | Left `core/agents.py` on thin compatibility facades for `_goal_keywords`, `_extract_page_payload`, `_collect_links`, `_score_link`, `_rank_links`, and `run_browser_agent` while freezing the old inline implementations. |
 | `2026-04-10 21:31:17 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/domain/tools/browser_agent_tool.py`, `core/agents.py`, and `domain/agents/planner.py` on the preserved `run_browser_agent` import path. |
 | `2026-04-10 21:31:17 +05:00` | `NEXT` | Extract the next bounded slice from `agents_service.py` or `core/agents.py`: monitoring/finalization emission or the next runtime helper cluster that stays compatibility-safe. |
+| `2026-04-11 00:30:00 +05:00` | `DONE` | [Claude Code] Created `domain/agents/reflection.py` (~240 lines) — reflect_and_improve_answer, reflection_v2, count_false_flags, regenerate_answer_from_context, safe_json_object, get_fallback_node_v8, run_graph_with_retry_v8 (Master Plan Task 7 continuation). |
+| `2026-04-11 00:30:00 +05:00` | `DONE` | [Claude Code] Created `domain/agents/orchestrator.py` (~470 lines) — run_agent_v8 (graph-based strategy dispatch with memory/KB/tool hints/reflection), run_self_improving_agent (iterative critique+improve loop). |
+| `2026-04-11 00:30:00 +05:00` | `DONE` | [Claude Code] Rewired core/agents.py: reflection_v2, _safe_json_object, _count_false_flags, regenerate_answer_from_context, get_fallback_node_v8, run_graph_with_retry_v8, reflect_and_improve_answer, run_agent_v8, run_self_improving_agent as thin facades. core/agents.py reduced from 3029 to 2146 lines (-880 lines). |
+| `2026-04-11 00:30:00 +05:00` | `DONE` | [Claude Code] Re-verified compile/import health for all domain/agents modules: reflection.py, orchestrator.py, planner.py, router.py, and core/agents.py. |
+| `2026-04-11 00:30:00 +05:00` | `NEXT` | core/agents.py remaining non-facade code: execute_python_with_capture, self_heal_python_code, generate_file_code, run_build_loop (~350 lines python lab), image generation (~250 lines), persist_web_knowledge (~100 lines), run_multi_agent (thin wrapper to workflow_engine). Next target: extract image generation or python lab into domain modules. |
 
 ## 8. Commit Ledger
 
 | Branch | Short SHA | Title | Merged state | Note |
 | --- | --- | --- | --- | --- |
+| `claude/refactor-master-plan` | `23520b1` | `refactor(agents): extract reflection and orchestrator into domain modules` | `pushed to origin` | Task 7 final — reflection.py (~240 lines) + orchestrator.py (~470 lines), core/agents.py 3029→2146 lines |
 | `main`, `origin/main`, `codex/workplan-codex-claude`, `feat/agent-os-phase2-tools`, `claude/zealous-goldwasser` | `755072177138` | `feat(agent-os): Phase 2 — Tool Registry with JSON Schema` | `current HEAD` | Shared current tip; Phase 2 status still needs reconciliation against the legacy workplan |
 | `historical mainline` | `283345d` | `feat(agent-os): finish phase 5 monitoring dashboard` | `present in docs history` | UI/dashboard completion for Agent OS monitoring |
 | `historical mainline` | `2b44a67` | `feat(agent-os): add phase 5 monitoring backend` | `present in docs history` | Backend half of Agent OS monitoring |
