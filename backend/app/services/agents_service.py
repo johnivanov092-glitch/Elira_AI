@@ -31,6 +31,7 @@ from app.application.chat.agent_os import (
     resolve_agent_os_source_id as _app_resolve_agent_os_source_id,
 )
 from app.application.chat.finalization import (
+    finalize_chat_failure as _app_finalize_chat_failure,
     finalize_chat_success as _app_finalize_chat_success,
     finalize_stream_success as _app_finalize_stream_success,
 )
@@ -2084,51 +2085,43 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
                 "sandbox_details": exc.details,
             },
         }
-        _HISTORY.finish_run(run["run_id"], err)
         _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
+        _app_finalize_chat_failure(
+            history_service=_HISTORY,
             run_id=run["run_id"],
-            route=locals().get("route", ""),
+            profile_name=profile_name,
             model_name=locals().get("effective_model", model_name),
-            ok=False,
+            route=locals().get("route", ""),
+            error_text=str(exc),
             duration_ms=_duration_ms,
             streaming=False,
             num_ctx=num_ctx,
-            selected_tools=locals().get("selected", []),
-        )
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
+            agent_id=_effective_agent_id,
             source_agent_id=_agent_os_source_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": locals().get("route", ""),
-                "ok": False,
-                "model_used": locals().get("effective_model", model_name),
-                "duration_ms": _duration_ms,
-                "error": str(exc)[:500],
-                "session_id": str(session_id or ""),
-                "streaming": False,
-            },
+            session_id=str(session_id or ""),
+            selected_tools=locals().get("selected", []),
+            history_payload=err,
         )
         return err
     except Exception as exc:
         err = {"ok": False, "answer": "", "timeline": timeline + [{"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)}], "tool_results": tool_results, "meta": {"error": str(exc), "run_id": run["run_id"]}}
-        _HISTORY.finish_run(run["run_id"], err)
         _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
 
-        # Agent OS: записываем ошибочный запуск
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
+        _app_finalize_chat_failure(
+            history_service=_HISTORY,
             run_id=run["run_id"],
-            route=locals().get("route", ""),
+            profile_name=profile_name,
             model_name=locals().get("effective_model", model_name),
-            ok=False,
+            route=locals().get("route", ""),
+            error_text=str(exc),
             duration_ms=_duration_ms,
             streaming=False,
             num_ctx=num_ctx,
+            agent_id=_effective_agent_id,
+            source_agent_id=_agent_os_source_id,
+            session_id=str(session_id or ""),
             selected_tools=locals().get("selected", []),
+            history_payload=err,
         )
         if agent_id or _registry_agent:
             try:
@@ -2145,22 +2138,6 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
                 })
             except Exception:
                 pass
-
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
-            source_agent_id=_agent_os_source_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": locals().get("route", ""),
-                "ok": False,
-                "model_used": locals().get("effective_model", model_name),
-                "duration_ms": _duration_ms,
-                "error": str(exc)[:500],
-                "session_id": str(session_id or ""),
-                "streaming": False,
-            },
-        )
 
         return err
 
@@ -2432,31 +2409,20 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 selected_tools=selected,
             )
     except Exception as exc:
-        _HISTORY.finish_run(run["run_id"], {"ok": False, "error": str(exc)})
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
+        _app_finalize_chat_failure(
+            history_service=_HISTORY,
             run_id=run["run_id"],
-            route=locals().get("route", ""),
+            profile_name=profile_name,
             model_name=locals().get("effective_model", model_name),
-            ok=False,
+            route=locals().get("route", ""),
+            error_text=str(exc),
             duration_ms=int((_time.monotonic() - _agent_start) * 1000),
             streaming=True,
             num_ctx=num_ctx,
-            selected_tools=locals().get("selected", []),
-        )
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
+            agent_id=_effective_agent_id,
             source_agent_id=_effective_agent_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": locals().get("route", ""),
-                "ok": False,
-                "model_used": locals().get("effective_model", model_name),
-                "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                "error": str(exc)[:500],
-                "session_id": str(session_id or ""),
-                "streaming": True,
-            },
+            session_id=str(session_id or ""),
+            selected_tools=locals().get("selected", []),
+            history_payload={"ok": False, "error": str(exc)},
         )
         yield {"token": "", "done": True, "error": str(exc), "full_text": ""}

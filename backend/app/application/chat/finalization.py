@@ -128,3 +128,49 @@ def finalize_stream_success(
         cached=cached,
     )
     return build_stream_done_event(full_text=full_text, meta=meta, timeline=timeline)
+
+
+def finalize_chat_failure(
+    *,
+    history_service: Any,
+    run_id: str,
+    profile_name: str,
+    model_name: str,
+    route: str,
+    error_text: str,
+    duration_ms: int,
+    streaming: bool,
+    num_ctx: int,
+    agent_id: str,
+    source_agent_id: str,
+    session_id: str,
+    selected_tools: list[str] | None,
+    history_payload: dict[str, Any],
+) -> None:
+    history_service.finish_run(run_id, history_payload)
+    record_agent_os_monitoring(
+        agent_id=agent_id,
+        run_id=run_id,
+        route=route,
+        model_name=model_name,
+        ok=False,
+        duration_ms=duration_ms,
+        streaming=streaming,
+        num_ctx=num_ctx,
+        selected_tools=selected_tools,
+    )
+    emit_agent_os_event(
+        event_type="agent.run.completed",
+        source_agent_id=source_agent_id,
+        payload={
+            "run_id": run_id,
+            "profile_name": profile_name,
+            "route": route,
+            "ok": False,
+            "model_used": model_name,
+            "duration_ms": duration_ms,
+            "error": error_text[:500],
+            "session_id": session_id,
+            "streaming": streaming,
+        },
+    )
