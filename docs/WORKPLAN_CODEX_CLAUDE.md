@@ -173,6 +173,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 16:00:00 +05:00` | `DONE` | [Claude Code] Removed dead `_collect_context_legacy` (69 lines) and `_strip_frontend_project_context_legacy` (14 lines) — never called, replaced by modern `_collect_context` -> `build_chat_context`. agents_service.py: 1075 -> 996 lines. |
 | `2026-04-11 16:00:00 +05:00` | `DONE` | [Claude Code] Final monolith sizes: `core/agents.py` 573 lines (pure facades), `agents_service.py` 996 lines (orchestration + facades). Combined reduction: 5343 -> 1569 lines (71% reduction). All 16 extracted modules verified. |
 | `2026-04-11 16:00:00 +05:00` | `NEXT` | agents_service.py remaining structure: `run_agent` (261 lines) + `run_agent_stream` (280 lines) core orchestrators + ~455 lines of helpers/facades. Next targets: extract prompt-building cluster (`_build_prompt`, `_compose_human_style_rules`, datetime context) into `application/chat/prompt_builder.py`, or DRY-refactor `run_agent`/`run_agent_stream` shared initialization. |
+| `2026-04-11 15:58:45 +05:00` | `DONE` | Integrated Claude cleanup/autoskills line onto the shared branch via cherry-pick: `28312e1`, `4e3282b`, `122a61c`, `f7d14f1`. Shared branch now contains the monolith cleanup, `application/chat/auto_skills.py`, and the latest `agents_service.py` dead-code removals. |
+| `2026-04-11 15:58:45 +05:00` | `DONE` | Added `backend/app/application/chat/prompting.py` and moved prompt-building, runtime datetime context, human-style answer rules, skill-result attachment parsing, and attachment rendering out of `services/agents_service.py`. |
+| `2026-04-11 15:58:45 +05:00` | `DONE` | Left `services/agents_service.py` on thin compatibility facades for `_compose_human_style_rules`, `_wants_explicit_datetime_answer`, `_build_runtime_datetime_context`, `_build_prompt`, and `_get_and_clear_attachments`; generated-file detection now reads from application-layer attachment state. |
+| `2026-04-11 15:58:45 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer response guards / memory recall helpers or DRY-refactor shared `run_agent`/`run_agent_stream` initialization before touching broader orchestration. |
 
 ## 8. Commit Ledger
 
@@ -180,6 +184,10 @@ Single live coordination document for Claude/Codex refactor work.
 | --- | --- | --- | --- | --- |
 | `codex/refactor-arch-foundation` | `1ca4dba` | `refactor(agents): extract reflection and orchestrator into domain modules` | `cherry-picked onto shared branch` | Claude extraction integrated into the branch that both agents can see |
 | `codex/refactor-arch-foundation` | `dd5a7a4` | `docs: update WORKPLAN with reflection/orchestrator extraction progress` | `cherry-picked onto shared branch` | Carries Claude's worklog entries into the shared branch |
+| `codex/refactor-arch-foundation` | `28312e1` | `cleanup: remove all frozen copies and unused imports from monoliths` | `cherry-picked onto shared branch` | Claude cleanup commit integrated after Codex extracted the active paths |
+| `codex/refactor-arch-foundation` | `4e3282b` | `refactor(chat): extract auto-skills and file generation into application module` | `cherry-picked onto shared branch` | Shared branch now carries `application/chat/auto_skills.py` |
+| `codex/refactor-arch-foundation` | `122a61c` | `cleanup: remove dead inline web-search code from agents_service.py` | `cherry-picked onto shared branch` | Removed overridden inline search code after Codex moved search into infrastructure |
+| `codex/refactor-arch-foundation` | `f7d14f1` | `cleanup: remove dead legacy code from agents_service.py` | `cherry-picked onto shared branch` | Removed dead legacy context helpers after Codex wired the modern facades |
 | `claude/refactor-master-plan` | `23520b1` | `refactor(agents): extract reflection and orchestrator into domain modules` | `pushed to origin` | Task 7 final — reflection.py (~240 lines) + orchestrator.py (~470 lines), core/agents.py 3029→2146 lines |
 | `main`, `origin/main`, `codex/workplan-codex-claude`, `feat/agent-os-phase2-tools`, `claude/zealous-goldwasser` | `755072177138` | `feat(agent-os): Phase 2 — Tool Registry with JSON Schema` | `current HEAD` | Shared current tip; Phase 2 status still needs reconciliation against the legacy workplan |
 | `historical mainline` | `283345d` | `feat(agent-os): finish phase 5 monitoring dashboard` | `present in docs history` | UI/dashboard completion for Agent OS monitoring |
@@ -215,7 +223,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Re-evaluate the next smallest slice out of `core/agents.py` after python-lab extraction | `codex/refactor-arch-foundation` | Prefer another isolated runtime helper only if Claude has not introduced overlapping shared-branch edits |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` after prompt/runtime extraction | `codex/refactor-arch-foundation` | Prefer response guards, memory recall helpers, or shared `run_agent`/`run_agent_stream` initialization from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

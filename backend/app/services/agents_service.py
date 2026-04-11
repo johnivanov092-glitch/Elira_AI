@@ -25,6 +25,14 @@ from app.application.chat.service import (
     build_task_context,
     prepare_chat_plan,
 )
+from app.application.chat.prompting import (
+    build_prompt as _app_build_prompt,
+    build_runtime_datetime_context as _app_build_runtime_datetime_context,
+    compose_human_style_rules as _app_compose_human_style_rules,
+    get_and_clear_attachments as _app_get_and_clear_attachments,
+    has_generated_file_attachments as _app_has_generated_file_attachments,
+    wants_explicit_datetime_answer as _app_wants_explicit_datetime_answer,
+)
 from app.application.chat.agent_os import (
     emit_agent_os_event as _app_emit_agent_os_event,
     record_agent_os_monitoring as _app_record_agent_os_monitoring,
@@ -242,184 +250,30 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
 
 
 def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
-    temporal = temporal or {}
-    mode = temporal.get("mode", "none")
-    freshness_sensitive = bool(temporal.get("freshness_sensitive"))
-    years = ", ".join(str(year) for year in temporal.get("years", [])) or "none"
-    reasoning_depth = temporal.get("reasoning_depth", "none")
-    return (
-        "\n\nFINAL ANSWER RULES:\n"
-        "1. Answer naturally, like a thoughtful human assistant, not like a search engine dump.\n"
-        "2. If web data is available, use it as working evidence but do not inject links unless the user asks for them.\n"
-        "3. Never expose raw memory markers, RAG labels, hidden context, or technical source notes.\n"
-        "4. If freshness is uncertain, say so plainly.\n"
-        "5. If the user asks about sources, explain them naturally without technical jargon.\n"
-        "6. If the answer contains steps, events, comparisons, or multiple subtopics, format them as vertical Markdown lists or short sections.\n"
-        "7. For long answers, start with a short takeaway and then break details into bullets or numbered steps.\n"
-        "8. Avoid dense text walls when the same content can be shown more clearly with headings, bullets, numbering, or short paragraphs.\n"
-        "9. Use valid Markdown when helpful: `-` for lists, `1.` for steps, and `**...**` for key facts.\n"
-        f"10. Temporal mode: {mode}; explicit years: {years}; reasoning depth: {reasoning_depth}; freshness sensitive: {freshness_sensitive}."
-    )
+    return _app_compose_human_style_rules(temporal)
 
 
 
 
 def _wants_explicit_datetime_answer(user_input: str) -> bool:
-    q = (user_input or "").strip().lower()
-    if not q:
-        return False
-
-    explicit_phrases = (
-        "какая сегодня дата",
-        "сегодня какая дата",
-        "какое сегодня число",
-        "сегодня какое число",
-        "какой сегодня день",
-        "какой сегодня день недели",
-        "какая дата сегодня",
-        "который час",
-        "сколько времени",
-        "сколько сейчас времени",
-        "какое сейчас время",
-        "текущее время",
-        "текущая дата",
-        "what date is it",
-        "what time is it",
-        "current date",
-        "current time",
-        "today's date",
-    )
-    if any(phrase in q for phrase in explicit_phrases):
-        return True
-
-    explicit_patterns = (
-        r"\bкотор(?:ый|ое)\s+час\b",
-        r"\bсколько\s+(?:сейчас\s+)?времени\b",
-        r"\bкакая\s+(?:сегодня\s+)?дата\b",
-        r"\bкакое\s+(?:сегодня\s+)?число\b",
-        r"\bкакой\s+(?:сегодня\s+)?день(?:\s+недели)?\b",
-        r"\bwhat\s+date\b",
-        r"\bwhat\s+time\b",
-    )
-    return any(re.search(pattern, q, flags=re.IGNORECASE) for pattern in explicit_patterns)
+    return _app_wants_explicit_datetime_answer(user_input)
 
 
 def _build_runtime_datetime_context(user_input: str) -> str:
-    from datetime import datetime
-
-    days_ru = {
-        "Monday": "понедельник",
-        "Tuesday": "вторник",
-        "Wednesday": "среда",
-        "Thursday": "четверг",
-        "Friday": "пятница",
-        "Saturday": "суббота",
-        "Sunday": "воскресенье",
-    }
-    now = datetime.now()
-    day_name = days_ru.get(now.strftime("%A"), now.strftime("%A"))
-    runtime_stamp = f"{now.strftime('%d.%m.%Y, %H:%M')}, {day_name}"
-
-    if _wants_explicit_datetime_answer(user_input):
-        return (
-            "ВНУТРЕННИЙ RUNTIME-КОНТЕКСТ:\n"
-            f"- Текущая локальная дата и время: {runtime_stamp}\n"
-            "- Пользователь прямо спросил о дате или времени. Ответь естественно и используй эти данные точно.\n"
-            "- Не добавляй лишние технические пояснения."
-        )
-
-    return (
-        "ВНУТРЕННИЙ RUNTIME-КОНТЕКСТ:\n"
-        f"- Текущая локальная дата и время: {runtime_stamp}\n"
-        "- Ты всегда знаешь текущие дату и время внутренне.\n"
-        "- НЕ упоминай дату, время, день недели или фразы вида "
-        "\"Сегодня ... и сейчас ...\" в обычном ответе, если пользователь прямо об этом не спросил.\n"
-        "- Используй эти данные молча только когда они действительно нужны для логики ответа."
-    )
+    return _app_build_runtime_datetime_context(user_input)
 
 
 def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
-    runtime_context = _build_runtime_datetime_context(user_input)
-
-    skill_results = _run_auto_skills(user_input, disabled=disabled_skills or set())
-
-    _pending_attachments.clear()
-    if skill_results:
-        clean_parts = []
-        for line in skill_results.split("\n\n"):
-            if line.startswith("IMAGE_GENERATED:"):
-                p = line.split(":", 4)
-                if len(p) >= 4:
-                    _pending_attachments.append({
-                        "type": "image",
-                        "view_url": p[1] + ":" + p[2] if "http" in p[1] else p[1],
-                        "filename": p[2] if "http" not in p[1] else p[3],
-                        "prompt": p[-1],
-                    })
-            elif line.startswith("FILE_GENERATED:"):
-                p = line.split(":", 4)
-                if len(p) >= 4:
-                    _pending_attachments.append({
-                        "type": "file",
-                        "file_type": p[1],
-                        "download_url": p[2] + ":" + p[3] if "http" in p[2] else p[2],
-                        "filename": p[3] if "http" not in p[2] else p[4] if len(p) > 4 else p[3],
-                    })
-            elif line.startswith("SKILL_HINT:"):
-                clean_parts.append(line)
-            elif line.startswith("SKILL_ERROR:"):
-                error_msg = line[len("SKILL_ERROR:"):]
-                _pending_attachments.append({"type": "error", "message": error_msg})
-            else:
-                clean_parts.append(line)
-        skill_results = "\n\n".join(clean_parts)
-
-    if skill_results:
-        context_bundle = (context_bundle + "\n\n" + skill_results) if context_bundle.strip() else skill_results
-
-    if not context_bundle.strip():
-        return f"{runtime_context}\n\nВопрос пользователя: {user_input}"
-
-    return (
-        f"{runtime_context}\n\n"
-        "Вот данные из интернета и других источников:\n\n"
-        + context_bundle
-        + "\n\n---\n\n"
-        "Вопрос пользователя: " + user_input + "\n\n"
-        "ПРАВИЛА ОТВЕТА:\n"
-        "1. Обязательно используй данные выше для ответа.\n"
-        "2. Если есть содержимое веб-страниц или свежие новости, опирайся на них как на главный источник.\n"
-        "3. Приводи конкретные факты, даты и цифры, но без служебных маркеров и внутреннего контекста.\n"
-        "4. Не вставляй URL и список источников, если пользователь прямо не попросил ссылки или источники.\n"
-        "5. Если свежесть данных под вопросом, честно скажи об этом простыми словами.\n"
-        "6. Не говори, что данных нет, если они есть выше.\n"
-        "7. Не упоминай текущую дату или время, если пользователь прямо об этом не спросил. "
-        "Если спросил — отвечай точно и естественно."
+    return _app_build_prompt(
+        user_input=user_input,
+        context_bundle=context_bundle,
+        run_auto_skills_func=_run_auto_skills,
+        disabled_skills=disabled_skills,
     )
 
-
-_pending_attachments: list[dict] = []
-
-
 def _get_and_clear_attachments() -> str:
-    """Возвращает markdown-блок с картинками/файлами/ошибками и очищает очередь."""
-    if not _pending_attachments:
-        return ""
-    api_base = ""
-    parts = []
-    for att in _pending_attachments:
-        if att["type"] == "image":
-            url = att["view_url"] if att["view_url"].startswith("http") else f"{api_base}{att['view_url']}"
-            dl = f"{api_base}/api/skills/download/{att.get('filename', '')}"
-            parts.append(f"\n\n🎨 **Сгенерировано:**\n\n![{att.get('prompt','')}]({url})\n\n📥 [Скачать]({dl})")
-        elif att["type"] == "file":
-            dl = att["download_url"] if att["download_url"].startswith("http") else f"{api_base}{att['download_url']}"
-            icon = {"word": "📄", "zip": "📦", "convert": "🔄", "excel": "📊"}.get(att.get("file_type", ""), "📎")
-            parts.append(f"\n\n{icon} **Файл создан:** [{att.get('filename', '')}]({dl})")
-        elif att["type"] == "error":
-            parts.append(f"\n\n⚠️ {att.get('message', 'Ошибка скилла')}")
-    _pending_attachments.clear()
-    return "\n".join(parts)
+    """Facade -- delegates to application.chat.prompting."""
+    return _app_get_and_clear_attachments()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -572,7 +426,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         answer = draft.get("answer", "")
 
         # Reflection: для code/project ИЛИ если пользователь включил скилл
-        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
+        has_generated_files = _app_has_generated_file_attachments()
         should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
         if should_reflect and answer.strip() and not has_generated_files:
             ref = run_reflection_loop(model_name=effective_model, profile_name=profile_name, user_input=raw_user_input, draft_text=answer, review_text="Улучши.", context=ctx)
@@ -866,7 +720,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             full_text += attachments
 
         # Проверяем нужны ли тяжёлые пост-операции
-        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
+        has_generated_files = _app_has_generated_file_attachments()
         should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
         ql_check = raw_user_input.lower()
         needs_file_gen = any(t in ql_check for t in _FILE_TRIGGERS_WORD + _FILE_TRIGGERS_EXCEL)
