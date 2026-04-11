@@ -139,10 +139,17 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 00:30:00 +05:00` | `DONE` | [Claude Code] Re-verified compile/import health for all domain/agents modules: reflection.py, orchestrator.py, planner.py, router.py, and core/agents.py. |
 | `2026-04-11 00:30:00 +05:00` | `NEXT` | core/agents.py remaining non-facade code: execute_python_with_capture, self_heal_python_code, generate_file_code, run_build_loop (~350 lines python lab), image generation (~250 lines), persist_web_knowledge (~100 lines), run_multi_agent (thin wrapper to workflow_engine). Next target: extract image generation or python lab into domain modules. |
 
+| `2026-04-11 10:42:31 +05:00` | `DONE` | Integrated Claude's `reflection/orchestrator` extraction into `codex/refactor-arch-foundation` via cherry-pick so the shared branch now contains `backend/app/domain/agents/reflection.py`, `backend/app/domain/agents/orchestrator.py`, and the matching `core/agents.py` facades. |
+| `2026-04-11 10:42:31 +05:00` | `DONE` | Added `backend/app/application/chat/agent_os.py` and moved Agent OS source-id resolution, event-bus emission, and monitoring metric recording out of `services/agents_service.py`. |
+| `2026-04-11 10:42:31 +05:00` | `DONE` | Left `services/agents_service.py` on thin compatibility facades for `_resolve_agent_os_source_id`, `_emit_agent_os_event`, and `_record_agent_os_monitoring`; re-verified compile/import health for the new `application/chat/agent_os.py` path. |
+| `2026-04-11 10:42:31 +05:00` | `NEXT` | Continue the next bounded extraction on the shared branch: finish remaining `agents_service.py` finalization helpers or take the next `core/agents.py` runtime cluster (`python lab` or image generation), whichever stays lower-risk after Claude's latest changes. |
+
 ## 8. Commit Ledger
 
 | Branch | Short SHA | Title | Merged state | Note |
 | --- | --- | --- | --- | --- |
+| `codex/refactor-arch-foundation` | `1ca4dba` | `refactor(agents): extract reflection and orchestrator into domain modules` | `cherry-picked onto shared branch` | Claude extraction integrated into the branch that both agents can see |
+| `codex/refactor-arch-foundation` | `dd5a7a4` | `docs: update WORKPLAN with reflection/orchestrator extraction progress` | `cherry-picked onto shared branch` | Carries Claude's worklog entries into the shared branch |
 | `claude/refactor-master-plan` | `23520b1` | `refactor(agents): extract reflection and orchestrator into domain modules` | `pushed to origin` | Task 7 final — reflection.py (~240 lines) + orchestrator.py (~470 lines), core/agents.py 3029→2146 lines |
 | `main`, `origin/main`, `codex/workplan-codex-claude`, `feat/agent-os-phase2-tools`, `claude/zealous-goldwasser` | `755072177138` | `feat(agent-os): Phase 2 — Tool Registry with JSON Schema` | `current HEAD` | Shared current tip; Phase 2 status still needs reconciliation against the legacy workplan |
 | `historical mainline` | `283345d` | `feat(agent-os): finish phase 5 monitoring dashboard` | `present in docs history` | UI/dashboard completion for Agent OS monitoring |
@@ -178,7 +185,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after browser traversal extraction | `codex/refactor-arch-foundation` | Prefer monitoring/finalization emission or another isolated runtime helper cluster while keeping the legacy facades thin |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after Agent OS monitoring extraction | `codex/refactor-arch-foundation` | Prefer remaining finalization helpers in `agents_service.py` or the next isolated `core/agents.py` runtime cluster (`python lab` or image generation) |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
