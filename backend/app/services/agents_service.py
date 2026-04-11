@@ -39,6 +39,11 @@ from app.application.chat.memory_policy import (
     should_recall_memory_context as _app_should_recall_memory_context,
     trim_history as _app_trim_history,
 )
+from app.application.chat.post_processing import (
+    apply_identity_guard as _app_apply_identity_guard,
+    apply_provenance_guard as _app_apply_provenance_guard,
+    maybe_auto_exec_python as _app_maybe_auto_exec_python,
+)
 from app.application.chat.agent_os import (
     emit_agent_os_event as _app_emit_agent_os_event,
     record_agent_os_monitoring as _app_record_agent_os_monitoring,
@@ -69,9 +74,7 @@ from app.services.agent_sandbox import (
     resolve_effective_agent_id,
 )
 from app.services.chat_service import run_chat, run_chat_stream
-from app.services.identity_guard import guard_identity_response
 from app.services.planner_v2_service import PlannerV2Service
-from app.services.provenance_guard import guard_provenance_response
 from app.services.reflection_loop_service import run_reflection_loop
 from app.services.run_history_service import RunHistoryService
 from app.services.temporal_intent import detect_temporal_intent
@@ -104,16 +107,20 @@ def _tl(timeline, step, title, status, detail):
 
 
 def _apply_identity_guard(user_input: str, answer_text: str, timeline: list[dict[str, Any]]):
-    guard = guard_identity_response(user_input, answer_text, persona_name="Elira")
-    if guard.get("changed"):
-        _tl(timeline, "identity_guard", "Идентичность Elira", "done", guard.get("reason", "identity_rewrite"))
-    return guard
+    return _app_apply_identity_guard(
+        user_input=user_input,
+        answer_text=answer_text,
+        append_timeline_func=_tl,
+        timeline=timeline,
+    )
 
 def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[dict[str, Any]]):
-    guard = guard_provenance_response(user_input, answer_text)
-    if guard.get("changed"):
-        _tl(timeline, "provenance_guard", "Ответ без служебных источников", "done", guard.get("reason", "source_hidden"))
-    return guard
+    return _app_apply_provenance_guard(
+        user_input=user_input,
+        answer_text=answer_text,
+        append_timeline_func=_tl,
+        timeline=timeline,
+    )
 
 
 def _resolve_agent_os_source_id(agent_id: str | None, registry_agent: dict[str, Any] | None) -> str:
@@ -178,41 +185,14 @@ def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
 
 
 
-_EXEC_TRIGGERS = ["запусти", "посчитай", "вычисли", "выполни", "рассчитай", "run", "execute", "calculate", "compute"]
-
-
 def _maybe_auto_exec_python(user_input, answer, timeline, enabled: bool = True):
-    """Если пользователь просил выполнить и ответ содержит Python — запускаем."""
-    if not enabled:
-        return answer
-    ql = user_input.lower()
-    if not any(t in ql for t in _EXEC_TRIGGERS):
-        return answer
-    import re as _re
-    match = _re.search(r"```python\n([\s\S]*?)```", answer)
-    if not match:
-        return answer
-    code = match.group(1).strip()
-    if not code or len(code) < 10:
-        return answer
-    try:
-        from app.services.python_runner import execute_python
-        result = execute_python(code)
-        _tl(timeline, "auto_exec", "Python exec", "done" if result.get("ok") else "error", "")
-        parts = ["\n\n**Результат выполнения:**"]
-        if result.get("ok"):
-            if result.get("stdout"):
-                parts.append("```\n" + result["stdout"].strip() + "\n```")
-            if result.get("locals"):
-                vars_str = ", ".join(f"{k}={v}" for k, v in result["locals"].items())
-                parts.append(f"Переменные: `{vars_str}`")
-            if not result.get("stdout") and not result.get("locals"):
-                parts.append("✓ Код выполнен без вывода")
-        else:
-            parts.append(f"❌ Ошибка: `{result.get('error', 'Unknown')}`")
-        return answer + "\n".join(parts)
-    except Exception:
-        return answer
+    return _app_maybe_auto_exec_python(
+        user_input=user_input,
+        answer=answer,
+        enabled=enabled,
+        append_timeline_func=_tl,
+        timeline=timeline,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════
