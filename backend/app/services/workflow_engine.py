@@ -24,6 +24,12 @@ from app.application.workflows.lifecycle import (
     merge_resumed_context as _app_merge_resumed_context,
     pause_after_step as _app_pause_after_step,
 )
+from app.application.workflows.step_results import (
+    build_step_completion_event as _app_build_step_completion_event,
+    build_step_result_from_exception as _app_build_step_result_from_exception,
+    capture_step_outcome as _app_capture_step_outcome,
+    should_pause_after_step as _app_should_pause_after_step,
+)
 from app.application.workflows.store import (
     create_workflow_run_record as _app_create_workflow_run_record,
     create_workflow_template as _app_create_workflow_template,
@@ -40,7 +46,6 @@ from app.application.workflows.store import (
     upsert_workflow_template as _app_upsert_workflow_template,
 )
 from app.core.data_files import sqlite_data_file
-from app.services.agent_sandbox import SandboxPolicyError, preflight_or_raise
 
 
 DB_PATH: Path = sqlite_data_file("workflow_engine.db")
@@ -310,26 +315,20 @@ def _execute_workflow_run(
                 step_results=step_results,
                 run_id=run_id,
             )
-        except SandboxPolicyError as exc:
-            step_result = {
-                "ok": False,
-                "error": str(exc),
-                "sandbox_reason": exc.reason,
-                "sandbox_details": exc.details,
-                "raw": {"ok": False, "error": str(exc)},
-            }
         except Exception as exc:
-            step_result = {
-                "ok": False,
-                "error": str(exc),
-                "raw": {"ok": False, "error": str(exc)},
-            }
+            step_result = _app_build_step_result_from_exception(exc)
         step_duration_ms = int((time.monotonic() - step_started) * 1000)
 
-        save_key = str(step.get("save_as") or current_step_id)
-        step_results[save_key] = step_result
-        success = bool(step_result.get("ok"))
-        next_step_id = _resolve_next_step(step, success=success)
+        step_outcome = _app_capture_step_outcome(
+            step,
+            current_step_id=current_step_id,
+            step_result=step_result,
+            step_results=step_results,
+            resolve_next_step=lambda current_step: _resolve_next_step(
+                current_step,
+                success=bool(step_result.get("ok")),
+            ),
+        )
         _record_workflow_step_state(
             step,
             workflow_id=run["workflow_id"],
@@ -338,29 +337,30 @@ def _execute_workflow_run(
             step_result=step_result,
             step_index=step_index,
             step_duration_ms=step_duration_ms,
-            next_step_id=next_step_id,
+            next_step_id=step_outcome.next_step_id,
             step_label=step_label,
         )
 
-        if success:
-            _emit_workflow_event("workflow.step.completed", run["workflow_id"], run_id, payload={"step_id": current_step_id, "save_as": save_key, "next_step_id": next_step_id or None})
-        else:
-            _emit_workflow_event("workflow.step.failed", run["workflow_id"], run_id, payload={"step_id": current_step_id, "error": step_result.get("error", ""), "next_step_id": next_step_id or None})
+        completion_event_type, completion_payload = _app_build_step_completion_event(
+            current_step_id=current_step_id,
+            outcome=step_outcome,
+            step_result=step_result,
+        )
+        _emit_workflow_event(completion_event_type, run["workflow_id"], run_id, payload=completion_payload)
 
-        should_pause = bool(step.get("pause_after")) or bool(step_result.get("pause_requested"))
-        if should_pause and success and next_step_id:
+        if _app_should_pause_after_step(step, step_result) and step_outcome.success and step_outcome.next_step_id:
             return _app_pause_after_step(
                 run_id=run_id,
                 workflow_id=run["workflow_id"],
                 current_step_id=current_step_id,
-                next_step_id=next_step_id,
+                next_step_id=step_outcome.next_step_id,
                 step_results=step_results,
                 update_workflow_run=_update_workflow_run,
                 record_workflow_run_state=_record_workflow_run_state,
                 emit_workflow_event=_emit_workflow_event,
             )
 
-        if not success and not next_step_id:
+        if not step_outcome.success and not step_outcome.next_step_id:
             return _app_fail_step_and_finish(
                 run_id=run_id,
                 workflow_id=run["workflow_id"],
@@ -373,7 +373,7 @@ def _execute_workflow_run(
                 now_func=_now,
             )
 
-        if not next_step_id:
+        if not step_outcome.next_step_id:
             return _app_complete_after_step(
                 run_id=run_id,
                 workflow_id=run["workflow_id"],
@@ -385,7 +385,7 @@ def _execute_workflow_run(
                 now_func=_now,
             )
 
-        current_step_id = next_step_id
+        current_step_id = step_outcome.next_step_id
         _app_advance_to_next_step(
             run_id=run_id,
             next_step_id=current_step_id,
