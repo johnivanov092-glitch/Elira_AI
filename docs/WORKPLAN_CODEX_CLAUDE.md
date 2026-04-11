@@ -143,6 +143,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 10:42:31 +05:00` | `DONE` | Added `backend/app/application/chat/agent_os.py` and moved Agent OS source-id resolution, event-bus emission, and monitoring metric recording out of `services/agents_service.py`. |
 | `2026-04-11 10:42:31 +05:00` | `DONE` | Left `services/agents_service.py` on thin compatibility facades for `_resolve_agent_os_source_id`, `_emit_agent_os_event`, and `_record_agent_os_monitoring`; re-verified compile/import health for the new `application/chat/agent_os.py` path. |
 | `2026-04-11 10:42:31 +05:00` | `NEXT` | Continue the next bounded extraction on the shared branch: finish remaining `agents_service.py` finalization helpers or take the next `core/agents.py` runtime cluster (`python lab` or image generation), whichever stays lower-risk after Claude's latest changes. |
+| `2026-04-11 10:49:01 +05:00` | `DONE` | Added `backend/app/application/chat/finalization.py` and moved the shared success-finalization path for `run_agent` / `run_agent_stream` into a dedicated application-layer helper. |
+| `2026-04-11 10:49:01 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse `finalize_chat_success` and `finalize_stream_success` for non-stream success, cached-stream success, and both stream completion branches while keeping the public response contract intact. |
+| `2026-04-11 10:49:01 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/finalization.py` and the updated `services/agents_service.py` success-finalization path. |
+| `2026-04-11 10:49:01 +05:00` | `NEXT` | Extract the next bounded helper slice from `agents_service.py`: error/failure finalization or another remaining post-processing cluster before moving on to `core/agents.py` python lab / image generation. |
 
 ## 8. Commit Ledger
 
@@ -185,7 +189,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after Agent OS monitoring extraction | `codex/refactor-arch-foundation` | Prefer remaining finalization helpers in `agents_service.py` or the next isolated `core/agents.py` runtime cluster (`python lab` or image generation) |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` or `core/agents.py` after success-finalization extraction | `codex/refactor-arch-foundation` | Prefer error/failure finalization in `agents_service.py` or the next isolated `core/agents.py` runtime cluster (`python lab` or image generation) |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

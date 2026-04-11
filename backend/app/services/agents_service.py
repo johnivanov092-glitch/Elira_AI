@@ -30,9 +30,11 @@ from app.application.chat.agent_os import (
     record_agent_os_monitoring as _app_record_agent_os_monitoring,
     resolve_agent_os_source_id as _app_resolve_agent_os_source_id,
 )
+from app.application.chat.finalization import (
+    finalize_chat_success as _app_finalize_chat_success,
+    finalize_stream_success as _app_finalize_stream_success,
+)
 from app.application.chat.stream_service import (
-    build_chat_meta,
-    build_stream_done_event,
     iter_text_stream_events,
 )
 from app.infrastructure.search.web_search import (
@@ -54,7 +56,6 @@ from app.services.agent_sandbox import (
 from app.services.chat_service import run_chat, run_chat_stream
 from app.services.identity_guard import guard_identity_response
 from app.services.planner_v2_service import PlannerV2Service
-from app.services.persona_service import observe_dialogue
 from app.services.provenance_guard import guard_provenance_response
 from app.services.reflection_loop_service import run_reflection_loop
 from app.services.run_history_service import RunHistoryService
@@ -2023,47 +2024,35 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
         answer = provenance_guard.get("text", answer)
 
-        persona_meta = observe_dialogue(
-            dialog_id=run["run_id"],
-            session_id=str(session_id or run["run_id"]),
+        _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
+        meta = _app_finalize_chat_success(
+            history_service=_HISTORY,
+            run_id=run["run_id"],
+            session_id=str(session_id or ""),
             profile_name=profile_name,
             model_name=effective_model,
+            route=route,
             user_input=raw_user_input,
             answer_text=answer,
-            route=route,
-            outcome_ok=True,
+            tools=selected,
+            temporal=temporal,
+            web_plan=web_plan,
+            identity_guard=identity_guard,
+            provenance_guard=provenance_guard,
+            duration_ms=_duration_ms,
+            streaming=False,
+            num_ctx=num_ctx,
+            agent_id=_effective_agent_id,
+            source_agent_id=_agent_os_source_id,
+            selected_tools=selected,
         )
         result = {
             "ok": True,
             "answer": answer,
             "timeline": timeline,
             "tool_results": tool_results,
-            "meta": build_chat_meta(
-                model_name=effective_model,
-                profile_name=profile_name,
-                route=route,
-                tools=selected,
-                run_id=run["run_id"],
-                temporal=temporal,
-                web_plan=web_plan,
-                persona=persona_meta,
-                identity_guard=identity_guard,
-                provenance_guard=provenance_guard,
-            ),
+            "meta": meta,
         }
-        _HISTORY.finish_run(run["run_id"], result)
-        _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
-            run_id=run["run_id"],
-            route=route,
-            model_name=effective_model,
-            ok=True,
-            duration_ms=_duration_ms,
-            streaming=False,
-            num_ctx=num_ctx,
-            selected_tools=selected,
-        )
 
         # Agent OS: записываем запуск в реестр
         if agent_id or _registry_agent:
@@ -2081,21 +2070,6 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
                 })
             except Exception:
                 pass
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
-            source_agent_id=_agent_os_source_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": route,
-                "ok": True,
-                "model_used": effective_model,
-                "duration_ms": _duration_ms,
-                "session_id": str(session_id or ""),
-                "streaming": False,
-            },
-        )
-
         return result
     except SandboxPolicyError as exc:
         err = {
@@ -2273,59 +2247,33 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 cached = identity_guard.get("text", cached)
                 provenance_guard = _apply_provenance_guard(raw_user_input, cached, timeline)
                 cached = provenance_guard.get("text", cached)
-                persona_meta = observe_dialogue(
-                    dialog_id=run["run_id"],
-                    session_id=str(session_id or run["run_id"]),
-                    profile_name=profile_name,
-                    model_name=effective_model,
-                    user_input=raw_user_input,
-                    answer_text=cached,
-                    route=route,
-                    outcome_ok=True,
-                )
-                meta = build_chat_meta(
-                    model_name=effective_model,
-                    profile_name=profile_name,
-                    route=route,
-                    tools=[],
+                _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
+                done_event = _app_finalize_stream_success(
+                    history_service=_HISTORY,
                     run_id=run["run_id"],
+                    session_id=str(session_id or ""),
+                    profile_name=profile_name,
+                    model_name=effective_model,
+                    route=route,
+                    user_input=raw_user_input,
+                    full_text=cached,
+                    tools=[],
                     temporal=temporal,
                     web_plan=web_plan,
-                    persona=persona_meta,
                     identity_guard=identity_guard,
                     provenance_guard=provenance_guard,
-                    cached=True,
-                )
-                _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": cached, "meta": meta})
-                _record_agent_os_monitoring(
-                    agent_id=_effective_agent_id,
-                    run_id=run["run_id"],
-                    route=route,
-                    model_name=effective_model,
-                    ok=True,
-                    duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-                    streaming=True,
+                    duration_ms=_duration_ms,
                     num_ctx=num_ctx,
-                    selected_tools=selected,
-                )
-                _emit_agent_os_event(
-                    event_type="agent.run.completed",
+                    agent_id=_effective_agent_id,
                     source_agent_id=_effective_agent_id,
-                    payload={
-                        "run_id": run["run_id"],
-                        "profile_name": profile_name,
-                        "route": route,
-                        "ok": True,
-                        "model_used": effective_model,
-                        "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                        "session_id": str(session_id or ""),
-                        "streaming": True,
-                    },
+                    timeline=timeline,
+                    selected_tools=selected,
+                    cached=True,
                 )
                 # Стримим кэшированный ответ по токенам (выглядит естественно)
                 for token_event in iter_text_stream_events(cached):
                     yield token_event
-                yield build_stream_done_event(full_text=cached, meta=meta, timeline=timeline)
+                yield done_event
                 return
 
         # Умная память: извлекаем факты
@@ -2400,55 +2348,28 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                     set_cached(planner_input, effective_model, profile_name, full_text)
                 except Exception:
                     pass
-            persona_meta = observe_dialogue(
-                dialog_id=run["run_id"],
-                session_id=str(session_id or run["run_id"]),
-                profile_name=profile_name,
-                model_name=effective_model,
-                user_input=raw_user_input,
-                answer_text=full_text,
-                route=route,
-                outcome_ok=True,
-            )
-            meta = build_chat_meta(
-                model_name=effective_model,
-                profile_name=profile_name,
-                route=route,
-                tools=selected,
+            _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
+            yield _app_finalize_stream_success(
+                history_service=_HISTORY,
                 run_id=run["run_id"],
+                session_id=str(session_id or ""),
+                profile_name=profile_name,
+                model_name=effective_model,
+                route=route,
+                user_input=raw_user_input,
+                full_text=full_text,
+                tools=selected,
                 temporal=temporal,
                 web_plan=web_plan,
-                persona=persona_meta,
                 identity_guard=identity_guard,
                 provenance_guard=provenance_guard,
-            )
-            _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
-            _record_agent_os_monitoring(
-                agent_id=_effective_agent_id,
-                run_id=run["run_id"],
-                route=route,
-                model_name=effective_model,
-                ok=True,
-                duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-                streaming=True,
+                duration_ms=_duration_ms,
                 num_ctx=num_ctx,
+                agent_id=_effective_agent_id,
+                source_agent_id=_effective_agent_id,
+                timeline=timeline,
                 selected_tools=selected,
             )
-            _emit_agent_os_event(
-                event_type="agent.run.completed",
-                source_agent_id=_effective_agent_id,
-                payload={
-                    "run_id": run["run_id"],
-                    "profile_name": profile_name,
-                    "route": route,
-                    "ok": True,
-                    "model_used": effective_model,
-                    "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                    "session_id": str(session_id or ""),
-                    "streaming": True,
-                },
-            )
-            yield build_stream_done_event(full_text=full_text, meta=meta, timeline=timeline)
         else:
             # Тяжёлый путь — reflection и/или генерация файлов
             if should_reflect and full_text.strip() and not has_generated_files:
@@ -2488,55 +2409,28 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 except Exception:
                     pass
 
-            persona_meta = observe_dialogue(
-                dialog_id=run["run_id"],
-                session_id=str(session_id or run["run_id"]),
-                profile_name=profile_name,
-                model_name=effective_model,
-                user_input=raw_user_input,
-                answer_text=full_text,
-                route=route,
-                outcome_ok=True,
-            )
-            meta = build_chat_meta(
-                model_name=effective_model,
-                profile_name=profile_name,
-                route=route,
-                tools=selected,
+            _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
+            yield _app_finalize_stream_success(
+                history_service=_HISTORY,
                 run_id=run["run_id"],
+                session_id=str(session_id or ""),
+                profile_name=profile_name,
+                model_name=effective_model,
+                route=route,
+                user_input=raw_user_input,
+                full_text=full_text,
+                tools=selected,
                 temporal=temporal,
                 web_plan=web_plan,
-                persona=persona_meta,
                 identity_guard=identity_guard,
                 provenance_guard=provenance_guard,
-            )
-            _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
-            _record_agent_os_monitoring(
-                agent_id=_effective_agent_id,
-                run_id=run["run_id"],
-                route=route,
-                model_name=effective_model,
-                ok=True,
-                duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-                streaming=True,
+                duration_ms=_duration_ms,
                 num_ctx=num_ctx,
+                agent_id=_effective_agent_id,
+                source_agent_id=_effective_agent_id,
+                timeline=timeline,
                 selected_tools=selected,
             )
-            _emit_agent_os_event(
-                event_type="agent.run.completed",
-                source_agent_id=_effective_agent_id,
-                payload={
-                    "run_id": run["run_id"],
-                    "profile_name": profile_name,
-                    "route": route,
-                    "ok": True,
-                    "model_used": effective_model,
-                    "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                    "session_id": str(session_id or ""),
-                    "streaming": True,
-                },
-            )
-            yield build_stream_done_event(full_text=full_text, meta=meta, timeline=timeline)
     except Exception as exc:
         _HISTORY.finish_run(run["run_id"], {"ok": False, "error": str(exc)})
         _record_agent_os_monitoring(
