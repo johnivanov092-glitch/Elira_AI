@@ -179,19 +179,6 @@ def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
     return first_pair + recent
 
 
-def _strip_frontend_project_context_legacy(user_input: str) -> str:
-    """Убирает project-context, который фронт может дописывать к запросу.
-
-    Секцию "Файлы пользователя" не трогаем, чтобы не ломать анализ
-    загруженных файлов и библиотечный контекст.
-    """
-    text = user_input or ""
-    marker = "\n\nОткрыт проект:"
-    pos = text.find(marker)
-    if pos >= 0:
-        return text[:pos].rstrip()
-    return text
-
 
 _EXEC_TRIGGERS = ["запусти", "посчитай", "вычисли", "выполни", "рассчитай", "run", "execute", "calculate", "compute"]
 
@@ -448,72 +435,6 @@ _do_web_search = partial(_infra_do_web_search, tl=_tl)
 _do_temporal_web_search = partial(_infra_do_temporal_web_search, tl=_tl)
 
 
-def _collect_context_legacy(*, profile_name, user_input, tools, tool_results, timeline, use_reflection=False, temporal=None, web_plan=None):
-    parts = []
-    for tool_name in tools:
-        try:
-            if tool_name == "memory_search":
-                result = run_tool("search_memory", {"profile": profile_name, "query": user_input, "limit": 5})
-                tool_results.append({"tool": "search_memory", "result": result})
-                items = result.get("items", [])
-                _tl(timeline, "tool_memory", "Память", "done", str(result.get("count", 0)))
-                if items:
-                    parts.append("Из памяти:\n" + "\n".join("- " + i.get("text", "") for i in items))
-
-            elif tool_name == "library_context":
-                _tl(timeline, "tool_library", "Библиотека", "skip", "Фронтенд")
-
-            elif tool_name == "web_search":
-                web_ctx = _do_temporal_web_search(user_input, timeline, tool_results, temporal=temporal, web_plan=web_plan)
-                if web_ctx:
-                    parts.append(web_ctx)
-
-            elif tool_name == "project_mode":
-                project_ctx = ""
-                # Попытка 1: старый project_service
-                try:
-                    tree = run_tool("list_project_tree", {"max_depth": 3, "max_items": 200})
-                    search = run_tool("search_project", {"query": user_input, "max_hits": 20})
-                    tool_results.append({"tool": "project", "result": {"tree": tree.get("count", 0), "hits": search.get("count", 0)}})
-                    snippets = search.get("items") or search.get("results") or []
-                    if snippets:
-                        rendered = ["- " + (item.get("path","") + ": " + (item.get("snippet","") or item.get("preview","")) if isinstance(item,dict) else str(item)) for item in snippets[:10]]
-                        project_ctx = "Из проекта:\n" + "\n".join(rendered)
-                except Exception:
-                    pass
-
-                # Попытка 2: advanced project API (если открыт через UI)
-                if not project_ctx:
-                    try:
-                        from app.api.routes.advanced_routes import _project_path
-                        if _project_path:
-                            from pathlib import Path
-                            root = Path(_project_path)
-                            if root.exists():
-                                file_list = []
-                                for f in sorted(root.rglob("*"))[:50]:
-                                    if f.is_file() and not any(b in str(f) for b in [".git","node_modules","__pycache__",".venv","dist"]):
-                                        file_list.append(str(f.relative_to(root)))
-                                project_ctx = f"Открыт проект: {root.name}\nФайлы ({len(file_list)}):\n" + "\n".join("- " + f for f in file_list[:30])
-                    except Exception:
-                        pass
-
-                if project_ctx:
-                    parts.append(project_ctx)
-                    _tl(timeline, "tool_project", "Проект", "done", "Контекст загружен")
-                else:
-                    _tl(timeline, "tool_project", "Проект", "skip", "Не открыт")
-
-            elif tool_name == "python_executor":
-                _tl(timeline, "tool_python", "Python", "ready", "Выполнение по запросу")
-
-            elif tool_name == "project_patch":
-                _tl(timeline, "tool_patch", "Патчинг", "ready", "")
-
-        except Exception as exc:
-            _tl(timeline, "tool_" + tool_name, tool_name, "error", str(exc))
-
-    return "\n\n".join(p for p in parts if p.strip())
 
 
 # ═══════════════════════════════════════════════════════════════
