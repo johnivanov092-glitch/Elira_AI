@@ -20,6 +20,7 @@ from app.application.chat.context_builder import (
     strip_frontend_project_context as build_strip_frontend_project_context,
 )
 from app.application.chat.service import (
+    bootstrap_chat_run,
     build_disabled_skills,
     build_task_context,
     prepare_chat_plan,
@@ -300,8 +301,21 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         profile_name=profile_name,
         registry_agent=_registry_agent,
     )
-    history = _trim_history(history or [])
-    _disabled_skills = build_disabled_skills(
+    _agent_os_source_id = _effective_agent_id
+    bootstrap = bootstrap_chat_run(
+        user_input=user_input,
+        history=history,
+        max_history_pairs=_MAX_HISTORY_PAIRS,
+        trim_history_func=_trim_history,
+        strip_frontend_project_context_func=_strip_frontend_project_context,
+        history_service=_HISTORY,
+        planner_factory=PlannerV2Service,
+        emit_run_started_func=_emit_agent_os_event,
+        source_agent_id=_agent_os_source_id,
+        profile_name=profile_name,
+        model_name=model_name,
+        session_id=str(session_id or ""),
+        streaming=False,
         use_web_search=use_web_search,
         use_python_exec=use_python_exec,
         use_image_gen=use_image_gen,
@@ -318,23 +332,14 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         use_webhook=use_webhook,
         use_plugins=use_plugins,
     )
-    timeline, tool_results = [], []
-    planner = PlannerV2Service()
-    raw_user_input = user_input
-    planner_input = _strip_frontend_project_context(user_input)
-    run = _HISTORY.start_run(raw_user_input)
-    _agent_os_source_id = _effective_agent_id
-    _emit_agent_os_event(
-        event_type="agent.run.started",
-        source_agent_id=_agent_os_source_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "requested_model": model_name,
-            "session_id": str(session_id or ""),
-            "streaming": False,
-        },
-    )
+    history = bootstrap.history
+    _disabled_skills = bootstrap.disabled_skills
+    timeline = bootstrap.timeline
+    tool_results = bootstrap.tool_results
+    planner = bootstrap.planner
+    raw_user_input = bootstrap.raw_user_input
+    planner_input = bootstrap.planner_input
+    run = bootstrap.run
     try:
         chat_plan = prepare_chat_plan(
             planner_input=planner_input,
@@ -540,8 +545,20 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
     import time as _time
     _agent_start = _time.monotonic()
     _effective_agent_id = resolve_effective_agent_id(profile_name=profile_name)
-    history = _trim_history(history or [])
-    _disabled_skills = build_disabled_skills(
+    bootstrap = bootstrap_chat_run(
+        user_input=user_input,
+        history=history,
+        max_history_pairs=_MAX_HISTORY_PAIRS,
+        trim_history_func=_trim_history,
+        strip_frontend_project_context_func=_strip_frontend_project_context,
+        history_service=_HISTORY,
+        planner_factory=PlannerV2Service,
+        emit_run_started_func=_emit_agent_os_event,
+        source_agent_id=_effective_agent_id,
+        profile_name=profile_name,
+        model_name=model_name,
+        session_id=str(session_id or ""),
+        streaming=True,
         use_web_search=use_web_search,
         use_python_exec=use_python_exec,
         use_image_gen=use_image_gen,
@@ -558,22 +575,14 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         use_webhook=use_webhook,
         use_plugins=use_plugins,
     )
-    timeline, tool_results = [], []
-    planner = PlannerV2Service()
-    raw_user_input = user_input
-    planner_input = _strip_frontend_project_context(user_input)
-    run = _HISTORY.start_run(raw_user_input)
-    _emit_agent_os_event(
-        event_type="agent.run.started",
-        source_agent_id=_effective_agent_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "requested_model": model_name,
-            "session_id": str(session_id or ""),
-            "streaming": True,
-        },
-    )
+    history = bootstrap.history
+    _disabled_skills = bootstrap.disabled_skills
+    timeline = bootstrap.timeline
+    tool_results = bootstrap.tool_results
+    planner = bootstrap.planner
+    raw_user_input = bootstrap.raw_user_input
+    planner_input = bootstrap.planner_input
+    run = bootstrap.run
     try:
         yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
 

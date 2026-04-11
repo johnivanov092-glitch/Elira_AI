@@ -7,6 +7,11 @@ from typing import Any, Callable
 PlanRunner = Callable[[str], dict[str, Any]]
 MemoryCommandChecker = Callable[[str], bool]
 ModelPicker = Callable[[str, str], str]
+HistoryTrimmer = Callable[[list[Any], int], list[Any]]
+InputStripper = Callable[[str], str]
+PlannerFactory = Callable[[], Any]
+RunStarter = Callable[[str], dict[str, Any]]
+EventEmitter = Callable[..., None]
 
 
 @dataclass(frozen=True)
@@ -17,6 +22,18 @@ class ChatPlanPreparation:
     web_plan: dict[str, Any]
     selected_tools: list[str]
     effective_model: str
+
+
+@dataclass(frozen=True)
+class ChatRunBootstrap:
+    history: list[Any]
+    disabled_skills: set[str]
+    timeline: list[dict[str, Any]]
+    tool_results: list[dict[str, Any]]
+    planner: Any
+    raw_user_input: str
+    planner_input: str
+    run: dict[str, Any]
 
 
 def build_disabled_skills(
@@ -55,6 +72,84 @@ def build_disabled_skills(
         "plugins": use_plugins,
     }
     return {skill_name for skill_name, is_enabled in skill_flags.items() if not is_enabled}
+
+
+def bootstrap_chat_run(
+    *,
+    user_input: str,
+    history: list[Any] | None,
+    max_history_pairs: int,
+    trim_history_func: HistoryTrimmer,
+    strip_frontend_project_context_func: InputStripper,
+    history_service: Any,
+    planner_factory: PlannerFactory,
+    emit_run_started_func: EventEmitter,
+    source_agent_id: str,
+    profile_name: str,
+    model_name: str,
+    session_id: str,
+    streaming: bool,
+    use_web_search: bool,
+    use_python_exec: bool,
+    use_image_gen: bool,
+    use_file_gen: bool,
+    use_http_api: bool,
+    use_sql: bool,
+    use_screenshot: bool,
+    use_encrypt: bool,
+    use_archiver: bool,
+    use_converter: bool,
+    use_regex: bool,
+    use_translator: bool,
+    use_csv: bool,
+    use_webhook: bool,
+    use_plugins: bool,
+) -> ChatRunBootstrap:
+    trimmed_history = trim_history_func(history or [], max_history_pairs)
+    disabled_skills = build_disabled_skills(
+        use_web_search=use_web_search,
+        use_python_exec=use_python_exec,
+        use_image_gen=use_image_gen,
+        use_file_gen=use_file_gen,
+        use_http_api=use_http_api,
+        use_sql=use_sql,
+        use_screenshot=use_screenshot,
+        use_encrypt=use_encrypt,
+        use_archiver=use_archiver,
+        use_converter=use_converter,
+        use_regex=use_regex,
+        use_translator=use_translator,
+        use_csv=use_csv,
+        use_webhook=use_webhook,
+        use_plugins=use_plugins,
+    )
+    timeline: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+    planner = planner_factory()
+    raw_user_input = user_input
+    planner_input = strip_frontend_project_context_func(user_input)
+    run = history_service.start_run(raw_user_input)
+    emit_run_started_func(
+        event_type="agent.run.started",
+        source_agent_id=source_agent_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "requested_model": model_name,
+            "session_id": session_id,
+            "streaming": streaming,
+        },
+    )
+    return ChatRunBootstrap(
+        history=trimmed_history,
+        disabled_skills=disabled_skills,
+        timeline=timeline,
+        tool_results=tool_results,
+        planner=planner,
+        raw_user_input=raw_user_input,
+        planner_input=planner_input,
+        run=run,
+    )
 
 
 def prepare_chat_plan(
