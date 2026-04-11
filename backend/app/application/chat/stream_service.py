@@ -138,3 +138,59 @@ def prepare_cached_stream_hit(
         cached=True,
     )
     return CachedStreamHit(full_text=full_text, done_event=done_event)
+
+
+def finalize_stream_response(
+    *,
+    planner_input: str,
+    route: str,
+    profile_name: str,
+    model_name: str,
+    raw_user_input: str,
+    full_text: str,
+    selected_tools: list[str],
+    temporal: dict[str, Any],
+    web_plan: dict[str, Any],
+    identity_guard: dict[str, Any] | None,
+    provenance_guard: dict[str, Any] | None,
+    history_service: Any,
+    run_id: str,
+    session_id: str,
+    num_ctx: int,
+    agent_id: str,
+    source_agent_id: str,
+    timeline: list[dict[str, Any]],
+    started_at: float,
+    monotonic_now_func: Any,
+    should_cache_func: Any,
+    set_cached_func: Any,
+    finalize_stream_success_func: Any,
+) -> dict[str, Any]:
+    if should_cache_func(planner_input, route) and full_text.strip():
+        try:
+            set_cached_func(planner_input, model_name, profile_name, full_text)
+        except Exception:
+            pass
+
+    duration_ms = int((monotonic_now_func() - started_at) * 1000)
+    return finalize_stream_success_func(
+        history_service=history_service,
+        run_id=run_id,
+        session_id=session_id,
+        profile_name=profile_name,
+        model_name=model_name,
+        route=route,
+        user_input=raw_user_input,
+        full_text=full_text,
+        tools=selected_tools,
+        temporal=temporal,
+        web_plan=web_plan,
+        identity_guard=identity_guard,
+        provenance_guard=provenance_guard,
+        duration_ms=duration_ms,
+        num_ctx=num_ctx,
+        agent_id=agent_id,
+        source_agent_id=source_agent_id,
+        timeline=timeline,
+        selected_tools=selected_tools,
+    )

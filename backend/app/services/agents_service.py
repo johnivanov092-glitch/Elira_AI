@@ -57,6 +57,7 @@ from app.application.chat.finalization import (
 from app.application.chat.stream_service import (
     build_selected_tools_phase_event,
     build_stream_phase_event,
+    finalize_stream_response,
     iter_text_stream_events,
     prepare_cached_stream_hit,
 )
@@ -712,32 +713,30 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             if guarded_text != full_text:
                 full_text = guarded_text
                 yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
-            if should_cache(planner_input, route) and full_text.strip():
-                try:
-                    set_cached(planner_input, effective_model, profile_name, full_text)
-                except Exception:
-                    pass
-            _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-            yield _app_finalize_stream_success(
-                history_service=_HISTORY,
-                run_id=run["run_id"],
-                session_id=str(session_id or ""),
+            yield finalize_stream_response(
+                planner_input=planner_input,
+                route=route,
                 profile_name=profile_name,
                 model_name=effective_model,
-                route=route,
-                user_input=raw_user_input,
+                raw_user_input=raw_user_input,
                 full_text=full_text,
-                tools=selected,
+                selected_tools=selected,
                 temporal=temporal,
                 web_plan=web_plan,
                 identity_guard=identity_guard,
                 provenance_guard=provenance_guard,
-                duration_ms=_duration_ms,
+                history_service=_HISTORY,
+                run_id=run["run_id"],
+                session_id=str(session_id or ""),
                 num_ctx=num_ctx,
                 agent_id=_effective_agent_id,
                 source_agent_id=_effective_agent_id,
                 timeline=timeline,
-                selected_tools=selected,
+                started_at=_agent_start,
+                monotonic_now_func=_time.monotonic,
+                should_cache_func=should_cache,
+                set_cached_func=set_cached,
+                finalize_stream_success_func=_app_finalize_stream_success,
             )
         else:
             # Тяжёлый путь — reflection и/или генерация файлов
@@ -771,34 +770,30 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                 full_text = guarded_text
                 yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
 
-            # Кэшируем после всех пост-обработок
-            if should_cache(planner_input, route) and full_text.strip():
-                try:
-                    set_cached(planner_input, effective_model, profile_name, full_text)
-                except Exception:
-                    pass
-
-            _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-            yield _app_finalize_stream_success(
-                history_service=_HISTORY,
-                run_id=run["run_id"],
-                session_id=str(session_id or ""),
+            yield finalize_stream_response(
+                planner_input=planner_input,
+                route=route,
                 profile_name=profile_name,
                 model_name=effective_model,
-                route=route,
-                user_input=raw_user_input,
+                raw_user_input=raw_user_input,
                 full_text=full_text,
-                tools=selected,
+                selected_tools=selected,
                 temporal=temporal,
                 web_plan=web_plan,
                 identity_guard=identity_guard,
                 provenance_guard=provenance_guard,
-                duration_ms=_duration_ms,
+                history_service=_HISTORY,
+                run_id=run["run_id"],
+                session_id=str(session_id or ""),
                 num_ctx=num_ctx,
                 agent_id=_effective_agent_id,
                 source_agent_id=_effective_agent_id,
                 timeline=timeline,
-                selected_tools=selected,
+                started_at=_agent_start,
+                monotonic_now_func=_time.monotonic,
+                should_cache_func=should_cache,
+                set_cached_func=set_cached,
+                finalize_stream_success_func=_app_finalize_stream_success,
             )
     except Exception as exc:
         _app_finalize_chat_failure(
