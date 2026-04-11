@@ -189,6 +189,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 16:36:52 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse the shared bootstrap helper for both non-stream and stream execution while preserving the existing registry-agent handling and emitted start-event payload. |
 | `2026-04-11 16:36:52 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/service.py` and the updated `services/agents_service.py` shared-bootstrap path. |
 | `2026-04-11 16:36:52 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer cache-hit handling / planner execution prep or another small orchestration helper before attempting a broader control-flow refactor. |
+| `2026-04-11 16:48:30 +05:00` | `DONE` | Extended `backend/app/application/chat/service.py` with `ChatExecutionPreparation` and `prepare_chat_execution` so the shared planner/preflight path now owns planner execution, run-history planner event logging, optional memory-save handling, preflight validation, and optional auto-model timeline emission. |
+| `2026-04-11 16:48:30 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse the shared planner/preflight helper for both non-stream and stream execution while preserving the non-stream `memory_save` timeline event and the stream `auto_model` timeline event. |
+| `2026-04-11 16:48:30 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/chat/service.py` and the updated `services/agents_service.py` shared planner/preflight path. |
+| `2026-04-11 16:48:30 +05:00` | `NEXT` | Extract the next bounded `agents_service.py` slice from the shared-branch tip: prefer stream cache-hit handling or another small orchestration helper before attempting a broader control-flow refactor. |
 
 ## 8. Commit Ledger
 
@@ -235,7 +239,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` after shared-bootstrap extraction | `codex/refactor-arch-foundation` | Prefer cache-hit handling, planner execution prep, or another small orchestration helper from the current shared-branch tip |
+| `2` | Extract the next smallest slice out of `services/agents_service.py` after planner/preflight extraction | `codex/refactor-arch-foundation` | Prefer stream cache-hit handling or another small orchestration helper from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |

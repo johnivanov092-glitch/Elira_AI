@@ -12,6 +12,7 @@ InputStripper = Callable[[str], str]
 PlannerFactory = Callable[[], Any]
 RunStarter = Callable[[str], dict[str, Any]]
 EventEmitter = Callable[..., None]
+TimelineAppender = Callable[[list[dict[str, Any]], str, str, str, str], None]
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,17 @@ class ChatRunBootstrap:
     raw_user_input: str
     planner_input: str
     run: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ChatExecutionPreparation:
+    plan: dict[str, Any]
+    route: str
+    temporal: dict[str, Any]
+    web_plan: dict[str, Any]
+    selected_tools: list[str]
+    effective_model: str
+    saved_memory_items: int
 
 
 def build_disabled_skills(
@@ -200,6 +212,93 @@ def prepare_chat_plan(
         web_plan=web_plan,
         selected_tools=selected_tools,
         effective_model=effective_model,
+    )
+
+
+def prepare_chat_execution(
+    *,
+    planner_input: str,
+    model_name: str,
+    plan_runner: PlanRunner,
+    use_memory: bool,
+    use_library: bool,
+    use_web_search: bool,
+    is_memory_command_func: MemoryCommandChecker,
+    pick_model_for_route_func: ModelPicker,
+    history_service: Any,
+    run_id: str,
+    extract_and_save_func: Callable[[str], Any],
+    preflight_or_raise_func: Callable[..., None],
+    agent_id: str,
+    num_ctx: int,
+    streaming: bool,
+    timeline: list[dict[str, Any]] | None = None,
+    append_timeline_func: TimelineAppender | None = None,
+    log_memory_save: bool = False,
+    log_auto_model_switch: bool = False,
+) -> ChatExecutionPreparation:
+    chat_plan = prepare_chat_plan(
+        planner_input=planner_input,
+        model_name=model_name,
+        plan_runner=plan_runner,
+        use_memory=use_memory,
+        use_library=use_library,
+        use_web_search=use_web_search,
+        is_memory_command_func=is_memory_command_func,
+        pick_model_for_route_func=pick_model_for_route_func,
+    )
+    history_service.add_event(run_id, "planner", chat_plan.plan)
+
+    saved_memory_items = 0
+    try:
+        saved = extract_and_save_func(planner_input)
+        if saved:
+            try:
+                saved_memory_items = len(saved)
+            except TypeError:
+                saved_memory_items = 0
+            if log_memory_save and append_timeline_func and timeline is not None:
+                append_timeline_func(
+                    timeline,
+                    "memory_save",
+                    "Память",
+                    "done",
+                    "Сохранено: " + str(saved_memory_items),
+                )
+    except Exception:
+        pass
+
+    preflight_or_raise_func(
+        agent_id=agent_id,
+        num_ctx=num_ctx,
+        selected_tools=chat_plan.selected_tools,
+        run_id=run_id,
+        route=chat_plan.route,
+        streaming=streaming,
+    )
+
+    if (
+        log_auto_model_switch
+        and append_timeline_func
+        and timeline is not None
+        and chat_plan.effective_model != model_name
+    ):
+        append_timeline_func(
+            timeline,
+            "auto_model",
+            "Авто-модель",
+            "ok",
+            f"{model_name} → {chat_plan.effective_model} (route={chat_plan.route})",
+        )
+
+    return ChatExecutionPreparation(
+        plan=chat_plan.plan,
+        route=chat_plan.route,
+        temporal=chat_plan.temporal,
+        web_plan=chat_plan.web_plan,
+        selected_tools=chat_plan.selected_tools,
+        effective_model=chat_plan.effective_model,
+        saved_memory_items=saved_memory_items,
     )
 
 

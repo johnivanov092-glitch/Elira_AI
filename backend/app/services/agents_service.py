@@ -21,9 +21,8 @@ from app.application.chat.context_builder import (
 )
 from app.application.chat.service import (
     bootstrap_chat_run,
-    build_disabled_skills,
     build_task_context,
-    prepare_chat_plan,
+    prepare_chat_execution,
 )
 from app.application.chat.prompting import (
     build_prompt as _app_build_prompt,
@@ -341,7 +340,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
     planner_input = bootstrap.planner_input
     run = bootstrap.run
     try:
-        chat_plan = prepare_chat_plan(
+        execution = prepare_chat_execution(
             planner_input=planner_input,
             model_name=model_name,
             plan_runner=planner.plan,
@@ -350,31 +349,23 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             use_web_search=use_web_search,
             is_memory_command_func=is_memory_command,
             pick_model_for_route_func=pick_model_for_route,
-        )
-        plan = chat_plan.plan
-        _HISTORY.add_event(run["run_id"], "planner", plan)
-        route = chat_plan.route
-        temporal = chat_plan.temporal
-        web_plan = chat_plan.web_plan
-        effective_model = chat_plan.effective_model
-        selected = chat_plan.selected_tools
-
-        # Умная память: извлекаем факты из сообщения
-        try:
-            saved = extract_and_save(planner_input)
-            if saved:
-                _tl(timeline, "memory_save", "Память", "done", "Сохранено: " + str(len(saved)))
-        except Exception:
-            pass
-
-        preflight_or_raise(
+            run_id=run["run_id"],
+            history_service=_HISTORY,
+            extract_and_save_func=extract_and_save,
+            preflight_or_raise_func=preflight_or_raise,
             agent_id=_effective_agent_id,
             num_ctx=num_ctx,
-            selected_tools=selected,
-            run_id=run["run_id"],
-            route=route,
             streaming=False,
+            timeline=timeline,
+            append_timeline_func=_tl,
+            log_memory_save=True,
         )
+        plan = execution.plan
+        route = execution.route
+        temporal = execution.temporal
+        web_plan = execution.web_plan
+        effective_model = execution.effective_model
+        selected = execution.selected_tools
 
         ctx = _collect_context(profile_name=profile_name, user_input=planner_input, tools=selected, tool_results=tool_results, timeline=timeline, use_reflection=use_reflection, temporal=temporal, web_plan=web_plan)
 
@@ -586,7 +577,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
     try:
         yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
 
-        chat_plan = prepare_chat_plan(
+        execution = prepare_chat_execution(
             planner_input=planner_input,
             model_name=model_name,
             plan_runner=planner.plan,
@@ -595,24 +586,23 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             use_web_search=use_web_search,
             is_memory_command_func=is_memory_command,
             pick_model_for_route_func=pick_model_for_route,
-        )
-        plan = chat_plan.plan
-        _HISTORY.add_event(run["run_id"], "planner", plan)
-        route = chat_plan.route
-        temporal = chat_plan.temporal
-        web_plan = chat_plan.web_plan
-        selected = chat_plan.selected_tools
-        effective_model = chat_plan.effective_model
-        preflight_or_raise(
+            run_id=run["run_id"],
+            history_service=_HISTORY,
+            extract_and_save_func=extract_and_save,
+            preflight_or_raise_func=preflight_or_raise,
             agent_id=_effective_agent_id,
             num_ctx=num_ctx,
-            selected_tools=selected,
-            run_id=run["run_id"],
-            route=route,
             streaming=True,
+            timeline=timeline,
+            append_timeline_func=_tl,
+            log_auto_model_switch=True,
         )
-        if effective_model != model_name:
-            _tl(timeline, "auto_model", "Авто-модель", "ok", f"{model_name} → {effective_model} (route={route})")
+        plan = execution.plan
+        route = execution.route
+        temporal = execution.temporal
+        web_plan = execution.web_plan
+        selected = execution.selected_tools
+        effective_model = execution.effective_model
 
         # ═══ КЭШИРОВАНИЕ ═══
         if should_cache(planner_input, route) and not history:
@@ -651,12 +641,6 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                     yield token_event
                 yield done_event
                 return
-
-        # Умная память: извлекаем факты
-        try:
-            extract_and_save(planner_input)
-        except Exception:
-            pass
 
         if "web_search" in selected:
             yield {"token": "", "done": False, "phase": "searching", "message": "Ищу..."}
