@@ -7,11 +7,14 @@
 """
 import hashlib
 import json
-import re
 import sqlite3
 from datetime import datetime
 from typing import List, Dict, Any
 
+from app.application.memory.context import (
+    build_memory_context as _app_build_memory_context,
+    search_memories_weighted as _app_search_memories_weighted,
+)
 from .config import DB_PATH, SETTINGS_PATH
 
 
@@ -462,145 +465,28 @@ def semantic_search_memory(query: str, top_k: int = 5, profile_name: str = "") -
     return [texts[i] for i in ids[0] if i != -1]
 
 
-def _memory_type_weight(memory_type: str, pinned: bool = False, source: str = "") -> float:
-    memory_type = (memory_type or "").strip().lower()
-    source = (source or "").strip().lower()
-    weight_map = {
-        "profile": 4.2,
-        "pinned": 4.0,
-        "insight": 3.4,
-        "orchestrator": 3.1,
-        "summary": 2.9,
-        "file": 2.4,
-        "chat_snapshot": 1.8,
-        "chat": 1.0,
-        "general": 1.3,
-    }
-    weight = weight_map.get(memory_type, 1.2)
-    if pinned:
-        weight += 1.2
-    if source.startswith("manual"):
-        weight += 0.3
-    return weight
-
-
-def _clean_memory_text(text: str, max_chars: int = 900) -> str:
-    text = re.sub(r"\s+", " ", (text or "")).strip()
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + " …"
-
-
-def _memory_query_words(query: str) -> List[str]:
-    return [w for w in re.findall(r"[\wа-яА-ЯёЁ-]+", (query or "").lower()) if len(w) >= 3]
-
-
 def search_memories_weighted(query: str, profile_name: str = "", top_k: int = 8) -> List[Dict[str, Any]]:
-    rows = load_memories(2500, profile_name=profile_name)
-    if not rows:
-        return []
-
-    q = (query or "").strip().lower()
-    q_words = _memory_query_words(query)
-
-    semantic_hits = set(semantic_search_memory(query, top_k=max(top_k * 2, 8), profile_name=profile_name)) if q else set()
-    keyword_hits = set(keyword_search_memory(query, top_k=max(top_k * 2, 8), profile_name=profile_name)) if q else set()
-
-    scored: List[Dict[str, Any]] = []
-    for rid, content, source, created_at, pinned, memory_type, prof in rows:
-        text = (content or "").strip()
-        if not text:
-            continue
-
-        score = _memory_type_weight(memory_type, bool(pinned), source)
-        low = text.lower()
-
-        if q:
-            if q in low:
-                score += 8.0
-            score += sum(1.6 for w in q_words if w in low)
-            if text in semantic_hits:
-                score += 3.0
-            if text in keyword_hits:
-                score += 2.2
-
-        if (memory_type or "").lower() == "chat" and score < 5:
-            score -= 1.4
-        if len(text) > 3000:
-            score -= 0.5
-        if score <= 0:
-            continue
-
-        scored.append({
-            "id": rid,
-            "content": text,
-            "source": source,
-            "created_at": created_at,
-            "pinned": bool(pinned),
-            "memory_type": memory_type,
-            "profile_name": prof,
-            "score": round(score, 3),
-        })
-
-    scored.sort(key=lambda x: (x["score"], x["created_at"], x["id"]), reverse=True)
-
-    unique: List[Dict[str, Any]] = []
-    seen = set()
-    for item in scored:
-        key = _content_hash(_clean_memory_text(item["content"], max_chars=400))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-        if len(unique) >= top_k:
-            break
-    return unique
+    return _app_search_memories_weighted(
+        query=query,
+        profile_name=profile_name,
+        top_k=top_k,
+        load_memories_func=load_memories,
+        semantic_search_memory_func=semantic_search_memory,
+        keyword_search_memory_func=keyword_search_memory,
+        content_hash_func=_content_hash,
+    )
 
 
 def build_memory_context(query: str, profile_name: str, top_k: int = 5) -> str:
-    pinned_rows = load_memories(20, only_pinned=True, profile_name=profile_name)
-    weighted = search_memories_weighted(query, profile_name=profile_name, top_k=max(top_k + 3, 8))
-    kb_ctx   = build_kb_context(query, profile_name=profile_name, top_k=max(2, top_k // 2))
-    tool_ctx = build_tool_memory_context(query, profile_name=profile_name, limit=3)
-    weblearn = build_web_learning_context(query, profile_name=profile_name, limit=3)
-
-    parts = []
-
-    if pinned_rows:
-        pinned_lines = []
-        seen_pinned = set()
-        for row in pinned_rows[:6]:
-            txt = _clean_memory_text(row[1], max_chars=700)
-            h = _content_hash(txt)
-            if h in seen_pinned:
-                continue
-            seen_pinned.add(h)
-            pinned_lines.append(f"- {txt}")
-        if pinned_lines:
-            parts.append("Закреплённая память:\n" + "\n".join(pinned_lines))
-
-    if weighted:
-        weighted_lines = []
-        pinned_hashes = {_content_hash(_clean_memory_text(r[1], max_chars=700)) for r in pinned_rows[:20]}
-        for item in weighted:
-            txt = _clean_memory_text(item["content"], max_chars=700)
-            h = _content_hash(txt)
-            if h in pinned_hashes:
-                continue
-            tag = (item.get("memory_type") or "general").lower()
-            weighted_lines.append(f"- [{tag}] {txt}")
-        if weighted_lines:
-            parts.append("Релевантная память:\n" + "\n".join(weighted_lines[:max(top_k, 6)]))
-
-    if kb_ctx:
-        parts.append(kb_ctx)
-    if tool_ctx:
-        parts.append(tool_ctx)
-    if weblearn:
-        parts.append(weblearn)
-
-    context = "\n\n".join(p for p in parts if p.strip())
-    return context[:16000]
+    return _app_build_memory_context(
+        query=query,
+        profile_name=profile_name,
+        top_k=top_k,
+        load_memories_func=load_memories,
+        semantic_search_memory_func=semantic_search_memory,
+        keyword_search_memory_func=keyword_search_memory,
+        content_hash_func=_content_hash,
+    )
 
 
 

@@ -217,11 +217,21 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 20:00:00 +05:00` | `DONE` | [Claude Code] Created `application/workflows/multi_agent.py` (~401 lines) -- extracted 4 builtin workflow templates, seed_builtin_workflows(), run_multi_agent_workflow(), run_legacy_multi_agent_workflow(). workflow_engine.py: 1316 -> 951 lines. |
 | `2026-04-11 20:00:00 +05:00` | `DONE` | [Claude Code] Created `domain/workflows/step_executor.py` (~252 lines) -- extracted input resolution (JSONPath), prompt template rendering, agent/tool step dispatch, step transition logic. workflow_engine.py: 951 -> 747 lines (-43% total). |
 | `2026-04-11 20:00:00 +05:00` | `NEXT` | workflow_engine.py (747 lines) remaining: DB schema + init (~64 lines), data mapping (~142 lines), CRUD operations (~84 lines), run state management (~135 lines), core execution engine (_execute_workflow_run, ~191 lines), start/resume/cancel (~50 lines). Next: extract data mapping + CRUD into infrastructure/db or continue with memory.py (1476 lines, biggest remaining monolith). |
+| `2026-04-11 21:02:12 +05:00` | `DONE` | Fast-forwarded `codex/refactor-arch-foundation` to `origin/claude/refactor-master-plan` so the shared branch now includes Claude commits `6614fb4`, `d1361d5`, `d84458e`, and `f178a40` on top of the latest Codex chat refactor wave. |
+| `2026-04-11 21:02:12 +05:00` | `DONE` | Re-verified compile/import health for the integrated Claude workflow/memory modules and confirmed the shared branch can continue from the rebased `workflow_engine.py` / `core/memory.py` state rather than the older monolith versions. |
+| `2026-04-11 21:02:12 +05:00` | `DONE` | Added `backend/app/application/memory/context.py` and moved weighted memory search plus memory-context assembly out of `core/memory.py`. |
+| `2026-04-11 21:02:12 +05:00` | `DONE` | Left `core/memory.py` on thin compatibility facades for `search_memories_weighted` and `build_memory_context` while preserving the current callback-driven search behavior and domain memory context sources. |
+| `2026-04-11 21:02:12 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/context.py` and the updated `backend/app/core/memory.py` memory-context path. |
+| `2026-04-11 21:02:12 +05:00` | `NEXT` | Extract the next bounded slice from `core/memory.py`: prefer memory/profile CRUD or semantic/keyword search plumbing before attempting a broader workflow-engine execution refactor. |
 
 ## 8. Commit Ledger
 
 | Branch | Short SHA | Title | Merged state | Note |
 | --- | --- | --- | --- | --- |
+| `codex/refactor-arch-foundation` | `f178a40` | `refactor(memory): extract task tracking and knowledge base` | `fast-forwarded from claude/refactor-master-plan` | Shared branch now carries `domain/memory/task_tracking.py` and `domain/memory/knowledge_base.py` |
+| `codex/refactor-arch-foundation` | `d84458e` | `refactor(memory): extract strategy tracking and working memory` | `fast-forwarded from claude/refactor-master-plan` | Shared branch now carries `domain/memory/strategy_tracking.py` and `domain/memory/working_memory.py` |
+| `codex/refactor-arch-foundation` | `d1361d5` | `refactor(workflows): extract step executor into domain module` | `fast-forwarded from claude/refactor-master-plan` | Shared branch now carries `domain/workflows/step_executor.py` |
+| `codex/refactor-arch-foundation` | `6614fb4` | `refactor(workflows): extract multi-agent workflows into application module` | `fast-forwarded from claude/refactor-master-plan` | Shared branch now carries `application/workflows/multi_agent.py` |
 | `codex/refactor-arch-foundation` | `1ca4dba` | `refactor(agents): extract reflection and orchestrator into domain modules` | `cherry-picked onto shared branch` | Claude extraction integrated into the branch that both agents can see |
 | `codex/refactor-arch-foundation` | `dd5a7a4` | `docs: update WORKPLAN with reflection/orchestrator extraction progress` | `cherry-picked onto shared branch` | Carries Claude's worklog entries into the shared branch |
 | `codex/refactor-arch-foundation` | `28312e1` | `cleanup: remove all frozen copies and unused imports from monoliths` | `cherry-picked onto shared branch` | Claude cleanup commit integrated after Codex extracted the active paths |
@@ -263,7 +273,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/agents_service.py` after registry-run helper extraction | `codex/refactor-arch-foundation` | Prefer non-stream error payload assembly or another small finalization helper from the current shared-branch tip |
+| `2` | Extract the next smallest slice out of `core/memory.py` after memory-context extraction | `codex/refactor-arch-foundation` | Prefer memory/profile CRUD or semantic/keyword search plumbing from the current shared-branch tip |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
