@@ -235,6 +235,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 21:13:56 +05:00` | `DONE` | Left `core/memory.py` on thin compatibility facades for `load_settings`, `save_settings`, and `init_db` while preserving existing route/service call sites. |
 | `2026-04-11 21:13:56 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/memory/bootstrap.py` and the updated `backend/app/core/memory.py`; one failed smoke check was due to an incorrect `runtime_service` symbol name, not this refactor. |
 | `2026-04-11 21:13:56 +05:00` | `NEXT` | Shift the next bounded slice to `workflow_engine.py`: prefer data-mapping / template-run store helpers before touching the remaining execution loop. |
+| `2026-04-11 21:18:45 +05:00` | `DONE` | Added `backend/app/application/workflows/store.py` and moved workflow DB bootstrap, JSON serialization helpers, graph normalization, template CRUD, run CRUD, and run-record update/create helpers out of `services/workflow_engine.py`. |
+| `2026-04-11 21:18:45 +05:00` | `DONE` | Left `services/workflow_engine.py` on thin compatibility facades for `_init_db`, `_normalize_graph`, `_upsert_workflow_template`, `create/get/list/update/delete_workflow_template`, `get/list_workflow_run`, `_update_workflow_run`, and `_create_workflow_run_record` while preserving override-able `DB_PATH` for tests. |
+| `2026-04-11 21:18:45 +05:00` | `DONE` | Re-verified compile/import health for `backend/app/application/workflows/store.py`, `backend/app/services/workflow_engine.py`, and `backend/app/application/workflows/multi_agent.py`; dynamic imports from `multi_agent.py` still resolve through the workflow-engine facade layer. |
+| `2026-04-11 21:18:45 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer run-state / execution bookkeeping helpers around `_execute_workflow_run` before touching the inner step loop itself. |
 
 ## 8. Commit Ledger
 
@@ -285,7 +289,7 @@ Single live coordination document for Claude/Codex refactor work.
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
 | `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after memory-bootstrap extraction | `codex/refactor-arch-foundation` | Prefer data-mapping / template-run store helpers before touching the execution loop |
+| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after workflow-store extraction | `codex/refactor-arch-foundation` | Prefer run-state / execution-bookkeeping helpers around `_execute_workflow_run` before touching the inner loop |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
