@@ -56,10 +56,7 @@ from app.application.chat.stream_service import (
     iter_text_stream_events,
     prepare_cached_stream_hit,
 )
-from app.infrastructure.search.web_search import (
-    do_temporal_web_search as _infra_do_temporal_web_search,
-    do_web_search as _infra_do_web_search,
-)
+from app.infrastructure.search.web_search import do_temporal_web_search as _infra_do_temporal_web_search
 from app.services.agent_sandbox import (
     SandboxPolicyError,
     preflight_or_raise,
@@ -116,53 +113,27 @@ def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[di
 # ═══════════════════════════════════════════════════════════════
 
 
-# Re-export file trigger constants from extracted module
 from app.application.chat.auto_skills import (  # noqa: E402
     _FILE_TRIGGERS_WORD,
     _FILE_TRIGGERS_EXCEL,
+    maybe_generate_files,
+    run_auto_skills,
 )
-
-
-def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True) -> str:
-    """Facade -- delegates to application.chat.auto_skills."""
-    from app.application.chat.auto_skills import maybe_generate_files
-    return maybe_generate_files(user_input, llm_answer, enabled=enabled)
-
-
-def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
-    """Facade -- delegates to application.chat.auto_skills."""
-    from app.application.chat.auto_skills import run_auto_skills
-    return run_auto_skills(user_input, disabled=disabled)
-
-
-def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
-    return _app_build_prompt(
-        user_input=user_input,
-        context_bundle=context_bundle,
-        run_auto_skills_func=_run_auto_skills,
-        disabled_skills=disabled_skills,
-    )
 
 # ═══════════════════════════════════════════════════════════════
 # ГЛУБОКИЙ ВЕБ-ПОИСК: поиск → заход на сайты → извлечение текста
 
-_do_web_search = partial(_infra_do_web_search, tl=_tl)
-_do_temporal_web_search = partial(_infra_do_temporal_web_search, tl=_tl)
+_TEMPORAL_WEB_SEARCH = partial(_infra_do_temporal_web_search, tl=_tl)
+_COLLECT_CONTEXT = partial(
+    build_chat_context,
+    run_tool_func=run_tool,
+    append_timeline=_tl,
+    temporal_web_search_func=_TEMPORAL_WEB_SEARCH,
+)
+_BUILD_PROMPT = partial(_app_build_prompt, run_auto_skills_func=run_auto_skills)
 
 
 # ═══════════════════════════════════════════════════════════════
-def _strip_frontend_project_context(user_input: str) -> str:
-    return build_strip_frontend_project_context(user_input)
-
-
-def _collect_context(**kwargs):
-    return build_chat_context(
-        run_tool_func=run_tool,
-        append_timeline=_tl,
-        temporal_web_search_func=_do_temporal_web_search,
-        **kwargs,
-    )
-
 # run_agent
 # ═══════════════════════════════════════════════════════════════
 
@@ -195,7 +166,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         history=history,
         max_history_pairs=_MAX_HISTORY_PAIRS,
         trim_history_func=_app_trim_history,
-        strip_frontend_project_context_func=_strip_frontend_project_context,
+        strip_frontend_project_context_func=build_strip_frontend_project_context,
         history_service=_HISTORY,
         planner_factory=PlannerV2Service,
         emit_run_started_func=_app_emit_agent_os_event,
@@ -272,9 +243,9 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             is_memory_command_func=is_memory_command,
             get_relevant_context_func=get_relevant_context,
             get_rag_context_func=get_rag_context,
-            collect_context_func=_collect_context,
+            collect_context_func=_COLLECT_CONTEXT,
             enrich_context_with_memory_func=_app_enrich_context_with_memory,
-            build_prompt_func=_build_prompt,
+            build_prompt_func=_BUILD_PROMPT,
             build_task_context_func=build_task_context,
             append_timeline_func=_tl,
         )
@@ -302,7 +273,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         guarded = apply_response_guards(
             raw_user_input=raw_user_input, text=answer, timeline=timeline,
             use_python_exec=use_python_exec, use_file_gen=use_file_gen,
-            append_timeline_func=_tl, maybe_generate_files_func=_maybe_generate_files,
+            append_timeline_func=_tl, maybe_generate_files_func=maybe_generate_files,
         )
         answer = guarded.text
 
@@ -427,7 +398,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         history=history,
         max_history_pairs=_MAX_HISTORY_PAIRS,
         trim_history_func=_app_trim_history,
-        strip_frontend_project_context_func=_strip_frontend_project_context,
+        strip_frontend_project_context_func=build_strip_frontend_project_context,
         history_service=_HISTORY,
         planner_factory=PlannerV2Service,
         emit_run_started_func=_app_emit_agent_os_event,
@@ -544,9 +515,9 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             is_memory_command_func=is_memory_command,
             get_relevant_context_func=get_relevant_context,
             get_rag_context_func=get_rag_context,
-            collect_context_func=_collect_context,
+            collect_context_func=_COLLECT_CONTEXT,
             enrich_context_with_memory_func=_app_enrich_context_with_memory,
-            build_prompt_func=_build_prompt,
+            build_prompt_func=_BUILD_PROMPT,
             build_task_context_func=build_task_context,
         )
 
@@ -591,7 +562,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         guarded = apply_response_guards(
             raw_user_input=raw_user_input, text=full_text, timeline=timeline,
             use_python_exec=use_python_exec, use_file_gen=use_file_gen,
-            append_timeline_func=_tl, maybe_generate_files_func=_maybe_generate_files,
+            append_timeline_func=_tl, maybe_generate_files_func=maybe_generate_files,
         )
         full_text = guarded.text
         if guarded.changed:

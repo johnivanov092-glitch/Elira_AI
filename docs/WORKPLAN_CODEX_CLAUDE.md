@@ -267,6 +267,14 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 09:24:36 +05:00` | `DONE` | Kept all public facades and any wrappers with actual in-file usage intact; this was a dead-code-only cleanup of `core/agents.py` under Task 14 with no public contract changes. |
 | `2026-04-12 09:24:36 +05:00` | `DONE` | Re-verified compile/import health for the updated `core/agents.py` and the extracted planner/browser/reflection modules it still delegates to. |
 | `2026-04-12 09:24:36 +05:00` | `NEXT` | Continue Task 14 on the shared branch: target the next dead or purely backward-compat wrappers in `core/agents.py` (`_ok_check`, `_run_in_dir`, media/browser shims with no external callers) or resume the remaining injected-wrapper migration in `services/agents_service.py`. |
+| `2026-04-12 09:27:32 +05:00` | `DONE` | Removed the next dead wrapper batch from `core/agents.py` after confirming there were no remaining repo callers: Python-lab shims (`_ok_check`, `_run_in_dir`), image-generation internals (`_torch_gc`, `_strip_ansi`, `_contains_cyrillic`, `_hf_access_hint`), and browser-agent internals (`_goal_keywords`, `_extract_page_payload`, `_collect_links`, `_score_link`, `_rank_links`). |
+| `2026-04-12 09:27:32 +05:00` | `DONE` | Kept the public compatibility surface (`run_build_loop`, `prepare_image_prompt`, `generate_image_*`, `run_browser_agent`, `run_browser_actions`, `run_terminal`, `run_agent_v8`, `run_multi_agent`) intact; this slice removed only dead internal shims from `core/agents.py`. |
+| `2026-04-12 09:27:32 +05:00` | `DONE` | Re-verified compile/import health for `core/agents.py` and its extracted dependencies after the second dead-shim cleanup wave. |
+| `2026-04-12 09:27:32 +05:00` | `NEXT` | Continue Task 14 on the shared branch: `core/agents.py` is now mostly public facades, so the next bounded cleanup should target the remaining injected-wrapper migration in `services/agents_service.py` or any last dead public aliases once callers are updated. |
+| `2026-04-12 09:31:06 +05:00` | `DONE` | Removed the next simple wrapper layer from `services/agents_service.py`: `_maybe_generate_files`, `_run_auto_skills`, `_build_prompt`, `_strip_frontend_project_context`, `_collect_context`, plus the dead `_do_web_search` alias. The service now passes direct imports or `partial(...)` callables into the extracted `application/chat` modules. |
+| `2026-04-12 09:31:06 +05:00` | `DONE` | Kept behavior stable by preserving the same injected dependencies: `maybe_generate_files` still feeds `apply_response_guards`, `run_auto_skills` still feeds prompt assembly, and temporal web search still flows through `collect_context` via `_TEMPORAL_WEB_SEARCH` / `_COLLECT_CONTEXT`. |
+| `2026-04-12 09:31:06 +05:00` | `DONE` | Re-verified compile/import health for `services/agents_service.py`, `core/agents.py`, and the extracted chat/media/browser/code-agent modules after the wrapper-to-partial cleanup. |
+| `2026-04-12 09:31:06 +05:00` | `NEXT` | Continue Task 14 on the shared branch: remaining `agents_service.py` wrappers are the ones that still inject local timeline callbacks (`_apply_identity_guard`, `_apply_provenance_guard`, `_tl`) or wider runtime orchestration. Target those only if the injection point moves into `application/chat`. |
 
 ## 8. Commit Ledger
 
@@ -316,7 +324,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine, simple `agents_service.py` pass-through facades, and the first dead `core/agents.py` shims are cleaned up; next targets are remaining dead wrappers in `core/agents.py` and injected wrappers in `agents_service.py` |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine, simple `agents_service.py` pass-through facades, and both dead `core/agents.py` shim waves are cleaned up; next targets are the remaining timeline-injection wrappers in `agents_service.py` and any last public aliases that can be retired safely after caller migration |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |

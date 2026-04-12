@@ -11,7 +11,6 @@ agents.py вЂ” РІСЃРµ Р°РіРµРЅС‚РЅС‹Рµ РјРѕРґС
 # Legacy monolith: keep behavior stable and prefer extraction into
 # smaller modules over new feature work in this file.
 # All logic has been extracted; only thin facade delegates remain.
-from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 
@@ -78,13 +77,6 @@ def generate_file_code(
     )
 
 
-def _ok_check(stdout: str, stderr: str, returncode: int) -> bool:
-    """Facade -- delegates to application.code_agent.python_lab."""
-    from app.application.code_agent.python_lab import ok_check as _ok_check_impl
-
-    return _ok_check_impl(stdout=stdout, stderr=stderr, returncode=returncode)
-
-
 def run_build_loop(
     target_file: str,
     task: str,
@@ -108,13 +100,6 @@ def run_build_loop(
         file_context=file_context,
         num_ctx=num_ctx,
     )
-
-
-def _run_in_dir(cmd: str, cwd: Path, timeout: int = 60) -> str:
-    """Facade -- delegates to application.code_agent.python_lab."""
-    from app.application.code_agent.python_lab import run_in_dir as _run_in_dir_impl
-
-    return _run_in_dir_impl(cmd=cmd, cwd=cwd, timeout=timeout)
 
 
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
@@ -166,27 +151,6 @@ def run_task_graph(
     """Facade -- delegates to domain.agents.planner."""
     from app.domain.agents.planner import run_task_graph as _run
     return _run(task, model_name, memory_profile, num_ctx=num_ctx, progress_callback=progress_callback)
-
-
-def _torch_gc():
-    """Facade -- delegates to application.media.image_generation."""
-    from app.application.media.image_generation import torch_gc as _app_torch_gc
-
-    return _app_torch_gc()
-
-
-def _strip_ansi(text: str) -> str:
-    """Facade -- delegates to application.media.image_generation."""
-    from app.application.media.image_generation import strip_ansi as _app_strip_ansi
-
-    return _app_strip_ansi(text)
-
-
-def _contains_cyrillic(text: str) -> bool:
-    """Facade -- delegates to application.media.image_generation."""
-    from app.application.media.image_generation import contains_cyrillic as _app_contains_cyrillic
-
-    return _app_contains_cyrillic(text)
 
 
 def prepare_image_prompt(
@@ -242,13 +206,6 @@ def generate_image_sdxl_turbo(
     )
 
 
-def _hf_access_hint(exc_text: str) -> str:
-    """Facade -- delegates to application.media.image_generation."""
-    from app.application.media.image_generation import hf_access_hint as _app_hf_access_hint
-
-    return _app_hf_access_hint(exc_text)
-
-
 def generate_image_flux_schnell(
     prompt: str,
     negative_prompt: str = "",
@@ -283,41 +240,6 @@ def generate_image_flux_schnell(
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
 # BROWSER AGENT
 # в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-
-def _goal_keywords(goal: str) -> List[str]:
-    """Facade -- delegates to domain.tools.browser_agent_tool."""
-    from app.domain.tools.browser_agent_tool import goal_keywords as _goal_keywords_impl
-
-    return _goal_keywords_impl(goal)
-
-
-def _extract_page_payload(page, max_chars: int = 9000) -> str:
-    """Facade -- delegates to domain.tools.browser_agent_tool."""
-    from app.domain.tools.browser_agent_tool import extract_page_payload as _extract_page_payload_impl
-
-    return _extract_page_payload_impl(page, max_chars=max_chars)
-
-
-def _collect_links(page, base_url: str) -> List[Dict[str, Any]]:
-    """Facade -- delegates to domain.tools.browser_agent_tool."""
-    from app.domain.tools.browser_agent_tool import collect_links as _collect_links_impl
-
-    return _collect_links_impl(page, base_url)
-
-
-def _score_link(link: Dict[str, Any], goal_keywords: List[str]) -> int:
-    """Facade -- delegates to domain.tools.browser_agent_tool."""
-    from app.domain.tools.browser_agent_tool import score_link as _score_link_impl
-
-    return _score_link_impl(link, goal_keywords)
-
-
-def _rank_links(links: List[Dict[str, Any]], goal: str, limit: int) -> List[Dict[str, Any]]:
-    """Facade -- delegates to domain.tools.browser_agent_tool."""
-    from app.domain.tools.browser_agent_tool import rank_links as _rank_links_impl
-
-    return _rank_links_impl(links, goal, limit)
-
 
 def run_browser_agent(start_url: str, goal: str, max_pages: int = 3) -> Dict[str, Any]:
     """Facade -- delegates to domain.tools.browser_agent_tool."""
