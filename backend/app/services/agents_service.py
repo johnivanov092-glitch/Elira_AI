@@ -30,7 +30,6 @@ from app.application.chat.prompting import (
     compose_human_style_rules as _app_compose_human_style_rules,
     get_and_clear_attachments as _app_get_and_clear_attachments,
     has_generated_file_attachments as _app_has_generated_file_attachments,
-    wants_explicit_datetime_answer as _app_wants_explicit_datetime_answer,
 )
 from app.application.chat.memory_policy import (
     enrich_context_with_memory as _app_enrich_context_with_memory,
@@ -112,44 +111,6 @@ def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[di
     )
 
 
-def _emit_agent_os_event(*, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None) -> None:
-    """Facade -- delegates to application.chat.agent_os."""
-    _app_emit_agent_os_event(
-        event_type=event_type,
-        source_agent_id=source_agent_id,
-        payload=payload,
-    )
-
-
-def _record_registry_agent_run(
-    *,
-    agent_id: str | None,
-    registry_agent: dict[str, Any] | None,
-    run_id: str,
-    input_summary: str,
-    output_summary: str,
-    ok: bool,
-    route: str,
-    model_name: str,
-    duration_ms: int,
-) -> None:
-    _app_record_registry_agent_run(
-        agent_id=agent_id,
-        registry_agent=registry_agent,
-        run_id=run_id,
-        input_summary=input_summary,
-        output_summary=output_summary,
-        ok=ok,
-        route=route,
-        model_name=model_name,
-        duration_ms=duration_ms,
-    )
-
-
-def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
-    return _app_trim_history(h, max_pairs=max_pairs)
-
-
 # ═══════════════════════════════════════════════════════════════
 # POST-ГЕНЕРАЦИЯ ФАЙЛОВ: LLM написал ответ → сохраняем в Word/Excel
 # ═══════════════════════════════════════════════════════════════
@@ -174,14 +135,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     return run_auto_skills(user_input, disabled=disabled)
 
 
-def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
-    return _app_compose_human_style_rules(temporal)
-
-
-def _wants_explicit_datetime_answer(user_input: str) -> bool:
-    return _app_wants_explicit_datetime_answer(user_input)
-
-
 def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
     return _app_build_prompt(
         user_input=user_input,
@@ -189,11 +142,6 @@ def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: s
         run_auto_skills_func=_run_auto_skills,
         disabled_skills=disabled_skills,
     )
-
-def _get_and_clear_attachments() -> str:
-    """Facade -- delegates to application.chat.prompting."""
-    return _app_get_and_clear_attachments()
-
 
 # ═══════════════════════════════════════════════════════════════
 # ГЛУБОКИЙ ВЕБ-ПОИСК: поиск → заход на сайты → извлечение текста
@@ -246,11 +194,11 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         user_input=user_input,
         history=history,
         max_history_pairs=_MAX_HISTORY_PAIRS,
-        trim_history_func=_trim_history,
+        trim_history_func=_app_trim_history,
         strip_frontend_project_context_func=_strip_frontend_project_context,
         history_service=_HISTORY,
         planner_factory=PlannerV2Service,
-        emit_run_started_func=_emit_agent_os_event,
+        emit_run_started_func=_app_emit_agent_os_event,
         source_agent_id=_agent_os_source_id,
         profile_name=profile_name,
         model_name=model_name,
@@ -332,7 +280,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         )
 
         ctx = prompt_bundle.context_bundle
-        prompt = prompt_bundle.prompt + _compose_human_style_rules(temporal)
+        prompt = prompt_bundle.prompt + _app_compose_human_style_rules(temporal)
         task_context = prompt_bundle.task_context
         draft = run_chat(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context)
         if not draft.get("ok"):
@@ -347,7 +295,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             answer = ref.get("answer") or answer
 
         # Добавляем вложения (картинки, файлы)
-        attachments = _get_and_clear_attachments()
+        attachments = _app_get_and_clear_attachments()
         if attachments:
             answer += attachments
 
@@ -388,7 +336,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             "meta": meta,
         }
 
-        _record_registry_agent_run(
+        _app_record_registry_agent_run(
             agent_id=agent_id,
             registry_agent=_registry_agent,
             run_id=run["run_id"],
@@ -451,7 +399,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             selected_tools=locals().get("selected", []),
             history_payload=err,
         )
-        _record_registry_agent_run(
+        _app_record_registry_agent_run(
             agent_id=agent_id,
             registry_agent=_registry_agent,
             run_id=run["run_id"],
@@ -478,11 +426,11 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         user_input=user_input,
         history=history,
         max_history_pairs=_MAX_HISTORY_PAIRS,
-        trim_history_func=_trim_history,
+        trim_history_func=_app_trim_history,
         strip_frontend_project_context_func=_strip_frontend_project_context,
         history_service=_HISTORY,
         planner_factory=PlannerV2Service,
-        emit_run_started_func=_emit_agent_os_event,
+        emit_run_started_func=_app_emit_agent_os_event,
         source_agent_id=_effective_agent_id,
         profile_name=profile_name,
         model_name=model_name,
@@ -603,7 +551,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         )
 
         ctx = prompt_bundle.context_bundle
-        prompt = prompt_bundle.prompt + _compose_human_style_rules(temporal)
+        prompt = prompt_bundle.prompt + _app_compose_human_style_rules(temporal)
         full_text = ""
         task_context = prompt_bundle.task_context
         for token in run_chat_stream(model_name=effective_model, profile_name=profile_name, user_input=prompt, history=history, num_ctx=num_ctx, task_context=task_context):
@@ -611,7 +559,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             yield {"token": token, "done": False}
 
         # Добавляем вложения (картинки, файлы) — быстрая операция
-        attachments = _get_and_clear_attachments()
+        attachments = _app_get_and_clear_attachments()
         if attachments:
             full_text += attachments
 

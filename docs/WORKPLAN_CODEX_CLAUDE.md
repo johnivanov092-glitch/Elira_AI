@@ -259,6 +259,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 09:18:59 +05:00` | `DONE` | Removed the remaining internal-only pass-through facades from `services/workflow_engine.py` for execution-state building, run-state recording, step indexing, step metrics, and total-step bookkeeping; the engine now calls the extracted `application/workflows/*` helpers directly. |
 | `2026-04-12 09:18:59 +05:00` | `DONE` | Re-verified compile/import health for the updated `services/workflow_engine.py`; this cleanup reduced facade noise without changing workflow event payloads, lifecycle transitions, or persisted run-state semantics. |
 | `2026-04-12 09:18:59 +05:00` | `NEXT` | Continue Task 14 on the shared branch: prefer removing the next batch of internal-only backward-compat facades from `services/agents_service.py` or `core/agents.py` after confirming no external callers remain. |
+| `2026-04-12 09:22:18 +05:00` | `DONE` | Removed the next batch of internal-only pass-through facades from `services/agents_service.py`: direct callback wiring now uses `_app_trim_history` and `_app_emit_agent_os_event`, registry-run recording uses `_app_record_registry_agent_run`, prompt-style composition uses `_app_compose_human_style_rules`, and attachment rendering uses `_app_get_and_clear_attachments`. |
+| `2026-04-12 09:22:18 +05:00` | `DONE` | Deleted the now-dead `_wants_explicit_datetime_answer` shim and the obsolete pass-through wrappers that no longer added behavior after Claude's `apply_response_guards()` consolidation; `agents_service.py` is down to 642 lines. |
+| `2026-04-12 09:22:18 +05:00` | `DONE` | Re-verified compile/import health for the updated `services/agents_service.py` and the related `application/chat` modules; runtime behavior is unchanged because the surviving wrappers still cover the injected dependency cases (`_collect_context`, `_build_prompt`, stream cached-guard callbacks). |
+| `2026-04-12 09:22:18 +05:00` | `NEXT` | Continue Task 14 on the shared branch: prefer removing the remaining `agents_service.py` wrappers that still inject local helpers only after moving those injections into `application/chat`, or switch to `core/agents.py` backward-compat facade cleanup. |
 
 ## 8. Commit Ledger
 
@@ -308,7 +312,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine internal pass-through facades are now cleaned up; next targets are `agents_service.py` and `agents.py` |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine and the simple `agents_service.py` pass-through facades are cleaned up; next targets are the injected wrappers in `agents_service.py` and the backward-compat layer in `agents.py` |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
