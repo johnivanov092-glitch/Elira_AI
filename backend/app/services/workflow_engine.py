@@ -8,7 +8,6 @@ from typing import Any, Callable
 from app.application.workflows.execution import (
     WorkflowExecutionState,
     build_workflow_execution_state as _app_build_workflow_execution_state,
-    parse_workflow_datetime as _app_parse_workflow_datetime,
     record_workflow_run_state as _app_record_workflow_run_state,
     record_workflow_step_state as _app_record_workflow_step_state,
     record_workflow_total_steps as _app_record_workflow_total_steps,
@@ -39,7 +38,6 @@ from app.application.workflows.store import (
     init_db as _app_init_db,
     list_workflow_runs as _app_list_workflow_runs,
     list_workflow_templates as _app_list_workflow_templates,
-    normalize_graph as _app_normalize_graph,
     now_utc as _app_now_utc,
     update_workflow_run as _app_update_workflow_run,
     update_workflow_template as _app_update_workflow_template,
@@ -51,13 +49,7 @@ from app.core.data_files import sqlite_data_file
 DB_PATH: Path = sqlite_data_file("workflow_engine.db")
 
 TERMINAL_STATUSES = {"completed", "failed", "paused", "cancelled"}
-STEP_SUCCESS = "on_success"
-STEP_FAILURE = "on_failure"
 
-MULTI_AGENT_DEFAULT_WORKFLOW_ID = "builtin.workflow.multi_agent.default"
-MULTI_AGENT_REFLECTION_WORKFLOW_ID = "builtin.workflow.multi_agent.reflection"
-MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID = "builtin.workflow.multi_agent.orchestrated"
-MULTI_AGENT_FULL_WORKFLOW_ID = "builtin.workflow.multi_agent.full"
 
 def _now() -> str:
     return _app_now_utc()
@@ -68,10 +60,6 @@ def _init_db() -> None:
 
 
 _init_db()
-
-
-def _normalize_graph(graph: dict[str, Any]) -> dict[str, Any]:
-    return _app_normalize_graph(graph)
 
 
 def _upsert_workflow_template(template: dict[str, Any]) -> dict[str, Any]:
@@ -173,10 +161,6 @@ def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload
         return
 
 
-def _parse_dt(raw: str | None) -> datetime | None:
-    return _app_parse_workflow_datetime(raw)
-
-
 def _workflow_duration_ms(run: dict[str, Any]) -> int:
     return _app_workflow_duration_ms(run)
 
@@ -214,11 +198,6 @@ def _build_workflow_execution_state(run: dict[str, Any], template: dict[str, Any
         template=template,
         get_workflow_run=get_workflow_run,
     )
-
-
-def _run_state_for_execution(run: dict[str, Any], template: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[str]]:
-    execution_state = _build_workflow_execution_state(run, template)
-    return execution_state.graph, execution_state.steps_by_id, execution_state.ordered_ids
 
 
 def _record_workflow_total_steps(run: dict[str, Any], *, run_id: str, total_steps: int) -> None:
