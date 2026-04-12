@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from functools import partial
-from typing import Any, Generator
+from typing import Any
 
 from app.application.chat.context_builder import (
     collect_context as build_chat_context,
@@ -21,12 +21,12 @@ from app.application.chat.context_builder import (
 )
 from app.application.chat.service import (
     bootstrap_chat_run,
+    build_task_context,
     prepare_chat_execution,
     prepare_chat_prompt,
 )
 from app.application.chat.prompting import (
     build_prompt as _app_build_prompt,
-    build_runtime_datetime_context as _app_build_runtime_datetime_context,
     compose_human_style_rules as _app_compose_human_style_rules,
     get_and_clear_attachments as _app_get_and_clear_attachments,
     has_generated_file_attachments as _app_has_generated_file_attachments,
@@ -34,21 +34,16 @@ from app.application.chat.prompting import (
 )
 from app.application.chat.memory_policy import (
     enrich_context_with_memory as _app_enrich_context_with_memory,
-    get_memory_recall_limits as _app_get_memory_recall_limits,
-    is_direct_personal_memory_query as _app_is_direct_personal_memory_query,
-    should_recall_memory_context as _app_should_recall_memory_context,
     trim_history as _app_trim_history,
 )
 from app.application.chat.post_processing import (
     apply_identity_guard as _app_apply_identity_guard,
     apply_provenance_guard as _app_apply_provenance_guard,
-    maybe_auto_exec_python as _app_maybe_auto_exec_python,
+    apply_response_guards,
 )
 from app.application.chat.agent_os import (
     emit_agent_os_event as _app_emit_agent_os_event,
-    record_agent_os_monitoring as _app_record_agent_os_monitoring,
     record_registry_agent_run as _app_record_registry_agent_run,
-    resolve_agent_os_source_id as _app_resolve_agent_os_source_id,
 )
 from app.application.chat.finalization import (
     finalize_chat_failure as _app_finalize_chat_failure,
@@ -63,16 +58,9 @@ from app.application.chat.stream_service import (
     prepare_cached_stream_hit,
 )
 from app.infrastructure.search.web_search import (
-    build_single_web_subquery_context as _infra_build_single_web_subquery_context,
-    clean_query as _infra_clean_query,
     do_temporal_web_search as _infra_do_temporal_web_search,
-    do_temporal_web_search_legacy as _infra_do_temporal_web_search_legacy,
     do_web_search as _infra_do_web_search,
-    do_web_search_legacy as _infra_do_web_search_legacy,
-    get_web_search_result as _infra_get_web_search_result,
-    is_strict_web_only_query as _infra_is_strict_web_only_query,
 )
-from app.services.agent_monitor import record_agent_run_metric
 from app.services.agent_sandbox import (
     SandboxPolicyError,
     preflight_or_raise,
@@ -82,7 +70,6 @@ from app.services.chat_service import run_chat, run_chat_stream
 from app.services.planner_v2_service import PlannerV2Service
 from app.services.reflection_loop_service import run_reflection_loop
 from app.services.run_history_service import RunHistoryService
-from app.services.temporal_intent import detect_temporal_intent
 from app.services.tool_service import run_tool
 from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
 from app.services.response_cache import get_cached, set_cached, should_cache
@@ -103,9 +90,6 @@ _HISTORY = RunHistoryService()
 _REFLECTION_ROUTES = {"code", "project"}
 _MAX_HISTORY_PAIRS = 10
 
-
-def _short(v, limit=600):
-    t = str(v or ""); return t if len(t) <= limit else t[:limit] + "..."
 
 def _tl(timeline, step, title, status, detail):
     timeline.append({"step": step, "title": title, "status": status, "detail": detail})
@@ -128,43 +112,12 @@ def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[di
     )
 
 
-def _resolve_agent_os_source_id(agent_id: str | None, registry_agent: dict[str, Any] | None) -> str:
-    """Facade -- delegates to application.chat.agent_os."""
-    return _app_resolve_agent_os_source_id(agent_id, registry_agent)
-
-
 def _emit_agent_os_event(*, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None) -> None:
     """Facade -- delegates to application.chat.agent_os."""
     _app_emit_agent_os_event(
         event_type=event_type,
         source_agent_id=source_agent_id,
         payload=payload,
-    )
-
-
-def _record_agent_os_monitoring(
-    *,
-    agent_id: str,
-    run_id: str,
-    route: str,
-    model_name: str,
-    ok: bool,
-    duration_ms: int,
-    streaming: bool,
-    num_ctx: int,
-    selected_tools: list[str] | None,
-) -> None:
-    """Facade -- delegates to application.chat.agent_os."""
-    _app_record_agent_os_monitoring(
-        agent_id=agent_id,
-        run_id=run_id,
-        route=route,
-        model_name=model_name,
-        ok=ok,
-        duration_ms=duration_ms,
-        streaming=streaming,
-        num_ctx=num_ctx,
-        selected_tools=selected_tools,
     )
 
 
@@ -193,36 +146,8 @@ def _record_registry_agent_run(
     )
 
 
-def _is_direct_personal_memory_query(user_input: str) -> bool:
-    return _app_is_direct_personal_memory_query(user_input)
-
-
-def _should_recall_memory_context(user_input: str, route: str, temporal: dict[str, Any] | None) -> bool:
-    return _app_should_recall_memory_context(
-        user_input,
-        route,
-        temporal,
-        is_memory_command_func=is_memory_command,
-    )
-
-
-def _get_memory_recall_limits(user_input: str) -> tuple[int, int]:
-    return _app_get_memory_recall_limits(user_input)
-
-
 def _trim_history(h, max_pairs=_MAX_HISTORY_PAIRS):
     return _app_trim_history(h, max_pairs=max_pairs)
-
-
-
-def _maybe_auto_exec_python(user_input, answer, timeline, enabled: bool = True):
-    return _app_maybe_auto_exec_python(
-        user_input=user_input,
-        answer=answer,
-        enabled=enabled,
-        append_timeline_func=_tl,
-        timeline=timeline,
-    )
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -253,14 +178,8 @@ def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
     return _app_compose_human_style_rules(temporal)
 
 
-
-
 def _wants_explicit_datetime_answer(user_input: str) -> bool:
     return _app_wants_explicit_datetime_answer(user_input)
-
-
-def _build_runtime_datetime_context(user_input: str) -> str:
-    return _app_build_runtime_datetime_context(user_input)
 
 
 def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
@@ -279,16 +198,8 @@ def _get_and_clear_attachments() -> str:
 # ═══════════════════════════════════════════════════════════════
 # ГЛУБОКИЙ ВЕБ-ПОИСК: поиск → заход на сайты → извлечение текста
 
-_clean_query = _infra_clean_query
-_is_strict_web_only_query = _infra_is_strict_web_only_query
-_get_web_search_result = _infra_get_web_search_result
-_build_single_web_subquery_context = _infra_build_single_web_subquery_context
-_do_web_search_legacy = partial(_infra_do_web_search_legacy, tl=_tl)
-_do_temporal_web_search_legacy = partial(_infra_do_temporal_web_search_legacy, tl=_tl)
 _do_web_search = partial(_infra_do_web_search, tl=_tl)
 _do_temporal_web_search = partial(_infra_do_temporal_web_search, tl=_tl)
-
-
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -440,15 +351,12 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         if attachments:
             answer += attachments
 
-        # POST-генерация: Word/Excel из ответа LLM
-        post_files = _maybe_generate_files(raw_user_input, answer, enabled=use_file_gen)
-        if post_files:
-            answer += post_files
-
-        identity_guard = _apply_identity_guard(raw_user_input, answer, timeline)
-        answer = identity_guard.get("text", answer)
-        provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
-        answer = provenance_guard.get("text", answer)
+        guarded = apply_response_guards(
+            raw_user_input=raw_user_input, text=answer, timeline=timeline,
+            use_python_exec=use_python_exec, use_file_gen=use_file_gen,
+            append_timeline_func=_tl, maybe_generate_files_func=_maybe_generate_files,
+        )
+        answer = guarded.text
 
         _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
         meta = _app_finalize_chat_success(
@@ -463,8 +371,8 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             tools=selected,
             temporal=temporal,
             web_plan=web_plan,
-            identity_guard=identity_guard,
-            provenance_guard=provenance_guard,
+            identity_guard=guarded.identity_guard,
+            provenance_guard=guarded.provenance_guard,
             duration_ms=_duration_ms,
             streaming=False,
             num_ctx=num_ctx,
@@ -713,48 +621,9 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         ql_check = raw_user_input.lower()
         needs_file_gen = any(t in ql_check for t in _FILE_TRIGGERS_WORD + _FILE_TRIGGERS_EXCEL)
 
-        # Если нет тяжёлых операций — отправляем done СРАЗУ (быстрый путь)
+        # Если нет тяжёлых операций — быстрый путь
         if not should_reflect and not needs_file_gen:
-            # Авто-выполнение Python (лёгкое, только если есть код)
-            try:
-                full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-            except Exception:
-                pass
-            post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
-            if post_files:
-                full_text += post_files
-            identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
-            guarded_text = identity_guard.get("text", full_text)
-            provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
-            guarded_text = provenance_guard.get("text", guarded_text)
-            if guarded_text != full_text:
-                full_text = guarded_text
-                yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
-            yield finalize_stream_response(
-                planner_input=planner_input,
-                route=route,
-                profile_name=profile_name,
-                model_name=effective_model,
-                raw_user_input=raw_user_input,
-                full_text=full_text,
-                selected_tools=selected,
-                temporal=temporal,
-                web_plan=web_plan,
-                identity_guard=identity_guard,
-                provenance_guard=provenance_guard,
-                history_service=_HISTORY,
-                run_id=run["run_id"],
-                session_id=str(session_id or ""),
-                num_ctx=num_ctx,
-                agent_id=_effective_agent_id,
-                source_agent_id=_effective_agent_id,
-                timeline=timeline,
-                started_at=_agent_start,
-                monotonic_now_func=_time.monotonic,
-                should_cache_func=should_cache,
-                set_cached_func=set_cached,
-                finalize_stream_success_func=_app_finalize_stream_success,
-            )
+            pass  # skip reflection
         else:
             # Тяжёлый путь — reflection и/или генерация файлов
             if should_reflect and full_text.strip() and not has_generated_files:
@@ -767,51 +636,44 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                         yield build_stream_phase_event(phase="reflection_replace", full_text=refined)
                 except Exception:
                     pass
-
-            try:
-                full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-            except Exception:
-                pass
-
             if needs_file_gen:
                 yield build_stream_phase_event(phase="generating_file", message="Готовлю файл...")
-            post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
-            if post_files:
-                full_text += post_files
 
-            identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
-            guarded_text = identity_guard.get("text", full_text)
-            provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
-            guarded_text = provenance_guard.get("text", guarded_text)
-            if guarded_text != full_text:
-                full_text = guarded_text
-                yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
+        # Shared post-processing: auto-exec, file gen, identity/provenance guards
+        guarded = apply_response_guards(
+            raw_user_input=raw_user_input, text=full_text, timeline=timeline,
+            use_python_exec=use_python_exec, use_file_gen=use_file_gen,
+            append_timeline_func=_tl, maybe_generate_files_func=_maybe_generate_files,
+        )
+        full_text = guarded.text
+        if guarded.changed:
+            yield build_stream_phase_event(phase="reflection_replace", full_text=full_text)
 
-            yield finalize_stream_response(
-                planner_input=planner_input,
-                route=route,
-                profile_name=profile_name,
-                model_name=effective_model,
-                raw_user_input=raw_user_input,
-                full_text=full_text,
-                selected_tools=selected,
-                temporal=temporal,
-                web_plan=web_plan,
-                identity_guard=identity_guard,
-                provenance_guard=provenance_guard,
-                history_service=_HISTORY,
-                run_id=run["run_id"],
-                session_id=str(session_id or ""),
-                num_ctx=num_ctx,
-                agent_id=_effective_agent_id,
-                source_agent_id=_effective_agent_id,
-                timeline=timeline,
-                started_at=_agent_start,
-                monotonic_now_func=_time.monotonic,
-                should_cache_func=should_cache,
-                set_cached_func=set_cached,
-                finalize_stream_success_func=_app_finalize_stream_success,
-            )
+        yield finalize_stream_response(
+            planner_input=planner_input,
+            route=route,
+            profile_name=profile_name,
+            model_name=effective_model,
+            raw_user_input=raw_user_input,
+            full_text=full_text,
+            selected_tools=selected,
+            temporal=temporal,
+            web_plan=web_plan,
+            identity_guard=guarded.identity_guard,
+            provenance_guard=guarded.provenance_guard,
+            history_service=_HISTORY,
+            run_id=run["run_id"],
+            session_id=str(session_id or ""),
+            num_ctx=num_ctx,
+            agent_id=_effective_agent_id,
+            source_agent_id=_effective_agent_id,
+            timeline=timeline,
+            started_at=_agent_start,
+            monotonic_now_func=_time.monotonic,
+            should_cache_func=should_cache,
+            set_cached_func=set_cached,
+            finalize_stream_success_func=_app_finalize_stream_success,
+        )
     except Exception as exc:
         _app_finalize_chat_failure(
             history_service=_HISTORY,
