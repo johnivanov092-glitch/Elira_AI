@@ -30,6 +30,7 @@ from app.application.chat.prompting import (
     get_and_clear_attachments as _app_get_and_clear_attachments,
     has_generated_file_attachments as _app_has_generated_file_attachments,
 )
+from app.application.chat.timeline import append_timeline as _app_append_timeline
 from app.application.chat.memory_policy import (
     enrich_context_with_memory as _app_enrich_context_with_memory,
     trim_history as _app_trim_history,
@@ -84,10 +85,6 @@ _REFLECTION_ROUTES = {"code", "project"}
 _MAX_HISTORY_PAIRS = 10
 
 
-def _tl(timeline, step, title, status, detail):
-    timeline.append({"step": step, "title": title, "status": status, "detail": detail})
-
-
 # ═══════════════════════════════════════════════════════════════
 # POST-ГЕНЕРАЦИЯ ФАЙЛОВ: LLM написал ответ → сохраняем в Word/Excel
 # ═══════════════════════════════════════════════════════════════
@@ -103,16 +100,16 @@ from app.application.chat.auto_skills import (  # noqa: E402
 # ═══════════════════════════════════════════════════════════════
 # ГЛУБОКИЙ ВЕБ-ПОИСК: поиск → заход на сайты → извлечение текста
 
-_TEMPORAL_WEB_SEARCH = partial(_infra_do_temporal_web_search, tl=_tl)
+_TEMPORAL_WEB_SEARCH = partial(_infra_do_temporal_web_search, tl=_app_append_timeline)
 _COLLECT_CONTEXT = partial(
     build_chat_context,
     run_tool_func=run_tool,
-    append_timeline=_tl,
+    append_timeline=_app_append_timeline,
     temporal_web_search_func=_TEMPORAL_WEB_SEARCH,
 )
 _BUILD_PROMPT = partial(_app_build_prompt, run_auto_skills_func=run_auto_skills)
-_APPLY_IDENTITY_GUARD = partial(_app_apply_identity_guard, append_timeline_func=_tl)
-_APPLY_PROVENANCE_GUARD = partial(_app_apply_provenance_guard, append_timeline_func=_tl)
+_APPLY_IDENTITY_GUARD = partial(_app_apply_identity_guard, append_timeline_func=_app_append_timeline)
+_APPLY_PROVENANCE_GUARD = partial(_app_apply_provenance_guard, append_timeline_func=_app_append_timeline)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -199,7 +196,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             num_ctx=num_ctx,
             streaming=False,
             timeline=timeline,
-            append_timeline_func=_tl,
+            append_timeline_func=_app_append_timeline,
             log_memory_save=True,
         )
         plan = execution.plan
@@ -229,7 +226,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             enrich_context_with_memory_func=_app_enrich_context_with_memory,
             build_prompt_func=_BUILD_PROMPT,
             build_task_context_func=build_task_context,
-            append_timeline_func=_tl,
+            append_timeline_func=_app_append_timeline,
         )
 
         ctx = prompt_bundle.context_bundle
@@ -255,7 +252,7 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
         guarded = apply_response_guards(
             raw_user_input=raw_user_input, text=answer, timeline=timeline,
             use_python_exec=use_python_exec, use_file_gen=use_file_gen,
-            append_timeline_func=_tl, maybe_generate_files_func=maybe_generate_files,
+            append_timeline_func=_app_append_timeline, maybe_generate_files_func=maybe_generate_files,
         )
         answer = guarded.text
 
@@ -407,7 +404,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
             num_ctx=num_ctx,
             streaming=True,
             timeline=timeline,
-            append_timeline_func=_tl,
+            append_timeline_func=_app_append_timeline,
             log_auto_model_switch=True,
         )
         plan = execution.plan
@@ -425,7 +422,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                     cached_text=cached,
                     raw_user_input=raw_user_input,
                     timeline=timeline,
-                    append_timeline_func=_tl,
+                    append_timeline_func=_app_append_timeline,
                     apply_identity_guard_func=_APPLY_IDENTITY_GUARD,
                     apply_provenance_guard_func=_APPLY_PROVENANCE_GUARD,
                     finalize_stream_success_func=_app_finalize_stream_success,
@@ -518,7 +515,7 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
         guarded = apply_response_guards(
             raw_user_input=raw_user_input, text=full_text, timeline=timeline,
             use_python_exec=use_python_exec, use_file_gen=use_file_gen,
-            append_timeline_func=_tl, maybe_generate_files_func=maybe_generate_files,
+            append_timeline_func=_app_append_timeline, maybe_generate_files_func=maybe_generate_files,
         )
         full_text = guarded.text
         if guarded.changed:

@@ -283,7 +283,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 16:54:37 +05:00` | `DONE` | Removed the final simple guard wrappers from `services/agents_service.py`: `_apply_identity_guard` and `_apply_provenance_guard` were replaced by `_APPLY_IDENTITY_GUARD` / `_APPLY_PROVENANCE_GUARD` partials over the extracted `application/chat/post_processing.py` functions. |
 | `2026-04-12 16:54:37 +05:00` | `DONE` | Re-verified compile/import health after the Claude sync and guard-wrapper cleanup; `agents_service.py` is now 569 lines and `_tl` remains the only local helper because it still serves as the shared timeline callback injection point. |
 | `2026-04-12 16:56:13 +05:00` | `DONE` | Re-ran the repaired targeted tests on the shared branch after the latest cleanup: `python -m pytest backend/tests/test_runtime_datetime_prompt.py backend/tests/test_web_multi_intent_runtime.py -q` -> `4 passed`. |
-| `2026-04-12 16:54:37 +05:00` | `NEXT` | Continue Task 14 by moving `_tl` callback injection into `application/chat` helpers, or pause further `agents_service.py` shrinking until a caller-migration wave begins on the public `core/agents.py` facades. |
+| `2026-04-12 17:05:05 +05:00` | `DONE` | Added `backend/app/application/chat/timeline.py` and moved the shared timeline append helper out of `services/agents_service.py` into the application layer. |
+| `2026-04-12 17:05:05 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse `application.chat.timeline.append_timeline` for temporal web-search, context collection, guard callbacks, memory/prompt orchestration, cached-stream handling, and post-processing. The local `_tl` helper is gone. |
+| `2026-04-12 17:05:05 +05:00` | `DONE` | Re-verified compile/import health for `services/agents_service.py`, `application/chat/timeline.py`, and the affected chat helpers. |
+| `2026-04-12 17:05:05 +05:00` | `NEXT` | Task 14 inside `agents_service.py` is effectively reduced to orchestration only. Next safe target is either direct caller migration away from public `core/agents.py` facades or an incremental DB-connection migration from the master plan. |
 
 ## 8. Commit Ledger
 
@@ -336,7 +339,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine, simple `agents_service.py` pass-through facades, both dead `core/agents.py` shim waves, and the guard-wrapper cleanup are done; next target is moving `_tl` callback injection into `application/chat` or pausing monolith cleanup until public caller migration begins |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | `agents_service.py` is now orchestration-only and `core/agents.py` is mostly public facades; next meaningful progress is caller migration away from those public aliases rather than more local shim deletion |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
