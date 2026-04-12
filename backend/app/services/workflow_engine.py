@@ -6,12 +6,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.application.workflows.execution import (
-    WorkflowExecutionState,
     build_workflow_execution_state as _app_build_workflow_execution_state,
-    record_workflow_run_state as _app_record_workflow_run_state,
     record_workflow_step_state as _app_record_workflow_step_state,
     record_workflow_total_steps as _app_record_workflow_total_steps,
-    workflow_duration_ms as _app_workflow_duration_ms,
+    record_workflow_run_state as _app_record_workflow_run_state,
     workflow_step_index as _app_workflow_step_index,
 )
 from app.application.workflows.lifecycle import (
@@ -161,15 +159,6 @@ def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload
         return
 
 
-def _workflow_duration_ms(run: dict[str, Any]) -> int:
-    return _app_workflow_duration_ms(run)
-
-
-def _record_workflow_run_state(run: dict[str, Any], *, status: str, details: dict[str, Any] | None = None) -> None:
-    _app_record_workflow_run_state(run, status=status, details=details)
-
-
-
 # ═══════════════════════════════════════════════════════════════
 # STEP EXECUTION -- extracted to domain/workflows/step_executor.py
 # ═══════════════════════════════════════════════════════════════
@@ -192,47 +181,6 @@ from app.domain.workflows.step_executor import (  # noqa: E402
 )
 
 
-def _build_workflow_execution_state(run: dict[str, Any], template: dict[str, Any]) -> WorkflowExecutionState:
-    return _app_build_workflow_execution_state(
-        run=run,
-        template=template,
-        get_workflow_run=get_workflow_run,
-    )
-
-
-def _record_workflow_total_steps(run: dict[str, Any], *, run_id: str, total_steps: int) -> None:
-    _app_record_workflow_total_steps(run, run_id=run_id, total_steps=total_steps)
-
-
-def _workflow_step_index(current_step_id: str, ordered_ids: list[str], step_results: dict[str, Any]) -> int:
-    return _app_workflow_step_index(current_step_id, ordered_ids, step_results)
-
-
-def _record_workflow_step_state(
-    step: dict[str, Any],
-    *,
-    workflow_id: str,
-    run_id: str,
-    step_id: str,
-    step_result: dict[str, Any],
-    step_index: int,
-    step_duration_ms: int,
-    next_step_id: str | None,
-    step_label: str,
-) -> None:
-    _app_record_workflow_step_state(
-        step,
-        workflow_id=workflow_id,
-        run_id=run_id,
-        step_id=step_id,
-        step_result=step_result,
-        step_index=step_index,
-        step_duration_ms=step_duration_ms,
-        next_step_id=next_step_id,
-        step_label=step_label,
-    )
-
-
 def _execute_workflow_run(
     run_id: str,
     *,
@@ -247,7 +195,11 @@ def _execute_workflow_run(
     if not template:
         raise ValueError(f"Workflow '{run['workflow_id']}' not found")
 
-    execution_state = _build_workflow_execution_state(run, template)
+    execution_state = _app_build_workflow_execution_state(
+        run=run,
+        template=template,
+        get_workflow_run=get_workflow_run,
+    )
     steps_by_id = execution_state.steps_by_id
     ordered_ids = execution_state.ordered_ids
     total_steps = execution_state.total_steps
@@ -259,11 +211,11 @@ def _execute_workflow_run(
 
     if resume_event:
         _emit_workflow_event("workflow.run.resumed", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
-        _record_workflow_run_state(run_state, status="resumed", details={"current_step_id": current_step_id})
+        _app_record_workflow_run_state(run_state, status="resumed", details={"current_step_id": current_step_id})
     else:
         _emit_workflow_event("workflow.run.started", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
-        _record_workflow_run_state(run_state, status="started", details={"current_step_id": current_step_id, "total_steps": total_steps})
-        _record_workflow_total_steps(run, run_id=run_id, total_steps=total_steps)
+        _app_record_workflow_run_state(run_state, status="started", details={"current_step_id": current_step_id, "total_steps": total_steps})
+        _app_record_workflow_total_steps(run, run_id=run_id, total_steps=total_steps)
 
     while current_step_id:
         step = steps_by_id.get(current_step_id)
@@ -273,12 +225,12 @@ def _execute_workflow_run(
                 workflow_id=run["workflow_id"],
                 current_step_id=current_step_id,
                 update_workflow_run=_update_workflow_run,
-                record_workflow_run_state=_record_workflow_run_state,
+                record_workflow_run_state=_app_record_workflow_run_state,
                 emit_workflow_event=_emit_workflow_event,
                 now_func=_now,
             )
 
-        step_index = _workflow_step_index(current_step_id, ordered_ids, step_results)
+        step_index = _app_workflow_step_index(current_step_id, ordered_ids, step_results)
         step_label = _step_label(step)
         if progress_callback:
             progress_callback(step_index, total_steps, step_label)
@@ -308,7 +260,7 @@ def _execute_workflow_run(
                 success=bool(step_result.get("ok")),
             ),
         )
-        _record_workflow_step_state(
+        _app_record_workflow_step_state(
             step,
             workflow_id=run["workflow_id"],
             run_id=run_id,
@@ -335,7 +287,7 @@ def _execute_workflow_run(
                 next_step_id=step_outcome.next_step_id,
                 step_results=step_results,
                 update_workflow_run=_update_workflow_run,
-                record_workflow_run_state=_record_workflow_run_state,
+                record_workflow_run_state=_app_record_workflow_run_state,
                 emit_workflow_event=_emit_workflow_event,
             )
 
@@ -347,7 +299,7 @@ def _execute_workflow_run(
                 step_results=step_results,
                 error_message=str(step_result.get("error", "step failed")),
                 update_workflow_run=_update_workflow_run,
-                record_workflow_run_state=_record_workflow_run_state,
+                record_workflow_run_state=_app_record_workflow_run_state,
                 emit_workflow_event=_emit_workflow_event,
                 now_func=_now,
             )
@@ -359,7 +311,7 @@ def _execute_workflow_run(
                 completed_from_step_id=current_step_id,
                 step_results=step_results,
                 update_workflow_run=_update_workflow_run,
-                record_workflow_run_state=_record_workflow_run_state,
+                record_workflow_run_state=_app_record_workflow_run_state,
                 emit_workflow_event=_emit_workflow_event,
                 now_func=_now,
             )
@@ -378,7 +330,7 @@ def _execute_workflow_run(
         completed_from_step_id="",
         step_results=step_results,
         update_workflow_run=_update_workflow_run,
-        record_workflow_run_state=_record_workflow_run_state,
+        record_workflow_run_state=_app_record_workflow_run_state,
         emit_workflow_event=_emit_workflow_event,
         now_func=_now,
     )
@@ -429,7 +381,7 @@ def cancel_workflow_run(run_id: str) -> dict[str, Any]:
         run_id=run_id,
         run=run,
         update_workflow_run=_update_workflow_run,
-        record_workflow_run_state=_record_workflow_run_state,
+        record_workflow_run_state=_app_record_workflow_run_state,
         emit_workflow_event=_emit_workflow_event,
         now_func=_now,
     )

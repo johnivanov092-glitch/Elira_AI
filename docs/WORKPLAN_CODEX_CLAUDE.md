@@ -255,6 +255,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] Removed dead facades from `workflow_engine.py`: `_parse_dt`, `_run_state_for_execution`, `_normalize_graph`, and duplicate inline STEP_SUCCESS/STEP_FAILURE + MULTI_AGENT_*_WORKFLOW_ID constants (already re-exported from extracted modules). workflow_engine.py: 473 -> 452 lines. |
 | `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] All 4 monoliths now under 700 soft limit: agents.py 573, agents_service.py 694, workflow_engine.py 452, memory.py 248. Total: 1967 lines (was 8135, -76%). |
 | `2026-04-12 06:00:00 +05:00` | `NEXT` | agents_service.py (694) remaining structure: pure facades (~160 lines) + `run_agent` (~215 lines) + `run_agent_stream` (~225 lines). Main remaining work: Task 14 (remove legacy facades when callers migrate to direct imports). Other targets: agents.py (573) has 12 backward-compat facades that can be removed when callers update. Frontend TypeScript migration (Task 10+) not started. |
+| `2026-04-12 09:18:59 +05:00` | `DONE` | Fast-forwarded `codex/refactor-arch-foundation` to Claude tip `34342b7` so the shared branch now includes `workflow_engine.py` dead-facade removal and the latest `agents_service.py` guard consolidation before the next Codex slice. |
+| `2026-04-12 09:18:59 +05:00` | `DONE` | Removed the remaining internal-only pass-through facades from `services/workflow_engine.py` for execution-state building, run-state recording, step indexing, step metrics, and total-step bookkeeping; the engine now calls the extracted `application/workflows/*` helpers directly. |
+| `2026-04-12 09:18:59 +05:00` | `DONE` | Re-verified compile/import health for the updated `services/workflow_engine.py`; this cleanup reduced facade noise without changing workflow event payloads, lifecycle transitions, or persisted run-state semantics. |
+| `2026-04-12 09:18:59 +05:00` | `NEXT` | Continue Task 14 on the shared branch: prefer removing the next batch of internal-only backward-compat facades from `services/agents_service.py` or `core/agents.py` after confirming no external callers remain. |
 
 ## 8. Commit Ledger
 
@@ -304,7 +308,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | agents.py has 12 facades, agents_service.py has ~15 facades that can be eliminated |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine internal pass-through facades are now cleaned up; next targets are `agents_service.py` and `agents.py` |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
