@@ -4,9 +4,7 @@ Extracted from core/agents.py — plan generation, normalization,
 step execution, task-graph building, and graph execution with
 auto-retry and reflection.
 
-Heavy runtime helpers (run_browser_agent, run_terminal, persist_web_knowledge,
-reflect_and_improve_answer) are imported lazily from app.core.agents to avoid
-circular imports.
+Heavy runtime helpers are imported directly from their extracted modules.
 """
 from __future__ import annotations
 
