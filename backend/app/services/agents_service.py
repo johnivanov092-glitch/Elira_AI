@@ -88,23 +88,6 @@ def _tl(timeline, step, title, status, detail):
     timeline.append({"step": step, "title": title, "status": status, "detail": detail})
 
 
-def _apply_identity_guard(user_input: str, answer_text: str, timeline: list[dict[str, Any]]):
-    return _app_apply_identity_guard(
-        user_input=user_input,
-        answer_text=answer_text,
-        append_timeline_func=_tl,
-        timeline=timeline,
-    )
-
-def _apply_provenance_guard(user_input: str, answer_text: str, timeline: list[dict[str, Any]]):
-    return _app_apply_provenance_guard(
-        user_input=user_input,
-        answer_text=answer_text,
-        append_timeline_func=_tl,
-        timeline=timeline,
-    )
-
-
 # ═══════════════════════════════════════════════════════════════
 # POST-ГЕНЕРАЦИЯ ФАЙЛОВ: LLM написал ответ → сохраняем в Word/Excel
 # ═══════════════════════════════════════════════════════════════
@@ -128,6 +111,8 @@ _COLLECT_CONTEXT = partial(
     temporal_web_search_func=_TEMPORAL_WEB_SEARCH,
 )
 _BUILD_PROMPT = partial(_app_build_prompt, run_auto_skills_func=run_auto_skills)
+_APPLY_IDENTITY_GUARD = partial(_app_apply_identity_guard, append_timeline_func=_tl)
+_APPLY_PROVENANCE_GUARD = partial(_app_apply_provenance_guard, append_timeline_func=_tl)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -441,8 +426,8 @@ def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, u
                     raw_user_input=raw_user_input,
                     timeline=timeline,
                     append_timeline_func=_tl,
-                    apply_identity_guard_func=_apply_identity_guard,
-                    apply_provenance_guard_func=_apply_provenance_guard,
+                    apply_identity_guard_func=_APPLY_IDENTITY_GUARD,
+                    apply_provenance_guard_func=_APPLY_PROVENANCE_GUARD,
                     finalize_stream_success_func=_app_finalize_stream_success,
                     history_service=_HISTORY,
                     run_id=run["run_id"],

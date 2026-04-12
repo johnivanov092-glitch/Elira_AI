@@ -279,6 +279,11 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 12:30:00 +05:00` | `DONE` | [Claude Code] Fixed broken test imports: `test_runtime_datetime_prompt.py` now calls `build_prompt` directly with noop auto_skills func (no more mock patching removed private), `test_web_multi_intent_runtime.py` imports `do_web_search` from `infrastructure.search.web_search`. All 4 tests pass. |
 | `2026-04-12 12:30:00 +05:00` | `DONE` | [Claude Code] Updated monolith sizes: agents.py 419 (-85%), agents_service.py 584 (-76%), workflow_engine.py 391 (-70%), memory.py 248 (-83%). Total: 1642 lines (was 8135, -80%). |
 | `2026-04-12 12:30:00 +05:00` | `NEXT` | Remaining work: agents_service.py still has timeline-injection wrappers that can be removed once injection moves to application/chat. core/agents.py has 12 public backward-compat facades needing caller migration. Frontend TypeScript migration (Task 10+) not started. |
+| `2026-04-12 16:54:37 +05:00` | `DONE` | Synced the shared branch with the latest Claude line by cherry-picking `b962aac`, `3bf6c14`, and `349222a`. `codex/refactor-arch-foundation` now includes Claude's cleanup and test-fix commits instead of leaving them isolated on `claude/refactor-master-plan`. |
+| `2026-04-12 16:54:37 +05:00` | `DONE` | Removed the final simple guard wrappers from `services/agents_service.py`: `_apply_identity_guard` and `_apply_provenance_guard` were replaced by `_APPLY_IDENTITY_GUARD` / `_APPLY_PROVENANCE_GUARD` partials over the extracted `application/chat/post_processing.py` functions. |
+| `2026-04-12 16:54:37 +05:00` | `DONE` | Re-verified compile/import health after the Claude sync and guard-wrapper cleanup; `agents_service.py` is now 569 lines and `_tl` remains the only local helper because it still serves as the shared timeline callback injection point. |
+| `2026-04-12 16:56:13 +05:00` | `DONE` | Re-ran the repaired targeted tests on the shared branch after the latest cleanup: `python -m pytest backend/tests/test_runtime_datetime_prompt.py backend/tests/test_web_multi_intent_runtime.py -q` -> `4 passed`. |
+| `2026-04-12 16:54:37 +05:00` | `NEXT` | Continue Task 14 by moving `_tl` callback injection into `application/chat` helpers, or pause further `agents_service.py` shrinking until a caller-migration wave begins on the public `core/agents.py` facades. |
 
 ## 8. Commit Ledger
 
@@ -294,6 +299,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `codex/refactor-arch-foundation` | `4e3282b` | `refactor(chat): extract auto-skills and file generation into application module` | `cherry-picked onto shared branch` | Shared branch now carries `application/chat/auto_skills.py` |
 | `codex/refactor-arch-foundation` | `122a61c` | `cleanup: remove dead inline web-search code from agents_service.py` | `cherry-picked onto shared branch` | Removed overridden inline search code after Codex moved search into infrastructure |
 | `codex/refactor-arch-foundation` | `f7d14f1` | `cleanup: remove dead legacy code from agents_service.py` | `cherry-picked onto shared branch` | Removed dead legacy context helpers after Codex wired the modern facades |
+| `codex/refactor-arch-foundation` | `b962aac` | `refactor: remove dead imports, merge error handlers, trim re-exports` | `cherry-picked onto shared branch` | Claude cleanup commit integrated into the shared branch |
+| `codex/refactor-arch-foundation` | `3bf6c14` | `fix(tests): update test imports to point at extracted modules` | `cherry-picked onto shared branch` | Shared branch now carries the test-import fixes for extracted modules |
+| `codex/refactor-arch-foundation` | `349222a` | `docs: update WORKPLAN with test fixes and 80% monolith reduction milestone` | `cherry-picked onto shared branch` | Carries Claude's latest worklog/test-fix milestone into the shared branch |
 | `claude/refactor-master-plan` | `23520b1` | `refactor(agents): extract reflection and orchestrator into domain modules` | `pushed to origin` | Task 7 final — reflection.py (~240 lines) + orchestrator.py (~470 lines), core/agents.py 3029→2146 lines |
 | `main`, `origin/main`, `codex/workplan-codex-claude`, `feat/agent-os-phase2-tools`, `claude/zealous-goldwasser` | `755072177138` | `feat(agent-os): Phase 2 — Tool Registry with JSON Schema` | `current HEAD` | Shared current tip; Phase 2 status still needs reconciliation against the legacy workplan |
 | `historical mainline` | `283345d` | `feat(agent-os): finish phase 5 monitoring dashboard` | `present in docs history` | UI/dashboard completion for Agent OS monitoring |
@@ -328,7 +336,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine, simple `agents_service.py` pass-through facades, and both dead `core/agents.py` shim waves are cleaned up; next targets are the remaining timeline-injection wrappers in `agents_service.py` and any last public aliases that can be retired safely after caller migration |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine, simple `agents_service.py` pass-through facades, both dead `core/agents.py` shim waves, and the guard-wrapper cleanup are done; next target is moving `_tl` callback injection into `application/chat` or pausing monolith cleanup until public caller migration begins |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
