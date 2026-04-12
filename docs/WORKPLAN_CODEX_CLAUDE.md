@@ -288,7 +288,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 17:05:05 +05:00` | `DONE` | Re-verified compile/import health for `services/agents_service.py`, `application/chat/timeline.py`, and the affected chat helpers. |
 | `2026-04-12 17:08:01 +05:00` | `DONE` | Migrated the remaining internal domain callers away from `app.core.agents`: `domain/agents/planner.py` now imports browser/terminal/persistence/reflection helpers from their extracted modules directly, and `domain/agents/orchestrator.py` now imports routing/planner/workflow helpers directly instead of going back through the compatibility facade layer. |
 | `2026-04-12 17:08:01 +05:00` | `DONE` | Re-verified compile/import health for `domain/agents/planner.py`, `domain/agents/orchestrator.py`, `application/workflows/multi_agent.py`, `application/memory/persistence.py`, `domain/tools/browser_agent_tool.py`, `domain/tools/terminal_tool.py`, and `domain/agents/reflection.py`. |
-| `2026-04-12 17:08:01 +05:00` | `NEXT` | Task 14 local cleanup is now mostly exhausted. Next meaningful progress is migrating external callers/tests off the public `core/agents.py` facades, or switching focus to the next master-plan item such as DB-connection adoption. |
+| `2026-04-12 17:10:56 +05:00` | `DONE` | Started the next master-plan item after Task 14 caller migration plateaued: moved `services/response_cache.py` and `services/run_history_service.py` from direct `sqlite3.connect(...)` calls to the shared `app.infrastructure.db.connection.connect_sqlite()` helper. |
+| `2026-04-12 17:10:56 +05:00` | `DONE` | Preserved behavior by passing `journal_mode=None` and `row_factory=sqlite3.Row`, so this slice centralizes connection setup without silently changing SQLite journaling semantics. |
+| `2026-04-12 17:10:56 +05:00` | `DONE` | Re-verified compile/import health for the migrated DB consumers and ran `python -m pytest backend/tests/test_temporal_internet_mode.py -q` -> `10 passed`. |
+| `2026-04-12 17:10:56 +05:00` | `NEXT` | Continue the DB-connection adoption wave with another small service-level SQLite consumer (`response_cache` / `run_history` are done), or pause and pick the next master-plan item if route-level DB files need a separate migration strategy. |
 
 ## 8. Commit Ledger
 
@@ -343,7 +346,7 @@ Single live coordination document for Claude/Codex refactor work.
 | --- | --- | --- | --- |
 | `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | internal domain callers are now migrated off `core/agents.py`; the remaining work is external/test/service caller migration away from the public compatibility aliases |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
-| `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
+| `3` | Continue routing SQLite consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | `response_cache.py` and `run_history_service.py` are migrated; next prefer another small service-level consumer before touching route-level DB files |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
 | `6` | Check whether `code_agent_service.py` still exists or has already been removed/replaced before adding a freeze step for it | `codex/refactor-arch-foundation` | Current filesystem snapshot does not show this file under `backend/app/services` |

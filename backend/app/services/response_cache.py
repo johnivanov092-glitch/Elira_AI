@@ -8,6 +8,7 @@ import sqlite3
 import time
 
 from app.core.config import DATA_DIR
+from app.infrastructure.db.connection import connect_sqlite
 from app.services.temporal_intent import detect_temporal_intent
 
 
@@ -19,9 +20,11 @@ MAX_CACHE_SIZE = 500
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(
+        _DB_PATH,
+        row_factory=sqlite3.Row,
+        journal_mode=None,
+    )
 
 
 def _init_db() -> None:

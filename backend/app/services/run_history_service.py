@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.data_files import json_data_file, sqlite_data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 
 DB_PATH = sqlite_data_file("run_history.db", key_tables=("run_history",))
@@ -19,9 +20,11 @@ _MAX_RUNS = 200
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(
+        DB_PATH,
+        row_factory=sqlite3.Row,
+        journal_mode=None,
+    )
 
 
 def _load_legacy_runs(path: Path) -> list[dict[str, Any]]:
