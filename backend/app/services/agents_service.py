@@ -1,14 +1,7 @@
-"""
-agents_service.py v8
+"""Chat agent entry points: run_agent (sync) and run_agent_stream (SSE).
 
-Улучшения v8:
-  • Авто-выбор модели под задачу (route → лучшая модель)
-  • Кэширование ответов (SQLite, TTL 2 часа)
-  • Умная обрезка истории (релевантные сообщения, не просто последние N)
-  • Детальные фазы стриминга
+All supporting logic extracted to application/domain/infrastructure modules.
 """
-# Legacy monolith: keep behavior stable and prefer extraction into
-# application/domain/infrastructure modules over new feature work here.
 from __future__ import annotations
 
 from functools import partial
@@ -23,6 +16,12 @@ from app.application.chat.service import (
     build_task_context,
     prepare_chat_execution,
     prepare_chat_prompt,
+)
+from app.application.chat.auto_skills import (
+    _FILE_TRIGGERS_WORD,
+    _FILE_TRIGGERS_EXCEL,
+    maybe_generate_files,
+    run_auto_skills,
 )
 from app.application.chat.prompting import (
     build_prompt as _app_build_prompt,
@@ -85,21 +84,6 @@ _REFLECTION_ROUTES = {"code", "project"}
 _MAX_HISTORY_PAIRS = 10
 
 
-# ═══════════════════════════════════════════════════════════════
-# POST-ГЕНЕРАЦИЯ ФАЙЛОВ: LLM написал ответ → сохраняем в Word/Excel
-# ═══════════════════════════════════════════════════════════════
-
-
-from app.application.chat.auto_skills import (  # noqa: E402
-    _FILE_TRIGGERS_WORD,
-    _FILE_TRIGGERS_EXCEL,
-    maybe_generate_files,
-    run_auto_skills,
-)
-
-# ═══════════════════════════════════════════════════════════════
-# ГЛУБОКИЙ ВЕБ-ПОИСК: поиск → заход на сайты → извлечение текста
-
 _TEMPORAL_WEB_SEARCH = partial(_infra_do_temporal_web_search, tl=_app_append_timeline)
 _COLLECT_CONTEXT = partial(
     build_chat_context,
@@ -111,10 +95,6 @@ _BUILD_PROMPT = partial(_app_build_prompt, run_auto_skills_func=run_auto_skills)
 _APPLY_IDENTITY_GUARD = partial(_app_apply_identity_guard, append_timeline_func=_app_append_timeline)
 _APPLY_PROVENANCE_GUARD = partial(_app_apply_provenance_guard, append_timeline_func=_app_append_timeline)
 
-
-# ═══════════════════════════════════════════════════════════════
-# run_agent
-# ═══════════════════════════════════════════════════════════════
 
 def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id=None, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
     import time as _time
@@ -337,10 +317,6 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             )
         return err
 
-
-# ═══════════════════════════════════════════════════════════════
-# run_agent_stream
-# ═══════════════════════════════════════════════════════════════
 
 def run_agent_stream(*, model_name, profile_name, user_input, session_id=None, use_memory=True, use_library=True, use_reflection=False, history=None, num_ctx=8192, use_web_search=True, use_python_exec=True, use_image_gen=True, use_file_gen=True, use_http_api=True, use_sql=True, use_screenshot=True, use_encrypt=True, use_archiver=True, use_converter=True, use_regex=True, use_translator=True, use_csv=True, use_webhook=True, use_plugins=True):
     import time as _time
