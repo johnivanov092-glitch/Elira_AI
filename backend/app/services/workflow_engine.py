@@ -46,8 +46,6 @@ from app.core.data_files import sqlite_data_file
 
 DB_PATH: Path = sqlite_data_file("workflow_engine.db")
 
-TERMINAL_STATUSES = {"completed", "failed", "paused", "cancelled"}
-
 
 def _now() -> str:
     return _app_now_utc()
@@ -164,20 +162,9 @@ def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload
 # ═══════════════════════════════════════════════════════════════
 
 from app.domain.workflows.step_executor import (  # noqa: E402
-    _resolve_path,
-    _resolve_input_expression,
-    _map_step_inputs,
-    _stringify_template_value,
-    _SafeFormatDict,
-    _render_prompt_template,
-    _determine_profile_name,
-    _execute_agent_step,
-    _execute_tool_step,
     _execute_step,
     _resolve_next_step,
     _step_label,
-    STEP_SUCCESS,
-    STEP_FAILURE,
 )
 
 

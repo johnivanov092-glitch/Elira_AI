@@ -11,7 +11,6 @@ agents_service.py v8
 # application/domain/infrastructure modules over new feature work here.
 from __future__ import annotations
 
-import logging
 from functools import partial
 from typing import Any
 
@@ -69,7 +68,7 @@ from app.services.run_history_service import RunHistoryService
 from app.services.tool_service import run_tool
 from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
 from app.services.response_cache import get_cached, set_cached, should_cache
-from app.core.config import pick_model_for_route, DEFAULT_MODEL
+from app.core.config import pick_model_for_route
 
 # RAG память (опционально — если embedding модель доступна)
 try:
@@ -79,8 +78,6 @@ except ImportError:
     _HAS_RAG = False
     def get_rag_context(*a, **kw): return ""
     def add_to_rag(*a, **kw): return {}
-
-logger = logging.getLogger(__name__)
 
 _HISTORY = RunHistoryService()
 _REFLECTION_ROUTES = {"code", "project"}
@@ -319,41 +316,15 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             duration_ms=_duration_ms,
         )
         return result
-    except SandboxPolicyError as exc:
-        err = {
-            "ok": False,
-            "answer": "",
-            "timeline": timeline + [{"step": "sandbox", "title": "Sandbox", "status": "error", "detail": str(exc)}],
-            "tool_results": tool_results,
-            "meta": {
-                "error": str(exc),
-                "run_id": run["run_id"],
-                "sandbox_reason": exc.reason,
-                "sandbox_details": exc.details,
-            },
-        }
-        _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-        _app_finalize_chat_failure(
-            history_service=_HISTORY,
-            run_id=run["run_id"],
-            profile_name=profile_name,
-            model_name=locals().get("effective_model", model_name),
-            route=locals().get("route", ""),
-            error_text=str(exc),
-            duration_ms=_duration_ms,
-            streaming=False,
-            num_ctx=num_ctx,
-            agent_id=_effective_agent_id,
-            source_agent_id=_agent_os_source_id,
-            session_id=str(session_id or ""),
-            selected_tools=locals().get("selected", []),
-            history_payload=err,
-        )
-        return err
     except Exception as exc:
-        err = {"ok": False, "answer": "", "timeline": timeline + [{"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)}], "tool_results": tool_results, "meta": {"error": str(exc), "run_id": run["run_id"]}}
+        if isinstance(exc, SandboxPolicyError):
+            err_step = {"step": "sandbox", "title": "Sandbox", "status": "error", "detail": str(exc)}
+            err_meta = {"error": str(exc), "run_id": run["run_id"], "sandbox_reason": exc.reason, "sandbox_details": exc.details}
+        else:
+            err_step = {"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)}
+            err_meta = {"error": str(exc), "run_id": run["run_id"]}
+        err = {"ok": False, "answer": "", "timeline": timeline + [err_step], "tool_results": tool_results, "meta": err_meta}
         _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-
         _app_finalize_chat_failure(
             history_service=_HISTORY,
             run_id=run["run_id"],
@@ -370,18 +341,18 @@ def run_agent(*, model_name, profile_name, user_input, session_id=None, agent_id
             selected_tools=locals().get("selected", []),
             history_payload=err,
         )
-        _app_record_registry_agent_run(
-            agent_id=agent_id,
-            registry_agent=_registry_agent,
-            run_id=run["run_id"],
-            input_summary=raw_user_input if 'raw_user_input' in dir() else user_input,
-            output_summary=str(exc),
-            ok=False,
-            route="",
-            model_name=model_name,
-            duration_ms=_duration_ms,
-        )
-
+        if not isinstance(exc, SandboxPolicyError):
+            _app_record_registry_agent_run(
+                agent_id=agent_id,
+                registry_agent=_registry_agent,
+                run_id=run["run_id"],
+                input_summary=raw_user_input if 'raw_user_input' in dir() else user_input,
+                output_summary=str(exc),
+                ok=False,
+                route="",
+                model_name=model_name,
+                duration_ms=_duration_ms,
+            )
         return err
 
 
