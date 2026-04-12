@@ -248,7 +248,13 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-11 21:27:39 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer step-result normalization / exception shaping or the remaining start/resume validation helpers before splitting the inner control loop. |
 | `2026-04-11 21:29:33 +05:00` | `DONE` | Added `backend/app/application/workflows/step_results.py` and moved workflow step exception shaping, step-outcome capture, completion-event payload construction, and pause gating out of `services/workflow_engine.py`. |
 | `2026-04-11 21:29:33 +05:00` | `DONE` | Switched `services/workflow_engine.py` to reuse the shared step-result helpers so the remaining loop keeps only execution sequencing while preserving sandbox error fields, completion event payloads, and pause semantics. |
-| `2026-04-11 21:29:33 +05:00` | `NEXT` | Extract the next bounded slice from `services/workflow_engine.py`: prefer remaining start/resume validation helpers or run-start event emission before attempting a broader control-loop split. |
+| `2026-04-11 21:29:33 +05:00` | `DONE` | Extract the next bounded slice from `services/workflow_engine.py`: prefer remaining start/resume validation helpers or run-start event emission before attempting a broader control-loop split. |
+| `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] Rebased `claude/refactor-master-plan` onto Codex's 8 new commits (4 memory + 4 workflow extractions). All our previous commits cleanly skipped (already cherry-picked by Codex). |
+| `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] Removed 7 dead facade functions from `agents_service.py` (`_short`, `_resolve_agent_os_source_id`, `_record_agent_os_monitoring`, `_is_direct_personal_memory_query`, `_should_recall_memory_context`, `_get_memory_recall_limits`, `_build_runtime_datetime_context`), 6 dead web-search aliases, and 4 unused imports. Fixed missing `build_task_context` import bug. |
+| `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] Added `apply_response_guards()` to `application/chat/post_processing.py` -- shared pipeline for auto-exec, file gen, identity/provenance guards. Consolidated duplicate post-processing in `run_agent` and `run_agent_stream` (fast + heavy paths merged). agents_service.py: 832 -> 694 lines (-17%). |
+| `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] Removed dead facades from `workflow_engine.py`: `_parse_dt`, `_run_state_for_execution`, `_normalize_graph`, and duplicate inline STEP_SUCCESS/STEP_FAILURE + MULTI_AGENT_*_WORKFLOW_ID constants (already re-exported from extracted modules). workflow_engine.py: 473 -> 452 lines. |
+| `2026-04-12 06:00:00 +05:00` | `DONE` | [Claude Code] All 4 monoliths now under 700 soft limit: agents.py 573, agents_service.py 694, workflow_engine.py 452, memory.py 248. Total: 1967 lines (was 8135, -76%). |
+| `2026-04-12 06:00:00 +05:00` | `NEXT` | agents_service.py (694) remaining structure: pure facades (~160 lines) + `run_agent` (~215 lines) + `run_agent_stream` (~225 lines). Main remaining work: Task 14 (remove legacy facades when callers migrate to direct imports). Other targets: agents.py (573) has 12 backward-compat facades that can be removed when callers update. Frontend TypeScript migration (Task 10+) not started. |
 
 ## 8. Commit Ledger
 
@@ -298,8 +304,8 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Commit the foundation wave after reviewing the current deleted docs and archive move state | `codex/refactor-arch-foundation` | Keep the commit limited to workplan plus backend foundation files |
-| `2` | Extract the next smallest slice out of `services/workflow_engine.py` after workflow-step-results extraction | `codex/refactor-arch-foundation` | Prefer remaining start/resume validation helpers or run-start event emission before attempting a broader control-loop split |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | agents.py has 12 facades, agents_service.py has ~15 facades that can be eliminated |
+| `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
