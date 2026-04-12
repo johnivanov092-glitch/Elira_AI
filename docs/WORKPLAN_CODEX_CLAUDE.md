@@ -275,6 +275,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 09:31:06 +05:00` | `DONE` | Kept behavior stable by preserving the same injected dependencies: `maybe_generate_files` still feeds `apply_response_guards`, `run_auto_skills` still feeds prompt assembly, and temporal web search still flows through `collect_context` via `_TEMPORAL_WEB_SEARCH` / `_COLLECT_CONTEXT`. |
 | `2026-04-12 09:31:06 +05:00` | `DONE` | Re-verified compile/import health for `services/agents_service.py`, `core/agents.py`, and the extracted chat/media/browser/code-agent modules after the wrapper-to-partial cleanup. |
 | `2026-04-12 09:31:06 +05:00` | `NEXT` | Continue Task 14 on the shared branch: remaining `agents_service.py` wrappers are the ones that still inject local timeline callbacks (`_apply_identity_guard`, `_apply_provenance_guard`, `_tl`) or wider runtime orchestration. Target those only if the injection point moves into `application/chat`. |
+| `2026-04-12 12:30:00 +05:00` | `DONE` | [Claude Code] Rebased onto Codex's 4 facade-removal commits. Removed dead imports, merged duplicate SandboxPolicyError/Exception handlers with isinstance pattern, trimmed workflow_engine re-exports from 14→3. |
+| `2026-04-12 12:30:00 +05:00` | `DONE` | [Claude Code] Fixed broken test imports: `test_runtime_datetime_prompt.py` now calls `build_prompt` directly with noop auto_skills func (no more mock patching removed private), `test_web_multi_intent_runtime.py` imports `do_web_search` from `infrastructure.search.web_search`. All 4 tests pass. |
+| `2026-04-12 12:30:00 +05:00` | `DONE` | [Claude Code] Updated monolith sizes: agents.py 419 (-85%), agents_service.py 584 (-76%), workflow_engine.py 391 (-70%), memory.py 248 (-83%). Total: 1642 lines (was 8135, -80%). |
+| `2026-04-12 12:30:00 +05:00` | `NEXT` | Remaining work: agents_service.py still has timeline-injection wrappers that can be removed once injection moves to application/chat. core/agents.py has 12 public backward-compat facades needing caller migration. Frontend TypeScript migration (Task 10+) not started. |
 
 ## 8. Commit Ledger
 
