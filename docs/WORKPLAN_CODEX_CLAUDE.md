@@ -292,6 +292,11 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 17:10:56 +05:00` | `DONE` | Preserved behavior by passing `journal_mode=None` and `row_factory=sqlite3.Row`, so this slice centralizes connection setup without silently changing SQLite journaling semantics. |
 | `2026-04-12 17:10:56 +05:00` | `DONE` | Re-verified compile/import health for the migrated DB consumers and ran `python -m pytest backend/tests/test_temporal_internet_mode.py -q` -> `10 passed`. |
 | `2026-04-12 17:10:56 +05:00` | `NEXT` | Continue the DB-connection adoption wave with another small service-level SQLite consumer (`response_cache` / `run_history` are done), or pause and pick the next master-plan item if route-level DB files need a separate migration strategy. |
+| `2026-04-12 18:00:00 +05:00` | `DONE` | [Claude Code] Rebased onto Codex's 4 new commits (guard wrappers, timeline extraction, caller migration, sqlite helper adoption). |
+| `2026-04-12 18:00:00 +05:00` | `DONE` | [Claude Code] Replaced all 25 verbose lazy-import facades in `core/agents.py` with simple direct re-exports: 419 → 62 lines (-85%). No circular deps remain since Codex migrated all internal callers. Fixed stale comment in `planner.py`. |
+| `2026-04-12 18:00:00 +05:00` | `DONE` | [Claude Code] Cleaned up `agents_service.py`: moved mid-file auto_skills import to top, removed stale section comments and v8 docstring. 566 → 542 lines. |
+| `2026-04-12 18:00:00 +05:00` | `DONE` | [Claude Code] Final monolith sizes: agents.py 62, agents_service.py 542, workflow_engine.py 391, memory.py 248. Total: 1243 lines (was 8135, **-85%**). |
+| `2026-04-12 18:00:00 +05:00` | `NEXT` | Remaining targets: agents_service.py (542) is mostly `run_agent` + `run_agent_stream` with duplicated bootstrap patterns — further extraction would need `application/chat/service` restructuring. workflow_engine.py (391) has DB_PATH injection wrappers that are structural, not dead. Frontend TypeScript migration (Task 10+) not started. |
 
 ## 8. Commit Ledger
 
