@@ -286,7 +286,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 17:05:05 +05:00` | `DONE` | Added `backend/app/application/chat/timeline.py` and moved the shared timeline append helper out of `services/agents_service.py` into the application layer. |
 | `2026-04-12 17:05:05 +05:00` | `DONE` | Switched `services/agents_service.py` to reuse `application.chat.timeline.append_timeline` for temporal web-search, context collection, guard callbacks, memory/prompt orchestration, cached-stream handling, and post-processing. The local `_tl` helper is gone. |
 | `2026-04-12 17:05:05 +05:00` | `DONE` | Re-verified compile/import health for `services/agents_service.py`, `application/chat/timeline.py`, and the affected chat helpers. |
-| `2026-04-12 17:05:05 +05:00` | `NEXT` | Task 14 inside `agents_service.py` is effectively reduced to orchestration only. Next safe target is either direct caller migration away from public `core/agents.py` facades or an incremental DB-connection migration from the master plan. |
+| `2026-04-12 17:08:01 +05:00` | `DONE` | Migrated the remaining internal domain callers away from `app.core.agents`: `domain/agents/planner.py` now imports browser/terminal/persistence/reflection helpers from their extracted modules directly, and `domain/agents/orchestrator.py` now imports routing/planner/workflow helpers directly instead of going back through the compatibility facade layer. |
+| `2026-04-12 17:08:01 +05:00` | `DONE` | Re-verified compile/import health for `domain/agents/planner.py`, `domain/agents/orchestrator.py`, `application/workflows/multi_agent.py`, `application/memory/persistence.py`, `domain/tools/browser_agent_tool.py`, `domain/tools/terminal_tool.py`, and `domain/agents/reflection.py`. |
+| `2026-04-12 17:08:01 +05:00` | `NEXT` | Task 14 local cleanup is now mostly exhausted. Next meaningful progress is migrating external callers/tests off the public `core/agents.py` facades, or switching focus to the next master-plan item such as DB-connection adoption. |
 
 ## 8. Commit Ledger
 
@@ -339,7 +341,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | `agents_service.py` is now orchestration-only and `core/agents.py` is mostly public facades; next meaningful progress is caller migration away from those public aliases rather than more local shim deletion |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | internal domain callers are now migrated off `core/agents.py`; the remaining work is external/test/service caller migration away from the public compatibility aliases |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |

@@ -17,6 +17,10 @@ from urllib.parse import quote_plus
 
 from app.core.llm import ask_model, clean_code_fence, safe_json_parse
 from app.core.files import truncate_text
+from app.domain.agents.reflection import reflect_and_improve_answer
+from app.domain.tools.browser_agent_tool import run_browser_agent
+from app.domain.tools.terminal_tool import is_dangerous_command, run_terminal
+from app.application.memory.persistence import persist_web_knowledge
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +38,6 @@ def extract_first_url(text: str) -> str:
 
 
 def planner_safe_terminal_command(cmd: str) -> bool:
-    from app.core.agents import is_dangerous_command
-
     low = (cmd or "").strip().lower()
     if not low or is_dangerous_command(low):
         return False
@@ -276,12 +278,6 @@ def run_planner_agent(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.core.agents import (
-        persist_web_knowledge,
-        reflect_and_improve_answer,
-        run_browser_agent,
-        run_terminal,
-    )
     from app.core.memory import build_memory_context, record_tool_usage
 
     total_steps = 3
@@ -450,12 +446,6 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.core.agents import (
-        persist_web_knowledge,
-        reflect_and_improve_answer,
-        run_browser_agent,
-        run_terminal,
-    )
     from app.core.memory import build_memory_context, record_tool_usage
 
     memory_context = build_memory_context(task, memory_profile, top_k=8)

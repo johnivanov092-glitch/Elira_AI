@@ -15,6 +15,9 @@ from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
 from app.core.llm import ask_model, clean_code_fence, safe_json_parse
+from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
+from app.domain.agents.planner import run_planner_agent, run_task_graph
+from app.domain.agents.router import TASK_GRAPH_TEMPLATES_V8, choose_v8_strategy, route_task
 
 # ---------------------------------------------------------------------------
 # Type alias for progress callbacks
@@ -35,14 +38,6 @@ def run_agent_v8(
     progress_callback: ProgressCallback = None,
     force_strategy: str | None = None,
 ) -> dict:
-    # Lazy imports to avoid circular deps
-    from app.core.agents import (
-        route_task,
-        choose_v8_strategy,
-        run_planner_agent,
-        run_task_graph,
-        run_multi_agent,
-    )
     from app.core.memory import (
         add_working_memory,
         build_kb_context,
@@ -59,8 +54,6 @@ def run_agent_v8(
         regenerate_answer_from_context,
         run_graph_with_retry_v8,
     )
-    from app.domain.agents.router import TASK_GRAPH_TEMPLATES_V8
-
     run_started = time.time()
     run_id = uuid4().hex[:12]
     route = route_task(
@@ -284,8 +277,10 @@ def run_agent_v8(
 
     def h_multi_agent(s: dict) -> dict:
         _progress(5, "\U0001f91d Multi-Agent")
-        result = run_multi_agent(
-            task, model_name, memory_profile,
+        result = run_legacy_multi_agent_workflow(
+            task=task,
+            model_name=model_name,
+            memory_profile=memory_profile,
             num_ctx=num_ctx, progress_callback=None,
         )
         s["multi_agent_result"] = result
