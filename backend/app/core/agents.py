@@ -133,24 +133,6 @@ def reflect_and_improve_answer(
     from app.domain.agents.reflection import reflect_and_improve_answer as _reflect
     return _reflect(task, draft, model_name, profile_name=profile_name, extra_context=extra_context, num_ctx=num_ctx)
 
-def _extract_first_url(text: str) -> str:
-    """Facade -- delegates to domain.agents.planner."""
-    from app.domain.agents.planner import extract_first_url
-    return extract_first_url(text)
-
-
-def _planner_safe_terminal_command(cmd: str) -> bool:
-    """Facade -- delegates to domain.agents.planner."""
-    from app.domain.agents.planner import planner_safe_terminal_command
-    return planner_safe_terminal_command(cmd)
-
-
-def _planner_default_steps(task: str) -> List[dict]:
-    """Facade -- delegates to domain.agents.planner."""
-    from app.domain.agents.planner import planner_default_steps
-    return planner_default_steps(task)
-
-
 def run_planner_agent(
     task: str,
     model_name: str,
@@ -163,18 +145,6 @@ def run_planner_agent(
     return _run(task, model_name, memory_profile, num_ctx=num_ctx, progress_callback=progress_callback)
 
 
-def _task_graph_default(task: str) -> List[dict]:
-    """Facade -- delegates to domain.agents.planner."""
-    from app.domain.agents.planner import task_graph_default
-    return task_graph_default(task)
-
-
-def _normalize_task_graph(raw_graph: Any, task: str) -> List[dict]:
-    """Facade -- delegates to domain.agents.planner."""
-    from app.domain.agents.planner import normalize_task_graph
-    return normalize_task_graph(raw_graph, task)
-
-
 def make_task_graph(
     task: str,
     model_name: str,
@@ -184,12 +154,6 @@ def make_task_graph(
     """Facade -- delegates to domain.agents.planner."""
     from app.domain.agents.planner import make_task_graph as _make
     return _make(task, model_name, memory_profile, num_ctx=num_ctx)
-
-
-def _task_graph_context_from_deps(node: dict, node_results: Dict[str, dict]) -> str:
-    """Facade -- delegates to domain.agents.planner."""
-    from app.domain.agents.planner import task_graph_context_from_deps
-    return task_graph_context_from_deps(node, node_results)
 
 
 def run_task_graph(
@@ -376,20 +340,6 @@ def run_terminal(cmd: str, timeout: int = 25) -> str:
     return _run_terminal(cmd, timeout=timeout)
 
 
-def _browser_runtime_hint(exc: Exception | str) -> str:
-    """Facade -- delegates to domain.tools.browser_action_tool."""
-    from app.domain.tools.browser_action_tool import browser_runtime_hint as _runtime_hint
-
-    return _runtime_hint(exc)
-
-
-def _sanitize_browser_actions(actions: List[dict]) -> List[dict]:
-    """Facade -- delegates to domain.tools.browser_action_tool."""
-    from app.domain.tools.browser_action_tool import sanitize_browser_actions as _sanitize_actions
-
-    return _sanitize_actions(actions)
-
-
 def browser_actions_from_goal(goal: str, model_name: str) -> List[dict]:
     """Facade -- delegates to domain.tools.browser_action_tool."""
     from app.domain.tools.browser_action_tool import browser_actions_from_goal as _browser_actions_from_goal
@@ -415,20 +365,6 @@ def sync_playwright_available() -> bool:
 # ================================
 # Browser в†’ RAG helpers
 # ================================
-
-def _clean_browser_text(text: str) -> str:
-    """Facade -- delegates to application.memory.web_knowledge."""
-    from app.application.memory.web_knowledge import clean_browser_text as _clean_text
-
-    return _clean_text(text)
-
-
-def _chunk_browser_text(text: str, size: int = 1200):
-    """Facade -- delegates to application.memory.web_knowledge."""
-    from app.application.memory.web_knowledge import chunk_browser_text as _chunk_text
-
-    return _chunk_text(text, size=size)
-
 
 def build_browser_rag_records(url: str, goal: str, summary: str, page_text: str):
     """Facade -- delegates to application.memory.web_knowledge."""
@@ -483,22 +419,10 @@ from app.domain.agents.router import TASK_GRAPH_TEMPLATES_V8  # noqa: E402
 
 
 
-def _safe_json_object(text: str) -> dict:
-    """Facade -- delegates to domain.agents.reflection."""
-    from app.domain.agents.reflection import safe_json_object
-    return safe_json_object(text)
-
-
 def reflection_v2(task: str, answer: str, model_name: str, memory_context: str = "", kb_context: str = "", profile_name: str = "", num_ctx: int = 4096) -> dict:
     """Facade -- delegates to domain.agents.reflection."""
     from app.domain.agents.reflection import reflection_v2 as _refl
     return _refl(task, answer, model_name, memory_context=memory_context, kb_context=kb_context, profile_name=profile_name, num_ctx=num_ctx)
-
-
-def _count_false_flags(reflection: dict) -> int:
-    """Facade -- delegates to domain.agents.reflection."""
-    from app.domain.agents.reflection import count_false_flags
-    return count_false_flags(reflection)
 
 
 def regenerate_answer_from_context(task: str, model_name: str, memory_context: str = "", kb_context: str = "", prior_answer: str = "", reflection_notes: str = "", num_ctx: int = 4096) -> str:

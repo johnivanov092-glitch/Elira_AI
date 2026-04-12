@@ -263,6 +263,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-12 09:22:18 +05:00` | `DONE` | Deleted the now-dead `_wants_explicit_datetime_answer` shim and the obsolete pass-through wrappers that no longer added behavior after Claude's `apply_response_guards()` consolidation; `agents_service.py` is down to 642 lines. |
 | `2026-04-12 09:22:18 +05:00` | `DONE` | Re-verified compile/import health for the updated `services/agents_service.py` and the related `application/chat` modules; runtime behavior is unchanged because the surviving wrappers still cover the injected dependency cases (`_collect_context`, `_build_prompt`, stream cached-guard callbacks). |
 | `2026-04-12 09:22:18 +05:00` | `NEXT` | Continue Task 14 on the shared branch: prefer removing the remaining `agents_service.py` wrappers that still inject local helpers only after moving those injections into `application/chat`, or switch to `core/agents.py` backward-compat facade cleanup. |
+| `2026-04-12 09:24:36 +05:00` | `DONE` | Removed the next batch of dead underscore-shims from `core/agents.py` after confirming they had no external callers: planner-only helpers (`_extract_first_url`, `_planner_safe_terminal_command`, `_planner_default_steps`, `_task_graph_default`, `_normalize_task_graph`, `_task_graph_context_from_deps`), browser-action/browser-RAG helpers (`_browser_runtime_hint`, `_sanitize_browser_actions`, `_clean_browser_text`, `_chunk_browser_text`), and reflection helpers (`_safe_json_object`, `_count_false_flags`). |
+| `2026-04-12 09:24:36 +05:00` | `DONE` | Kept all public facades and any wrappers with actual in-file usage intact; this was a dead-code-only cleanup of `core/agents.py` under Task 14 with no public contract changes. |
+| `2026-04-12 09:24:36 +05:00` | `DONE` | Re-verified compile/import health for the updated `core/agents.py` and the extracted planner/browser/reflection modules it still delegates to. |
+| `2026-04-12 09:24:36 +05:00` | `NEXT` | Continue Task 14 on the shared branch: target the next dead or purely backward-compat wrappers in `core/agents.py` (`_ok_check`, `_run_in_dir`, media/browser shims with no external callers) or resume the remaining injected-wrapper migration in `services/agents_service.py`. |
 
 ## 8. Commit Ledger
 
@@ -312,7 +316,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine and the simple `agents_service.py` pass-through facades are cleaned up; next targets are the injected wrappers in `agents_service.py` and the backward-compat layer in `agents.py` |
+| `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | workflow_engine, simple `agents_service.py` pass-through facades, and the first dead `core/agents.py` shims are cleaned up; next targets are remaining dead wrappers in `core/agents.py` and injected wrappers in `agents_service.py` |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Start routing the next touched DB consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | Prefer incremental migration over broad rewrites |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
