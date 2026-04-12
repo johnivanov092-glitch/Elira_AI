@@ -12,7 +12,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services.agents_service import _do_web_search  # noqa: E402
+from app.infrastructure.search.web_search import do_web_search as _do_web_search  # noqa: E402
 
 
 class WebMultiIntentRuntimeTest(unittest.TestCase):
@@ -50,7 +50,7 @@ class WebMultiIntentRuntimeTest(unittest.TestCase):
         timeline = []
         tool_results = []
 
-        with patch("app.services.agents_service._build_single_web_subquery_context", side_effect=fake_builder):
+        with patch("app.infrastructure.search.web_search.build_single_web_subquery_context", side_effect=fake_builder):
             context = _do_web_search("composite current-world query", timeline, tool_results, web_plan=web_plan)
 
         self.assertIn("section for news a", context)
