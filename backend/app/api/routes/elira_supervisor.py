@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.data_files import data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 router = APIRouter(prefix="/api/elira/supervisor", tags=["elira-supervisor"])
 
@@ -28,7 +29,7 @@ BLOCKED_PARTS = {
 
 def ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         conn.execute(
             """
@@ -168,7 +169,7 @@ def build_steps(plan: List[dict], status_overrides: dict | None = None) -> List[
 
 def persist_run(goal: str, mode: str, current_path: str | None, status: str, plan: list, steps: list, summary: dict) -> int:
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         cur = conn.execute(
             """
@@ -315,8 +316,7 @@ def execute_supervisor(payload: SupervisorExecutePayload):
 @router.get("/history/list")
 def list_supervisor_history(limit: int = 30):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
     try:
         rows = conn.execute(
             """
@@ -335,8 +335,7 @@ def list_supervisor_history(limit: int = 30):
 @router.get("/history/get")
 def get_supervisor_history(id: int):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
     try:
         row = conn.execute(
             """
