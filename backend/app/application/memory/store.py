@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Any, Callable
+
+from app.infrastructure.db.connection import connect_sqlite
 
 
 TimestampFactory = Callable[[], str]
@@ -12,7 +13,7 @@ AddMemoryFunc = Callable[..., bool]
 
 
 def list_mem_profiles(*, db_path: str) -> list[dict[str, Any]]:
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         rows = conn.execute(
             "SELECT id, name, emoji, created_at FROM mem_profiles ORDER BY id ASC"
         ).fetchall()
@@ -30,7 +31,7 @@ def create_mem_profile(
     if not normalized_name or len(normalized_name) > 40:
         return False
     try:
-        with sqlite3.connect(db_path) as conn:
+        with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO mem_profiles (name, emoji, created_at) VALUES (?, ?, ?)",
                 (normalized_name, emoji, now_iso_func()),
@@ -44,7 +45,7 @@ def create_mem_profile(
 def delete_mem_profile(*, db_path: str, name: str) -> None:
     if name == "default":
         return
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         conn.execute("DELETE FROM mem_profiles WHERE name = ?", (name,))
         conn.execute("DELETE FROM memories WHERE profile_name = ?", (name,))
         conn.commit()
@@ -67,7 +68,7 @@ def add_memory(
         return False
 
     content_hash = content_hash_func(normalized_content)
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         if deduplicate:
             existing = conn.execute(
                 "SELECT id FROM memories WHERE content_hash = ? AND profile_name = ? LIMIT 1",
@@ -100,7 +101,7 @@ def load_memories(
     only_pinned: bool = False,
     profile_name: str = "",
 ) -> list[Any]:
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         sql = "SELECT id, content, source, created_at, pinned, memory_type, profile_name FROM memories"
         clauses: list[str] = []
         params: list[Any] = []
@@ -117,13 +118,13 @@ def load_memories(
 
 
 def delete_memory(*, db_path: str, memory_id: int) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         conn.commit()
 
 
 def clear_memories(*, db_path: str, profile_name: str = "") -> None:
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             conn.execute("DELETE FROM memories WHERE profile_name = ?", (profile_name,))
         else:
@@ -132,7 +133,7 @@ def clear_memories(*, db_path: str, profile_name: str = "") -> None:
 
 
 def set_memory_pin(*, db_path: str, memory_id: int, pinned: bool) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         conn.execute("UPDATE memories SET pinned = ? WHERE id = ?", (int(pinned), memory_id))
         conn.commit()
 

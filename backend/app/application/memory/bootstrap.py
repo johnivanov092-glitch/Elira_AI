@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any, Callable
+
+from app.infrastructure.db.connection import connect_sqlite
 
 
 TimestampFactory = Callable[[], str]
@@ -36,7 +37,7 @@ def save_settings(*, settings_path: str | Path, settings: dict[str, Any]) -> Non
 
 
 def init_db(*, db_path: str | Path, now_iso_func: TimestampFactory) -> None:
-    with sqlite3.connect(str(db_path)) as conn:
+    with connect_sqlite(db_path, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memories (

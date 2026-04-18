@@ -7,15 +7,15 @@ and reflection results for learning across sessions.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any
 
 from app.core.config import DB_PATH
+from app.infrastructure.db.connection import connect_sqlite
 
 
 def _conn():
-    return sqlite3.connect(str(DB_PATH))
+    return connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
 
 
 def record_task_run(
@@ -25,7 +25,7 @@ def record_task_run(
     final_status: str,
     profile_name: str = "",
 ):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO task_runs (profile_name, task_text, route_mode, graph_used, final_status)
@@ -49,7 +49,7 @@ def record_reflection(
     profile_name: str = "",
 ):
     reflection = reflection or {}
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO reflections (
@@ -74,7 +74,7 @@ def record_reflection(
 
 
 def get_recent_task_runs(profile_name: str = "", limit: int = 20):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """
@@ -111,7 +111,7 @@ def get_recent_task_runs(profile_name: str = "", limit: int = 20):
 
 
 def get_recent_reflections(profile_name: str = "", limit: int = 20):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """

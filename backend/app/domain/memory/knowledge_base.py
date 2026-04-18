@@ -7,15 +7,15 @@ for long-term factual storage with semantic search.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List
 
 from app.core.config import DB_PATH
+from app.infrastructure.db.connection import connect_sqlite
 
 
 def _conn():
-    return sqlite3.connect(str(DB_PATH))
+    return connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
 
 
 def record_tool_usage(
@@ -26,7 +26,7 @@ def record_tool_usage(
     notes: str = "",
     profile_name: str = "",
 ):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             "INSERT INTO tool_usage (tool_name, task_hint, ok, score, notes, created_at, profile_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -44,7 +44,7 @@ def record_tool_usage(
 
 def get_tool_preferences(task_hint: str = "", profile_name: str = "", limit: int = 5) -> List[Dict[str, Any]]:
     q_words = [w for w in (task_hint or "").lower().split() if len(w) >= 3]
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         rows = conn.execute(
             "SELECT tool_name, task_hint, ok, score, notes, created_at FROM tool_usage WHERE (? = '' OR profile_name = ?) ORDER BY id DESC LIMIT 200",
             (profile_name, profile_name),
@@ -90,7 +90,7 @@ def add_kb_record(
     if not content:
         return False
     h = _content_hash(f"{title}\n{url}\n{content}")
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if deduplicate:
             existing = conn.execute(
                 "SELECT id FROM knowledge_chunks WHERE content_hash = ? AND profile_name = ? LIMIT 1",
@@ -119,7 +119,7 @@ def search_kb(query: str, top_k: int = 5, profile_name: str = "") -> List[Dict[s
     if not (query or "").strip():
         return []
     q_words = [w for w in query.lower().split() if len(w) >= 2]
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         rows = conn.execute(
             "SELECT title, url, content, source, chunk_type, created_at FROM knowledge_chunks WHERE (? = '' OR profile_name = ?) ORDER BY id DESC LIMIT 1000",
             (profile_name, profile_name),
@@ -157,7 +157,7 @@ def build_kb_context(query: str, profile_name: str = "", top_k: int = 4) -> str:
 
 
 def get_kb_stats(profile_name: str = "") -> Dict[str, int]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             total = conn.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE profile_name = ?", (profile_name,)).fetchone()[0]
         else:

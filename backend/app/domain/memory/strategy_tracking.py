@@ -7,15 +7,15 @@ self-improvement run tracking, and web learning run recording and context buildi
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any, Dict
 
 from app.core.config import DB_PATH
+from app.infrastructure.db.connection import connect_sqlite
 
 
 def _conn():
-    return sqlite3.connect(str(DB_PATH))
+    return connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
 
 
 def record_self_improve_run(
@@ -26,7 +26,7 @@ def record_self_improve_run(
     reflection,
     profile_name: str = "",
 ):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO self_improve_runs (
@@ -47,7 +47,7 @@ def record_self_improve_run(
 
 
 def get_recent_self_improve_runs(profile_name: str = "", limit: int = 20):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """
@@ -94,7 +94,7 @@ def record_v8_strategy_usage(
     notes: str = "",
     profile_name: str = "",
 ):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO v8_strategy_usage (
@@ -119,7 +119,7 @@ def record_v8_strategy_usage(
 
 def get_v8_strategy_preferences(task_hint: str = "", profile_name: str = "", limit: int = 5):
     q_words = [w for w in re.findall(r"[\wа-яА-ЯёЁ-]+", (task_hint or "").lower()) if len(w) >= 3]
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         rows = conn.execute(
             """
             SELECT strategy, route_mode, task_hint, ok, score, latency, notes, created_at
@@ -179,7 +179,7 @@ def build_v8_strategy_context(task_hint: str, profile_name: str = "", limit: int
 
 
 def get_recent_v8_strategy_runs(profile_name: str = "", limit: int = 20):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """
@@ -231,7 +231,7 @@ def record_web_learning_run(
     notes: str = "",
     profile_name: str = "",
 ):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO web_learning_runs (
@@ -256,7 +256,7 @@ def record_web_learning_run(
 
 
 def get_recent_web_learning_runs(profile_name: str = "", limit: int = 20):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """

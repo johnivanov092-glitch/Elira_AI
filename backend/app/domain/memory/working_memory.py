@@ -7,15 +7,15 @@ memory compaction (summarization and dedup), and related run tracking.
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List
 
 from app.core.config import DB_PATH
+from app.infrastructure.db.connection import connect_sqlite
 
 
 def _conn():
-    return sqlite3.connect(str(DB_PATH))
+    return connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
 
 
 def add_working_memory(
@@ -30,7 +30,7 @@ def add_working_memory(
     content = (content or "").strip()
     if not run_id or not content:
         return False
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO working_memory (run_id, profile_name, step_name, fact_type, content, score)
@@ -53,7 +53,7 @@ def get_working_memory(run_id: str, profile_name: str = "", limit: int = 50) -> 
     run_id = (run_id or "").strip()
     if not run_id:
         return []
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """
@@ -112,7 +112,7 @@ def build_working_memory_context(run_id: str, profile_name: str = "", limit: int
 
 
 def clear_working_memory(run_id: str = "", profile_name: str = "") -> int:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if run_id and profile_name:
             cur = conn.execute(
                 "DELETE FROM working_memory WHERE run_id = ? AND profile_name = ?",
@@ -129,7 +129,7 @@ def clear_working_memory(run_id: str = "", profile_name: str = "") -> int:
 
 
 def get_recent_working_memory_runs(profile_name: str = "", limit: int = 12) -> List[Dict[str, Any]]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """
@@ -204,7 +204,7 @@ def _build_compaction_summary(rows: List[tuple]) -> str:
 def record_memory_compaction_run(profile_name: str = "", source_count: int = 0,
                                  summary_count: int = 0, deleted_count: int = 0,
                                  notes: str = ""):
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         conn.execute(
             """
             INSERT INTO memory_compaction_runs
@@ -217,7 +217,7 @@ def record_memory_compaction_run(profile_name: str = "", source_count: int = 0,
 
 
 def get_recent_memory_compaction_runs(profile_name: str = "", limit: int = 20) -> List[Dict[str, Any]]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
         if profile_name:
             rows = conn.execute(
                 """
@@ -295,7 +295,7 @@ def compact_memory(profile_name: str = "", keep_recent: int = 120, chunk_size: i
             )
             if added:
                 summary_count += 1
-            with sqlite3.connect(DB_PATH) as conn:
+            with connect_sqlite(DB_PATH, row_factory=None, journal_mode=None) as conn:
                 conn.executemany("DELETE FROM memories WHERE id = ?", [(row[0],) for row in group])
                 conn.commit()
             deleted_count += len(group)
