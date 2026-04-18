@@ -260,7 +260,7 @@ def run_multi_agent(
     use_reflection: bool = False,
     use_orchestrator: bool = False,
 ) -> dict[str, Any]:
-    from app.services.workflow_engine import run_multi_agent_workflow
+    from app.application.workflows.multi_agent import run_multi_agent_workflow
 
     return run_multi_agent_workflow(
         query=query,

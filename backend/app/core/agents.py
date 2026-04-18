@@ -52,8 +52,8 @@ def run_multi_agent(
     task, model_name, memory_profile, num_ctx=4096,
     progress_callback=None, project_context="", file_context="",
 ):
-    """Kept as lazy import to avoid potential circular dep with workflow_engine."""
-    from app.services.workflow_engine import run_legacy_multi_agent_workflow
+    """Kept as lazy import to avoid potential circular dep with workflow modules."""
+    from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
 
     return run_legacy_multi_agent_workflow(
         task=task, model_name=model_name, memory_profile=memory_profile,
