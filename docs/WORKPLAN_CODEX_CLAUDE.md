@@ -323,6 +323,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-18 12:21:31 +05:00` | `DONE` | Continued the same migration in the extracted domain memory modules: `domain/memory/knowledge_base.py`, `strategy_tracking.py`, `task_tracking.py`, and `working_memory.py` no longer call `sqlite3.connect(...)` directly. |
 | `2026-04-18 12:21:31 +05:00` | `DONE` | Re-verified compile/import health for the migrated application/domain memory helpers and ran an isolated temp-DB smoke covering task/reflection tracking, self-improve runs, V8 strategy runs, web-learning runs, working-memory records, and compaction-run tracking. |
 | `2026-04-18 12:21:31 +05:00` | `NEXT` | Service-level and extracted memory-layer SQLite migration is effectively closed; the remaining direct `sqlite3.connect(...)` calls are in `backend/app/api/routes/*`, so the next step should be a separate route-level migration plan or a switch to another master-plan task. |
+| `2026-04-18 12:22:56 +05:00` | `DONE` | Started the explicit route-level migration wave with `api/routes/library_sqlite.py`: its `_conn()` path now uses `app.infrastructure.db.connection.connect_sqlite()` instead of direct `sqlite3.connect(...)`. |
+| `2026-04-18 12:22:56 +05:00` | `DONE` | Preserved route behavior by keeping `row_factory=sqlite3.Row` and `journal_mode=None`; verified the module with a mocked-`fastapi` temp-DB smoke covering `_init`, add/list/toggle/search/context/delete on isolated uploads. |
+| `2026-04-18 12:22:56 +05:00` | `NEXT` | Continue route-level SQLite migration only in similarly isolated slices (`library_sqlite.py` is done); do not batch the `elira_phase*` routes together without a separate verification plan. |
 
 ## 8. Commit Ledger
 
@@ -379,7 +382,7 @@ Single live coordination document for Claude/Codex refactor work.
 | --- | --- | --- | --- |
 | `1` | Remove remaining backward-compat facades from monoliths when callers migrate to direct imports (Task 14) | `codex/refactor-arch-foundation` | internal domain callers are now migrated off `core/agents.py`; the remaining work is external/test/service caller migration away from the public compatibility aliases |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
-| `3` | Continue routing SQLite consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | service-level consumers plus the extracted `application/memory/*` and `domain/memory/*` helpers are migrated; the remaining direct `sqlite3.connect(...)` calls are in `backend/app/api/routes/*`, so proceed only with an explicit route-level migration slice |
+| `3` | Continue routing SQLite consumers through `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | service-level consumers plus the extracted `application/memory/*` and `domain/memory/*` helpers are migrated; route-level migration has started with `api/routes/library_sqlite.py`, and the remaining direct `sqlite3.connect(...)` calls are still in other `backend/app/api/routes/*` modules |
 | `4` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
 | `5` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
 | `6` | Check whether `code_agent_service.py` still exists or has already been removed/replaced before adding a freeze step for it | `codex/refactor-arch-foundation` | Current filesystem snapshot does not show this file under `backend/app/services` |

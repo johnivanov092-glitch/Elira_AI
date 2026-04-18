@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.core.config import DATA_DIR, UPLOAD_DIR
+from app.infrastructure.db.connection import connect_sqlite
 
 DB_PATH = DATA_DIR / "library.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -27,9 +28,7 @@ router = APIRouter(prefix="/api/lib", tags=["library-v2"])
 
 
 def _conn():
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    return c
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
 
 
 def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
