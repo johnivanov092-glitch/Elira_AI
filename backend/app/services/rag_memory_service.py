@@ -8,6 +8,7 @@ import math
 import sqlite3
 
 from app.core.data_files import sqlite_data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,7 @@ EMBED_DIM = 768
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
 
 
 def _init() -> None:

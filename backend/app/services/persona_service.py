@@ -15,6 +15,7 @@ from app.core.persona_defaults import (
     PROFILE_MODE_OVERLAYS,
     PROFILE_UI,
 )
+from app.infrastructure.db.connection import connect_sqlite
 from app.services.elira_memory_sqlite import DB_PATH, init_db as init_state_db
 
 
@@ -26,9 +27,7 @@ def _utc_now() -> str:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
 
 
 def _json_loads(value: Any, fallback: Any) -> Any:
