@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any
 
 from app.core.data_files import sqlite_data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 
 DEFAULT_PROFILE = "default"
@@ -50,9 +51,7 @@ def _normalize_profile(profile_name: str | None) -> str:
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
 
 
 def init_memory_db() -> None:
