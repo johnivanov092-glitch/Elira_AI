@@ -5,6 +5,7 @@ from typing import Any
 import sqlite3
 
 from app.core.config import DATA_DIR, UPLOAD_DIR
+from app.infrastructure.db.connection import connect_sqlite
 
 SQLITE_DB = DATA_DIR / "library.db"
 LEGACY_UPLOADS_DIR = UPLOAD_DIR
@@ -13,10 +14,7 @@ TEXT_EXTS = {".txt", ".md", ".py", ".json", ".csv", ".yml", ".yaml", ".log", ".h
 
 
 def _conn() -> sqlite3.Connection:
-    SQLITE_DB.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(SQLITE_DB)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(SQLITE_DB, row_factory=sqlite3.Row, journal_mode=None)
 
 
 def _read_disk_preview(stored_path: str, max_chars: int) -> str:

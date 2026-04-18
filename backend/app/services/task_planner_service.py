@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 
 from app.core.config import DATA_DIR
+from app.infrastructure.db.connection import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +22,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _connect():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
 
 
 def _init_db():
