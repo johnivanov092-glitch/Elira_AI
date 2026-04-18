@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from typing import List
 
 from app.core.data_files import data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20-state"])
 
@@ -15,7 +16,7 @@ DB_PATH = data_file("elira_state.db")
 
 def ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         conn.execute(
             '''
@@ -72,7 +73,7 @@ def build_execution_state(payload: Phase20StatePayload):
         "created_at": datetime.utcnow().isoformat(),
     }
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         cur = conn.execute(
             '''
@@ -100,8 +101,7 @@ def build_execution_state(payload: Phase20StatePayload):
 @router.get("/execution-state/list")
 def list_execution_states(limit: int = 30):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
     try:
         rows = conn.execute(
             '''
