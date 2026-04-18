@@ -93,7 +93,7 @@ def choose_v8_strategy(
     force_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Select an execution strategy based on task, route, and learned history."""
-    from app.core.memory import get_v8_strategy_preferences
+    from app.domain.memory.strategy_tracking import get_v8_strategy_preferences
 
     if force_strategy:
         return {

@@ -117,7 +117,7 @@ def reflection_v2(
     profile_name: str = "",
     num_ctx: int = 4096,
 ) -> dict:
-    from app.core.memory import record_reflection
+    from app.domain.memory.task_tracking import record_reflection
 
     context = "\n\n".join(x for x in [memory_context, kb_context] if x.strip())
     prompt = (

@@ -344,6 +344,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-18 22:24:31 +05:00` | `DONE` | Continued Task 14 with a workflow-events extraction: added `application/workflows/events.py` as the canonical workflow event emitter and moved the inner `tool.executed` emission path in `domain/workflows/step_executor.py` off the private `services/workflow_engine._emit_workflow_event` shim. |
 | `2026-04-18 22:24:31 +05:00` | `DONE` | Kept `services/workflow_engine.py` behavior stable by leaving `_emit_workflow_event` as a thin wrapper over the new canonical helper; runtime payloads and the event-bus source id contract are unchanged. |
 | `2026-04-18 22:24:31 +05:00` | `NEXT` | Continue Task 14 only with similarly small workflow caller migrations; remaining service-level workflow APIs should move one dependency edge at a time, not via another broad engine rewrite. |
+| `2026-04-19 00:07:18 +05:00` | `DONE` | Continued Task 14 with a direct memory-import cleanup in the domain agent layer: `domain/agents/router.py` now reads learned strategy preferences from `domain/memory/strategy_tracking.py`, and `domain/agents/reflection.py` now records reflection runs through `domain/memory/task_tracking.py` instead of going back through `core/memory.py`. |
+| `2026-04-19 00:07:18 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` dependence on `core/memory.py` to the remaining injected `build_memory_context` helper only; knowledge-base, strategy-tracking, task-tracking, and working-memory calls now import from their canonical extracted modules directly. |
+| `2026-04-19 00:07:18 +05:00` | `NEXT` | Continue Task 14 with similarly small caller migrations off `core/memory.py`; the next safe targets are planner/orchestrator edges that still rely on the compat `build_memory_context` facade, but only after choosing a stable canonical wiring for its injected search dependencies. |
 
 ## 8. Commit Ledger
 
