@@ -18,6 +18,7 @@ from typing import Any
 import requests as http_lib
 
 from app.core.config import DATA_DIR, GENERATED_DIR
+from app.infrastructure.db.connection import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -152,8 +153,7 @@ def run_sql(db_path: str, query: str, params: list = None, max_rows: int = 100) 
         return {"ok": False, "error": f"Р—Р°Р±Р»РѕРєРёСЂРѕРІР°РЅРѕ: {q_up.split()[0]}"}
 
     try:
-        conn = sqlite3.connect(safe)
-        conn.row_factory = sqlite3.Row
+        conn = connect_sqlite(safe, row_factory=sqlite3.Row, journal_mode=None)
         cur = conn.cursor()
         if q_up.startswith(("SELECT", "PRAGMA", "WITH")):
             cur.execute(query, params or [])
@@ -187,7 +187,7 @@ def describe_db(db_path: str) -> dict:
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     try:
-        conn = sqlite3.connect(safe)
+        conn = connect_sqlite(safe, row_factory=sqlite3.Row, journal_mode=None)
         tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
         schema = {}
         for (tbl,) in tables:
