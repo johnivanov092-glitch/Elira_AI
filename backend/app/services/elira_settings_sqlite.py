@@ -3,6 +3,7 @@ import sqlite3
 
 from app.core.data_files import sqlite_data_file
 from app.core.persona_defaults import DEFAULT_PROFILE
+from app.infrastructure.db.connection import connect_sqlite
 from app.services.elira_memory_sqlite import init_db as init_state_db
 
 
@@ -17,9 +18,11 @@ DEFAULT_ROUTE_MAP = {
 
 
 def _connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(
+        DB_PATH,
+        row_factory=sqlite3.Row,
+        journal_mode=None,
+    )
 
 
 def _ensure_route_map_column():

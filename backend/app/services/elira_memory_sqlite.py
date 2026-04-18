@@ -5,15 +5,18 @@ from pathlib import Path
 
 from app.core.data_files import sqlite_data_file
 from app.core.persona_defaults import DEFAULT_PROFILE
+from app.infrastructure.db.connection import connect_sqlite
 
 
 DB_PATH = sqlite_data_file("elira_state.db", key_tables=("chats", "messages"))
 
 
 def _connect(path: str | Path | None = None):
-    conn = sqlite3.connect(str(path or DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(
+        path or DB_PATH,
+        row_factory=sqlite3.Row,
+        journal_mode=None,
+    )
 
 
 _VALID_TABLES = {"chats", "messages", "settings"}
