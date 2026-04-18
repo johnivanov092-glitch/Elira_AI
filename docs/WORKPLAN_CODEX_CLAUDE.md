@@ -341,6 +341,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-18 22:14:52 +05:00` | `DONE` | Continued Task 14 with a small compatibility cleanup: `core/agents.py` no longer reaches through `services/workflow_engine` for the legacy multi-agent shim and now lazily delegates to the canonical `application/workflows/multi_agent.py` entrypoint instead. |
 | `2026-04-18 22:14:52 +05:00` | `DONE` | Switched `services/multi_agent_chain.py` to import `run_multi_agent_workflow` from `application/workflows/multi_agent.py` directly, and updated the legacy compatibility test to patch the canonical multi-agent shim path instead of the old service re-export. |
 | `2026-04-18 22:14:52 +05:00` | `NEXT` | Continue Task 14 only with similarly small caller migrations off `services/workflow_engine` / other compatibility re-exports; keep startup-facing service APIs in place until their remaining callers are intentionally moved. |
+| `2026-04-18 22:24:31 +05:00` | `DONE` | Continued Task 14 with a workflow-events extraction: added `application/workflows/events.py` as the canonical workflow event emitter and moved the inner `tool.executed` emission path in `domain/workflows/step_executor.py` off the private `services/workflow_engine._emit_workflow_event` shim. |
+| `2026-04-18 22:24:31 +05:00` | `DONE` | Kept `services/workflow_engine.py` behavior stable by leaving `_emit_workflow_event` as a thin wrapper over the new canonical helper; runtime payloads and the event-bus source id contract are unchanged. |
+| `2026-04-18 22:24:31 +05:00` | `NEXT` | Continue Task 14 only with similarly small workflow caller migrations; remaining service-level workflow APIs should move one dependency edge at a time, not via another broad engine rewrite. |
 
 ## 8. Commit Ledger
 

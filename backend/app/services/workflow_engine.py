@@ -12,6 +12,7 @@ from app.application.workflows.execution import (
     record_workflow_run_state as _app_record_workflow_run_state,
     workflow_step_index as _app_workflow_step_index,
 )
+from app.application.workflows.events import emit_workflow_event as _app_emit_workflow_event
 from app.application.workflows.lifecycle import (
     advance_to_next_step as _app_advance_to_next_step,
     cancel_run as _app_cancel_run,
@@ -145,16 +146,7 @@ def _create_workflow_run_record(
 
 
 def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload: dict[str, Any] | None = None) -> None:
-    try:
-        from app.services.event_bus import emit_event
-
-        emit_event(
-            event_type=event_type,
-            source_agent_id=workflow_id,
-            payload={"workflow_id": workflow_id, "run_id": run_id, **(payload or {})},
-        )
-    except Exception:
-        return
+    _app_emit_workflow_event(event_type, workflow_id, run_id, payload=payload)
 
 
 # ═══════════════════════════════════════════════════════════════

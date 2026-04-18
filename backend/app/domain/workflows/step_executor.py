@@ -11,6 +11,7 @@ import json
 from string import Formatter
 from typing import Any
 
+from app.application.workflows.events import emit_workflow_event
 from app.services.agent_monitor import WORKFLOW_ENGINE_AGENT_ID
 from app.services.agent_sandbox import preflight_or_raise
 
@@ -166,12 +167,6 @@ def _execute_agent_step(
         "error": result.get("meta", {}).get("error", "") if not result.get("ok") else "",
     }
 
-
-def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload: dict[str, Any] | None = None) -> None:
-    from app.services.workflow_engine import _emit_workflow_event as _emit
-    return _emit(event_type, workflow_id, run_id, payload=payload)
-
-
 def _execute_tool_step(
     step: dict[str, Any],
     mapped_inputs: dict[str, Any],
@@ -195,7 +190,7 @@ def _execute_tool_step(
     )
     result = run_tool(tool_name, args)
     ok = bool(result.get("ok"))
-    _emit_workflow_event(
+    emit_workflow_event(
         "tool.executed",
         workflow_id,
         run_id,
