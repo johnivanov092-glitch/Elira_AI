@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.data_files import data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 router = APIRouter(prefix="/api/elira", tags=["elira-execute"])
 
@@ -16,7 +17,7 @@ DB_PATH = data_file("elira_state.db")
 
 def ensure_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         conn.execute(
             """
@@ -109,8 +110,7 @@ def execute(payload: ExecutePayload):
 @router.get("/memory/list")
 def list_memory(q: str = ""):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
     try:
         if q.strip():
             rows = conn.execute(
@@ -143,7 +143,7 @@ def list_memory(q: str = ""):
 def save_memory(payload: MemorySavePayload):
     ensure_db()
     now = datetime.utcnow().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         cur = conn.execute(
             """
@@ -180,7 +180,7 @@ def save_memory(payload: MemorySavePayload):
 @router.post("/memory/delete")
 def delete_memory(payload: MemoryDeletePayload):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         conn.execute("DELETE FROM memory_store WHERE id = ?", (payload.id,))
         conn.commit()

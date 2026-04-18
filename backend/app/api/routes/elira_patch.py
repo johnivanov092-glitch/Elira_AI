@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+from app.infrastructure.db.connection import connect_sqlite
 
 router = APIRouter(prefix="/api/elira/patch", tags=["elira-patch"])
 
@@ -68,7 +69,7 @@ class BatchVerifyPayload(BaseModel):
 
 def ensure_db() -> None:
     DATA_ROOT.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         conn.execute(
             """
@@ -141,7 +142,7 @@ def write_history(path: str, action: str, before_content: str, after_content: st
     ensure_db()
     diff_text = build_diff_text(path, before_content, after_content)
     now = datetime.utcnow().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
     try:
         cur = conn.execute(
             """
@@ -333,8 +334,7 @@ def verify_batch(payload: BatchVerifyPayload):
 @router.get("/history/list")
 def list_history(path: str = "", limit: int = 50):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
     try:
         if path.strip():
             rows = conn.execute(
@@ -366,8 +366,7 @@ def list_history(path: str = "", limit: int = 50):
 @router.get("/history/get")
 def get_history_item(id: int):
     ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
     try:
         row = conn.execute(
             """
