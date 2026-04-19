@@ -308,7 +308,7 @@ def run_multi_agent_workflow(
     use_reflection: bool = False,
     use_orchestrator: bool = False,
 ) -> dict[str, Any]:
-    from app.services.workflow_engine import start_workflow_run
+    from app.application.workflows.runtime import start_workflow_run
     seed_builtin_workflows()
     workflow_id = _select_multi_agent_workflow_id(use_reflection=use_reflection, use_orchestrator=use_orchestrator)
     run = start_workflow_run(
@@ -384,7 +384,7 @@ def run_legacy_multi_agent_workflow(
     file_context: str = "",
 ) -> dict[str, Any]:
     from app.application.memory.context import build_default_memory_context
-    from app.services.workflow_engine import start_workflow_run
+    from app.application.workflows.runtime import start_workflow_run
 
     seed_builtin_workflows()
     memory_context = build_default_memory_context(

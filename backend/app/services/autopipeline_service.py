@@ -236,7 +236,7 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             workflow_id = str(task_data.get("workflow_id", "")).strip()
             if not workflow_id:
                 return {"ok": False, "error": "Нет workflow_id"}
-            from app.services.workflow_engine import start_workflow_run
+            from app.application.workflows.runtime import start_workflow_run
 
             run = start_workflow_run(
                 workflow_id=workflow_id,

@@ -1,35 +1,15 @@
 """Legacy workflow-engine monolith kept for compatibility during extraction."""
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any, Callable
 
-from app.application.workflows.execution import (
-    build_workflow_execution_state as _app_build_workflow_execution_state,
-    record_workflow_step_state as _app_record_workflow_step_state,
-    record_workflow_total_steps as _app_record_workflow_total_steps,
-    record_workflow_run_state as _app_record_workflow_run_state,
-    workflow_step_index as _app_workflow_step_index,
-)
-from app.application.workflows.events import emit_workflow_event as _app_emit_workflow_event
-from app.application.workflows.lifecycle import (
-    advance_to_next_step as _app_advance_to_next_step,
-    cancel_run as _app_cancel_run,
-    complete_after_step as _app_complete_after_step,
-    fail_missing_step as _app_fail_missing_step,
-    fail_step_and_finish as _app_fail_step_and_finish,
-    merge_resumed_context as _app_merge_resumed_context,
-    pause_after_step as _app_pause_after_step,
-)
-from app.application.workflows.step_results import (
-    build_step_completion_event as _app_build_step_completion_event,
-    build_step_result_from_exception as _app_build_step_result_from_exception,
-    capture_step_outcome as _app_capture_step_outcome,
-    should_pause_after_step as _app_should_pause_after_step,
+from app.application.workflows.runtime import (
+    cancel_workflow_run as _app_cancel_workflow_run,
+    resume_workflow_run as _app_resume_workflow_run,
+    start_workflow_run as _app_start_workflow_run,
 )
 from app.application.workflows.store import (
-    create_workflow_run_record as _app_create_workflow_run_record,
     create_workflow_template as _app_create_workflow_template,
     delete_workflow_template as _app_delete_workflow_template,
     get_workflow_run as _app_get_workflow_run,
@@ -38,7 +18,6 @@ from app.application.workflows.store import (
     list_workflow_runs as _app_list_workflow_runs,
     list_workflow_templates as _app_list_workflow_templates,
     now_utc as _app_now_utc,
-    update_workflow_run as _app_update_workflow_run,
     update_workflow_template as _app_update_workflow_template,
     upsert_workflow_template as _app_upsert_workflow_template,
 )
@@ -323,13 +302,14 @@ def start_workflow_run(
     trigger_source: str = "api",
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
-    run = _create_workflow_run_record(
+    return _app_start_workflow_run(
+        db_path=DB_PATH,
         workflow_id=workflow_id,
         workflow_input=workflow_input,
         context=context,
         trigger_source=trigger_source,
+        progress_callback=progress_callback,
     )
-    return _execute_workflow_run(run["run_id"], progress_callback=progress_callback)
 
 
 def resume_workflow_run(
@@ -338,31 +318,18 @@ def resume_workflow_run(
     context_patch: dict[str, Any] | None = None,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
-    run = get_workflow_run(run_id)
-    if not run:
-        raise ValueError(f"Workflow run '{run_id}' not found")
-    if run["status"] != "paused":
-        raise ValueError("Only paused workflow runs can be resumed")
-
-    merged_context = _app_merge_resumed_context(run, context_patch)
-    _update_workflow_run(run_id, status="running", context=merged_context, error={}, requested_pause=False)
-    return _execute_workflow_run(run_id, resume_event=True, progress_callback=progress_callback)
+    return _app_resume_workflow_run(
+        run_id,
+        db_path=DB_PATH,
+        context_patch=context_patch,
+        progress_callback=progress_callback,
+    )
 
 
 def cancel_workflow_run(run_id: str) -> dict[str, Any]:
-    run = get_workflow_run(run_id)
-    if not run:
-        raise ValueError(f"Workflow run '{run_id}' not found")
-    if run["status"] in {"completed", "failed", "cancelled"}:
-        raise ValueError("Terminal workflow runs cannot be cancelled")
-
-    return _app_cancel_run(
-        run_id=run_id,
-        run=run,
-        update_workflow_run=_update_workflow_run,
-        record_workflow_run_state=_app_record_workflow_run_state,
-        emit_workflow_event=_emit_workflow_event,
-        now_func=_now,
+    return _app_cancel_workflow_run(
+        run_id,
+        db_path=DB_PATH,
     )
 
 

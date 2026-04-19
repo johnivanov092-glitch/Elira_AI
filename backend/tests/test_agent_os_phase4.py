@@ -218,9 +218,9 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
         }
         fake_template = {"graph": {"steps": [{"id": "plan", "save_as": "plan", "config": {"label": "Plan"}}]}}
 
-        with patch("app.services.workflow_engine.seed_builtin_workflows", return_value=0), \
-             patch("app.services.workflow_engine.start_workflow_run", return_value=fake_run), \
-             patch("app.services.workflow_engine.get_workflow_template", return_value=fake_template):
+        with patch("app.application.workflows.multi_agent.seed_builtin_workflows", return_value=0), \
+             patch("app.application.workflows.runtime.start_workflow_run", return_value=fake_run), \
+             patch("app.application.workflows.multi_agent._app_get_workflow_template", return_value=fake_template):
             result = multi_agent_chain.run_multi_agent("hello", use_reflection=True, use_orchestrator=True)
 
         self.assertTrue(result["ok"])
@@ -253,7 +253,7 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
 
 class WorkflowAutopipelineTest(WorkflowDbMixin):
     def test_autopipeline_workflow_task_type(self) -> None:
-        with patch("app.services.workflow_engine.start_workflow_run", return_value={"run_id": "wfr-123", "status": "completed", "error": {}}):
+        with patch("app.application.workflows.runtime.start_workflow_run", return_value={"run_id": "wfr-123", "status": "completed", "error": {}}):
             result = autopipeline_service._execute_task(
                 "workflow",
                 {"workflow_id": "builtin.workflow.multi_agent.default", "input": {"query": "hello"}},
