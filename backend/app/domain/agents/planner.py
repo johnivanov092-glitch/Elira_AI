@@ -276,7 +276,8 @@ def run_planner_agent(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.core.memory import build_memory_context, record_tool_usage
+    from app.core.memory import build_memory_context
+    from app.domain.memory.knowledge_base import record_tool_usage
 
     total_steps = 3
 
@@ -444,7 +445,8 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.core.memory import build_memory_context, record_tool_usage
+    from app.core.memory import build_memory_context
+    from app.domain.memory.knowledge_base import record_tool_usage
 
     memory_context = build_memory_context(task, memory_profile, top_k=8)
     graph = make_task_graph(task, model_name, memory_profile, num_ctx=num_ctx)
