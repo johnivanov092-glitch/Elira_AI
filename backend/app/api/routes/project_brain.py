@@ -532,7 +532,7 @@ def _build_chat_prompt(message: str, route_mode: str, attachments: list[dict[str
 # ---------- routes ----------
 @router.get("/status")
 def project_brain_status():
-    from app.core.memory import vector_memory_capability_status
+    from app.application.memory.search import vector_memory_capability_status
     from app.services.skills_service import screenshot_capability_status
 
     return {

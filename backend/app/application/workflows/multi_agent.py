@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from app.application.workflows.store import (
+    get_workflow_template as _app_get_workflow_template,
+    now_utc as _app_now_utc,
+    upsert_workflow_template as _app_upsert_workflow_template,
+)
+from app.core.data_files import sqlite_data_file
+
 # Workflow ID constants (canonical definitions, re-exported by workflow_engine)
 MULTI_AGENT_DEFAULT_WORKFLOW_ID = "builtin.workflow.multi_agent.default"
 MULTI_AGENT_REFLECTION_WORKFLOW_ID = "builtin.workflow.multi_agent.reflection"
@@ -15,6 +22,7 @@ MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID = "builtin.workflow.multi_agent.orchestrate
 MULTI_AGENT_FULL_WORKFLOW_ID = "builtin.workflow.multi_agent.full"
 
 _BUILTIN_WORKFLOWS_SEEDED = False
+_WORKFLOW_DB_PATH = sqlite_data_file("workflow_engine.db")
 
 
 def _multi_agent_template(
@@ -237,15 +245,14 @@ def _builtin_workflow_templates() -> list[dict[str, Any]]:
 
 
 def seed_builtin_workflows() -> int:
-    from app.services.workflow_engine import get_workflow_template, _upsert_workflow_template
     global _BUILTIN_WORKFLOWS_SEEDED
     if _BUILTIN_WORKFLOWS_SEEDED:
         return 0
 
     created = 0
     for template in _builtin_workflow_templates():
-        existing = get_workflow_template(template["id"])
-        _upsert_workflow_template(template)
+        existing = _app_get_workflow_template(db_path=_WORKFLOW_DB_PATH, workflow_id=template["id"])
+        _app_upsert_workflow_template(db_path=_WORKFLOW_DB_PATH, template=template, now_func=_app_now_utc)
         if not existing:
             created += 1
 
@@ -301,7 +308,7 @@ def run_multi_agent_workflow(
     use_reflection: bool = False,
     use_orchestrator: bool = False,
 ) -> dict[str, Any]:
-    from app.services.workflow_engine import get_workflow_template, start_workflow_run
+    from app.services.workflow_engine import start_workflow_run
     seed_builtin_workflows()
     workflow_id = _select_multi_agent_workflow_id(use_reflection=use_reflection, use_orchestrator=use_orchestrator)
     run = start_workflow_run(
@@ -324,7 +331,7 @@ def run_multi_agent_workflow(
             "workflow_id": workflow_id,
         }
 
-    template = get_workflow_template(workflow_id) or {"graph": {"steps": []}}
+    template = _app_get_workflow_template(db_path=_WORKFLOW_DB_PATH, workflow_id=workflow_id) or {"graph": {"steps": []}}
     step_results = run.get("step_results", {})
     results: dict[str, str] = {}
     if "plan" in step_results:

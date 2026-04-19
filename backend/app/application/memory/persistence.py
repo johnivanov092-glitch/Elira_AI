@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
+from app.application.memory.context import default_content_hash
+from app.application.memory.store import add_memory
 from app.application.memory.web_knowledge import build_web_knowledge_records
-from app.core.memory import add_kb_record, add_memory, record_web_learning_run
+from app.core.config import DB_PATH
+from app.domain.memory.knowledge_base import add_kb_record
+from app.domain.memory.strategy_tracking import record_web_learning_run
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def persist_web_knowledge(
@@ -16,6 +25,7 @@ def persist_web_knowledge(
 ) -> dict[str, Any]:
     saved_memory = 0
     saved_kb = 0
+    db_path = str(DB_PATH)
     records = build_web_knowledge_records(
         query=query,
         web_context=web_context,
@@ -29,7 +39,10 @@ def persist_web_knowledge(
         record_type = record.get("type", "web_chunk")
 
         if add_memory(
-            content,
+            db_path=db_path,
+            content_hash_func=default_content_hash,
+            now_iso_func=_now_iso,
+            content=content,
             source=f"{source_kind}:{record_url or query[:80]}",
             memory_type=record_type,
             profile_name=profile_name,
