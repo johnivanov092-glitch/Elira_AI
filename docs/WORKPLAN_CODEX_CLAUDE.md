@@ -350,6 +350,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-19 00:12:41 +05:00` | `DONE` | Continued Task 14 with a small planner cleanup: `domain/agents/planner.py` now imports `record_tool_usage` from `domain/memory/knowledge_base.py` directly in both `run_planner_agent()` and `run_task_graph()`, instead of routing that write path back through `core/memory.py`. |
 | `2026-04-19 00:12:41 +05:00` | `DONE` | Kept `build_memory_context` on the `core/memory.py` facade intentionally; that compat edge still carries the injected semantic/keyword search wiring and should move only as a separate canonicalization step. |
 | `2026-04-19 00:12:41 +05:00` | `NEXT` | Continue Task 14 only with similarly small `core/memory.py` caller migrations; remaining planner/orchestrator/application-workflow edges are all centered on `build_memory_context`, so the next safe move is to extract a stable canonical wrapper for that one function before switching more callers. |
+| `2026-04-19 00:24:58 +05:00` | `DONE` | Added `build_default_memory_context()` and `default_content_hash()` to `application/memory/context.py` as the canonical runtime wrapper around pinned-memory loading, semantic/keyword search, KB/tool/web-learning context assembly, and DB-path wiring. |
+| `2026-04-19 00:24:58 +05:00` | `DONE` | Switched the remaining internal callers in `application/workflows/multi_agent.py`, `domain/agents/planner.py`, and `domain/agents/orchestrator.py` off `core/memory.build_memory_context`; `core/memory.py` now keeps that name only as a compatibility facade over the new canonical wrapper. |
+| `2026-04-19 00:24:58 +05:00` | `NEXT` | Continue Task 14 by trimming any now-unused `core/memory.py` internal plumbing or by migrating the next remaining service-level compatibility import; the `build_memory_context` compat edge for internal runtime callers is now closed. |
 
 ## 8. Commit Ledger
 

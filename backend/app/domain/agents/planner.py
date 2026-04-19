@@ -230,9 +230,13 @@ def make_task_graph(
     memory_profile: str,
     num_ctx: int = 4096,
 ) -> List[dict]:
-    from app.core.memory import build_memory_context
+    from app.application.memory.context import build_default_memory_context
 
-    memory_context = build_memory_context(task, memory_profile, top_k=8)
+    memory_context = build_default_memory_context(
+        query=task,
+        profile_name=memory_profile,
+        top_k=8,
+    )
     planner_prompt = (
         "\u0422\u044b \u0441\u0442\u0440\u043e\u0438\u0448\u044c task graph \u0434\u043b\u044f \u043b\u043e\u043a\u0430\u043b\u044c\u043d\u043e\u0439 AI-\u0441\u0438\u0441\u0442\u0435\u043c\u044b. "
         "\u0412\u0435\u0440\u043d\u0438 \u0422\u041e\u041b\u042c\u041a\u041e JSON-\u043c\u0430\u0441\u0441\u0438\u0432 \u0443\u0437\u043b\u043e\u0432 \u0431\u0435\u0437 \u043f\u043e\u044f\u0441\u043d\u0435\u043d\u0438\u0439. "
@@ -276,7 +280,7 @@ def run_planner_agent(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.core.memory import build_memory_context
+    from app.application.memory.context import build_default_memory_context
     from app.domain.memory.knowledge_base import record_tool_usage
 
     total_steps = 3
@@ -285,7 +289,11 @@ def run_planner_agent(
         if progress_callback:
             progress_callback(step, total_steps, label)
 
-    memory_context = build_memory_context(task, memory_profile, top_k=8)
+    memory_context = build_default_memory_context(
+        query=task,
+        profile_name=memory_profile,
+        top_k=8,
+    )
 
     # --- Step 1: build plan via LLM ---
     _progress(1, "\U0001f9ed Planner: \u0441\u0442\u0440\u043e\u044e \u043f\u043b\u0430\u043d...")
@@ -445,10 +453,14 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.core.memory import build_memory_context
+    from app.application.memory.context import build_default_memory_context
     from app.domain.memory.knowledge_base import record_tool_usage
 
-    memory_context = build_memory_context(task, memory_profile, top_k=8)
+    memory_context = build_default_memory_context(
+        query=task,
+        profile_name=memory_profile,
+        top_k=8,
+    )
     graph = make_task_graph(task, model_name, memory_profile, num_ctx=num_ctx)
 
     total_steps = max(len(graph) + 1, 2)
@@ -517,7 +529,11 @@ def run_task_graph(
 
             elif tool == "memory_lookup":
                 lookup_q = node.get("goal") or task
-                mem = build_memory_context(lookup_q, memory_profile, top_k=8)
+                mem = build_default_memory_context(
+                    query=lookup_q,
+                    profile_name=memory_profile,
+                    top_k=8,
+                )
                 node_results[node["id"]] = {
                     "id": node["id"], "tool": tool, "goal": node["goal"],
                     "ok": True,

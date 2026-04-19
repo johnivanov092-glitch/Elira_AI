@@ -15,7 +15,7 @@ from app.application.memory.bootstrap import (
     save_settings as _app_save_settings,
 )
 from app.application.memory.context import (
-    build_memory_context as _app_build_memory_context,
+    build_default_memory_context as _app_build_default_memory_context,
     search_memories_weighted as _app_search_memories_weighted,
 )
 from app.application.memory.store import (
@@ -185,14 +185,11 @@ def search_memories_weighted(query: str, profile_name: str = "", top_k: int = 8)
 
 
 def build_memory_context(query: str, profile_name: str, top_k: int = 5) -> str:
-    return _app_build_memory_context(
+    return _app_build_default_memory_context(
         query=query,
         profile_name=profile_name,
         top_k=top_k,
-        load_memories_func=load_memories,
-        semantic_search_memory_func=semantic_search_memory,
-        keyword_search_memory_func=keyword_search_memory,
-        content_hash_func=_content_hash,
+        db_path=str(DB_PATH),
     )
 
 

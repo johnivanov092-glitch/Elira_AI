@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any, Callable
 
+from app.application.memory.search import keyword_search_memory, semantic_search_memory
+from app.application.memory.store import load_memories
+from app.core.config import DB_PATH
 from app.domain.memory.knowledge_base import build_kb_context, build_tool_memory_context
 from app.domain.memory.strategy_tracking import build_web_learning_context
 
@@ -10,6 +14,10 @@ from app.domain.memory.strategy_tracking import build_web_learning_context
 LoadMemoriesFunc = Callable[..., list[Any]]
 SearchMemoryFunc = Callable[..., list[str]]
 ContentHashFunc = Callable[[str], str]
+
+
+def default_content_hash(text: str) -> str:
+    return hashlib.md5(text.strip().lower().encode("utf-8")).hexdigest()
 
 
 def _memory_type_weight(memory_type: str, pinned: bool = False, source: str = "") -> float:
@@ -206,3 +214,47 @@ def build_memory_context(
 
     context = "\n\n".join(part for part in parts if part.strip())
     return context[:16000]
+
+
+def build_default_memory_context(
+    *,
+    query: str,
+    profile_name: str,
+    top_k: int = 5,
+    db_path: str | None = None,
+) -> str:
+    resolved_db_path = str(db_path or DB_PATH)
+
+    def _load_memories(limit: int = 500, only_pinned: bool = False, profile_name: str = ""):
+        return load_memories(
+            db_path=resolved_db_path,
+            limit=limit,
+            only_pinned=only_pinned,
+            profile_name=profile_name,
+        )
+
+    def _semantic_search(query: str, top_k: int = 5, profile_name: str = "") -> list[str]:
+        return semantic_search_memory(
+            query=query,
+            top_k=top_k,
+            profile_name=profile_name,
+            load_memories_func=_load_memories,
+        )
+
+    def _keyword_search(query: str, top_k: int = 10, profile_name: str = "") -> list[str]:
+        return keyword_search_memory(
+            query=query,
+            top_k=top_k,
+            profile_name=profile_name,
+            load_memories_func=_load_memories,
+        )
+
+    return build_memory_context(
+        query=query,
+        profile_name=profile_name,
+        top_k=top_k,
+        load_memories_func=_load_memories,
+        semantic_search_memory_func=_semantic_search,
+        keyword_search_memory_func=_keyword_search,
+        content_hash_func=default_content_hash,
+    )

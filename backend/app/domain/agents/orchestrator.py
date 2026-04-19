@@ -38,7 +38,7 @@ def run_agent_v8(
     progress_callback: ProgressCallback = None,
     force_strategy: str | None = None,
 ) -> dict:
-    from app.core.memory import build_memory_context
+    from app.application.memory.context import build_default_memory_context
     from app.domain.memory.knowledge_base import (
         build_kb_context,
         get_tool_preferences,
@@ -190,7 +190,11 @@ def run_agent_v8(
     # -- graph node handlers --
     def h_retrieve_memory(s: dict) -> dict:
         _progress(1, "\U0001f9e0 \u041f\u0430\u043c\u044f\u0442\u044c")
-        s["memory_context"] = build_memory_context(task, memory_profile, top_k=8)
+        s["memory_context"] = build_default_memory_context(
+            query=task,
+            profile_name=memory_profile,
+            top_k=8,
+        )
         if s["memory_context"].strip():
             _wm("retrieve_memory", "finding", s["memory_context"][:2000], score=0.9)
         _refresh_working()
@@ -485,7 +489,7 @@ def run_self_improving_agent(
     progress_callback: ProgressCallback = None,
     base_force_strategy: str | None = None,
 ) -> Dict[str, Any]:
-    from app.core.memory import build_memory_context
+    from app.application.memory.context import build_default_memory_context
     from app.domain.memory.knowledge_base import build_kb_context, record_tool_usage
     from app.domain.memory.strategy_tracking import record_self_improve_run
     from app.domain.memory.working_memory import build_working_memory_context
@@ -513,7 +517,11 @@ def run_self_improving_agent(
 
     for idx in range(1, max(0, int(max_iters)) + 1):
         _progress(min(idx + 1, total_steps), f"\U0001faa9 Self-Improve {idx}")
-        mem_ctx = build_memory_context(task, memory_profile, top_k=8)
+        mem_ctx = build_default_memory_context(
+            query=task,
+            profile_name=memory_profile,
+            top_k=8,
+        )
         kb_ctx = build_kb_context(task, profile_name=memory_profile, top_k=4)
         if run_id:
             try:
