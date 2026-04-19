@@ -6,6 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from app.application.workflows.store import (
+    init_db as _workflow_store_init_db,
+    list_workflow_templates as _workflow_store_list_workflow_templates,
+)
 from app.core.data_files import sqlite_data_file
 from app.infrastructure.db.connection import connect_sqlite
 
@@ -512,6 +516,16 @@ def get_recent_blocked_runs(hours: int = 24, limit: int = 10) -> list[dict[str, 
     return [item for item in items if item]
 
 
+def _health_list_workflow_templates() -> tuple[list[dict[str, Any]], int]:
+    from app.services import workflow_engine as workflow_engine_service
+
+    _workflow_store_init_db(db_path=workflow_engine_service.DB_PATH)
+    return _workflow_store_list_workflow_templates(
+        db_path=workflow_engine_service.DB_PATH,
+        include_disabled=True,
+    )
+
+
 def get_agent_os_health() -> dict[str, Any]:
     seed_default_limits()
     components: list[dict[str, Any]] = []
@@ -519,7 +533,7 @@ def get_agent_os_health() -> dict[str, Any]:
     checks = [
         ("agent_registry", lambda: __import__("app.services.agent_registry", fromlist=["list_agents"]).list_agents(enabled_only=False)),
         ("event_bus", lambda: __import__("app.services.event_bus", fromlist=["list_events"]).list_events(limit=1)),
-        ("workflow_engine", lambda: __import__("app.services.workflow_engine", fromlist=["list_workflow_templates"]).list_workflow_templates(include_disabled=True)),
+        ("workflow_engine", _health_list_workflow_templates),
         ("agent_monitor", lambda: list_agent_limits()),
     ]
 
