@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from app.application.workflows.db_path import get_workflow_db_path
 from app.application.workflows.store import (
     init_db as _workflow_store_init_db,
     list_workflow_templates as _workflow_store_list_workflow_templates,
@@ -517,11 +518,10 @@ def get_recent_blocked_runs(hours: int = 24, limit: int = 10) -> list[dict[str, 
 
 
 def _health_list_workflow_templates() -> tuple[list[dict[str, Any]], int]:
-    from app.services import workflow_engine as workflow_engine_service
-
-    _workflow_store_init_db(db_path=workflow_engine_service.DB_PATH)
+    workflow_db_path = get_workflow_db_path()
+    _workflow_store_init_db(db_path=workflow_db_path)
     return _workflow_store_list_workflow_templates(
-        db_path=workflow_engine_service.DB_PATH,
+        db_path=workflow_db_path,
         include_disabled=True,
     )
 

@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from app.application.workflows.db_path import get_workflow_db_path
 from app.application.workflows.execution import (
     build_workflow_execution_state,
     record_workflow_run_state,
@@ -35,7 +36,6 @@ from app.application.workflows.store import (
     now_utc,
     update_workflow_run,
 )
-from app.core.data_files import sqlite_data_file
 from app.domain.workflows.step_executor import (
     _execute_step,
     _resolve_next_step,
@@ -43,11 +43,8 @@ from app.domain.workflows.step_executor import (
 )
 
 
-DEFAULT_DB_PATH: Path = sqlite_data_file("workflow_engine.db")
-
-
 def _resolve_db_path(db_path: str | Path | None = None) -> str | Path:
-    return db_path or DEFAULT_DB_PATH
+    return db_path or get_workflow_db_path()
 
 
 def _update_workflow_run_for_db(

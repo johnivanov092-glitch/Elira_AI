@@ -16,6 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router  # noqa: E402
 from app.services import agent_monitor  # noqa: E402
 from app.services import agent_registry  # noqa: E402
@@ -35,6 +36,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         self._original_registry_db = agent_registry.DB_PATH
         self._original_event_bus_db = bus.DB_PATH
         self._original_workflow_db = workflow_engine.DB_PATH
+        self._original_workflow_db_path = workflow_db_path.get_workflow_db_path()
         self._original_limit_seed = agent_monitor._LIMIT_SEED_DONE
         self._original_agent_seed = agent_registry._BUILTIN_AGENTS_SEEDED
         self._original_workflow_seed = workflow_engine._BUILTIN_WORKFLOWS_SEEDED
@@ -42,7 +44,9 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         agent_monitor.DB_PATH = tmp_root / "agent_monitor.db"
         agent_registry.DB_PATH = tmp_root / "agent_registry.db"
         bus.DB_PATH = tmp_root / "event_bus.db"
-        workflow_engine.DB_PATH = tmp_root / "workflow_engine.db"
+        workflow_db = tmp_root / "workflow_engine.db"
+        workflow_db_path.set_workflow_db_path(workflow_db)
+        workflow_engine.DB_PATH = workflow_db
 
         agent_monitor._LIMIT_SEED_DONE = False
         agent_registry._BUILTIN_AGENTS_SEEDED = False
@@ -58,6 +62,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         agent_registry.DB_PATH = self._original_registry_db
         bus.DB_PATH = self._original_event_bus_db
         workflow_engine.DB_PATH = self._original_workflow_db
+        workflow_db_path.set_workflow_db_path(self._original_workflow_db_path)
         agent_monitor._LIMIT_SEED_DONE = self._original_limit_seed
         agent_registry._BUILTIN_AGENTS_SEEDED = self._original_agent_seed
         workflow_engine._BUILTIN_WORKFLOWS_SEEDED = self._original_workflow_seed

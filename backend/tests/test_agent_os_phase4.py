@@ -16,6 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
 from app.services import autopipeline_service  # noqa: E402
 from app.services import event_bus as bus  # noqa: E402
@@ -27,9 +28,12 @@ class WorkflowDbMixin(unittest.TestCase):
         super().setUp()
         self._tmpdir = tempfile.TemporaryDirectory()
         self._original_workflow_db = workflow_engine.DB_PATH
+        self._original_workflow_db_path = workflow_db_path.get_workflow_db_path()
         self._original_event_bus_db = bus.DB_PATH
         self._original_seeded = workflow_engine._BUILTIN_WORKFLOWS_SEEDED
-        workflow_engine.DB_PATH = Path(self._tmpdir.name) / "workflow_engine.db"
+        workflow_db = Path(self._tmpdir.name) / "workflow_engine.db"
+        workflow_db_path.set_workflow_db_path(workflow_db)
+        workflow_engine.DB_PATH = workflow_db
         bus.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
         workflow_engine._BUILTIN_WORKFLOWS_SEEDED = False
         workflow_engine._init_db()
@@ -37,6 +41,7 @@ class WorkflowDbMixin(unittest.TestCase):
 
     def tearDown(self) -> None:
         workflow_engine.DB_PATH = self._original_workflow_db
+        workflow_db_path.set_workflow_db_path(self._original_workflow_db_path)
         bus.DB_PATH = self._original_event_bus_db
         workflow_engine._BUILTIN_WORKFLOWS_SEEDED = self._original_seeded
         self._tmpdir.cleanup()

@@ -8,12 +8,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from app.application.workflows.db_path import get_workflow_db_path
 from app.application.workflows.store import (
     get_workflow_template as _app_get_workflow_template,
     now_utc as _app_now_utc,
     upsert_workflow_template as _app_upsert_workflow_template,
 )
-from app.core.data_files import sqlite_data_file
 
 # Workflow ID constants (canonical definitions, re-exported by workflow_engine)
 MULTI_AGENT_DEFAULT_WORKFLOW_ID = "builtin.workflow.multi_agent.default"
@@ -22,7 +22,6 @@ MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID = "builtin.workflow.multi_agent.orchestrate
 MULTI_AGENT_FULL_WORKFLOW_ID = "builtin.workflow.multi_agent.full"
 
 _BUILTIN_WORKFLOWS_SEEDED = False
-_WORKFLOW_DB_PATH = sqlite_data_file("workflow_engine.db")
 
 
 def _multi_agent_template(
@@ -249,10 +248,11 @@ def seed_builtin_workflows() -> int:
     if _BUILTIN_WORKFLOWS_SEEDED:
         return 0
 
+    workflow_db_path = get_workflow_db_path()
     created = 0
     for template in _builtin_workflow_templates():
-        existing = _app_get_workflow_template(db_path=_WORKFLOW_DB_PATH, workflow_id=template["id"])
-        _app_upsert_workflow_template(db_path=_WORKFLOW_DB_PATH, template=template, now_func=_app_now_utc)
+        existing = _app_get_workflow_template(db_path=workflow_db_path, workflow_id=template["id"])
+        _app_upsert_workflow_template(db_path=workflow_db_path, template=template, now_func=_app_now_utc)
         if not existing:
             created += 1
 
@@ -331,7 +331,7 @@ def run_multi_agent_workflow(
             "workflow_id": workflow_id,
         }
 
-    template = _app_get_workflow_template(db_path=_WORKFLOW_DB_PATH, workflow_id=workflow_id) or {"graph": {"steps": []}}
+    template = _app_get_workflow_template(db_path=get_workflow_db_path(), workflow_id=workflow_id) or {"graph": {"steps": []}}
     step_results = run.get("step_results", {})
     results: dict[str, str] = {}
     if "plan" in step_results:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.application.workflows.db_path import get_workflow_db_path
 from app.application.workflows.runtime import (
     cancel_workflow_run as _app_cancel_workflow_run,
     resume_workflow_run as _app_resume_workflow_run,
@@ -26,14 +27,13 @@ from app.schemas.workflow import (
     WorkflowTemplateCreate,
     WorkflowTemplateUpdate,
 )
-from app.services import workflow_engine as workflow_engine_service
 
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])
 
 
 def _workflow_db_path():
-    return workflow_engine_service.DB_PATH
+    return get_workflow_db_path()
 
 
 @router.post("/workflows", response_model=WorkflowTemplate, summary="Create workflow template")

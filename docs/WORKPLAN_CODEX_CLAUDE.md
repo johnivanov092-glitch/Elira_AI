@@ -362,7 +362,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-19 01:24:44 +05:00` | `DONE` | Switched the remaining internal execution callers in `application/workflows/multi_agent.py` and `services/autopipeline_service.py` off `services/workflow_engine.py`; updated the phase-4 compatibility tests to patch the new runtime entrypoint and canonical multi-agent template lookup hook. |
 | `2026-04-19 01:39:27 +05:00` | `DONE` | Removed the orphaned private execution helpers from `services/workflow_engine.py` after the runtime extraction; the service file is now a thin compatibility facade instead of carrying duplicate workflow-run logic internally. |
 | `2026-04-19 01:39:27 +05:00` | `DONE` | Switched `api/routes/workflow_routes.py` off `services/workflow_engine.py` method calls to canonical `application/workflows/store.py` and `application/workflows/runtime.py` functions while still reading `workflow_engine.DB_PATH` so the existing test/runtime DB override behavior stays intact. |
-| `2026-04-19 01:39:27 +05:00` | `NEXT` | Continue Task 14 with only test/service compatibility cleanup around `services/workflow_engine.py`; route handlers and internal backend callers now use canonical workflow store/runtime modules. |
+| `2026-04-19 01:52:18 +05:00` | `DONE` | Added `application/workflows/db_path.py` as the canonical workflow SQLite path provider and switched `runtime.py`, `multi_agent.py`, `workflow_routes.py`, and the Agent OS workflow-health check to use it instead of hard-coded or service-imported DB paths. |
+| `2026-04-19 01:52:18 +05:00` | `DONE` | Updated the phase-4 and phase-5 workflow test mixins so temp-DB overrides now set both the canonical workflow DB-path provider and the legacy `services/workflow_engine.py` facade path; this preserves route/runtime/service test isolation during the compatibility phase. |
+| `2026-04-19 01:52:18 +05:00` | `NEXT` | Continue Task 14 outside workflow DB-path compatibility; the remaining `services/workflow_engine.py` usage is now almost entirely intentional public compatibility for service-level tests. |
 
 ## 8. Commit Ledger
 
