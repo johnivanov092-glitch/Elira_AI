@@ -17,7 +17,16 @@ from uuid import uuid4
 from app.core.llm import ask_model, clean_code_fence, safe_json_parse
 from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
 from app.domain.agents.planner import run_planner_agent, run_task_graph
-from app.domain.agents.router import TASK_GRAPH_TEMPLATES_V8, choose_v8_strategy, route_task
+from app.domain.agents.orchestrator_runtime import (
+    build_run_agent_v8_result,
+    build_self_improving_result,
+    build_v8_state,
+    compute_reflection_quality_score,
+    normalize_v8_route,
+    observe_persona_dialogue,
+    select_v8_graph,
+)
+from app.domain.agents.router import choose_v8_strategy, route_task
 
 # ---------------------------------------------------------------------------
 # Type alias for progress callbacks
@@ -62,15 +71,7 @@ def run_agent_v8(
         task, model_name=model_name,
         memory_profile=memory_profile, num_ctx=num_ctx,
     )
-    if not isinstance(route, dict):
-        route = {
-            "mode": "chat",
-            "agent": "chat_agent",
-            "use_graph": False,
-            "confidence": 0.0,
-            "source": "fallback",
-            "reason": "route_task returned None or invalid data",
-        }
+    route = normalize_v8_route(route)
 
     mode = route.get("mode", "chat") or "chat"
     strategy = choose_v8_strategy(
@@ -80,68 +81,24 @@ def run_agent_v8(
     )
     selected_strategy = strategy.get("strategy", "direct") or "direct"
 
-    graph_map = {
-        "direct": [
-            "retrieve_memory", "retrieve_kb",
-            "retrieve_working_memory", "finalize",
-        ],
-        "planner": [
-            "retrieve_memory", "retrieve_kb",
-            "retrieve_working_memory", "planner",
-            "reflection_v2", "finalize",
-        ],
-        "task_graph": [
-            "retrieve_memory", "retrieve_kb",
-            "retrieve_working_memory", "tool_hint",
-            "task_graph", "reflection_v2", "finalize",
-        ],
-        "multi_agent": [
-            "retrieve_memory", "retrieve_kb",
-            "retrieve_working_memory", "multi_agent",
-            "reflection_v2", "finalize",
-        ],
-        "self_improve": [
-            "retrieve_memory", "retrieve_kb",
-            "retrieve_working_memory", "self_improve",
-            "finalize",
-        ],
-    }
-    graph = (
-        graph_map.get(selected_strategy)
-        or TASK_GRAPH_TEMPLATES_V8.get(
-            mode,
-            ["retrieve_memory", "retrieve_working_memory", "finalize"],
-        )
-    )
+    graph = select_v8_graph(selected_strategy, mode)
     total_steps = max(len(graph), 1)
 
     def _progress(step: int, label: str):
         if progress_callback:
             progress_callback(step, total_steps, label)
 
-    state: Dict[str, Any] = {
-        "run_id": run_id,
-        "task": task,
-        "model_name": model_name,
-        "memory_profile": memory_profile,
-        "route": route,
-        "mode": mode,
-        "strategy": strategy,
-        "selected_strategy": selected_strategy,
-        "graph": graph,
-        "memory_context": "",
-        "kb_context": "",
-        "working_context": "",
-        "tool_hint": "",
-        "plan_result": None,
-        "task_graph_result": None,
-        "multi_agent_result": None,
-        "self_improve_result": None,
-        "answer": "",
-        "reflection": {},
-        "errors": [],
-        "timeline": [],
-    }
+    state: Dict[str, Any] = build_v8_state(
+        run_id=run_id,
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        route=route,
+        mode=mode,
+        strategy=strategy,
+        selected_strategy=selected_strategy,
+        graph=graph,
+    )
 
     # -- working-memory helpers --
     def _wm(step_name: str, fact_type: str, content: str, score: float = 1.0):
@@ -418,15 +375,7 @@ def run_agent_v8(
     latency = round(time.time() - run_started, 3)
     reflection = state.get("reflection", {}) or {}
     answer_ok = bool(state.get("answer", "").strip()) and not state.get("failed_node")
-    quality_score = 1.0
-    if reflection:
-        quality_score = (
-            0.2
-            + 0.2 * float(bool(reflection.get("answered", True)))
-            + 0.2 * float(bool(reflection.get("grounded", True)))
-            + 0.2 * float(bool(reflection.get("complete", True)))
-            + 0.2 * float(bool(reflection.get("actionable", True)))
-        )
+    quality_score = compute_reflection_quality_score(reflection)
     try:
         record_v8_strategy_usage(
             strategy=selected_strategy, route_mode=mode,
@@ -438,42 +387,29 @@ def run_agent_v8(
     except Exception:
         pass
 
-    try:
-        from app.services.persona_service import observe_dialogue
-        persona_meta = observe_dialogue(
-            dialog_id=run_id, session_id=run_id,
-            profile_name=memory_profile, model_name=model_name,
-            user_input=task,
-            answer_text=state.get("answer", ""),
-            route=mode, reflection=reflection,
-            outcome_ok=answer_ok,
-        )
-    except Exception:
-        persona_meta = None
+    persona_meta = observe_persona_dialogue(
+        dialog_id=run_id,
+        session_id=run_id,
+        profile_name=memory_profile,
+        model_name=model_name,
+        user_input=task,
+        answer_text=state.get("answer", ""),
+        route=mode,
+        reflection=reflection,
+        outcome_ok=answer_ok,
+    )
 
-    return {
-        "run_id": run_id,
-        "mode": mode,
-        "route": route,
-        "strategy": strategy,
-        "delegated_strategy": selected_strategy,
-        "graph": graph,
-        "answer": state.get("answer", ""),
-        "reflection": state.get("reflection", {}),
-        "task_graph_result": state.get("task_graph_result"),
-        "plan_result": state.get("plan_result"),
-        "multi_agent_result": state.get("multi_agent_result"),
-        "self_improve_result": state.get("self_improve_result"),
-        "errors": state.get("errors", []),
-        "timeline": state.get("timeline", []),
-        "failed_node": state.get("failed_node", ""),
-        "memory_context": state.get("memory_context", ""),
-        "kb_context": state.get("kb_context", ""),
-        "working_context": state.get("working_context", ""),
-        "tool_hint": state.get("tool_hint", ""),
-        "latency_seconds": latency,
-        "persona": persona_meta,
-    }
+    return build_run_agent_v8_result(
+        run_id=run_id,
+        mode=mode,
+        route=route,
+        strategy=strategy,
+        selected_strategy=selected_strategy,
+        graph=graph,
+        state=state,
+        latency=latency,
+        persona_meta=persona_meta,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -655,33 +591,24 @@ def run_self_improving_agent(
     except Exception:
         pass
 
-    try:
-        from app.services.persona_service import observe_dialogue
-        persona_meta = observe_dialogue(
-            dialog_id=run_id or f"self-improve-{memory_profile}",
-            session_id=run_id or f"self-improve-{memory_profile}",
-            profile_name=memory_profile, model_name=model_name,
-            user_input=task, answer_text=answer,
-            route="self_improve",
-            reflection=reflection if isinstance(reflection, dict) else {},
-            outcome_ok=bool(answer.strip()),
-        )
-    except Exception:
-        persona_meta = None
+    persona_meta = observe_persona_dialogue(
+        dialog_id=run_id or f"self-improve-{memory_profile}",
+        session_id=run_id or f"self-improve-{memory_profile}",
+        profile_name=memory_profile,
+        model_name=model_name,
+        user_input=task,
+        answer_text=answer,
+        route="self_improve",
+        reflection=reflection if isinstance(reflection, dict) else {},
+        outcome_ok=bool(answer.strip()),
+    )
 
-    return {
-        "run_id": run_id,
-        "base": base,
-        "answer": answer,
-        "iterations": iterations,
-        "final_reflection": reflection,
-        "mode": base.get("mode", ""),
-        "route": base.get("route", {}),
-        "graph": base.get("graph", []),
-        "timeline": base.get("timeline", []),
-        "errors": base.get("errors", []),
-        "memory_context": base.get("memory_context", ""),
-        "kb_context": base.get("kb_context", ""),
-        "working_context": working_context or base.get("working_context", ""),
-        "persona": persona_meta,
-    }
+    return build_self_improving_result(
+        run_id=run_id,
+        base=base,
+        answer=answer,
+        iterations=iterations,
+        reflection=reflection,
+        working_context=working_context,
+        persona_meta=persona_meta,
+    )

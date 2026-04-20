@@ -371,6 +371,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-20 14:23:46 +05:00` | `DONE` | Continued the planner bounded-context split: extracted `domain/agents/planner_prompts.py` and moved all planner/task-graph prompt builders there, including task-graph build prompts, planner prompts, reasoning-node prompt construction, and both final synthesis prompt builders. |
 | `2026-04-20 14:23:46 +05:00` | `DONE` | Reduced `domain/agents/planner.py` and `domain/agents/planner_runtime.py` to orchestration/runtime roles only; the active call-sites now import prompt text from the canonical `planner_prompts.py` module instead of embedding long inline strings. |
 | `2026-04-20 14:23:46 +05:00` | `NEXT` | The next safe backend slice is `domain/agents/orchestrator.py`; planner prompt/runtime extraction is now separated enough that the remaining big internal agent module is the better target. |
+| `2026-04-20 14:30:57 +05:00` | `DONE` | Started the next orchestrator bounded-context split: extracted `domain/agents/orchestrator_runtime.py` and moved route normalization, strategy-graph selection, initial state assembly, reflection-quality scoring, persona-observation wrapper, and final result builders out of `domain/agents/orchestrator.py`. |
+| `2026-04-20 14:30:57 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 687 to 614 lines without changing the public `run_agent_v8()` / `run_self_improving_agent()` entrypoints; the nested graph handlers remain local, but the outer orchestration scaffolding is now in a canonical runtime helper module. |
+| `2026-04-20 14:30:57 +05:00` | `NEXT` | If continuing this wave, the next safe orchestrator slice is the self-improve loop or the nested handler cluster; do not mix it with unrelated service/db cleanup. |
 
 ## 8. Commit Ledger
 
