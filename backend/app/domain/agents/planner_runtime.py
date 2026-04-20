@@ -12,6 +12,7 @@ from urllib.parse import quote_plus
 from app.application.memory.persistence import persist_web_knowledge
 from app.core.files import truncate_text
 from app.core.llm import ask_model
+from app.domain.agents.planner_prompts import build_task_graph_reasoning_prompt
 from app.domain.tools.browser_agent_tool import run_browser_agent
 from app.domain.tools.terminal_tool import is_dangerous_command, run_terminal
 
@@ -208,14 +209,10 @@ def execute_task_graph_node(
             ),
         }
 
-    reasoning_prompt = (
-        "Ты reasoning-node в task graph. Выполни только задачу этого узла, "
-        "опираясь на исходную задачу и контекст зависимостей. "
-        "Если контекста мало — скажи об этом прямо.\n\n"
-        f"ИСХОДНАЯ ЗАДАЧА:\n{task}\n\n"
-        f"ЗАДАЧА УЗЛА:\n{node['goal']}\n\n"
-        "КОНТЕКСТ ЗАВИСИМОСТЕЙ:\n"
-        + (dep_context or "Нет контекста зависимостей.")
+    reasoning_prompt = build_task_graph_reasoning_prompt(
+        task=task,
+        node_goal=node["goal"],
+        dep_context=dep_context,
     )
     output = ask_model(
         model_name=model_name,

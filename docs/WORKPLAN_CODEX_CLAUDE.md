@@ -368,6 +368,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-19 20:00:41 +05:00` | `DONE` | Started the next non-workflow bounded-context wave from the master refactor plan: extracted `domain/agents/planner_runtime.py` out of `domain/agents/planner.py` and moved the live browser/terminal/memory-lookup execution paths, task-graph retry handling, and task-graph state-blob assembly into the new runtime helper module. |
 | `2026-04-19 20:00:41 +05:00` | `DONE` | Rebuilt `domain/agents/planner.py` as a thinner orchestration module around the extracted runtime helpers; it now keeps plan/graph defaults, normalization, LLM prompt generation, and final synthesis/reflection while preserving the public `make_task_graph()`, `run_planner_agent()`, and `run_task_graph()` entrypoints. |
 | `2026-04-19 20:00:41 +05:00` | `NEXT` | Continue the new bounded-context wave with `domain/agents/orchestrator.py` or the remaining prompt-construction cluster in `domain/agents/planner.py`; avoid reopening workflow compatibility churn unless a concrete caller migration appears. |
+| `2026-04-20 14:23:46 +05:00` | `DONE` | Continued the planner bounded-context split: extracted `domain/agents/planner_prompts.py` and moved all planner/task-graph prompt builders there, including task-graph build prompts, planner prompts, reasoning-node prompt construction, and both final synthesis prompt builders. |
+| `2026-04-20 14:23:46 +05:00` | `DONE` | Reduced `domain/agents/planner.py` and `domain/agents/planner_runtime.py` to orchestration/runtime roles only; the active call-sites now import prompt text from the canonical `planner_prompts.py` module instead of embedding long inline strings. |
+| `2026-04-20 14:23:46 +05:00` | `NEXT` | The next safe backend slice is `domain/agents/orchestrator.py`; planner prompt/runtime extraction is now separated enough that the remaining big internal agent module is the better target. |
 
 ## 8. Commit Ledger
 

@@ -6,18 +6,22 @@ planner_runtime.py.
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Callable, Dict, List
 from urllib.parse import quote_plus
 
 from app.core.llm import ask_model, clean_code_fence, safe_json_parse
+from app.domain.agents.planner_prompts import (
+    build_planner_plan_prompt,
+    build_planner_summary_prompt,
+    build_task_graph_prompt,
+    build_task_graph_summary_prompt,
+)
 from app.domain.agents.planner_runtime import (
     build_task_graph_state_blob,
     execute_planner_step,
     execute_task_graph_node,
     extract_first_url,
-    planner_safe_terminal_command,
     retry_failed_task_graph_steps,
 )
 from app.domain.agents.reflection import reflect_and_improve_answer
@@ -200,23 +204,7 @@ def make_task_graph(
         profile_name=memory_profile,
         top_k=8,
     )
-    planner_prompt = (
-        "Ты строишь task graph для локальной AI-системы. "
-        "Верни ТОЛЬКО JSON-массив узлов без пояснений. "
-        "Каждый узел должен иметь формат:\n"
-        '[{"id":"n1","tool":"browser|terminal|reasoning|memory_lookup",'
-        '"goal":"...","url":"optional","command":"optional","depends_on":["n0"]}]\n\n'
-        "Правила:\n"
-        "- Узлы должны быть короткими и практичными.\n"
-        "- browser: только если нужен веб/сайт/документация/страница.\n"
-        "- terminal: только для безопасных read-only команд локального анализа.\n"
-        "- memory_lookup: когда нужно поднять релевантную память профиля.\n"
-        "- reasoning: для аналитики и синтеза.\n"
-        "- Последний узел всегда reasoning.\n"
-        "- Максимум 6 узлов.\n"
-        "- Не придумывай опасные команды.\n\n"
-        f"Задача:\n{task}"
-    )
+    planner_prompt = build_task_graph_prompt(task)
     raw_graph = ask_model(
         model_name=model_name,
         profile_name="Оркестратор",
@@ -255,19 +243,7 @@ def run_planner_agent(
     )
 
     _progress(1, "🧭 Planner: строю план...")
-    planner_prompt = (
-        "Ты Planner agent. Разбей задачу на 2-4 шага и верни ТОЛЬКО JSON-массив без пояснений.\n"
-        "Формат шага:\n"
-        '[{"tool":"browser|terminal|reasoning","goal":"...","url":"optional","command":"optional"}]\n'
-        "Правила:\n"
-        "- browser: только если нужен веб/страница/документация/поиск.\n"
-        "- terminal: только для БЕЗОПАСНЫХ read-only команд локального анализа.\n"
-        "- reasoning: финальный аналитический шаг.\n"
-        "- Не предлагай опасные команды.\n"
-        "- Если в задаче есть URL, используй его в browser step.\n"
-        "- Последний шаг всегда reasoning.\n\n"
-        f"Задача:\n{task}"
-    )
+    planner_prompt = build_planner_plan_prompt(task)
     raw_plan = ask_model(
         model_name=model_name,
         profile_name="Оркестратор",
@@ -299,16 +275,10 @@ def run_planner_agent(
 
     _progress(3, "🎯 Planner: собираю итог...")
     context_blob = "\n\n".join(gathered_contexts)[:24000]
-    final_prompt = (
-        "Ты Planner-Orchestrator. Собери финальный ответ пользователю на основе исходной задачи "
-        "и результатов шагов. Если данных недостаточно, честно укажи это.\n\n"
-        f"ЗАДАЧА:\n{task}\n\n"
-        f"ПЛАН:\n{json.dumps(normalized_plan, ensure_ascii=False, indent=2)}\n\n"
-        f"КОНТЕКСТ ШАГОВ:\n{context_blob}\n\n"
-        "Структура:\n"
-        "1. Краткий итог\n"
-        "2. Что удалось узнать / сделать\n"
-        "3. Практические следующие шаги"
+    final_prompt = build_planner_summary_prompt(
+        task=task,
+        normalized_plan=normalized_plan,
+        context_blob=context_blob,
     )
     final_draft = ask_model(
         model_name=model_name,
@@ -416,17 +386,10 @@ def run_task_graph(
     _progress(total_steps, "🎯 Task Graph: собираю итог...")
     state_blob = build_task_graph_state_blob(execution_log)
 
-    final_prompt = (
-        "Ты Task Graph Orchestrator. Собери финальный ответ пользователю на основе состояния графа. "
-        "Честно отмечай, если какой-то узел не сработал или данных не хватило.\n\n"
-        f"ИСХОДНАЯ ЗАДАЧА:\n{task}\n\n"
-        f"ГРАФ:\n{json.dumps(graph, ensure_ascii=False, indent=2)}\n\n"
-        f"STATE:\n{state_blob}\n\n"
-        "Структура ответа:\n"
-        "1. Краткий итог\n"
-        "2. Что удалось узнать / сделать\n"
-        "3. Ограничения или сбои\n"
-        "4. Практические следующие шаги"
+    final_prompt = build_task_graph_summary_prompt(
+        task=task,
+        graph=graph,
+        state_blob=state_blob,
     )
     final_draft = ask_model(
         model_name=model_name,
