@@ -374,6 +374,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-20 14:30:57 +05:00` | `DONE` | Started the next orchestrator bounded-context split: extracted `domain/agents/orchestrator_runtime.py` and moved route normalization, strategy-graph selection, initial state assembly, reflection-quality scoring, persona-observation wrapper, and final result builders out of `domain/agents/orchestrator.py`. |
 | `2026-04-20 14:30:57 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 687 to 614 lines without changing the public `run_agent_v8()` / `run_self_improving_agent()` entrypoints; the nested graph handlers remain local, but the outer orchestration scaffolding is now in a canonical runtime helper module. |
 | `2026-04-20 14:30:57 +05:00` | `NEXT` | If continuing this wave, the next safe orchestrator slice is the self-improve loop or the nested handler cluster; do not mix it with unrelated service/db cleanup. |
+| `2026-04-20 15:05:00 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/self_improve_runtime.py` and moved the self-improve iteration loop, context loading, critique/improve prompt builders, reflection calls, and self-improve run tracking out of `domain/agents/orchestrator.py`. |
+| `2026-04-20 15:05:00 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 614 to 500 lines; `run_self_improving_agent()` is now a thin facade over the canonical self-improve runtime helper and no longer mixes active and legacy loop paths. |
+| `2026-04-20 15:05:00 +05:00` | `NEXT` | Continue the orchestrator wave with the nested handler cluster inside `run_agent_v8()`; the self-improve loop is now isolated enough that the next safe slice is one handler family at a time, not another service/db migration. |
 
 ## 8. Commit Ledger
 

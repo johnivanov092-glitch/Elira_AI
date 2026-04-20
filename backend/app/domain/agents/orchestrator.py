@@ -14,7 +14,7 @@ import time
 from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
-from app.core.llm import ask_model, clean_code_fence, safe_json_parse
+from app.core.llm import ask_model
 from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
 from app.domain.agents.planner import run_planner_agent, run_task_graph
 from app.domain.agents.orchestrator_runtime import (
@@ -26,6 +26,7 @@ from app.domain.agents.orchestrator_runtime import (
     observe_persona_dialogue,
     select_v8_graph,
 )
+from app.domain.agents.self_improve_runtime import run_self_improve_iterations
 from app.domain.agents.router import choose_v8_strategy, route_task
 
 # ---------------------------------------------------------------------------
@@ -425,11 +426,7 @@ def run_self_improving_agent(
     progress_callback: ProgressCallback = None,
     base_force_strategy: str | None = None,
 ) -> Dict[str, Any]:
-    from app.application.memory.context import build_default_memory_context
-    from app.domain.memory.knowledge_base import build_kb_context, record_tool_usage
-    from app.domain.memory.strategy_tracking import record_self_improve_run
-    from app.domain.memory.working_memory import build_working_memory_context
-    from app.domain.agents.reflection import reflection_v2
+    from app.domain.memory.knowledge_base import record_tool_usage
 
     total_steps = max(2, int(max_iters) + 1)
 
@@ -439,145 +436,34 @@ def run_self_improving_agent(
 
     _progress(1, "\U0001f680 \u0411\u0430\u0437\u043e\u0432\u044b\u0439 \u0437\u0430\u043f\u0443\u0441\u043a V8")
     base = run_agent_v8(
-        task=task, model_name=model_name,
-        memory_profile=memory_profile, num_ctx=num_ctx,
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        num_ctx=num_ctx,
         progress_callback=None,
         force_strategy=base_force_strategy,
     )
 
-    answer = (base.get("answer", "") or "").strip()
-    reflection: dict | Any = base.get("reflection", {}) or {}
-    iterations: List[Dict[str, Any]] = []
     run_id = base.get("run_id", "")
-    working_context = base.get("working_context", "") or ""
-
-    for idx in range(1, max(0, int(max_iters)) + 1):
-        _progress(min(idx + 1, total_steps), f"\U0001faa9 Self-Improve {idx}")
-        mem_ctx = build_default_memory_context(
-            query=task,
-            profile_name=memory_profile,
-            top_k=8,
-        )
-        kb_ctx = build_kb_context(task, profile_name=memory_profile, top_k=4)
-        if run_id:
-            try:
-                working_context = build_working_memory_context(
-                    run_id, profile_name=memory_profile, limit=12,
-                )
-            except Exception:
-                pass
-
-        combined_context = (
-            (mem_ctx or "") + "\n\n"
-            + (kb_ctx or "") + "\n\n"
-            + (working_context or "")
-        )
-        critique_prompt = (
-            "\u0422\u044b self-improve critic.\n"
-            "\u0412\u0435\u0440\u043d\u0438 \u0422\u041e\u041b\u042c\u041a\u041e JSON:\n"
-            "{\n"
-            '  "improve": true,\n'
-            '  "score": 0.0,\n'
-            '  "issues": ["..."],\n'
-            '  "focus": "\u0447\u0442\u043e \u0443\u043b\u0443\u0447\u0448\u0438\u0442\u044c"\n'
-            "}\n\n"
-            f"\u0417\u0410\u0414\u0410\u0427\u0410:\n{task}\n\n"
-            f"\u0422\u0415\u041a\u0423\u0429\u0418\u0419 \u041e\u0422\u0412\u0415\u0422:\n{answer[:9000]}\n\n"
-            f"REFLECTION:\n{json.dumps(reflection, ensure_ascii=False)}\n\n"
-            f"\u041a\u041e\u041d\u0422\u0415\u041a\u0421\u0422:\n{combined_context[:9000]}"
-        )
-        raw_crit = ask_model(
-            model_name=model_name,
-            profile_name="\u0410\u043d\u0430\u043b\u0438\u0442\u0438\u043a",
-            user_input=critique_prompt,
-            memory_context=mem_ctx,
-            use_memory=True,
-            include_history=False,
-            temp=0.05,
-            num_ctx=min(num_ctx, 4096),
-        )
-        crit = safe_json_parse(clean_code_fence(raw_crit)) or {}
-        should_improve = bool(crit.get("improve", idx == 1))
-        if isinstance(reflection, dict) and (
-            reflection.get("needs_retry")
-            or not reflection.get("complete", True)
-        ):
-            should_improve = True
-
-        if not should_improve:
-            item = {
-                "iteration": idx,
-                "changed": False,
-                "answer": answer,
-                "critique": crit,
-                "reflection": reflection,
-            }
-            iterations.append(item)
-            try:
-                record_self_improve_run(task, idx, answer, crit, reflection, memory_profile)
-            except Exception:
-                pass
-            break
-
-        improve_prompt = (
-            "\u0423\u043b\u0443\u0447\u0448\u0438 \u043e\u0442\u0432\u0435\u0442 \u043f\u043e\u0441\u043b\u0435 self-improving loop.\n\n"
-            f"\u0418\u0441\u0445\u043e\u0434\u043d\u0430\u044f \u0437\u0430\u0434\u0430\u0447\u0430:\n{task}\n\n"
-            f"\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u043e\u0442\u0432\u0435\u0442:\n{answer[:9000]}\n\n"
-            f"\u041f\u0440\u043e\u0431\u043b\u0435\u043c\u044b / focus:\n{json.dumps(crit, ensure_ascii=False, indent=2)}\n\n"
-            f"Reflection:\n{json.dumps(reflection, ensure_ascii=False, indent=2)}\n\n"
-            f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u043f\u0430\u043c\u044f\u0442\u0438:\n{mem_ctx[:4000]}\n\n"
-            f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 KB:\n{kb_ctx[:3000]}\n\n"
-            f"\u0420\u0430\u0431\u043e\u0447\u0430\u044f \u043f\u0430\u043c\u044f\u0442\u044c:\n{working_context[:3000]}\n\n"
-            "\u0422\u0440\u0435\u0431\u043e\u0432\u0430\u043d\u0438\u044f:\n"
-            "- \u0421\u0434\u0435\u043b\u0430\u0439 \u043e\u0442\u0432\u0435\u0442 \u0442\u043e\u0447\u043d\u0435\u0435 \u0438 \u043f\u0440\u0430\u043a\u0442\u0438\u0447\u043d\u0435\u0435.\n"
-            "- \u041d\u0435 \u0432\u044b\u0434\u0443\u043c\u044b\u0432\u0430\u0439 \u0444\u0430\u043a\u0442\u044b.\n"
-            "- \u0415\u0441\u043b\u0438 \u0434\u0430\u043d\u043d\u044b\u0445 \u043d\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u2014 \u0441\u043a\u0430\u0436\u0438 \u044d\u0442\u043e \u044f\u0432\u043d\u043e.\n"
-            "- \u0421\u043e\u0445\u0440\u0430\u043d\u0438 \u0441\u0438\u043b\u044c\u043d\u044b\u0435 \u0447\u0430\u0441\u0442\u0438 \u043f\u0440\u043e\u0448\u043b\u043e\u0433\u043e \u043e\u0442\u0432\u0435\u0442\u0430."
-        )
-        improved = ask_model(
-            model_name=model_name,
-            profile_name="\u041e\u0440\u043a\u0435\u0441\u0442\u0440\u0430\u0442\u043e\u0440",
-            user_input=improve_prompt,
-            memory_context="\n\n".join(
-                x for x in [mem_ctx, kb_ctx, working_context] if x.strip()
-            ),
-            use_memory=True,
-            include_history=False,
-            temp=0.15,
-            num_ctx=num_ctx,
-        ).strip() or answer
-
-        reflection = reflection_v2(
-            task=task, answer=improved,
-            model_name=model_name,
-            memory_context="\n\n".join(
-                x for x in [mem_ctx, working_context] if x.strip()
-            ),
-            kb_context=kb_ctx,
-            profile_name=memory_profile,
-            num_ctx=num_ctx,
-        )
-        answer = improved
-        item = {
-            "iteration": idx,
-            "changed": True,
-            "answer": answer,
-            "critique": crit,
-            "reflection": reflection,
-        }
-        iterations.append(item)
-        try:
-            record_self_improve_run(task, idx, answer, crit, reflection, memory_profile)
-        except Exception:
-            pass
-
-        if (
-            isinstance(reflection, dict)
-            and reflection.get("complete", True)
-            and reflection.get("answered", True)
-            and not reflection.get("needs_retry", False)
-        ):
-            break
+    loop_result = run_self_improve_iterations(
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        num_ctx=num_ctx,
+        max_iters=max_iters,
+        run_id=run_id,
+        answer=(base.get("answer", "") or "").strip(),
+        reflection=base.get("reflection", {}) or {},
+        working_context=base.get("working_context", "") or "",
+        progress_callback=lambda idx, label: _progress(
+            min(idx + 1, total_steps),
+            label,
+        ),
+    )
+    answer = loop_result.get("answer", "")
+    reflection: dict | Any = loop_result.get("reflection", {}) or {}
+    iterations = loop_result.get("iterations", [])
+    working_context = loop_result.get("working_context", "") or ""
 
     try:
         record_tool_usage(
