@@ -32,6 +32,17 @@ Single live coordination document for Claude/Codex refactor work.
 - If work pauses, blocks, or hands off, record it in `Handoffs / Blockers`; do not create separate coordination markdown files.
 - If a file is deleted or moved, add the deletion here first, including restore guidance if the reason is not yet confirmed.
 
+## 2A. Acceleration Protocol
+
+- Refactor execution is now in `ACCELERATED` mode because the current micro-slice cadence is too slow for the remaining scope.
+- Default unit of change is no longer a single helper unless it is the last isolated tail of a bounded context; prefer one whole handler family, one whole runtime cluster, or one whole medium-sized module per commit.
+- Prefer reducing the largest active backend modules first: `domain/agents/orchestrator.py`, `services/agents_service.py`, `services/agent_monitor.py`, `services/persona_service.py`, `api/routes/project_brain.py`, and `infrastructure/search/web_search.py`.
+- Do not reopen closed cleanup waves just because a tiny follow-up is available; only touch a previously stabilized area if it unlocks a larger current target.
+- Keep public contracts stable, but accept larger internal moves in a single commit when the change stays inside one bounded context and compile/import smoke remains cheap.
+- Mandatory verification for accelerated slices: source-level syntax check, `python -m compileall` on touched runtime files, focused import smoke, and `git diff --check`. Defer broader tests unless the slice changes route contracts or persistence behavior.
+- Workplan logging remains required, but compress future entries: one acceleration note plus one result note per commit is sufficient unless a risk or blocker changes.
+- If a module falls below roughly `350-450` lines and only small wrappers remain, stop splitting it further unless a concrete coupling problem remains.
+
 ## 3. Source Docs
 
 | Path | Role | State at snapshot |
@@ -386,6 +397,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-21 12:24:15 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/orchestrator_postprocess_runtime.py` and moved the `reflection_v2` / `finalize` handler family, reflection context assembly, reflection regeneration gating, and finalize prompt builder out of `domain/agents/orchestrator.py`. |
 | `2026-04-21 12:24:15 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 473 to 417 lines while keeping `run_agent_v8()` public behavior unchanged; the only remaining local graph handler is `self_improve`, while context/execution/post-process families are now all in canonical runtime helper modules. |
 | `2026-04-21 12:24:15 +05:00` | `NEXT` | Re-evaluate whether to extract the remaining `self_improve` graph handler from `run_agent_v8()`; the orchestrator bounded context is now small enough that further splitting may have lower return than moving to the next large backend module. |
+| `2026-04-21 12:25:51 +05:00` | `DONE` | Switched the workplan into `ACCELERATED` mode: future refactor commits should take whole handler families or medium-sized runtime clusters instead of micro-slices, while keeping verification limited to syntax/compile/import smoke unless contracts change. |
 
 ## 8. Commit Ledger
 
