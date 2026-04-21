@@ -380,6 +380,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-21 12:19:12 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/orchestrator_context_runtime.py` and moved the retrieval/tool-memory handler family (`retrieve_memory`, `retrieve_kb`, `retrieve_working_memory`, `tool_hint`) out of `domain/agents/orchestrator.py`. |
 | `2026-04-21 12:19:12 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 500 to 489 lines while keeping `run_agent_v8()` public behavior unchanged; the remaining local graph handlers are now planner/task-graph/multi-agent/self-improve/reflection/finalize only. |
 | `2026-04-21 12:19:12 +05:00` | `NEXT` | Continue the orchestrator wave with the execution/result handler family inside `run_agent_v8()`; the next safe slice is planner/task-graph/multi-agent or reflection/finalize, but keep it to one family per commit. |
+| `2026-04-21 12:20:58 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/orchestrator_execution_runtime.py` and moved the execution/result handler family (`planner`, `task_graph`, `multi_agent`) plus task-graph answer extraction out of `domain/agents/orchestrator.py`. |
+| `2026-04-21 12:20:58 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 489 to 473 lines while keeping `run_agent_v8()` public behavior unchanged; the remaining local graph handlers are now `self_improve`, `reflection_v2`, and `finalize`. |
+| `2026-04-21 12:20:58 +05:00` | `NEXT` | Continue the orchestrator wave with the remaining `reflection_v2` / `finalize` family, or stop and re-evaluate if preserving local closure wiring becomes cleaner than extracting the last two handlers. |
 
 ## 8. Commit Ledger
 

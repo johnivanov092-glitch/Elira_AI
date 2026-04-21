@@ -15,14 +15,17 @@ from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
 from app.core.llm import ask_model
-from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
 from app.domain.agents.orchestrator_context_runtime import (
     handle_retrieve_kb,
     handle_retrieve_memory,
     handle_retrieve_working_memory,
     handle_tool_hint,
 )
-from app.domain.agents.planner import run_planner_agent, run_task_graph
+from app.domain.agents.orchestrator_execution_runtime import (
+    handle_multi_agent,
+    handle_planner,
+    handle_task_graph,
+)
 from app.domain.agents.orchestrator_runtime import (
     build_run_agent_v8_result,
     build_self_improving_result,
@@ -187,62 +190,43 @@ def run_agent_v8(
         )
 
     def h_planner(s: dict) -> dict:
-        _progress(5, "\U0001f9ed Planner")
-        plan = run_planner_agent(
-            task, model_name, memory_profile,
-            num_ctx=num_ctx, progress_callback=None,
-        )
-        s["plan_result"] = plan
-        s["answer"] = plan.get("final") or plan.get("summary") or ""
-        if plan:
-            _wm("planner", "decision", str(plan)[:2500], score=0.85)
-        _record_tool("planner_agent", True, "run_planner_agent")
-        _refresh_working()
-        return s
-
-    def h_task_graph(s: dict) -> dict:
-        _progress(5, "\U0001f578 Task Graph")
-        result = run_task_graph(
-            task, model_name, memory_profile,
-            num_ctx=num_ctx, progress_callback=None,
-        )
-        s["task_graph_result"] = result
-        final_answer = ""
-        if isinstance(result, dict):
-            final_answer = (
-                result.get("final")
-                or result.get("answer")
-                or result.get("summary")
-                or ""
-            )
-        if not final_answer and isinstance(result, dict):
-            logs = result.get("execution_log", []) or result.get("steps", [])
-            if logs:
-                final_answer = "\n\n".join(
-                    str(x.get("output", ""))[:2000] for x in logs[-2:]
-                )
-        s["answer"] = final_answer or s.get("answer", "")
-        if result:
-            _wm("task_graph", "finding", str(result)[:3000], score=0.9)
-        _record_tool("task_graph", True, "run_task_graph")
-        _refresh_working()
-        return s
-
-    def h_multi_agent(s: dict) -> dict:
-        _progress(5, "\U0001f91d Multi-Agent")
-        result = run_legacy_multi_agent_workflow(
+        return handle_planner(
+            s,
             task=task,
             model_name=model_name,
             memory_profile=memory_profile,
-            num_ctx=num_ctx, progress_callback=None,
+            num_ctx=num_ctx,
+            progress_callback=lambda label: _progress(5, label),
+            record_working_memory=_wm,
+            record_tool_usage=_record_tool,
+            refresh_working_context=_refresh_working,
         )
-        s["multi_agent_result"] = result
-        s["answer"] = (result or {}).get("final", "") or s.get("answer", "")
-        if result:
-            _wm("multi_agent", "finding", str(result)[:3000], score=0.92)
-        _record_tool("multi_agent", True, "run_multi_agent")
-        _refresh_working()
-        return s
+
+    def h_task_graph(s: dict) -> dict:
+        return handle_task_graph(
+            s,
+            task=task,
+            model_name=model_name,
+            memory_profile=memory_profile,
+            num_ctx=num_ctx,
+            progress_callback=lambda label: _progress(5, label),
+            record_working_memory=_wm,
+            record_tool_usage=_record_tool,
+            refresh_working_context=_refresh_working,
+        )
+
+    def h_multi_agent(s: dict) -> dict:
+        return handle_multi_agent(
+            s,
+            task=task,
+            model_name=model_name,
+            memory_profile=memory_profile,
+            num_ctx=num_ctx,
+            progress_callback=lambda label: _progress(5, label),
+            record_working_memory=_wm,
+            record_tool_usage=_record_tool,
+            refresh_working_context=_refresh_working,
+        )
 
     def h_self_improve(s: dict) -> dict:
         _progress(5, "\u267b\ufe0f Self-Improving")
