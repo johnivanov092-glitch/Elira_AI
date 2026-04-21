@@ -404,6 +404,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-21 13:01:42 +05:00` | `DONE` | Applied the next accelerated package: extracted `application/persona/store.py` and `application/persona/evolution.py` from `services/persona_service.py`, moving persona SQLite bootstrap/audit/version status, candidate promotion, model calibration, and dialogue-observation evolution into canonical application-layer modules. |
 | `2026-04-21 13:01:42 +05:00` | `DONE` | Reduced `services/persona_service.py` from 707 to 88 lines while preserving the public persona service facade used by routes, runtime callers, and `backend/tests/test_persona_service.py`; targeted verification passed with `2 passed` on the persona test file. |
 | `2026-04-21 13:01:42 +05:00` | `NEXT` | Continue accelerated mode with the next large backend target outside the now-thin persona facade. Preferred order: `api/routes/project_brain.py`, then `infrastructure/search/web_search.py`, then any remaining medium service still above the acceleration threshold. |
+| `2026-04-21 13:34:28 +05:00` | `DONE` | Applied the next accelerated package: extracted `application/project_brain/{state,files,uploads,ollama,chat}.py` from `api/routes/project_brain.py`, moving project file access, attachment staging, Ollama integration, web-context collection, and local chat/code orchestration into a dedicated application-layer package. |
+| `2026-04-21 13:34:28 +05:00` | `DONE` | Reduced `api/routes/project_brain.py` from 789 to 205 lines while preserving the existing route surface and response shapes as a thin HTTP facade; verification passed with syntax checks, `compileall`, and mocked `fastapi/pydantic` import smoke. |
+| `2026-04-21 13:34:28 +05:00` | `NEXT` | Continue accelerated mode with `infrastructure/search/web_search.py` as the next large backend target; avoid reopening the now-thin `project_brain` route unless a concrete contract issue appears. |
 
 ## 8. Commit Ledger
 
