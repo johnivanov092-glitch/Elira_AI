@@ -383,6 +383,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-21 12:20:58 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/orchestrator_execution_runtime.py` and moved the execution/result handler family (`planner`, `task_graph`, `multi_agent`) plus task-graph answer extraction out of `domain/agents/orchestrator.py`. |
 | `2026-04-21 12:20:58 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 489 to 473 lines while keeping `run_agent_v8()` public behavior unchanged; the remaining local graph handlers are now `self_improve`, `reflection_v2`, and `finalize`. |
 | `2026-04-21 12:20:58 +05:00` | `NEXT` | Continue the orchestrator wave with the remaining `reflection_v2` / `finalize` family, or stop and re-evaluate if preserving local closure wiring becomes cleaner than extracting the last two handlers. |
+| `2026-04-21 12:24:15 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/orchestrator_postprocess_runtime.py` and moved the `reflection_v2` / `finalize` handler family, reflection context assembly, reflection regeneration gating, and finalize prompt builder out of `domain/agents/orchestrator.py`. |
+| `2026-04-21 12:24:15 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 473 to 417 lines while keeping `run_agent_v8()` public behavior unchanged; the only remaining local graph handler is `self_improve`, while context/execution/post-process families are now all in canonical runtime helper modules. |
+| `2026-04-21 12:24:15 +05:00` | `NEXT` | Re-evaluate whether to extract the remaining `self_improve` graph handler from `run_agent_v8()`; the orchestrator bounded context is now small enough that further splitting may have lower return than moving to the next large backend module. |
 
 ## 8. Commit Ledger
 

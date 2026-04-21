@@ -14,7 +14,6 @@ import time
 from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
-from app.core.llm import ask_model
 from app.domain.agents.orchestrator_context_runtime import (
     handle_retrieve_kb,
     handle_retrieve_memory,
@@ -25,6 +24,10 @@ from app.domain.agents.orchestrator_execution_runtime import (
     handle_multi_agent,
     handle_planner,
     handle_task_graph,
+)
+from app.domain.agents.orchestrator_postprocess_runtime import (
+    handle_finalize,
+    handle_reflection_v2,
 )
 from app.domain.agents.orchestrator_runtime import (
     build_run_agent_v8_result,
@@ -66,12 +69,7 @@ def run_agent_v8(
         add_working_memory,
         build_working_memory_context,
     )
-    from app.domain.agents.reflection import (
-        reflection_v2,
-        count_false_flags,
-        regenerate_answer_from_context,
-        run_graph_with_retry_v8,
-    )
+    from app.domain.agents.reflection import run_graph_with_retry_v8
     run_started = time.time()
     run_id = uuid4().hex[:12]
     route = route_task(
@@ -245,81 +243,27 @@ def run_agent_v8(
         return s
 
     def h_reflection_v2(s: dict) -> dict:
-        _progress(6, "\U0001faa9 Reflection v2")
-        if s.get("selected_strategy") == "self_improve" and s.get("answer", "").strip():
-            return s
-        refl = reflection_v2(
+        return handle_reflection_v2(
+            s,
             task=task,
-            answer=s.get("answer", ""),
             model_name=model_name,
-            memory_context=s.get("memory_context", ""),
-            kb_context="\n\n".join(
-                x for x in [s.get("kb_context", ""), s.get("working_context", "")]
-                if x.strip()
-            ),
-            profile_name=memory_profile,
+            memory_profile=memory_profile,
             num_ctx=num_ctx,
+            progress_callback=lambda label: _progress(6, label),
+            record_working_memory=_wm,
+            refresh_working_context=_refresh_working,
         )
-        false_count = count_false_flags(refl)
-        if false_count >= 3 or refl.get("needs_retry"):
-            regenerated = regenerate_answer_from_context(
-                task=task, model_name=model_name,
-                memory_context="\n\n".join(
-                    x for x in [s.get("memory_context", ""), s.get("working_context", "")]
-                    if x.strip()
-                ),
-                kb_context=s.get("kb_context", ""),
-                prior_answer=s.get("answer", ""),
-                reflection_notes=refl.get("notes", ""),
-                num_ctx=num_ctx,
-            )
-            s["answer"] = regenerated
-            refl["regenerated"] = True
-        else:
-            improved = refl.get("improved_answer", "").strip()
-            if improved:
-                s["answer"] = improved
-            refl["regenerated"] = False
-        s["reflection"] = refl
-        _wm("reflection_v2", "decision", json.dumps(refl, ensure_ascii=False)[:2500], score=0.9)
-        if s.get("answer", "").strip():
-            _wm("reflection_v2", "finding", s["answer"][:2500], score=0.8)
-        _refresh_working()
-        return s
 
     def h_finalize(s: dict) -> dict:
-        _progress(total_steps, "\u2705 Final")
-        if not s.get("answer", "").strip():
-            fallback_prompt = (
-                "\u0421\u043e\u0431\u0435\u0440\u0438 \u0444\u0438\u043d\u0430\u043b\u044c\u043d\u044b\u0439 \u043e\u0442\u0432\u0435\u0442 \u043f\u043e \u0437\u0430\u0434\u0430\u0447\u0435.\n\n"
-                f"\u0417\u0430\u0434\u0430\u0447\u0430:\n{task}\n\n"
-                f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 \u043f\u0430\u043c\u044f\u0442\u0438:\n{s.get('memory_context', '')[:5000]}\n\n"
-                f"\u041a\u043e\u043d\u0442\u0435\u043a\u0441\u0442 KB:\n{s.get('kb_context', '')[:4000]}\n\n"
-                f"\u0420\u0430\u0431\u043e\u0447\u0430\u044f \u043f\u0430\u043c\u044f\u0442\u044c:\n{s.get('working_context', '')[:4000]}\n\n"
-                f"\u041f\u043e\u0434\u0441\u043a\u0430\u0437\u043a\u0430 \u043f\u043e \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u0430\u043c:\n{s.get('tool_hint', '')[:1500]}\n\n"
-                "\u0422\u0440\u0435\u0431\u043e\u0432\u0430\u043d\u0438\u044f:\n"
-                "- \u043e\u0442\u0432\u0435\u0442 \u0434\u043e\u043b\u0436\u0435\u043d \u0431\u044b\u0442\u044c \u043a\u043e\u043d\u043a\u0440\u0435\u0442\u043d\u044b\u043c,\n"
-                "- \u043d\u0435 \u0432\u044b\u0434\u0443\u043c\u044b\u0432\u0430\u0439 \u0444\u0430\u043a\u0442\u044b,\n"
-                "- \u0435\u0441\u043b\u0438 \u0434\u0430\u043d\u043d\u044b\u0445 \u043c\u0430\u043b\u043e, \u0442\u0430\u043a \u0438 \u0441\u043a\u0430\u0436\u0438,\n"
-                "- \u0434\u0430\u0439 \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0438\u0439 \u043f\u0440\u0430\u043a\u0442\u0438\u0447\u0435\u0441\u043a\u0438\u0439 \u0448\u0430\u0433."
-            )
-            s["answer"] = ask_model(
-                model_name=model_name,
-                profile_name="\u041e\u0440\u043a\u0435\u0441\u0442\u0440\u0430\u0442\u043e\u0440",
-                user_input=fallback_prompt,
-                memory_context="\n\n".join(
-                    x for x in [s.get("memory_context", ""), s.get("working_context", "")]
-                    if x.strip()
-                ),
-                use_memory=True,
-                include_history=False,
-                temp=0.15,
-                num_ctx=num_ctx,
-            )
-        if s.get("answer", "").strip():
-            _wm("finalize", "finding", s["answer"][:3000], score=0.95)
-        _refresh_working()
-        return s
+        return handle_finalize(
+            s,
+            task=task,
+            model_name=model_name,
+            num_ctx=num_ctx,
+            progress_callback=lambda label: _progress(total_steps, label),
+            record_working_memory=_wm,
+            refresh_working_context=_refresh_working,
+        )
 
     handlers = {
         "retrieve_memory": h_retrieve_memory,
