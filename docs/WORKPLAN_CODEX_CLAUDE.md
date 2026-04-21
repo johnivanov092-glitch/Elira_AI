@@ -377,6 +377,9 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-20 15:05:00 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/self_improve_runtime.py` and moved the self-improve iteration loop, context loading, critique/improve prompt builders, reflection calls, and self-improve run tracking out of `domain/agents/orchestrator.py`. |
 | `2026-04-20 15:05:00 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 614 to 500 lines; `run_self_improving_agent()` is now a thin facade over the canonical self-improve runtime helper and no longer mixes active and legacy loop paths. |
 | `2026-04-20 15:05:00 +05:00` | `NEXT` | Continue the orchestrator wave with the nested handler cluster inside `run_agent_v8()`; the self-improve loop is now isolated enough that the next safe slice is one handler family at a time, not another service/db migration. |
+| `2026-04-21 12:19:12 +05:00` | `DONE` | Continued the orchestrator bounded-context split: extracted `domain/agents/orchestrator_context_runtime.py` and moved the retrieval/tool-memory handler family (`retrieve_memory`, `retrieve_kb`, `retrieve_working_memory`, `tool_hint`) out of `domain/agents/orchestrator.py`. |
+| `2026-04-21 12:19:12 +05:00` | `DONE` | Reduced `domain/agents/orchestrator.py` from 500 to 489 lines while keeping `run_agent_v8()` public behavior unchanged; the remaining local graph handlers are now planner/task-graph/multi-agent/self-improve/reflection/finalize only. |
+| `2026-04-21 12:19:12 +05:00` | `NEXT` | Continue the orchestrator wave with the execution/result handler family inside `run_agent_v8()`; the next safe slice is planner/task-graph/multi-agent or reflection/finalize, but keep it to one family per commit. |
 
 ## 8. Commit Ledger
 

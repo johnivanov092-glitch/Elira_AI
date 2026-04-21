@@ -16,6 +16,12 @@ from uuid import uuid4
 
 from app.core.llm import ask_model
 from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
+from app.domain.agents.orchestrator_context_runtime import (
+    handle_retrieve_kb,
+    handle_retrieve_memory,
+    handle_retrieve_working_memory,
+    handle_tool_hint,
+)
 from app.domain.agents.planner import run_planner_agent, run_task_graph
 from app.domain.agents.orchestrator_runtime import (
     build_run_agent_v8_result,
@@ -48,10 +54,7 @@ def run_agent_v8(
     progress_callback: ProgressCallback = None,
     force_strategy: str | None = None,
 ) -> dict:
-    from app.application.memory.context import build_default_memory_context
     from app.domain.memory.knowledge_base import (
-        build_kb_context,
-        get_tool_preferences,
         record_tool_usage,
     )
     from app.domain.memory.strategy_tracking import record_v8_strategy_usage
@@ -147,55 +150,41 @@ def run_agent_v8(
 
     # -- graph node handlers --
     def h_retrieve_memory(s: dict) -> dict:
-        _progress(1, "\U0001f9e0 \u041f\u0430\u043c\u044f\u0442\u044c")
-        s["memory_context"] = build_default_memory_context(
-            query=task,
-            profile_name=memory_profile,
-            top_k=8,
+        return handle_retrieve_memory(
+            s,
+            task=task,
+            memory_profile=memory_profile,
+            progress_callback=lambda label: _progress(1, label),
+            record_working_memory=_wm,
+            refresh_working_context=_refresh_working,
         )
-        if s["memory_context"].strip():
-            _wm("retrieve_memory", "finding", s["memory_context"][:2000], score=0.9)
-        _refresh_working()
-        return s
 
     def h_retrieve_kb(s: dict) -> dict:
-        _progress(2, "\U0001f4da KB")
-        s["kb_context"] = build_kb_context(task, profile_name=memory_profile, top_k=4)
-        if s["kb_context"].strip():
-            _wm("retrieve_kb", "source", s["kb_context"][:2000], score=0.85)
-        _refresh_working()
-        return s
+        return handle_retrieve_kb(
+            s,
+            task=task,
+            memory_profile=memory_profile,
+            progress_callback=lambda label: _progress(2, label),
+            record_working_memory=_wm,
+            refresh_working_context=_refresh_working,
+        )
 
     def h_retrieve_working_memory(s: dict) -> dict:
-        _progress(3, "\U0001f9e9 Working memory")
-        _refresh_working()
-        return s
+        return handle_retrieve_working_memory(
+            s,
+            progress_callback=lambda label: _progress(3, label),
+            refresh_working_context=_refresh_working,
+        )
 
     def h_tool_hint(s: dict) -> dict:
-        _progress(4, "\U0001f6e0 Tool memory")
-        try:
-            prefs = get_tool_preferences(task, profile_name=memory_profile, limit=3)
-        except Exception:
-            prefs = []
-        if prefs:
-            lines = []
-            for p in prefs:
-                tool = p.get("tool", p.get("tool_name", "unknown"))
-                success_rate = p.get("success_rate")
-                if success_rate is None:
-                    runs = max(int(p.get("runs", 0) or p.get("uses", 0) or 0), 1)
-                    success_rate = round(float(p.get("success", 0)) / runs, 2)
-                uses = p.get("uses", p.get("runs", 0))
-                lines.append(f"- {tool}: success_rate={success_rate}, uses={uses}")
-            s["tool_hint"] = (
-                "\u041f\u0440\u0435\u0434\u043f\u043e\u0447\u0442\u0438\u0442\u0435\u043b\u044c\u043d\u044b\u0435 \u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b \u043f\u043e \u043f\u0440\u043e\u0448\u043b\u043e\u043c\u0443 \u043e\u043f\u044b\u0442\u0443:\n"
-                + "\n".join(lines)
-            )
-            _wm("tool_hint", "decision", s["tool_hint"][:1800], score=0.75)
-        else:
-            s["tool_hint"] = ""
-        _refresh_working()
-        return s
+        return handle_tool_hint(
+            s,
+            task=task,
+            memory_profile=memory_profile,
+            progress_callback=lambda label: _progress(4, label),
+            record_working_memory=_wm,
+            refresh_working_context=_refresh_working,
+        )
 
     def h_planner(s: dict) -> dict:
         _progress(5, "\U0001f9ed Planner")
