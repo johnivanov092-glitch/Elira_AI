@@ -9,26 +9,11 @@ to avoid circular imports.
 """
 from __future__ import annotations
 
-import json
 import time
 from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
-from app.domain.agents.orchestrator_context_runtime import (
-    handle_retrieve_kb,
-    handle_retrieve_memory,
-    handle_retrieve_working_memory,
-    handle_tool_hint,
-)
-from app.domain.agents.orchestrator_execution_runtime import (
-    handle_multi_agent,
-    handle_planner,
-    handle_task_graph,
-)
-from app.domain.agents.orchestrator_postprocess_runtime import (
-    handle_finalize,
-    handle_reflection_v2,
-)
+from app.domain.agents.orchestrator_graph_runtime import build_v8_graph_runtime
 from app.domain.agents.orchestrator_runtime import (
     build_run_agent_v8_result,
     build_self_improving_result,
@@ -60,15 +45,8 @@ def run_agent_v8(
     progress_callback: ProgressCallback = None,
     force_strategy: str | None = None,
 ) -> dict:
-    from app.domain.memory.knowledge_base import (
-        record_tool_usage,
-    )
     from app.domain.memory.strategy_tracking import record_v8_strategy_usage
     from app.domain.memory.task_tracking import record_task_run
-    from app.domain.memory.working_memory import (
-        add_working_memory,
-        build_working_memory_context,
-    )
     from app.domain.agents.reflection import run_graph_with_retry_v8
     run_started = time.time()
     run_id = uuid4().hex[:12]
@@ -89,10 +67,6 @@ def run_agent_v8(
     graph = select_v8_graph(selected_strategy, mode)
     total_steps = max(len(graph), 1)
 
-    def _progress(step: int, label: str):
-        if progress_callback:
-            progress_callback(step, total_steps, label)
-
     state: Dict[str, Any] = build_v8_state(
         run_id=run_id,
         task=task,
@@ -104,181 +78,18 @@ def run_agent_v8(
         selected_strategy=selected_strategy,
         graph=graph,
     )
-
-    # -- working-memory helpers --
-    def _wm(step_name: str, fact_type: str, content: str, score: float = 1.0):
-        try:
-            add_working_memory(
-                run_id=run_id, step_name=step_name,
-                fact_type=fact_type,
-                content=(content or "")[:6000],
-                score=score, profile_name=memory_profile,
-            )
-        except Exception:
-            pass
-
-    def _refresh_working():
-        try:
-            state["working_context"] = build_working_memory_context(
-                run_id, profile_name=memory_profile, limit=12,
-            )
-        except Exception:
-            state["working_context"] = state.get("working_context", "")
-
-    def _record_tool(tool_name: str, ok: bool, meta: str = ""):
-        try:
-            record_tool_usage(
-                tool_name=tool_name, task_hint=task,
-                ok=ok, score=1.0 if ok else 0.0,
-                notes=meta[:1000], profile_name=memory_profile,
-            )
-        except Exception:
-            pass
-
-    _wm("route", "goal", task, score=1.0)
-    _wm(
-        "route", "decision",
-        f"mode={route.get('mode')} source={route.get('source', 'keyword')} "
-        f"confidence={route.get('confidence', 0)} reason={route.get('reason', '')}",
-        score=float(route.get("confidence", 0.5) or 0.5),
+    runtime = build_v8_graph_runtime(
+        state=state,
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        num_ctx=num_ctx,
+        run_id=run_id,
+        total_steps=total_steps,
+        progress_callback=progress_callback,
+        run_self_improving_agent_func=run_self_improving_agent,
     )
-    _wm(
-        "strategy", "decision",
-        json.dumps(strategy, ensure_ascii=False)[:2000],
-        score=float(strategy.get("confidence", 0.6) or 0.6),
-    )
-    _refresh_working()
-
-    # -- graph node handlers --
-    def h_retrieve_memory(s: dict) -> dict:
-        return handle_retrieve_memory(
-            s,
-            task=task,
-            memory_profile=memory_profile,
-            progress_callback=lambda label: _progress(1, label),
-            record_working_memory=_wm,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_retrieve_kb(s: dict) -> dict:
-        return handle_retrieve_kb(
-            s,
-            task=task,
-            memory_profile=memory_profile,
-            progress_callback=lambda label: _progress(2, label),
-            record_working_memory=_wm,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_retrieve_working_memory(s: dict) -> dict:
-        return handle_retrieve_working_memory(
-            s,
-            progress_callback=lambda label: _progress(3, label),
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_tool_hint(s: dict) -> dict:
-        return handle_tool_hint(
-            s,
-            task=task,
-            memory_profile=memory_profile,
-            progress_callback=lambda label: _progress(4, label),
-            record_working_memory=_wm,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_planner(s: dict) -> dict:
-        return handle_planner(
-            s,
-            task=task,
-            model_name=model_name,
-            memory_profile=memory_profile,
-            num_ctx=num_ctx,
-            progress_callback=lambda label: _progress(5, label),
-            record_working_memory=_wm,
-            record_tool_usage=_record_tool,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_task_graph(s: dict) -> dict:
-        return handle_task_graph(
-            s,
-            task=task,
-            model_name=model_name,
-            memory_profile=memory_profile,
-            num_ctx=num_ctx,
-            progress_callback=lambda label: _progress(5, label),
-            record_working_memory=_wm,
-            record_tool_usage=_record_tool,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_multi_agent(s: dict) -> dict:
-        return handle_multi_agent(
-            s,
-            task=task,
-            model_name=model_name,
-            memory_profile=memory_profile,
-            num_ctx=num_ctx,
-            progress_callback=lambda label: _progress(5, label),
-            record_working_memory=_wm,
-            record_tool_usage=_record_tool,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_self_improve(s: dict) -> dict:
-        _progress(5, "\u267b\ufe0f Self-Improving")
-        result = run_self_improving_agent(
-            task, model_name, memory_profile,
-            num_ctx=num_ctx, max_iters=2,
-            progress_callback=None,
-            base_force_strategy="direct",
-        )
-        s["self_improve_result"] = result
-        s["answer"] = (result or {}).get("answer", "") or s.get("answer", "")
-        if result:
-            _wm("self_improve", "finding", str(result)[:3000], score=0.9)
-        _record_tool("self_improve", True, "run_self_improving_agent")
-        _refresh_working()
-        return s
-
-    def h_reflection_v2(s: dict) -> dict:
-        return handle_reflection_v2(
-            s,
-            task=task,
-            model_name=model_name,
-            memory_profile=memory_profile,
-            num_ctx=num_ctx,
-            progress_callback=lambda label: _progress(6, label),
-            record_working_memory=_wm,
-            refresh_working_context=_refresh_working,
-        )
-
-    def h_finalize(s: dict) -> dict:
-        return handle_finalize(
-            s,
-            task=task,
-            model_name=model_name,
-            num_ctx=num_ctx,
-            progress_callback=lambda label: _progress(total_steps, label),
-            record_working_memory=_wm,
-            refresh_working_context=_refresh_working,
-        )
-
-    handlers = {
-        "retrieve_memory": h_retrieve_memory,
-        "retrieve_kb": h_retrieve_kb,
-        "retrieve_working_memory": h_retrieve_working_memory,
-        "tool_hint": h_tool_hint,
-        "planner": h_planner,
-        "task_graph": h_task_graph,
-        "multi_agent": h_multi_agent,
-        "self_improve": h_self_improve,
-        "reflection_v2": h_reflection_v2,
-        "finalize": h_finalize,
-    }
-
-    state = run_graph_with_retry_v8(graph, handlers, state, max_retries=2)
+    state = run_graph_with_retry_v8(graph, runtime.handlers, state, max_retries=2)
 
     status = "ok" if not state.get("failed_node") else "failed"
     try:
