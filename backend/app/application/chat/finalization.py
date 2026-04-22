@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from app.application.chat.agent_os import emit_agent_os_event, record_agent_os_monitoring
 from app.application.chat.stream_service import build_chat_meta, build_stream_done_event
@@ -29,8 +29,9 @@ def finalize_chat_success(
     source_agent_id: str,
     selected_tools: list[str] | None = None,
     cached: bool = False,
+    observe_dialogue_func: Callable[..., dict[str, Any]] = observe_dialogue,
 ) -> dict[str, Any]:
-    persona_meta = observe_dialogue(
+    persona_meta = observe_dialogue_func(
         dialog_id=run_id,
         session_id=session_id or run_id,
         profile_name=profile_name,
@@ -104,6 +105,7 @@ def finalize_stream_success(
     timeline: list[dict[str, Any]],
     selected_tools: list[str] | None = None,
     cached: bool = False,
+    observe_dialogue_func: Callable[..., dict[str, Any]] = observe_dialogue,
 ) -> dict[str, Any]:
     meta = finalize_chat_success(
         history_service=history_service,
@@ -126,6 +128,7 @@ def finalize_stream_success(
         source_agent_id=source_agent_id,
         selected_tools=selected_tools,
         cached=cached,
+        observe_dialogue_func=observe_dialogue_func,
     )
     return build_stream_done_event(full_text=full_text, meta=meta, timeline=timeline)
 

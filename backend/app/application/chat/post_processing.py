@@ -131,6 +131,7 @@ def apply_response_guards(
     use_file_gen: bool = True,
     append_timeline_func: Callable | None = None,
     maybe_generate_files_func: Callable | None = None,
+    maybe_auto_exec_python_func: Callable | None = None,
 ) -> GuardedResponse:
     """Run auto-exec, file gen, identity guard, and provenance guard.
 
@@ -140,13 +141,21 @@ def apply_response_guards(
 
     # Auto-execute Python snippets
     try:
-        text = maybe_auto_exec_python(
-            user_input=raw_user_input,
-            answer=text,
-            enabled=use_python_exec,
-            append_timeline_func=append_timeline_func,
-            timeline=timeline,
-        )
+        if maybe_auto_exec_python_func is not None:
+            text = maybe_auto_exec_python_func(
+                raw_user_input,
+                text,
+                timeline,
+                enabled=use_python_exec,
+            )
+        else:
+            text = maybe_auto_exec_python(
+                user_input=raw_user_input,
+                answer=text,
+                enabled=use_python_exec,
+                append_timeline_func=append_timeline_func,
+                timeline=timeline,
+            )
     except Exception:
         pass
 
