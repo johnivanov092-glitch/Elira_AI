@@ -1,4 +1,3 @@
-"""Autopipeline compatibility facade."""
 from __future__ import annotations
 
 from app.application.autopipeline.runtime import (
