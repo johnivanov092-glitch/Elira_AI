@@ -453,6 +453,10 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-21 13:34:28 +05:00` | `DONE` | Reduced `api/routes/project_brain.py` from 789 to 205 lines while preserving the existing route surface and response shapes as a thin HTTP facade; verification passed with syntax checks, `compileall`, and mocked `fastapi/pydantic` import smoke. |
 | `2026-04-21 13:34:28 +05:00` | `NEXT` | Continue accelerated mode with `infrastructure/search/web_search.py` as the next large backend target; avoid reopening the now-thin `project_brain` route unless a concrete contract issue appears. |
 
+| `2026-04-25 02:36:45 +05:00` | `DONE` | Applied the next accelerated Agent OS package: extracted `application/agent_registry/store.py`, `application/agent_registry/builtins.py`, and `application/agent_registry/__init__.py` from `services/agent_registry.py`, moving SQLite CRUD/runtime helpers and builtin agent-definition assembly into an application-layer package while keeping the service module authoritative for `DB_PATH`, `_conn()`, `_init_db()`, `_row_to_dict()`, and `_BUILTIN_AGENTS_SEEDED`. |
+| `2026-04-25 02:36:45 +05:00` | `DONE` | Reduced `services/agent_registry.py` from 326 lines to 139 while preserving all public CRUD/state/run functions for `agent_registry_routes.py`, `backend/tests/test_agent_os_phase1.py`, and the Phase 5 DB-override path; verification passed with `py_compile`, `compileall`, `python -m pytest backend/tests/test_agent_os_phase1.py -q` (`15 passed`), mocked `agent_registry_routes` import smoke, and a temp-DB smoke that rebinds `DB_PATH` and resets `_BUILTIN_AGENTS_SEEDED`. |
+| `2026-04-25 02:36:45 +05:00` | `NEXT` | Continue accelerated mode with `services/event_bus.py` as the next medium Agent OS package, using the same compatibility-first extraction pattern so Phase 5 DB overrides and route/test patch points stay stable. |
+
 ## 8. Commit Ledger
 
 | Branch | Short SHA | Title | Merged state | Note |
@@ -506,7 +510,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Continue bounded-context extraction in the agent runtime (`planner.py` / `orchestrator.py`) | `codex/refactor-arch-foundation` | workflow DB-path compatibility is closed; the next low-risk backend wins are internal agent modules that still mix prompt-building and execution/runtime logic |
+| `1` | Extract `services/event_bus.py` into an accelerated medium Agent OS package | `codex/refactor-arch-foundation` | Follow the `agent_registry` compatibility pattern: keep service-owned `DB_PATH`, `_conn()`, `_init_db()`, and test patch points stable while moving storage/runtime logic into `application/event_bus/*` |
 | `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
 | `3` | Keep SQLite connection handling centralized in `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | service-level consumers, extracted `application/memory/*` and `domain/memory/*` helpers, and the current route-level sweep (`api/routes/library_sqlite.py`, `api/routes/elira_phase20_state.py`, `api/routes/elira_phase21.py`, `api/routes/elira_task_runner.py`, `api/routes/elira_phase19.py`, `api/routes/elira_phase20.py`, `api/routes/elira_supervisor.py`, `api/routes/elira_execute.py`, `api/routes/elira_patch.py`) are migrated; do not reopen this wave without a new concrete target |
 | `3` | Continue shrinking compatibility imports around workflow orchestration (Task 14) | `codex/refactor-arch-foundation` | `services/workflow_engine.py` is now mostly intentional public compatibility for tests/routes; touch it only through small, concrete caller migrations |
