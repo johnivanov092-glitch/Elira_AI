@@ -1,4 +1,3 @@
-"""Plugin compatibility facade."""
 from __future__ import annotations
 
 from app.application.plugins.runtime import (
