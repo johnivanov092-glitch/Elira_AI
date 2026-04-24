@@ -1,4 +1,3 @@
-"""PDF compatibility facade."""
 from __future__ import annotations
 
 from app.application.pdf.runtime import (
