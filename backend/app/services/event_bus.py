@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import sqlite3
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.application.event_bus import store as event_bus_store
 from app.core.data_files import sqlite_data_file
 from app.infrastructure.db.connection import connect_sqlite
 
@@ -79,51 +78,38 @@ def _conn() -> sqlite3.Connection:
 
 
 def _init_db() -> None:
-    with _conn() as con:
-        con.executescript(_CREATE_SQL)
+    event_bus_store.init_db(conn_factory=_conn, create_sql=_CREATE_SQL)
 
 
 _init_db()
 
 
 def _dumps(value: Any) -> str:
-    return json.dumps(value if value is not None else {}, ensure_ascii=False)
+    return event_bus_store.dumps_json(value)
 
 
 def _loads(raw: Any, default: Any) -> Any:
-    if raw in (None, ""):
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return default
+    return event_bus_store.loads_json(raw, default)
 
 
 def _row_to_event(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if not row:
-        return None
-    data = dict(row)
-    data["payload"] = _loads(data.pop("payload_json", "{}"), {})
-    return data
+    return event_bus_store.row_to_event(loads_func=_loads, row=row)
 
 
 def _row_to_message(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if not row:
-        return None
-    data = dict(row)
-    data["content"] = _loads(data.pop("content_json", "{}"), {})
-    data["read"] = bool(data.get("read"))
-    return data
+    return event_bus_store.row_to_message(loads_func=_loads, row=row)
 
 
 def _row_to_subscription(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    return dict(row) if row else None
+    return event_bus_store.row_to_subscription(row=row)
 
 
 def get_event(event_id: str) -> dict[str, Any] | None:
-    with _conn() as con:
-        row = con.execute("SELECT * FROM events WHERE event_id = ?", (event_id,)).fetchone()
-    return _row_to_event(row)
+    return event_bus_store.get_event(
+        conn_factory=_conn,
+        row_to_event_func=_row_to_event,
+        event_id=event_id,
+    )
 
 
 def emit_event(
@@ -133,34 +119,16 @@ def emit_event(
     source_agent_id: str | None = None,
     event_id: str | None = None,
 ) -> dict[str, Any]:
-    event_type = str(event_type or "").strip()
-    if not event_type:
-        raise ValueError("event_type is required")
-
-    actual_event_id = str(event_id or f"evt-{uuid.uuid4().hex}")
-    created_at = _now()
-
-    with _conn() as con:
-        con.execute(
-            """
-            INSERT INTO events (event_id, event_type, payload_json, source_agent_id, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(event_id) DO UPDATE SET
-                event_type = excluded.event_type,
-                payload_json = excluded.payload_json,
-                source_agent_id = excluded.source_agent_id,
-                created_at = excluded.created_at
-            """,
-            (
-                actual_event_id,
-                event_type,
-                _dumps(payload or {}),
-                str(source_agent_id or ""),
-                created_at,
-            ),
-        )
-
-    return get_event(actual_event_id) or {}
+    return event_bus_store.emit_event(
+        conn_factory=_conn,
+        now_func=_now,
+        dumps_func=_dumps,
+        get_event_func=get_event,
+        event_type=event_type,
+        payload=payload,
+        source_agent_id=source_agent_id,
+        event_id=event_id,
+    )
 
 
 def list_events(
@@ -170,41 +138,22 @@ def list_events(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    if event_type:
-        clauses.append("event_type = ?")
-        params.append(event_type)
-    if source_agent_id:
-        clauses.append("source_agent_id = ?")
-        params.append(source_agent_id)
-
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-
-    with _conn() as con:
-        total_row = con.execute(f"SELECT COUNT(*) AS cnt FROM events {where}", params).fetchone()
-        rows = con.execute(
-            f"""
-            SELECT * FROM events {where}
-            ORDER BY created_at DESC, id DESC
-            LIMIT ? OFFSET ?
-            """,
-            [*params, max(1, int(limit)), max(0, int(offset))],
-        ).fetchall()
-
-    total = int(total_row["cnt"]) if total_row else 0
-    events = [_row_to_event(row) for row in rows]
-    return [event for event in events if event], total
+    return event_bus_store.list_events(
+        conn_factory=_conn,
+        row_to_event_func=_row_to_event,
+        event_type=event_type,
+        source_agent_id=source_agent_id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def get_message(message_id: str) -> dict[str, Any] | None:
-    with _conn() as con:
-        row = con.execute(
-            "SELECT * FROM agent_messages WHERE message_id = ?",
-            (message_id,),
-        ).fetchone()
-    return _row_to_message(row)
+    return event_bus_store.get_message(
+        conn_factory=_conn,
+        row_to_message_func=_row_to_message,
+        message_id=message_id,
+    )
 
 
 def send_message(
@@ -215,37 +164,17 @@ def send_message(
     reply_to: str | None = None,
     message_id: str | None = None,
 ) -> dict[str, Any]:
-    to_agent = str(to_agent or "").strip()
-    if not to_agent:
-        raise ValueError("to_agent is required")
-
-    actual_message_id = str(message_id or f"msg-{uuid.uuid4().hex}")
-    created_at = _now()
-
-    with _conn() as con:
-        con.execute(
-            """
-            INSERT INTO agent_messages
-                (message_id, from_agent, to_agent, content_json, reply_to, read, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(message_id) DO UPDATE SET
-                from_agent = excluded.from_agent,
-                to_agent = excluded.to_agent,
-                content_json = excluded.content_json,
-                reply_to = excluded.reply_to
-            """,
-            (
-                actual_message_id,
-                str(from_agent or ""),
-                to_agent,
-                _dumps(content),
-                str(reply_to or ""),
-                0,
-                created_at,
-            ),
-        )
-
-    return get_message(actual_message_id) or {}
+    return event_bus_store.send_message(
+        conn_factory=_conn,
+        now_func=_now,
+        dumps_func=_dumps,
+        get_message_func=get_message,
+        to_agent=to_agent,
+        content=content,
+        from_agent=from_agent,
+        reply_to=reply_to,
+        message_id=message_id,
+    )
 
 
 def get_agent_messages(
@@ -255,53 +184,32 @@ def get_agent_messages(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    clauses = ["to_agent = ?"]
-    params: list[Any] = [agent_id]
-    if unread_only:
-        clauses.append("read = 0")
-    where = f"WHERE {' AND '.join(clauses)}"
-
-    with _conn() as con:
-        total_row = con.execute(
-            f"SELECT COUNT(*) AS cnt FROM agent_messages {where}",
-            params,
-        ).fetchone()
-        rows = con.execute(
-            f"""
-            SELECT * FROM agent_messages {where}
-            ORDER BY created_at DESC, id DESC
-            LIMIT ? OFFSET ?
-            """,
-            [*params, max(1, int(limit)), max(0, int(offset))],
-        ).fetchall()
-
-    total = int(total_row["cnt"]) if total_row else 0
-    messages = [_row_to_message(row) for row in rows]
-    return [message for message in messages if message], total
+    return event_bus_store.get_agent_messages(
+        conn_factory=_conn,
+        row_to_message_func=_row_to_message,
+        agent_id=agent_id,
+        unread_only=unread_only,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def mark_message_read(message_id: str, read: bool = True) -> dict[str, Any] | None:
-    with _conn() as con:
-        cursor = con.execute(
-            "UPDATE agent_messages SET read = ? WHERE message_id = ?",
-            (1 if read else 0, message_id),
-        )
-        if cursor.rowcount <= 0:
-            return None
-
-    return get_message(message_id)
+    return event_bus_store.mark_message_read(
+        conn_factory=_conn,
+        get_message_func=get_message,
+        message_id=message_id,
+        read=read,
+    )
 
 
 def get_subscription(subscriber_id: str, event_type: str) -> dict[str, Any] | None:
-    with _conn() as con:
-        row = con.execute(
-            """
-            SELECT * FROM subscriptions
-            WHERE subscriber_id = ? AND event_type = ?
-            """,
-            (subscriber_id, event_type),
-        ).fetchone()
-    return _row_to_subscription(row)
+    return event_bus_store.get_subscription(
+        conn_factory=_conn,
+        row_to_subscription_func=_row_to_subscription,
+        subscriber_id=subscriber_id,
+        event_type=event_type,
+    )
 
 
 def subscribe(
@@ -310,26 +218,14 @@ def subscribe(
     event_type: str,
     handler_name: str | None = None,
 ) -> dict[str, Any]:
-    subscriber_id = str(subscriber_id or "").strip()
-    event_type = str(event_type or "").strip()
-    if not subscriber_id:
-        raise ValueError("subscriber_id is required")
-    if not event_type:
-        raise ValueError("event_type is required")
-
-    created_at = _now()
-    with _conn() as con:
-        con.execute(
-            """
-            INSERT INTO subscriptions (subscriber_id, event_type, handler_name, created_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(subscriber_id, event_type) DO UPDATE SET
-                handler_name = excluded.handler_name
-            """,
-            (subscriber_id, event_type, str(handler_name or ""), created_at),
-        )
-
-    return get_subscription(subscriber_id, event_type) or {}
+    return event_bus_store.subscribe(
+        conn_factory=_conn,
+        now_func=_now,
+        get_subscription_func=get_subscription,
+        subscriber_id=subscriber_id,
+        event_type=event_type,
+        handler_name=handler_name,
+    )
 
 
 def list_subscriptions(
@@ -339,45 +235,19 @@ def list_subscriptions(
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    clauses: list[str] = []
-    params: list[Any] = []
-
-    if subscriber_id:
-        clauses.append("subscriber_id = ?")
-        params.append(subscriber_id)
-    if event_type:
-        clauses.append("event_type = ?")
-        params.append(event_type)
-
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-
-    with _conn() as con:
-        total_row = con.execute(f"SELECT COUNT(*) AS cnt FROM subscriptions {where}", params).fetchone()
-        rows = con.execute(
-            f"""
-            SELECT * FROM subscriptions {where}
-            ORDER BY subscriber_id, event_type
-            LIMIT ? OFFSET ?
-            """,
-            [*params, max(1, int(limit)), max(0, int(offset))],
-        ).fetchall()
-
-    total = int(total_row["cnt"]) if total_row else 0
-    subscriptions = [_row_to_subscription(row) for row in rows]
-    return [subscription for subscription in subscriptions if subscription], total
+    return event_bus_store.list_subscriptions(
+        conn_factory=_conn,
+        row_to_subscription_func=_row_to_subscription,
+        subscriber_id=subscriber_id,
+        event_type=event_type,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def unsubscribe(subscriber_id: str, event_type: str) -> dict[str, Any]:
-    with _conn() as con:
-        cursor = con.execute(
-            """
-            DELETE FROM subscriptions
-            WHERE subscriber_id = ? AND event_type = ?
-            """,
-            (subscriber_id, event_type),
-        )
-    return {
-        "subscriber_id": subscriber_id,
-        "event_type": event_type,
-        "removed": cursor.rowcount > 0,
-    }
+    return event_bus_store.unsubscribe(
+        conn_factory=_conn,
+        subscriber_id=subscriber_id,
+        event_type=event_type,
+    )
