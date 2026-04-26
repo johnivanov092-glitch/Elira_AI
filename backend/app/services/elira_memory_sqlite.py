@@ -3,12 +3,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from app.application.elira_memory import runtime as elira_memory_runtime
 from app.core.data_files import sqlite_data_file
 from app.core.persona_defaults import DEFAULT_PROFILE
 from app.infrastructure.db.connection import connect_sqlite
 
 
 DB_PATH = sqlite_data_file("elira_state.db", key_tables=("chats", "messages"))
+DEFAULT_CHAT_TITLE = "Новый чат"
 
 
 def _connect(path: str | Path | None = None):
@@ -23,146 +25,68 @@ _VALID_TABLES = {"chats", "messages", "settings"}
 
 
 def _ensure_column(conn, table: str, column: str, ddl: str):
-    if table not in _VALID_TABLES:
-        raise ValueError(f"Invalid table name: {table}")
-    safe_table = '"' + table.replace('"', '""') + '"'
-    columns = {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({safe_table})").fetchall()
-    }
-    if column not in columns:
-        conn.execute(f"ALTER TABLE {safe_table} ADD COLUMN {ddl}")
+    return elira_memory_runtime.ensure_column(
+        conn=conn,
+        valid_tables=_VALID_TABLES,
+        table=table,
+        column=column,
+        ddl=ddl,
+    )
 
 
 def _table_exists(conn, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return bool(row)
+    return elira_memory_runtime.table_exists(conn=conn, table=table)
 
 
 def init_db():
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS chats ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "title TEXT NOT NULL, "
-            "created_at TEXT DEFAULT CURRENT_TIMESTAMP, "
-            "updated_at TEXT DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        )
-        _ensure_column(conn, "chats", "pinned", "pinned INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(conn, "chats", "memory_saved", "memory_saved INTEGER NOT NULL DEFAULT 0")
-
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS messages ("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-            "chat_id INTEGER NOT NULL, "
-            "role TEXT NOT NULL, "
-            "content TEXT NOT NULL, "
-            "created_at TEXT DEFAULT CURRENT_TIMESTAMP"
-            ")"
-        )
-
-        cur.execute(
-            "CREATE TABLE IF NOT EXISTS settings ("
-            "id INTEGER PRIMARY KEY CHECK (id = 1), "
-            "ollama_context INTEGER NOT NULL DEFAULT 8192, "
-            "default_model TEXT NOT NULL DEFAULT 'gemma3:4b', "
-            f"agent_profile TEXT NOT NULL DEFAULT '{DEFAULT_PROFILE}'"
-            ")"
-        )
-        cur.execute(
-            "INSERT OR IGNORE INTO settings(id, ollama_context, default_model, agent_profile) "
-            f"VALUES(1, 8192, 'gemma3:4b', '{DEFAULT_PROFILE}')"
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    return elira_memory_runtime.init_db(
+        connect_func=_connect,
+        default_profile=DEFAULT_PROFILE,
+        ensure_column_func=_ensure_column,
+    )
 
 
 def count_chats(path: str | Path | None = None) -> int:
-    conn = _connect(path)
-    try:
-        if not _table_exists(conn, "chats"):
-            return 0
-        return int(conn.execute("SELECT COUNT(*) FROM chats").fetchone()[0])
-    finally:
-        conn.close()
+    return elira_memory_runtime.count_chats(
+        connect_func=lambda: _connect(path),
+        table_exists_func=_table_exists,
+    )
 
 
 def count_messages(path: str | Path | None = None) -> int:
-    conn = _connect(path)
-    try:
-        if not _table_exists(conn, "messages"):
-            return 0
-        return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-    finally:
-        conn.close()
+    return elira_memory_runtime.count_messages(
+        connect_func=lambda: _connect(path),
+        table_exists_func=_table_exists,
+    )
 
 
 def _chat_row(conn, chat_id: int):
-    return conn.execute(
-        "SELECT id, title, pinned, memory_saved, created_at, updated_at "
-        "FROM chats WHERE id = ?",
-        (chat_id,),
-    ).fetchone()
+    return elira_memory_runtime.chat_row(conn=conn, chat_id=chat_id)
 
 
 def list_chats():
-    conn = _connect()
-    try:
-        rows = conn.execute(
-            "SELECT id, title, pinned, memory_saved, created_at, updated_at "
-            "FROM chats ORDER BY pinned DESC, updated_at DESC, id DESC"
-        ).fetchall()
-    finally:
-        conn.close()
-    return [dict(r) for r in rows]
+    return elira_memory_runtime.list_chats(connect_func=_connect)
 
 
-def create_chat(title="Новый чат"):
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO chats(title, pinned, memory_saved) VALUES (?, 0, 0)",
-            (title or "Новый чат",),
-        )
-        chat_id = cur.lastrowid
-        row = _chat_row(conn, chat_id)
-        conn.commit()
-    finally:
-        conn.close()
-    return dict(row)
+def create_chat(title=DEFAULT_CHAT_TITLE):
+    return elira_memory_runtime.create_chat(
+        connect_func=_connect,
+        chat_row_func=_chat_row,
+        title=title,
+        default_title=DEFAULT_CHAT_TITLE,
+    )
 
 
 def update_chat(chat_id: int, title=None, pinned=None, memory_saved=None):
-    conn = _connect()
-    try:
-        current = _chat_row(conn, chat_id)
-        if not current:
-            return None
-
-        next_title = current["title"] if title is None else (title or "Новый чат")
-        next_pinned = current["pinned"] if pinned is None else int(bool(pinned))
-        next_memory_saved = current["memory_saved"] if memory_saved is None else int(bool(memory_saved))
-
-        conn.execute(
-            "UPDATE chats "
-            "SET title = ?, pinned = ?, memory_saved = ?, updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
-            (next_title, next_pinned, next_memory_saved, chat_id),
-        )
-        row = _chat_row(conn, chat_id)
-        conn.commit()
-    finally:
-        conn.close()
-    return dict(row) if row else None
+    return elira_memory_runtime.update_chat(
+        connect_func=_connect,
+        chat_row_func=_chat_row,
+        chat_id=chat_id,
+        default_title=DEFAULT_CHAT_TITLE,
+        title=title,
+        pinned=pinned,
+        memory_saved=memory_saved,
+    )
 
 
 def rename_chat(chat_id, title):
@@ -178,49 +102,20 @@ def set_chat_memory_saved(chat_id, memory_saved):
 
 
 def delete_chat(chat_id):
-    conn = _connect()
-    try:
-        conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
-        conn.execute("DELETE FROM chats WHERE id = ?", (chat_id,))
-        conn.commit()
-    finally:
-        conn.close()
+    return elira_memory_runtime.delete_chat(connect_func=_connect, chat_id=chat_id)
 
 
 def get_messages(chat_id):
-    conn = _connect()
-    try:
-        rows = conn.execute(
-            "SELECT id, chat_id, role, content, created_at "
-            "FROM messages WHERE chat_id = ? ORDER BY id ASC",
-            (chat_id,),
-        ).fetchall()
-    finally:
-        conn.close()
-    return [dict(r) for r in rows]
+    return elira_memory_runtime.get_messages(connect_func=_connect, chat_id=chat_id)
 
 
 def add_message(chat_id, role, content):
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO messages(chat_id, role, content) VALUES (?, ?, ?)",
-            (chat_id, role, content),
-        )
-        message_id = cur.lastrowid
-        conn.execute(
-            "UPDATE chats SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (chat_id,),
-        )
-        row = conn.execute(
-            "SELECT * FROM messages WHERE id = ?",
-            (message_id,),
-        ).fetchone()
-        conn.commit()
-    finally:
-        conn.close()
-    return dict(row)
+    return elira_memory_runtime.add_message(
+        connect_func=_connect,
+        chat_id=chat_id,
+        role=role,
+        content=content,
+    )
 
 
 init_db()
