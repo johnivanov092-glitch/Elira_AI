@@ -436,3 +436,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   local image generation internals now live under `application/media`, and route/service imports remain backward-compatible.
+
+### 29. Git subprocess runtime extraction
+- Status: completed
+- Scope: moved Git subprocess integration out of the service layer while preserving existing helper imports.
+- Finish:
+  added [backend/app/infrastructure/git/runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/git/runtime.py) and [backend/app/infrastructure/git/__init__.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/git/__init__.py);
+  reduced [backend/app/services/git_service.py](/D:/AIWork/Elira_AI/backend/app/services/git_service.py) to a compatibility facade exporting `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branches`, and `format_git_context`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Git integration now sits under `infrastructure/git`, and current API/tool callers can continue using `app.services.git_service`.
