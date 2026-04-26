@@ -449,3 +449,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   Git integration now sits under `infrastructure/git`, and current API/tool callers can continue using `app.services.git_service`.
+
+### 30. Project filesystem runtime extraction
+- Status: completed
+- Scope: moved project tree/read/write/search filesystem helpers out of the service layer while preserving existing imports used by project brain and patch tooling.
+- Finish:
+  added [backend/app/infrastructure/storage/project_files.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/storage/project_files.py) for safe repo-root path resolution, tree listing, file read/write, and text search;
+  reduced [backend/app/services/project_service.py](/D:/AIWork/Elira_AI/backend/app/services/project_service.py) to a compatibility facade exporting `BASE_DIR`, `list_project_tree`, `read_project_file`, `write_project_file`, and `search_project`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  project filesystem access now sits under `infrastructure/storage`, and legacy service imports remain backward-compatible.
