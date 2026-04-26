@@ -423,3 +423,16 @@ Live repair log for concrete backend/runtime fixes.
 - Result:
   library upload/list/search/context behavior keeps the same API shape, while SQL and file processing now live under `application/library`;
   workflow startup and tests are protected against missing-table failures after the workflow extraction.
+
+### 28. Local FLUX image generation runtime extraction
+- Status: completed
+- Scope: moved the legacy local FLUX image generation runtime out of the service layer while preserving `/api/image/*` behavior.
+- Finish:
+  moved the implementation from [backend/app/services/image_gen.py](/D:/AIWork/Elira_AI/backend/app/services/image_gen.py) into [backend/app/application/media/flux_schnell_runtime.py](/D:/AIWork/Elira_AI/backend/app/application/media/flux_schnell_runtime.py);
+  reduced [backend/app/services/image_gen.py](/D:/AIWork/Elira_AI/backend/app/services/image_gen.py) to a compatibility facade exporting `generate_image`, `get_status`, and `unload_model`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  local image generation internals now live under `application/media`, and route/service imports remain backward-compatible.
