@@ -117,7 +117,7 @@ init_runtime_state()
 # Seed встроенных агентов в Agent Registry при старте
 from app.services.agent_registry import seed_builtin_agents
 from app.services.agent_monitor import seed_default_limits
-from app.application.workflows.multi_agent import seed_builtin_workflows
+from app.services.workflow_engine import seed_builtin_workflows
 seed_builtin_agents()
 seed_builtin_workflows()
 seed_default_limits()

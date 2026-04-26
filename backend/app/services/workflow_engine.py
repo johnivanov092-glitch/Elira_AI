@@ -25,6 +25,7 @@ from app.application.workflows.store import (
     update_workflow_template as _app_update_workflow_template,
     upsert_workflow_template as _app_upsert_workflow_template,
 )
+from app.application.workflows import multi_agent as _workflow_multi_agent
 
 DB_PATH: Path = get_workflow_db_path()
 
@@ -164,7 +165,21 @@ from app.application.workflows.multi_agent import (  # noqa: E402
     MULTI_AGENT_REFLECTION_WORKFLOW_ID,
     MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
     MULTI_AGENT_FULL_WORKFLOW_ID,
-    seed_builtin_workflows,
     run_multi_agent_workflow,
     run_legacy_multi_agent_workflow,
+    seed_builtin_workflows as _app_seed_builtin_workflows,
 )
+
+_BUILTIN_WORKFLOWS_SEEDED = False
+
+
+def seed_builtin_workflows() -> int:
+    global _BUILTIN_WORKFLOWS_SEEDED
+    if _BUILTIN_WORKFLOWS_SEEDED:
+        return 0
+
+    _init_db()
+    _workflow_multi_agent._BUILTIN_WORKFLOWS_SEEDED = False
+    created = _app_seed_builtin_workflows()
+    _BUILTIN_WORKFLOWS_SEEDED = True
+    return created

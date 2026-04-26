@@ -407,3 +407,19 @@ Live repair log for concrete backend/runtime fixes.
 - Result:
   Agent OS now has a complete Phase 5 layer: backend monitoring/soft-sandboxing, audit events, policy-limit endpoints, workflow-aware metrics, and a read-only dashboard view for runtime operators;
   ordinary chat and multi-agent flows stay compatible under the seeded soft defaults, while policy blocks and limit updates are visible both in API responses and in the dashboard summary.
+
+### 27. Library runtime extraction and workflow seed facade repair
+- Status: completed
+- Scope: continued backend architecture decomposition by moving SQLite/file-library runtime logic out of the route layer and preserving legacy compatibility facades.
+- Finish:
+  added [backend/app/application/library/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/library/runtime.py) for library DB initialization, upload persistence, preview extraction, search, context building, activation, and deletion;
+  reduced [backend/app/api/routes/library_sqlite.py](/D:/AIWork/Elira_AI/backend/app/api/routes/library_sqlite.py) to a thin FastAPI router that passes request data into the application runtime;
+  reduced [backend/app/services/library_service.py](/D:/AIWork/Elira_AI/backend/app/services/library_service.py) to a compatibility facade for existing `/api/library/*` callers;
+  repaired workflow builtin seeding through [backend/app/services/workflow_engine.py](/D:/AIWork/Elira_AI/backend/app/services/workflow_engine.py), [backend/app/application/workflows/multi_agent.py](/D:/AIWork/Elira_AI/backend/app/application/workflows/multi_agent.py), and [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) so isolated test data roots initialize workflow tables before seed.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  library upload/list/search/context behavior keeps the same API shape, while SQL and file processing now live under `application/library`;
+  workflow startup and tests are protected against missing-table failures after the workflow extraction.
