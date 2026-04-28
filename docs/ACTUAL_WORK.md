@@ -557,3 +557,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   memory/profile route helpers now sit under `application/memory` and `application/persona`, and old service imports remain backward-compatible.
+
+### 38. Chat Ollama runtime and reflection loop extraction
+- Status: completed
+- Scope: moved direct Ollama chat runtime and reflection-loop orchestration out of the service layer while preserving existing chat imports.
+- Finish:
+  added [backend/app/application/chat/ollama_chat.py](/D:/AIWork/Elira_AI/backend/app/application/chat/ollama_chat.py) for `normalize_profile`, `run_chat`, and `run_chat_stream`;
+  added [backend/app/application/chat/reflection_loop.py](/D:/AIWork/Elira_AI/backend/app/application/chat/reflection_loop.py) for `run_reflection_loop`;
+  reduced [backend/app/services/chat_service.py](/D:/AIWork/Elira_AI/backend/app/services/chat_service.py) and [backend/app/services/reflection_loop_service.py](/D:/AIWork/Elira_AI/backend/app/services/reflection_loop_service.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  local chat model execution now sits under `application/chat`, reflection-loop logic is colocated with chat orchestration, and old service imports remain backward-compatible.
