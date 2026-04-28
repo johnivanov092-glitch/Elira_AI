@@ -514,3 +514,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   legacy callers can continue using `app.services.web_service`, while public web search wrappers now sit under `infrastructure/search`.
+
+### 35. LLM model listing and Python runner facade extraction
+- Status: completed
+- Scope: batched low-risk service extractions for runtime utility code while preserving existing route/tool imports.
+- Finish:
+  added [backend/app/infrastructure/llm/ollama_models.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/llm/ollama_models.py) for `get_models` and `list_ollama_models`;
+  added [backend/app/domain/runtime/python_runner.py](/D:/AIWork/Elira_AI/backend/app/domain/runtime/python_runner.py) for restricted Python execution;
+  reduced [backend/app/services/models_service.py](/D:/AIWork/Elira_AI/backend/app/services/models_service.py), [backend/app/services/ollama_runtime_service.py](/D:/AIWork/Elira_AI/backend/app/services/ollama_runtime_service.py), and [backend/app/services/python_runner.py](/D:/AIWork/Elira_AI/backend/app/services/python_runner.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Ollama model listing now sits under `infrastructure/llm`, restricted Python execution sits under `domain/runtime`, and old service imports remain backward-compatible.
