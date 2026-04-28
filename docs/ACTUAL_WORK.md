@@ -501,3 +501,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   chat request planning now sits under `application/chat`, and `app.services.planner_v2_service` remains backward-compatible.
+
+### 34. Web service search facade extraction
+- Status: completed
+- Scope: moved public web search helper wrappers out of the service layer while preserving existing tool-registry imports.
+- Finish:
+  added `search_web` and `research_web` compatibility entrypoints to [backend/app/infrastructure/search/web_search.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_search.py);
+  reduced [backend/app/services/web_service.py](/D:/AIWork/Elira_AI/backend/app/services/web_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  legacy callers can continue using `app.services.web_service`, while public web search wrappers now sit under `infrastructure/search`.

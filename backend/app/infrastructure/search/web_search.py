@@ -6,7 +6,11 @@ Runtime logic is split across sibling helpers.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote_plus
 
+from app.core.web import ENGINE_LABELS, format_search_results
+from app.core.web import research_web as core_research_web
+from app.core.web import search_web as core_search_web
 from app.infrastructure.search import web_query
 from app.infrastructure.search import web_runtime
 from app.infrastructure.search import web_temporal
@@ -14,6 +18,44 @@ from app.infrastructure.search import web_temporal
 
 TimelineAppender = Any
 WEB_SKIP_FETCH_DOMAINS = web_runtime.WEB_SKIP_FETCH_DOMAINS
+
+
+def search_web(query: str, max_results: int = 8) -> dict[str, Any]:
+    query = (query or "").strip()
+    if not query:
+        return {
+            "ok": False,
+            "query": query,
+            "sources": [],
+            "engines_used": [],
+            "context": "",
+            "count": 0,
+            "engine_links": [],
+        }
+
+    sources = core_search_web(query, max_results=max_results)
+    engines_used = list({item.get("engine", "") for item in sources if item.get("engine")})
+    context = format_search_results(sources[:6]) if sources else ""
+
+    engine_links = [
+        {"name": "Tavily", "url": "https://app.tavily.com/"},
+        {"name": "DuckDuckGo", "url": f"https://duckduckgo.com/?q={quote_plus(query)}"},
+        {"name": "Wikipedia", "url": f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"},
+    ]
+
+    return {
+        "ok": bool(sources),
+        "query": query,
+        "sources": sources,
+        "engines_used": [ENGINE_LABELS.get(engine, engine) for engine in engines_used],
+        "count": len(sources),
+        "context": context,
+        "engine_links": engine_links,
+    }
+
+
+def research_web(query: str, max_results: int = 8) -> str:
+    return core_research_web(query, max_results=max_results)
 
 
 def clean_query(query: str) -> str:
