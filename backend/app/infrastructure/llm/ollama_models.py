@@ -7,6 +7,7 @@ import requests
 
 
 OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags"
+OLLAMA = "http://localhost:11434"
 
 
 def get_models() -> dict[str, Any]:
@@ -61,3 +62,21 @@ async def list_ollama_models() -> dict[str, Any]:
         return {"models": models}
     except Exception as e:
         return {"models": [], "error": str(e)}
+
+
+async def list_models() -> list[dict[str, str]]:
+    import httpx
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{OLLAMA}/api/tags")
+        data = response.json()
+
+    models = []
+    for item in data.get("models", []):
+        models.append(
+            {
+                "name": item["name"],
+                "type": "local",
+            }
+        )
+    return models

@@ -1,4 +1,6 @@
-"""Stub: project_map_service."""
-class ProjectMapService:
-    def build(self, *a, **kw): return {"ok": False, "error": "stub"}
-    def get_map(self, *a, **kw): return {"ok": False, "error": "stub"}
+"""Compatibility facade for project map service."""
+from __future__ import annotations
+
+from app.application.project_brain.map_service import ProjectMapService
+
+__all__ = ["ProjectMapService"]

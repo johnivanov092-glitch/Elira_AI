@@ -571,3 +571,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   local chat model execution now sits under `application/chat`, reflection-loop logic is colocated with chat orchestration, and old service imports remain backward-compatible.
+
+### 39. Tool, browser stub, and deprecated Ollama model facade extraction
+- Status: completed
+- Scope: batched small service-layer extractions that do not touch mutable DB-backed service state.
+- Finish:
+  added [backend/app/application/tool_registry/service.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/service.py) for tool-service compatibility helpers;
+  added [backend/app/infrastructure/browser/agent.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/browser/agent.py) and [backend/app/infrastructure/browser/__init__.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/browser/__init__.py) for the browser agent stub;
+  added [backend/app/application/project_brain/map_service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/map_service.py) and [backend/app/application/project_brain/loop_service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/loop_service.py) for project-brain compatibility stubs;
+  extended [backend/app/infrastructure/llm/ollama_models.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/llm/ollama_models.py) with deprecated `list_models` compatibility;
+  reduced `tool_service`, `browser_agent`, `project_map_service`, `project_brain_loop_service`, and `ollama_models_service` under [backend/app/services](/D:/AIWork/Elira_AI/backend/app/services) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  small compatibility helpers now sit under application/infrastructure modules, while existing service imports and Agent OS tool seeding remain backward-compatible.
