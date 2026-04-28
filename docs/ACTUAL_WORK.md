@@ -488,3 +488,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   temporal intent logic now sits under `application/chat`, and legacy imports from `app.services.temporal_intent` remain compatible.
+
+### 33. Chat planner v2 extraction
+- Status: completed
+- Scope: moved chat/tool route planning out of the service layer while preserving existing imports used by agents_service.
+- Finish:
+  added [backend/app/application/chat/planner_v2.py](/D:/AIWork/Elira_AI/backend/app/application/chat/planner_v2.py) for `PlannerV2Service`;
+  reduced [backend/app/services/planner_v2_service.py](/D:/AIWork/Elira_AI/backend/app/services/planner_v2_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  chat request planning now sits under `application/chat`, and `app.services.planner_v2_service` remains backward-compatible.
