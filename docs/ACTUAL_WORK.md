@@ -528,3 +528,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   Ollama model listing now sits under `infrastructure/llm`, restricted Python execution sits under `domain/runtime`, and old service imports remain backward-compatible.
+
+### 36. Runtime status and response cache extraction
+- Status: completed
+- Scope: moved runtime status and response-cache orchestration out of the service layer while preserving existing backend imports.
+- Finish:
+  added [backend/app/application/runtime/status.py](/D:/AIWork/Elira_AI/backend/app/application/runtime/status.py) for runtime health/status assembly;
+  added [backend/app/application/response_cache/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/response_cache/runtime.py) for response cache DB wiring and policy/store orchestration;
+  reduced [backend/app/services/runtime_service.py](/D:/AIWork/Elira_AI/backend/app/services/runtime_service.py) and [backend/app/services/response_cache.py](/D:/AIWork/Elira_AI/backend/app/services/response_cache.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  runtime status now sits under `application/runtime`, response cache runtime now sits under `application/response_cache`, and old service imports remain backward-compatible.
