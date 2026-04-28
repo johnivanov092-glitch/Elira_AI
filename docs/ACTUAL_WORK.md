@@ -475,3 +475,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   multi-engine web search helpers now sit under `infrastructure/search`, and service-level imports remain backward-compatible.
+
+### 32. Chat temporal intent extraction
+- Status: completed
+- Scope: moved temporal/current-world query classification out of the service layer while preserving existing imports used by planner and cache policy.
+- Finish:
+  added [backend/app/application/chat/temporal_intent.py](/D:/AIWork/Elira_AI/backend/app/application/chat/temporal_intent.py) for `detect_temporal_intent` and its classifier constants;
+  reduced [backend/app/services/temporal_intent.py](/D:/AIWork/Elira_AI/backend/app/services/temporal_intent.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  temporal intent logic now sits under `application/chat`, and legacy imports from `app.services.temporal_intent` remain compatible.
