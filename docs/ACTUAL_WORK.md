@@ -542,3 +542,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   runtime status now sits under `application/runtime`, response cache runtime now sits under `application/response_cache`, and old service imports remain backward-compatible.
+
+### 37. Memory and profile facade extraction
+- Status: completed
+- Scope: moved memory route helpers and profile listing helpers out of the service layer while preserving existing route imports.
+- Finish:
+  added [backend/app/application/memory/service.py](/D:/AIWork/Elira_AI/backend/app/application/memory/service.py) for memory API helper orchestration;
+  added [backend/app/application/memory/profiles.py](/D:/AIWork/Elira_AI/backend/app/application/memory/profiles.py) for legacy memory profile helpers;
+  added [backend/app/application/persona/profiles.py](/D:/AIWork/Elira_AI/backend/app/application/persona/profiles.py) for persona profile listing;
+  reduced [backend/app/services/memory_service.py](/D:/AIWork/Elira_AI/backend/app/services/memory_service.py), [backend/app/services/profile_service.py](/D:/AIWork/Elira_AI/backend/app/services/profile_service.py), and [backend/app/services/profiles_service.py](/D:/AIWork/Elira_AI/backend/app/services/profiles_service.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  memory/profile route helpers now sit under `application/memory` and `application/persona`, and old service imports remain backward-compatible.

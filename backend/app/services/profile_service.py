@@ -1,13 +1,6 @@
-# DEPRECATED: логика перенесена в profiles_service.py и memory_service.py
-from ..core.memory import list_mem_profiles, create_mem_profile, delete_mem_profile
+"""Compatibility facade for legacy memory profiles."""
+from __future__ import annotations
 
-def get_profiles():
-    return list_mem_profiles()
+from app.application.memory.profiles import create_profile, get_profiles, remove_profile
 
-def create_profile(name: str, emoji: str = "👤"):
-    ok = create_mem_profile(name=name, emoji=emoji)
-    return {"ok": ok, "name": name, "emoji": emoji}
-
-def remove_profile(name: str):
-    delete_mem_profile(name)
-    return {"ok": True, "name": name}
+__all__ = ["create_profile", "get_profiles", "remove_profile"]
