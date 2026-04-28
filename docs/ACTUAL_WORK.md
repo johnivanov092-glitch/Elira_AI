@@ -462,3 +462,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   project filesystem access now sits under `infrastructure/storage`, and legacy service imports remain backward-compatible.
+
+### 31. Web multi-search runtime extraction
+- Status: completed
+- Scope: moved multi-engine web search wrappers out of the service layer while preserving existing imports.
+- Finish:
+  added [backend/app/infrastructure/search/multisearch.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/multisearch.py) for `multi_search`, `deep_search`, `news_search`, `fetch_page`, and `WebMultiSearchService`;
+  reduced [backend/app/services/web_multisearch_service.py](/D:/AIWork/Elira_AI/backend/app/services/web_multisearch_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  multi-engine web search helpers now sit under `infrastructure/search`, and service-level imports remain backward-compatible.
