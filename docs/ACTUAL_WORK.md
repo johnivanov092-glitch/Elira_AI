@@ -587,3 +587,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   small compatibility helpers now sit under application/infrastructure modules, while existing service imports and Agent OS tool seeding remain backward-compatible.
+
+### 40. Project patch service wrapper extraction
+- Status: completed
+- Scope: moved the ProjectPatchService wrapper out of the service layer while preserving project brain/tool registry imports.
+- Finish:
+  added [backend/app/application/project_patch/service.py](/D:/AIWork/Elira_AI/backend/app/application/project_patch/service.py) for the backward-compatible `ProjectPatchService` wrapper over `ProjectPatchRuntime`;
+  reduced [backend/app/services/project_patch_service.py](/D:/AIWork/Elira_AI/backend/app/services/project_patch_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  project patch wrapper construction now sits under `application/project_patch`, and old service imports remain backward-compatible.
