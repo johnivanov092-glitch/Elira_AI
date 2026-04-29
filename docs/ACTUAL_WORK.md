@@ -613,3 +613,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   run-history persistence wiring now sits under `application/run_history`, and old service imports remain backward-compatible.
+
+### 42. Chat guard policy extraction
+- Status: completed
+- Scope: moved response guard policy modules out of the legacy service layer without changing guard behavior or legacy imports.
+- Finish:
+  added [backend/app/application/chat/identity_guard.py](/D:/AIWork/Elira_AI/backend/app/application/chat/identity_guard.py) and [backend/app/application/chat/provenance_guard.py](/D:/AIWork/Elira_AI/backend/app/application/chat/provenance_guard.py);
+  updated [backend/app/application/chat/post_processing.py](/D:/AIWork/Elira_AI/backend/app/application/chat/post_processing.py) to import guards from `application/chat`;
+  reduced [backend/app/services/identity_guard.py](/D:/AIWork/Elira_AI/backend/app/services/identity_guard.py) and [backend/app/services/provenance_guard.py](/D:/AIWork/Elira_AI/backend/app/services/provenance_guard.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  chat response guard policies now sit under `application/chat`, while old service imports remain backward-compatible.

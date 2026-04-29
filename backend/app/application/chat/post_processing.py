@@ -4,8 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.services.identity_guard import guard_identity_response
-from app.services.provenance_guard import guard_provenance_response
+from app.application.chat.identity_guard import guard_identity_response
+from app.application.chat.provenance_guard import guard_provenance_response
 
 
 _EXEC_TRIGGERS = [
