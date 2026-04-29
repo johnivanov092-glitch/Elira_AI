@@ -60,7 +60,7 @@ from app.application.chat.agent_os import (
 )
 from app.core.config import pick_model_for_route
 from app.infrastructure.search.web_search import do_temporal_web_search as _infra_do_temporal_web_search
-from app.services.agent_sandbox import preflight_or_raise, resolve_effective_agent_id
+from app.application.agent_registry.sandbox import preflight_or_raise, resolve_effective_agent_id
 from app.services.chat_service import run_chat, run_chat_stream
 from app.services.persona_service import observe_dialogue
 from app.services.planner_v2_service import PlannerV2Service

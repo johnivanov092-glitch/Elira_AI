@@ -641,3 +641,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   task-planner and RAG-memory concrete persistence wiring now sits under `application/*/service.py`, and old service imports remain backward-compatible.
+
+### 44. Agent sandbox policy extraction
+- Status: completed
+- Scope: moved agent sandbox preflight policy out of the legacy service layer while preserving legacy service imports and Agent OS behavior.
+- Finish:
+  added [backend/app/application/agent_registry/sandbox.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/sandbox.py) for agent id resolution, sandbox policy errors, tool/context/rate preflight checks, and sandbox block recording;
+  updated [backend/app/application/workflows/step_results.py](/D:/AIWork/Elira_AI/backend/app/application/workflows/step_results.py), [backend/app/domain/workflows/step_executor.py](/D:/AIWork/Elira_AI/backend/app/domain/workflows/step_executor.py), and [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) to use the application sandbox module;
+  reduced [backend/app/services/agent_sandbox.py](/D:/AIWork/Elira_AI/backend/app/services/agent_sandbox.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  sandbox policy now sits under `application/agent_registry`, and old service imports remain backward-compatible.

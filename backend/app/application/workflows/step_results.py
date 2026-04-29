@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.services.agent_sandbox import SandboxPolicyError
+from app.application.agent_registry.sandbox import SandboxPolicyError
 
 
 @dataclass(slots=True)
