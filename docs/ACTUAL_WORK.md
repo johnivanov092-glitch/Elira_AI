@@ -655,3 +655,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   sandbox policy now sits under `application/agent_registry`, and old service imports remain backward-compatible.
+
+### 45. Elira state and settings wiring extraction
+- Status: completed
+- Scope: moved Elira chat/settings SQLite wiring out of the legacy service layer while preserving existing state routes and service imports.
+- Finish:
+  added [backend/app/application/elira_memory/service.py](/D:/AIWork/Elira_AI/backend/app/application/elira_memory/service.py) for Elira chat/message/settings table wiring over `application/elira_memory/runtime`;
+  added [backend/app/application/elira_memory/settings.py](/D:/AIWork/Elira_AI/backend/app/application/elira_memory/settings.py) for settings and route-model-map persistence;
+  updated state/runtime/persona/config imports to use the application modules;
+  reduced [backend/app/services/elira_memory_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_memory_sqlite.py) and [backend/app/services/elira_settings_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_settings_sqlite.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Elira chat state and settings persistence wiring now sits under `application/elira_memory`, and old service imports remain backward-compatible.

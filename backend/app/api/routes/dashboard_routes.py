@@ -66,7 +66,7 @@ def dashboard_stats() -> dict:
     chat_count = 0
     message_count = 0
     try:
-        from app.services.elira_memory_sqlite import get_messages, list_chats
+        from app.application.elira_memory.service import get_messages, list_chats
 
         chats = list_chats()
         chat_count = len(chats)

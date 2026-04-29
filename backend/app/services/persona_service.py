@@ -10,7 +10,7 @@ from app.core.persona_defaults import (
     ELIRA_PERSONA_BASE_PAYLOAD,
     PROFILE_MODE_OVERLAYS,
 )
-from app.services.elira_memory_sqlite import DB_PATH
+from app.application.elira_memory.service import DB_PATH
 
 
 get_persona_version = persona_store.get_persona_version

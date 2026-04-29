@@ -14,7 +14,7 @@ from app.core.persona_defaults import (
     PROFILE_UI,
 )
 from app.infrastructure.db.connection import connect_sqlite
-from app.services.elira_memory_sqlite import DB_PATH, init_db as init_state_db
+from app.application.elira_memory.service import DB_PATH, init_db as init_state_db
 
 
 logger = logging.getLogger(__name__)
@@ -356,4 +356,3 @@ def get_persona_status() -> dict[str, Any]:
 def init_persona_store() -> dict[str, Any]:
     bootstrap_if_needed()
     return get_persona_status()
-
