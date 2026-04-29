@@ -627,3 +627,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   chat response guard policies now sit under `application/chat`, while old service imports remain backward-compatible.
+
+### 43. Task planner and RAG memory service wiring extraction
+- Status: completed
+- Scope: batched two existing runtime-backed service wrappers into application-layer wiring modules while preserving legacy imports.
+- Finish:
+  added [backend/app/application/task_planner/service.py](/D:/AIWork/Elira_AI/backend/app/application/task_planner/service.py) for task-planner DB wiring, init, and public helper functions;
+  added [backend/app/application/rag_memory/service.py](/D:/AIWork/Elira_AI/backend/app/application/rag_memory/service.py) for RAG DB wiring, seed cleanup, embedding glue, and public helper functions;
+  reduced [backend/app/services/task_planner_service.py](/D:/AIWork/Elira_AI/backend/app/services/task_planner_service.py) and [backend/app/services/rag_memory_service.py](/D:/AIWork/Elira_AI/backend/app/services/rag_memory_service.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  task-planner and RAG-memory concrete persistence wiring now sits under `application/*/service.py`, and old service imports remain backward-compatible.
