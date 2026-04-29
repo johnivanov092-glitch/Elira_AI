@@ -600,3 +600,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   project patch wrapper construction now sits under `application/project_patch`, and old service imports remain backward-compatible.
+
+### 41. Run history service wiring extraction
+- Status: completed
+- Scope: moved run-history DB wiring and concrete service construction out of the legacy service layer while preserving existing dashboard/agent imports.
+- Finish:
+  added [backend/app/application/run_history/service.py](/D:/AIWork/Elira_AI/backend/app/application/run_history/service.py) for `DB_PATH`, legacy JSON migration wiring, DB init, and the concrete `RunHistoryService`;
+  reduced [backend/app/services/run_history_service.py](/D:/AIWork/Elira_AI/backend/app/services/run_history_service.py) to a compatibility facade with the previous exports.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  run-history persistence wiring now sits under `application/run_history`, and old service imports remain backward-compatible.
