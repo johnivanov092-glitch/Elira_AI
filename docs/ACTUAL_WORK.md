@@ -450,3 +450,27 @@ Live repair log for concrete backend/runtime fixes.
   the supervisor HTTP layer is now a pure FastAPI shell with all business and storage logic in `application/elira_supervisor/*`, ready for further reuse outside the route handler if needed;
   the public REST contract under `/api/elira/supervisor/*` is unchanged: same response keys, same error codes, same pydantic schemas;
   branch `claude/extract-skills-extra` carries this and the prior `skills_extra` extraction so both can be picked into `codex/refactor-arch-foundation` in one go.
+
+### 29. Refactor accelerated wave - elira_phase19 route extraction (Claude Code)
+- Status: completed
+- Scope: applied the same route-extraction pattern to the multi-file dev-loop endpoints `/api/elira/phase19/*`, moving the SQLite schema, JSON helpers, project scanner, plan/reasoning/file-op/verify builders, and persistence into the application layer while leaving the route file as a thin FastAPI shell.
+- Start:
+  picked `backend/app/api/routes/elira_phase19.py` (272 lines, ~9.5 KB) from the largest remaining unrefactored route files because it follows the same shape as `elira_supervisor` (one route, one DB table, one consumer in `main.py`) and was untouched in Codex's last unpushed commits;
+  reused the pattern locked in entry #28 to keep blast radius minimal: HTTP-free runtime + thin FastAPI handlers + no public-API change.
+- Finish:
+  added [backend/app/application/elira_phase19/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase19/runtime.py) carrying `DB_PATH`, `BLOCKED_PARTS`, `ALLOWED_SUFFIXES`, `PROJECT_ROOT`, `ensure_db`, `dumps` / `loads`, `scan_project`, `build_project_reasoning`, `build_multi_file_plan`, `build_file_operations`, `build_verify_summary`, `persist`, `list_runs`, `get_run`, plus the orchestrator `prepare_run`;
+  added [backend/app/application/elira_phase19/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase19/__init__.py) re-exporting the runtime surface;
+  rebuilt [backend/app/api/routes/elira_phase19.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase19.py) as a thin FastAPI shell: router, `Phase19RunPayload` Pydantic schema, and three short delegating handlers (`/run`, `/history/list`, `/history/get`);
+  reduced the route file from 272 lines to 42 (-85%) without touching response shapes or status codes.
+- Verification:
+  `python -m compileall backend/app` -> clean;
+  pure-Python import smoke for the runtime + package facade (no fastapi);
+  mocked fastapi/pydantic import smoke for the route module;
+  `scan_project(limit=20)` returns only files whose suffix is in `ALLOWED_SUFFIXES` and whose parts do not intersect `BLOCKED_PARTS`;
+  reasoning scope detection covers `ui` / `backend` / `multi-file` keyword paths;
+  `build_multi_file_plan` produces create-suggestions for component/api keywords and an `inspect` fallback when no paths are selected;
+  end-to-end smoke against a temp `data/elira_state.db`: `persist` returns increasing IDs, `list_runs` orders DESC, `get_run` round-trips JSON columns and reports `not_found` for missing ids, `prepare_run` returns the full response payload including the `project_sample` slice.
+- Result:
+  `/api/elira/phase19/*` is now a thin FastAPI shell over `application/elira_phase19/*`, ready to be paired with the very similar `elira_phase20` and `elira_phase21` routes in the next wave;
+  REST contract unchanged: same response keys, same status codes, same Pydantic schema;
+  branch `claude/extract-skills-extra` now carries three accelerated extractions (`skills_extra`, `elira_supervisor`, `elira_phase19`) ready for Codex integration.
