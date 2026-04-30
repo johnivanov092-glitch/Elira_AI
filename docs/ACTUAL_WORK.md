@@ -562,3 +562,23 @@ Live repair log for concrete backend/runtime fixes.
   `python -m py_compile` -> clean; mode-reply smoke for `code` and unknown modes; memory CRUD lifecycle in a temp DB; mocked-fastapi routes import.
 - Result:
   `/api/elira/execute`, `/api/elira/memory/*` are now thin FastAPI shells over `application/elira_execute/*`; REST contract unchanged.
+
+### 34. Refactor accelerated wave - library_sqlite + file_ops extractions (Claude Code)
+- Status: completed
+- Scope: extracted two more route files into application packages:
+  (a) `library_sqlite.py` (223 lines) — SQLite file-library CRUD + disk storage + preview extraction;
+  (b) `file_ops.py` (216 lines) — workspace sandbox FS operations (write/read/tree/diff/mkdir/delete).
+- Start:
+  both absent from Codex's unpushed commits; `library_sqlite.py` has a module-level `_init()` side effect (DB init on import) which needed preserving; `file_ops.py` has `_safe_path` raising HTTPException directly (same pattern as elira_devtools, now made HTTP-free); `library_sqlite.py`'s `add_file` route is `async` (reads UploadFile bytes) — route handler reads bytes then passes them to the runtime function.
+- Finish:
+  added `backend/app/application/library_sqlite/runtime.py` + `__init__.py` with `DB_PATH`, `UPLOADS_DIR`, `init_db` (called at module bottom), `safe_disk_name`, `extract_preview`, `list_files`, `add_file(filename, contents, content_type, use_in_context)`, `toggle_context`, `delete_file`, `search_files`, `get_context_files`;
+  rebuilt `backend/app/api/routes/library_sqlite.py` as a 46-line FastAPI shell (was 223 lines, -79%); async `add_file` handler reads UploadFile bytes then delegates to runtime;
+  added `backend/app/application/file_ops/runtime.py` + `__init__.py` with `WORKSPACE`, `BLOCKED`, `MAX_FILE_SIZE`, `safe_path` (returns `(Path|None, error_kind)`), `write_file`, `read_file`, `file_tree`, `diff_file`, `mkdir_dir`, `delete_path` (all return `(dict|None, error_kind)` tuples);
+  rebuilt `backend/app/api/routes/file_ops.py` as a 86-line FastAPI shell (was 216 lines, -60%); five error dicts translate runtime tuples to HTTPException codes.
+- Verification:
+  `python -m py_compile` on all 6 files -> clean;
+  file_ops smoke: write/read/diff/tree/mkdir/delete in tempdir, path error cases (`empty`, `blocked`);
+  library_sqlite smoke: `add_file` saves bytes + preview + DB row, `list_files`, `search_files`, `get_context_files`, `toggle_context`, `delete_file` all verified in isolated temp DB/dir;
+  mocked-fastapi import smoke for both route modules.
+- Result:
+  branch `claude/extract-skills-extra` now carries eleven accelerated extractions; REST contracts unchanged.
