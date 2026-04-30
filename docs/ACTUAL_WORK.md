@@ -549,3 +549,16 @@ Live repair log for concrete backend/runtime fixes.
 - Result:
   branch `claude/extract-skills-extra` now carries nine accelerated extractions;
   all public REST contracts unchanged; `resolve_project_path` in `elira_devtools` runtime is now fully HTTP-free and reusable outside the route layer.
+
+### 33. Refactor accelerated wave - elira_execute extraction (Claude Code)
+- Status: completed
+- Scope: extracted `elira_execute.py` (190 lines) into `application/elira_execute/runtime.py`; covers the memory_store DB table, mode-reply builder, and three memory CRUD functions.
+- Start:
+  confirmed absent from Codex's unpushed commits; `build_mode_reply` took a Pydantic `ExecutePayload` model directly — extracted to accept raw fields; `save_memory` handler similarly depended on Pydantic model — changed to raw fields.
+- Finish:
+  added `backend/app/application/elira_execute/runtime.py` + `__init__.py` with `DB_PATH`, `ensure_db`, `build_mode_reply(content, mode, model, agent_profile)`, `list_memory(q)`, `save_memory(content, chat_id, title, source, pinned)`, `delete_memory(id)`;
+  rebuilt `backend/app/api/routes/elira_execute.py` as a 58-line FastAPI shell (was 190 lines, -69%).
+- Verification:
+  `python -m py_compile` -> clean; mode-reply smoke for `code` and unknown modes; memory CRUD lifecycle in a temp DB; mocked-fastapi routes import.
+- Result:
+  `/api/elira/execute`, `/api/elira/memory/*` are now thin FastAPI shells over `application/elira_execute/*`; REST contract unchanged.
