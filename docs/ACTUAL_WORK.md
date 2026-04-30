@@ -712,3 +712,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   supervisor business and persistence logic now sits under `application/elira_supervisor`, while `/api/elira/supervisor/*` remains route-compatible.
+
+### 49. Elira phase19 route runtime extraction
+- Status: completed
+- Scope: integrated the Claude `elira_phase19` route split into the current refactor branch while preserving the public phase19 API routes.
+- Finish:
+  added [backend/app/application/elira_phase19/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase19/runtime.py) for phase19 DB bootstrap, project scanning, plan/reasoning/file-operation builders, verification summary, persistence, history reads, and run payload assembly;
+  added [backend/app/application/elira_phase19/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase19/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_phase19.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase19.py) to a FastAPI shell with the request model and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase19 business and persistence logic now sits under `application/elira_phase19`, while `/api/elira/phase19/*` remains route-compatible.
