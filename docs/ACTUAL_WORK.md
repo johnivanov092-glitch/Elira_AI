@@ -670,3 +670,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   Elira chat state and settings persistence wiring now sits under `application/elira_memory`, and old service imports remain backward-compatible.
+
+### 46. Persona service facade extraction
+- Status: completed
+- Scope: moved persona prompt/service orchestration out of the legacy service layer while preserving persona routes, chat imports, and legacy service imports.
+- Finish:
+  added [backend/app/application/persona/service.py](/D:/AIWork/Elira_AI/backend/app/application/persona/service.py) for `build_persona_prompt` and persona store/evolution public exports;
+  updated persona route, chat finalization, Ollama chat runtime, profile previews, core LLM, domain orchestrator runtime, and agent service imports to use `application/persona/service`;
+  reduced [backend/app/services/persona_service.py](/D:/AIWork/Elira_AI/backend/app/services/persona_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  persona service orchestration now sits under `application/persona`, and old service imports remain backward-compatible.

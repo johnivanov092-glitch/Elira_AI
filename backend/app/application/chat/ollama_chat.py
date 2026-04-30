@@ -5,7 +5,7 @@ from typing import Any, Generator
 import ollama
 
 from app.core.persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
-from app.services.persona_service import build_persona_prompt
+from app.application.persona.service import build_persona_prompt
 
 
 def normalize_profile(name: str) -> str:

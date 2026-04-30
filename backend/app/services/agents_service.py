@@ -62,7 +62,7 @@ from app.core.config import pick_model_for_route
 from app.infrastructure.search.web_search import do_temporal_web_search as _infra_do_temporal_web_search
 from app.application.agent_registry.sandbox import preflight_or_raise, resolve_effective_agent_id
 from app.services.chat_service import run_chat, run_chat_stream
-from app.services.persona_service import observe_dialogue
+from app.application.persona.service import observe_dialogue
 from app.services.planner_v2_service import PlannerV2Service
 from app.services.reflection_loop_service import run_reflection_loop
 from app.services.response_cache import get_cached, set_cached, should_cache

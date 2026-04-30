@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from app.application.chat.agent_os import emit_agent_os_event, record_agent_os_monitoring
 from app.application.chat.stream_service import build_chat_meta, build_stream_done_event
-from app.services.persona_service import observe_dialogue
+from app.application.persona.service import observe_dialogue
 
 
 def finalize_chat_success(
