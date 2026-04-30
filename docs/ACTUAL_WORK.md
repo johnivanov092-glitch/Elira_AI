@@ -474,3 +474,24 @@ Live repair log for concrete backend/runtime fixes.
   `/api/elira/phase19/*` is now a thin FastAPI shell over `application/elira_phase19/*`, ready to be paired with the very similar `elira_phase20` and `elira_phase21` routes in the next wave;
   REST contract unchanged: same response keys, same status codes, same Pydantic schema;
   branch `claude/extract-skills-extra` now carries three accelerated extractions (`skills_extra`, `elira_supervisor`, `elira_phase19`) ready for Codex integration.
+
+### 30. Refactor accelerated wave - elira_phase20 route extraction (Claude Code)
+- Status: completed
+- Scope: applied the same route-extraction pattern to the multi-agent dev-loop endpoints `/api/elira/phase20/*`, moving the SQLite schema, JSON helpers, project scanner, six agent builders (reasoning/planner/coder/reviewer/tester/execution), and persistence into the application layer while leaving the route file as a thin FastAPI shell.
+- Start:
+  picked `backend/app/api/routes/elira_phase20.py` (324 lines, ~11.6 KB) as the next largest unrefactored route file after elira_phase19; it follows the same shape (one DB table, one Pydantic schema, three routes) and was absent from Codex's unpushed commit set;
+  key difference from phase19: phase20 has six agent builders instead of four (reasoning, planner, coder, reviewer, tester, execution), inline `list_runs`/`get_run` logic, and no `mode` field in the payload.
+- Finish:
+  added `backend/app/application/elira_phase20/runtime.py` carrying `DB_PATH`, `BLOCKED_PARTS`, `ALLOWED_SUFFIXES`, `PROJECT_ROOT`, `ensure_db`, `dumps` / `loads`, `scan_project(limit=600)`, `build_reasoning`, `build_planner`, `build_coder`, `build_reviewer`, `build_tester`, `build_execution`, `persist`, `list_runs`, `get_run`, plus the orchestrator `prepare_run`;
+  added `backend/app/application/elira_phase20/__init__.py` re-exporting the full runtime surface;
+  rebuilt `backend/app/api/routes/elira_phase20.py` as a thin FastAPI shell: router, `Phase20RunPayload` Pydantic schema, and three short delegating handlers (`/run`, `/history/list`, `/history/get`);
+  reduced the route file from 324 lines to 42 (-87%) without touching response shapes or status codes.
+- Verification:
+  `python -m py_compile` on all three files -> clean;
+  pure-Python import smoke for the runtime + package facade;
+  mocked-fastapi/pydantic import smoke for the route module;
+  DB lifecycle smoke: `ensure_db`, `persist` returns increasing IDs, `list_runs` returns 1 item, `get_run` round-trips all JSON columns, `get_run(9999)` returns `not_found`.
+- Result:
+  `/api/elira/phase20/*` is now a thin FastAPI shell over `application/elira_phase20/*`;
+  REST contract unchanged: same response keys, same status codes, same Pydantic schema;
+  branch `claude/extract-skills-extra` now carries four accelerated extractions (`skills_extra`, `elira_supervisor`, `elira_phase19`, `elira_phase20`) ready for Codex integration.
