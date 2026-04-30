@@ -523,3 +523,29 @@ Live repair log for concrete backend/runtime fixes.
   all remaining `elira_phase2x` and `elira_phase21` routes are now thin FastAPI shells over application packages;
   public REST contracts unchanged: same response keys, same status codes, same Pydantic schemas;
   branch `claude/extract-skills-extra` now carries seven accelerated extractions ready for Codex integration.
+
+### 32. Refactor accelerated wave - elira_task_runner + elira_devtools extractions (Claude Code)
+- Status: completed
+- Scope: applied the route-extraction pattern to two more route files in a single commit:
+  (a) `elira_task_runner.py` (240 lines) — task-run DB + plan/pipeline builders;
+  (b) `elira_devtools.py` (252 lines) — project scanner, import parser, FS operations, patch-plan builder.
+- Start:
+  both files confirmed absent from Codex's unpushed commit set;
+  `elira_devtools.py` is the most structurally interesting file so far: it mixes SQLite-free file-system mutations with `resolve_project_path` that raises `HTTPException` directly;
+  `elira_task_runner.py` follows the established DB pattern but `persist_run` took a Pydantic model as an argument (coupling route schema to persistence) — extracted to accept raw fields.
+- Finish:
+  added `backend/app/application/elira_task_runner/runtime.py` + `__init__.py` with `DB_PATH`, `ensure_db`, `dumps_json`/`loads_json`, `build_plan`, `build_supervisor_pipeline`, `persist_run` (now takes raw fields), `list_runs`, `get_run`, `prepare_run`;
+  rebuilt `backend/app/api/routes/elira_task_runner.py` as a 46-line FastAPI shell (was 240 lines, -81%); `history/get` handler translates `not_found` result to HTTPException(404);
+  added `backend/app/application/elira_devtools/runtime.py` + `__init__.py` with `PROJECT_ROOT`, `BLOCKED_PARTS`, `ALLOWED_SCAN_SUFFIXES`, `resolve_project_path` (now returns `(Path|None, error_kind|None)` tuple — HTTP-free), `is_allowed_path`, `scan_project_files`, `parse_imports`, `build_project_map`, `fs_create`, `fs_delete`, `fs_rename` (each returns `(dict|None, error_kind|None)`), `build_patch_plan`;
+  rebuilt `backend/app/api/routes/elira_devtools.py` as a 97-line FastAPI shell (was 252 lines, -62%); five error-kind dicts (`_PATH_ERRORS`, `_FS_CREATE_ERRORS`, etc.) translate runtime tuples to HTTPException codes via a shared `_raise` helper.
+- Verification:
+  `python -m py_compile` on all 6 files -> clean;
+  task_runner DB lifecycle: `ensure_db`, `persist_run` returns increasing IDs, `list_runs` DESC, `get_run` round-trips JSON, `prepare_run` returns full payload with `run_id`;
+  devtools path resolver: `outside_root` for `../../../etc/passwd`, `blocked` for `.git/config`;
+  `build_patch_plan` produces create suggestions for `component` keyword;
+  `build_project_map(limit=5)` returns 5 files with `status: ok`;
+  `fs_create`/`fs_delete` smoke in a tempdir: create succeeds, duplicate returns `already_exists`, delete succeeds, second delete returns `not_found`;
+  mocked-fastapi import smoke for both route modules.
+- Result:
+  branch `claude/extract-skills-extra` now carries nine accelerated extractions;
+  all public REST contracts unchanged; `resolve_project_path` in `elira_devtools` runtime is now fully HTTP-free and reusable outside the route layer.
