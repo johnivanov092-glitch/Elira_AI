@@ -684,3 +684,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   persona service orchestration now sits under `application/persona`, and old service imports remain backward-compatible.
+
+### 47. Skills extra runtime extraction
+- Status: completed
+- Scope: integrated the Claude `skills_extra` extraction into the current refactor branch while preserving legacy service imports.
+- Finish:
+  added [backend/app/application/skills_extra/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/skills_extra/runtime.py) for archive, conversion, regex, translation, CSV analysis, and webhook helper runtime;
+  added [backend/app/application/skills_extra/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/skills_extra/__init__.py) with the public runtime exports;
+  reduced [backend/app/services/skills_extra.py](/D:/AIWork/Elira_AI/backend/app/services/skills_extra.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  `skills_extra` implementation now sits under `application/skills_extra`, and old service imports remain backward-compatible.
