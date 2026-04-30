@@ -740,3 +740,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   phase20 business and persistence logic now sits under `application/elira_phase20`, while `/api/elira/phase20/*` remains route-compatible.
+
+### 51. Elira phase21 route runtime extraction
+- Status: completed
+- Scope: completed the phase19/20/21 route split by moving phase21 controller/runtime logic out of the FastAPI route while preserving the public phase21 endpoints.
+- Finish:
+  added [backend/app/application/elira_phase21/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase21/runtime.py) for phase21 DB bootstrap, controller building, persistence, history reads, and run payload assembly;
+  added [backend/app/application/elira_phase21/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase21/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_phase21.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase21.py) to a FastAPI shell with the request model and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase21 business and persistence logic now sits under `application/elira_phase21`, while `/api/elira/phase21/*` remains route-compatible.
