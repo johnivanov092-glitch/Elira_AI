@@ -698,3 +698,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   `skills_extra` implementation now sits under `application/skills_extra`, and old service imports remain backward-compatible.
+
+### 48. Elira supervisor route runtime extraction
+- Status: completed
+- Scope: integrated the Claude `elira_supervisor` route split into the current refactor branch while preserving the public supervisor API routes.
+- Finish:
+  added [backend/app/application/elira_supervisor/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_supervisor/runtime.py) for supervisor DB bootstrap, path validation, planning, step building, persistence, history reads, and execute/run payload assembly;
+  added [backend/app/application/elira_supervisor/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_supervisor/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_supervisor.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_supervisor.py) to a FastAPI shell with request models, HTTP error translation, and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  supervisor business and persistence logic now sits under `application/elira_supervisor`, while `/api/elira/supervisor/*` remains route-compatible.
