@@ -495,3 +495,31 @@ Live repair log for concrete backend/runtime fixes.
   `/api/elira/phase20/*` is now a thin FastAPI shell over `application/elira_phase20/*`;
   REST contract unchanged: same response keys, same status codes, same Pydantic schema;
   branch `claude/extract-skills-extra` now carries four accelerated extractions (`skills_extra`, `elira_supervisor`, `elira_phase19`, `elira_phase20`) ready for Codex integration.
+
+### 31. Refactor accelerated wave - elira_phase20_queue / elira_phase20_state / elira_phase21 extractions (Claude Code)
+- Status: completed
+- Scope: applied the same route-extraction pattern to the remaining three elira phase route files in one batch commit:
+  (a) `elira_phase20_queue.py` — stateless preview-queue builder;
+  (b) `elira_phase20_state.py` — checkpoint/rollback state with `phase20_execution_state` DB table;
+  (c) `elira_phase21.py` — autonomous-controller with `phase21_runs` DB table.
+- Start:
+  all three files were absent from Codex's unpushed commit set and followed the established shape;
+  `elira_phase20_queue` is stateless (no DB), making it the simplest extraction in the wave;
+  `elira_phase20_state` and `elira_phase21` both have SQLite schemas and inline persistence logic mixed into the route handlers.
+- Finish:
+  added `backend/app/application/elira_phase20_queue/runtime.py` + `__init__.py` with `build_preview_queue(goal, targets) -> dict`;
+  rebuilt `backend/app/api/routes/elira_phase20_queue.py` as a 24-line FastAPI shell (was 34 lines);
+  added `backend/app/application/elira_phase20_state/runtime.py` + `__init__.py` with `DB_PATH`, `ensure_db`, `dumps`, `build_checkpoints`, `build_rollback`, `persist_state`, `list_states`, `prepare_execution_state`;
+  rebuilt `backend/app/api/routes/elira_phase20_state.py` as a 36-line FastAPI shell (was 118 lines, -69%);
+  added `backend/app/application/elira_phase21/runtime.py` + `__init__.py` with `DB_PATH`, `ensure_db`, `dumps`, `loads`, `build_controller`, `persist`, `list_runs`, `get_run`, `prepare_run`;
+  rebuilt `backend/app/api/routes/elira_phase21.py` as a 40-line FastAPI shell (was 154 lines, -74%).
+- Verification:
+  `python -m py_compile` on all 9 new/modified files -> clean;
+  stateless smoke for `build_preview_queue` (order/count/status);
+  state DB lifecycle: `ensure_db`, `persist_state` returns increasing IDs, `list_states` DESC order;
+  phase21 DB lifecycle: `persist` returns increasing IDs, `list_runs` orders DESC, `get_run` round-trips JSON columns, `get_run(9999)` returns `not_found`, `build_controller` sets `queue_count`/`has_execution_state` in summary;
+  mocked-fastapi import smoke for all three route modules.
+- Result:
+  all remaining `elira_phase2x` and `elira_phase21` routes are now thin FastAPI shells over application packages;
+  public REST contracts unchanged: same response keys, same status codes, same Pydantic schemas;
+  branch `claude/extract-skills-extra` now carries seven accelerated extractions ready for Codex integration.
