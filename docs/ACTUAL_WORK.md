@@ -407,3 +407,46 @@ Live repair log for concrete backend/runtime fixes.
 - Result:
   Agent OS now has a complete Phase 5 layer: backend monitoring/soft-sandboxing, audit events, policy-limit endpoints, workflow-aware metrics, and a read-only dashboard view for runtime operators;
   ordinary chat and multi-agent flows stay compatible under the seeded soft defaults, while policy blocks and limit updates are visible both in API responses and in the dashboard summary.
+
+### 27. Refactor accelerated wave - skills_extra extraction (Claude Code)
+- Status: completed
+- Scope: continued the Codex-led `ACCELERATED` refactor mode by extracting `services/skills_extra.py` into a new application-layer package while keeping the public symbol surface stable for routes, auto-skills, and any future caller.
+- Start:
+  reviewed the latest [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) state on `codex/refactor-arch-foundation` to find a still-heavy backend module that was outside Codex's last 20 unpushed commits;
+  picked `backend/app/services/skills_extra.py` (357 lines, ~19 KB) because it has only two callers (`api/routes/skills_extra_routes.py`, `application/chat/auto_skills.py`) and was untouched in Codex's recent extraction sweep;
+  branched off `origin/codex/refactor-arch-foundation` (`e7bc995`) as `claude/extract-skills-extra` so the work can be pushed publicly without entangling Codex's local in-flight commits.
+- Finish:
+  added [backend/app/application/skills_extra/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/skills_extra/runtime.py) as a byte-equal copy of the previous service runtime (Fernet encryption, ZIP archiver, file converter for CSV/JSON/MD/XLSX, regex helper, Ollama translator, CSV analyzer, in-memory webhook store);
+  added [backend/app/application/skills_extra/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/skills_extra/__init__.py) re-exporting `encrypt_text`, `decrypt_text`, `create_zip`, `extract_zip`, `convert_file`, `test_regex`, `translate_text`, `analyze_csv`, `store_webhook`, `list_webhooks`, `clear_webhooks`, plus `OUTPUT_DIR` / `WORKSPACE` / `BACKEND_UPLOADS` for parity;
+  reduced [backend/app/services/skills_extra.py](/D:/AIWork/Elira_AI/backend/app/services/skills_extra.py) from 357 lines to 42 by turning it into a pure facade that re-exports the runtime so existing `from app.services.skills_extra import ...` callers keep working unchanged.
+- Verification:
+  `python -m py_compile` on the three touched files and `python -m compileall backend/app` -> clean;
+  identity smoke confirming facade and package re-exports are the same objects as the runtime symbols;
+  behavior smoke covering `test_regex` (match + invalid pattern), webhook `store/list/clear` lifecycle, and `encrypt/decrypt` round-trip;
+  mocked-fastapi/pydantic import smoke for `api/routes/skills_extra_routes.py` and `application/chat/auto_skills.py` confirming all expected names still resolve through the facade.
+- Result:
+  `services/skills_extra.py` is now a thin compatibility surface, while the runtime lives in `application/skills_extra/*` alongside Codex's other accelerated extractions (`skills`, `telegram`, `smart_memory`, `pdf`, `plugins`, etc.);
+  branch `claude/extract-skills-extra` pushed to origin so Codex can cherry-pick or fast-forward into `codex/refactor-arch-foundation` without touching any of his unpushed work;
+  no caller required updates because the facade preserves the prior public symbol set.
+
+### 28. Refactor accelerated wave - elira_supervisor route extraction (Claude Code)
+- Status: completed
+- Scope: split the supervisor HTTP route into a thin FastAPI shell over a dedicated application-layer runtime, mirroring the route-extraction pattern Codex used for `api/routes/project_brain.py`.
+- Start:
+  scanned the largest remaining backend modules on `origin/codex/refactor-arch-foundation` and selected `backend/app/api/routes/elira_supervisor.py` (358 lines, ~12 KB) because it mixes DB schema, JSON helpers, plan/step builders, persistence, and HTTP handlers in one file and has only one consumer (`backend/app/main.py` router include);
+  confirmed the file was not in Codex's last 20 unpushed commits, so a parallel extraction is safe.
+- Finish:
+  added [backend/app/application/elira_supervisor/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_supervisor/runtime.py) carrying `DB_PATH`, `BLOCKED_PARTS`, `PROJECT_ROOT`, `ensure_db`, `dumps_json` / `loads_json`, `resolve_project_path` (now returning `(Path | None, error_kind | None)` instead of raising), `build_plan`, `build_steps`, `persist_run`, `list_runs`, `get_run`, plus the HTTP-free orchestrators `prepare_run` and `prepare_execute`;
+  added [backend/app/application/elira_supervisor/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_supervisor/__init__.py) re-exporting the runtime surface for any future caller;
+  rebuilt [backend/app/api/routes/elira_supervisor.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_supervisor.py) as a thin FastAPI shell: it now keeps only the router, the two Pydantic request models (`SupervisorRunPayload`, `SupervisorExecutePayload`), a small `resolve_project_path` wrapper that translates runtime error kinds into `HTTPException(403)`, and four short delegating handlers (`/run`, `/execute`, `/history/list`, `/history/get`);
+  reduced the route file from 358 lines to 87 (-76%) without touching the routes' public response shapes or status codes.
+- Verification:
+  `python -m compileall backend/app` -> clean;
+  pure-Python import smoke for `app.application.elira_supervisor.runtime` and the package facade (no fastapi/pydantic required);
+  mocked-fastapi/pydantic import smoke for `app.api.routes.elira_supervisor` confirming the four handlers and the path-resolver wrapper are still wired;
+  path-resolver unit smoke covering `outside_root`, `blocked`, and a normal in-tree file;
+  end-to-end runtime smoke against a temp `data/elira_state.db`: `build_plan` infers create-targets from goal keywords, `build_steps` produces the four-agent ordering with overrides, `persist_run` returns increasing IDs, `list_runs` orders DESC, `get_run` round-trips JSON columns and returns `not_found` for missing ids, `prepare_run` produces a full response payload, and `prepare_execute` reports correct `changed_vs_disk` plus `diff_stats` against a fixture file.
+- Result:
+  the supervisor HTTP layer is now a pure FastAPI shell with all business and storage logic in `application/elira_supervisor/*`, ready for further reuse outside the route handler if needed;
+  the public REST contract under `/api/elira/supervisor/*` is unchanged: same response keys, same error codes, same pydantic schemas;
+  branch `claude/extract-skills-extra` carries this and the prior `skills_extra` extraction so both can be picked into `codex/refactor-arch-foundation` in one go.

@@ -1,0 +1,383 @@
+"""Application-layer runtime for the Elira supervisor route.
+
+Owns SQLite bootstrap, JSON helpers, plan/step builders, run persistence,
+history readers, and the FastAPI-free body of ``/api/elira/supervisor/*``
+handlers. The HTTP layer in ``api/routes/elira_supervisor.py`` keeps the
+Pydantic models, router, and HTTPException translation, but delegates all
+non-trivial logic here.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Any, List, Optional, Tuple
+
+from app.core.data_files import data_file
+from app.infrastructure.db.connection import connect_sqlite
+
+
+DB_PATH = data_file("elira_state.db")
+PROJECT_ROOT = Path(".").resolve()
+BLOCKED_PARTS = {
+    ".git",
+    "node_modules",
+    ".venv",
+    "__pycache__",
+    "dist",
+    "build",
+    "target",
+}
+
+
+# ───────── DB ─────────
+
+def ensure_db() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS supervisor_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                goal TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                current_path TEXT,
+                status TEXT NOT NULL,
+                plan_json TEXT NOT NULL,
+                steps_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ───────── Helpers ─────────
+
+def dumps_json(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False)
+
+
+def loads_json(text: str | None) -> Any:
+    return json.loads(text) if text else None
+
+
+def resolve_project_path(rel_path: str) -> Tuple[Optional[Path], Optional[str]]:
+    """Resolve ``rel_path`` against ``PROJECT_ROOT`` and validate it.
+
+    Returns ``(path, None)`` on success or ``(None, error_kind)`` where
+    ``error_kind`` is one of ``"outside_root"`` / ``"blocked"``. Callers
+    are expected to translate the kind into an HTTP error.
+    """
+    target = (PROJECT_ROOT / rel_path).resolve()
+    try:
+        target.relative_to(PROJECT_ROOT)
+    except ValueError:
+        return None, "outside_root"
+    if set(target.parts) & BLOCKED_PARTS:
+        return None, "blocked"
+    return target, None
+
+
+# ───────── Plan / Steps ─────────
+
+def build_plan(goal: str, current_path: str | None, staged_paths: List[str]) -> List[dict]:
+    plan: List[dict] = []
+
+    if current_path:
+        plan.append({
+            "action": "modify",
+            "path": current_path,
+            "reason": "РўРµРєСѓС‰РёР№ С„Р°Р№Р» РІС‹Р±СЂР°РЅ РєР°Рє РѕСЃРЅРѕРІРЅРѕР№ РєР°РЅРґРёРґР°С‚.",
+        })
+
+    for path in staged_paths[:8]:
+        if path and path != current_path:
+            plan.append({
+                "action": "modify",
+                "path": path,
+                "reason": "Р¤Р°Р№Р» staged Рё СѓС‡Р°СЃС‚РІСѓРµС‚ РІ С‚РµРєСѓС‰РµРј СЃС†РµРЅР°СЂРёРё.",
+            })
+
+    goal_l = goal.lower()
+    if any(word in goal_l for word in ["create", "СЃРѕР·РґР°Р№", "РґРѕР±Р°РІ", "РєРѕРјРїРѕРЅРµРЅС‚", "component"]):
+        plan.append({
+            "action": "create",
+            "path": "frontend/src/components/SupervisorGeneratedPanel.jsx",
+            "reason": "Р—Р°РґР°С‡Р° РІС‹РіР»СЏРґРёС‚ РєР°Рє РґРѕР±Р°РІР»РµРЅРёРµ РЅРѕРІРѕР№ UI-С„СѓРЅРєС†РёРё.",
+        })
+
+    if any(word in goal_l for word in ["api", "backend", "СЂРѕСѓС‚", "route", "router", "СЌРЅРґРїРѕРёРЅС‚"]):
+        plan.append({
+            "action": "create",
+            "path": "backend/app/api/routes/supervisor_generated_route.py",
+            "reason": "Р—Р°РґР°С‡Р° Р·Р°С‚СЂР°РіРёРІР°РµС‚ backend API.",
+        })
+
+    if not plan:
+        plan.append({
+            "action": "inspect",
+            "path": current_path or "project",
+            "reason": "РќСѓР¶РЅРѕ СЃРЅР°С‡Р°Р»Р° СѓС‚РѕС‡РЅРёС‚СЊ РѕР±Р»Р°СЃС‚СЊ РёР·РјРµРЅРµРЅРёР№.",
+        })
+
+    return plan[:12]
+
+
+def build_steps(plan: List[dict], status_overrides: dict | None = None) -> List[dict]:
+    preview_targets = [item["path"] for item in plan if item["action"] in {"modify", "create"}]
+    statuses = {
+        "planner": "done",
+        "coder": "ready",
+        "reviewer": "ready",
+        "tester": "queued",
+    }
+    if status_overrides:
+        statuses.update(status_overrides)
+
+    return [
+        {
+            "agent": "planner",
+            "status": statuses["planner"],
+            "title": "РџРѕСЃС‚СЂРѕРµРЅРёРµ РїР»Р°РЅР°",
+            "details": f"РџРѕРґРіРѕС‚РѕРІР»РµРЅРѕ {len(plan)} item(s).",
+        },
+        {
+            "agent": "coder",
+            "status": statuses["coder"],
+            "title": "РџРѕРґРіРѕС‚РѕРІРєР° preview",
+            "details": f"Preview targets: {', '.join(preview_targets) if preview_targets else 'РЅРµС‚'}",
+        },
+        {
+            "agent": "reviewer",
+            "status": statuses["reviewer"],
+            "title": "Review",
+            "details": "Diff, history Рё verify flow РїРѕРґРіРѕС‚РѕРІР»РµРЅС‹.",
+        },
+        {
+            "agent": "tester",
+            "status": statuses["tester"],
+            "title": "Verify",
+            "details": "Verify СЃС†РµРЅР°СЂРёР№ РїРѕРґРіРѕС‚РѕРІР»РµРЅ.",
+        },
+    ]
+
+
+# ───────── Persistence ─────────
+
+def persist_run(
+    goal: str,
+    mode: str,
+    current_path: str | None,
+    status: str,
+    plan: list,
+    steps: list,
+    summary: dict,
+) -> int:
+    ensure_db()
+    conn = connect_sqlite(DB_PATH, row_factory=None, journal_mode=None)
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO supervisor_runs (
+                goal, mode, current_path, status,
+                plan_json, steps_json, summary_json, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                goal,
+                mode,
+                current_path,
+                status,
+                dumps_json(plan),
+                dumps_json(steps),
+                dumps_json(summary),
+                datetime.utcnow().isoformat(),
+            ),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def list_runs(limit: int = 30) -> dict:
+    ensure_db()
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, goal, mode, current_path, status, created_at
+            FROM supervisor_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return {"items": [dict(row) for row in rows]}
+    finally:
+        conn.close()
+
+
+def get_run(run_id: int) -> dict:
+    ensure_db()
+    conn = connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
+    try:
+        row = conn.execute(
+            """
+            SELECT id, goal, mode, current_path, status,
+                   plan_json, steps_json, summary_json, created_at
+            FROM supervisor_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if not row:
+            return {"status": "not_found"}
+        data = dict(row)
+        data["plan"] = loads_json(data.pop("plan_json"))
+        data["steps"] = loads_json(data.pop("steps_json"))
+        data["summary"] = loads_json(data.pop("summary_json"))
+        return data
+    finally:
+        conn.close()
+
+
+# ───────── High-level handlers (HTTP-free) ─────────
+
+def prepare_run(
+    goal: str,
+    mode: str,
+    current_path: str | None,
+    staged_paths: List[str],
+    auto_apply: bool,
+) -> dict:
+    """Build the supervisor run payload, persist it, and return the response body.
+
+    Mirrors the previous body of ``POST /api/elira/supervisor/run`` and is the
+    single source of truth for that handler shape.
+    """
+    plan = build_plan(goal, current_path, staged_paths)
+    steps = build_steps(plan, {"coder": "done" if auto_apply else "ready"})
+    summary = {
+        "preview_targets": [item["path"] for item in plan if item["action"] in {"modify", "create"}],
+        "next_steps": [
+            "РћС‚РєСЂРѕР№ С„Р°Р№Р»С‹ РёР· РїР»Р°РЅР°.",
+            "РЎРґРµР»Р°Р№ Preview Patch.",
+            "РџСЂРѕРІРµСЂСЊ Diff Рё History.",
+            "РЎРґРµР»Р°Р№ Apply Рё Verify.",
+        ],
+        "auto_apply": auto_apply,
+    }
+    run_id = persist_run(
+        goal,
+        mode,
+        current_path,
+        "planned",
+        plan,
+        steps,
+        summary,
+    )
+    return {
+        "status": "ok",
+        "run_id": run_id,
+        "goal": goal,
+        "mode": mode,
+        "current_path": current_path,
+        "plan": plan,
+        "steps": steps,
+        "summary": summary,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+def prepare_execute(
+    goal: str,
+    target: Path,
+    current_path: str,
+    current_content: str,
+    auto_apply: bool,
+) -> dict:
+    """Build the supervisor execute payload (preview + verify) and persist it.
+
+    ``target`` must already be the validated absolute path produced by
+    ``resolve_project_path``; the route layer is responsible for that
+    translation so this function stays HTTP-free.
+    """
+    disk_content = target.read_text(encoding="utf-8")
+    plan = build_plan(goal, current_path, [])
+    proposed_content = current_content or disk_content
+
+    changed_vs_disk = proposed_content != disk_content
+    diff_stats = {
+        "added": max(0, proposed_content.count("\n") - disk_content.count("\n")),
+        "removed": max(0, disk_content.count("\n") - proposed_content.count("\n")),
+    }
+
+    statuses = {
+        "planner": "done",
+        "coder": "done",
+        "reviewer": "done",
+        "tester": "done" if auto_apply else "ready",
+    }
+    steps = build_steps(plan, statuses)
+
+    summary = {
+        "preview_targets": [current_path],
+        "next_steps": [
+            "РџСЂРѕРІРµСЂСЊ preview content.",
+            "РЎРґРµР»Р°Р№ Apply Patch РІ Code Workspace.",
+            "Р—Р°РїСѓСЃС‚Рё Verify.",
+        ] if not auto_apply else [
+            "Preview СЂР°СЃСЃС‡РёС‚Р°РЅ.",
+            "РџРѕРґС‚РІРµСЂРґРё Apply Patch.",
+            "РЎСЂР°Р·Сѓ РїРѕСЃР»Рµ apply РІС‹РїРѕР»РЅРё Verify.",
+        ],
+        "auto_apply": auto_apply,
+        "changed_vs_disk": changed_vs_disk,
+        "diff_stats": diff_stats,
+    }
+
+    result = {
+        "status": "ok",
+        "goal": goal,
+        "mode": "code",
+        "current_path": current_path,
+        "plan": plan,
+        "steps": steps,
+        "summary": summary,
+        "preview": {
+            "path": current_path,
+            "current_content": disk_content,
+            "proposed_content": proposed_content,
+            "changed_vs_disk": changed_vs_disk,
+        },
+        "verify": {
+            "path": current_path,
+            "checks": [
+                "Р¤Р°Р№Р» СЃСѓС‰РµСЃС‚РІСѓРµС‚",
+                "Р¤Р°Р№Р» С‡РёС‚Р°РµС‚СЃСЏ РєР°Рє UTF-8",
+                "Preview СЂР°СЃСЃС‡РёС‚Р°РЅ РґР»СЏ С‚РµРєСѓС‰РµРіРѕ С„Р°Р№Р»Р°",
+                "Р“РѕС‚РѕРІ Рє Verify РїРѕСЃР»Рµ Apply",
+            ],
+        },
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    run_id = persist_run(
+        goal,
+        "code",
+        current_path,
+        "executed-preview",
+        plan,
+        steps,
+        result,
+    )
+    result["run_id"] = run_id
+    return result
