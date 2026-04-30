@@ -582,3 +582,24 @@ Live repair log for concrete backend/runtime fixes.
   mocked-fastapi import smoke for both route modules.
 - Result:
   branch `claude/extract-skills-extra` now carries eleven accelerated extractions; REST contracts unchanged.
+
+### 35. Refactor accelerated wave - files (file_extract) + elira_patch extractions (Claude Code)
+- Status: completed
+- Scope: extracted two more route files:
+  (a) `files.py` (192 lines) — stateless file text-extraction (PDF/DOCX/XLSX/ZIP/text);
+  (b) `elira_patch.py` (388 lines) — the largest route file; DB history, diff helpers, path resolver, apply/rollback/verify/batch operations.
+- Start:
+  `files.py` is the cleanest extraction of the wave: purely stateless utility functions delegating to optional heavy libraries (`pypdf`, `docx`, `openpyxl`);
+  `elira_patch.py` is the most complex: `resolve_project_path` raises HTTPException, batch operations do a 2-phase validate-then-apply loop, 8 Pydantic models, 8 routes, SQLite `patch_history` table.
+- Finish:
+  added `backend/app/application/file_extract/runtime.py` + `__init__.py` with `TEXT_EXTS`, `extract_pdf`, `extract_docx`, `extract_xlsx`, `extract_zip`, `extract_text`, `extract_file(filename, contents) -> dict`;
+  rebuilt `backend/app/api/routes/files.py` as a 19-line async FastAPI shell (was 192 lines, -90%);
+  added `backend/app/application/elira_patch/runtime.py` + `__init__.py` with `PROJECT_ROOT`, `DATA_ROOT`, `BACKUP_ROOT`, `DB_PATH`, `BLOCKED_PARTS`, `ensure_db`, `resolve_project_path` (HTTP-free tuple), `backup_file_path`, `ensure_parent`, `build_diff_text`, `diff_stats`, `write_history`, `list_history`, `get_history_item`, `compute_diff`, `apply_patch`, `rollback_patch`, `verify_patch`, `batch_apply`, `batch_verify` (batch ops return `(result|None, error_kind, error_path)` triples for atomic 2-phase apply);
+  rebuilt `backend/app/api/routes/elira_patch.py` as an 88-line FastAPI shell (was 388 lines, -77%); one `_PATH_ERRORS` dict + `_raise(kind, path)` helper translate all runtime error kinds to HTTPException codes.
+- Verification:
+  `python -m py_compile` on all 6 files -> clean;
+  file_extract smoke: `extract_file` routes to correct extractor by extension;
+  elira_patch smoke: path resolver (`outside_root`, `blocked`), diff helpers (`build_diff_text`, `diff_stats`, `compute_diff`), full lifecycle in tempdir: `apply_patch` writes + backs up + writes history, `rollback_patch` restores, `verify_patch` computes `changed_vs_disk`, `list_history` / `get_history_item` / `not_found`, `batch_apply` 2-item batch;
+  mocked-fastapi import smoke for both route modules.
+- Result:
+  all extractable route files are now thin FastAPI shells; `elira_patch.py` was the last >200-line monolithic route file; REST contracts unchanged.
