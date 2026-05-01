@@ -655,3 +655,17 @@ Live repair log for concrete backend/runtime fixes.
   smoke: `get_status()` returns `loaded=False`, `gpu="CPU only"` (no GPU in test env); empty-prompt guard returns `"Empty prompt"`; no-torch guard returns `"torch not installed: pip install torch"`; `_clip_prompt(100 words, max=60)` -> 60 words; `unload_model()` returns `ok=True`; compat shim re-exports verified (`svc.generate_image is igr.generate_image`).
 - Result:
   `services/image_gen.py` is now a 15-line re-export shim; FLUX pipeline fully in `application/image_generation/`; `AGENT_OS_WORKPLAN.md` Phase 2 corrected to DONE; REST contract and all callers unchanged.
+
+### 39. Refactor accelerated wave - planner_v2_service extraction (Claude Code)
+- Status: completed
+- Scope: extracted `services/planner_v2_service.py` (331 lines) into `application/planner_v2/runtime.py`; covers 8 keyword sets (research/web/project/code/python/memory/library/chat-only), two scoring helpers, and `PlannerV2Service.plan()` — pure Python, no HTTP, no DB.
+- Start:
+  `planner_v2_service.py` is used by `services/agents_service.py` (imported as `PlannerV2Service` and passed as a factory) and by two test suites that patch `agents_service.PlannerV2Service`; also imported directly by `test_temporal_internet_mode.py`; all dependency paths preserved via thin shim; Cyrillic keyword strings (Russian user query words) kept intact — these are valid UTF-8 source strings, not mojibake.
+- Finish:
+  added `backend/app/application/planner_v2/runtime.py` + `__init__.py` with all 8 keyword sets, `_count()`, `_needs_web()`, and `PlannerV2Service` class;
+  rebuilt `backend/app/services/planner_v2_service.py` as an 11-line re-export shim (was 331 lines, -97%); re-exports `PlannerV2Service` for all callers.
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke: empty query -> `route="chat"`, `strategy="planner_v4_empty"`; `"search python documentation"` -> `route="research"`, `tools=["web_search",...]`; `"fix the bug in this file"` -> `route="code"`, `tools=["project_mode","project_patch",...]`; python query -> `"python_executor"` in tools; compat shim: `svc.PlannerV2Service is PlannerV2Service`.
+- Result:
+  `services/planner_v2_service.py` is now an 11-line shim; intent routing logic fully in `application/planner_v2/`; test patch paths unchanged; all callers backward-compatible.
