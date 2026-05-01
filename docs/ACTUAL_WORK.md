@@ -796,3 +796,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   task runner and devtools business logic now sits under `application/elira_task_runner` and `application/elira_devtools`, while `/api/elira/task/*`, `/api/elira/project/map`, `/api/elira/fs/*`, and `/api/elira/patch/plan` remain route-compatible.
+
+### 55. Workspace file-ops runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving workspace file operation logic out of `file_ops.py`; the paired Claude `library_sqlite` split was skipped because this branch already delegates `/api/lib/*` to `application/library/runtime.py`.
+- Finish:
+  added [backend/app/application/file_ops/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/file_ops/runtime.py) for safe workspace path resolution, write/read/tree/diff/mkdir/delete operations, and runtime error payloads;
+  added [backend/app/application/file_ops/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/file_ops/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/file_ops.py](/D:/AIWork/Elira_AI/backend/app/api/routes/file_ops.py) to request models, route handlers, and HTTP error translation.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  `/api/file-ops/*` remains route-compatible while workspace filesystem behavior now sits under `application/file_ops`.
