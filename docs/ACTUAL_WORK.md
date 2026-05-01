@@ -669,3 +669,17 @@ Live repair log for concrete backend/runtime fixes.
   smoke: empty query -> `route="chat"`, `strategy="planner_v4_empty"`; `"search python documentation"` -> `route="research"`, `tools=["web_search",...]`; `"fix the bug in this file"` -> `route="code"`, `tools=["project_mode","project_patch",...]`; python query -> `"python_executor"` in tools; compat shim: `svc.PlannerV2Service is PlannerV2Service`.
 - Result:
   `services/planner_v2_service.py` is now an 11-line shim; intent routing logic fully in `application/planner_v2/`; test patch paths unchanged; all callers backward-compatible.
+
+### 40. Refactor accelerated wave - agent_sandbox extraction (Claude Code)
+- Status: completed
+- Scope: extracted `services/agent_sandbox.py` (174 lines) into `application/agent_sandbox/runtime.py`; covers profile-to-agent-id resolution, sandbox policy enforcement (context-window limit, tool allow-list, hourly rate limit), and `SandboxPolicyError` dataclass.
+- Start:
+  `agent_sandbox.py` has no HTTP/DB of its own; delegates DB calls to `services/agent_monitor`; callers: `domain/workflows/step_executor.py` (direct import), `application/workflows/step_results.py` (imports `SandboxPolicyError`), `services/agents_service.py` (imports functions), and `tests/test_agent_os_phase5.py` (imports module, tests `SandboxPolicyError`/`preflight_or_raise`); all preserved via thin shim; Cyrillic profile-hint substrings kept intact.
+- Finish:
+  added `backend/app/application/agent_sandbox/runtime.py` + `__init__.py` with `_PROFILE_AGENT_HINTS`, `_normalize_tool_names()`, `resolve_effective_agent_id()`, `SandboxPolicyError`, `_make_error()`, `evaluate_preflight()`, `preflight_or_raise()`;
+  rebuilt `backend/app/services/agent_sandbox.py` as an 18-line re-export shim (was 174 lines, -90%).
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke: `resolve_effective_agent_id` for researcher/explicit/default fallback; `evaluate_preflight` happy path (num_ctx=2048 < limit=4096); `context_limit_exceeded` (num_ctx=8192 > limit=4096); `rate_limit_exceeded` (run_count=10 >= max=10); `preflight_or_raise` happy path; compat shim identity checks.
+- Result:
+  `services/agent_sandbox.py` is now an 18-line shim; all sandbox policy logic in `application/agent_sandbox/`; `test_agent_os_phase5.py` patch paths unchanged; REST contract unchanged.

@@ -1,9 +1,3 @@
-"""Agent sandbox service — compatibility shim.
-
-All logic lives in ``app.application.agent_sandbox.runtime``.
-Public API re-exported for callers across services, domain, application,
-and test layers.
-"""
 from __future__ import annotations
 
 from app.application.agent_sandbox.runtime import (
