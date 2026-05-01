@@ -754,3 +754,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   phase21 business and persistence logic now sits under `application/elira_phase21`, while `/api/elira/phase21/*` remains route-compatible.
+
+### 52. Elira phase20 queue and execution-state runtime extraction
+- Status: completed
+- Scope: continued integrating the non-overlapping Claude route-split work by moving phase20 preview queue and execution-state logic out of FastAPI route modules.
+- Finish:
+  added [backend/app/application/elira_phase20_queue/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase20_queue/runtime.py) for preview queue payload assembly;
+  added [backend/app/application/elira_phase20_state/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase20_state/runtime.py) for execution-state DB bootstrap, checkpoint/rollback building, persistence, and list reads;
+  added package exports for both runtimes and reduced [backend/app/api/routes/elira_phase20_queue.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase20_queue.py) plus [backend/app/api/routes/elira_phase20_state.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase20_state.py) to FastAPI shells.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase20 queue/state business and persistence logic now sits under `application/elira_phase20_*`, while `/api/elira/phase20/preview-queue` and `/execution-state*` remain route-compatible.

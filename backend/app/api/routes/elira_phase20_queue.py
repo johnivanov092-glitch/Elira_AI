@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from typing import List
+
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
-from typing import List
-from datetime import datetime
+
+from app.application.elira_phase20_queue import runtime as queue_runtime
 
 router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20-queue"])
 
@@ -15,20 +17,4 @@ class PreviewQueuePayload(BaseModel):
 
 @router.post("/preview-queue")
 def preview_queue(payload: PreviewQueuePayload):
-    items = []
-    for index, path in enumerate(payload.targets):
-        items.append({
-            "order": index + 1,
-            "path": path,
-            "status": "queued",
-            "mode": "preview",
-        })
-
-    return {
-        "status": "ok",
-        "goal": payload.goal,
-        "count": len(items),
-        "items": items,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-
+    return queue_runtime.build_preview_queue(payload.goal, payload.targets)
