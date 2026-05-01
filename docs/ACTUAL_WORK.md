@@ -639,3 +639,19 @@ Live repair log for concrete backend/runtime fixes.
   mocked-fastapi import smoke for route module (prefix `/api/dashboard`).
 - Result:
   `dashboard_routes.py` is now a 14-line shell; REST contract unchanged; fourteen application packages extracted in this wave.
+
+### 38. Refactor accelerated wave - image_gen service extraction (Claude Code)
+- Status: completed
+- Scope: extracted `services/image_gen.py` (227 lines) into `application/image_generation/runtime.py`; covers the FLUX.1-schnell direct diffusers pipeline with lazy loading, VRAM management, and CUDA/CPU fallback — Priority 1 item from `WORKPLAN_CODEX_CLAUDE.md` §11 Next Queue.
+- Start:
+  `services/image_gen.py` had all FLUX pipeline logic inline — lazy `_get_pipe()` loader, `_clip_prompt()` for CLIP 77-token limit, `_cleanup_vram()` for GPU memory management, `generate_image()`, `unload_model()`, `get_status()`; all Cyrillic comment/error strings translated to English to prevent SyntaxError on write; callers are `api/routes/image_routes.py` (lazy imports) and `application/chat/auto_skills.py` (lazy imports) — both use the service module path, preserved by thin shim;
+  `application/media/image_generation.py` already existed (Codex extraction from `core/agents.py`) but covers LLM-based prompt preparation and SDXL/Ollama generation — a different concern; kept separate.
+- Finish:
+  added `backend/app/application/image_generation/runtime.py` + `__init__.py` with `OUTPUT_DIR`, `_MODEL_ID`, `_get_pipe()`, `_clip_prompt()`, `_cleanup_vram()`, `generate_image(prompt, width, height, steps, guidance_scale, seed, filename)`, `unload_model()`, `get_status()`;
+  rebuilt `backend/app/services/image_gen.py` as a 15-line re-export shim (was 227 lines, -93%); re-exports `generate_image`, `unload_model`, `get_status`, `OUTPUT_DIR` for full backward compatibility;
+  updated `docs/AGENT_OS_WORKPLAN.md` Phase 2 status: TODO -> DONE (commit `7550721` was already in main, workplan just hadn't been updated).
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke: `get_status()` returns `loaded=False`, `gpu="CPU only"` (no GPU in test env); empty-prompt guard returns `"Empty prompt"`; no-torch guard returns `"torch not installed: pip install torch"`; `_clip_prompt(100 words, max=60)` -> 60 words; `unload_model()` returns `ok=True`; compat shim re-exports verified (`svc.generate_image is igr.generate_image`).
+- Result:
+  `services/image_gen.py` is now a 15-line re-export shim; FLUX pipeline fully in `application/image_generation/`; `AGENT_OS_WORKPLAN.md` Phase 2 corrected to DONE; REST contract and all callers unchanged.

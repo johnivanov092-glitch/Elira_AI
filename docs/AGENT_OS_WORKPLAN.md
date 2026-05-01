@@ -10,7 +10,7 @@
 | Фаза | Описание | Исполнитель | Ветка | Статус | Зависимости |
 |------|----------|-------------|-------|--------|-------------|
 | 1 | Agent Registry + Persistent State | Claude Code | `feat/agent-os-phase1-registry` | **DONE** | — |
-| 2 | Tool Registry с JSON Schema | Claude Code | `feat/agent-os-phase2-tools` | **TODO** | Phase 1 |
+| 2 | Tool Registry с JSON Schema | Claude Code | `feat/agent-os-phase2-tools` | **DONE** | Phase 1 |
 | 3 | Event Bus + межагентные сообщения | Codex | `feat/agent-os-phase3-eventbus` | **DONE** | Phase 1 (core), Phase 2 (`tool.executed` — заглушка) |
 | 4 | Workflow Engine | Codex | `feat/agent-os-phase4-workflows` | **DONE** | Phase 1 + 3 (core), Phase 2 (tool adapter only) |
 | 5 | Monitoring + Sandboxing | Codex | `feat/agent-os-phase5-monitoring` | **DONE** | Phase 3 + 4 |
