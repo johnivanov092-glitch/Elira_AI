@@ -768,3 +768,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   phase20 queue/state business and persistence logic now sits under `application/elira_phase20_*`, while `/api/elira/phase20/preview-queue` and `/execution-state*` remain route-compatible.
+
+### 53. Elira execute and memory runtime extraction
+- Status: completed
+- Scope: moved the `/api/elira/execute` mode-reply builder and `/api/elira/memory/*` SQLite CRUD out of the FastAPI route while preserving existing response strings and DB table usage.
+- Finish:
+  added [backend/app/application/elira_execute/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_execute/runtime.py) for `memory_store` bootstrap, mode reply construction, memory listing, save, and delete operations;
+  added [backend/app/application/elira_execute/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_execute/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_execute.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execute.py) to request models and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Elira execute/memory route business and persistence logic now sits under `application/elira_execute`, while `/api/elira/execute` and `/api/elira/memory/*` remain route-compatible.
