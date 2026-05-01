@@ -683,3 +683,17 @@ Live repair log for concrete backend/runtime fixes.
   smoke: `resolve_effective_agent_id` for researcher/explicit/default fallback; `evaluate_preflight` happy path (num_ctx=2048 < limit=4096); `context_limit_exceeded` (num_ctx=8192 > limit=4096); `rate_limit_exceeded` (run_count=10 >= max=10); `preflight_or_raise` happy path; compat shim identity checks.
 - Result:
   `services/agent_sandbox.py` is now an 18-line shim; all sandbox policy logic in `application/agent_sandbox/`; `test_agent_os_phase5.py` patch paths unchanged; REST contract unchanged.
+
+### 41. Refactor accelerated wave - temporal_intent extraction (Claude Code)
+- Status: completed
+- Scope: extracted `services/temporal_intent.py` (173 lines) into `application/temporal_intent/runtime.py`; covers `detect_temporal_intent()` — pure NLP classification (mode: hard/soft/stable_historical/none) with regex year extraction and keyword term matching; no HTTP, no DB.
+- Start:
+  already used from application-layer modules (`application/planner_v2/runtime.py`, `application/response_cache/policy.py`) and infrastructure layer (`infrastructure/search/web_query.py`) plus tests; clean self-contained module — no transitive service dependencies; Cyrillic term strings (Russian time/world/historical keywords) kept intact.
+- Finish:
+  added `backend/app/application/temporal_intent/runtime.py` + `__init__.py` with all regex constants, `_contains_any()`, `_collect_years()`, `detect_temporal_intent(query, now) -> dict`;
+  rebuilt `backend/app/services/temporal_intent.py` as a 10-line shim (was 173 lines, -94%).
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke: code query -> `mode="none"`; `"today"` query -> `mode="hard"`, `freshness_sensitive=True`; `"python releases in 2020"` -> `mode="soft"`, `years=[2020]`; `"кто был президентом в 2000 году"` -> `mode="stable_historical"`, `requires_web=False`; compat shim identity check.
+- Result:
+  `services/temporal_intent.py` is now a 10-line shim; temporal classification fully in `application/temporal_intent/`; all callers (planner_v2, response_cache, infrastructure/search, tests) backward-compatible via shim.
