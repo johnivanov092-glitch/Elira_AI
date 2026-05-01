@@ -603,3 +603,24 @@ Live repair log for concrete backend/runtime fixes.
   mocked-fastapi import smoke for both route modules.
 - Result:
   all extractable route files are now thin FastAPI shells; `elira_patch.py` was the last >200-line monolithic route file; REST contracts unchanged.
+
+### 36. Refactor accelerated wave - advanced (project mode) + terminal extractions (Claude Code)
+- Status: completed
+- Scope: extracted two more route files:
+  (a) `advanced_routes.py` (227 lines) — project-mode section only (global `_project_path` state, 6 FS operations); multi-agent and RAG sections are already thin lazy-import delegates — kept in place;
+  (b) `terminal.py` (137 lines) — entire file: `_cwd` global state, blocked-command list, Windows CP866/UTF-8 decode, `change_dir`, `exec_command`.
+- Start:
+  `advanced_routes.py` mixes three concerns: multi-agent (lazy service import, kept), RAG (lazy service import, kept), project-mode (module-level `_project_path: str = ""` global + pure FS operations, extracted); all Russian error strings translated to English to prevent SyntaxError on write;
+  `terminal.py` has module-level `_cwd = str(WORKSPACE)` global and `WORKSPACE.mkdir()` side effect at import — preserved at module level in runtime; `_decode_win` renamed `decode_win` (public); all Russian strings (`"Пустая команда"`, `"Команда заблокирована"`, `"Таймаут"`, `"Не найдена"`) translated to English.
+- Finish:
+  added `backend/app/application/advanced/runtime.py` + `__init__.py` with `BLOCKED_DIRS`, `TEXT_EXTS`, `open_project(path)`, `get_project_info()`, `project_tree(max_depth, max_items)`, `read_project_file(path, max_chars)`, `search_in_project(query, max_results)`, `close_project()` — all return plain dicts;
+  rebuilt `backend/app/api/routes/advanced_routes.py` as a 118-line FastAPI shell (was 227 lines, -48%); multi-agent + RAG sections unchanged, project-mode handlers are one-line delegates;
+  added `backend/app/application/terminal/runtime.py` + `__init__.py` with `WORKSPACE`, `BLOCKED`, `TIMEOUT`, `_IS_WINDOWS`, `decode_win(data)`, `change_dir(target)`, `exec_command(cmd, cwd)`, `get_cwd()`;
+  rebuilt `backend/app/api/routes/terminal.py` as a 32-line FastAPI shell (was 137 lines, -77%).
+- Verification:
+  `python -m py_compile` on all 6 files -> clean;
+  advanced smoke: `get_project_info`/`project_tree`/`read_project_file`/`search_in_project` all return `ok: False` before a project is opened; `open_project` opens the backend root, `project_tree` returns 20 items at depth=1, `read_project_file` reads runtime.py (4587 bytes), path-escape attempt blocked with `"Path escapes project root"`, `search_in_project` finds 5 hits for `BLOCKED_DIRS`, `close_project` resets state;
+  terminal smoke: `decode_win` UTF-8 roundtrip, empty-command guard, blocked-command guard (`rm -rf /`), `change_dir` to WORKSPACE (ok) and non-existent path (error), `get_cwd` returns string, `exec_command("echo hello_from_smoke")` returns `stdout="hello_from_smoke"`;
+  mocked-fastapi import smoke for both route modules (prefix `/api/advanced`, `/api/terminal`).
+- Result:
+  thirteen application packages now cover all extractable route logic; `advanced_routes.py` and `terminal.py` are the final two route files reduced to thin FastAPI shells; REST contracts unchanged.
