@@ -782,3 +782,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   Elira execute/memory route business and persistence logic now sits under `application/elira_execute`, while `/api/elira/execute` and `/api/elira/memory/*` remain route-compatible.
+
+### 54. Elira task runner and devtools runtime extraction
+- Status: completed
+- Scope: continued the Claude route-split queue by moving task-runner planning/history logic and Elira devtools filesystem/project-map/patch-plan logic out of FastAPI route modules without changing public endpoints.
+- Finish:
+  added [backend/app/application/elira_task_runner/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_task_runner/runtime.py) for task plan building, supervisor pipeline assembly, `task_runs` persistence, and history reads;
+  added [backend/app/application/elira_devtools/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_devtools/runtime.py) for project scanning, import parsing, guarded filesystem operations, and patch-plan payload assembly;
+  added package exports for both runtimes and reduced [backend/app/api/routes/elira_task_runner.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_task_runner.py) plus [backend/app/api/routes/elira_devtools.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_devtools.py) to FastAPI shells with request models and HTTP error translation.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  task runner and devtools business logic now sits under `application/elira_task_runner` and `application/elira_devtools`, while `/api/elira/task/*`, `/api/elira/project/map`, `/api/elira/fs/*`, and `/api/elira/patch/plan` remain route-compatible.
