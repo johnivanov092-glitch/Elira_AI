@@ -624,3 +624,18 @@ Live repair log for concrete backend/runtime fixes.
   mocked-fastapi import smoke for both route modules (prefix `/api/advanced`, `/api/terminal`).
 - Result:
   thirteen application packages now cover all extractable route logic; `advanced_routes.py` and `terminal.py` are the final two route files reduced to thin FastAPI shells; REST contracts unchanged.
+
+### 37. Refactor accelerated wave - dashboard stats extraction (Claude Code)
+- Status: completed
+- Scope: extracted `dashboard_routes.py` (102 lines) into `application/dashboard/runtime.py`; the single `dashboard_stats()` handler had ~80 lines of real business logic (Counter aggregation, datetime arithmetic, multi-service lazy imports) embedded directly in the route handler.
+- Start:
+  `dashboard_stats()` aggregates run history (Counter for models/routes, daily activity over 14 days, today/week counts), then lazy-imports three services (`smart_memory.get_stats`, `elira_memory_sqlite.{list_chats,get_messages}`, `plugin_system.list_plugins`) with silent fallbacks; all logic was inline in the handler — no application package existed.
+- Finish:
+  added `backend/app/application/dashboard/runtime.py` + `__init__.py` with `_HISTORY = RunHistoryService()` module-level instance and `compute_dashboard_stats() -> dict`; all datetime/Counter logic and lazy service imports moved verbatim;
+  rebuilt `backend/app/api/routes/dashboard_routes.py` as a 14-line FastAPI shell (was 102 lines, -86%); single `dashboard_stats()` handler delegates to `dash_runtime.compute_dashboard_stats()`.
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke test with mocked `RunHistoryService` (3 fake runs): `total=3`, `success=2`, `errors=1`, `daily_activity` has 14 entries, `top_models[0]["model"]=="qwen3"`;
+  mocked-fastapi import smoke for route module (prefix `/api/dashboard`).
+- Result:
+  `dashboard_routes.py` is now a 14-line shell; REST contract unchanged; fourteen application packages extracted in this wave.
