@@ -810,3 +810,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   `/api/file-ops/*` remains route-compatible while workspace filesystem behavior now sits under `application/file_ops`.
+
+### 56. File text extraction runtime extraction
+- Status: completed
+- Scope: continued the file extraction split by moving PDF/DOCX/XLSX/ZIP/text extraction helpers out of the `/api/files` route while preserving the existing response shape and extractor messages.
+- Finish:
+  added [backend/app/application/file_extract/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/file_extract/runtime.py) for `TEXT_EXTS`, PDF/DOCX/XLSX/ZIP/plain-text extraction helpers, and `extract_file` dispatch;
+  added [backend/app/application/file_extract/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/file_extract/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/files.py](/D:/AIWork/Elira_AI/backend/app/api/routes/files.py) to an async upload reader and FastAPI error wrapper.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  `/api/files/extract-text` remains route-compatible while file text extraction logic now sits under `application/file_extract`.
