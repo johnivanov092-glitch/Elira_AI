@@ -840,3 +840,14 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   Agent OS service facade code now lives under `application/*/runtime.py`, while legacy `app.services.*` imports remain compatible.
+
+### 58. Elira phase naming compatibility refactor planned
+- Status: completed
+- Scope: recorded the requested follow-up to replace milestone-style `elira_phase*` module names with domain names as a separate compatibility refactor.
+- Finish:
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) with a planned task for renaming `elira_phase19`, `elira_phase20`, `elira_phase20_queue`, `elira_phase20_state`, and `elira_phase21` while preserving legacy route paths and import aliases;
+  documented the current domain meaning: multi-file dev loop, planner/coder/reviewer/tester execution loop, preview queue, checkpoint/rollback execution state, and controller/orchestration.
+- Verification:
+  `git diff --cached --check` after staging.
+- Result:
+  the non-engineering `elira_phase*` naming issue is now tracked as an explicit future compatibility refactor instead of being mixed into unrelated runtime extraction work.
