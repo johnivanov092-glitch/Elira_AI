@@ -1,9 +1,3 @@
-"""Provenance-guard service — compatibility shim.
-
-All logic lives in ``app.application.provenance_guard.runtime``.
-Public API re-exported for all callers: application/chat/post_processing
-and tests.
-"""
 from __future__ import annotations
 
 from app.application.provenance_guard.runtime import (

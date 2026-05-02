@@ -697,3 +697,17 @@ Live repair log for concrete backend/runtime fixes.
   smoke: code query -> `mode="none"`; `"today"` query -> `mode="hard"`, `freshness_sensitive=True`; `"python releases in 2020"` -> `mode="soft"`, `years=[2020]`; `"кто был президентом в 2000 году"` -> `mode="stable_historical"`, `requires_web=False`; compat shim identity check.
 - Result:
   `services/temporal_intent.py` is now a 10-line shim; temporal classification fully in `application/temporal_intent/`; all callers (planner_v2, response_cache, infrastructure/search, tests) backward-compatible via shim.
+
+### 42. Refactor accelerated wave - provenance_guard extraction (Claude Code)
+- Status: completed
+- Scope: extracted `services/provenance_guard.py` (167 lines) into `application/provenance_guard/runtime.py`; covers `guard_provenance_response()` + `is_provenance_question()` — pure NLP post-processing that strips internal RAG/memory markers and rewrites provenance phrases; no HTTP, no DB.
+- Start:
+  used exclusively from `application/chat/post_processing.py` (imports `guard_provenance_response`) and tests; 15+ compiled regex constants (RAW_MARKER_RE, SOURCE_LEAD_REPLACEMENTS, UNWANTED_SOURCE_SENTENCE_RE, etc.) plus 6 pure functions; Cyrillic Russian user-facing phrase strings kept intact (valid UTF-8 literals for Russian query matching); fixed raw-string quote-escaping syntax bug (`[\"«"]?` in double-quoted raw string closes early → changed to single-quoted raw string).
+- Finish:
+  added `backend/app/application/provenance_guard/runtime.py` + `__init__.py` with all 15 regex constants and 6 functions (`is_provenance_question`, `_normalize_whitespace`, `_strip_raw_markers`, `_rewrite_natural_provenance`, `_strip_technical_source_phrases`, `_rewrite_direct_personal_facts`, `guard_provenance_response`);
+  rebuilt `backend/app/services/provenance_guard.py` as a 13-line shim (was 167 lines, -92%).
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke: `is_provenance_question` true/false; `[fact]` marker stripped; `"Из моей памяти"` source phrase hidden; provenance question rewrites memory phrase; `"как меня зовут?"` → `"Тебя зовут X."`; empty input; compat shim identity check.
+- Result:
+  `services/provenance_guard.py` is now a 13-line shim; all provenance NLP in `application/provenance_guard/`; `application/chat/post_processing.py` and tests backward-compatible via shim.
