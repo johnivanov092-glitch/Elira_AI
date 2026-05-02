@@ -896,3 +896,18 @@ Live repair log for concrete backend/runtime fixes.
   targeted `/api/terminal` route smoke for cwd, empty command, blocked command, and `cd` -> passed.
 - Result:
   `/api/terminal/*` remains route-compatible while terminal runtime behavior now sits under `application/terminal`.
+
+### 62. Dashboard route runtime extraction
+- Status: completed
+- Scope: continued after Claude's separate worktree by applying the next small route split locally instead of merging the wide divergent Claude branch.
+- Finish:
+  added [backend/app/application/dashboard/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/dashboard/runtime.py) for run-history aggregation, daily activity, memory/chat/plugin counters, and dashboard response assembly;
+  added [backend/app/application/dashboard/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/dashboard/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/dashboard_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/dashboard_routes.py) to endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/dashboard/stats` route smoke for response keys and 14-day activity shape -> passed.
+- Result:
+  `/api/dashboard/stats` remains route-compatible while dashboard aggregation now sits under `application/dashboard`.
