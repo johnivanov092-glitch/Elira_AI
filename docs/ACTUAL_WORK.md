@@ -908,3 +908,18 @@ Live repair log for concrete backend/runtime fixes.
   `list_chats()` returns 8 chats; `count_chats()` returns 8.
 - Result:
   `services/` now has only 2 genuinely fat files remaining: `agents_service.py` (373 lines — Codex actively extracting) and `multi_agent_chain.py` (272 lines — candidate for follow-on session); every other service file is a thin re-export shim.
+
+### 53. Extract multi_agent_chain service (Claude Code)
+- Status: completed
+- Scope: extracted `services/multi_agent_chain.py` (272 lines) → `application/multi_agent_chain/runtime.py` + `__init__.py`; rebuilt shim.
+- Start:
+  `services/multi_agent_chain.py` held the full legacy multi-agent orchestration pipeline (utility helpers `_clip`, `_is_llm_error`, `_call_llm`; agent helpers `_orchestrator_plan`, `_researcher`, `_programmer`, `_analyst`, `_reflect_on_report`; legacy pipeline `_run_multi_agent_legacy_report`; and the active public entrypoint `run_multi_agent` which already delegated to `application/workflows/multi_agent.run_multi_agent_workflow`); file commented "Legacy monolith: keep older in-file orchestration as reference only."
+- Finish:
+  added `backend/app/application/multi_agent_chain/runtime.py` (239 lines) with all utility helpers, all agent helpers, legacy pipeline, and the active `run_multi_agent` entrypoint; added `__init__.py` re-exporting `run_multi_agent`;
+  rebuilt `services/multi_agent_chain.py`: 272→5 lines (-98%), now a single-import shim.
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  shim identity check: `svc.run_multi_agent is rt.run_multi_agent` passes;
+  structural check: all 10 expected functions present in runtime (`_clip` through `run_multi_agent`).
+- Result:
+  `services/` now has only 1 genuinely fat file remaining: `agents_service.py` (373 lines — Codex is actively extracting); every other service file is a thin re-export shim; the full extraction wave is effectively complete.
