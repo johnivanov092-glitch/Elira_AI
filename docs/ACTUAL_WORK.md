@@ -923,3 +923,14 @@ Live repair log for concrete backend/runtime fixes.
   structural check: all 10 expected functions present in runtime (`_clip` through `run_multi_agent`).
 - Result:
   `services/` now has only 1 genuinely fat file remaining: `agents_service.py` (373 lines — Codex is actively extracting); every other service file is a thin re-export shim; the full extraction wave is effectively complete.
+
+### 54. Fix cross-layer imports in application/ (Claude Code)
+- Status: completed
+- Scope: eliminated layering violations where application/ modules imported through services/ shims instead of directly from their application/X/runtime counterparts.
+- Problem:
+  12 application-layer files used `from app.services.X import Y` rather than `from app.application.X.runtime import Y`, creating a roundabout dependency chain (application → services shim → application). This worked because shims are thin re-exports, but violated the intended architecture where services/ is a one-way compatibility facade for external callers only.
+- Fix (12 files):
+  `agent_sandbox/runtime.py` → `monitoring/runtime`; `chat/agent_os.py` → `monitoring/runtime`; `chat/finalization.py` → `persona/evolution`; `chat/post_processing.py` → `identity_guard/runtime` + `provenance_guard/runtime`; `workflows/execution.py` → `monitoring/runtime`; `workflows/step_results.py` → `agent_sandbox/runtime`; `persona/store.py` → `elira_memory_sqlite/runtime`; `persona_service/runtime.py` → `elira_memory_sqlite/runtime`; `planner_v2/runtime.py` → `temporal_intent/runtime` + `web_query_planner/runtime`; `response_cache/runtime.py` → `temporal_intent/runtime`; `runtime_status/runtime.py` → `elira_memory_sqlite/runtime` + `persona/store`; `dashboard/runtime.py` → `run_history_service/runtime`.
+- Also fixed: re-export `_conn` from `services/agent_registry.py` shim to restore test tearDown compatibility in `test_agent_os_phase1.py` (15 tests were failing with AttributeError).
+- Verification: all 12 files compile clean; Phase 1+2 tests 32/32 pass.
+- Result: application/ layer is now self-contained — all inter-application dependencies go directly to `application/X/runtime`; `services/` layer is purely a one-way backward-compat facade.
