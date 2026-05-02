@@ -881,3 +881,18 @@ Live repair log for concrete backend/runtime fixes.
   targeted `/api/elira/patch` route smoke for diff, verify, and missing-file HTTP translation -> passed.
 - Result:
   `/api/elira/patch/*` remains route-compatible while patch runtime behavior now sits under `application/elira_patch`.
+
+### 61. Terminal route runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/terminal` command execution, cwd state, Windows output decoding, blocked command checks, and timeout handling out of the FastAPI route.
+- Finish:
+  added [backend/app/application/terminal/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/terminal/runtime.py) for terminal workspace state, `exec_command`, `change_dir`, `get_cwd`, and Windows decode helpers;
+  added [backend/app/application/terminal/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/terminal/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/terminal.py](/D:/AIWork/Elira_AI/backend/app/api/routes/terminal.py) to request models and endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/terminal` route smoke for cwd, empty command, blocked command, and `cd` -> passed.
+- Result:
+  `/api/terminal/*` remains route-compatible while terminal runtime behavior now sits under `application/terminal`.
