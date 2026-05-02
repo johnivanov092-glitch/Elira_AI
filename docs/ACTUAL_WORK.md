@@ -851,3 +851,18 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --cached --check` after staging.
 - Result:
   the non-engineering `elira_phase*` naming issue is now tracked as an explicit future compatibility refactor instead of being mixed into unrelated runtime extraction work.
+
+### 59. Elira phase module compatibility rename
+- Status: completed
+- Scope: implemented the planned compatibility rename for milestone-style `elira_phase*` modules without changing public `/api/elira/phase*` route paths or SQLite table names.
+- Finish:
+  added domain-named route modules [backend/app/api/routes/elira_multi_file_loop.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_multi_file_loop.py), [backend/app/api/routes/elira_execution_loop.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execution_loop.py), [backend/app/api/routes/elira_preview_queue.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_preview_queue.py), [backend/app/api/routes/elira_execution_state.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execution_state.py), and [backend/app/api/routes/elira_execution_controller.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execution_controller.py);
+  added matching application packages under `application/elira_multi_file_loop`, `application/elira_execution_loop`, `application/elira_preview_queue`, `application/elira_execution_state`, and `application/elira_execution_controller`;
+  rewired [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) to register the domain-named route modules;
+  reduced the old `elira_phase*` route and application modules to compatibility aliases so legacy imports keep working.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  active code now uses engineer-facing names for multi-file loop, execution loop, preview queue, execution state, and execution controller while preserving legacy route/import compatibility.

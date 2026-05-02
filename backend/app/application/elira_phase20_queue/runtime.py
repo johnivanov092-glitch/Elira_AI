@@ -1,23 +1,8 @@
+"""Compatibility alias for the legacy elira_phase20_queue runtime module."""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import List
+import sys
 
+from app.application.elira_preview_queue import runtime as _runtime
 
-def build_preview_queue(goal: str, targets: List[str]) -> dict:
-    items = []
-    for index, path in enumerate(targets):
-        items.append({
-            "order": index + 1,
-            "path": path,
-            "status": "queued",
-            "mode": "preview",
-        })
-
-    return {
-        "status": "ok",
-        "goal": goal,
-        "count": len(items),
-        "items": items,
-        "created_at": datetime.utcnow().isoformat(),
-    }
+sys.modules[__name__] = _runtime

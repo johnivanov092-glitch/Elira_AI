@@ -1,30 +1,18 @@
+"""Compatibility route aliases for the legacy phase20 module name."""
 from __future__ import annotations
 
-from typing import List
+from app.api.routes.elira_execution_loop import (
+    ExecutionLoopRunPayload as Phase20RunPayload,
+    get_execution_loop_history as get_phase20_history,
+    list_execution_loop_history as list_phase20_history,
+    router,
+    run_execution_loop as run_phase20,
+)
 
-from fastapi import APIRouter
-from pydantic import BaseModel, Field
-
-from app.application.elira_phase20 import runtime as phase20_runtime
-
-router = APIRouter(prefix="/api/elira/phase20", tags=["elira-phase20"])
-
-
-class Phase20RunPayload(BaseModel):
-    goal: str = Field(min_length=1)
-    selected_paths: List[str] = []
-
-
-@router.post("/run")
-def run_phase20(payload: Phase20RunPayload):
-    return phase20_runtime.prepare_run(payload.goal, payload.selected_paths)
-
-
-@router.get("/history/list")
-def list_phase20_history(limit: int = 30):
-    return phase20_runtime.list_runs(limit)
-
-
-@router.get("/history/get")
-def get_phase20_history(id: int):
-    return phase20_runtime.get_run(id)
+__all__ = [
+    "Phase20RunPayload",
+    "get_phase20_history",
+    "list_phase20_history",
+    "router",
+    "run_phase20",
+]
