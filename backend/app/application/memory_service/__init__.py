@@ -1,9 +1,3 @@
-"""Memory service — compatibility shim.
-
-All logic lives in ``app.application.memory_service.runtime``.
-Public API re-exported for all callers: api/routes/memory and
-application-layer modules that build memory context.
-"""
 from __future__ import annotations
 
 from app.application.memory_service.runtime import (

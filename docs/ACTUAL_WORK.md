@@ -770,3 +770,23 @@ Live repair log for concrete backend/runtime fixes.
   runtime_status smoke: get_runtime_status returns ok=True with correct persona_version/primary_engine/storage_mode; shim identity.
 - Result:
   all three services now thin shims; all application packages on `application/web_service/`, `application/ollama_runtime/`, `application/runtime_status/`; backward compat unchanged.
+
+### 46. Refactor accelerated wave - models + profiles + memory_service extractions (Claude Code)
+- Status: completed
+- Scope: extracted three services into application packages:
+  (a) `services/models_service.py` (29 lines) → `application/models/runtime.py` — Ollama tags-API fetch with lazy `requests` import;
+  (b) `services/profiles_service.py` (30 lines) → `application/profiles/runtime.py` — persona profile index builder from `core/persona_defaults` constants;
+  (c) `services/memory_service.py` (79 lines) → `application/memory_service/runtime.py` — profile-normalising façade over `smart_memory` with result augmentation.
+- Start:
+  `models_service` used from model-listing routes; single `get_models()` function, HTTP via `requests` (moved inside function);
+  `profiles_service` used from profile routes; depends on `persona_defaults` constants + `persona_service.build_persona_prompt` (lazy import);
+  `memory_service` used from memory routes + application-layer modules; wraps `smart_memory` with `_normalize_profile` helper and consistent `profile` key in all result dicts.
+- Finish:
+  added 6 new files (3 × runtime.py + 3 × __init__.py); rebuilt 3 service files as shims (models 29→10 lines -66%; profiles 30→10 lines -67%; memory 79→20 lines -75%).
+- Verification:
+  `python -m py_compile` on 9 files -> clean;
+  models smoke: happy path + error path; shim identity;
+  profiles smoke: count=2; default_profile correct; icon/tags present; shim identity;
+  memory smoke: list/add/delete/search/build_context; empty profile → "default"; invalid id → ok=False; shim identity.
+- Result:
+  all three services now thin shims; model listing, profile index, and memory façade logic in dedicated application packages; backward compat unchanged.
