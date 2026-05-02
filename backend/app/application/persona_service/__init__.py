@@ -1,10 +1,3 @@
-"""Persona service — compatibility shim.
-
-All logic lives in ``app.application.persona_service.runtime``.
-Public API re-exported for all callers: chat_service, profiles_service,
-dashboard, and tests.  Mojibake in the original ``build_persona_prompt``
-f-strings has been corrected in the runtime module.
-"""
 from __future__ import annotations
 
 from app.application.persona_service.runtime import (

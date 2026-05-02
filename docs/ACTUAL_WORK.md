@@ -790,3 +790,17 @@ Live repair log for concrete backend/runtime fixes.
   memory smoke: list/add/delete/search/build_context; empty profile → "default"; invalid id → ok=False; shim identity.
 - Result:
   all three services now thin shims; model listing, profile index, and memory façade logic in dedicated application packages; backward compat unchanged.
+
+### 47. Refactor accelerated wave - persona_service extraction + mojibake fix (Claude Code)
+- Status: completed
+- Scope: extracted `services/persona_service.py` (88 lines) → `application/persona_service/runtime.py`; fixed corrupted Cyrillic in `build_persona_prompt` f-strings.
+- Start:
+  `persona_service` used by `chat_service`, `profiles_service`, dashboard, and tests; exports `build_persona_prompt` plus 7 aliases to `application/persona.{store,evolution}` functions; `persona_store.bootstrap_if_needed()` call preserved at module level;
+  mojibake: the original file had CP1252 round-trip corruption where Cyrillic vowels in the `\xD0\xBX` UTF-8 range (а/е/з/и/к/л/м/н/о/п) were replaced by Latin-supplement characters (°/µ/‚/‡/·/¶ etc.), making the LLM persona prompt incoherent.
+- Finish:
+  added `backend/app/application/persona_service/runtime.py` + `__init__.py`; rewrote all 7 corrupted f-string lines with valid UTF-8 Cyrillic (lines 68–79 of original); runtime list lines 56–62 were already valid UTF-8 and were copied as-is; rebuilt `backend/app/services/persona_service.py` as a 27-line shim (was 88 lines, -69%).
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  smoke: build_persona_prompt returns >100 chars; "v3" version in output; mojibake chars (°µ‚‡·¶¸¹º»¼½¾¿†‹›) absent from output; "Ты — Elira", "Идентичность:", "Ценности:", "Режим профиля", "Калибровка модели:" present; task_context injected; unknown profile falls back; shim identity.
+- Result:
+  `services/persona_service.py` is now a 27-line shim; LLM persona prompts now send valid Russian Cyrillic instead of garbled Latin-supplement characters; all downstream callers (chat_service, profiles, tests) backward-compatible.
