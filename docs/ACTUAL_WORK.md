@@ -892,3 +892,19 @@ Live repair log for concrete backend/runtime fixes.
   all 5 shim identity checks pass; `list_agents` count=7; `cache_stats` total_entries correct; `task_stats` ok; `list_rag` ok; `RunHistoryService().list_runs()` count correct.
 - Result:
   `services/` now has only 3 genuinely fat files remaining: `agents_service.py` (373 lines — complex orchestration, Codex actively extracting), `multi_agent_chain.py` (272 lines), and `elira_memory_sqlite.py` (121 lines — already 90% delegating to application/elira_memory); all other service files are thin re-export shims.
+
+### 52. Extract elira_memory_sqlite service (Claude Code)
+- Status: completed
+- Scope: extracted `services/elira_memory_sqlite.py` (121 lines) → `application/elira_memory_sqlite/runtime.py` + `__init__.py`; rebuilt shim.
+- Start:
+  `services/elira_memory_sqlite.py` held `DB_PATH`, `DEFAULT_CHAT_TITLE`, `_VALID_TABLES`, `_connect()`, `_ensure_column()`, `_table_exists()`, 13 public delegation wrappers, `_chat_row()` helper, and a module-level `init_db()` bootstrap call; all business logic already lived in `application/elira_memory/runtime.py`.
+- Finish:
+  added `backend/app/application/elira_memory_sqlite/runtime.py` with all connection wiring (`DB_PATH`, `DEFAULT_CHAT_TITLE`, `_VALID_TABLES`, `_connect`, `_ensure_column`, `_table_exists`, `_chat_row`) and 13 public delegation wrappers (`init_db`, `count_chats`, `count_messages`, `list_chats`, `create_chat`, `update_chat`, `rename_chat`, `set_chat_pinned`, `set_chat_memory_saved`, `delete_chat`, `get_messages`, `add_message`); `init_db()` called at module bottom to preserve bootstrap side-effect;
+  added `backend/app/application/elira_memory_sqlite/__init__.py` re-exporting all 14 public names;
+  rebuilt `services/elira_memory_sqlite.py`: 121→20 lines (-83%), now a pure re-export shim.
+- Verification:
+  `python -m py_compile` on 3 files -> clean;
+  shim identity checks: `init_db`, `list_chats`, `add_message`, `DB_PATH`, `DEFAULT_CHAT_TITLE` all resolve to runtime objects;
+  `list_chats()` returns 8 chats; `count_chats()` returns 8.
+- Result:
+  `services/` now has only 2 genuinely fat files remaining: `agents_service.py` (373 lines — Codex actively extracting) and `multi_agent_chain.py` (272 lines — candidate for follow-on session); every other service file is a thin re-export shim.
