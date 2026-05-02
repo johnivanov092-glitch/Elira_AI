@@ -934,3 +934,12 @@ Live repair log for concrete backend/runtime fixes.
 - Also fixed: re-export `_conn` from `services/agent_registry.py` shim to restore test tearDown compatibility in `test_agent_os_phase1.py` (15 tests were failing with AttributeError).
 - Verification: all 12 files compile clean; Phase 1+2 tests 32/32 pass.
 - Result: application/ layer is now self-contained — all inter-application dependencies go directly to `application/X/runtime`; `services/` layer is purely a one-way backward-compat facade.
+
+### 55. Fix remaining lazy cross-layer imports in application/ (Claude Code)
+- Status: completed
+- Scope: round 2 of layer-violation cleanup — 21 lazy imports inside functions still used `from app.services.X` paths through shims instead of going directly to `app.application.X.runtime`.
+- Files fixed (11 total):
+  `monitoring/runtime.py` (agent_registry + event_bus×2); `workflows/events.py` (event_bus); `chat/agent_os.py` (event_bus + agent_registry); `chat/post_processing.py` (python_runner); `chat_service/runtime.py` (persona_service×2); `dashboard/runtime.py` (smart_memory + elira_memory_sqlite); `elira_settings/runtime.py` (elira_memory_sqlite); `file_extract/runtime.py` (pdf_pro); `memory_service/runtime.py` (smart_memory×6); `profiles/runtime.py` (persona_service); `project_brain/runtime.py` (project_service×3).
+- Remaining intentional cross-layer lazy imports (unchanged): `autopipeline`, `telegram` → `agents_service` (top-level orchestrator, no application package); `tool_registry/builtins.py` → multiple service tools (plugin_system, tool_service, git_service, etc. — builtins are adapter layer by design); `chat/auto_skills.py` → skills/plugins (same adapter pattern); `monitoring/store.py` → `tool_service` (tool_service not yet extracted); `project_brain/runtime.py` → `project_patch_service.ProjectPatchService` (compatibility class with injected deps, kept as-is).
+- Verification: all 11 changed files compile clean; Phase 1+2 tests 32/32 pass.
+- Result: application/ layer is now architecturally clean — all intra-application dependencies go directly to `application/X/runtime`; only `services/` layer has genuine backward-compat shim duty.
