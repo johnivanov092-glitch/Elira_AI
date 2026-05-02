@@ -866,3 +866,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   active code now uses engineer-facing names for multi-file loop, execution loop, preview queue, execution state, and execution controller while preserving legacy route/import compatibility.
+
+### 60. Elira patch runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/elira/patch` filesystem patching, backup, diff, verification, and history persistence logic out of the FastAPI route.
+- Finish:
+  added [backend/app/application/elira_patch/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_patch/runtime.py) for project path guards, patch backup/apply/rollback, batch apply/verify, diff stats, and `patch_history` persistence;
+  added [backend/app/application/elira_patch/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_patch/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/elira_patch.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_patch.py) to request models, endpoint wiring, and HTTP error translation.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/elira/patch` route smoke for diff, verify, and missing-file HTTP translation -> passed.
+- Result:
+  `/api/elira/patch/*` remains route-compatible while patch runtime behavior now sits under `application/elira_patch`.
