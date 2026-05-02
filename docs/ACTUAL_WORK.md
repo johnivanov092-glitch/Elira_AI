@@ -750,3 +750,23 @@ Live repair log for concrete backend/runtime fixes.
   reflection_loop smoke: basic run with mocked run_chat; context flag set; shim identity.
 - Result:
   all three services now thin shims; web search orchestration, Ollama chat, and reflection logic each live in dedicated application packages; backward compat via shims unchanged.
+
+### 45. Refactor accelerated wave - web_service + ollama_runtime + runtime_status extractions (Claude Code)
+- Status: completed
+- Scope: extracted three remaining small services into application packages:
+  (a) `services/web_service.py` (51 lines) → `application/web_service/runtime.py` — legacy search compat wrapper over `core/web.py`;
+  (b) `services/ollama_runtime_service.py` (40 lines) → `application/ollama_runtime/runtime.py` — async Ollama model listing, compatible with ollama>=0.1 and >=0.3;
+  (c) `services/runtime_service.py` (64 lines) → `application/runtime_status/runtime.py` — backend status aggregation (Python runtime, storage, persona version, web engine).
+- Start:
+  `web_service` used from `application/tool_registry/builtins.py` (lazy import); thin wrapper over `core/web.search_web`/`format_search_results`/`research_web` with URL-safe engine links;
+  `ollama_runtime_service` used from `api/routes/elira_state.py`; handles both object-style and dict-style ollama API responses; ollama import moved inside async function;
+  `runtime_service` used from `api/routes/runtime.py`, `app/main.py`, and one test; module-level `ROOT_DATA_DIR`/`ACTIVE_DB_PATH` constants preserved in runtime.py.
+- Finish:
+  added 6 new files (3 × runtime.py + 3 × __init__.py); rebuilt 3 service files as shims (web_service 51→10 lines -80%; ollama_runtime_service 40→10 lines -75%; runtime_service 64→11 lines -83%).
+- Verification:
+  `python -m py_compile` on 9 files -> clean;
+  web_service smoke: search result + engine labels + engine_links; empty query returns ok=False; research_web delegates; shim identity;
+  ollama_runtime smoke: object-style models parsed; error path returns empty list; shim identity;
+  runtime_status smoke: get_runtime_status returns ok=True with correct persona_version/primary_engine/storage_mode; shim identity.
+- Result:
+  all three services now thin shims; all application packages on `application/web_service/`, `application/ollama_runtime/`, `application/runtime_status/`; backward compat unchanged.
