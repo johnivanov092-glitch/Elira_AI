@@ -824,3 +824,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
 - Result:
   `/api/files/extract-text` remains route-compatible while file text extraction logic now sits under `application/file_extract`.
+
+### 57. Agent OS service runtime alias extraction
+- Status: completed
+- Scope: finished the incomplete Claude service-runtime extraction by moving Event Bus, Monitoring, Tool Registry, and Workflow Engine service state/wiring into application runtimes.
+- Finish:
+  added [backend/app/application/event_bus/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/event_bus/runtime.py) for event bus DB bootstrap, conversion helpers, event/message/subscription wrappers, and module-level state;
+  added [backend/app/application/monitoring/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/runtime.py) for agent limit seeding, metrics, resource usage, sandbox block recording, and Agent OS health/dashboard wrappers;
+  added [backend/app/application/tool_registry/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/runtime.py) for tool registry DB bootstrap, handlers, builtin seeding, CRUD, execution, and validation;
+  added [backend/app/application/workflow_engine/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/workflow_engine/runtime.py) plus package init for workflow-engine DB path/state and workflow template/run wrappers;
+  reduced [backend/app/services/event_bus.py](/D:/AIWork/Elira_AI/backend/app/services/event_bus.py), [backend/app/services/agent_monitor.py](/D:/AIWork/Elira_AI/backend/app/services/agent_monitor.py), [backend/app/services/tool_registry.py](/D:/AIWork/Elira_AI/backend/app/services/tool_registry.py), and [backend/app/services/workflow_engine.py](/D:/AIWork/Elira_AI/backend/app/services/workflow_engine.py) to compatibility aliases that preserve mutable module state such as `DB_PATH`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Agent OS service facade code now lives under `application/*/runtime.py`, while legacy `app.services.*` imports remain compatible.
