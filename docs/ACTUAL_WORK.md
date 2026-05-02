@@ -911,3 +911,18 @@ Live repair log for concrete backend/runtime fixes.
   targeted `/api/dashboard/stats` route smoke for response keys and 14-day activity shape -> passed.
 - Result:
   `/api/dashboard/stats` remains route-compatible while dashboard aggregation now sits under `application/dashboard`.
+
+### 63. Tools exec route runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/tools` Python execution delegation, code analysis, and run-history lookup out of the FastAPI route.
+- Finish:
+  added [backend/app/application/tools_exec/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/tools_exec/runtime.py) for `run_python`, `analyze_code`, and `get_run_history`;
+  added [backend/app/application/tools_exec/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/tools_exec/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/tools_exec.py](/D:/AIWork/Elira_AI/backend/app/api/routes/tools_exec.py) to request models and endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/tools` route smoke for Python/TypeScript analysis and run-history response shape -> passed.
+- Result:
+  `/api/tools/*` remains route-compatible while tools-exec runtime behavior now sits under `application/tools_exec`.
