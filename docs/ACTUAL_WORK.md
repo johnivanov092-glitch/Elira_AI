@@ -730,3 +730,23 @@ Live repair log for concrete backend/runtime fixes.
   python_runner smoke: basic exec with locals; blocked import raises; allowed import works; syntax error caught; empty code; shim identity check.
 - Result:
   both services now 13-line shims; all persona drift prevention and sandboxed execution logic in application packages; REST contract and test patch-paths unchanged.
+
+### 44. Refactor accelerated wave - web_multisearch + chat_service + reflection_loop extractions (Claude Code)
+- Status: completed
+- Scope: extracted three services into application packages:
+  (a) `services/web_multisearch_service.py` (113 lines) → `application/web_multisearch/runtime.py` — multi-engine search/deep-search/news/fetch-page orchestration with lazy `core/web.py` imports;
+  (b) `services/chat_service.py` (89 lines) → `application/chat_service/runtime.py` — Ollama chat/stream wrapper with persona prompt assembly;
+  (c) `services/reflection_loop_service.py` (62 lines) → `application/reflection_loop/runtime.py` — LLM reflection pass that improves a draft using reviewer notes.
+- Start:
+  `web_multisearch` used from `api/routes/web_search_routes.py` (4 lazy imports) and `application/autopipeline/runtime.py`; all `core/web` calls lazy-imported inside functions — pure orchestration;
+  `chat_service` used from `services/agents_service.py` and `services/reflection_loop_service.py`; `ollama` and `persona_service` imports moved inside functions so module-level is pure Python;
+  `reflection_loop_service` used from agents/routes; depends only on `application/chat_service/runtime.run_chat` (lazy import).
+- Finish:
+  added 6 new files (3 × runtime.py + 3 × __init__.py); rebuilt 3 service files as shims (web_multisearch 113→19 lines -83%; chat_service 89→13 lines -85%; reflection_loop 62→10 lines -84%).
+- Verification:
+  `python -m py_compile` on 9 files -> clean;
+  web_multisearch smoke: multi_search result + engines; deep_search content; news_search items; fetch_page full + truncated; WebMultiSearchService.search/news; shim identity;
+  chat_service smoke: normalize_profile empty/default/valid/unknown; run_chat success with mocked ollama; shim identity;
+  reflection_loop smoke: basic run with mocked run_chat; context flag set; shim identity.
+- Result:
+  all three services now thin shims; web search orchestration, Ollama chat, and reflection logic each live in dedicated application packages; backward compat via shims unchanged.

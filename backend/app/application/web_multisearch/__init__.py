@@ -1,9 +1,3 @@
-"""Web multi-search service — compatibility shim.
-
-All logic lives in ``app.application.web_multisearch.runtime``.
-Public API re-exported for all callers: api/routes/web_search_routes
-and application/autopipeline/runtime.
-"""
 from __future__ import annotations
 
 from app.application.web_multisearch.runtime import (

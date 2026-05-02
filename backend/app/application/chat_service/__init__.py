@@ -1,9 +1,3 @@
-"""Chat service — compatibility shim.
-
-All logic lives in ``app.application.chat_service.runtime``.
-Public API re-exported for all callers: services/agents_service,
-services/reflection_loop_service.
-"""
 from __future__ import annotations
 
 from app.application.chat_service.runtime import (
