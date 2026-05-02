@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from app.application.agent_registry.runtime import (
     DB_PATH,
+    _conn,
     delete_agent,
     get_agent,
     get_agent_runs,
