@@ -1,8 +1,3 @@
-"""Run History service — compatibility shim.
-
-All logic lives in ``app.application.run_history_service.runtime``.
-Public API re-exported for all callers.
-"""
 from __future__ import annotations
 
 from app.application.run_history_service.runtime import (

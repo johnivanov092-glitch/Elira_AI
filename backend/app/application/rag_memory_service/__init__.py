@@ -1,12 +1,8 @@
-"""RAG Memory service — compatibility shim.
-
-All logic lives in ``app.application.rag_memory_service.runtime``.
-Public API re-exported for all callers.
-"""
 from __future__ import annotations
 
 from app.application.rag_memory_service.runtime import (
     DB_PATH,
+    EMBED_DIM,
     EMBED_MODEL,
     SEED_RAG_TEXT,
     add_to_rag,
@@ -19,6 +15,7 @@ from app.application.rag_memory_service.runtime import (
 
 __all__ = [
     "DB_PATH",
+    "EMBED_DIM",
     "EMBED_MODEL",
     "SEED_RAG_TEXT",
     "add_to_rag",

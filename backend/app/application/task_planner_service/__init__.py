@@ -1,8 +1,3 @@
-"""Task Planner service — compatibility shim.
-
-All logic lives in ``app.application.task_planner_service.runtime``.
-Public API re-exported for all callers.
-"""
 from __future__ import annotations
 
 from app.application.task_planner_service.runtime import (

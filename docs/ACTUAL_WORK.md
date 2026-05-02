@@ -873,3 +873,22 @@ Live repair log for concrete backend/runtime fixes.
   fetched `origin/main` — Codex pushed 2 new commits (`815c618` architecture foundation with infrastructure/db + domain layer, `8506c88` chat planning + `infrastructure/search/web_search.py` ~860 lines extracting web search from `agents_service.py`); no file conflicts with our extraction branch.
 - Result:
   all four services now thin shims; all connection wiring and module-level state fully in dedicated application packages; `services/` directory is now almost entirely composed of re-export shims; all callers backward-compatible.
+
+### 51. Refactor accelerated wave - agent_registry + task_planner + response_cache + rag_memory + run_history extractions (Claude Code)
+- Status: completed
+- Scope: extracted five remaining medium-complexity delegator services into application packages:
+  (a) `services/agent_registry.py` (181 lines) → `application/agent_registry/runtime.py`;
+  (b) `services/task_planner_service.py` (89 lines) → `application/task_planner_service/runtime.py` (new package — `application/task_planner/` already had domain logic);
+  (c) `services/response_cache.py` (86 lines) → `application/response_cache/runtime.py`;
+  (d) `services/rag_memory_service.py` (83 lines) → `application/rag_memory_service/runtime.py` (new package);
+  (e) `services/run_history_service.py` (57 lines) → `application/run_history_service/runtime.py` (new package); fixed `LEGACY_JSON_PATHS` depth from `parents[5]` to `parents[3]` for the new deeper file location.
+- Start:
+  all five already delegated every call to their respective `application/X/{store,runtime,policy}` modules; unique contribution of each service file was only: `DB_PATH`, `_connect()`/`_conn()`, `_init_db()` bootstrap call, and thin delegation wrappers.
+- Finish:
+  added 5 `runtime.py` files + 3 new `__init__.py` files (task_planner_service, rag_memory_service, run_history_service); agent_registry and response_cache used existing `application/X/__init__.py`;
+  rebuilt 5 service shims: agent_registry 181→38 lines (-79%), task_planner_service 89→29 lines (-67%), response_cache 86→24 lines (-72%), rag_memory_service 83→26 lines (-69%), run_history_service 57→17 lines (-70%).
+- Verification:
+  `python -m py_compile` on 13 files -> clean;
+  all 5 shim identity checks pass; `list_agents` count=7; `cache_stats` total_entries correct; `task_stats` ok; `list_rag` ok; `RunHistoryService().list_runs()` count correct.
+- Result:
+  `services/` now has only 3 genuinely fat files remaining: `agents_service.py` (373 lines — complex orchestration, Codex actively extracting), `multi_agent_chain.py` (272 lines), and `elira_memory_sqlite.py` (121 lines — already 90% delegating to application/elira_memory); all other service files are thin re-export shims.
