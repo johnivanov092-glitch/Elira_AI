@@ -61,7 +61,7 @@ def compute_dashboard_stats() -> dict:
 
     memory_stats: dict = {"total": 0, "categories": {}}
     try:
-        from app.services.smart_memory import get_stats
+        from app.application.smart_memory import get_stats
         memory_stats = get_stats()
     except Exception:
         pass
@@ -69,7 +69,7 @@ def compute_dashboard_stats() -> dict:
     chat_count = 0
     message_count = 0
     try:
-        from app.services.elira_memory_sqlite import get_messages, list_chats
+        from app.application.elira_memory_sqlite.runtime import get_messages, list_chats
         chats = list_chats()
         chat_count = len(chats)
         for chat in chats[:50]:

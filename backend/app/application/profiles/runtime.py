@@ -23,7 +23,7 @@ def get_profiles() -> dict[str, Any]:
                                mode_overlay_preview, system_prompt_preview
       count: int
     """
-    from app.services.persona_service import build_persona_prompt
+    from app.application.persona_service.runtime import build_persona_prompt
 
     profiles = []
     for name, overlay in PROFILE_MODE_OVERLAYS.items():

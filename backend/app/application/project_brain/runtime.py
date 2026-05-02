@@ -17,19 +17,19 @@ from typing import Any
 # ── public API ────────────────────────────────────────────────────────────────
 
 def scan_project() -> dict[str, Any]:
-    from app.services.project_service import list_project_tree
+    from app.application.project_service.runtime import list_project_tree
     tree = list_project_tree(max_depth=4, max_items=500)
     return {"ok": True, "type": "project_scan", "tree": tree}
 
 
 def find_code(query: str) -> dict[str, Any]:
-    from app.services.project_service import search_project
+    from app.application.project_service.runtime import search_project
     results = search_project(query=query, max_hits=50)
     return {"ok": True, "type": "search", "query": query, "results": results}
 
 
 def read_file(path: str) -> dict[str, Any]:
-    from app.services.project_service import read_project_file
+    from app.application.project_service.runtime import read_project_file
     return read_project_file(path, max_chars=20000)
 
 

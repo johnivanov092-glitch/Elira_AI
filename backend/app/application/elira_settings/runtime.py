@@ -32,7 +32,7 @@ def _connect():
 
 def _ensure_route_map_column() -> None:
     """Ensure the settings table and route_model_map column exist."""
-    from app.services.elira_memory_sqlite import init_db as init_state_db
+    from app.application.elira_memory_sqlite.runtime import init_db as init_state_db
     init_state_db()
     conn = _connect()
     try:

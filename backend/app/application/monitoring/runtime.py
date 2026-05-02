@@ -43,7 +43,7 @@ def seed_default_limits() -> int:
     created = 0
     agent_ids: list[str] = []
     try:
-        from app.services.agent_registry import list_agents, seed_builtin_agents
+        from app.application.agent_registry.runtime import list_agents, seed_builtin_agents
 
         seed_builtin_agents()
         agent_ids = [
@@ -117,7 +117,7 @@ def update_agent_limit(agent_id: str, updates: dict[str, Any]) -> dict[str, Any]
     }
     updated = monitoring_store.upsert_limit(DB_PATH, merged)
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus.runtime import emit_event
 
         emit_event(
             event_type="agent.limit.updated",
@@ -288,7 +288,7 @@ def record_sandbox_block(
         details=payload,
     )
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus.runtime import emit_event
 
         emit_event(
             event_type="sandbox.policy.blocked",

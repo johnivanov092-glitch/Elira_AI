@@ -41,7 +41,7 @@ def run_chat(
       meta: dict  — includes ``profile`` key
     """
     import ollama
-    from app.services.persona_service import build_persona_prompt
+    from app.application.persona_service.runtime import build_persona_prompt
 
     profile = normalize_profile(profile_name)
     system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
@@ -77,7 +77,7 @@ def run_chat_stream(
     ``run_chat`` call if the streaming client raises.
     """
     import ollama
-    from app.services.persona_service import build_persona_prompt
+    from app.application.persona_service.runtime import build_persona_prompt
 
     profile = normalize_profile(profile_name)
     system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)

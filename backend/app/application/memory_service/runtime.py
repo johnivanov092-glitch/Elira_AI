@@ -23,7 +23,7 @@ def _normalize_profile(profile: str | None) -> str:
 
 def list_profiles() -> dict[str, Any]:
     """List all memory profiles."""
-    from app.services.smart_memory import list_profiles as _sm_list_profiles
+    from app.application.smart_memory import list_profiles as _sm_list_profiles
     return _sm_list_profiles()
 
 
@@ -33,7 +33,7 @@ def list_memories(profile: str) -> dict[str, Any]:
     Returns:
       ok, profile, items, count
     """
-    from app.services.smart_memory import list_memories as _sm_list_memories
+    from app.application.smart_memory import list_memories as _sm_list_memories
     normalized = _normalize_profile(profile)
     result = _sm_list_memories(limit=500, profile_name=normalized)
     return {
@@ -49,7 +49,7 @@ def add_memory(profile: str, text: str, source: str = "manual") -> dict[str, Any
 
     Returns the smart_memory result dict augmented with ``profile``.
     """
-    from app.services.smart_memory import add_memory as _sm_add_memory
+    from app.application.smart_memory import add_memory as _sm_add_memory
     normalized = _normalize_profile(profile)
     result = _sm_add_memory(
         text=text,
@@ -67,7 +67,7 @@ def delete_memory(profile: str, item_id: str) -> dict[str, Any]:
 
     Returns the smart_memory result dict augmented with ``profile``.
     """
-    from app.services.smart_memory import delete_memory as _sm_delete_memory
+    from app.application.smart_memory import delete_memory as _sm_delete_memory
     normalized = _normalize_profile(profile)
     try:
         mem_id = int(item_id)
@@ -84,7 +84,7 @@ def search_memory(profile: str, query: str, limit: int = 10) -> dict[str, Any]:
 
     Returns the smart_memory result dict augmented with ``profile``.
     """
-    from app.services.smart_memory import search_memory as _sm_search_memory
+    from app.application.smart_memory import search_memory as _sm_search_memory
     normalized = _normalize_profile(profile)
     result = _sm_search_memory(
         query=query,
@@ -97,7 +97,7 @@ def search_memory(profile: str, query: str, limit: int = 10) -> dict[str, Any]:
 
 def build_memory_context(profile: str, query: str, limit: int = 5) -> str:
     """Return a context string of the most relevant memories for *query*."""
-    from app.services.smart_memory import get_relevant_context as _sm_get_relevant_context
+    from app.application.smart_memory import get_relevant_context as _sm_get_relevant_context
     normalized = _normalize_profile(profile)
     return _sm_get_relevant_context(
         query=query,
