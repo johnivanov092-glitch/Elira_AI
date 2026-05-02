@@ -804,3 +804,28 @@ Live repair log for concrete backend/runtime fixes.
   smoke: build_persona_prompt returns >100 chars; "v3" version in output; mojibake chars (°µ‚‡·¶¸¹º»¼½¾¿†‹›) absent from output; "Ты — Elira", "Идентичность:", "Ценности:", "Режим профиля", "Калибровка модели:" present; task_context injected; unknown profile falls back; shim identity.
 - Result:
   `services/persona_service.py` is now a 27-line shim; LLM persona prompts now send valid Russian Cyrillic instead of garbled Latin-supplement characters; all downstream callers (chat_service, profiles, tests) backward-compatible.
+
+### 48. Refactor accelerated wave - git_service + project_service + library_service extractions (Claude Code)
+- Status: completed
+- Scope: extracted three pure-logic services into application packages:
+  (a) `services/git_service.py` (117 lines) → `application/git/runtime.py` — subprocess-based Git operations;
+  (b) `services/project_service.py` (139 lines) → `application/project_service/runtime.py` — project tree traversal, safe path resolution, file read/write, full-text search;
+  (c) `services/library_service.py` (117 lines) → `application/library_service/runtime.py` — filename-keyed library CRUD façade over the shared `library.db`.
+- Start:
+  `git_service` used from `application/tool_registry/builtins.py` and `services/project_brain_service.py`; pure subprocess, no HTTP, no DB;
+  `project_service` used from project-brain, tool builtins, and routes; `BASE_DIR = Path(__file__).resolve().parents[3]` in original (3 levels up from `services/`) → corrected to `parents[4]` in new file at `application/project_service/runtime.py` (4 levels up from that deeper path);
+  `library_service` used from `api/routes/library.py`, `api/routes/debug.py`, `application/tool_registry/builtins.py`; provides filename-keyed API (`list_library_files`, `set_library_active`, `delete_library_file`, `build_library_context`) over the same `library.db` as `application/library_sqlite/runtime.py` but with a different surface — extracted as its own package rather than mapping through the id-keyed sqlite runtime.
+- Finish:
+  added `backend/app/application/git/runtime.py` + `__init__.py` with `_run`, `_find_repo`, `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branches`, `format_git_context`;
+  rebuilt `backend/app/services/git_service.py` as a 24-line shim (was 117 lines, -79%);
+  added `backend/app/application/project_service/runtime.py` + `__init__.py` with `BASE_DIR`, `TEXT_EXTS`, `IGNORE_DIRS`, `_is_safe_path`, `_normalize_rel_path`, `list_project_tree`, `read_project_file`, `write_project_file`, `search_project`; `BASE_DIR` corrected to `parents[4]` for new module depth;
+  rebuilt `backend/app/services/project_service.py` as a 26-line shim (was 139 lines, -81%);
+  added `backend/app/application/library_service/runtime.py` + `__init__.py` with `SQLITE_DB`, `LEGACY_UPLOADS_DIR`, `TEXT_EXTS`, `_conn`, `_read_disk_preview`, `list_library_files`, `set_library_active`, `delete_library_file`, `build_library_context`;
+  rebuilt `backend/app/services/library_service.py` as a 21-line shim (was 117 lines, -82%).
+- Verification:
+  `python -m py_compile` on 9 files -> clean;
+  git smoke: `_find_repo` finds `.git`; `git_status` returns branch + clean flag; `format_git_context` contains Russian "Ветка:" string; `git_log` count>0; `git_branches` current branch correct; shim identity checks;
+  project_service smoke: `BASE_DIR` exists on disk; `list_project_tree` returns items; `read_project_file` reads slimmed `git_service.py` shim; path-escape `../../../etc/passwd` raises ValueError; `search_project` finds expected symbol; shim identity checks;
+  library_service smoke: shim identity checks pass (DB-dependent functions not called in test env).
+- Result:
+  all three services now thin shims; Git subprocess ops, project FS ops, and library CRUD façade each live in dedicated application packages; `BASE_DIR` depth bug corrected in migration; all callers backward-compatible via shims.

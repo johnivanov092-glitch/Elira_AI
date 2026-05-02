@@ -1,9 +1,3 @@
-"""Library service — compatibility shim.
-
-All logic lives in ``app.application.library_service.runtime``.
-Public API re-exported for all callers: api/routes/library, api/routes/debug,
-and application/tool_registry/builtins.
-"""
 from __future__ import annotations
 
 from app.application.library_service.runtime import (

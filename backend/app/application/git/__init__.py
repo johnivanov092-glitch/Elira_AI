@@ -1,11 +1,8 @@
-"""Git service — compatibility shim.
-
-All logic lives in ``app.application.git.runtime``.
-Public API re-exported for all callers.
-"""
 from __future__ import annotations
 
 from app.application.git.runtime import (
+    _find_repo,
+    _run,
     format_git_context,
     git_branches,
     git_commit,
@@ -15,6 +12,8 @@ from app.application.git.runtime import (
 )
 
 __all__ = [
+    "_find_repo",
+    "_run",
     "format_git_context",
     "git_branches",
     "git_commit",
