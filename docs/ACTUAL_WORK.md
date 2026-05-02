@@ -711,3 +711,22 @@ Live repair log for concrete backend/runtime fixes.
   smoke: `is_provenance_question` true/false; `[fact]` marker stripped; `"Из моей памяти"` source phrase hidden; provenance question rewrites memory phrase; `"как меня зовут?"` → `"Тебя зовут X."`; empty input; compat shim identity check.
 - Result:
   `services/provenance_guard.py` is now a 13-line shim; all provenance NLP in `application/provenance_guard/`; `application/chat/post_processing.py` and tests backward-compatible via shim.
+
+### 43. Refactor accelerated wave - identity_guard + python_runner extractions (Claude Code)
+- Status: completed
+- Scope: extracted two pure-logic services into application packages:
+  (a) `services/identity_guard.py` (99 lines) → `application/identity_guard/runtime.py` — persona identity drift detection and rewriting;
+  (b) `services/python_runner.py` (90 lines) → `application/python_runner/runtime.py` — sandboxed Python execution with whitelisted builtins/imports.
+- Start:
+  `identity_guard` used by `application/chat/post_processing.py` and `tests/test_persona_service.py`; exports `guard_identity_response`, `is_identity_question`; pure regex NLP, no HTTP, no DB;
+  `python_runner` used by `api/routes/tools_exec.py`, `application/chat/post_processing.py`, `application/tool_registry/builtins.py`; exports `execute_python`, `SAFE_BUILTINS`, `ALLOWED_IMPORTS`; pure Python sandbox, no HTTP, no DB.
+- Finish:
+  added `backend/app/application/identity_guard/runtime.py` + `__init__.py` with 4 regex constants and 5 functions (`is_identity_question`, `_safe_identity_reply`, `_contains_model_identity`, `_rewrite_identity_drift`, `_still_drifting`, `guard_identity_response`);
+  added `backend/app/application/python_runner/runtime.py` + `__init__.py` with `SAFE_BUILTINS`, `ALLOWED_IMPORTS`, `_safe_import`, `execute_python`;
+  rebuilt both service files as 13-line shims (identity_guard was 99 lines -87%; python_runner was 90 lines -86%).
+- Verification:
+  `python -m py_compile` on 6 files -> clean;
+  identity_guard smoke: identity question detected; identity question locked to persona; model drift stripped from non-identity reply; clean text unchanged; empty input; shim identity check;
+  python_runner smoke: basic exec with locals; blocked import raises; allowed import works; syntax error caught; empty code; shim identity check.
+- Result:
+  both services now 13-line shims; all persona drift prevention and sandboxed execution logic in application packages; REST contract and test patch-paths unchanged.
