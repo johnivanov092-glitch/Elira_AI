@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta
 
-from app.services.run_history_service import RunHistoryService
+from app.application.run_history_service.runtime import RunHistoryService
 
 _HISTORY = RunHistoryService()
 

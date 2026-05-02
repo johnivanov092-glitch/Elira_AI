@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.temporal_intent import detect_temporal_intent
-from app.services.web_query_planner import plan_web_query
+from app.application.temporal_intent.runtime import detect_temporal_intent
+from app.application.web_query_planner.runtime import plan_web_query
 
 # ── keyword sets ─────────────────────────────────────────────────────────────
 

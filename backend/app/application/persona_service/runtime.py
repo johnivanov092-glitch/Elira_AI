@@ -23,7 +23,7 @@ from app.core.persona_defaults import (
     ELIRA_PERSONA_BASE_PAYLOAD,
     PROFILE_MODE_OVERLAYS,
 )
-from app.services.elira_memory_sqlite import DB_PATH  # noqa: F401  (re-exported for callers)
+from app.application.elira_memory_sqlite.runtime import DB_PATH  # noqa: F401  (re-exported for callers)
 
 
 # ── direct aliases to application/persona sub-packages ───────────────────────

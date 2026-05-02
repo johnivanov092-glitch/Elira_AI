@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.services.agent_monitor import record_agent_run_metric
+from app.application.monitoring.runtime import record_agent_run_metric
 
 
 logger = logging.getLogger(__name__)

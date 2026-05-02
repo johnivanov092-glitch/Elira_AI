@@ -16,8 +16,8 @@ from typing import Any
 
 from app.core.data_files import DATA_DIR
 from app.core.web import get_web_engine_status
-from app.services.elira_memory_sqlite import DB_PATH, count_chats, init_db
-from app.services.persona_service import get_persona_status
+from app.application.elira_memory_sqlite.runtime import DB_PATH, count_chats, init_db
+from app.application.persona.store import get_persona_status
 
 
 # ── module-level resolved paths (set once at import) ─────────────────────────

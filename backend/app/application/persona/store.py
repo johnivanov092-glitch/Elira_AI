@@ -14,7 +14,7 @@ from app.core.persona_defaults import (
     PROFILE_UI,
 )
 from app.infrastructure.db.connection import connect_sqlite
-from app.services.elira_memory_sqlite import DB_PATH, init_db as init_state_db
+from app.application.elira_memory_sqlite.runtime import DB_PATH, init_db as init_state_db
 
 
 logger = logging.getLogger(__name__)

@@ -13,7 +13,7 @@ from app.application.response_cache import policy as cache_policy
 from app.application.response_cache import store as cache_store
 from app.core.config import DATA_DIR
 from app.infrastructure.db.connection import connect_sqlite
-from app.services.temporal_intent import detect_temporal_intent
+from app.application.temporal_intent.runtime import detect_temporal_intent
 
 
 _DB_PATH = DATA_DIR / "response_cache.db"

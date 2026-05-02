@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from app.services.agent_monitor import (
+from app.application.monitoring.runtime import (
     WORKFLOW_ENGINE_AGENT_ID,
     record_resource_usage,
     record_workflow_run_metric,
