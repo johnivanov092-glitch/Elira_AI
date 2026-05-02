@@ -829,3 +829,23 @@ Live repair log for concrete backend/runtime fixes.
   library_service smoke: shim identity checks pass (DB-dependent functions not called in test env).
 - Result:
   all three services now thin shims; Git subprocess ops, project FS ops, and library CRUD façade each live in dedicated application packages; `BASE_DIR` depth bug corrected in migration; all callers backward-compatible via shims.
+
+### 49. Refactor accelerated wave - project_brain_service + elira_settings_sqlite extractions (Claude Code)
+- Status: completed
+- Scope: extracted two remaining medium-complexity services:
+  (a) `services/project_brain_service.py` (84 lines) → `application/project_brain/runtime.py` — project scan, code search, file read, patch preview/apply, and optional git commit;
+  (b) `services/elira_settings_sqlite.py` (111 lines) → `application/elira_settings/runtime.py` — settings persistence (ollama_context, default_model, agent_profile, route_model_map) in `elira_state.db`.
+- Start:
+  `project_brain_service` had a pre-existing import bug: `from app.services.git_service import GitService` — `GitService` class never existed in `git_service.py`; the file always exported standalone functions; callers of `apply_patch_and_push(..., auto_push=True)` would have crashed at runtime;
+  `elira_settings_sqlite` used by `api/routes/elira_state.py` (get/save settings) and `app/core/config.py` (lazy `get_route_model_map`); pure SQLite, no HTTP.
+- Finish:
+  added `backend/app/application/project_brain/runtime.py` + `__init__.py` with standalone functions (`scan_project`, `find_code`, `read_file`, `preview_patch`, `apply_patch`, `apply_patch_and_push`) plus backward-compat `ProjectBrainService` class; fixed `GitService` bug — now calls `git_commit()` from `application/git/runtime` directly; all `project_service` and `project_patch_service` calls moved inside function bodies as lazy imports;
+  rebuilt `backend/app/services/project_brain_service.py` as a 25-line shim (was 84 lines, -70%);
+  added `backend/app/application/elira_settings/runtime.py` + `__init__.py` with `DB_PATH`, `DEFAULT_ROUTE_MAP`, `_connect`, `_ensure_route_map_column`, `get_settings`, `save_settings`, `get_route_model_map`; `_ensure_route_map_column` lazy-imports `elira_memory_sqlite.init_db` to avoid circular dependency at module import time;
+  rebuilt `backend/app/services/elira_settings_sqlite.py` as a 21-line shim (was 111 lines, -81%).
+- Verification:
+  `python -m py_compile` on 6 files -> clean;
+  project_brain smoke: shim identity checks; `scan_project()` returns tree; `find_code("ProjectBrainService")` finds hits; `read_file(path)` reads shim text; no ImportError (GitService bug confirmed fixed);
+  elira_settings smoke: shim identity checks; `DEFAULT_ROUTE_MAP` has all 4 routes (`code`, `project`, `research`, `chat`).
+- Result:
+  `services/project_brain_service.py` is now a 25-line shim with GitService bug fixed; `services/elira_settings_sqlite.py` is now a 21-line shim; both services fully in dedicated application packages; REST contracts and callers backward-compatible.

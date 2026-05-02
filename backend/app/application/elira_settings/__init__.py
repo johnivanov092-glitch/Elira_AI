@@ -1,9 +1,3 @@
-"""Elira settings service — compatibility shim.
-
-All logic lives in ``app.application.elira_settings.runtime``.
-Public API re-exported for all callers: api/routes/elira_state and
-app/core/config (lazy import of get_route_model_map).
-"""
 from __future__ import annotations
 
 from app.application.elira_settings.runtime import (
