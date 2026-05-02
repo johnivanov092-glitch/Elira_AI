@@ -849,3 +849,27 @@ Live repair log for concrete backend/runtime fixes.
   elira_settings smoke: shim identity checks; `DEFAULT_ROUTE_MAP` has all 4 routes (`code`, `project`, `research`, `chat`).
 - Result:
   `services/project_brain_service.py` is now a 25-line shim with GitService bug fixed; `services/elira_settings_sqlite.py` is now a 21-line shim; both services fully in dedicated application packages; REST contracts and callers backward-compatible.
+
+### 50. Refactor accelerated wave - tool_registry + event_bus + agent_monitor + workflow_engine extractions (Claude Code)
+- Status: completed
+- Scope: extracted the four remaining large DB-heavy services into application packages:
+  (a) `services/tool_registry.py` (173 lines) → `application/tool_registry/runtime.py` — connection wiring + state (_handlers dict, _BUILTIN_SEEDED flag) over `application/tool_registry/store.py`;
+  (b) `services/event_bus.py` (253 lines) → `application/event_bus/runtime.py` — connection wiring over `application/event_bus/store.py`;
+  (c) `services/agent_monitor.py` (334 lines) → `application/monitoring/runtime.py` — connection wiring + seed flag over `application/monitoring/{store,reporting}.py`; lazy imports to `event_bus` inside `update_agent_limit` and `record_sandbox_block` to avoid circular dependencies;
+  (d) `services/workflow_engine.py` (170 lines) → `application/workflow_engine/runtime.py` (new package) — `_resolved_db_path()` + delegation wrappers over `application/workflows/{store,runtime,multi_agent}`; new `application/workflow_engine/__init__.py` added.
+- Start:
+  all four services were already "half-extracted" — each delegated every call to an existing `application/X/store.py` or `application/X/runtime.py`, but still lived in `services/` with module-level state (DB path, handler dict, seed flags) and `_init_db()` bootstrap calls; none had HTTP imports.
+- Finish:
+  added `backend/app/application/tool_registry/runtime.py` with `DB_PATH`, `_CREATE_SQL`, `_handlers`, `_BUILTIN_SEEDED`, `_now`, `_conn`, `_init_db`, `_row_to_dict`, `_noop_handler`, and all 8 public functions + `seed_builtin_tools`; `_init_db()` called at module bottom;
+  added `backend/app/application/event_bus/runtime.py` with `DB_PATH`, `SUPPORTED_EVENT_TYPES`, `_CREATE_SQL`, all helpers (`_now`, `_conn`, `_dumps`, `_loads`, row converters), and 10 public API functions; `_init_db()` called at module bottom;
+  added `backend/app/application/monitoring/runtime.py` with `DB_PATH`, 4 default-limit constants, `_LIMIT_SEED_DONE` flag, `seed_default_limits`, and 14 public functions (`list_agent_limits`, `ensure_agent_limit`, `update_agent_limit`, `record_metric`, `record_agent_run_metric`, `record_workflow_run_metric`, `record_workflow_step_metric`, `record_sandbox_block`, `get_agent_os_health`, `get_agent_os_dashboard`, etc.); `_init_db()` called at module bottom;
+  added `backend/app/application/workflow_engine/runtime.py` + `__init__.py` with `DB_PATH`, `_resolved_db_path()`, `_init_db`, and 10 delegation wrappers (template CRUD, run CRUD, start/resume/cancel) + re-exports for all multi-agent workflow constants and functions;
+  rebuilt 4 service shims: tool_registry 173→32 lines (-81%), event_bus 253→39 lines (-85%), agent_monitor 334→53 lines (-84%), workflow_engine 170→47 lines (-72%).
+- Verification:
+  `python -m py_compile` on 9 files -> clean;
+  shim identity checks for all 4 services (function refs match runtime refs);
+  `list_tools_with_schemas()` returns list; `emit_event` + `list_events` round-trips correctly.
+- Codex status check:
+  fetched `origin/main` — Codex pushed 2 new commits (`815c618` architecture foundation with infrastructure/db + domain layer, `8506c88` chat planning + `infrastructure/search/web_search.py` ~860 lines extracting web search from `agents_service.py`); no file conflicts with our extraction branch.
+- Result:
+  all four services now thin shims; all connection wiring and module-level state fully in dedicated application packages; `services/` directory is now almost entirely composed of re-export shims; all callers backward-compatible.

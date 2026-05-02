@@ -1,9 +1,3 @@
-"""Workflow Engine — compatibility shim (Agent OS Phase 4).
-
-All logic lives in ``app.application.workflow_engine.runtime``.
-Public API re-exported for all callers: main.py, routes, multi_agent_chain,
-agents/core.
-"""
 from __future__ import annotations
 
 from app.application.workflow_engine.runtime import (
