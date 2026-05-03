@@ -955,3 +955,23 @@ Live repair log for concrete backend/runtime fixes.
   `chat/auto_skills.py` — 3 git_service lazy imports → application/git/runtime.
 - Verification: all changed files compile clean; Phase 1+2 tests 32/32 pass; identity check: shim functions resolve to runtime functions.
 - Result: `application/` layer now has ZERO avoidable cross-layer imports through services/ shims. The only remaining services/ references inside application/ are legitimate adapters: `plugin_system`, `project_patch_service`, `agents_service` (top-level orchestrator), and `skills_extra`/`skills_service`/`image_gen` (not yet extracted to application packages).
+
+
+### 57. Fix all remaining lazy cross-layer imports — skills/plugins/image_gen/web_multisearch (round 3) (Claude Code)
+- Status: completed
+- Scope: eliminated final batch of lazy inside-function cross-layer imports from application/ modules; after this commit application/ has ZERO avoidable cross-layer imports to services/ shims.
+- Files fixed (3):
+  `application/chat/auto_skills.py` — 17 lazy imports redirected:
+    skills_service×5 → application/skills/runtime;
+    skills_extra×8 → application/skills_extra/runtime;
+    image_gen×2 → application/image_generation/runtime;
+    plugin_system×1 → application/plugins/runtime;
+    git_service×1 → application/git/runtime.
+  `application/autopipeline/runtime.py` — 2 lazy imports:
+    web_multisearch_service → application/web_multisearch/runtime;
+    plugin_system → application/plugins/runtime.
+  `application/dashboard/runtime.py` — 1 lazy import:
+    plugin_system → application/plugins/runtime.
+- Remaining intentional services/ references in application/ (7 lines, 3 files): `autopipeline/runtime.py` + `telegram/` → `agents_service` (top-level orchestrator, no application package); `tool_registry/builtins.py` → `project_patch_service.ProjectPatchService`, `project_map_service.ProjectMapService`, `project_brain_loop_service.ProjectBrainLoopService` (compatibility classes kept as structural boundaries).
+- Verification: all 3 changed files compile clean; 20 total deletions, 20 total insertions (pure import-path redirects, no logic change).
+- Result: the application/ layer is now fully self-contained. Every import from application/ to another application/ module goes directly via `application/X/runtime`; the services/ layer serves exclusively as a backward-compat facade for external callers.
