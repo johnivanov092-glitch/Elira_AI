@@ -1102,3 +1102,12 @@ Live repair log for concrete backend/runtime fixes.
 - tests/test_project_and_web_service.py (26 tests): project_service _is_safe_path/_normalize_rel_path/read/write/list_tree/search; web_service search_web success/empty/no-results/engines-deduplicated/engine_links/shape.
 - tests/test_task_planner.py (20 tests): task_planner create/list (filter by status+category, limit, tags, priority ordering)/get/update/delete/task_stats.
 - Verification: 210/210 tests pass.
+
+
+### 69. Test coverage expansion — file_ops, file_extract, web_multisearch, ollama_models, ollama_runtime, library_sqlite, library_service (Claude Code)
+- Status: completed
+- Scope: added tests for seven previously uncovered application modules.
+- tests/test_file_ops_and_extract.py (42 tests): file_ops safe_path/write/read/tree/diff/mkdir/delete with patched WORKSPACE; file_extract text/zip/dispatch with real data.
+- tests/test_web_multisearch_and_ollama.py (24 tests): multi_search/deep_search/news_search/fetch_page; WebMultiSearchService facade; ollama_models get_models mock; ollama_runtime list_ollama_models new/old API/async.
+- tests/test_library_service.py (28 tests): library_sqlite safe_disk_name/extract_preview/CRUD; library_service list/set_active/delete/build_context with shared patched DB_PATH.
+- Verification: 304/304 tests pass.
