@@ -1013,3 +1013,15 @@ Live repair log for concrete backend/runtime fixes.
 - New package: `application/browser_agent/` — `BrowserAgent` stub class with `search()`, `run()`, `screenshot()` methods (all return stub error); `services/browser_agent.py` converted to 6-line shim.
 - Verification: all changed/new files compile clean; grep for both from-import and __import__ string patterns confirms zero remaining services/ references in application/ (only the two intentional agents_service calls in autopipeline and telegram remain).
 - Result: application/ is now completely free of services/ dependencies in every form.
+
+
+### 61. Redirect main.py startup imports to application layer directly (Claude Code)
+- Status: completed
+- Scope: main.py was the last non-api/non-services file with services/ imports. 4 startup calls redirected.
+- Fixes:
+  `services/runtime_service` → `application/runtime_status/runtime`
+  `services/agent_registry` → `application/agent_registry/runtime`
+  `services/agent_monitor` → `application/monitoring/runtime`
+  `services/tool_registry` → `application/tool_registry/runtime`
+- Verification: main.py compiles clean; grep confirms zero remaining services/ imports outside services/ and api/ layers (except 3 intentional agents_service.run_agent calls in autopipeline, telegram, and step_executor).
+- Result: `from app.services.*` imports now exist ONLY in: `backend/app/services/**` (shims), `backend/app/api/routes/**` (correct external facade usage), and 3 intentional `agents_service.run_agent` orchestrator calls. The refactoring of the services/ layer is COMPLETE.
