@@ -12,8 +12,8 @@ from string import Formatter
 from typing import Any
 
 from app.application.workflows.events import emit_workflow_event
-from app.services.agent_monitor import WORKFLOW_ENGINE_AGENT_ID
-from app.services.agent_sandbox import preflight_or_raise
+from app.application.monitoring.runtime import WORKFLOW_ENGINE_AGENT_ID
+from app.application.agent_sandbox.runtime import preflight_or_raise
 
 STEP_SUCCESS = "on_success"
 STEP_FAILURE = "on_failure"

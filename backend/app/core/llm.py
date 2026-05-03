@@ -22,7 +22,7 @@ from functools import lru_cache
 
 from .config import MODEL_SAFE_CTX, DEFAULT_SAFE_CTX
 from .persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
-from app.services.persona_service import build_persona_prompt
+from app.application.persona_service.runtime import build_persona_prompt
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

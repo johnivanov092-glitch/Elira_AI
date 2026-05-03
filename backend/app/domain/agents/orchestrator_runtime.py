@@ -121,7 +121,7 @@ def observe_persona_dialogue(
     outcome_ok: bool,
 ) -> Any:
     try:
-        from app.services.persona_service import observe_dialogue
+        from app.application.persona_service.runtime import observe_dialogue
 
         return observe_dialogue(
             dialog_id=dialog_id,

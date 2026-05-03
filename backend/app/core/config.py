@@ -60,7 +60,7 @@ _FALLBACK_ROUTE_MAP: dict[str, list[str]] = {
 def _get_route_map() -> dict[str, list[str]]:
     """Р—Р°РіСЂСѓР¶Р°РµС‚ РјР°РїРїРёРЅРі РёР· Р‘Р”. РџСЂРё РѕС€РёР±РєРµ вЂ” С„РѕР»Р»Р±СЌРє."""
     try:
-        from app.services.elira_settings_sqlite import get_route_model_map
+        from app.application.elira_settings.runtime import get_route_model_map
         return get_route_model_map()
     except Exception:
         return _FALLBACK_ROUTE_MAP

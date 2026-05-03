@@ -13,7 +13,7 @@ def clean_query(query: str) -> str:
     """Clean and improve a raw user query for web search engines."""
     from datetime import datetime
 
-    from app.services.temporal_intent import detect_temporal_intent
+    from app.application.temporal_intent.runtime import detect_temporal_intent
 
     q = query.strip()
     for pattern in _QUERY_NOISE:
