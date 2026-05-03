@@ -19,8 +19,9 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
 from app.services import autopipeline_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+from app.application.event_bus import runtime as bus  # noqa: E402
+from app.application.workflow_engine import runtime as workflow_engine  # noqa: E402
+from app.application.workflows import multi_agent as _workflow_seeding  # noqa: E402
 
 
 class WorkflowDbMixin(unittest.TestCase):
@@ -30,12 +31,12 @@ class WorkflowDbMixin(unittest.TestCase):
         self._original_workflow_db = workflow_engine.DB_PATH
         self._original_workflow_db_path = workflow_db_path.get_workflow_db_path()
         self._original_event_bus_db = bus.DB_PATH
-        self._original_seeded = workflow_engine._BUILTIN_WORKFLOWS_SEEDED
+        self._original_seeded = _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED
         workflow_db = Path(self._tmpdir.name) / "workflow_engine.db"
         workflow_db_path.set_workflow_db_path(workflow_db)
         workflow_engine.DB_PATH = workflow_db
         bus.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = False
+        _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED = False
         workflow_engine._init_db()
         bus._init_db()
 
@@ -43,7 +44,7 @@ class WorkflowDbMixin(unittest.TestCase):
         workflow_engine.DB_PATH = self._original_workflow_db
         workflow_db_path.set_workflow_db_path(self._original_workflow_db_path)
         bus.DB_PATH = self._original_event_bus_db
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = self._original_seeded
+        _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED = self._original_seeded
         self._tmpdir.cleanup()
         super().tearDown()
 
@@ -102,7 +103,7 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
     def test_start_workflow_run_completes_and_emits_events(self) -> None:
         workflow_engine.create_workflow_template(self._simple_agent_template())
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.agents_service.runtime.run_agent", side_effect=self._agent_result):
             run = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.simple",
                 workflow_input={"query": "hello"},
@@ -125,7 +126,7 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
     def test_pause_resume_and_cancel_workflow_run(self) -> None:
         workflow_engine.create_workflow_template(self._simple_agent_template(workflow_id="test.workflow.pause", pause_after=True))
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.agents_service.runtime.run_agent", side_effect=self._agent_result):
             paused = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.pause",
                 workflow_input={"query": "pause"},
@@ -135,11 +136,11 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(paused["current_step_id"], "step-two")
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.agents_service.runtime.run_agent", side_effect=self._agent_result):
             resumed = workflow_engine.resume_workflow_run(paused["run_id"])
         self.assertEqual(resumed["status"], "completed")
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.agents_service.runtime.run_agent", side_effect=self._agent_result):
             paused_again = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.pause",
                 workflow_input={"query": "cancel"},
@@ -170,7 +171,7 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
             }
         )
 
-        with patch("app.services.tool_service.run_tool", return_value={"ok": True, "items": [{"text": "fact"}]}):
+        with patch("app.application.tool_service.runtime.run_tool", return_value={"ok": True, "items": [{"text": "fact"}]}):
             run = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.tool",
                 workflow_input={"query": "memory"},
@@ -197,7 +198,7 @@ class WorkflowRoutesTest(WorkflowDbMixin):
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(list_response.json()["total"], 1)
 
-        with patch("app.services.agents_service.run_agent", return_value={"ok": True, "answer": "ok", "timeline": [], "tool_results": [], "meta": {}}):
+        with patch("app.application.agents_service.runtime.run_agent", return_value={"ok": True, "answer": "ok", "timeline": [], "tool_results": [], "meta": {}}):
             run_response = self.client.post(
                 "/api/agent-os/workflow-runs",
                 json={"workflow_id": "test.workflow.route", "input": {"query": "hi"}, "context": {"model_name": "test-model"}},

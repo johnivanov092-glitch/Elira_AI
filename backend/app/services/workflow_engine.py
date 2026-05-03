@@ -7,6 +7,7 @@ agents/core.
 from __future__ import annotations
 
 from app.application.workflow_engine.runtime import (
+    DB_PATH,  # noqa: F401 — used by Phase 4/5 test setUp/tearDown
     MULTI_AGENT_DEFAULT_WORKFLOW_ID,
     MULTI_AGENT_FULL_WORKFLOW_ID,
     MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
@@ -27,6 +28,7 @@ from app.application.workflow_engine.runtime import (
 )
 
 __all__ = [
+    "DB_PATH",
     "MULTI_AGENT_DEFAULT_WORKFLOW_ID",
     "MULTI_AGENT_FULL_WORKFLOW_ID",
     "MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID",

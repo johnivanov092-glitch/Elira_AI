@@ -18,12 +18,13 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router  # noqa: E402
-from app.services import agent_monitor  # noqa: E402
-from app.services import agent_registry  # noqa: E402
-from app.services import agent_sandbox  # noqa: E402
-from app.services import agents_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+from app.application.monitoring import runtime as agent_monitor  # noqa: E402
+from app.application.agent_registry import runtime as agent_registry  # noqa: E402
+from app.application.agent_sandbox import runtime as agent_sandbox  # noqa: E402
+from app.application.agents_service import runtime as agents_service  # noqa: E402
+from app.application.event_bus import runtime as bus  # noqa: E402
+from app.application.workflow_engine import runtime as workflow_engine  # noqa: E402
+from app.application.workflows import multi_agent as _workflow_seeding  # noqa: E402
 
 
 class AgentOsPhase5DbMixin(unittest.TestCase):
@@ -39,7 +40,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         self._original_workflow_db_path = workflow_db_path.get_workflow_db_path()
         self._original_limit_seed = agent_monitor._LIMIT_SEED_DONE
         self._original_agent_seed = agent_registry._BUILTIN_AGENTS_SEEDED
-        self._original_workflow_seed = workflow_engine._BUILTIN_WORKFLOWS_SEEDED
+        self._original_workflow_seed = _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED
 
         agent_monitor.DB_PATH = tmp_root / "agent_monitor.db"
         agent_registry.DB_PATH = tmp_root / "agent_registry.db"
@@ -50,7 +51,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
 
         agent_monitor._LIMIT_SEED_DONE = False
         agent_registry._BUILTIN_AGENTS_SEEDED = False
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = False
+        _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED = False
 
         agent_monitor._init_db()
         agent_registry._init_db()
@@ -65,7 +66,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         workflow_db_path.set_workflow_db_path(self._original_workflow_db_path)
         agent_monitor._LIMIT_SEED_DONE = self._original_limit_seed
         agent_registry._BUILTIN_AGENTS_SEEDED = self._original_agent_seed
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = self._original_workflow_seed
+        _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED = self._original_workflow_seed
         self._tmpdir.cleanup()
         super().tearDown()
 

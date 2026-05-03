@@ -1054,3 +1054,17 @@ Live repair log for concrete backend/runtime fixes.
 - profile_service.py (DEPRECATED, 0 importers): 9-line implementation importing from core.memory → shim re-exporting get_profiles from application/profiles/runtime.
 - Verification: both files compile clean; 50/50 services are now pure shims (confirmed by audit script).
 - Result: ALL 50 files in backend/app/services/ are now pure backward-compat shims with zero business logic. The services/ layer is a complete facade. The multi-entry extraction project (#48–#63) is fully complete.
+
+
+### 64. Fix Phase 3-5 test imports for application-layer module state isolation (Claude Code)
+- Status: completed
+- Scope: test_agent_os_phase3/4/5.py were importing from services/ shims, which caused two categories of failures: (1) module-level state mutations (DB_PATH, seed flags) did not reach the live application module; (2) patch.object() targets did not exist on shim modules.
+- Root cause: shim re-exports create copies of module-level variables — mutating `services.event_bus.DB_PATH` does not affect `application.event_bus.runtime.DB_PATH` that the actual functions read.
+- Changes:
+  tests/test_agent_os_phase3.py: import application.event_bus.runtime as bus; import application.agents_service.runtime as agents_service.
+  tests/test_agent_os_phase4.py: import application.workflow_engine.runtime as workflow_engine; application.event_bus.runtime as bus; added application.workflows.multi_agent as _workflow_seeding; fixed all _workflow_seeding._BUILTIN_WORKFLOWS_SEEDED refs; fixed patch target from app.services.tool_service.run_tool → app.application.tool_service.runtime.run_tool.
+  tests/test_agent_os_phase5.py: import application.monitoring.runtime as agent_monitor; application.agent_registry.runtime as agent_registry; application.agent_sandbox.runtime as agent_sandbox; application.agents_service.runtime as agents_service; application.event_bus.runtime as bus; application.workflow_engine.runtime as workflow_engine; added application.workflows.multi_agent as _workflow_seeding; fixed all seed flag refs.
+  services/event_bus.py shim: added _init_db to re-exports (setUp still calls bus._init_db() on first setUp pass).
+  services/workflow_engine.py shim: confirmed DB_PATH re-export present.
+- Verification: 23/23 tests pass (0 failures).
+- Result: Phase 3, 4 and 5 test suites are fully green against the extracted application layer.
