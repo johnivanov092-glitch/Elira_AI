@@ -433,14 +433,14 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     _git_st = ['git status', 'статус git', 'что изменилось в git', 'покажи git', 'git изменения', 'ветка git']
     if 'git' not in disabled and any(t in ql for t in _git_st):
         try:
-            from app.services.git_service import format_git_context
+            from app.application.git.runtime import format_git_context
             parts.append(format_git_context())
         except Exception as _e:
             parts.append('SKILL_ERROR:Git: ' + str(_e))
     _git_lg = ['git log', 'история коммитов', 'последние коммиты', 'покажи коммиты']
     if 'git' not in disabled and any(t in ql for t in _git_lg):
         try:
-            from app.services.git_service import git_log as _gl
+            from app.application.git.runtime import git_log as _gl
             _r = _gl(limit=10)
             if _r.get('ok'):
                 _rows = ['Git log (' + _r['repo'] + '):'] + ['  ' + c['hash'] + ' - ' + c['message'] for c in _r.get('commits', [])]
@@ -450,7 +450,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     _git_df = ['git diff', 'покажи diff', 'что я изменил', 'изменения в коде']
     if 'git' not in disabled and any(t in ql for t in _git_df):
         try:
-            from app.services.git_service import git_diff as _gdf
+            from app.application.git.runtime import git_diff as _gdf
             _r = _gdf()
             if _r.get('ok'):
                 parts.append('Git diff:' + chr(10) + _r.get('stat','') + chr(10) + _r.get('diff','')[:3000])

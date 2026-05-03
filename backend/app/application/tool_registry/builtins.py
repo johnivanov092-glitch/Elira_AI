@@ -5,17 +5,17 @@ from typing import Any
 
 def build_builtin_tools() -> list[dict[str, Any]]:
     from app.application.tool_service.runtime import search_memory_tool
-    from app.services.web_service import research_web, search_web
-    from app.services.python_runner import execute_python
-    from app.services.project_service import (
+    from app.application.web_service.runtime import research_web, search_web
+    from app.application.python_runner.runtime import execute_python
+    from app.application.project_service.runtime import (
         list_project_tree,
         read_project_file,
         search_project,
         write_project_file,
     )
     from app.services.project_patch_service import ProjectPatchService
-    from app.services.library_service import build_library_context, list_library_files
-    from app.services.git_service import git_commit as _git_commit_fn, git_status as _git_status_fn
+    from app.application.library_service.runtime import build_library_context, list_library_files
+    from app.application.git.runtime import git_commit as _git_commit_fn, git_status as _git_status_fn
     from app.services.project_map_service import ProjectMapService
     from app.services.project_brain_loop_service import ProjectBrainLoopService
 
