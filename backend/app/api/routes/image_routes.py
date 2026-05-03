@@ -24,7 +24,8 @@ class GenerateRequest(BaseModel):
 
 @router.post("/generate")
 def api_generate(p: GenerateRequest):
-    from app.services.image_gen import generate_image
+    from app.application.media.flux_schnell_runtime import generate_image
+
     return generate_image(
         prompt=p.prompt, width=p.width, height=p.height,
         steps=p.steps, guidance_scale=p.guidance_scale,
@@ -34,11 +35,13 @@ def api_generate(p: GenerateRequest):
 
 @router.get("/status")
 def api_status():
-    from app.services.image_gen import get_status
+    from app.application.media.flux_schnell_runtime import get_status
+
     return get_status()
 
 
 @router.post("/unload")
 def api_unload():
-    from app.services.image_gen import unload_model
+    from app.application.media.flux_schnell_runtime import unload_model
+
     return unload_model()

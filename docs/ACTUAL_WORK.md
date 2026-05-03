@@ -974,3 +974,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Multi-agent public behavior stays workflow-backed while the obsolete service monolith body is gone.
+
+### 67. Route imports for image and RAG runtimes
+- Status: completed
+- Scope: continued small compatibility-import cleanup for routes that were still calling already-extracted application runtimes through service facades.
+- Finish:
+  updated [backend/app/api/routes/image_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/image_routes.py) to call `application.media.flux_schnell_runtime` directly for generate/status/unload;
+  updated [backend/app/api/routes/advanced_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/advanced_routes.py) to call `application.rag_memory.service` directly for RAG add/search/list/delete/stats.
+- Verification:
+  `python -m py_compile backend/app/api/routes/advanced_routes.py backend/app/api/routes/image_routes.py` -> passed;
+  targeted advanced RAG and image route smoke with mocked application runtimes -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Image and advanced RAG endpoints keep the same public route behavior while bypassing redundant service compatibility facades.
