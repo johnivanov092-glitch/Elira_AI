@@ -975,3 +975,16 @@ Live repair log for concrete backend/runtime fixes.
 - Remaining intentional services/ references in application/ (7 lines, 3 files): `autopipeline/runtime.py` + `telegram/` → `agents_service` (top-level orchestrator, no application package); `tool_registry/builtins.py` → `project_patch_service.ProjectPatchService`, `project_map_service.ProjectMapService`, `project_brain_loop_service.ProjectBrainLoopService` (compatibility classes kept as structural boundaries).
 - Verification: all 3 changed files compile clean; 20 total deletions, 20 total insertions (pure import-path redirects, no logic change).
 - Result: the application/ layer is now fully self-contained. Every import from application/ to another application/ module goes directly via `application/X/runtime`; the services/ layer serves exclusively as a backward-compat facade for external callers.
+
+
+### 58. Extract last 3 stub/composition services into application packages — ZERO services/ imports in application/ (Claude Code)
+- Status: completed
+- Scope: the final 3 `from app.services.X` imports remaining inside application/ modules all pointed to stub or composition-wrapper classes that had no application package yet. Created those packages and redirected all callers.
+- New application packages:
+  `application/project_patch_service/` — `ProjectPatchService` class that inherits `ProjectPatchRuntime` and wires `BASE_DIR` + `read/write_project_file` from `application/project_service/runtime` (no services/ reference).
+  `application/project_map_service/` — `ProjectMapService` stub class.
+  `application/project_brain_loop_service/` — `ProjectBrainLoopService` stub class.
+- Services converted to shims: `project_patch_service.py`, `project_map_service.py`, `project_brain_loop_service.py` → 6-line re-export shims.
+- Callers fixed: `application/project_brain/runtime.py` (×2 lazy imports), `application/tool_registry/builtins.py` (×3 lazy imports).
+- Verification: all 11 changed/new files compile clean; grep confirms 0 `from app.services.` lines in all of `backend/app/application/`.
+- Result: the application/ layer is now COMPLETELY self-contained — it imports from `application/X/runtime` paths only. The services/ layer is a pure one-way backward-compat facade with ZERO logic of its own (only `agents_service.py` remains as a composition root that assembles chat dependencies and delegates to `application/chat/entrypoints`).
