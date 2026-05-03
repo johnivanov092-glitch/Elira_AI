@@ -25,7 +25,7 @@ TEXT_EXTS = {
 def _extract_pdf(data: bytes, max_chars: int = 50000) -> str:
     """Умное извлечение: pypdf → pdfplumber → OCR."""
     try:
-        from app.services.pdf_pro import extract_pdf_smart
+        from app.application.pdf.runtime import extract_pdf_smart
         result = extract_pdf_smart(data, max_chars)
         text = result.get("text", "")
         # Добавляем таблицы в текст

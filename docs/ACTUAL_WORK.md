@@ -926,3 +926,19 @@ Live repair log for concrete backend/runtime fixes.
   targeted `/api/tools` route smoke for Python/TypeScript analysis and run-history response shape -> passed.
 - Result:
   `/api/tools/*` remains route-compatible while tools-exec runtime behavior now sits under `application/tools_exec`.
+
+### 64. Route service-facade import cleanup
+- Status: completed
+- Scope: removed remaining route-to-service-facade imports where an application/runtime implementation already exists, without changing public routes.
+- Finish:
+  updated [backend/app/api/routes/pdf_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/pdf_routes.py) to call `application/pdf/runtime.py` directly;
+  updated [backend/app/application/file_extract/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/file_extract/runtime.py) to use the PDF application runtime directly;
+  updated [backend/app/api/routes/task_planner_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/task_planner_routes.py) to use `application/task_planner/service.py`;
+  updated [backend/app/api/routes/autopipeline_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/autopipeline_routes.py) to use `application/autopipeline/runtime.py` while preserving lazy imports.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted task planner/autopipeline route smoke -> passed.
+- Result:
+  PDF, file extraction, task planner, and autopipeline paths now bypass service compatibility facades where application-layer modules are already available.
