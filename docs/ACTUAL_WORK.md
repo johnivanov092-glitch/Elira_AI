@@ -1025,3 +1025,23 @@ Live repair log for concrete backend/runtime fixes.
   `services/tool_registry` → `application/tool_registry/runtime`
 - Verification: main.py compiles clean; grep confirms zero remaining services/ imports outside services/ and api/ layers (except 3 intentional agents_service.run_agent calls in autopipeline, telegram, and step_executor).
 - Result: `from app.services.*` imports now exist ONLY in: `backend/app/services/**` (shims), `backend/app/api/routes/**` (correct external facade usage), and 3 intentional `agents_service.run_agent` orchestrator calls. The refactoring of the services/ layer is COMPLETE.
+
+
+### 62. Extract agents_service composition root into application package (Claude Code)
+- Status: completed
+- Scope: the last remaining fat services/ file (agents_service.py, 325 lines) extracted into application/agents_service/runtime.py. All services/* dependency imports replaced with direct application/* equivalents.
+- Dependencies redirected inside runtime.py:
+  services/agent_sandbox → application/agent_sandbox/runtime;
+  services/chat_service → application/chat_service/runtime;
+  services/persona_service → application/persona_service/runtime;
+  services/planner_v2_service → application/planner_v2/runtime;
+  services/reflection_loop_service → application/reflection_loop/runtime;
+  services/response_cache → application/response_cache/runtime;
+  services/run_history_service → application/run_history_service/runtime;
+  services/smart_memory → application/smart_memory/extraction + search;
+  services/rag_memory_service → application/rag_memory_service/runtime;
+  services/agent_registry (lazy) → application/agent_registry/runtime.
+- services/agents_service.py slimmed from 373 lines to 9-line shim.
+- 3 lazy callers redirected: application/autopipeline/runtime.py, application/telegram/runtime.py, domain/workflows/step_executor.py.
+- Verification: all 7 changed/new files compile clean; 32/32 tests pass.
+- Result: services/ now contains ONLY backward-compat shims — every file is a thin re-export with zero logic. The application/ layer is 100% self-contained with no services/ dependencies in any form.
