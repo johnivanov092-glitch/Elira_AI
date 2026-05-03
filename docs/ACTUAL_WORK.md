@@ -943,3 +943,15 @@ Live repair log for concrete backend/runtime fixes.
 - Remaining intentional cross-layer lazy imports (unchanged): `autopipeline`, `telegram` → `agents_service` (top-level orchestrator, no application package); `tool_registry/builtins.py` → multiple service tools (plugin_system, tool_service, git_service, etc. — builtins are adapter layer by design); `chat/auto_skills.py` → skills/plugins (same adapter pattern); `monitoring/store.py` → `tool_service` (tool_service not yet extracted); `project_brain/runtime.py` → `project_patch_service.ProjectPatchService` (compatibility class with injected deps, kept as-is).
 - Verification: all 11 changed files compile clean; Phase 1+2 tests 32/32 pass.
 - Result: application/ layer is now architecturally clean — all intra-application dependencies go directly to `application/X/runtime`; only `services/` layer has genuine backward-compat shim duty.
+
+### 56. Extract tool_service + final cross-layer import cleanup (Claude Code)
+- Status: completed
+- Scope: extracted `services/tool_service.py` (28 lines) into `application/tool_service/runtime.py`; cleared the last avoidable `from app.services.*` imports in the application layer.
+- Codex status check: fetched all remote branches — `codex/refactor-arch-foundation` (117 commits ahead of main) is doing parallel service extractions (elira-memory, rag, cache, run-history, pdf, plugins, skills, autopipeline, smart-memory, planner, tools, etc.); `claude/refactor-master-plan` (61 commits ahead of main) has reached 85% monolith reduction milestone (agents_service 542 lines, core/agents.py 62 lines). No merge conflict risk with our branch since we diverge from the Phase 2 merge point and work in non-overlapping files.
+- tool_service extraction:
+  moved `list_tools()` (wraps tool_registry + adds ok/count envelope), `search_memory_tool()` (wraps smart_memory + adds profile), and `run_tool()` (delegates to tool_registry.execute_tool) into `application/tool_service/runtime.py`; rebuilt shim as 8-line re-export; redirected 4 callers (monitoring/store.py, tool_registry/builtins.py, services/agents_service.py, domain/workflows/step_executor.py) to the new application path.
+- Final cross-layer cleanup (round 3):
+  `tool_registry/builtins.py` — 5 more lazy imports redirected (project_service, library_service, git_service, python_runner, web_service → their respective application/*/runtime);
+  `chat/auto_skills.py` — 3 git_service lazy imports → application/git/runtime.
+- Verification: all changed files compile clean; Phase 1+2 tests 32/32 pass; identity check: shim functions resolve to runtime functions.
+- Result: `application/` layer now has ZERO avoidable cross-layer imports through services/ shims. The only remaining services/ references inside application/ are legitimate adapters: `plugin_system`, `project_patch_service`, `agents_service` (top-level orchestrator), and `skills_extra`/`skills_service`/`image_gen` (not yet extracted to application packages).
