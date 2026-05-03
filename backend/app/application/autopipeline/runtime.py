@@ -207,7 +207,7 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             model = task_data.get("model", "")
             if not prompt:
                 return {"ok": False, "error": "Нет промпта"}
-            from app.services.agents_service import run_agent
+            from app.application.agents_service.runtime import run_agent
             result = run_agent(
                 model_name=model or "gemma3:4b",
                 profile_name=task_data.get("profile", "Универсальный"),

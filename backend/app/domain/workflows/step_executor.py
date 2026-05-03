@@ -120,7 +120,7 @@ def _execute_agent_step(
     run_context: dict[str, Any],
     run_id: str,
 ) -> dict[str, Any]:
-    from app.services.agents_service import run_agent
+    from app.application.agents_service.runtime import run_agent
 
     config = step.get("config", {}) or {}
     prompt_template = str(config.get("prompt_template", "")).strip()

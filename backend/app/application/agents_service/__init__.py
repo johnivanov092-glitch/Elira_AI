@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-"""Backward-compatible shim — all logic lives in application/agents_service."""
 from __future__ import annotations
 
 from app.application.agents_service.runtime import (  # noqa: F401

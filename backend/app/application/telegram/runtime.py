@@ -152,7 +152,7 @@ def process_message(token: str, message: dict[str, Any]) -> None:
         use_memory = get_config_value("use_memory", "true") == "true"
         use_web = get_config_value("use_web_search", "false") == "true"
 
-        from app.services.agents_service import run_agent
+        from app.application.agents_service.runtime import run_agent
 
         result = run_agent(
             model_name=model or "gemma3:4b",
