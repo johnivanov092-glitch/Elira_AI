@@ -11,7 +11,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services import tool_registry as reg  # noqa: E402
+from app.application.tool_registry import runtime as reg  # noqa: E402
 
 
 def _dummy_handler(args: dict) -> dict:

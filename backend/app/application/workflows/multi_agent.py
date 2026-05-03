@@ -11,6 +11,7 @@ from typing import Any, Callable
 from app.application.workflows.db_path import get_workflow_db_path
 from app.application.workflows.store import (
     get_workflow_template as _app_get_workflow_template,
+    init_db as _app_init_db,
     now_utc as _app_now_utc,
     upsert_workflow_template as _app_upsert_workflow_template,
 )
@@ -249,6 +250,7 @@ def seed_builtin_workflows() -> int:
         return 0
 
     workflow_db_path = get_workflow_db_path()
+    _app_init_db(db_path=workflow_db_path)
     created = 0
     for template in _builtin_workflow_templates():
         existing = _app_get_workflow_template(db_path=workflow_db_path, workflow_id=template["id"])
