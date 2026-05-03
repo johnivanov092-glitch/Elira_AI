@@ -1085,3 +1085,11 @@ Live repair log for concrete backend/runtime fixes.
 - application/event_bus/runtime.py: replaced TODO comment with a note describing both emit sites.
 - tests/test_tool_executed_event.py: three tests — successful emit, failed-tool emit, bus-unavailable resilience.
 - Verification: 90/90 tests pass.
+
+
+### 67. Test coverage expansion — chat_service, reflection_loop, PlannerV2Service (Claude Code)
+- Status: completed
+- Scope: added tests for three previously uncovered application modules.
+- tests/test_chat_and_reflection.py (18 tests): chat_service normalize_profile, run_chat (success/history/blank-skip/error/task_context), run_chat_stream (tokens/empty-skip/fallback/error-token), reflection_loop (ok/context-in-prompt/failure/used_context flag).
+- tests/test_planner_v2.py (23 tests): PlannerV2Service routing (research/code/project/chat/python/memory/library), temporal.requires_web forced upgrade, plan_web_query called iff web_search tool present, tools deduplication, required result keys.
+- Verification: 131/131 tests pass.
