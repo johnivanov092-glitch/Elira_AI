@@ -1,13 +1,7 @@
-# DEPRECATED: логика перенесена в profiles_service.py и memory_service.py
-from ..core.memory import list_mem_profiles, create_mem_profile, delete_mem_profile
+# DEPRECATED: logic moved to profiles_service.py and memory_service.py
+# Nobody imports this file. Kept as a shim for backward-compat only.
+from __future__ import annotations
 
-def get_profiles():
-    return list_mem_profiles()
+from app.application.profiles.runtime import get_profiles  # noqa: F401
 
-def create_profile(name: str, emoji: str = "👤"):
-    ok = create_mem_profile(name=name, emoji=emoji)
-    return {"ok": ok, "name": name, "emoji": emoji}
-
-def remove_profile(name: str):
-    delete_mem_profile(name)
-    return {"ok": True, "name": name}
+__all__ = ["get_profiles"]

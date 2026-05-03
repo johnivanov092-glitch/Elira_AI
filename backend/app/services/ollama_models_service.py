@@ -1,20 +1,7 @@
-# DEPRECATED: дублирует models_service.py. Используй models_service.get_models()
+# DEPRECATED: duplicates models_service.py / application/ollama_models/runtime.py
+# Nobody imports this file. Kept as a shim for backward-compat only.
+from __future__ import annotations
 
-import httpx
+from app.application.ollama_models.runtime import get_models as list_models  # noqa: F401
 
-OLLAMA = "http://localhost:11434"
-
-async def list_models():
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{OLLAMA}/api/tags")
-        data = r.json()
-
-        models = []
-
-        for m in data.get("models", []):
-            models.append({
-                "name": m["name"],
-                "type": "local"
-            })
-
-        return models
+__all__ = ["list_models"]
