@@ -1076,3 +1076,12 @@ Live repair log for concrete backend/runtime fixes.
 - test_agent_os_phase2.py::TestSeedBuiltinTools::test_seed_creates_tools: import changed to application.tool_registry.runtime so reg._BUILTIN_SEEDED = False resets the live flag (same shim-copy pattern as #64).
 - application/workflows/multi_agent.py: seed_builtin_workflows() now calls _app_init_db() before the first SELECT so it works in fresh subprocess environments (found by memory regression test spawning app.main in a clean tmpdir).
 - Verification: 87/87 tests pass in a single pytest run with no test ordering issues.
+
+
+### 66. Wire tool.executed event to run_tool() for direct tool calls (Claude Code)
+- Status: completed
+- Scope: closed the Phase 2/3 TODO — tool.executed was only emitted for workflow tool steps (domain/workflows/step_executor.py), never for direct calls through tool_service.run_tool().
+- application/tool_service/runtime.py: after execute_tool() returns, emit "tool.executed" with tool_name, ok flag, and arg keys. Wrapped in try/except so bus failures never propagate to callers.
+- application/event_bus/runtime.py: replaced TODO comment with a note describing both emit sites.
+- tests/test_tool_executed_event.py: three tests — successful emit, failed-tool emit, bus-unavailable resilience.
+- Verification: 90/90 tests pass.
