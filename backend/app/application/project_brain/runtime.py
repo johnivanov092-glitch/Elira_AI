@@ -34,13 +34,13 @@ def read_file(path: str) -> dict[str, Any]:
 
 
 def preview_patch(path: str, new_content: str) -> dict[str, Any]:
-    from app.services.project_patch_service import ProjectPatchService
+    from app.application.project_patch_service.runtime import ProjectPatchService
     patch = ProjectPatchService()
     return patch.preview_patch(path, new_content, max_chars=20000)
 
 
 def apply_patch(path: str, new_content: str) -> dict[str, Any]:
-    from app.services.project_patch_service import ProjectPatchService
+    from app.application.project_patch_service.runtime import ProjectPatchService
     patch = ProjectPatchService()
     return patch.apply_patch(path, new_content)
 

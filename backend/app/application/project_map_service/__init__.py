@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-"""Stub shim — stub lives in application/project_map_service."""
 from __future__ import annotations
 
 from app.application.project_map_service.runtime import ProjectMapService  # noqa: F401

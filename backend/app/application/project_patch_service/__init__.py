@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-"""Backward-compatible shim — all logic lives in application/project_patch_service."""
 from __future__ import annotations
 
 from app.application.project_patch_service.runtime import ProjectPatchService  # noqa: F401

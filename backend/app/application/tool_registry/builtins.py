@@ -13,11 +13,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         search_project,
         write_project_file,
     )
-    from app.services.project_patch_service import ProjectPatchService
+    from app.application.project_patch_service.runtime import ProjectPatchService
     from app.application.library_service.runtime import build_library_context, list_library_files
     from app.application.git.runtime import git_commit as _git_commit_fn, git_status as _git_status_fn
-    from app.services.project_map_service import ProjectMapService
-    from app.services.project_brain_loop_service import ProjectBrainLoopService
+    from app.application.project_map_service.runtime import ProjectMapService
+    from app.application.project_brain_loop_service.runtime import ProjectBrainLoopService
 
     patch_service = ProjectPatchService()
     map_service = ProjectMapService()
