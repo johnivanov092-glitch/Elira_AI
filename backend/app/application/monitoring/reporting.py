@@ -30,11 +30,11 @@ def get_agent_os_health(
     checks = [
         (
             "agent_registry",
-            lambda: __import__("app.services.agent_registry", fromlist=["list_agents"]).list_agents(enabled_only=False),
+            lambda: __import__("app.application.agent_registry.runtime", fromlist=["list_agents"]).list_agents(enabled_only=False),
         ),
         (
             "event_bus",
-            lambda: __import__("app.services.event_bus", fromlist=["list_events"]).list_events(limit=1),
+            lambda: __import__("app.application.event_bus.runtime", fromlist=["list_events"]).list_events(limit=1),
         ),
         (
             "workflow_engine",

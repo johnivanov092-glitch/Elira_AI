@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-"""Stub shim — stub lives in application/browser_agent."""
 from __future__ import annotations
 
 from app.application.browser_agent.runtime import BrowserAgent  # noqa: F401
