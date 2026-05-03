@@ -942,3 +942,18 @@ Live repair log for concrete backend/runtime fixes.
   targeted task planner/autopipeline route smoke -> passed.
 - Result:
   PDF, file extraction, task planner, and autopipeline paths now bypass service compatibility facades where application-layer modules are already available.
+
+### 65. Web search route runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/web` search orchestration wrappers and engine metadata out of the FastAPI route.
+- Finish:
+  added [backend/app/application/web_search/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/web_search/runtime.py) for default engine normalization, search/deep-search/news/fetch delegation, and engine metadata;
+  added [backend/app/application/web_search/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/web_search/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/web_search_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/web_search_routes.py) to request models and endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/web/engines` route smoke and engine normalization check -> passed.
+- Result:
+  `/api/web/*` remains route-compatible while web-search route orchestration now sits under `application/web_search`.
