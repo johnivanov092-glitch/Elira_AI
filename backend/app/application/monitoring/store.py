@@ -126,7 +126,7 @@ def planner_tool_aliases() -> list[str]:
 def all_known_tools() -> list[str]:
     tool_names: list[str] = []
     try:
-        from app.services.tool_service import list_tools
+        from app.application.tool_service.runtime import list_tools
 
         payload = list_tools()
         for item in payload.get("tools", []):

@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-"""Backward-compatible shim — all logic lives in application/tool_service."""
 from __future__ import annotations
 
 from app.application.tool_service.runtime import (  # noqa: F401
@@ -7,3 +5,5 @@ from app.application.tool_service.runtime import (  # noqa: F401
     run_tool,
     search_memory_tool,
 )
+
+__all__ = ["list_tools", "run_tool", "search_memory_tool"]

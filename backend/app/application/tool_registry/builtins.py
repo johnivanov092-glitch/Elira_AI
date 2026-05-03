@@ -4,7 +4,7 @@ from typing import Any
 
 
 def build_builtin_tools() -> list[dict[str, Any]]:
-    from app.services.tool_service import search_memory_tool
+    from app.application.tool_service.runtime import search_memory_tool
     from app.services.web_service import research_web, search_web
     from app.services.python_runner import execute_python
     from app.services.project_service import (

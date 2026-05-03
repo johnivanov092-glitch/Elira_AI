@@ -68,7 +68,7 @@ from app.services.reflection_loop_service import run_reflection_loop
 from app.services.response_cache import get_cached, set_cached, should_cache
 from app.services.run_history_service import RunHistoryService
 from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
-from app.services.tool_service import run_tool
+from app.application.tool_service.runtime import run_tool
 
 try:
     from app.services.rag_memory_service import get_rag_context
