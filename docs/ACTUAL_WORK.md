@@ -1045,3 +1045,12 @@ Live repair log for concrete backend/runtime fixes.
 - 3 lazy callers redirected: application/autopipeline/runtime.py, application/telegram/runtime.py, domain/workflows/step_executor.py.
 - Verification: all 7 changed/new files compile clean; 32/32 tests pass.
 - Result: services/ now contains ONLY backward-compat shims — every file is a thin re-export with zero logic. The application/ layer is 100% self-contained with no services/ dependencies in any form.
+
+
+### 63. Convert last 2 deprecated services to shims — 50/50 services are pure shims (Claude Code)
+- Status: completed
+- Scope: two deprecated, unused services still contained actual implementation code. Converted them to proper shims.
+- ollama_models_service.py (DEPRECATED, 0 importers): 13-line async httpx implementation → shim re-exporting get_models from application/ollama_models/runtime.
+- profile_service.py (DEPRECATED, 0 importers): 9-line implementation importing from core.memory → shim re-exporting get_profiles from application/profiles/runtime.
+- Verification: both files compile clean; 50/50 services are now pure shims (confirmed by audit script).
+- Result: ALL 50 files in backend/app/services/ are now pure backward-compat shims with zero business logic. The services/ layer is a complete facade. The multi-entry extraction project (#48–#63) is fully complete.
