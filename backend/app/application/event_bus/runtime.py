@@ -35,7 +35,9 @@ SUPPORTED_EVENT_TYPES = (
     "workflow.step.failed",
 )
 
-# TODO: wire tool.executed after Phase 2 merge.
+# tool.executed is emitted by application/tool_service/runtime.run_tool() for
+# direct tool calls and by domain/workflows/step_executor._execute_tool_step()
+# for workflow tool steps.
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS events (

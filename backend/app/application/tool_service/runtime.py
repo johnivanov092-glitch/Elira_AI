@@ -30,4 +30,19 @@ def run_tool(tool_name: str, args: dict[str, Any] | None = None) -> dict[str, An
     """Execute a registered tool by name via the Tool Registry."""
     from app.application.tool_registry.runtime import execute_tool
 
-    return execute_tool(tool_name, args)
+    result = execute_tool(tool_name, args)
+    try:
+        from app.application.event_bus.runtime import emit_event
+
+        emit_event(
+            event_type="tool.executed",
+            payload={
+                "tool_name": tool_name,
+                "ok": bool(result.get("ok")),
+                "args_keys": list((args or {}).keys()),
+            },
+            source_agent_id=None,
+        )
+    except Exception:
+        pass
+    return result
