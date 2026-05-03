@@ -957,3 +957,20 @@ Live repair log for concrete backend/runtime fixes.
   targeted `/api/web/engines` route smoke and engine normalization check -> passed.
 - Result:
   `/api/web/*` remains route-compatible while web-search route orchestration now sits under `application/web_search`.
+
+### 66. Multi-agent workflow facade cleanup
+- Status: completed
+- Scope: continued the compatibility-import cleanup after confirming `services/image_gen.py` is already a thin facade over `application/media/flux_schnell_runtime.py`.
+- Finish:
+  reduced [backend/app/services/multi_agent_chain.py](/D:/AIWork/Elira_AI/backend/app/services/multi_agent_chain.py) to the public `run_multi_agent(...)` compatibility wrapper over `application.workflows.multi_agent.run_multi_agent_workflow`;
+  updated [backend/app/api/routes/advanced_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/advanced_routes.py) so `/api/advanced/multi-agent` calls the application workflow runtime directly;
+  removed the dead inline legacy multi-agent implementation from the service facade.
+- Verification:
+  `python -m py_compile backend/app/services/multi_agent_chain.py backend/app/api/routes/advanced_routes.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase4.WorkflowCompatibilityShimTest` -> 2 tests OK;
+  targeted `/api/advanced/multi-agent` route smoke with mocked workflow runtime -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Multi-agent public behavior stays workflow-backed while the obsolete service monolith body is gone.
