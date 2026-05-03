@@ -988,3 +988,17 @@ Live repair log for concrete backend/runtime fixes.
 - Callers fixed: `application/project_brain/runtime.py` (×2 lazy imports), `application/tool_registry/builtins.py` (×3 lazy imports).
 - Verification: all 11 changed/new files compile clean; grep confirms 0 `from app.services.` lines in all of `backend/app/application/`.
 - Result: the application/ layer is now COMPLETELY self-contained — it imports from `application/X/runtime` paths only. The services/ layer is a pure one-way backward-compat facade with ZERO logic of its own (only `agents_service.py` remains as a composition root that assembles chat dependencies and delegates to `application/chat/entrypoints`).
+
+
+### 59. Eliminate services/ imports from core/, domain/, and infrastructure/ layers (Claude Code)
+- Status: completed
+- Scope: services/ is meant only as a backward-compat facade for external callers (API routes). core/, domain/, and infrastructure/ layers should bypass it and call application/X/runtime directly. Fixed 6 import sites across 5 files.
+- Fixes:
+  `core/config.py` — `elira_settings_sqlite.get_route_model_map` → `application/elira_settings/runtime`
+  `core/llm.py` — `persona_service.build_persona_prompt` → `application/persona_service/runtime`
+  `domain/agents/orchestrator_runtime.py` — `persona_service.observe_dialogue` → `application/persona_service/runtime`
+  `domain/workflows/step_executor.py` — `agent_monitor.WORKFLOW_ENGINE_AGENT_ID` → `application/monitoring/runtime`
+  `domain/workflows/step_executor.py` — `agent_sandbox.preflight_or_raise` → `application/agent_sandbox/runtime`
+  `infrastructure/search/web_query.py` — `temporal_intent.detect_temporal_intent` → `application/temporal_intent/runtime`
+- Verification: all 5 changed files compile clean; grep confirms zero `from app.services.` across core/, domain/, infrastructure/, and application/.
+- Result: `from app.services.*` imports now exist exclusively in: `backend/app/services/**` (shims), `backend/app/api/**` (routes), `services/agents_service.py` (composition root), and `main.py` (startup). All other layers are now free of services/ dependencies.
