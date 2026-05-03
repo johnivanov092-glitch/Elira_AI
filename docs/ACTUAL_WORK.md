@@ -1093,3 +1093,12 @@ Live repair log for concrete backend/runtime fixes.
 - tests/test_chat_and_reflection.py (18 tests): chat_service normalize_profile, run_chat (success/history/blank-skip/error/task_context), run_chat_stream (tokens/empty-skip/fallback/error-token), reflection_loop (ok/context-in-prompt/failure/used_context flag).
 - tests/test_planner_v2.py (23 tests): PlannerV2Service routing (research/code/project/chat/python/memory/library), temporal.requires_web forced upgrade, plan_web_query called iff web_search tool present, tools deduplication, required result keys.
 - Verification: 131/131 tests pass.
+
+
+### 68. Test coverage expansion — run_history, python_runner, terminal, project_service, web_service, task_planner (Claude Code)
+- Status: completed
+- Scope: added tests for six previously uncovered application modules.
+- tests/test_run_history_python_terminal.py (33 tests): RunHistoryService start/finish/add_event/list via shared-cache in-memory SQLite; execute_python arithmetic/print/empty/syntax error/runtime exception/allowed imports/blocked imports/dunder exclusion/multiline/builtins; terminal exec_command empty/blocked/echo/timeout, change_dir valid/invalid, get_cwd.
+- tests/test_project_and_web_service.py (26 tests): project_service _is_safe_path/_normalize_rel_path/read/write/list_tree/search; web_service search_web success/empty/no-results/engines-deduplicated/engine_links/shape.
+- tests/test_task_planner.py (20 tests): task_planner create/list (filter by status+category, limit, tags, priority ordering)/get/update/delete/task_stats.
+- Verification: 210/210 tests pass.
