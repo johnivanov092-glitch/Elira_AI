@@ -222,14 +222,14 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             query = task_data.get("query", "")
             if not query:
                 return {"ok": False, "error": "Нет запроса"}
-            from app.services.web_multisearch_service import multi_search
+            from app.application.web_multisearch.runtime import multi_search
             return multi_search(query, max_results=task_data.get("max_results", 5))
 
         elif task_type == "plugin":
             name = task_data.get("plugin_name", "")
             if not name:
                 return {"ok": False, "error": "Нет имени плагина"}
-            from app.services.plugin_system import run_plugin
+            from app.application.plugins.runtime import run_plugin
             return run_plugin(name, task_data.get("args", {}))
 
         elif task_type == "workflow":

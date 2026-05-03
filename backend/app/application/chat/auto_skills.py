@@ -40,7 +40,7 @@ def maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True)
     wants_word = any(t in ql for t in _FILE_TRIGGERS_WORD)
     if wants_word and len(llm_answer) > 50:
         try:
-            from app.services.skills_service import generate_word
+            from app.application.skills.runtime import generate_word
             # Извлекаем заголовок из первой строки ответа
             lines = llm_answer.strip().split("\n")
             title = ""
@@ -65,7 +65,7 @@ def maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True)
     wants_excel = any(t in ql for t in _FILE_TRIGGERS_EXCEL)
     if wants_excel and len(llm_answer) > 30:
         try:
-            from app.services.skills_service import generate_excel
+            from app.application.skills.runtime import generate_excel
             import re as _re
 
             # Парсим markdown таблицы из ответа LLM
@@ -122,7 +122,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
      http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
      if "http_api" not in disabled and url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
         try:
-            from app.services.skills_service import http_request
+            from app.application.skills.runtime import http_request
             method = "POST" if "post" in ql else "GET"
             result = http_request(url_match.group(1), method=method, timeout=10)
             if result.get("ok"):
@@ -138,7 +138,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     sql_triggers = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу", "select ", "покажи записи", "покажи данные из"]
     if "sql" not in disabled and any(t in ql for t in sql_triggers):
         try:
-            from app.services.skills_service import list_databases, describe_db, run_sql
+            from app.application.skills.runtime import list_databases, describe_db, run_sql
             sql_match = _re.search(r"(SELECT\s+.+)", user_input, _re.IGNORECASE)
             if sql_match:
                 dbs = list_databases()
@@ -163,7 +163,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     screenshot_triggers = ["скриншот", "screenshot", "покажи как выглядит", "сделай снимок"]
     if "screenshot" not in disabled and url_match and any(t in ql for t in screenshot_triggers):
         try:
-            from app.services.skills_service import screenshot_url
+            from app.application.skills.runtime import screenshot_url
             result = screenshot_url(url_match.group(1))
             if result.get("ok"):
                 parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:Скриншот {result.get('title','')}")
@@ -178,7 +178,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
                     "сделай картинк", "покажи картинк", "нарисовать"]
     if "image_gen" not in disabled and any(t in ql for t in img_triggers):
         try:
-            from app.services.image_gen import generate_image
+            from app.application.image_generation.runtime import generate_image
             prompt = user_input
             for t in img_triggers:
                 idx = ql.find(t)
@@ -225,7 +225,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
                 target_lang = lang_text[0].strip() if lang_text else "english"
                 text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
                 if text_to_translate and len(text_to_translate) > 2:
-                    from app.services.skills_extra import translate_text
+                    from app.application.skills_extra.runtime import translate_text
                     result = translate_text(text_to_translate, target_lang)
                     if result.get("ok"):
                         parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
@@ -236,7 +236,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     # ─── 🔐 Шифрование ───
     if "encrypt" not in disabled and any(t in ql for t in ["зашифруй", "шифрование", "encrypt"]):
         try:
-            from app.services.skills_extra import encrypt_text
+            from app.application.skills_extra.runtime import encrypt_text
             text = user_input
             for t in ["зашифруй:", "зашифруй ", "encrypt:", "encrypt "]:
                 idx = ql.find(t)
@@ -252,7 +252,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
 
     if "encrypt" not in disabled and any(t in ql for t in ["расшифруй", "дешифруй", "decrypt"]):
         try:
-            from app.services.skills_extra import decrypt_text
+            from app.application.skills_extra.runtime import decrypt_text
             token = user_input
             for t in ["расшифруй:", "расшифруй ", "decrypt:", "decrypt ", "дешифруй "]:
                 idx = ql.find(t)
@@ -272,7 +272,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     zip_triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
     if "archiver" not in disabled and any(t in ql for t in zip_triggers):
         try:
-            from app.services.skills_extra import create_zip
+            from app.application.skills_extra.runtime import create_zip
             path = user_input
             for t in zip_triggers:
                 idx = ql.find(t)
@@ -291,7 +291,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     unzip_triggers = ["распакуй", "разархивируй", "извлеки архив"]
     if "archiver" not in disabled and any(t in ql for t in unzip_triggers):
         try:
-            from app.services.skills_extra import extract_zip
+            from app.application.skills_extra.runtime import extract_zip
             path = user_input
             for t in unzip_triggers:
                 idx = ql.find(t)
@@ -309,7 +309,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     convert_triggers = ["конвертируй", "преобразуй", "конвертировать", "convert "]
     if "converter" not in disabled and any(t in ql for t in convert_triggers):
         try:
-            from app.services.skills_extra import convert_file
+            from app.application.skills_extra.runtime import convert_file
             # Парсим: "конвертируй data.csv в xlsx"
             match = _re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, _re.IGNORECASE)
             if not match:
@@ -327,7 +327,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     regex_triggers = ["проверь regex", "тест regex", "regex тест", "test regex", "регулярка", "регулярное выражение"]
     if "regex" not in disabled and any(t in ql for t in regex_triggers):
         try:
-            from app.services.skills_extra import test_regex
+            from app.application.skills_extra.runtime import test_regex
             # Парсим: "проверь regex \d+ на строке abc123def"
             match = _re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, _re.IGNORECASE)
             if not match:
@@ -345,7 +345,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     csv_triggers = ["проанализируй csv", "анализ csv", "статистика csv", "analyze csv", "проанализируй файл", "покажи статистику"]
     if "csv_analysis" not in disabled and any(t in ql for t in csv_triggers):
         try:
-            from app.services.skills_extra import analyze_csv
+            from app.application.skills_extra.runtime import analyze_csv
             # Ищем имя файла
             file_match = _re.search(r"(\S+\.csv)", user_input, _re.IGNORECASE)
             if file_match:
@@ -364,7 +364,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     webhook_triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
     if "webhook" not in disabled and any(t in ql for t in webhook_triggers):
         try:
-            from app.services.skills_extra import list_webhooks
+            from app.application.skills_extra.runtime import list_webhooks
             result = list_webhooks(10)
             items = result.get("items", [])
             if items:
@@ -380,7 +380,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     # ─── 🔌 Плагины v2 ───
     if "plugins" not in disabled:
         try:
-            from app.services.plugin_system import list_plugins, run_plugin, run_triggered, fire_hook
+            from app.application.plugins.runtime import list_plugins, run_plugin, run_triggered, fire_hook
 
             # 1. Список плагинов
             plugin_list_triggers = ["список плагинов", "покажи плагины", "plugins list", "мои плагины"]
@@ -461,7 +461,7 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     gpu_triggers = ["статус gpu", "gpu status", "сколько vram", "видеопамять"]
     if any(t in ql for t in gpu_triggers):
         try:
-            from app.services.image_gen import get_status
+            from app.application.image_generation.runtime import get_status
             result = get_status()
             parts.append(f"🖥 GPU: {result.get('gpu','?')}\n"
                          f"VRAM: {result.get('vram_used_mb',0)} / {result.get('vram_total_mb',0)} MB\n"

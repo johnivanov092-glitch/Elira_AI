@@ -79,7 +79,7 @@ def compute_dashboard_stats() -> dict:
 
     plugin_count = 0
     try:
-        from app.services.plugin_system import list_plugins
+        from app.application.plugins.runtime import list_plugins
         plugin_count = list_plugins().get("count", 0)
     except Exception:
         pass
