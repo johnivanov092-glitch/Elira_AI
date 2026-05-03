@@ -1068,3 +1068,11 @@ Live repair log for concrete backend/runtime fixes.
   services/workflow_engine.py shim: confirmed DB_PATH re-export present.
 - Verification: 23/23 tests pass (0 failures).
 - Result: Phase 3, 4 and 5 test suites are fully green against the extracted application layer.
+
+
+### 65. Fix two cross-test DB contamination failures (Claude Code)
+- Status: completed
+- Scope: two tests failed when run in the full suite due to missing DB init and shim-copy module state.
+- test_agent_os_phase2.py::TestSeedBuiltinTools::test_seed_creates_tools: import changed to application.tool_registry.runtime so reg._BUILTIN_SEEDED = False resets the live flag (same shim-copy pattern as #64).
+- application/workflows/multi_agent.py: seed_builtin_workflows() now calls _app_init_db() before the first SELECT so it works in fresh subprocess environments (found by memory regression test spawning app.main in a clean tmpdir).
+- Verification: 87/87 tests pass in a single pytest run with no test ordering issues.
