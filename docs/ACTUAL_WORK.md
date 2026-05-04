@@ -1111,3 +1111,84 @@ Live repair log for concrete backend/runtime fixes.
 - tests/test_web_multisearch_and_ollama.py (24 tests): multi_search/deep_search/news_search/fetch_page; WebMultiSearchService facade; ollama_models get_models mock; ollama_runtime list_ollama_models new/old API/async.
 - tests/test_library_service.py (28 tests): library_sqlite safe_disk_name/extract_preview/CRUD; library_service list/set_active/delete/build_context with shared patched DB_PATH.
 - Verification: 304/304 tests pass.
+
+
+### 70. Test coverage expansion — task_planner_service, run_history_service, image_generation wiring (Claude Code)
+- Status: completed
+- Scope: added tests for three wiring modules that wire DB_PATH + connect_func to underlying runtimes; fixed DB isolation root cause (legacy JSON migration into temp DB).
+- tests/test_service_wiring.py (19 tests): task_planner_service create/list/get/update/delete/stats/constants/filter; run_history_service start/finish/multiple runs/failed run/constants; image_generation status/load state/unload/generate-without-diffusers/model-id/output-dir.
+- Root cause fix: RunHistoryServiceWiringTest.setUp also patches LEGACY_JSON_PATHS = [] so init_db() does not migrate 50 production runs into the fresh temp DB (causing 50 != 1 failures).
+- Verification: 323/323 tests pass.
+
+
+### 71. Test coverage expansion — skills_extra, plugins, elira_supervisor, elira_patch (Claude Code)
+- Status: completed
+- Scope: added tests for four previously uncovered application modules.
+- tests/test_skills_extra_and_plugins.py (39 tests): skills_extra regex helper (match/no-match/flags/groups/invalid); zip create/extract with patched OUTPUT_DIR+WORKSPACE; webhooks store/list/clear/limit; JSON→CSV convert_file. plugins load/skip-underscore/metadata/get_info; run/disable/enable/update_settings; check_triggers/run_triggered/fire_hook.
+- tests/test_elira_supervisor_and_patch.py (52 tests): elira_supervisor dumps_json/loads_json round-trip; resolve_project_path (blocked/outside/valid); build_plan (empty/current_path/create-keyword/api-keyword/staged/capped); build_steps (4 agents/status overrides); persist_run/list_runs/get_run with patched DB_PATH. elira_patch diff_stats/compute_diff; backup_file_path; resolve_project_path; write_history/list_history/get_history_item; apply_patch/rollback/verify/batch_apply/batch_verify — all with PROJECT_ROOT/DATA_ROOT/BACKUP_ROOT/DB_PATH nested correctly inside temp dirs so backup.relative_to(PROJECT_ROOT) succeeds.
+- Root cause fix: BACKUP_ROOT must be nested inside PROJECT_ROOT (mirrors real structure) for backup.relative_to(PROJECT_ROOT) to work.
+- Verification: 414/414 tests pass.
+
+
+### 72. Test coverage expansion — identity_guard, provenance_guard, response_cache (Claude Code)
+- Status: completed
+- Scope: added tests for three previously uncovered application modules (all pure Python / patched DB).
+- tests/test_identity_and_provenance_guard.py (28 tests): identity_guard is_identity_question (кто ты/как тебя зовут/представься/non-identity/empty/None); guard_identity_response (locked to safe reply/unchanged-clean/drift-removed/empty/custom-persona/already-safe/LLaMA-rewrite). provenance_guard is_provenance_question (откуда знаешь/покажи источники/give-show sources/non-provenance/empty); guard_provenance_response (raw-markers/memory-marker stripped/provenance-rewrite/technical-tokens/empty/clean-unchanged/personal-name rewrite).
+- tests/test_response_cache.py (29 tests): policy normalize_query (lower/punct/spaces/empty/None); query_hash (same→same/different-query/model/profile/hex-string); should_cache_query (chat ok/memory-cmd no/code-route no/project-route no/temporal no/сейчас no/research ok). runtime get_cached/set_cached/short-query-rejected/short-response-rejected/clear/cache_stats/hit_count-increments/error-response-rejected/should_cache-delegates.
+- Verification: 471/471 tests pass.
+
+
+### 73. Test coverage expansion — profiles, memory_service, elira_task_runner (Claude Code)
+- Status: completed
+- Scope: added tests for three previously uncovered application modules.
+- tests/test_profiles_memory_task_runner.py (33 tests): profiles get_profiles (ok-flag/list/count-matches/default-present/required-keys/exactly-one-default/preview-non-empty). memory_service _normalize_profile (None/empty/whitespace/named/strips-whitespace); list_memories/add_memory/delete_memory/search_memory with lazy-import mocking at app.application.smart_memory.*. elira_task_runner dumps_json/loads_json round-trip; build_plan (empty/current_path/create-keyword/api-keyword); build_supervisor_pipeline (four-agents/planner-done); persist_run/list_runs/get_run/get_run_not_found/multiple_newest_first/list_limit with patched DB_PATH.
+- Verification: 504/504 tests pass.
+
+
+### 74. Test coverage expansion — git, dashboard (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application modules.
+- tests/test_git_and_dashboard.py (29 tests): git _find_repo (finds-repo/no-git/None-searches-cwd); _run helper (success/nonzero/FileNotFoundError/TimeoutExpired); git_status (no-repo/clean/dirty-with-files); git_log (no-repo/parses-commits/empty-log); git_commit (empty-message/no-repo/successful); git_branches (no-repo/parses-current); format_git_context (no-repo/clean/dirty-lists-files). dashboard compute_dashboard_stats (empty-zeros/counts/success-rate/top-models/top-routes/14-days/required-keys/avg-answer-length) — mocked via patch.object(_HISTORY, "list_runs").
+- Verification: 533/533 tests pass.
+
+
+### 75. Test coverage expansion — elira_execute, elira_phase19, elira_phase20 (Claude Code)
+- Status: completed
+- Scope: added tests for three previously uncovered application modules.
+- tests/test_elira_execute_phase19_phase20.py (57 tests): elira_execute build_mode_reply (chat/code/research/image/orchestrator/unknown-fallback/None-mode/lowercased/model-profile-passthrough/content-stripped); list_memory/save_memory/delete_memory with patched DB_PATH. elira_phase19 dumps/loads round-trip; build_project_reasoning (scope backend/ui/multi); build_multi_file_plan (selected-paths/create-keyword/api-keyword/empty-fallback); build_file_operations (modify/create/inspect); build_verify_summary (required-keys/only-modify-create); persist/list_runs/get_run/not_found/newest_first/limit. elira_phase20 dumps/loads; build_reasoning (scopes); build_planner (paths/create/api); build_coder (preview-targets/inspect-excluded); build_reviewer/build_tester (required-keys); build_execution (apply_recommended/verify_recommended); persist/list_runs/get_run/not_found/newest_first/limit.
+- Verification: 590/590 tests pass.
+
+
+### 76. Test coverage expansion — elira_memory (pure callbacks), elira_memory_sqlite (patched DB) (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application modules.
+- tests/test_elira_memory_sqlite.py (35 tests): elira_memory/runtime ensure_column (adds-missing/no-op-if-exists/invalid-table-raises); table_exists (existing-true/missing-false); full CRUD via temp-file DB (init_db/count_chats/count_messages/list_chats/create_chat/create_chat_default_title/list_chats_after_create/update_chat_title/update_chat_pinned/update_not_found/delete/add_message/get_messages/count_messages_after_add/delete_cascades_messages). elira_memory_sqlite/runtime (patched DB_PATH, all 16 high-level API functions): count_chats/count_messages/list_chats/create_chat/default_title/count_after_create/list_after_create/rename/set_pinned/set_memory_saved/delete/add_message+get_messages/count_messages/get_messages_empty/delete_removes_messages/update_not_found.
+- Verification: 625/625 tests pass.
+
+
+### 77. Test coverage expansion — elira_devtools, elira_settings (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application modules.
+- tests/test_elira_devtools_and_settings.py (37 tests): elira_devtools resolve_project_path (valid/traversal-outside_root/blocked-git/blocked-node_modules); is_allowed_path (clean/blocked); parse_imports (python-import/from-import/js-import/unsupported-ext/missing-file/limit-30); build_patch_plan (required-keys/current_path/staged/create-keyword/api-keyword/empty-inspect/staged-not-duplicated/notes-not-empty); fs_create/fs_delete/fs_rename with patched PROJECT_ROOT (success/outside_root/already_exists/not_found/is_directory/source_not_found/target_exists). elira_settings get_settings/save_settings/get_route_model_map (required-keys/defaults/save-and-get/custom-route-map/all-routes/list-values/constant-is-dict/returns-dict) — both es.DB_PATH and msql.DB_PATH patched to same temp file.
+- Verification: 662/662 tests pass.
+
+
+### 78. Test coverage expansion — rag_memory, elira_phase21, elira_phase20_queue, elira_phase20_state (Claude Code)
+- Status: completed
+- Scope: added tests for four previously uncovered application modules.
+- tests/test_rag_and_phase21.py (46 tests): rag_memory cosine_sim (identical/orthogonal/empty/different-lengths/zero-norm/opposite); add_to_rag (success/short-rejected/empty-rejected/with-embedding/without-embedding); list_rag (empty/after-add); delete_rag; rag_stats (empty/with-embedding); search_rag (empty-query/keyword-match/embedding-match); get_rag_context (empty→empty-string/formats-items/respects-max-chars). elira_phase21 build_controller (with-queue/empty-queue/all-stages/load-queue-done/summary-count); persist/list_runs/get_run_parsed/get_run_not_found/newest_first/limit. elira_phase20_queue build_preview_queue (required-keys/count/items-order-status/empty/goal/sequential-order). elira_phase20_state build_checkpoints (list/queue-built-done); build_rollback (strategy/targets/empty); persist_state/list_states/newest_first/limit; prepare_execution_state.
+- Verification: 708/708 tests pass.
+
+
+### 79. Test coverage expansion — rag_memory_service, chat_service, skills, multi_agent_chain (Claude Code)
+- Status: completed
+- Scope: added tests for four previously uncovered application modules.
+- tests/test_rag_service_chat_skills_chain.py (45 tests): rag_memory_service constants (seed_rag_text/embed_model/embed_dim); CRUD with patched DB_PATH: add_to_rag (success/short-rejected)/list_rag/delete_rag/rag_stats (empty/after-add)/search_rag (empty-query/keyword-match)/get_rag_context (empty/after-add). chat_service normalize_profile (None/empty/default/valid/unknown-fallback); run_chat (success/includes-profile/error-returns-ok-false/with-history) — ollama.Client mocked. skills screenshot_capability_status (required-keys/feature-screenshot/bool-available); run_sql with patched ALLOWED_DB_DIRS (select-returns-rows/blocked-outside/nonexistent/blocked-drop/blocked-delete/select-max-rows); http_request blocked hosts (localhost/127.0.0.1/169.254.169.254). multi_agent_chain _clip (short-unchanged/long-truncated/empty/none/exact-limit); _is_llm_error (Russian-prefix/English-prefix/normal-false/empty-false/None-false).
+- Verification: 753/753 tests pass.
+
+
+### 80. Test coverage expansion — advanced, tool_service, project_patch (Claude Code)
+- Status: completed
+- Scope: added tests for three previously uncovered application modules.
+- tests/test_advanced_toolservice_projectpatch.py (36 tests): advanced open_project (existing-ok/nonexistent-fails/file-as-dir-fails); get_project_info (no-project/after-open); project_tree (no-project/after-open/max-items); read_project_file (no-project/success/nonexistent/path-escape); search_in_project (no-project/finds-match/no-match); close_project. tool_service list_tools (ok/empty); search_memory_tool (adds-profile/default-profile/limit-floor) — smart_memory mocked; run_tool (success/failure/event-bus-failure-swallowed) — execute_tool and emit_event mocked. project_patch ProjectPatchRuntime with callback file_store: preview_patch (not-found/changed/unchanged/hashes); apply_patch (success/no-change); replace_in_file (success/old-text-not-found); list_backups (empty/after-apply); rollback_patch (after-apply/missing-backup).
+- Verification: 789/789 tests pass.
