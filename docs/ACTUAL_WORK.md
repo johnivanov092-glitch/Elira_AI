@@ -1234,3 +1234,10 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for three previously uncovered application modules.
 - tests/test_image_reflection_plugins.py (30 tests): image_generation _clip_prompt (short/long/exact/empty/single-word/custom-max-words); get_status (ok-true/model-key/loaded-bool/loaded-false-when-no-pipe/gpu-key); unload_model (ok/message/sets-pipe-none). reflection_loop run_reflection_loop (ok-true/meta-stage/used-context-false/used-context-true/ok-false-when-fails/warnings-through/required-keys) — chat_service.run_chat mocked. plugins with patched PLUGINS_DIR+CONFIG_FILE: list_plugins (empty/after-load); load_plugins (finds-written-plugin/loaded-is-list); list_plugins (count/fields); get_plugin_info (found/not-found); enable_plugin/disable_plugin; reload_plugins.
 - Verification: 1108/1108 tests pass.
+
+
+### 87. Test coverage expansion — telegram (store + runtime), browser_agent stub (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application modules (three sub-files).
+- tests/test_telegram_and_browser_agent.py (29 tests): telegram/store config key-value CRUD: get_config_value (default-when-missing/after-set/override); update_telegram_config (ok/ignores-unknown-keys). register_user/list_telegram_users (stores-user/empty-initially/after-register). is_user_allowed (all/none/whitelist-after-toggle); toggle_user_access. log_message/get_telegram_log (empty-initially/after-log/respects-limit) — tg_store.DB_PATH patched to temp dir. telegram/runtime get_telegram_config (ok/required-keys/no-token-empty/token-masked-with-dots/running-is-bool); telegram_bot_status (ok/keys/running-false-initially). browser_agent BrowserAgent stub: search (not-implemented/accepts-max-results); run (not-implemented/accepts-args); screenshot (not-implemented); error-message-mentions-stub; all-methods-not-ok.
+- Verification: 1132/1132 tests pass.
