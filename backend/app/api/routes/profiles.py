@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.services.profiles_service import get_profiles
+from app.application.persona.profiles import get_profiles
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 

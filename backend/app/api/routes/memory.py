@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.schemas.memory import MemoryAddRequest, MemorySearchRequest
-from app.services.memory_service import (
+from app.application.memory.service import (
     add_memory,
     build_memory_context,
     delete_memory,

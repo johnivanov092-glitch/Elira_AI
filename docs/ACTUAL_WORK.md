@@ -989,3 +989,20 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Image and advanced RAG endpoints keep the same public route behavior while bypassing redundant service compatibility facades.
+
+### 68. Route imports for runtime, profiles, memory, and library
+- Status: completed
+- Scope: continued compatibility-import cleanup in the shared Codex branch after checking Claude's `claude/extract-skills-extra` branch and confirming it is too broad to merge wholesale.
+- Finish:
+  updated [backend/app/api/routes/runtime.py](/D:/AIWork/Elira_AI/backend/app/api/routes/runtime.py) to call `application.runtime.status` directly;
+  updated [backend/app/api/routes/profiles.py](/D:/AIWork/Elira_AI/backend/app/api/routes/profiles.py) to call `application.persona.profiles` directly;
+  updated [backend/app/api/routes/memory.py](/D:/AIWork/Elira_AI/backend/app/api/routes/memory.py) to call `application.memory.service` directly;
+  updated [backend/app/api/routes/library.py](/D:/AIWork/Elira_AI/backend/app/api/routes/library.py) to call `application.library.runtime` directly.
+- Verification:
+  `python -m py_compile backend/app/api/routes/runtime.py backend/app/api/routes/profiles.py backend/app/api/routes/memory.py backend/app/api/routes/library.py` -> passed;
+  targeted mocked route smoke for runtime/profiles/memory/library -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Four more routes now bypass redundant service facades while preserving public route behavior.
