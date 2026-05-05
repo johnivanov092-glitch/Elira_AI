@@ -1161,3 +1161,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   The auto-skills dispatcher now bypasses redundant skills/plugin/git/image service facades while keeping lazy import behavior.
+
+### 79. Autopipeline, Telegram, and web-query runtime imports
+- Status: completed
+- Scope: removed additional non-route service-facade imports where direct runtime modules already exist.
+- Finish:
+  updated [backend/app/application/autopipeline/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/autopipeline/runtime.py) to import chat runtime, multi-search, and plugins directly;
+  updated [backend/app/application/telegram/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/telegram/runtime.py) to import chat runtime directly;
+  updated [backend/app/infrastructure/search/web_query.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_query.py) to import temporal intent detection from `application.chat.temporal_intent`.
+- Verification:
+  `python -m py_compile backend/app/application/autopipeline/runtime.py backend/app/application/telegram/runtime.py backend/app/infrastructure/search/web_query.py` -> passed;
+  targeted direct-import smoke confirmed autopipeline prompt execution still sees legacy `agents_service.run_agent` patching, web-query cleaning works, and telegram runtime imports -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Autopipeline, Telegram, and web-query helpers now bypass redundant service facades while preserving legacy chat patch compatibility.
