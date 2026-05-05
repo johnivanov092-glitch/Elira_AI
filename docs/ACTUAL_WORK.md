@@ -1100,3 +1100,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   `/api/agents` and `/api/chat` no longer import chat agent entry points through `services.agents_service`, while existing legacy service patch points remain compatible.
+
+### 75. Agent Registry runtime facade
+- Status: completed
+- Scope: moved the Agent Registry route off the service namespace while preserving legacy mutable test/runtime state.
+- Finish:
+  added [backend/app/application/agent_registry/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/runtime.py) as the Agent Registry runtime module with DB path wiring, built-in seeding, and CRUD/run/state functions;
+  updated [backend/app/services/agent_registry.py](/D:/AIWork/Elira_AI/backend/app/services/agent_registry.py) to remain a `sys.modules` compatibility alias over `application.agent_registry.runtime`;
+  updated [backend/app/api/routes/agent_registry_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agent_registry_routes.py) to import the runtime directly.
+- Verification:
+  targeted Agent Registry compatibility smoke confirmed legacy service imports and application runtime share one module object, including `DB_PATH` and `_init_db`;
+  `python -m py_compile backend/app/application/agent_registry/runtime.py backend/app/services/agent_registry.py backend/app/api/routes/agent_registry_routes.py` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  `agent_registry_routes.py` no longer imports through `services.agent_registry`, while legacy callers can still patch and mutate the same runtime module.
