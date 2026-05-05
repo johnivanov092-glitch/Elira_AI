@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 
-from app.services.smart_memory import (
+from app.application.smart_memory import (
     add_memory, list_memories, delete_memory, clear_all_memories,
     search_memory, get_stats, extract_and_save,
 )

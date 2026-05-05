@@ -1006,3 +1006,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Four more routes now bypass redundant service facades while preserving public route behavior.
+
+### 69. Route imports for Telegram, smart memory, and extra skills
+- Status: completed
+- Scope: continued route compatibility-import cleanup for service facades that already re-export application packages.
+- Finish:
+  updated [backend/app/api/routes/telegram_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/telegram_routes.py) lazy imports to call `application.telegram`;
+  updated [backend/app/api/routes/smart_memory_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/smart_memory_routes.py) to call `application.smart_memory`;
+  updated [backend/app/api/routes/skills_extra_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/skills_extra_routes.py) to call `application.skills_extra` and `application.plugins`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/telegram_routes.py backend/app/api/routes/smart_memory_routes.py backend/app/api/routes/skills_extra_routes.py` -> passed;
+  targeted mocked route smoke for Telegram, smart-memory, extra-skill, and plugin endpoints -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Telegram, smart-memory, extra-skill, and plugin routes now bypass redundant service facades while keeping route contracts stable.
