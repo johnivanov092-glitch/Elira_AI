@@ -1132,3 +1132,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Agent OS startup and internal application helpers now depend on application runtimes instead of service aliases, without breaking legacy workflow patch points.
+
+### 77. Chat runtime direct application dependencies
+- Status: completed
+- Scope: reduced service-alias imports inside the newly extracted chat runtime without changing public chat entry points.
+- Finish:
+  updated [backend/app/application/chat/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/chat/runtime.py) to import chat execution, planner, reflection, response cache, run history, smart memory, RAG context, and Agent Registry resolution from application modules directly;
+  intentionally left `services.tool_service` for tool execution compatibility.
+- Verification:
+  targeted chat runtime direct-import smoke confirmed legacy `agents_service` still shares the runtime module and patching runtime globals remains effective;
+  `python -m py_compile backend/app/application/chat/runtime.py backend/app/services/agents_service.py` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Chat runtime composition now depends on application modules for extracted subsystems while preserving the legacy service alias behavior.
