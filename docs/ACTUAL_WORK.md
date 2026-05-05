@@ -1147,3 +1147,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Chat runtime composition now depends on application modules for extracted subsystems while preserving the legacy service alias behavior.
+
+### 78. Auto-skills direct application imports
+- Status: completed
+- Scope: removed remaining service-facade imports from the chat auto-skills dispatcher where application runtimes already exist.
+- Finish:
+  updated [backend/app/application/chat/auto_skills.py](/D:/AIWork/Elira_AI/backend/app/application/chat/auto_skills.py) to import skills, extra skills, plugins, Git helpers, and image generation/status from application modules directly.
+- Verification:
+  `python -m py_compile backend/app/application/chat/auto_skills.py` -> passed;
+  targeted auto-skills direct-import smoke with mocked HTTP, docx generation, and Git status paths -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  The auto-skills dispatcher now bypasses redundant skills/plugin/git/image service facades while keeping lazy import behavior.
