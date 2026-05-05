@@ -1022,3 +1022,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Telegram, smart-memory, extra-skill, and plugin routes now bypass redundant service facades while keeping route contracts stable.
+
+### 70. Debug library route import cleanup
+- Status: completed
+- Scope: removed the remaining debug route dependency on the library service facade where the application runtime is already available.
+- Finish:
+  updated [backend/app/api/routes/debug.py](/D:/AIWork/Elira_AI/backend/app/api/routes/debug.py) so `/api/debug/library` imports `list_library_files` and `build_library_context` from `application.library.runtime`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/debug.py` -> passed;
+  targeted mocked `/api/debug/library` route smoke -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  The debug library route now bypasses the redundant library service facade without changing response shape.

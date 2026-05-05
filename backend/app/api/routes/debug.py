@@ -107,7 +107,8 @@ def debug_search(q: str = "курс доллара к тенге 2025"):
 def debug_library():
     """Показывает что бекенд-библиотека инжектирует."""
     try:
-        from app.services.library_service import list_library_files, build_library_context
+        from app.application.library.runtime import list_library_files, build_library_context
+
         files = list_library_files()
         context = build_library_context()
         return {
