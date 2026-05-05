@@ -5,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.services.agents_service import run_agent
+from app.application.chat.runtime import run_agent
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 

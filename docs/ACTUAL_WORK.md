@@ -1084,3 +1084,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Agent OS monitor, event bus, and tool registry routes now bypass redundant service aliases while preserving route contracts.
+
+### 74. Chat agent runtime facade
+- Status: completed
+- Scope: moved chat/agent route orchestration entry points out of the service namespace while keeping legacy imports patch-compatible.
+- Finish:
+  added [backend/app/application/chat/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/chat/runtime.py) as the chat agent runtime composition module;
+  updated [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) to remain a `sys.modules` compatibility alias over `application.chat.runtime`;
+  updated [backend/app/api/routes/agents.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agents.py) and [backend/app/api/routes/chat.py](/D:/AIWork/Elira_AI/backend/app/api/routes/chat.py) to import `run_agent` / `run_agent_stream` from `application.chat.runtime`.
+- Verification:
+  targeted chat runtime compatibility smoke confirmed `app.services.agents_service` and `app.application.chat.runtime` share one module object;
+  `python -m py_compile backend/app/application/chat/runtime.py backend/app/services/agents_service.py backend/app/api/routes/agents.py backend/app/api/routes/chat.py` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  `/api/agents` and `/api/chat` no longer import chat agent entry points through `services.agents_service`, while existing legacy service patch points remain compatible.
