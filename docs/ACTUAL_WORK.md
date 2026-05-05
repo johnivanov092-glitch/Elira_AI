@@ -1192,3 +1192,31 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for three previously uncovered application modules.
 - tests/test_advanced_toolservice_projectpatch.py (36 tests): advanced open_project (existing-ok/nonexistent-fails/file-as-dir-fails); get_project_info (no-project/after-open); project_tree (no-project/after-open/max-items); read_project_file (no-project/success/nonexistent/path-escape); search_in_project (no-project/finds-match/no-match); close_project. tool_service list_tools (ok/empty); search_memory_tool (adds-profile/default-profile/limit-floor) — smart_memory mocked; run_tool (success/failure/event-bus-failure-swallowed) — execute_tool and emit_event mocked. project_patch ProjectPatchRuntime with callback file_store: preview_patch (not-found/changed/unchanged/hashes); apply_patch (success/no-change); replace_in_file (success/old-text-not-found); list_backups (empty/after-apply); rollback_patch (after-apply/missing-backup).
 - Verification: 789/789 tests pass.
+
+
+### 81. Test coverage expansion — project_brain_engine, project_brain_loop_service, project_map_service, runtime_status (Claude Code)
+- Status: completed
+- Scope: added tests for four previously uncovered application modules.
+- tests/test_project_brain_and_runtime_status.py (34 tests): ProjectBrainEngineService health (ok/all-integrations-false-when-none/true-when-provided); build_project_snapshot (ok/contains-python-files/nonexistent-dir/max-index-files); build_semantic_index (ok/only-includes-extensions); _chunk_text (empty/short/splits-long); search_index (finds-match/no-match/respects-limit); analyze_project_goal (ok); create_refactor_plan (ok/plan-id/steps). ProjectBrainLoopService run_loop/analyze (stub/accepts-args). ProjectMapService build/get_map (stub/accepts-args). runtime_status get_runtime_status (ok/required-keys/chat-count/persona-version/degraded-mode/no-warnings/warning-joined); init_runtime_state (calls-init-db/returns-ok); _storage_mode (valid-string); _chat_count_for (bad-path-returns-zero) — persona and web mocked.
+- Verification: 823/823 tests pass.
+
+
+### 82. Test coverage expansion — memory (context, search, store, web_knowledge), media (image_generation) (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application modules covering 5 sub-files.
+- tests/test_memory_and_media.py (87 tests): memory/context _memory_type_weight (profile-highest/chat-lowest/pinned-bonus/manual-bonus/unknown-default/none-type/empty-string); _clean_memory_text (short-unchanged/long-truncated/whitespace-normalized/empty/none); _memory_query_words (words-min-3/empty/none/cyrillic/short-excluded/3-chars-included); default_content_hash (same/different/case-insensitive/whitespace-stripped/returns-string). memory/search vector_memory_capability_status (required-keys/feature/bool-available/valid-mode/list-packages); keyword_search_memory (finds-match/empty-query/no-match/respects-top-k/empty-rows/exact-phrase). memory/web_knowledge clean_browser_text (empty/none/strips/tabs/cr/spaces); chunk_browser_text (empty/short/long-splits/not-empty); build_browser_rag_records (empty→empty/summary-produces-record/page-chunks/all-required-fields); build_web_knowledge_records (empty→empty/web-summary/contains-query/source-kind/none-query). memory/store with temp-file DB: list_mem_profiles/create (success/empty/too-long)/delete/delete-default-noop; add_memory (success/empty-rejected); load_memories (empty/after-add/limit); delete_memory; clear_memories; set_memory_pin; export_memories. media/image_generation strip_ansi (strips-codes/plain/none/empty/reset); contains_cyrillic (true/false/mixed/empty/none/yo-letter); hf_access_hint (gated/401/403/logged-in/unrelated-empty/empty/none/accept-conditions).
+- Verification: 910/910 tests pass.
+
+
+### 83. Test coverage expansion — temporal_intent, project_brain, project_brain functions (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application modules.
+- tests/test_temporal_intent_and_project_brain.py (39 tests): temporal_intent _contains_any (match/no-match/empty-terms/empty-text); _collect_years (single/multiple/deduplicated/no-year/ignores-non-year/sorted); detect_temporal_intent hard (today/news/current-year/price/russian)/soft (past-year)/stable-historical/none (general/empty); required-keys; years-list; reasoning-depth; current-year-reflects-now; signals-populated; requires-web-false; freshness-sensitive. project_brain scan_project/find_code/read_file/preview_patch/apply_patch/apply_patch_and_push (no-autopush/preview-fails/apply-fails) — project_service and project_patch_service mocked. ProjectBrainService class (scan_project/find_code/read_file/apply_patch_and_push).
+- Verification: 949/949 tests pass.
+
+
+### 84. Test coverage expansion — ollama_models, ollama_runtime, python_runner, library_sqlite (Claude Code)
+- Status: completed
+- Scope: added tests for four previously uncovered application modules.
+- tests/test_ollama_python_runner_library.py (59 tests): ollama_models get_models (ok/empty/connection-error/fields-present/tags-url-local) — requests mocked. ollama_runtime list_ollama_models async (object-response/dict-response/model-attribute/empty/error/no-name-skipped) — ollama.list mocked. python_runner _safe_import (allowed/blocked-os/blocked-subprocess/blocked-sys/allowed-imports-set/safe-builtins); execute_python (empty/none/arithmetic/print-captured/multiple-assignments/allowed-import-math/blocked-os/blocked-subprocess/syntax-error/runtime-error/stdout-stderr-keys/locals-no-dunder/list-comprehension/json-allowed/division-by-zero). library_sqlite safe_disk_name (returns-string/extension/sanitized/digest/same-content/empty-fallback/stem-max); extract_preview (text/python/markdown/json/unknown/binary/truncated-12000); CRUD (list-empty/add-empty-rejected/add-success/list-after-add/writes-to-disk/search-by-name/search-no-match/toggle-on/toggle-off/get-context-empty/get-context-after-toggle/delete-removes-db/delete-removes-disk) — DB_PATH and UPLOADS_DIR patched.
+- Verification: 1008/1008 tests pass.
