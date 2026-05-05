@@ -9,7 +9,7 @@ from app.schemas.agent_monitor import (
     AgentLimitUpdate,
     SystemHealth,
 )
-from app.services import agent_monitor
+from app.application.monitoring import runtime as agent_monitor
 
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])

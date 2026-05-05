@@ -13,7 +13,7 @@ from app.schemas.tool_registry import (
     ToolListResponse,
     ToolUpdate,
 )
-from app.services import tool_registry as registry
+from app.application.tool_registry import runtime as registry
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])
 

@@ -1068,3 +1068,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Skills routes and project-brain capability checks now bypass the redundant skills service facade.
+
+### 73. Agent OS route import cleanup
+- Status: completed
+- Scope: continued route compatibility cleanup for Agent OS routes whose service modules are already aliases over application runtimes.
+- Finish:
+  updated [backend/app/api/routes/agent_monitor_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agent_monitor_routes.py) to import `application.monitoring.runtime`;
+  updated [backend/app/api/routes/event_bus_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/event_bus_routes.py) to import `application.event_bus.runtime`;
+  updated [backend/app/api/routes/tool_registry_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/tool_registry_routes.py) to import `application.tool_registry.runtime`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/agent_monitor_routes.py backend/app/api/routes/event_bus_routes.py backend/app/api/routes/tool_registry_routes.py` -> passed;
+  targeted mocked Agent OS route smoke for monitor, event bus, and tool registry -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Agent OS monitor, event bus, and tool registry routes now bypass redundant service aliases while preserving route contracts.
