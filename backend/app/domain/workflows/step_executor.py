@@ -12,7 +12,7 @@ from string import Formatter
 from typing import Any
 
 from app.application.workflows.events import emit_workflow_event
-from app.services.agent_monitor import WORKFLOW_ENGINE_AGENT_ID
+from app.application.monitoring.runtime import WORKFLOW_ENGINE_AGENT_ID
 from app.application.agent_registry.sandbox import preflight_or_raise
 
 STEP_SUCCESS = "on_success"
@@ -120,7 +120,7 @@ def _execute_agent_step(
     run_context: dict[str, Any],
     run_id: str,
 ) -> dict[str, Any]:
-    from app.services.agents_service import run_agent
+    from app.application.chat.runtime import run_agent
 
     config = step.get("config", {}) or {}
     prompt_template = str(config.get("prompt_template", "")).strip()

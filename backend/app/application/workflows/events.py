@@ -11,7 +11,7 @@ def emit_workflow_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus.runtime import emit_event
 
         emit_event(
             event_type=event_type,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.services.agent_monitor import record_agent_run_metric
+from app.application.monitoring.runtime import record_agent_run_metric
 
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def emit_agent_os_event(
     payload: dict[str, Any] | None = None,
 ) -> None:
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus.runtime import emit_event
 
         emit_event(
             event_type=event_type,
@@ -79,7 +79,7 @@ def record_registry_agent_run(
         return
 
     try:
-        from app.services.agent_registry import record_agent_run
+        from app.application.agent_registry.runtime import record_agent_run
 
         record_agent_run(
             {

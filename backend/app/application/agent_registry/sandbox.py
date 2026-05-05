@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.agent_monitor import (
+from app.application.monitoring.runtime import (
     count_agent_runs_last_hour,
     ensure_agent_limit,
     record_sandbox_block,

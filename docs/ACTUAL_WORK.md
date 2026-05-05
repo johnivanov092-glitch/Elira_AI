@@ -1116,3 +1116,19 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   `agent_registry_routes.py` no longer imports through `services.agent_registry`, while legacy callers can still patch and mutate the same runtime module.
+
+### 76. Agent OS internal runtime imports
+- Status: completed
+- Scope: continued cleanup after route-layer service imports were removed; moved startup and Agent OS internal helpers to existing application runtimes.
+- Finish:
+  updated [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) startup seeding and runtime initialization imports to use application runtimes;
+  updated Agent OS sandbox, chat monitoring/event recording, workflow events/execution, monitoring runtime/reporting, and workflow step executor imports to use application runtimes where compatibility-safe;
+  intentionally left workflow tool execution on `services.tool_service` because existing workflow tests patch that facade.
+- Verification:
+  `python -m py_compile` on all touched runtime/startup files -> passed;
+  targeted startup/workflow compatibility smoke confirmed `app.main` imports, service alias patching still affects workflow agent step execution, and the application chat runtime remains the active module object;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Agent OS startup and internal application helpers now depend on application runtimes instead of service aliases, without breaking legacy workflow patch points.
