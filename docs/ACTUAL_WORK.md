@@ -1053,3 +1053,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Git and Ollama model routes now depend on application facades instead of service facades while legacy service imports remain compatible.
+
+### 72. Skills route import cleanup
+- Status: completed
+- Scope: continued route compatibility cleanup for the skills service facade.
+- Finish:
+  updated [backend/app/api/routes/skills_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/skills_routes.py) to call `application.skills` directly;
+  updated [backend/app/api/routes/project_brain.py](/D:/AIWork/Elira_AI/backend/app/api/routes/project_brain.py) so project-brain capability status imports `screenshot_capability_status` from `application.skills`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/skills_routes.py backend/app/api/routes/project_brain.py` -> passed;
+  targeted mocked route smoke for skills endpoints and project-brain status -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Skills routes and project-brain capability checks now bypass the redundant skills service facade.
