@@ -1,7 +1,7 @@
-"""Compatibility facade for Git integration helpers."""
+"""Application-layer wrapper for infrastructure Git runtime."""
 from __future__ import annotations
 
-from app.application.git.runtime import (
+from app.infrastructure.git.runtime import (
     format_git_context,
     git_branches,
     git_commit,

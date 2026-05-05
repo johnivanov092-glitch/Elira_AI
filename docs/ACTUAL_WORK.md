@@ -1036,3 +1036,20 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   The debug library route now bypasses the redundant library service facade without changing response shape.
+
+### 71. Git and Ollama application facades
+- Status: completed
+- Scope: continued route compatibility cleanup for routes that still depended on service facades backed directly by infrastructure modules.
+- Finish:
+  added [backend/app/application/git/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/git/runtime.py) and [backend/app/application/git/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/git/__init__.py) as the application facade for Git helpers;
+  added [backend/app/application/ollama_models/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/ollama_models/runtime.py) and [backend/app/application/ollama_models/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/ollama_models/__init__.py) as the application facade for Ollama model listing;
+  updated [backend/app/api/routes/git_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/git_routes.py), [backend/app/api/routes/models.py](/D:/AIWork/Elira_AI/backend/app/api/routes/models.py), and [backend/app/api/routes/elira_state.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_state.py) to call those application facades;
+  updated `services/git_service.py`, `services/models_service.py`, and `services/ollama_runtime_service.py` to remain compatibility facades over the new application modules.
+- Verification:
+  `python -m py_compile` on the new facades, touched routes, and touched service facades -> passed;
+  targeted mocked route smoke for Git, `/api/models`, and `/api/elira/models` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Git and Ollama model routes now depend on application facades instead of service facades while legacy service imports remain compatible.

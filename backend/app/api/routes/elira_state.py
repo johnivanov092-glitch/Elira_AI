@@ -14,7 +14,7 @@ from app.application.elira_memory.service import (
     add_message,
 )
 from app.application.elira_memory.settings import get_settings, save_settings
-from app.services.ollama_runtime_service import list_ollama_models
+from app.application.ollama_models import list_ollama_models
 
 router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 

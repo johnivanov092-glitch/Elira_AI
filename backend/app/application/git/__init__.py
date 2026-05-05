@@ -1,4 +1,4 @@
-"""Compatibility facade for Git integration helpers."""
+"""Application facade for Git integration helpers."""
 from __future__ import annotations
 
 from app.application.git.runtime import (
