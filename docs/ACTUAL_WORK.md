@@ -1323,3 +1323,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 576 tests OK.
 - Result:
   An eleventh Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 91. Selective Claude test import — sandbox and memory service facade
+- Status: completed
+- Scope: selectively imported Claude commit `76c5684` while keeping the current Codex application package layout.
+- Finish:
+  added [backend/tests/test_agent_sandbox_and_memory_service.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_sandbox_and_memory_service.py) covering Agent Registry sandbox helper/preflight behavior and the memory service facade over smart memory;
+  adapted Claude-only imports from `application.agent_sandbox.runtime` and `application.memory_service.runtime` to current modules `application.agent_registry.sandbox` and `application.memory.service`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_sandbox_and_memory_service` -> 44 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 620 tests OK.
+- Result:
+  A twelfth Claude test commit was integrated without adding redundant compatibility packages.
