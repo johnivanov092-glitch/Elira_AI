@@ -1283,3 +1283,10 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for the previously uncovered application/chat/post_processing module.
 - tests/test_chat_post_processing.py (28 tests): _EXEC_TRIGGERS (is-list/not-empty/execute/calculate/run); apply_identity_guard (returns-dict/unchanged-passes-through/changed-reflects/appends-timeline/no-timeline-when-unchanged) — guard_identity_response mocked; apply_provenance_guard (returns-dict/unchanged/changed/appends-timeline) — guard_provenance_response mocked; maybe_auto_exec_python (disabled-unchanged/no-trigger-unchanged/trigger-no-code/trigger-short-code/trigger-executes/returns-string); GuardedResponse (has-text/has-identity-guard/has-provenance-guard/has-changed); apply_response_guards (returns-GuardedResponse/has-text/has-changed-bool/no-exec-when-disabled).
 - Verification: 1391/1391 tests pass.
+
+
+### 94. Test coverage expansion — chat/service (pure helpers + frozen dataclasses) and chat/stream_service (event builders) (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application/chat sub-modules.
+- tests/test_chat_service_stream.py (35 tests): service build_task_context (returns-string/contains-route/lists-tools/no-tools-fallback/multiple-tools-joined); build_disabled_skills (returns-set/all-enabled-empty-set/all-disabled-nonempty/web-search-in-set/web-search-not-in-enabled/python-exec-in-set/strings-only). ChatPlanPreparation/ChatRunBootstrap/ChatExecutionPreparation/ChatPromptPreparation (fields/frozen-raises-on-mutation). stream_service build_selected_tools_phase_event (dict-when-present/none-when-empty/phase-is-tools/has-token/has-done); build_stream_phase_event (returns-dict/has-phase/has-done/message-reflected/full-text-dict); iter_text_stream_events (yields-events/are-dicts/have-token/have-done/done-false-for-tokens/tokens-reconstruct-text/empty-yields-empty-token/single-word-yields-event).
+- Verification: 1426/1426 tests pass.
