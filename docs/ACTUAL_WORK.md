@@ -1351,3 +1351,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 661 tests OK.
 - Result:
   A thirteenth Claude test commit was integrated without adding a redundant `run_history_service` package.
+
+### 93. Selective Claude test import — Telegram/browser stub
+- Status: completed
+- Scope: selectively imported Claude commit `64ac687` while keeping the current browser-agent facade layout.
+- Finish:
+  added [backend/tests/test_telegram_and_browser_agent.py](/D:/AIWork/Elira_AI/backend/tests/test_telegram_and_browser_agent.py) covering `application.telegram.store`, `application.telegram.runtime`, and the browser-agent compatibility facade;
+  adapted Claude-only import from `application.browser_agent.runtime` to current `services.browser_agent`, removed non-ASCII decorative comments, and added the missing `BrowserAgent.search` stub method used by the tool registry.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_telegram_and_browser_agent` -> 29 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 690 tests OK.
+- Result:
+  A fourteenth Claude test commit was integrated, and the browser-agent facade now matches the tool registry call surface.
