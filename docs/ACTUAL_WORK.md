@@ -1271,3 +1271,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 437 tests OK.
 - Result:
   A seventh Claude test commit was integrated without widening the application package layout.
+
+### 87. Selective Claude test import — chat service/stream helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `39264a5` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_service_stream.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_service_stream.py) covering `application.chat.service` pure helpers/frozen preparation dataclasses and `application.chat.stream_service` event builders.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_service_stream` -> 35 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 472 tests OK.
+- Result:
+  An eighth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
