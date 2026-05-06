@@ -1190,3 +1190,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 134 tests OK.
 - Result:
   One Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 81. Selective Claude test import — memory web knowledge/bootstrap
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `b8dc5c5` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_memory_web_knowledge_bootstrap.py](/D:/AIWork/Elira_AI/backend/tests/test_memory_web_knowledge_bootstrap.py) covering `application.memory.web_knowledge` pure string helpers and `application.memory.bootstrap` settings file I/O.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_memory_web_knowledge_bootstrap` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 181 tests OK.
+- Result:
+  A second Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
