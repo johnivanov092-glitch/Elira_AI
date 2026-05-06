@@ -1325,3 +1325,10 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for two previously uncovered application/chat sub-modules.
 - tests/test_chat_auto_skills_agent_os.py (32 tests): auto_skills _FILE_TRIGGERS_WORD (is-list/not-empty/strings/contains-docx-or-word); _FILE_TRIGGERS_EXCEL (is-list/not-empty/strings/contains-excel-or-xlsx); maybe_generate_files (disabled-empty/string-type/no-trigger-empty/short-answer-no-file); run_auto_skills (returns-string/neutral-empty/all-disabled-empty/word-hint-when-file-gen-enabled/excel-hint-enabled/no-triggers-empty/empty-input-empty). agent_os resolve_agent_os_source_id (returns-string/explicit-wins/registry-fallback/both-none-empty/empty-uses-registry/registry-no-id-empty/none-registry-empty); emit_agent_os_event (returns-none/no-raise/no-raise-with-payload); record_registry_agent_run (none-returns-none/empty-no-raise/valid-no-raise).
 - Verification: 1682/1682 tests pass.
+
+
+### 100. Test coverage expansion — memory/web_knowledge pure string helpers, memory/bootstrap settings I/O (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered memory sub-modules — all pure functions + file I/O.
+- tests/test_memory_web_knowledge_bootstrap.py (47 tests): web_knowledge clean_browser_text (returns-string/empty/none/collapses-spaces/replaces-tabs/replaces-cr/strips/normal-unchanged/multiple-spaces); chunk_browser_text (returns-list/empty-empty/short-one-chunk/equals-input/long-splits/chunks-strings/chunk-length-size/whitespace-excluded); build_browser_rag_records (returns-list/empty-inputs-empty/summary-browser-summary/page-text-browser-page/records-url/records-goal/records-content); build_web_knowledge_records (returns-list/empty-context/none-context/web-summary/web-chunk/goal-from-query/source-kind/records-content). bootstrap SETTINGS_DEFAULTS (is-dict/not-empty/active-mem-profile/model/values-strings); load_settings (missing-returns-defaults/returns-dict/merged-with-defaults/override-profile/invalid-json-defaults); save_settings (returns-none/creates-file/saved-json/roundtrip/invalid-path-no-raise).
+- Verification: 1729/1729 tests pass.
