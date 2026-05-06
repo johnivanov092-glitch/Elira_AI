@@ -1379,3 +1379,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
 - Result:
   A fifteenth Claude test commit was integrated without changing terminal runtime behavior.
+
+### 95. Project patch service import cleanup
+- Status: completed
+- Scope: removed one remaining application-layer dependency on the project filesystem service facade.
+- Finish:
+  updated [backend/app/application/project_patch/service.py](/D:/AIWork/Elira_AI/backend/app/application/project_patch/service.py) so `ProjectPatchService` imports `BASE_DIR`, `read_project_file`, and `write_project_file` directly from `infrastructure.storage.project_files` instead of going through `services.project_service`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -c "..."` import/identity smoke for `ProjectPatchService` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
+- Result:
+  `application.project_patch` no longer depends on the legacy project-service facade; the public `services.project_patch_service` compatibility import remains intact.

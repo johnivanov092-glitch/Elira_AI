@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from app.application.project_patch.runtime import ProjectPatchRuntime
-from app.services.project_service import BASE_DIR, read_project_file, write_project_file
+from app.infrastructure.storage.project_files import (
+    BASE_DIR,
+    read_project_file,
+    write_project_file,
+)
 
 
 class ProjectPatchService(ProjectPatchRuntime):
