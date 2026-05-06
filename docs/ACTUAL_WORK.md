@@ -1392,3 +1392,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
 - Result:
   `application.project_patch` no longer depends on the legacy project-service facade; the public `services.project_patch_service` compatibility import remains intact.
+
+### 96. Monitoring tool-list import cleanup
+- Status: completed
+- Scope: removed one monitoring-layer dependency on the Agent OS tool-service facade.
+- Finish:
+  updated [backend/app/application/monitoring/store.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/store.py) so `all_known_tools()` imports `list_tools` directly from `application.tool_registry.service` instead of `services.tool_service`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase5 backend.tests.test_workflows_event_monitoring_pure` -> 83 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
+- Result:
+  Monitoring no longer reaches the tool registry through the legacy `services.tool_service` facade; seeded Agent OS limits still use the same tool payload.
