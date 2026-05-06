@@ -1276,3 +1276,10 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for two previously uncovered application/chat sub-modules.
 - tests/test_chat_prompting_timeline.py (38 tests): prompting wants_explicit_datetime_answer (ru-date/ru-time/ru-number/ru-day-of-week/ru-current-time/en-what-time/en-current-date/en-todays-date/general-false/empty-false/none-false/returns-bool/case-insensitive/unrelated-false); compose_human_style_rules (returns-string/contains-rules/contains-mode/none-defaults/contains-years/freshness-reflected/depth-reflected/non-empty/no-years-shows-none); build_runtime_datetime_context (nonempty/returns-string/non-datetime-string/empty-string/contains-year/contains-runtime-marker). timeline append_timeline (appends-to-list/has-step/has-title/has-status/has-detail/multiple-appends/returns-none/is-dict/exactly-four-keys).
 - Verification: 1363/1363 tests pass.
+
+
+### 93. Test coverage expansion — chat/post_processing (identity/provenance guards, auto-exec, GuardedResponse) (Claude Code)
+- Status: completed
+- Scope: added tests for the previously uncovered application/chat/post_processing module.
+- tests/test_chat_post_processing.py (28 tests): _EXEC_TRIGGERS (is-list/not-empty/execute/calculate/run); apply_identity_guard (returns-dict/unchanged-passes-through/changed-reflects/appends-timeline/no-timeline-when-unchanged) — guard_identity_response mocked; apply_provenance_guard (returns-dict/unchanged/changed/appends-timeline) — guard_provenance_response mocked; maybe_auto_exec_python (disabled-unchanged/no-trigger-unchanged/trigger-no-code/trigger-short-code/trigger-executes/returns-string); GuardedResponse (has-text/has-identity-guard/has-provenance-guard/has-changed); apply_response_guards (returns-GuardedResponse/has-text/has-changed-bool/no-exec-when-disabled).
+- Verification: 1391/1391 tests pass.
