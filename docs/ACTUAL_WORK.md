@@ -1297,3 +1297,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 500 tests OK.
 - Result:
   A ninth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 89. Selective Claude test import — chat prompting/timeline helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `8aa1e56` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_prompting_timeline.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_prompting_timeline.py) covering `application.chat.prompting` datetime/prompt-rule helpers and `application.chat.timeline.append_timeline`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_prompting_timeline` -> 38 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 538 tests OK.
+- Result:
+  A tenth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
