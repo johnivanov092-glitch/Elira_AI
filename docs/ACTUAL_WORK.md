@@ -1365,3 +1365,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 690 tests OK.
 - Result:
   A fourteenth Claude test commit was integrated, and the browser-agent facade now matches the tool registry call surface.
+
+### 94. Selective Claude test import — smart memory/terminal runtime
+- Status: completed
+- Scope: selectively imported Claude commit `fb12dc4` while preserving the current terminal runtime API.
+- Finish:
+  added [backend/tests/test_smart_memory_and_terminal.py](/D:/AIWork/Elira_AI/backend/tests/test_smart_memory_and_terminal.py) covering `application.smart_memory.extraction`, `application.smart_memory.store`, and `application.terminal.runtime`;
+  kept smart-memory tests isolated on a temp SQLite DB and adapted Claude's terminal assertions to the current dict-based `get_cwd()` contract and localized error strings.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_smart_memory_and_terminal` -> 70 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
+- Result:
+  A fifteenth Claude test commit was integrated without changing terminal runtime behavior.
