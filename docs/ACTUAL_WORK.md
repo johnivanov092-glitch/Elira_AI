@@ -1420,3 +1420,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 833 tests OK.
 - Result:
   Batch #102 was integrated with a small canonical runtime and without adding a new eager `ollama` import path.
+
+### 98. Selective Claude test import — response cache store / advanced runtime
+- Status: completed
+- Scope: selectively imported Claude commit `4d4df92` and added the missing application runtime expected by the tests.
+- Finish:
+  added [backend/tests/test_response_cache_store_advanced_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_response_cache_store_advanced_runtime.py) covering response-cache store callbacks and advanced project-mode runtime behavior;
+  added [backend/app/application/advanced/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/advanced/runtime.py) and [backend/app/application/advanced/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/advanced/__init__.py) for project open/info/tree/read/search/close helpers;
+  updated [backend/app/api/routes/advanced_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/advanced_routes.py) so project-mode endpoints delegate to the application runtime.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_response_cache_store_advanced_runtime` -> 50 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 883 tests OK.
+- Result:
+  Batch #103 is integrated without wholesale-merging Claude branch; advanced project-mode filesystem state is no longer owned by the route module.

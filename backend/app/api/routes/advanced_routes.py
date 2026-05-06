@@ -2,14 +2,13 @@
 advanced_routes.py — роуты для Multi-agent, RAG, Project mode.
 """
 from __future__ import annotations
-import os
-from pathlib import Path
-from typing import Optional
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import logging
+
+from app.application.advanced import runtime as project_runtime
 
 router = APIRouter(prefix="/api/advanced", tags=["advanced"])
 logger = logging.getLogger(__name__)
@@ -103,11 +102,9 @@ def rag_get_stats():
 # PROJECT MODE
 # ═══════════════════════════════════════════════════════════════
 
-# Храним текущий открытый проект
-_project_path: str = ""
-
-BLOCKED_DIRS = {".git", "node_modules", ".venv", "__pycache__", "dist", "build", ".next", ".cache", "target", ".idea", ".vs"}
-TEXT_EXTS = {".py",".js",".jsx",".ts",".tsx",".css",".html",".json",".yml",".yaml",".toml",".ini",".md",".txt",".rs",".go",".java",".c",".cpp",".h",".sh",".bat",".sql",".xml",".csv",".env",".bas",".vba",".cls"}
+# Project-mode compatibility constants
+BLOCKED_DIRS = project_runtime.BLOCKED_DIRS
+TEXT_EXTS = project_runtime.TEXT_EXTS
 
 
 class OpenProjectRequest(BaseModel):
@@ -127,107 +124,32 @@ class SearchProjectRequest(BaseModel):
 @router.post("/project/open")
 def open_project(payload: OpenProjectRequest):
     """Открывает проект по пути."""
-    global _project_path
-    p = Path(payload.path).resolve()
-    if not p.exists() or not p.is_dir():
-        return {"ok": False, "error": f"Директория не найдена: {payload.path}"}
-    _project_path = str(p)
-    return {"ok": True, "path": _project_path, "name": p.name}
+    return project_runtime.open_project(payload.path)
 
 
 @router.get("/project/info")
 def project_info():
-    if not _project_path:
-        return {"ok": False, "error": "Проект не открыт"}
-    p = Path(_project_path)
-    return {"ok": True, "path": _project_path, "name": p.name, "exists": p.exists()}
+    return project_runtime.get_project_info()
 
 
 @router.get("/project/tree")
 def project_tree(max_depth: int = 3, max_items: int = 300):
     """Дерево файлов проекта."""
-    if not _project_path:
-        return {"ok": False, "error": "Проект не открыт", "items": []}
-    root = Path(_project_path)
-    if not root.exists():
-        return {"ok": False, "error": "Путь не существует", "items": []}
-
-    items = []
-    def walk(dir_path, depth, prefix=""):
-        if depth > max_depth or len(items) >= max_items:
-            return
-        try:
-            entries = sorted(dir_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-        except PermissionError:
-            return
-        for entry in entries:
-            if entry.name.startswith(".") and entry.name not in (".env",):
-                continue
-            if entry.name in BLOCKED_DIRS:
-                continue
-            rel = str(entry.relative_to(root)).replace("\\", "/")
-            if entry.is_dir():
-                items.append({"path": rel, "type": "dir", "name": entry.name})
-                walk(entry, depth + 1)
-            else:
-                items.append({"path": rel, "type": "file", "name": entry.name, "size": entry.stat().st_size, "ext": entry.suffix.lower()})
-            if len(items) >= max_items:
-                return
-    walk(root, 0)
-    return {"ok": True, "items": items, "count": len(items), "root": _project_path}
+    return project_runtime.project_tree(max_depth=max_depth, max_items=max_items)
 
 
 @router.post("/project/read")
 def read_project_file(payload: ReadFileRequest):
     """Читает файл из проекта."""
-    if not _project_path:
-        return {"ok": False, "error": "Проект не открыт"}
-    full = (Path(_project_path) / payload.path).resolve()
-    if not str(full).startswith(_project_path):
-        return {"ok": False, "error": "Выход за пределы проекта"}
-    if not full.exists() or not full.is_file():
-        return {"ok": False, "error": f"Файл не найден: {payload.path}"}
-    try:
-        content = full.read_text(encoding="utf-8", errors="replace")[:payload.max_chars]
-        return {"ok": True, "path": payload.path, "content": content, "size": full.stat().st_size}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    return project_runtime.read_project_file(payload.path, max_chars=payload.max_chars)
 
 
 @router.post("/project/search")
 def search_in_project(payload: SearchProjectRequest):
     """Поиск текста по файлам проекта."""
-    if not _project_path:
-        return {"ok": False, "error": "Проект не открыт"}
-    root = Path(_project_path)
-    query = payload.query.lower()
-    results = []
-
-    for fpath in root.rglob("*"):
-        if len(results) >= payload.max_results:
-            break
-        if not fpath.is_file():
-            continue
-        if fpath.suffix.lower() not in TEXT_EXTS:
-            continue
-        rel = str(fpath.relative_to(root)).replace("\\", "/")
-        if any(b in rel for b in BLOCKED_DIRS):
-            continue
-        try:
-            content = fpath.read_text(encoding="utf-8", errors="replace")
-            for i, line in enumerate(content.split("\n"), 1):
-                if query in line.lower():
-                    results.append({"path": rel, "line": i, "text": line.strip()[:200]})
-                    if len(results) >= payload.max_results:
-                        break
-        except Exception:
-            continue
-
-    return {"ok": True, "items": results, "count": len(results), "query": payload.query}
+    return project_runtime.search_in_project(payload.query, max_results=payload.max_results)
 
 
 @router.get("/project/close")
 def close_project():
-    global _project_path
-    _project_path = ""
-    return {"ok": True}
+    return project_runtime.close_project()
