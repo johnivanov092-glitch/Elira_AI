@@ -18,14 +18,20 @@ PYTHON_EXEC_TIMEOUT = 30
 
 FIGURE_SAVER = textwrap.dedent(
     """
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import atexit, os, pathlib
 
 _FIG_DIR = pathlib.Path(os.environ.get("_FIG_DIR", "."))
 
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+
 def _save_all_figures():
+    if plt is None:
+        return
     for n in plt.get_fignums():
         fig = plt.figure(n)
         out = _FIG_DIR / f"fig_{n}.png"

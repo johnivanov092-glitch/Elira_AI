@@ -1229,3 +1229,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 257 tests OK.
 - Result:
   A fourth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 84. Selective Claude test import — tool registry/persona/python lab
+- Status: completed
+- Scope: selectively imported Claude commit `da13e83` after validating it against the current Codex branch; fixed one real runtime issue exposed by the new tests.
+- Finish:
+  added [backend/tests/test_tool_registry_persona_evolution_python_lab.py](/D:/AIWork/Elira_AI/backend/tests/test_tool_registry_persona_evolution_python_lab.py) covering `application.tool_registry.store`, `application.persona.evolution`, and `application.code_agent.python_lab`;
+  updated [backend/app/application/code_agent/python_lab.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/python_lab.py) so the generated figure-capture prelude treats matplotlib as optional, allowing non-plot Python snippets to run when matplotlib is not installed.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_tool_registry_persona_evolution_python_lab` -> 50 tests OK;
+  direct `execute_python_with_capture` smoke for `print("hello")` and `x = 1` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 307 tests OK.
+- Result:
+  A fifth Claude test commit was integrated, and Python Lab no longer hard-fails ordinary snippets in environments without matplotlib.
