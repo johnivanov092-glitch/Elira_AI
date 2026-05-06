@@ -1284,3 +1284,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 472 tests OK.
 - Result:
   An eighth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 88. Selective Claude test import — chat post-processing guards
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `39cce57` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_post_processing.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_post_processing.py) covering `application.chat.post_processing` identity/provenance guard plumbing, auto-exec trigger handling, and `GuardedResponse`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_post_processing` -> 28 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 500 tests OK.
+- Result:
+  A ninth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
