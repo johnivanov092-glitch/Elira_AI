@@ -1244,3 +1244,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 307 tests OK.
 - Result:
   A fifth Claude test commit was integrated, and Python Lab no longer hard-fails ordinary snippets in environments without matplotlib.
+
+### 85. Selective Claude test import — smart search/registry/run-history helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `38ff868` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_smart_search_agent_registry_run_history.py](/D:/AIWork/Elira_AI/backend/tests/test_smart_search_agent_registry_run_history.py) covering `application.smart_memory.search`, `application.agent_registry.store`, and `application.run_history.store` helper behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_smart_search_agent_registry_run_history` -> 54 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 361 tests OK.
+- Result:
+  A sixth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
