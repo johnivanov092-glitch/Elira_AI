@@ -1405,3 +1405,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
 - Result:
   Monitoring no longer reaches the tool registry through the legacy `services.tool_service` facade; seeded Agent OS limits still use the same tool payload.
+
+### 97. Selective Claude test import — stream service / multi-agent chain helpers
+- Status: completed
+- Scope: selectively imported Claude commit `31ee4c3` without bringing over its legacy LLM implementation.
+- Finish:
+  added [backend/tests/test_stream_service_extra_multi_agent_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_stream_service_extra_multi_agent_pure.py) covering extra `application.chat.stream_service` helpers and pure multi-agent chain helpers;
+  added [backend/app/application/multi_agent_chain/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/multi_agent_chain/runtime.py) with `_clip`, `_is_llm_error`, and `run_multi_agent` delegation to the workflow engine;
+  updated [backend/app/services/multi_agent_chain.py](/D:/AIWork/Elira_AI/backend/app/services/multi_agent_chain.py) to re-export from the new application runtime.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_stream_service_extra_multi_agent_pure` -> 73 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 833 tests OK.
+- Result:
+  Batch #102 was integrated with a small canonical runtime and without adding a new eager `ollama` import path.
