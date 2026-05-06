@@ -1318,3 +1318,10 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for two previously uncovered workflow sub-modules.
 - tests/test_workflows_lifecycle_multi_agent.py (44 tests): lifecycle merge_resumed_context (returns-dict/base-merged/patch-overrides/patch-adds/no-context-key/none-patch/no-mutation); fail_missing_step (returns-dict/status-failed/emits-step-failed/emits-run-completed/two-events) — mock updater/recorder/emitter; pause_after_step (returns-dict/status-paused/emits-paused/one-event); fail_step_and_finish (returns-dict/status-failed/emits-completed); complete_after_step (returns-dict/status-completed/emits-completed); advance_to_next_step (returns-dict/status-running/next-step-id-passed); cancel_run (returns-dict/status-cancelled/emits-cancelled). multi_agent constants (default/reflection/orchestrated/full are strings; all-distinct; contain-builtin-prefix); _multi_agent_template (returns-dict/has-id/has-name/graph-steps/entry-step/enabled/version-1/source-builtin/description-ru-mirrors/steps-count).
 - Verification: 1650/1650 tests pass.
+
+
+### 99. Test coverage expansion — chat/auto_skills constants + trigger paths, chat/agent_os pure helper and fire-and-forget functions (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application/chat sub-modules.
+- tests/test_chat_auto_skills_agent_os.py (32 tests): auto_skills _FILE_TRIGGERS_WORD (is-list/not-empty/strings/contains-docx-or-word); _FILE_TRIGGERS_EXCEL (is-list/not-empty/strings/contains-excel-or-xlsx); maybe_generate_files (disabled-empty/string-type/no-trigger-empty/short-answer-no-file); run_auto_skills (returns-string/neutral-empty/all-disabled-empty/word-hint-when-file-gen-enabled/excel-hint-enabled/no-triggers-empty/empty-input-empty). agent_os resolve_agent_os_source_id (returns-string/explicit-wins/registry-fallback/both-none-empty/empty-uses-registry/registry-no-id-empty/none-registry-empty); emit_agent_os_event (returns-none/no-raise/no-raise-with-payload); record_registry_agent_run (none-returns-none/empty-no-raise/valid-no-raise).
+- Verification: 1682/1682 tests pass.
