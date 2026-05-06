@@ -83,7 +83,7 @@ def maybe_auto_exec_python(
         return answer
 
     try:
-        from app.services.python_runner import execute_python
+        from app.domain.runtime.python_runner import execute_python
 
         result = execute_python(code)
         if append_timeline_func and timeline is not None:

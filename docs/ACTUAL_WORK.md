@@ -1506,3 +1506,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1139 tests OK.
 - Result:
   `application.tool_registry` no longer depends on service compatibility facades for builtin tool assembly or wrapper helpers; chat/workflow `services.tool_service` patch points remain intentionally untouched.
+
+### 104. Chat post-processing Python runner direct import
+- Status: completed
+- Scope: continued compatibility-import cleanup for the remaining application-layer service facade reference that was not an intentional `services.tool_service` patch point.
+- Finish:
+  updated [backend/app/application/chat/post_processing.py](/D:/AIWork/Elira_AI/backend/app/application/chat/post_processing.py) so `maybe_auto_exec_python()` imports `execute_python` from `app.domain.runtime.python_runner` directly instead of `app.services.python_runner`;
+  confirmed the only remaining real application/domain `app.services.*` imports are the intentional `services.tool_service` patch points in chat runtime and workflow step execution.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_post_processing` -> 28 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1139 tests OK.
+- Result:
+  chat post-processing no longer depends on the Python runner service facade; public auto-exec behavior is unchanged.
