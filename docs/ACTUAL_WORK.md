@@ -1435,3 +1435,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 883 tests OK.
 - Result:
   Batch #103 is integrated without wholesale-merging Claude branch; advanced project-mode filesystem state is no longer owned by the route module.
+
+### 99. Selective Claude test import — elira memory runtime
+- Status: completed
+- Scope: selectively imported Claude commit `58fd5a6` as an isolated test batch for the existing `application.elira_memory.runtime`.
+- Finish:
+  added [backend/tests/test_elira_memory_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_elira_memory_runtime.py) covering table/column guards, DB init, chat CRUD, message CRUD, and cascade deletion through in-memory SQLite callback injection;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_elira_memory_runtime` -> 39 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 922 tests OK.
+- Result:
+  Batch #104 is integrated as coverage only; no production runtime changes were needed for `elira_memory`.
