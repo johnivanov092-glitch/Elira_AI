@@ -1216,3 +1216,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 213 tests OK.
 - Result:
   A third Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 83. Selective Claude test import — workflow lifecycle/multi-agent helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `e1e3084` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_workflows_lifecycle_multi_agent.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_lifecycle_multi_agent.py) covering `application.workflows.lifecycle` orchestration helpers and `application.workflows.multi_agent` built-in template helpers.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_workflows_lifecycle_multi_agent` -> 44 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 257 tests OK.
+- Result:
+  A fourth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
