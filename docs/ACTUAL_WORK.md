@@ -1269,3 +1269,10 @@ Live repair log for concrete backend/runtime fixes.
 - Scope: added tests for two previously uncovered application/chat sub-modules.
 - tests/test_chat_submodules.py (38 tests): memory_policy is_direct_personal_memory_query (en-what-is-my-name/en-do-you-know/ru-kak-menya-zovut/ru-ty-znaesh/general-false/empty-false/none-false/returns-bool/partial-phrase-false); trim_history (none-empty/empty-empty/short-unchanged/exact-limit/long-keeps-first-pair-and-recent/returns-list/no-modify-original/default-ten-pairs/large-shorter); should_recall_memory_context (normal-recalls/memory-command-skips/research-hard-freshness-skips/research-hard-not-freshness-recalls/research-soft-recalls/none-temporal-recalls); get_memory_recall_limits (direct-small/russian-small/general-large/empty-large/returns-tuple/tuple-len-2). context_builder strip_frontend_project_context (strips-project-block/no-marker-unchanged/empty-unchanged/none-empty/strips-trailing-whitespace/only-marker-empty/marker-mid-message/returns-string).
 - Verification: 1325/1325 tests pass.
+
+
+### 92. Test coverage expansion — chat/prompting and chat/timeline pure functions (Claude Code)
+- Status: completed
+- Scope: added tests for two previously uncovered application/chat sub-modules.
+- tests/test_chat_prompting_timeline.py (38 tests): prompting wants_explicit_datetime_answer (ru-date/ru-time/ru-number/ru-day-of-week/ru-current-time/en-what-time/en-current-date/en-todays-date/general-false/empty-false/none-false/returns-bool/case-insensitive/unrelated-false); compose_human_style_rules (returns-string/contains-rules/contains-mode/none-defaults/contains-years/freshness-reflected/depth-reflected/non-empty/no-years-shows-none); build_runtime_datetime_context (nonempty/returns-string/non-datetime-string/empty-string/contains-year/contains-runtime-marker). timeline append_timeline (appends-to-list/has-step/has-title/has-status/has-detail/multiple-appends/returns-none/is-dict/exactly-four-keys).
+- Verification: 1363/1363 tests pass.
