@@ -1477,3 +1477,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1075 tests OK.
 - Result:
   Batch #106 is integrated as coverage only; no production changes were needed for `rag_memory`.
+
+### 102. Selective Claude test import — Elira phase20 builder helpers
+- Status: completed
+- Scope: selectively imported Claude commit `2a7bc6f` as pure builder coverage for the current `app.application.elira_phase20.runtime` compatibility alias.
+- Finish:
+  added [backend/tests/test_elira_phase20_builders.py](/D:/AIWork/Elira_AI/backend/tests/test_elira_phase20_builders.py) covering constants, JSON helpers, and `build_reasoning`, `build_planner`, `build_coder`, `build_reviewer`, `build_tester`, `build_execution`;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_elira_phase20_builders` -> 61 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1136 tests OK.
+- Result:
+  Batch #107 is integrated as coverage only; `elira_phase20.runtime` remains a compatibility alias to the canonical execution-loop runtime.
