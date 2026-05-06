@@ -1310,3 +1310,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 538 tests OK.
 - Result:
   A tenth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 90. Selective Claude test import — chat memory policy/context builder
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `a9f0765` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_submodules.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_submodules.py) covering `application.chat.memory_policy` direct-memory/recall trimming helpers and `application.chat.context_builder.strip_frontend_project_context`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_submodules` -> 38 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 576 tests OK.
+- Result:
+  An eleventh Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
