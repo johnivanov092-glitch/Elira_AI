@@ -1177,3 +1177,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
 - Result:
   Autopipeline, Telegram, and web-query helpers now bypass redundant service facades while preserving legacy chat patch compatibility.
+
+### 80. Selective Claude test import — memory context/search
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `90f5573` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_memory_context_search_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_memory_context_search_pure.py) covering `application.memory.context` pure helpers and `application.memory.search` callback-driven helper paths.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_memory_context_search_pure` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 134 tests OK.
+- Result:
+  One Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
