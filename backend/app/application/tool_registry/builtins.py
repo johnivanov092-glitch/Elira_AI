@@ -4,20 +4,28 @@ from typing import Any
 
 
 def build_builtin_tools() -> list[dict[str, Any]]:
-    from app.services.tool_service import search_memory_tool
-    from app.services.web_service import research_web, search_web
-    from app.services.python_runner import execute_python
-    from app.services.project_service import (
+    from app.application.git.runtime import git_commit as _git_commit_fn
+    from app.application.git.runtime import git_status as _git_status_fn
+    from app.application.library.runtime import build_library_context, list_library_files
+    from app.application.project_brain.loop_service import ProjectBrainLoopService
+    from app.application.project_brain.map_service import ProjectMapService
+    from app.application.project_patch.service import ProjectPatchService
+    from app.application.smart_memory import search_memory as smart_search_memory
+    from app.domain.runtime.python_runner import execute_python
+    from app.infrastructure.browser.agent import BrowserAgent
+    from app.infrastructure.search.multisearch import WebMultiSearchService
+    from app.infrastructure.search.web_search import research_web, search_web
+    from app.infrastructure.storage.project_files import (
         list_project_tree,
         read_project_file,
         search_project,
         write_project_file,
     )
-    from app.services.project_patch_service import ProjectPatchService
-    from app.services.library_service import build_library_context, list_library_files
-    from app.services.git_service import git_commit as _git_commit_fn, git_status as _git_status_fn
-    from app.services.project_map_service import ProjectMapService
-    from app.services.project_brain_loop_service import ProjectBrainLoopService
+
+    def search_memory_tool(profile: str, query: str, limit: int = 5) -> dict[str, Any]:
+        result = smart_search_memory(query=query, limit=max(1, int(limit)))
+        result["profile"] = str(profile or "default")
+        return result
 
     patch_service = ProjectPatchService()
     map_service = ProjectMapService()
@@ -53,7 +61,7 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "browser_search",
-            "handler": lambda a: __import__("app.services.browser_agent", fromlist=["BrowserAgent"]).BrowserAgent().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
+            "handler": lambda a: BrowserAgent().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
             "display_name": "Browser Search",
             "display_name_ru": "Поиск через браузер",
             "category": "web",
@@ -61,7 +69,7 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "browser_run",
-            "handler": lambda a: __import__("app.services.browser_agent", fromlist=["BrowserAgent"]).BrowserAgent().run(start_url=str(a.get("start_url", "")), steps=a.get("steps", []) if isinstance(a.get("steps", []), list) else [], headless=bool(a.get("headless", True))),
+            "handler": lambda a: BrowserAgent().run(start_url=str(a.get("start_url", "")), steps=a.get("steps", []) if isinstance(a.get("steps", []), list) else [], headless=bool(a.get("headless", True))),
             "display_name": "Browser Run",
             "display_name_ru": "Запуск браузера",
             "category": "web",
@@ -69,7 +77,7 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         },
         {
             "name": "multi_web_search",
-            "handler": lambda a: __import__("app.services.web_multisearch_service", fromlist=["WebMultiSearchService"]).WebMultiSearchService().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
+            "handler": lambda a: WebMultiSearchService().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
             "display_name": "Multi Web Search",
             "display_name_ru": "Мульти-поиск",
             "category": "web",

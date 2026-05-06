@@ -1491,3 +1491,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1136 tests OK.
 - Result:
   Batch #107 is integrated as coverage only; `elira_phase20.runtime` remains a compatibility alias to the canonical execution-loop runtime.
+
+### 103. Tool registry application import cleanup
+- Status: completed
+- Scope: continued small compatibility-import cleanup after confirming Claude's remote branch has no newer batch beyond #107.
+- Finish:
+  updated [backend/app/application/tool_registry/builtins.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/builtins.py) and [backend/app/application/tool_registry/service.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/service.py) to import application/domain/infrastructure modules directly instead of `app.services.*` facades;
+  added [backend/app/application/project_brain/map_service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/map_service.py) compatibility methods `build_map()` and `search()` so existing builtin tool handlers return structured stub results instead of raising `AttributeError`;
+  added [backend/tests/test_tool_registry_application_imports.py](/D:/AIWork/Elira_AI/backend/tests/test_tool_registry_application_imports.py) covering the no-service-facade import rule and handler stability.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_tool_registry_application_imports` -> 3 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1139 tests OK.
+- Result:
+  `application.tool_registry` no longer depends on service compatibility facades for builtin tool assembly or wrapper helpers; chat/workflow `services.tool_service` patch points remain intentionally untouched.
