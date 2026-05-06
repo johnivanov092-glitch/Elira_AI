@@ -1337,3 +1337,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 620 tests OK.
 - Result:
   A twelfth Claude test commit was integrated without adding redundant compatibility packages.
+
+### 92. Selective Claude test import — autopipeline/run-history wrapper
+- Status: completed
+- Scope: selectively imported Claude commit `4a167d7` while keeping the current run-history package layout.
+- Finish:
+  added [backend/tests/test_autopipeline_and_run_history_service.py](/D:/AIWork/Elira_AI/backend/tests/test_autopipeline_and_run_history_service.py) covering `application.autopipeline.runtime` CRUD/scheduler state and `application.run_history.service.RunHistoryService`;
+  adapted Claude-only import from `application.run_history_service.runtime` to current `application.run_history.service`, removed non-ASCII decorative comments from the imported test file, and isolated run-history assertions behind a temp SQLite DB.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_autopipeline_and_run_history_service` -> 41 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 661 tests OK.
+- Result:
+  A thirteenth Claude test commit was integrated without adding a redundant `run_history_service` package.
