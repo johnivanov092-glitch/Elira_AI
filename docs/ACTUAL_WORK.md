@@ -1463,3 +1463,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1020 tests OK.
 - Result:
   Batch #105 is integrated as coverage only; no production changes were needed for `web_query_planner`.
+
+### 101. Selective Claude test import — RAG memory runtime
+- Status: completed
+- Scope: selectively imported Claude commit `24b3c42` as isolated coverage for `application.rag_memory.runtime`.
+- Finish:
+  added [backend/tests/test_rag_memory_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_rag_memory_runtime.py) covering `cosine_sim`, DB init, seed cleanup, RAG add/search/context/list/delete/stats paths through in-memory SQLite callback injection;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_rag_memory_runtime` -> 55 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1075 tests OK.
+- Result:
+  Batch #106 is integrated as coverage only; no production changes were needed for `rag_memory`.
