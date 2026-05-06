@@ -1203,3 +1203,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 181 tests OK.
 - Result:
   A second Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 82. Selective Claude test import — chat auto-skills/Agent OS helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `b5efaab` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_auto_skills_agent_os.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_auto_skills_agent_os.py) covering `application.chat.auto_skills` trigger paths and `application.chat.agent_os` helper/fire-and-forget paths.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_auto_skills_agent_os` -> 32 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 213 tests OK.
+- Result:
+  A third Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
