@@ -1257,3 +1257,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 361 tests OK.
 - Result:
   A sixth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 86. Selective Claude test import — workflow/event/monitoring pure helpers
+- Status: completed
+- Scope: selectively imported Claude commit `52a526c` while keeping the current Codex sandbox module layout.
+- Finish:
+  added [backend/tests/test_workflows_event_monitoring_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_event_monitoring_pure.py) covering `application.workflows.db_path`, `application.workflows.step_results`, `application.event_bus.store`, and `application.monitoring.store`;
+  adapted the test's `SandboxPolicyError` import to the current `application.agent_registry.sandbox` path instead of introducing Claude's `application.agent_sandbox.runtime` package.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_workflows_event_monitoring_pure` -> 76 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 437 tests OK.
+- Result:
+  A seventh Claude test commit was integrated without widening the application package layout.
