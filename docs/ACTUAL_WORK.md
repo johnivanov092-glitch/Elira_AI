@@ -1449,3 +1449,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 922 tests OK.
 - Result:
   Batch #104 is integrated as coverage only; no production runtime changes were needed for `elira_memory`.
+
+### 100. Selective Claude test import — web query planner pure helpers
+- Status: completed
+- Scope: selectively imported Claude commit `5fd2b15` as pure coverage for `application.web_query_planner.runtime`.
+- Finish:
+  added [backend/tests/test_web_query_planner_pure_helpers.py](/D:/AIWork/Elira_AI/backend/tests/test_web_query_planner_pure_helpers.py) covering planner constants and pure helpers for intent, freshness, geo/time extraction, query shaping, priorities, merging, and empty-plan structure;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_web_query_planner_pure_helpers` -> 98 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1020 tests OK.
+- Result:
+  Batch #105 is integrated as coverage only; no production changes were needed for `web_query_planner`.
