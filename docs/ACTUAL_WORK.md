@@ -1580,3 +1580,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1482 tests OK.
 - Result:
   Batch #111 is integrated as coverage only; no production code changes were needed.
+
+### 109. Selective Claude test import - planner prompts and graphs helpers
+- Status: completed
+- Scope: selectively imported Claude batch #112 (`9e7fe59`) as pure helper coverage for `app.domain.agents.planner_prompts` and `app.domain.agents.planner_graphs`.
+- Finish:
+  added [backend/tests/test_planner_prompts_and_graphs_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_planner_prompts_and_graphs_pure.py) covering planner prompt builders, planner step normalization, and task graph normalization;
+  removed decorative Unicode separators and em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_planner_prompts_and_graphs_pure` -> 69 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1551 tests OK.
+- Result:
+  Batch #112 is integrated as coverage only; no production code changes were needed.
