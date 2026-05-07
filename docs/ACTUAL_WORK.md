@@ -1520,3 +1520,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1139 tests OK.
 - Result:
   chat post-processing no longer depends on the Python runner service facade; public auto-exec behavior is unchanged.
+
+### 105. Selective Claude test import — core files and web engines helpers
+- Status: completed
+- Scope: selectively imported Claude batch #108 (`e33dd4c`) as pure helper coverage for `app.core.files` and `app.core.web_engines`.
+- Finish:
+  added [backend/tests/test_core_files_and_web_engines_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_core_files_and_web_engines_pure.py) covering file/text helpers, chat markdown export labels, path labels, web-engine constants, URL/domain helpers, HTML stripping, engine availability, and search-engine resolution;
+  removed decorative Unicode separators from the imported test file;
+  adapted five assertions to the current repository contract instead of changing production encoding/runtime behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_core_files_and_web_engines_pure` -> 112 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1251 tests OK.
+- Result:
+  Batch #108 is integrated as coverage only; no production code changes were needed.
