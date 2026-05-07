@@ -1594,3 +1594,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1551 tests OK.
 - Result:
   Batch #112 is integrated as coverage only; no production code changes were needed.
+
+### 110. Selective Claude test import - planner runtime and orchestrator postprocess helpers
+- Status: completed
+- Scope: selectively imported Claude batch #113 (`c732b13`) as pure helper coverage for `app.domain.agents.planner_runtime`, `app.domain.agents.orchestrator_postprocess_runtime`, and `app.domain.tools.terminal_tool`.
+- Finish:
+  added [backend/tests/test_planner_and_orchestrator_postprocess_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_planner_and_orchestrator_postprocess_pure.py) covering URL extraction, safe terminal command filtering, task graph dependency context/state formatting, reflection context builders, finalize prompt assembly, and dangerous command detection;
+  removed decorative Unicode separators and em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_planner_and_orchestrator_postprocess_pure` -> 84 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1635 tests OK.
+- Result:
+  Batch #113 is integrated as coverage only; no production code changes were needed.
