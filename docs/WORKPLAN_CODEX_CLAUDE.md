@@ -535,6 +535,8 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-07 13:00:37 +05:00` | `DONE` | Selectively imported Claude batch #116 (`147f7fb`) by adding `backend/tests/test_browser_and_execution_pure.py`; kept it coverage-only by cleaning imported test formatting instead of changing production browser/execution helper behavior. Verification passed with targeted unittest (`62 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`1852 tests OK`). |
 | `2026-05-07 13:03:27 +05:00` | `DONE` | Selectively imported Claude batch #117 (`9f120fe`) by adding `backend/tests/test_router_reflection_builtins_pure.py`; kept it coverage-only by cleaning imported test formatting instead of changing production router/reflection/builtin role behavior. Verification passed with targeted unittest (`62 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`1914 tests OK`). |
 
+| `2026-05-07 13:10:07 +05:00` | `DONE` | Selectively imported Claude batch #118 (`9f62312`) by adding `backend/tests/test_project_brain_workflows_identity_pure.py`; kept it coverage-only by adapting the stale identity-guard import to `app.application.chat.identity_guard` and cleaning imported test formatting. Verification passed with targeted unittest (`107 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`2021 tests OK`). |
+
 ## 8. Commit Ledger
 
 | Branch | Short SHA | Title | Merged state | Note |

@@ -1664,3 +1664,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1914 tests OK.
 - Result:
   Batch #117 is integrated as coverage only; no production code changes were needed.
+
+### 115. Selective Claude test import - project brain/workflows/identity helpers
+- Status: completed
+- Scope: selectively imported Claude batch #118 (`9f62312`) as pure helper coverage for `app.application.project_brain.chat`, `app.application.project_brain.files`, `app.application.project_brain.uploads`, `app.application.workflows.execution`, and `app.application.chat.identity_guard`.
+- Finish:
+  added [backend/tests/test_project_brain_workflows_identity_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_project_brain_workflows_identity_pure.py) covering HTML cleanup, code prompt construction, project path normalization, text-file detection, byte hashing, upload filename/summary helpers, workflow datetime/index helpers, and identity drift helpers;
+  adapted Claude's stale identity-guard import to the current application module and removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_project_brain_workflows_identity_pure` -> 107 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2021 tests OK.
+- Result:
+  Batch #118 is integrated as coverage only; no production code changes were needed.
