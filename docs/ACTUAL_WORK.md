@@ -1608,3 +1608,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1635 tests OK.
 - Result:
   Batch #113 is integrated as coverage only; no production code changes were needed.
+
+### 111. Selective Claude test import - self-improve and step executor helpers
+- Status: completed
+- Scope: selectively imported Claude batch #114 (`1cbf33c`) as pure helper coverage for `app.domain.agents.orchestrator_context_runtime`, `app.domain.agents.self_improve_runtime`, and `app.domain.workflows.step_executor`.
+- Finish:
+  added [backend/tests/test_self_improve_step_executor_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_self_improve_step_executor_pure.py) covering tool hint text, self-improve context/prompt/decision helpers, completion checks, workflow path/input mapping, template rendering, profile/step labels, and next-step resolution;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_self_improve_step_executor_pure` -> 97 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1732 tests OK.
+- Result:
+  Batch #114 is integrated as coverage only; no production code changes were needed.
