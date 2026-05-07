@@ -1565,3 +1565,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1413 tests OK.
 - Result:
   Batch #110 is integrated as coverage only; no production code changes were needed.
+
+### 108. Selective Claude test import - web knowledge helpers
+- Status: completed
+- Scope: selectively imported Claude batch #111 (`082d55a`) as pure helper coverage for `app.application.memory.web_knowledge`.
+- Finish:
+  added [backend/tests/test_web_knowledge_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_web_knowledge_pure.py) covering browser text cleanup, chunking, browser RAG record building, and web-knowledge record building;
+  removed decorative Unicode separators from the imported test file;
+  converted the Unicode text fixture to escaped `\u` literals to keep the test source ASCII-stable.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_web_knowledge_pure` -> 69 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1482 tests OK.
+- Result:
+  Batch #111 is integrated as coverage only; no production code changes were needed.
