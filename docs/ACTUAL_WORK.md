@@ -1550,3 +1550,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1345 tests OK.
 - Result:
   Batch #109 is integrated as coverage only; no production code changes were needed.
+
+### 107. Selective Claude test import - memory context and web temporal helpers
+- Status: completed
+- Scope: selectively imported Claude batch #110 (`9189fbc`) as pure helper coverage for `app.infrastructure.search.web_temporal`, `app.infrastructure.search.web_query`, `app.application.memory.context`, and `app.core.memory`.
+- Finish:
+  added [backend/tests/test_memory_context_and_web_temporal_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_memory_context_and_web_temporal_pure.py) covering freshness-state selection, strict web-only query detection, memory content hashing, memory weighting, text cleanup, query word extraction, and core memory hash compatibility;
+  removed decorative Unicode separators from the imported test file;
+  converted ellipsis assertions to escaped `\u2026` literals to keep the test source ASCII-stable.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_memory_context_and_web_temporal_pure` -> 68 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1413 tests OK.
+- Result:
+  Batch #110 is integrated as coverage only; no production code changes were needed.
