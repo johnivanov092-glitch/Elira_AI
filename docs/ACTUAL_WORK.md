@@ -1706,3 +1706,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2141 tests OK.
 - Result:
   Batch #120 is integrated as coverage only; no production code changes were needed.
+
+### 118. Selective Claude test import - workflows/sandbox/registry helpers
+- Status: completed
+- Scope: selectively imported Claude batch #121 (`b3c3a76`) as pure helper coverage for `app.application.workflows.store`, `app.application.agent_registry.sandbox`, `app.application.tool_registry.runtime`, and `app.application.agent_registry.builtins`.
+- Finish:
+  added [backend/tests/test_workflows_store_sandbox_registry_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_store_sandbox_registry_pure.py) covering workflow store bool/JSON/graph helpers, sandbox policy error construction, noop tool handler output, and builtin agent definition iteration;
+  adapted Claude's stale `application.agent_sandbox.runtime` import to the current `application.agent_registry.sandbox` module, removed decorative Unicode separators and arrow/em-dash comments, and rewrote Unicode fixture literals as escaped source strings.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_workflows_store_sandbox_registry_pure` -> 68 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2209 tests OK.
+- Result:
+  Batch #121 is integrated as coverage only; no production code changes were needed.
