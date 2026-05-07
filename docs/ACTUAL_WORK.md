@@ -1692,3 +1692,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2091 tests OK.
 - Result:
   Batch #119 is integrated as coverage only; no production code changes were needed.
+
+### 117. Selective Claude test import - web query planner/python lab helpers
+- Status: completed
+- Scope: selectively imported Claude batch #120 (`d7703c0`) as pure helper coverage for `app.application.web_query_planner.runtime` and `app.application.code_agent.python_lab`.
+- Finish:
+  added [backend/tests/test_web_query_planner_python_lab_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_web_query_planner_python_lab_pure.py) covering query-merge decisions, current-query augmentation, subquery/default query builders, and Python lab output checks;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_web_query_planner_python_lab_pure` -> 50 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2141 tests OK.
+- Result:
+  Batch #120 is integrated as coverage only; no production code changes were needed.
