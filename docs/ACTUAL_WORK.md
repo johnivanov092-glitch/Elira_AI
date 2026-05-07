@@ -1678,3 +1678,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2021 tests OK.
 - Result:
   Batch #118 is integrated as coverage only; no production code changes were needed.
+
+### 116. Selective Claude test import - monitoring/workflows/persona helpers
+- Status: completed
+- Scope: selectively imported Claude batch #119 (`7e5782b`) as pure helper coverage for `app.application.monitoring.store`, `app.application.workflows.multi_agent`, and `app.application.persona.store`.
+- Finish:
+  added [backend/tests/test_monitoring_multi_agent_persona_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_monitoring_multi_agent_persona_pure.py) covering monitoring JSON helpers, planner tool aliases, multi-agent workflow selection, step answer/timeline helpers, and persona JSON helpers;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file, and rewrote Unicode fixture literals as escaped source strings.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_monitoring_multi_agent_persona_pure` -> 70 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2091 tests OK.
+- Result:
+  Batch #119 is integrated as coverage only; no production code changes were needed.
