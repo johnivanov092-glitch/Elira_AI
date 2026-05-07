@@ -1650,3 +1650,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1852 tests OK.
 - Result:
   Batch #116 is integrated as coverage only; no production code changes were needed.
+
+### 114. Selective Claude test import - router/reflection/builtins helpers
+- Status: completed
+- Scope: selectively imported Claude batch #117 (`9f120fe`) as pure helper coverage for `app.domain.agents.router`, `app.domain.agents.reflection`, and `app.application.agent_registry.builtins`.
+- Finish:
+  added [backend/tests/test_router_reflection_builtins_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_router_reflection_builtins_pure.py) covering task routing, safe JSON object extraction, false-flag counting, fallback-node selection, and builtin role matching;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_router_reflection_builtins_pure` -> 62 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1914 tests OK.
+- Result:
+  Batch #117 is integrated as coverage only; no production code changes were needed.
