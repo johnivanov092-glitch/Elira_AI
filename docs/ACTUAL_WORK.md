@@ -1,4 +1,4 @@
-﻿# Actual Work
+# Actual Work
 
 Live repair log for concrete backend/runtime fixes.
 
@@ -1535,3 +1535,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1251 tests OK.
 - Result:
   Batch #108 is integrated as coverage only; no production code changes were needed.
+
+### 106. Selective Claude test import — core LLM and web runtime helpers
+- Status: completed
+- Scope: selectively imported Claude batch #109 (`d4bc859`) as pure helper coverage for `app.core.llm` and `app.core.web_runtime`.
+- Finish:
+  added [backend/tests/test_core_llm_and_web_runtime_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_core_llm_and_web_runtime_pure.py) covering context-error detection, token/ctx budgeting, history trimming, context warnings, code-fence cleanup, JSON extraction, model split helpers, result scoring/reranking, preferred-domain counting, dedupe, and formatted web-search output;
+  removed decorative Unicode separators from the imported test file;
+  adapted two assertions to the current repository contract instead of changing production encoding/runtime behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_core_llm_and_web_runtime_pure` -> 94 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1345 tests OK.
+- Result:
+  Batch #109 is integrated as coverage only; no production code changes were needed.
