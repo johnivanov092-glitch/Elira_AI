@@ -25,19 +25,19 @@ def extract_signals(
     persona: list[dict[str, Any]] = []
     calibration: list[dict[str, Any]] = []
 
-    if any(token in combined for token in ("РїРѕРјРѕРіСѓ", "РґР°РІР°Р№", "СЃР»РµРґСѓСЋС‰РёР№ С€Р°Рі", "С€Р°РіРё")):
-        persona.append({"trait_key": "supportive_guidance", "layer": "behavior_rules", "confidence": 0.82, "summary": "РџРѕРґРґРµСЂР¶РєР° Рё РїРѕРЅСЏС‚РЅС‹Рµ СЃР»РµРґСѓСЋС‰РёРµ С€Р°РіРё."})
-    if any(token in combined for token in ("СЃС‚СЂСѓРєС‚СѓСЂ", "1.", "2.", "РёС‚РѕРі", "РІС‹РІРѕРґ")):
-        persona.append({"trait_key": "structured_clarity", "layer": "preferences", "confidence": 0.79, "summary": "РЎС‚СЂСѓРєС‚СѓСЂРёСЂРѕРІР°РЅРЅС‹Р№ Рё СЏСЃРЅС‹Р№ РѕС‚РІРµС‚."})
-    if any(token in combined for token in ("РЅРµ СѓРІРµСЂРµРЅ", "РЅРµ Р·РЅР°СЋ", "РЅРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ РґР°РЅРЅС‹С…", "СЃРєР°Р¶Сѓ РїСЂСЏРјРѕ")):
-        persona.append({"trait_key": "transparent_honesty", "layer": "values", "confidence": 0.88, "summary": "Р§РµСЃС‚РЅРѕ РѕР±РѕР·РЅР°С‡Р°РµС‚ РЅРµРѕРїСЂРµРґРµР»С‘РЅРЅРѕСЃС‚СЊ."})
+    if any(token in combined for token in ("помогу", "давай", "следующий шаг", "шаги")):
+        persona.append({"trait_key": "supportive_guidance", "layer": "behavior_rules", "confidence": 0.82, "summary": "Поддержка и понятные следующие шаги."})
+    if any(token in combined for token in ("структур", "1.", "2.", "итог", "вывод")):
+        persona.append({"trait_key": "structured_clarity", "layer": "preferences", "confidence": 0.79, "summary": "Структурированный и ясный ответ."})
+    if any(token in combined for token in ("не уверен", "не знаю", "недостаточно данных", "скажу прямо")):
+        persona.append({"trait_key": "transparent_honesty", "layer": "values", "confidence": 0.88, "summary": "Честно обозначает неопределённость."})
 
-    if profile_name == "РџСЂРѕРіСЂР°РјРјРёСЃС‚" and any(token in combined for token in ("```", "РїР°С‚С‡", "СЂРµС„Р°РєС‚РѕСЂ", "РєРѕРґ")):
-        persona.append({"trait_key": "code_first_precision", "layer": "preferences", "confidence": 0.74, "summary": "РЎС‚Р°РІРёС‚ РєРѕРґ Рё РЅР°РґС‘Р¶РЅРѕСЃС‚СЊ РІС‹С€Рµ РѕР±С‰РёС… СЂР°СЃСЃСѓР¶РґРµРЅРёР№."})
-    if profile_name == "РђРЅР°Р»РёС‚РёРє" and any(token in combined for token in ("СЂРёСЃРє", "СЃСЂР°РІРЅ", "Р°Р»СЊС‚РµСЂРЅР°С‚РёРІ", "РґРµРєРѕРјРїРѕР·Рё")):
-        persona.append({"trait_key": "risk_visible_reasoning", "layer": "behavior_rules", "confidence": 0.74, "summary": "РџРѕРєР°Р·С‹РІР°РµС‚ СЂРёСЃРєРё Рё РІР°СЂРёР°РЅС‚С‹ СЏРІРЅРѕ."})
-    if profile_name == "РЎРѕРєСЂР°С‚" and answer_text.count("?") >= 2:
-        persona.append({"trait_key": "guided_questions", "layer": "behavior_rules", "confidence": 0.73, "summary": "Р’РµРґС‘С‚ С‡РµСЂРµР· РІРѕРїСЂРѕСЃС‹ Рё СѓС‚РѕС‡РЅРµРЅРёРµ РјС‹СЃР»Рё."})
+    if profile_name == "Программист" and any(token in combined for token in ("```", "патч", "рефактор", "код")):
+        persona.append({"trait_key": "code_first_precision", "layer": "preferences", "confidence": 0.74, "summary": "Ставит код и надёжность выше общих рассуждений."})
+    if profile_name == "Аналитик" and any(token in combined for token in ("риск", "сравн", "альтернатив", "декомпози")):
+        persona.append({"trait_key": "risk_visible_reasoning", "layer": "behavior_rules", "confidence": 0.74, "summary": "Показывает риски и варианты явно."})
+    if profile_name == "Сократ" and answer_text.count("?") >= 2:
+        persona.append({"trait_key": "guided_questions", "layer": "behavior_rules", "confidence": 0.73, "summary": "Ведёт через вопросы и уточнение мысли."})
 
     answer_len = len(answer_text or "")
     bullet_count = answer_text.count("\n- ") + answer_text.count("\n1.")

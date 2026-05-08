@@ -12,6 +12,7 @@ Single live coordination document for Claude/Codex refactor work.
 - `origin/main` at snapshot: `755072177138c5c7bd9f022eb62f43b6b11ace57`
 - Protected paths: `.claude/`, `.claude/worktrees/`
 - Encoding rule: keep this file in UTF-8; if a terminal shows mojibake, reopen the file in UTF-8 and do not rewrite it through ANSI tooling.
+- Russian context encoding hard rule: source code, tests, docs, prompt text, persona evolution text, and SQLite JSON/text payloads must stay readable UTF-8. Any imported Claude/Codex text containing mojibake markers such as `Рџ`, `РЎ`, `вЂ`, `Ð`, or `Ñ` must be repaired before staging; persona JSON read/write paths must normalize through `app.utils.text_encoding`.
 
 ## 1. Update Rules
 
@@ -21,6 +22,7 @@ Single live coordination document for Claude/Codex refactor work.
 - After each meaningful commit, branch handoff, file deletion, or status change, update the relevant sections here before push or immediately after push.
 - Do not delete `.claude/` or any path under `.claude/worktrees/`.
 - Do not auto-clean the current dirty `docs/` state until the change is logged and reviewed here.
+- Do not commit Russian/persona/context text that is unreadable in UTF-8. If PowerShell display is suspicious, verify with Python `read_text(encoding="utf-8")` or `unicode_escape` before editing.
 
 ## 2. Coordination Rules
 
@@ -538,6 +540,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-07 13:14:05 +05:00` | `DONE` | Selectively imported Claude batch #119 (`7e5782b`) by adding `backend/tests/test_monitoring_multi_agent_persona_pure.py`; kept it coverage-only by cleaning imported test formatting and using escaped Unicode fixture literals. Verification passed with targeted unittest (`70 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`2091 tests OK`). |
 | `2026-05-07 13:17:28 +05:00` | `DONE` | Selectively imported Claude batch #120 (`d7703c0`) by adding `backend/tests/test_web_query_planner_python_lab_pure.py`; kept it coverage-only by cleaning imported test formatting. Verification passed with targeted unittest (`50 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`2141 tests OK`). |
 | `2026-05-07 13:21:08 +05:00` | `DONE` | Selectively imported Claude batch #121 (`b3c3a76`) by adding `backend/tests/test_workflows_store_sandbox_registry_pure.py`; kept it coverage-only by adapting the stale sandbox import to `app.application.agent_registry.sandbox`, cleaning imported test formatting, and using escaped Unicode fixture literals. Verification passed with targeted unittest (`68 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`2209 tests OK`). |
+| `2026-05-08 18:16:05 +05:00` | `DONE` | Added the UTF-8 hard rule and runtime/test guard for Russian persona context: `app.utils.text_encoding` repairs mojibake, persona store normalizes JSON/SQLite text, persona evolution/prompt literals are readable UTF-8, and `test_text_encoding_persona_mojibake` enforces the path. Verification passed with targeted unittest (`6 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`2220 tests OK`). |
 
 ## 8. Commit Ledger
 

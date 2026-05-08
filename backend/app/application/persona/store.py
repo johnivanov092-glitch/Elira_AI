@@ -15,6 +15,7 @@ from app.core.persona_defaults import (
 )
 from app.infrastructure.db.connection import connect_sqlite
 from app.application.elira_memory.service import DB_PATH, init_db as init_state_db
+from app.utils.text_encoding import repair_mojibake_payload, repair_mojibake_text
 
 
 logger = logging.getLogger(__name__)
@@ -32,13 +33,60 @@ def json_loads(value: Any, fallback: Any) -> Any:
     if not value:
         return deepcopy(fallback)
     try:
-        return json.loads(value)
+        return repair_mojibake_payload(json.loads(value))
     except Exception:
         return deepcopy(fallback)
 
 
 def json_dumps(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(repair_mojibake_payload(value), ensure_ascii=False)
+
+
+def repair_persona_encoding_in_db() -> dict[str, Any]:
+    columns_by_table = {
+        "persona_versions": ("source", "payload_json", "diff_summary"),
+        "persona_candidates": ("candidate_json",),
+        "persona_learning_events": ("profile", "extracted_json"),
+        "persona_model_calibrations": ("calibration_json",),
+        "persona_audit_log": ("payload_json",),
+    }
+    conn = connect()
+    updated = 0
+    try:
+        for table, columns in columns_by_table.items():
+            existing = {
+                row["name"]
+                for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+            }
+            selected = [column for column in columns if column in existing]
+            if not selected:
+                continue
+            column_sql = ", ".join(f'"{column}"' for column in selected)
+            rows = conn.execute(
+                f'SELECT rowid AS __rowid__, {column_sql} FROM "{table}"'
+            ).fetchall()
+            for row in rows:
+                changes: dict[str, str] = {}
+                for column in selected:
+                    value = row[column]
+                    if not isinstance(value, str):
+                        continue
+                    repaired = repair_mojibake_text(value)
+                    if repaired != value:
+                        changes[column] = repaired
+                if not changes:
+                    continue
+                assignments = ", ".join(f'"{column}" = ?' for column in changes)
+                conn.execute(
+                    f'UPDATE "{table}" SET {assignments} WHERE rowid = ?',
+                    (*changes.values(), row["__rowid__"]),
+                )
+                updated += 1
+        if updated:
+            conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "updated_rows": updated}
 
 
 def audit(
@@ -133,6 +181,7 @@ def ensure_tables() -> None:
 
 def bootstrap_if_needed() -> None:
     ensure_tables()
+    repair_persona_encoding_in_db()
     conn = connect()
     try:
         row = conn.execute(
@@ -169,6 +218,7 @@ def row_to_version(row: sqlite3.Row | None) -> dict[str, Any] | None:
     data = dict(row)
     data["payload"] = json_loads(data.pop("payload_json", "{}"), {})
     data["source"] = json_loads(data.get("source"), {})
+    data["diff_summary"] = repair_mojibake_text(data.get("diff_summary") or "")
     return data
 
 

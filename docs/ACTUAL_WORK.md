@@ -1720,3 +1720,20 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2209 tests OK.
 - Result:
   Batch #121 is integrated as coverage only; no production code changes were needed.
+
+### 119. Persona UTF-8 mojibake guard
+- Status: completed
+- Scope: fixed the unreadable Russian text in persona evolution/prompt paths and added a guard so imported Russian context is normalized before it reaches persona state.
+- Finish:
+  added [backend/app/utils/text_encoding.py](/D:/AIWork/Elira_AI/backend/app/utils/text_encoding.py) with bounded mojibake detection and repair helpers;
+  wired [backend/app/application/persona/store.py](/D:/AIWork/Elira_AI/backend/app/application/persona/store.py) so persona JSON reads/writes, DB repair, and version summaries normalize broken UTF-8/CP1251 text;
+  repaired the hard-coded Russian strings in [backend/app/application/persona/evolution.py](/D:/AIWork/Elira_AI/backend/app/application/persona/evolution.py) and [backend/app/application/persona/service.py](/D:/AIWork/Elira_AI/backend/app/application/persona/service.py);
+  added [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) to enforce readable persona source strings and SQLite JSON repair;
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) with the UTF-8 hard rule for Russian/persona/context text.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 6 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
+- Result:
+  persona evolution status now returns readable Russian summaries such as `Структурированный и ясный ответ.` instead of mojibake.
