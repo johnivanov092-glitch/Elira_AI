@@ -82,10 +82,10 @@ def scan_project(limit: int = 400) -> List[str]:
 
 def build_project_reasoning(goal: str, selected_paths: List[str]) -> dict:
     goal_l = goal.lower()
-    scope = "ui" if any(word in goal_l for word in ["ui", "button", "panel", "component", "РёРЅС‚РµСЂС„РµР№СЃ", "РєРЅРѕРїРє", "РїР°РЅРµР»"]) else "backend"
-    if any(word in goal_l for word in ["api", "route", "backend", "endpoint", "СЂРѕСѓС‚", "СЌРЅРґРїРѕРёРЅС‚"]):
+    scope = "ui" if any(word in goal_l for word in ["ui", "button", "panel", "component", "интерфейс", "кнопк", "панел"]) else "backend"
+    if any(word in goal_l for word in ["api", "route", "backend", "endpoint", "роут", "эндпоинт"]):
         scope = "backend"
-    if any(word in goal_l for word in ["multi", "РЅРµСЃРєРѕР»СЊРєРѕ", "workflow", "pipeline", "loop"]):
+    if any(word in goal_l for word in ["multi", "несколько", "workflow", "pipeline", "loop"]):
         scope = "multi-file"
 
     return {
@@ -93,9 +93,9 @@ def build_project_reasoning(goal: str, selected_paths: List[str]) -> dict:
         "goal_summary": goal[:240],
         "selected_paths": selected_paths,
         "advice": [
-            "РЎРЅР°С‡Р°Р»Р° РїСЂРѕРІРµСЂСЊ Р·Р°С‚СЂРѕРЅСѓС‚С‹Рµ С„Р°Р№Р»С‹ С‡РµСЂРµР· preview diff.",
-            "Р”Р»СЏ multi-file РёР·РјРµРЅРµРЅРёР№ Р»СѓС‡С€Рµ РїСЂРёРјРµРЅСЏС‚СЊ verify РїР°РєРµС‚РѕРј.",
-            "РџРѕСЃР»Рµ apply СЃРѕС…СЂР°РЅСЏР№ РёСЃС‚РѕСЂРёСЋ patch/task/supervisor runs.",
+            "Сначала проверь затронутые файлы через preview diff.",
+            "Для multi-file изменений лучше применять verify пакетом.",
+            "После apply сохраняй историю patch/task/supervisor runs.",
         ],
     }
 
@@ -107,34 +107,34 @@ def build_multi_file_plan(goal: str, selected_paths: List[str], project_files: L
         plan.append({
             "action": "modify",
             "path": path,
-            "reason": "Р¤Р°Р№Р» РІС‹Р±СЂР°РЅ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј РґР»СЏ multi-file dev loop.",
+            "reason": "Файл выбран пользователем для multi-file dev loop.",
         })
 
     goal_l = goal.lower()
 
-    if any(word in goal_l for word in ["create", "СЃРѕР·РґР°Р№", "РЅРѕРІС‹Р№ С„Р°Р№Р»", "component", "РєРѕРјРїРѕРЅРµРЅС‚"]):
+    if any(word in goal_l for word in ["create", "создай", "новый файл", "component", "компонент"]):
         suggested = "frontend/src/components/Phase19GeneratedPanel.jsx"
         if suggested not in selected_paths:
             plan.append({
                 "action": "create",
                 "path": suggested,
-                "reason": "Р—Р°РґР°С‡Р° РїРѕС…РѕР¶Р° РЅР° СЃРѕР·РґР°РЅРёРµ РЅРѕРІРѕРіРѕ UI-РєРѕРјРїРѕРЅРµРЅС‚Р°.",
+                "reason": "Задача похожа на создание нового UI-компонента.",
             })
 
-    if any(word in goal_l for word in ["api", "route", "backend", "СЂРѕСѓС‚", "СЌРЅРґРїРѕРёРЅС‚"]):
+    if any(word in goal_l for word in ["api", "route", "backend", "роут", "эндпоинт"]):
         suggested = "backend/app/api/routes/phase19_generated_route.py"
         if suggested not in selected_paths:
             plan.append({
                 "action": "create",
                 "path": suggested,
-                "reason": "Р—Р°РґР°С‡Р° Р·Р°С‚СЂР°РіРёРІР°РµС‚ backend API РёР»Рё СЂРѕСѓС‚РёРЅРі.",
+                "reason": "Задача затрагивает backend API или роутинг.",
             })
 
     if not plan and project_files:
         plan.append({
             "action": "inspect",
             "path": project_files[0],
-            "reason": "РќРµС‚ РІС‹Р±СЂР°РЅРЅС‹С… С„Р°Р№Р»РѕРІ, РЅСѓР¶РµРЅ СЃС‚Р°СЂС‚РѕРІС‹Р№ inspect РїРѕ РїСЂРѕРµРєС‚Сѓ.",
+            "reason": "Нет выбранных файлов, нужен стартовый inspect по проекту.",
         })
 
     return plan[:12]

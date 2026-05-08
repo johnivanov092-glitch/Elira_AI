@@ -93,7 +93,7 @@ def build_plan(goal: str, current_path: str | None, staged_paths: List[str]) -> 
         plan.append({
             "action": "modify",
             "path": current_path,
-            "reason": "РўРµРєСѓС‰РёР№ С„Р°Р№Р» РІС‹Р±СЂР°РЅ РєР°Рє РѕСЃРЅРѕРІРЅРѕР№ РєР°РЅРґРёРґР°С‚.",
+            "reason": "Текущий файл выбран как основной кандидат.",
         })
 
     for path in staged_paths[:8]:
@@ -101,29 +101,29 @@ def build_plan(goal: str, current_path: str | None, staged_paths: List[str]) -> 
             plan.append({
                 "action": "modify",
                 "path": path,
-                "reason": "Р¤Р°Р№Р» staged Рё СѓС‡Р°СЃС‚РІСѓРµС‚ РІ С‚РµРєСѓС‰РµРј СЃС†РµРЅР°СЂРёРё.",
+                "reason": "Файл staged и участвует в текущем сценарии.",
             })
 
     goal_l = goal.lower()
-    if any(word in goal_l for word in ["create", "СЃРѕР·РґР°Р№", "РґРѕР±Р°РІ", "РєРѕРјРїРѕРЅРµРЅС‚", "component"]):
+    if any(word in goal_l for word in ["create", "создай", "добав", "компонент", "component"]):
         plan.append({
             "action": "create",
             "path": "frontend/src/components/SupervisorGeneratedPanel.jsx",
-            "reason": "Р—Р°РґР°С‡Р° РІС‹РіР»СЏРґРёС‚ РєР°Рє РґРѕР±Р°РІР»РµРЅРёРµ РЅРѕРІРѕР№ UI-С„СѓРЅРєС†РёРё.",
+            "reason": "Задача выглядит как добавление новой UI-функции.",
         })
 
-    if any(word in goal_l for word in ["api", "backend", "СЂРѕСѓС‚", "route", "router", "СЌРЅРґРїРѕРёРЅС‚"]):
+    if any(word in goal_l for word in ["api", "backend", "роут", "route", "router", "эндпоинт"]):
         plan.append({
             "action": "create",
             "path": "backend/app/api/routes/supervisor_generated_route.py",
-            "reason": "Р—Р°РґР°С‡Р° Р·Р°С‚СЂР°РіРёРІР°РµС‚ backend API.",
+            "reason": "Задача затрагивает backend API.",
         })
 
     if not plan:
         plan.append({
             "action": "inspect",
             "path": current_path or "project",
-            "reason": "РќСѓР¶РЅРѕ СЃРЅР°С‡Р°Р»Р° СѓС‚РѕС‡РЅРёС‚СЊ РѕР±Р»Р°СЃС‚СЊ РёР·РјРµРЅРµРЅРёР№.",
+            "reason": "Нужно сначала уточнить область изменений.",
         })
 
     return plan[:12]
@@ -144,26 +144,26 @@ def build_steps(plan: List[dict], status_overrides: dict | None = None) -> List[
         {
             "agent": "planner",
             "status": statuses["planner"],
-            "title": "РџРѕСЃС‚СЂРѕРµРЅРёРµ РїР»Р°РЅР°",
-            "details": f"РџРѕРґРіРѕС‚РѕРІР»РµРЅРѕ {len(plan)} item(s).",
+            "title": "Построение плана",
+            "details": f"Подготовлено {len(plan)} item(s).",
         },
         {
             "agent": "coder",
             "status": statuses["coder"],
-            "title": "РџРѕРґРіРѕС‚РѕРІРєР° preview",
-            "details": f"Preview targets: {', '.join(preview_targets) if preview_targets else 'РЅРµС‚'}",
+            "title": "Подготовка preview",
+            "details": f"Preview targets: {', '.join(preview_targets) if preview_targets else 'нет'}",
         },
         {
             "agent": "reviewer",
             "status": statuses["reviewer"],
             "title": "Review",
-            "details": "Diff, history Рё verify flow РїРѕРґРіРѕС‚РѕРІР»РµРЅС‹.",
+            "details": "Diff, history и verify flow подготовлены.",
         },
         {
             "agent": "tester",
             "status": statuses["tester"],
             "title": "Verify",
-            "details": "Verify СЃС†РµРЅР°СЂРёР№ РїРѕРґРіРѕС‚РѕРІР»РµРЅ.",
+            "details": "Verify сценарий подготовлен.",
         },
     ]
 
@@ -268,10 +268,10 @@ def prepare_run(
     summary = {
         "preview_targets": [item["path"] for item in plan if item["action"] in {"modify", "create"}],
         "next_steps": [
-            "РћС‚РєСЂРѕР№ С„Р°Р№Р»С‹ РёР· РїР»Р°РЅР°.",
-            "РЎРґРµР»Р°Р№ Preview Patch.",
-            "РџСЂРѕРІРµСЂСЊ Diff Рё History.",
-            "РЎРґРµР»Р°Р№ Apply Рё Verify.",
+            "Открой файлы из плана.",
+            "Сделай Preview Patch.",
+            "Проверь Diff и History.",
+            "Сделай Apply и Verify.",
         ],
         "auto_apply": auto_apply,
     }
@@ -331,13 +331,13 @@ def prepare_execute(
     summary = {
         "preview_targets": [current_path],
         "next_steps": [
-            "РџСЂРѕРІРµСЂСЊ preview content.",
-            "РЎРґРµР»Р°Р№ Apply Patch РІ Code Workspace.",
-            "Р—Р°РїСѓСЃС‚Рё Verify.",
+            "Проверь preview content.",
+            "Сделай Apply Patch в Code Workspace.",
+            "Запусти Verify.",
         ] if not auto_apply else [
-            "Preview СЂР°СЃСЃС‡РёС‚Р°РЅ.",
-            "РџРѕРґС‚РІРµСЂРґРё Apply Patch.",
-            "РЎСЂР°Р·Сѓ РїРѕСЃР»Рµ apply РІС‹РїРѕР»РЅРё Verify.",
+            "Preview рассчитан.",
+            "Подтверди Apply Patch.",
+            "Сразу после apply выполни Verify.",
         ],
         "auto_apply": auto_apply,
         "changed_vs_disk": changed_vs_disk,
@@ -361,10 +361,10 @@ def prepare_execute(
         "verify": {
             "path": current_path,
             "checks": [
-                "Р¤Р°Р№Р» СЃСѓС‰РµСЃС‚РІСѓРµС‚",
-                "Р¤Р°Р№Р» С‡РёС‚Р°РµС‚СЃСЏ РєР°Рє UTF-8",
-                "Preview СЂР°СЃСЃС‡РёС‚Р°РЅ РґР»СЏ С‚РµРєСѓС‰РµРіРѕ С„Р°Р№Р»Р°",
-                "Р“РѕС‚РѕРІ Рє Verify РїРѕСЃР»Рµ Apply",
+                "Файл существует",
+                "Файл читается как UTF-8",
+                "Preview рассчитан для текущего файла",
+                "Готов к Verify после Apply",
             ],
         },
         "created_at": datetime.utcnow().isoformat(),

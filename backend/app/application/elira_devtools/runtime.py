@@ -183,7 +183,7 @@ def build_patch_plan(
         plan_items.append({
             "action": "modify",
             "path": current_path,
-            "reason": "РўРµРєСѓС‰РёР№ РѕС‚РєСЂС‹С‚С‹Р№ С„Р°Р№Р» РІС‹Р±СЂР°РЅ РєР°Рє РѕСЃРЅРѕРІРЅРѕР№ РєР°РЅРґРёРґР°С‚ РЅР° РёР·РјРµРЅРµРЅРёРµ.",
+            "reason": "Текущий открытый файл выбран как основной кандидат на изменение.",
         })
 
     for path in staged_paths[:10]:
@@ -191,39 +191,39 @@ def build_patch_plan(
             plan_items.append({
                 "action": "modify",
                 "path": path,
-                "reason": "Р¤Р°Р№Р» СѓР¶Рµ staged, Р·РЅР°С‡РёС‚ СѓС‡Р°СЃС‚РІСѓРµС‚ РІ С‚РµРєСѓС‰РµРј РЅР°Р±РѕСЂРµ РёР·РјРµРЅРµРЅРёР№.",
+                "reason": "Файл уже staged, значит участвует в текущем наборе изменений.",
             })
 
     goal_l = goal.lower()
 
-    if any(word in goal_l for word in ["create", "СЃРѕР·РґР°Р№", "РґРѕР±Р°РІ", "РЅРѕРІС‹Р№ С„Р°Р№Р»", "component", "РєРѕРјРїРѕРЅРµРЅС‚"]):
+    if any(word in goal_l for word in ["create", "создай", "добав", "новый файл", "component", "компонент"]):
         suggested_name = "frontend/src/components/NewFeaturePanel.jsx"
         if not any(item["path"] == suggested_name for item in plan_items):
             plan_items.append({
                 "action": "create",
                 "path": suggested_name,
-                "reason": "Р—Р°РґР°С‡Р° РІС‹РіР»СЏРґРёС‚ РєР°Рє РґРѕР±Р°РІР»РµРЅРёРµ РЅРѕРІРѕР№ UI-С„СѓРЅРєС†РёРё РёР»Рё РєРѕРјРїРѕРЅРµРЅС‚Р°.",
+                "reason": "Задача выглядит как добавление новой UI-функции или компонента.",
             })
 
-    if any(word in goal_l for word in ["route", "router", "endpoint", "api", "backend", "СЂРѕСѓС‚", "СЌРЅРґРїРѕРёРЅС‚"]):
+    if any(word in goal_l for word in ["route", "router", "endpoint", "api", "backend", "роут", "эндпоинт"]):
         suggested_name = "backend/app/api/routes/new_feature.py"
         if not any(item["path"] == suggested_name for item in plan_items):
             plan_items.append({
                 "action": "create",
                 "path": suggested_name,
-                "reason": "Р—Р°РґР°С‡Р° Р·Р°С‚СЂР°РіРёРІР°РµС‚ backend API РёР»Рё СЂРѕСѓС‚РёРЅРі.",
+                "reason": "Задача затрагивает backend API или роутинг.",
             })
 
     if not plan_items:
         plan_items.append({
             "action": "inspect",
             "path": current_path or "project",
-            "reason": "РќСѓР¶РЅРѕ СЃРЅР°С‡Р°Р»Р° СѓС‚РѕС‡РЅРёС‚СЊ Р·Р°С‚СЂРѕРЅСѓС‚СѓСЋ РѕР±Р»Р°СЃС‚СЊ РїСЂРѕРµРєС‚Р°.",
+            "reason": "Нужно сначала уточнить затронутую область проекта.",
         })
 
-    notes.append("РЎРЅР°С‡Р°Р»Р° СЃРґРµР»Р°Р№ preview diff РґРѕ apply.")
-    notes.append("Р”Р»СЏ multi-file РёР·РјРµРЅРµРЅРёР№ Р»СѓС‡С€Рµ stage РЅСѓР¶РЅС‹Рµ С„Р°Р№Р»С‹ Р·Р°СЂР°РЅРµРµ.")
-    notes.append("РџРѕСЃР»Рµ apply РІС‹РїРѕР»РЅРё verify Рё РїСЂРѕРІРµСЂСЊ history.")
+    notes.append("Сначала сделай preview diff до apply.")
+    notes.append("Для multi-file изменений лучше stage нужные файлы заранее.")
+    notes.append("После apply выполни verify и проверь history.")
 
     return {
         "status": "ok",

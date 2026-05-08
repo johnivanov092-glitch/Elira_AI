@@ -34,19 +34,19 @@ def route_task(
         return {"mode": mode, "reason": "manual"}
 
     low = (text or "").lower()
-    if any(x in low for x in ["Р Р…Р В°РЎР‚Р С‘РЎРѓРЎС“Р в„–", "Р С‘Р В·Р С•Р В±РЎР‚Р В°Р В¶", "image", "Р С”Р В°РЎР‚РЎвЂљР С‘Р Р…", "png", "sdxl", "flux"]):
+    if any(x in low for x in ["нарисуй", "изображ", "image", "картин", "png", "sdxl", "flux"]):
         return {"mode": "image", "reason": "image markers"}
     if selected_project_paths or any(
         item.get("suffix") in {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".css", ".html"}
         for item in attachments
     ):
-        if any(x in low for x in ["Р С‘РЎРѓР С—РЎР‚Р В°Р Р†", "fix", "refactor", "patch", "endpoint", "Р С”Р С•Р Т‘", "api", "РЎвЂћРЎС“Р Р…Р С”РЎвЂ ", "Р С•РЎв‚¬Р С‘Р В±Р С”", "bug", "Р Т‘Р С•Р В±Р В°Р Р†РЎРЉ"]):
+        if any(x in low for x in ["исправ", "fix", "refactor", "patch", "endpoint", "код", "api", "функц", "ошибк", "bug", "добавь"]):
             return {"mode": "code", "reason": "code markers"}
-    if any(x in low for x in ["Р С—Р В»Р В°Р Р…", "roadmap", "РЎв‚¬Р В°Р С–", "Р В°РЎР‚РЎвЂ¦Р С‘РЎвЂљР ВµР С”РЎвЂљ", "strategy", "РЎРѓРЎвЂљРЎР‚Р В°РЎвЂљР ВµР С–"]):
+    if any(x in low for x in ["план", "roadmap", "шаг", "архитект", "strategy", "стратег"]):
         return {"mode": "plan", "reason": "plan markers"}
     if attachments:
         return {"mode": "analyze", "reason": "attachments present"}
-    if web_enabled and any(x in low for x in ["Р С”РЎвЂљР С•", "Р С”Р С•Р С–Р Т‘Р В°", "Р Р…Р С•Р Р†Р С•РЎРѓРЎвЂљ", "latest", "Р Р…Р В°Р в„–Р Т‘Р С‘", "search", "Р Р† Р С‘Р Р…РЎвЂљР ВµРЎР‚Р Р…Р ВµРЎвЂљР Вµ", "Р Т‘Р С•Р С”РЎС“Р СР ВµР Р…РЎвЂљР В°РЎвЂ ", "web", "Р Р†Р ВµР В±", "research"]):
+    if web_enabled and any(x in low for x in ["кто", "когда", "новост", "latest", "найди", "search", "в интернете", "документац", "web", "веб", "research"]):
         return {"mode": "research", "reason": "research markers"}
     return {"mode": "chat", "reason": "default"}
 
@@ -299,7 +299,7 @@ def send_chat_message(
     answer = str(result.get("answer") or "")
     plan = result.get("plan") if isinstance(result.get("plan"), list) else []
     if not answer:
-        answer = "Р СњР Вµ РЎС“Р Т‘Р В°Р В»Р С•РЎРѓРЎРЉ Р С—Р С•Р В»РЎС“РЎвЂЎР С‘РЎвЂљРЎРЉ РЎРѓР С•Р Т‘Р ВµРЎР‚Р В¶Р В°РЎвЂљР ВµР В»РЎРЉР Р…РЎвЂ№Р в„– Р С•РЎвЂљР Р†Р ВµРЎвЂљ Р С•РЎвЂљ Р СР С•Р Т‘Р ВµР В»Р С‘."
+        answer = "Не удалось получить содержательный ответ от модели."
 
     response = {
         "status": "ok",

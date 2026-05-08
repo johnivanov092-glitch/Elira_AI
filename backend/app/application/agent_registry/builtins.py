@@ -4,11 +4,11 @@ from typing import Any
 
 
 _ROLE_DEFS = [
-    ("РЅРёРІРµСЂСЃР°Р»СЊРЅ", "general", "Universal", "builtin-universal"),
-    ("СЃСЃР»РµРґРѕРІР°С‚РµР»", "researcher", "Researcher", "builtin-researcher"),
-    ("СЂРѕРіСЂР°РјРјРёСЃС‚", "programmer", "Programmer", "builtin-programmer"),
-    ("РЅР°Р»РёС‚РёРє", "analyst", "Analyst", "builtin-analyst"),
-    ("РѕРєСЂР°С‚", "teacher", "Socrat", "builtin-socrat"),
+    ("ниверсальн", "general", "Universal", "builtin-universal"),
+    ("сследовател", "researcher", "Researcher", "builtin-researcher"),
+    ("рограммист", "programmer", "Programmer", "builtin-programmer"),
+    ("налитик", "analyst", "Analyst", "builtin-analyst"),
+    ("ократ", "teacher", "Socrat", "builtin-socrat"),
 ]
 
 
@@ -46,30 +46,30 @@ def iter_builtin_agent_defs() -> list[dict[str, Any]]:
             {
                 "id": "builtin-orchestrator",
                 "name": "Orchestrator",
-                "name_ru": "РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ",
+                "name_ru": "Оркестратор",
                 "description": "Plans and synthesizes multi-step workflows.",
-                "description_ru": "РџР»Р°РЅРёСЂСѓРµС‚ Рё СЃРѕР±РёСЂР°РµС‚ РёС‚РѕРі РјРЅРѕРіРѕС€Р°РіРѕРІС‹С… workflow.",
+                "description_ru": "Планирует и собирает итог многошаговых workflow.",
                 "role": "orchestrator",
                 "system_prompt": (
-                    "РўС‹ РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ. Р Р°Р·Р±РёРІР°Р№ СЃР»РѕР¶РЅС‹Рµ Р·Р°РґР°С‡Рё РЅР° С€Р°РіРё, СЃРѕР±РёСЂР°Р№ РёС‚РѕРіРѕРІС‹Рµ РІС‹РІРѕРґС‹, "
-                    "РґРµСЂР¶Рё СЃС‚СЂСѓРєС‚СѓСЂСѓ РѕС‚РІРµС‚Р° Рё РїРѕРјРѕРіР°Р№ Р°РіРµРЅС‚Р°Рј СЂР°Р±РѕС‚Р°С‚СЊ СЃРѕРіР»Р°СЃРѕРІР°РЅРЅРѕ."
+                    "Ты Оркестратор. Разбивай сложные задачи на шаги, собирай итоговые выводы, "
+                    "держи структуру ответа и помогай агентам работать согласованно."
                 ),
                 "tags": ["workflow", "planning", "coordination"],
-                "config": {"icon": "в—Ћ"},
+                "config": {"icon": "◎"},
             },
             {
                 "id": "builtin-reviewer",
                 "name": "Reviewer",
-                "name_ru": "Р РµРІСЊСЋРµСЂ",
+                "name_ru": "Ревьюер",
                 "description": "Critiques intermediate and final results.",
-                "description_ru": "РџСЂРѕРІРµСЂСЏРµС‚ РїСЂРѕРјРµР¶СѓС‚РѕС‡РЅС‹Рµ Рё С„РёРЅР°Р»СЊРЅС‹Рµ СЂРµР·СѓР»СЊС‚Р°С‚С‹.",
+                "description_ru": "Проверяет промежуточные и финальные результаты.",
                 "role": "reviewer",
                 "system_prompt": (
-                    "РўС‹ Р РµРІСЊСЋРµСЂ. РџСЂРѕРІРµСЂСЏР№ РѕС‚РІРµС‚С‹ РЅР° Р»РѕРіРёС‡РµСЃРєРёРµ РїСЂРѕР±РµР»С‹, СЃР»Р°Р±С‹Рµ РјРµСЃС‚Р°, СЂРёСЃРєРё Рё "
-                    "РЅРµРґРѕСЃС‚Р°СЋС‰РёРµ СѓР»СѓС‡С€РµРЅРёСЏ. РџРёС€Рё РєРѕРЅРєСЂРµС‚РЅРѕ Рё РїРѕР»РµР·РЅРѕ."
+                    "Ты Ревьюер. Проверяй ответы на логические пробелы, слабые места, риски и "
+                    "недостающие улучшения. Пиши конкретно и полезно."
                 ),
                 "tags": ["review", "quality", "critique"],
-                "config": {"icon": "в—Њ"},
+                "config": {"icon": "◌"},
             },
         ]
     )

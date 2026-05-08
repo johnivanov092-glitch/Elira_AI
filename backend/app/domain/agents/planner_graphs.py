@@ -11,20 +11,20 @@ from app.domain.agents.planner_runtime import extract_first_url
 
 
 _SEARCH_KEYWORDS = [
-    "РЅР°Р№РґРё",
-    "РїРѕРёСЃРє",
-    "РІРµР±",
-    "СЃР°Р№С‚",
-    "РґРѕРєСѓРјРµРЅС‚Р°С†",
-    "РёРЅС‚РµСЂРЅРµС‚",
-    "СЃС‚СЂР°РЅРёС†",
+    "найди",
+    "поиск",
+    "веб",
+    "сайт",
+    "документац",
+    "интернет",
+    "страниц",
 ]
 
 _MEMORY_KEYWORDS = [
-    "РІСЃРїРѕРјРЅРё",
-    "РїР°РјСЏС‚СЊ",
-    "С‡С‚Рѕ С‚С‹ Р·РЅР°РµС€СЊ",
-    "РёР· РїР°РјСЏС‚Рё",
+    "вспомни",
+    "память",
+    "что ты знаешь",
+    "из памяти",
     "memory",
 ]
 
@@ -36,7 +36,7 @@ def planner_default_steps(task: str) -> List[dict]:
         steps.append(
             {
                 "tool": "browser",
-                "goal": "РџСЂРѕС‡РёС‚Р°Р№ СЃС‚СЂР°РЅРёС†Сѓ Рё РёР·РІР»РµРєРё С„Р°РєС‚С‹, РїРѕР»РµР·РЅС‹Рµ РґР»СЏ РёСЃС…РѕРґРЅРѕР№ Р·Р°РґР°С‡Рё.",
+                "goal": "Прочитай страницу и извлеки факты, полезные для исходной задачи.",
                 "url": url,
             }
         )
@@ -51,7 +51,7 @@ def planner_default_steps(task: str) -> List[dict]:
     steps.append(
         {
             "tool": "reasoning",
-            "goal": "РЎРѕР±РµСЂРё РІС‹РІРѕРґ Рё РїСЂР°РєС‚РёС‡РµСЃРєРёРµ С€Р°РіРё РЅР° РѕСЃРЅРѕРІРµ РґРѕСЃС‚СѓРїРЅРѕРіРѕ РєРѕРЅС‚РµРєСЃС‚Р°.",
+            "goal": "Собери вывод и практические шаги на основе доступного контекста.",
         }
     )
     return steps[:4]
@@ -76,7 +76,7 @@ def task_graph_default(task: str) -> List[dict]:
             {
                 "id": f"n{len(nodes) + 1}",
                 "tool": "browser",
-                "goal": "РџСЂРѕС‡РёС‚Р°Р№ СЃС‚СЂР°РЅРёС†Сѓ Рё РёР·РІР»РµРєРё С„Р°РєС‚С‹, РїРѕР»РµР·РЅС‹Рµ РґР»СЏ РёСЃС…РѕРґРЅРѕР№ Р·Р°РґР°С‡Рё.",
+                "goal": "Прочитай страницу и извлеки факты, полезные для исходной задачи.",
                 "url": url,
                 "depends_on": [],
             }
@@ -96,7 +96,7 @@ def task_graph_default(task: str) -> List[dict]:
         {
             "id": f"n{len(nodes) + 1}",
             "tool": "reasoning",
-            "goal": "РЎРѕР±РµСЂРё С„РёРЅР°Р»СЊРЅС‹Р№ Р°РЅР°Р»РёС‚РёС‡РµСЃРєРёР№ РѕС‚РІРµС‚ РїРѕ РёСЃС…РѕРґРЅРѕР№ Р·Р°РґР°С‡Рµ.",
+            "goal": "Собери финальный аналитический ответ по исходной задаче.",
             "depends_on": [node["id"] for node in nodes],
         }
     )
@@ -147,7 +147,7 @@ def normalize_task_graph(raw_graph: Any, task: str) -> List[dict]:
             {
                 "id": f"n{len(cleaned) + 1}",
                 "tool": "reasoning",
-                "goal": "РЎРѕР±РµСЂРё С„РёРЅР°Р»СЊРЅС‹Р№ Р°РЅР°Р»РёС‚РёС‡РµСЃРєРёР№ РѕС‚РІРµС‚ РїРѕ РёСЃС…РѕРґРЅРѕР№ Р·Р°РґР°С‡Рµ.",
+                "goal": "Собери финальный аналитический ответ по исходной задаче.",
                 "url": "",
                 "command": "",
                 "depends_on": [node["id"] for node in cleaned],
@@ -186,7 +186,7 @@ def normalize_planner_steps(raw_plan: Any, task: str) -> List[dict]:
         normalized.append(
             {
                 "tool": "reasoning",
-                "goal": "РЎРѕР±РµСЂРё С„РёРЅР°Р»СЊРЅС‹Р№ РѕС‚РІРµС‚ РїРѕ РІСЃРµРј РЅР°Р±Р»СЋРґРµРЅРёСЏРј.",
+                "goal": "Собери финальный ответ по всем наблюдениям.",
                 "url": "",
                 "command": "",
             }
@@ -210,7 +210,7 @@ def make_task_graph(
     planner_prompt = build_task_graph_prompt(task)
     raw_graph = ask_model(
         model_name=model_name,
-        profile_name="РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ",
+        profile_name="Оркестратор",
         user_input=planner_prompt,
         memory_context=memory_context,
         use_memory=True,

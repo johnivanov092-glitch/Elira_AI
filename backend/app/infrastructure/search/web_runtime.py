@@ -152,7 +152,7 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
     )
 
     query = subquery.get("query", "")
-    label = subquery.get("label", "РџРѕРёСЃРє")
+    label = subquery.get("label", "Поиск")
     intent_kind = subquery.get("intent_kind", "")
     geo_scope = subquery.get("geo_scope", "")
     local_first = bool(subquery.get("local_first"))
@@ -252,27 +252,27 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
         )
         deeper_search = bool(deep_context)
 
-    parts = [f"=== РџРћР”РўР•РњРђ: {label} ===", f"Р—Р°РїСЂРѕСЃ: {query}"]
+    parts = [f"=== ПОДТЕМА: {label} ===", f"Запрос: {query}"]
     if deep_content:
-        parts.append("РЎРћР”Р•Р Р–РРњРћР• Р’Р•Р‘-РЎРўР РђРќРР¦:\n" + "\n\n".join(deep_content))
+        parts.append("СОДЕРЖИМОЕ ВЕБ-СТРАНИЦ:\n" + "\n\n".join(deep_content))
     if news_results:
         lines = []
         for item in news_results[:5]:
             date_str = f" [{item['date']}]" if item.get("date") else ""
             source_str = f" ({item['source']})" if item.get("source") else ""
             lines.append(f"- {item['title']}{date_str}{source_str}: {item['snippet']}")
-        parts.append("РЎР’Р•Р–РР• РќРћР’РћРЎРўР:\n" + "\n".join(lines))
+        parts.append("СВЕЖИЕ НОВОСТИ:\n" + "\n".join(lines))
 
     remaining = [item for item in normalized_search if item["url"] not in fetched_urls][:4]
     if remaining:
         lines = [f"- {item['title']}: {item['snippet']}" for item in remaining]
-        parts.append("РћРЎРўРђР›Р¬РќР«Р• Р Р•Р—РЈР›Р¬РўРђРўР«:\n" + "\n".join(lines))
+        parts.append("ОСТАЛЬНЫЕ РЕЗУЛЬТАТЫ:\n" + "\n".join(lines))
 
     if deep_context:
-        parts.append("РЈР“Р›РЈР‘Р›Р•РќРќР«Р™ РџРћРРЎРљ:\n" + deep_context)
+        parts.append("УГЛУБЛЕННЫЙ ПОИСК:\n" + deep_context)
 
     if not normalized_search and not news_results and not deep_context:
-        parts.append("РќРµРґРѕСЃС‚Р°С‚РѕС‡РЅРѕ СЃРІРµР¶РёС… РїРѕРґС‚РІРµСЂР¶РґРµРЅРЅС‹С… РґР°РЅРЅС‹С… РїРѕ СЌС‚РѕР№ РїРѕРґС‚РµРјРµ.")
+        parts.append("Недостаточно свежих подтвержденных данных по этой подтеме.")
 
     engines_used = sorted(
         {
@@ -381,9 +381,9 @@ def do_web_search_legacy(
         pass
 
     if not search_results and not news_results:
-        _tl(timeline, "tool_web", "Р’РµР±-РїРѕРёСЃРє", "error", "РќРµС‚ СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ")
+        _tl(timeline, "tool_web", "Веб-поиск", "error", "Нет результатов")
         tool_results.append({"tool": "web_search", "result": {"count": 0}})
-        return "[РџРѕРёСЃРє РЅРµ РґР°Р» СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ]"
+        return "[Поиск не дал результатов]"
 
     deep_content: list[str] = []
     fetched_urls: set[str] = set()
@@ -438,14 +438,14 @@ def do_web_search_legacy(
     _tl(
         timeline,
         "tool_web",
-        "Р’РµР±-РїРѕРёСЃРє",
+        "Веб-поиск",
         "done",
-        f"{len(search_results)} РЅР°Р№РґРµРЅРѕ ({engines_str}), {fetched_count} СЃС‚СЂР°РЅРёС† Р·Р°РіСЂСѓР¶РµРЅРѕ, {len(news_results)} РЅРѕРІРѕСЃС‚РµР№",
+        f"{len(search_results)} найдено ({engines_str}), {fetched_count} страниц загружено, {len(news_results)} новостей",
     )
 
     parts: list[str] = []
     if deep_content:
-        parts.append("в•ђв•ђ РЎРћР”Р•Р Р–РРњРћР• Р’Р•Р‘-РЎРўР РђРќРР¦ (РРЎРџРћР›Р¬Р—РЈР™ Р­РўР Р”РђРќРќР«Р•!) в•ђв•ђ\n\n" + "\n\n".join(deep_content))
+        parts.append("══ СОДЕРЖИМОЕ ВЕБ-СТРАНИЦ (ИСПОЛЬЗУЙ ЭТИ ДАННЫЕ!) ══\n\n" + "\n\n".join(deep_content))
 
     if news_results:
         news_lines = []
@@ -453,12 +453,12 @@ def do_web_search_legacy(
             date_str = f" [{item['date']}]" if item.get("date") else ""
             source_str = f" ({item['source']})" if item.get("source") else ""
             news_lines.append(f"- {item['title']}{date_str}{source_str}: {item['snippet']}")
-        parts.append("в•ђв•ђ РЎР’Р•Р–РР• РќРћР’РћРЎРўР в•ђв•ђ\n" + "\n".join(news_lines))
+        parts.append("══ СВЕЖИЕ НОВОСТИ ══\n" + "\n".join(news_lines))
 
     remaining = [item for item in search_results if item["url"] not in fetched_urls][:5]
     if remaining:
         snippet_lines = [f"- {item['title']}: {item['snippet']}" for item in remaining]
-        parts.append("в•ђв•ђ Р”Р РЈР“РР• Р Р•Р—РЈР›Р¬РўРђРўР« в•ђв•ђ\n" + "\n".join(snippet_lines))
+        parts.append("══ ДРУГИЕ РЕЗУЛЬТАТЫ ══\n" + "\n".join(snippet_lines))
 
     return "\n\n".join(parts)
 
@@ -578,7 +578,7 @@ def do_web_search(
                 _tl(
                     timeline,
                     step_id,
-                    f"Р’РµР±-РїРѕРёСЃРє {pass_name}",
+                    f"Веб-поиск {pass_name}",
                     "done",
                     f"{debug.get('query', '')}: found={found}, news={news_hits}, pages={fetched_pages}",
                 )
@@ -586,7 +586,7 @@ def do_web_search(
                 _tl(
                     timeline,
                     step_id,
-                    f"Р’РµР±-РїРѕРёСЃРє {pass_name}",
+                    f"Веб-поиск {pass_name}",
                     "error",
                     f"{debug.get('query', '')}: no confirmed results",
                 )
@@ -605,9 +605,9 @@ def do_web_search(
         _tl(
             timeline,
             f"tool_web_{pass_name}",
-            f"Р’РµР±-РїСЂРѕС…РѕРґ {pass_index}",
+            f"Веб-проход {pass_index}",
             "done",
-            f"{len(pass_queries)} РїРѕРґС‚РµРј, found={pass_found}, news={pass_news}, pages={pass_pages}",
+            f"{len(pass_queries)} подтем, found={pass_found}, news={pass_news}, pages={pass_pages}",
         )
 
     unique_uncovered = list(dict.fromkeys(item for item in uncovered_subqueries if item))
@@ -640,14 +640,14 @@ def do_web_search(
     tool_results.append({"tool": "web_search", "result": result_payload})
 
     if not sections:
-        _tl(timeline, "tool_web", "Р’РµР±-РїРѕРёСЃРє", "error", "РќРµС‚ РїРѕРґС‚РІРµСЂР¶РґРµРЅРЅС‹С… СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ")
-        return "[РџРѕРёСЃРє РЅРµ РґР°Р» СЂРµР·СѓР»СЊС‚Р°С‚РѕРІ]"
+        _tl(timeline, "tool_web", "Веб-поиск", "error", "Нет подтвержденных результатов")
+        return "[Поиск не дал результатов]"
 
     _tl(
         timeline,
         "tool_web",
-        "Р’РµР±-РїРѕРёСЃРє",
+        "Веб-поиск",
         "done",
-        f"{total_found} РЅР°Р№РґРµРЅРѕ, {total_news} РЅРѕРІРѕСЃС‚РµР№, {total_fetched} СЃС‚СЂР°РЅРёС†, {len(raw_subqueries)} РїРѕРґС‚РµРј, {len(pass_summaries)} РїСЂРѕС…РѕРґРѕРІ",
+        f"{total_found} найдено, {total_news} новостей, {total_fetched} страниц, {len(raw_subqueries)} подтем, {len(pass_summaries)} проходов",
     )
     return "\n\n".join(section for section in sections if section.strip())

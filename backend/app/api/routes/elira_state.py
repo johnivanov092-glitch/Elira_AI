@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 
 
 class ChatCreateRequest(BaseModel):
-    title: str = "РќРѕРІС‹Р№ С‡Р°С‚"
+    title: str = "Новый чат"
 
 
 class ChatPatchRequest(BaseModel):
@@ -38,7 +38,7 @@ class ChatMessageRequest(BaseModel):
 class SettingsRequest(BaseModel):
     ollama_context: int = 8192
     default_model: str = "gemma3:4b"
-    agent_profile: str = "РЈРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№"
+    agent_profile: str = "Универсальный"
     route_model_map: dict | None = None
 
 
@@ -91,7 +91,7 @@ def chats_patch(chat_id: int, payload: ChatPatchRequest):
         memory_saved=payload.memory_saved,
     )
     if not item:
-        raise HTTPException(status_code=404, detail="Р§Р°С‚ РЅРµ РЅР°Р№РґРµРЅ")
+        raise HTTPException(status_code=404, detail="Чат не найден")
     return item
 
 
@@ -100,7 +100,7 @@ def chats_pin(chat_id: int, payload: ChatPatchRequest):
     init_db()
     item = set_chat_pinned(chat_id, bool(payload.pinned))
     if not item:
-        raise HTTPException(status_code=404, detail="Р§Р°С‚ РЅРµ РЅР°Р№РґРµРЅ")
+        raise HTTPException(status_code=404, detail="Чат не найден")
     return item
 
 
@@ -109,7 +109,7 @@ def chats_memory(chat_id: int, payload: ChatPatchRequest):
     init_db()
     item = set_chat_memory_saved(chat_id, bool(payload.memory_saved))
     if not item:
-        raise HTTPException(status_code=404, detail="Р§Р°С‚ РЅРµ РЅР°Р№РґРµРЅ")
+        raise HTTPException(status_code=404, detail="Чат не найден")
     return item
 
 
@@ -131,7 +131,7 @@ def messages_add(payload: ChatMessageRequest):
     init_db()
     chat_id = payload.chat_id
     if not chat_id:
-        created = create_chat("РќРѕРІС‹Р№ С‡Р°С‚")
+        created = create_chat("Новый чат")
         chat_id = int(created["id"])
     message = add_message(chat_id, payload.role, payload.content)
     return {"status": "ok", "chat_id": chat_id, "message": message}

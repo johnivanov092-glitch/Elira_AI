@@ -49,8 +49,8 @@ from app.application.runtime.status import init_runtime_state
 
 app = FastAPI(title="Elira AI API")
 
-# CORS: localhost + LAN (РґР»СЏ mobile mode).
-# Regex РїРѕРєСЂС‹РІР°РµС‚: 127.0.0.1, localhost, Рё Р»СЋР±РѕР№ LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+# CORS: localhost + LAN (для mobile mode).
+# Regex покрывает: 127.0.0.1, localhost, и любой LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

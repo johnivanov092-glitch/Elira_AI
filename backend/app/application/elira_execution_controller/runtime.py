@@ -59,9 +59,9 @@ def build_controller(queue_items: List[dict], execution_state: dict) -> dict:
             "verify_allowed": bool(queue_items),
         },
         "notes": [
-            "РљРѕРЅС‚СЂРѕР»Р»РµСЂ РёСЃРїРѕР»СЊР·СѓРµС‚ queue Рё execution state РєР°Рє РІС…РѕРґ.",
-            "РЎРЅР°С‡Р°Р»Р° Р·Р°РІРµСЂС€Р°РµС‚СЃСЏ preview queue, Р·Р°С‚РµРј apply, Р·Р°С‚РµРј verify.",
-            "РџСЂРё РїСЂРѕР±Р»РµРјР°С… РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ rollback strategy РёР· execution state.",
+            "Контроллер использует queue и execution state как вход.",
+            "Сначала завершается preview queue, затем apply, затем verify.",
+            "При проблемах используется rollback strategy из execution state.",
         ],
     }
 

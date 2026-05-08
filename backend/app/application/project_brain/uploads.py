@@ -40,7 +40,7 @@ def extract_text_from_docx(data: bytes) -> str:
 def extract_text_from_pdf(data: bytes) -> str:
     text = data.decode("latin-1", errors="ignore")
     text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[^\x20-\x7E\n\rР С’-Р Р‡Р В°-РЎРЏР РѓРЎвЂ]", " ", text)
+    text = re.sub(r"[^\x20-\x7E\n\rА-Яа-яЁё]", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 

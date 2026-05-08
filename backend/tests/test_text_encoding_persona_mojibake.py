@@ -138,15 +138,15 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
         self.assertIn(readable, row[0])
         self.assertEqual(row[1], readable)
 
-    def test_persona_source_files_do_not_contain_mojibake(self) -> None:
-        for relative_path in (
-            "backend/app/application/persona/evolution.py",
-            "backend/app/application/persona/service.py",
-            "backend/app/core/persona_defaults.py",
-        ):
-            with self.subTest(path=relative_path):
-                text = (ROOT / relative_path).read_text(encoding="utf-8")
-                self.assertEqual(mojibake_score(text), 0)
+    def test_backend_source_files_do_not_contain_mojibake(self) -> None:
+        bad_files = []
+        for path in (ROOT / "backend" / "app").rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            score = mojibake_score(text)
+            if score:
+                bad_files.append(f"{path.relative_to(ROOT)}:{score}")
+
+        self.assertEqual(bad_files, [])
 
 
 if __name__ == "__main__":

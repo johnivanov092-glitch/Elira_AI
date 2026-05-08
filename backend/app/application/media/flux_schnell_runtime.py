@@ -1,15 +1,15 @@
 """
-image_gen.py вЂ” РіРµРЅРµСЂР°С†РёСЏ РёР·РѕР±СЂР°Р¶РµРЅРёР№ С‡РµСЂРµР· FLUX.1-schnell.
+image_gen.py — генерация изображений через FLUX.1-schnell.
 
-РћРїС‚РёРјРёР·РёСЂРѕРІР°РЅРѕ РґР»СЏ RTX 4060 Ti (8GB VRAM):
-  вЂў torch.float16 РґР»СЏ СЌРєРѕРЅРѕРјРёРё РїР°РјСЏС‚Рё
-  вЂў CPU offload РµСЃР»Рё РЅРµ С…РІР°С‚Р°РµС‚ VRAM
-  вЂў РђРІС‚Рѕ-РѕС‡РёСЃС‚РєР° VRAM РїРѕСЃР»Рµ РіРµРЅРµСЂР°С†РёРё
+Оптимизировано для RTX 4060 Ti (8GB VRAM):
+  • torch.float16 для экономии памяти
+  • CPU offload если не хватает VRAM
+  • Авто-очистка VRAM после генерации
 
-РЈСЃС‚Р°РЅРѕРІРєР°:
+Установка:
   pip install diffusers transformers accelerate torch sentencepiece protobuf
 
-РџРµСЂРІС‹Р№ Р·Р°РїСѓСЃРє СЃРєР°С‡Р°РµС‚ РјРѕРґРµР»СЊ (~12GB), РїРѕС‚РѕРј Р±СѓРґРµС‚ РєРµС€РёСЂРѕРІР°С‚СЊСЃСЏ.
+Первый запуск скачает модель (~12GB), потом будет кешироваться.
 """
 from __future__ import annotations
 import gc
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Compatibility runtime extracted from app.services.image_gen.
 
-# torch РёРјРїРѕСЂС‚РёСЂСѓРµРј РЅР° СѓСЂРѕРІРЅРµ РјРѕРґСѓР»СЏ вЂ” Р±РµР·РѕРїР°СЃРЅРѕ
+# torch импортируем на уровне модуля — безопасно
 try:
     import torch
     _HAS_TORCH = True
@@ -38,7 +38,7 @@ _model_id = "black-forest-labs/FLUX.1-schnell"
 
 
 def _get_pipe():
-    """Р›РµРЅРёРІР°СЏ Р·Р°РіСЂСѓР·РєР° РјРѕРґРµР»Рё."""
+    """Ленивая загрузка модели."""
     global _pipe
     if _pipe is not None:
         return _pipe
@@ -52,7 +52,7 @@ def _get_pipe():
 
     cuda_available = _HAS_TORCH and torch.cuda.is_available()
     dtype = torch.float16 if cuda_available else torch.float32
-    logger.info("CUDA РґРѕСЃС‚СѓРїРЅР°: %s", cuda_available)
+    logger.info("CUDA доступна: %s", cuda_available)
 
     _pipe = FluxPipeline.from_pretrained(
         _model_id,
@@ -68,9 +68,9 @@ def _get_pipe():
             logger.info("CUDA (full GPU) enabled")
     else:
         _pipe = _pipe.to("cpu")
-        logger.warning("Running on CPU вЂ” CUDA РЅРµРґРѕСЃС‚СѓРїРЅР°. РџРµСЂРµСѓСЃС‚Р°РЅРѕРІРё torch: pip install torch --index-url https://download.pytorch.org/whl/cu121")
+        logger.warning("Running on CPU — CUDA недоступна. Переустанови torch: pip install torch --index-url https://download.pytorch.org/whl/cu121")
 
-    # РћРїС‚РёРјРёР·Р°С†РёРё
+    # Оптимизации
     try:
         _pipe.enable_attention_slicing()
     except Exception:
@@ -82,14 +82,14 @@ def _get_pipe():
 
 
 def _clip_prompt(prompt: str, max_words: int = 60) -> str:
-    """CLIP РїРѕРґРґРµСЂР¶РёРІР°РµС‚ РјР°РєСЃРёРјСѓРј 77 С‚РѕРєРµРЅРѕРІ (~60 СЃР»РѕРІ).
-    РћР±СЂРµР·Р°РµРј РїСЂРѕРјРїС‚ С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ IndexError Рё truncation warning.
+    """CLIP поддерживает максимум 77 токенов (~60 слов).
+    Обрезаем промпт чтобы избежать IndexError и truncation warning.
     """
     words = prompt.split()
     if len(words) <= max_words:
         return prompt
     clipped = " ".join(words[:max_words])
-    logger.warning(f"РџСЂРѕРјРїС‚ РѕР±СЂРµР·Р°РЅ: {len(words)} СЃР»РѕРІ в†’ {max_words} (Р»РёРјРёС‚ CLIP 77 С‚РѕРєРµРЅРѕРІ)")
+    logger.warning(f"Промпт обрезан: {len(words)} слов → {max_words} (лимит CLIP 77 токенов)")
     return clipped
 
 
@@ -103,31 +103,31 @@ def generate_image(
     filename: str = "",
 ) -> dict:
     """
-    Р“РµРЅРµСЂРёСЂСѓРµС‚ РёР·РѕР±СЂР°Р¶РµРЅРёРµ РїРѕ С‚РµРєСЃС‚РѕРІРѕРјСѓ РѕРїРёСЃР°РЅРёСЋ.
+    Генерирует изображение по текстовому описанию.
 
-    FLUX.1-schnell РѕРїС‚РёРјР°Р»РµРЅ РЅР° 4 С€Р°РіР°С…, guidance_scale=0.0
-    РњР°РєСЃРёРјСѓРј РґР»СЏ 8GB VRAM: 1024x1024
+    FLUX.1-schnell оптимален на 4 шагах, guidance_scale=0.0
+    Максимум для 8GB VRAM: 1024x1024
     """
     if not prompt or not prompt.strip():
-        return {"ok": False, "error": "РџСѓСЃС‚РѕР№ РїСЂРѕРјРїС‚"}
+        return {"ok": False, "error": "Пустой промпт"}
 
-    # CLIP РѕР±СЂРµР·Р°РµС‚ РґРѕ 77 С‚РѕРєРµРЅРѕРІ вЂ” РѕР±СЂРµР·Р°РµРј Р·Р°СЂР°РЅРµРµ С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ РѕС€РёР±РѕРє
+    # CLIP обрезает до 77 токенов — обрезаем заранее чтобы избежать ошибок
     prompt = _clip_prompt(prompt.strip())
 
-    # РћРіСЂР°РЅРёС‡РµРЅРёСЏ РґР»СЏ 8GB VRAM
+    # Ограничения для 8GB VRAM
     max_pixels = 1024 * 1024
     if width * height > max_pixels:
         ratio = (max_pixels / (width * height)) ** 0.5
         width = int(width * ratio // 8) * 8
         height = int(height * ratio // 8) * 8
 
-    # Р Р°Р·РјРµСЂС‹ РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ РєСЂР°С‚РЅС‹ 8
+    # Размеры должны быть кратны 8
     width = (width // 8) * 8
     height = (height // 8) * 8
 
     try:
         if not _HAS_TORCH:
-            return {"ok": False, "error": "torch РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ: pip install torch"}
+            return {"ok": False, "error": "torch не установлен: pip install torch"}
 
         pipe = _get_pipe()
 
@@ -150,14 +150,14 @@ def generate_image(
         elapsed = round(time.time() - start, 1)
         image = result.images[0]
 
-        # РЎРѕС…СЂР°РЅСЏРµРј
+        # Сохраняем
         fname = filename or f"elira_img_{int(time.time())}.png"
         if not fname.endswith(".png"):
             fname += ".png"
         path = OUTPUT_DIR / fname
         image.save(str(path))
 
-        # РћС‡РёСЃС‚РєР° VRAM
+        # Очистка VRAM
         try:
             if _HAS_TORCH and torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -184,14 +184,14 @@ def generate_image(
             _cleanup_vram()
             return {"ok": False, "error": str(_oom_err)}
         _cleanup_vram()
-        return {"ok": False, "error": f"РќРµ С…РІР°С‚Р°РµС‚ VRAM РґР»СЏ {width}x{height}. РџРѕРїСЂРѕР±СѓР№ РјРµРЅСЊС€РёР№ СЂР°Р·РјРµСЂ (512x512)."}
+        return {"ok": False, "error": f"Не хватает VRAM для {width}x{height}. Попробуй меньший размер (512x512)."}
     except Exception as e:
         _cleanup_vram()
         return {"ok": False, "error": str(e)}
 
 
 def _cleanup_vram():
-    """РћСЃРІРѕР±РѕР¶РґР°РµС‚ VRAM."""
+    """Освобождает VRAM."""
     global _pipe
     try:
         del _pipe
@@ -204,13 +204,13 @@ def _cleanup_vram():
 
 
 def unload_model() -> dict:
-    """Р’С‹РіСЂСѓР¶Р°РµС‚ РјРѕРґРµР»СЊ РёР· РїР°РјСЏС‚Рё."""
+    """Выгружает модель из памяти."""
     _cleanup_vram()
-    return {"ok": True, "message": "РњРѕРґРµР»СЊ РІС‹РіСЂСѓР¶РµРЅР°, VRAM РѕСЃРІРѕР±РѕР¶РґРµРЅР°"}
+    return {"ok": True, "message": "Модель выгружена, VRAM освобождена"}
 
 
 def get_status() -> dict:
-    """РЎС‚Р°С‚СѓСЃ РіРµРЅРµСЂР°С‚РѕСЂР°."""
+    """Статус генератора."""
     loaded = _pipe is not None
     info = {"ok": True, "model": _model_id, "loaded": loaded}
 

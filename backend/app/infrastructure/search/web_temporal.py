@@ -66,16 +66,16 @@ def try_deep_research(
             _tl_fn(
                 timeline,
                 "tool_web_deep",
-                "РЈРіР»СѓР±Р»РµРЅРЅС‹Р№ РІРµР±-РїРѕРёСЃРє",
+                "Углубленный веб-поиск",
                 "done",
-                "Р”РѕРїРѕР»РЅРёС‚РµР»СЊРЅР°СЏ РїСЂРѕРІРµСЂРєР° РёСЃС‚РѕС‡РЅРёРєРѕРІ",
+                "Дополнительная проверка источников",
             )
             return deep_context
     except Exception as exc:
         _tl_fn(
             timeline,
             "tool_web_deep",
-            "РЈРіР»СѓР±Р»РµРЅРЅС‹Р№ РІРµР±-РїРѕРёСЃРє",
+            "Углубленный веб-поиск",
             "error",
             str(exc),
         )
@@ -120,7 +120,7 @@ def do_temporal_web_search_legacy(
             if deep_context:
                 deeper_search = True
                 context = (
-                    context + "\n\nР”РѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Р№ СѓРіР»СѓР±Р»РµРЅРЅС‹Р№ РІРµР±-РїРѕРёСЃРє:\n" + deep_context
+                    context + "\n\nДополнительный углубленный веб-поиск:\n" + deep_context
                     if context
                     else deep_context
                 )
@@ -190,7 +190,7 @@ def do_temporal_web_search(
             if deep_context:
                 deeper_search = True
                 context = (
-                    context + "\n\nР”РѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Р№ СѓРіР»СѓР±Р»РµРЅРЅС‹Р№ РІРµР±-РїРѕРёСЃРє:\n" + deep_context
+                    context + "\n\nДополнительный углубленный веб-поиск:\n" + deep_context
                     if context
                     else deep_context
                 )

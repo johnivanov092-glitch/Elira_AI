@@ -1,10 +1,10 @@
 """
-skills_service.py вЂ” 4 СЃРєРёР»Р»Р° Elira.
+skills_service.py — 4 скилла Elira.
 
-1. Р“РµРЅРµСЂР°С†РёСЏ Word/Excel
-2. SQL Р·Р°РїСЂРѕСЃС‹ (SQLite)
-3. HTTP/API РІС‹Р·РѕРІС‹
-4. РЎРєСЂРёРЅС€РѕС‚ СЃР°Р№С‚Р° (playwright)
+1. Генерация Word/Excel
+2. SQL запросы (SQLite)
+3. HTTP/API вызовы
+4. Скриншот сайта (playwright)
 """
 from __future__ import annotations
 import io
@@ -46,9 +46,9 @@ def screenshot_capability_status() -> dict:
     }
 
 
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-# 1. Р“Р•РќР•Р РђР¦РРЇ Р¤РђР™Р›РћР’
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+# ═══════════════════════════════════════════════════════════════
+# 1. ГЕНЕРАЦИЯ ФАЙЛОВ
+# ═══════════════════════════════════════════════════════════════
 
 def generate_word(title: str, content: str, filename: str = "") -> dict:
     try:
@@ -123,9 +123,9 @@ def generate_excel(title: str, data: list, headers: list = None, filename: str =
             "download_url": f"/api/skills/download/{fname}"}
 
 
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-# 2. SQL Р—РђРџР РћРЎР«
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+# ═══════════════════════════════════════════════════════════════
+# 2. SQL ЗАПРОСЫ
+# ═══════════════════════════════════════════════════════════════
 
 ALLOWED_DB_DIRS = [DATA_DIR.resolve()]
 
@@ -137,7 +137,7 @@ def _safe_db(db_path: str) -> Path:
             return p
         except ValueError:
             continue
-    raise ValueError(f"Р—Р°РїСЂРµС‰РµРЅРѕ: {db_path}. РўРѕР»СЊРєРѕ data/")
+    raise ValueError(f"Запрещено: {db_path}. Только data/")
 
 
 def run_sql(db_path: str, query: str, params: list = None, max_rows: int = 100) -> dict:
@@ -146,11 +146,11 @@ def run_sql(db_path: str, query: str, params: list = None, max_rows: int = 100) 
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     if not safe.exists():
-        return {"ok": False, "error": f"РќРµ РЅР°Р№РґРµРЅР°: {db_path}"}
+        return {"ok": False, "error": f"Не найдена: {db_path}"}
 
     q_up = query.strip().upper()
     if any(q_up.startswith(c) for c in ["DROP ", "DELETE ", "TRUNCATE ", "ALTER "]):
-        return {"ok": False, "error": f"Р—Р°Р±Р»РѕРєРёСЂРѕРІР°РЅРѕ: {q_up.split()[0]}"}
+        return {"ok": False, "error": f"Заблокировано: {q_up.split()[0]}"}
 
     try:
         conn = connect_sqlite(safe, row_factory=sqlite3.Row, journal_mode=None)
@@ -201,9 +201,9 @@ def describe_db(db_path: str) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+# ═══════════════════════════════════════════════════════════════
 # 3. HTTP / API
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+# ═══════════════════════════════════════════════════════════════
 
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254"}
 
@@ -211,7 +211,7 @@ def http_request(url: str, method: str = "GET", headers: dict = None, body: Any 
     from urllib.parse import urlparse
     parsed = urlparse(url)
     if parsed.hostname in BLOCKED_HOSTS:
-        return {"ok": False, "error": f"Р—Р°Р±Р»РѕРєРёСЂРѕРІР°РЅ: {parsed.hostname}"}
+        return {"ok": False, "error": f"Заблокирован: {parsed.hostname}"}
 
     try:
         kw = {"url": url, "headers": headers or {}, "timeout": timeout}
@@ -228,7 +228,7 @@ def http_request(url: str, method: str = "GET", headers: dict = None, body: Any 
         elif method == "DELETE":
             resp = http_lib.delete(**kw)
         else:
-            return {"ok": False, "error": f"РќРµРёР·РІРµСЃС‚РЅС‹Р№ РјРµС‚РѕРґ: {method}"}
+            return {"ok": False, "error": f"Неизвестный метод: {method}"}
 
         ct = resp.headers.get("content-type", "")
         try:
@@ -239,14 +239,14 @@ def http_request(url: str, method: str = "GET", headers: dict = None, body: Any 
         return {"ok": True, "status": resp.status_code, "body": rbody,
                 "url": str(resp.url), "elapsed_ms": int(resp.elapsed.total_seconds() * 1000)}
     except http_lib.Timeout:
-        return {"ok": False, "error": f"РўР°Р№РјР°СѓС‚ ({timeout}СЃ)"}
+        return {"ok": False, "error": f"Таймаут ({timeout}с)"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
-# 4. РЎРљР РРќРЁРћРў РЎРђР™РўРђ
-# в•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђв•ђ
+# ═══════════════════════════════════════════════════════════════
+# 4. СКРИНШОТ САЙТА
+# ═══════════════════════════════════════════════════════════════
 
 def screenshot_url(url: str, width: int = 1280, height: int = 800, full_page: bool = False) -> dict:
     try:

@@ -4,35 +4,31 @@ from copy import deepcopy
 from typing import Any
 
 
+def _cp1251_tail_chars(start: int, stop: int) -> tuple[str, ...]:
+    chars: list[str] = []
+    for byte in range(start, stop):
+        try:
+            chars.append(bytes([byte]).decode("cp1251"))
+        except UnicodeDecodeError:
+            continue
+    return tuple(chars)
+
+
+CP1251_D0_D1_TAILS = _cp1251_tail_chars(0x80, 0xC0)
+CP1251_E2_TAILS = _cp1251_tail_chars(0x80, 0xA0)
 MOJIBAKE_MARKERS = (
-    "\u0420\u0401",
-    "\u0420\u040e",
-    "\u0420\u0406",
-    "\u0420\u0408",
-    "\u0420\u040b",
-    "\u0420\u0452",
-    "\u0420\u0453",
-    "\u0420\u0454",
-    "\u0420\u0455",
-    "\u0420\u0458",
-    "\u0420\u045c",
-    "\u0420\u045f",
-    "\u0420\u00a0",
-    "\u0420\u0491",
-    "\u0421\u0402",
-    "\u0421\u0403",
-    "\u0421\u040a",
-    "\u0421\u040b",
-    "\u0421\u040f",
-    "\u0421\u0453",
-    "\u0421\u201a",
-    "\u0421\u2030",
-    "\u0421\u2039",
-    "\u0421\u20ac",
+    *(
+        lead + tail
+        for lead in ("\u0420", "\u0421")
+        for tail in CP1251_D0_D1_TAILS
+    ),
+    *(
+        "\u0432" + tail
+        for tail in CP1251_E2_TAILS
+    ),
     "\u00d0",
     "\u00d1",
     "\u00e2\u20ac",
-    "\u0432\u0402",
     "\ufffd",
 )
 

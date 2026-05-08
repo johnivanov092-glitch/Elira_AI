@@ -1737,3 +1737,18 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
 - Result:
   persona evolution status now returns readable Russian summaries such as `Структурированный и ясный ответ.` instead of mojibake.
+
+### 120. Backend source UTF-8 mojibake sweep
+- Status: completed
+- Scope: extended the encoding guard from persona-only to the backend Python source tree.
+- Finish:
+  repaired mojibake Russian literals/comments in 23 backend source files under `backend/app`;
+  expanded [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) so it scans every `backend/app/**/*.py` file and fails on mojibake markers;
+  verified with `app.utils.text_encoding.mojibake_score` that the backend Python source tree has zero remaining marker hits.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 6 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
+- Result:
+  new or imported backend Python code with Russian mojibake now fails the guard test before it can be merged.

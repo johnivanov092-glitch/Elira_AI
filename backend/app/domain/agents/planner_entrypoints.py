@@ -48,7 +48,7 @@ def run_planner_agent(
     planner_prompt = build_planner_plan_prompt(task)
     raw_plan = ask_model(
         model_name=model_name,
-        profile_name="РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ",
+        profile_name="Оркестратор",
         user_input=planner_prompt,
         memory_context=memory_context,
         use_memory=True,
@@ -84,7 +84,7 @@ def run_planner_agent(
     )
     final_draft = ask_model(
         model_name=model_name,
-        profile_name="РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ",
+        profile_name="Оркестратор",
         user_input=final_prompt,
         memory_context=memory_context,
         use_memory=True,
@@ -171,7 +171,7 @@ def run_task_graph(
                     "tool": node["tool"],
                     "goal": node["goal"],
                     "ok": False,
-                    "output": "РЈР·РµР» РЅРµ РІС‹РїРѕР»РЅРµРЅ: Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РЅРµ СЂР°Р·СЂРµС€РёР»РёСЃСЊ РёР»Рё РіСЂР°С„ РЅРµРєРѕСЂСЂРµРєС‚РµРЅ.",
+                    "output": "Узел не выполнен: зависимости не разрешились или граф некорректен.",
                 }
                 execution_log.append(node_results[node["id"]])
             break
@@ -193,7 +193,7 @@ def run_task_graph(
     )
     final_draft = ask_model(
         model_name=model_name,
-        profile_name="РћСЂРєРµСЃС‚СЂР°С‚РѕСЂ",
+        profile_name="Оркестратор",
         user_input=final_prompt,
         memory_context=memory_context,
         use_memory=True,

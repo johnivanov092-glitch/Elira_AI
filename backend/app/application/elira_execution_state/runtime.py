@@ -51,9 +51,9 @@ def build_rollback(staged_paths: List[str]) -> dict:
         "strategy": "checkpoint-based",
         "targets": staged_paths,
         "advice": [
-            "РЎРѕС…СЂР°РЅРё patch history РїРµСЂРµРґ apply.",
-            "Р”РµСЂР¶Рё staged РЅР°Р±РѕСЂ РЅРµРёР·РјРµРЅРЅС‹Рј РґРѕ verify.",
-            "РџСЂРё РєРѕРЅС„Р»РёРєС‚Рµ РёСЃРїРѕР»СЊР·СѓР№ rollback РїРѕ С„Р°Р№Р»Р°Рј РёР· history.",
+            "Сохрани patch history перед apply.",
+            "Держи staged набор неизменным до verify.",
+            "При конфликте используй rollback по файлам из history.",
         ],
     }
 
