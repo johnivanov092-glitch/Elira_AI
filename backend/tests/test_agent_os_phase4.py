@@ -170,7 +170,7 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
             }
         )
 
-        with patch("app.services.tool_service.run_tool", return_value={"ok": True, "items": [{"text": "fact"}]}):
+        with patch("app.application.tool_registry.service.run_tool", return_value={"ok": True, "items": [{"text": "fact"}]}):
             run = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.tool",
                 workflow_input={"query": "memory"},

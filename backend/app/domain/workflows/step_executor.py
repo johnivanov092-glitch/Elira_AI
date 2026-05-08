@@ -174,7 +174,7 @@ def _execute_tool_step(
     workflow_id: str,
     run_id: str,
 ) -> dict[str, Any]:
-    from app.services.tool_service import run_tool
+    from app.application.tool_registry.service import run_tool
 
     tool_name = str(step.get("tool_name", "")).strip()
     args = mapped_inputs if isinstance(mapped_inputs, dict) else {"input": mapped_inputs}

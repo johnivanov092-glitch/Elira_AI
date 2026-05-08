@@ -68,7 +68,7 @@ from app.application.chat.reflection_loop import run_reflection_loop
 from app.application.response_cache.runtime import get_cached, set_cached, should_cache
 from app.application.run_history.service import RunHistoryService
 from app.application.smart_memory import extract_and_save, get_relevant_context, is_memory_command
-from app.services.tool_service import run_tool
+from app.application.tool_registry.service import run_tool
 
 try:
     from app.application.rag_memory.service import get_rag_context

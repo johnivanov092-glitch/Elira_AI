@@ -1766,3 +1766,18 @@ Live repair log for concrete backend/runtime fixes.
   broader post-sweep verification already included this file set: full backend unittest discovery -> 2220 tests OK.
 - Result:
   Project Brain no longer depends on the removed `GitService` class path and keeps the legacy import stable.
+
+### 122. Tool execution imports moved off service facade
+- Status: completed
+- Scope: continued compatibility-import cleanup around workflow/runtime tool execution.
+- Finish:
+  moved [backend/app/application/chat/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/chat/runtime.py) and [backend/app/domain/workflows/step_executor.py](/D:/AIWork/Elira_AI/backend/app/domain/workflows/step_executor.py) from `app.services.tool_service.run_tool` to the canonical `app.application.tool_registry.service.run_tool`;
+  updated [backend/tests/test_agent_os_phase4.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase4.py) to patch the new application-layer path;
+  verified that `backend/app/application`, `backend/app/domain`, and `backend/app/infrastructure` no longer contain real `app.services.*` imports.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase4 backend.tests.test_text_encoding_persona_mojibake` -> 14 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\chat\runtime.py backend\app\domain\workflows\step_executor.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
+- Result:
+  application/domain code now depends directly on the Tool Registry application service while the legacy `services.tool_service` facade remains available for compatibility.
