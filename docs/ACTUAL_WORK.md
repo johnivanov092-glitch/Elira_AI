@@ -1752,3 +1752,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
 - Result:
   new or imported backend Python code with Russian mojibake now fails the guard test before it can be merged.
+
+### 121. Project Brain service application runtime
+- Status: completed
+- Scope: moved the active Project Brain service implementation out of the legacy service facade into the application layer.
+- Finish:
+  added [backend/app/application/project_brain/service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/service.py) as the canonical runtime using application/infrastructure imports;
+  reduced [backend/app/services/project_brain_service.py](/D:/AIWork/Elira_AI/backend/app/services/project_brain_service.py) to a compatibility re-export;
+  added [backend/tests/test_project_brain_service_facade.py](/D:/AIWork/Elira_AI/backend/tests/test_project_brain_service_facade.py) for facade identity, project scan/search delegation, patch apply, and no-commit-on-failure behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_project_brain_service_facade` -> 5 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\project_brain\service.py backend\app\services\project_brain_service.py` -> passed;
+  broader post-sweep verification already included this file set: full backend unittest discovery -> 2220 tests OK.
+- Result:
+  Project Brain no longer depends on the removed `GitService` class path and keeps the legacy import stable.
