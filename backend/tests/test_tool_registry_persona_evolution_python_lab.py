@@ -27,6 +27,9 @@ from app.application.code_agent.python_lab import (  # noqa: E402
     PYTHON_EXEC_TIMEOUT,
     FIGURE_SAVER,
 )
+from app.application.code_agent import execution as code_execution  # noqa: E402
+from app.application.code_agent import generation as code_generation  # noqa: E402
+from app.application.code_agent import python_lab as code_python_lab  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -235,6 +238,27 @@ class PythonLabConstantsTest(unittest.TestCase):
 
     def test_figure_saver_has_matplotlib(self) -> None:
         self.assertIn("matplotlib", FIGURE_SAVER)
+
+
+class PythonLabFacadeTest(unittest.TestCase):
+    def test_python_lab_reexports_execution_runtime(self) -> None:
+        self.assertIs(
+            code_python_lab.execute_python_with_capture,
+            code_execution.execute_python_with_capture,
+        )
+        self.assertIs(code_python_lab.ok_check, code_execution.ok_check)
+        self.assertIs(code_python_lab.run_in_dir, code_execution.run_in_dir)
+
+    def test_python_lab_reexports_generation_runtime(self) -> None:
+        self.assertIs(
+            code_python_lab.generate_file_code,
+            code_generation.generate_file_code,
+        )
+        self.assertIs(
+            code_python_lab.self_heal_python_code,
+            code_generation.self_heal_python_code,
+        )
+        self.assertIs(code_python_lab.run_build_loop, code_generation.run_build_loop)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1834,3 +1834,19 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   frontend/Tauri source is now included in the same readable UTF-8 rule as backend/persona/docs, preventing future unreadable Russian context from being staged unnoticed.
+
+### 127. Code-agent runtime split
+- Status: completed
+- Scope: closed Phase 3 by splitting the remaining code-agent Python lab runtime without breaking legacy imports.
+- Finish:
+  added [backend/app/application/code_agent/execution.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/execution.py) for Python execution, figure capture, command execution, and `ok_check`;
+  added [backend/app/application/code_agent/generation.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/generation.py) for self-healing generated Python, file-code generation, and build-loop orchestration;
+  reduced [backend/app/application/code_agent/python_lab.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/python_lab.py) to a compatibility re-export and exposed the canonical symbols from [backend/app/application/code_agent/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/__init__.py);
+  added facade identity coverage in [backend/tests/test_tool_registry_persona_evolution_python_lab.py](/D:/AIWork/Elira_AI/backend/tests/test_tool_registry_persona_evolution_python_lab.py).
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_tool_registry_persona_evolution_python_lab backend.tests.test_web_query_planner_python_lab_pure backend.tests.test_text_encoding_persona_mojibake` -> 109 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\code_agent backend\app\core\agents.py` -> passed;
+  code-agent/core-agent import smoke -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Phase 3 now has canonical execution/generation modules while existing `app.application.code_agent.python_lab` and `app.core.agents` imports remain stable.

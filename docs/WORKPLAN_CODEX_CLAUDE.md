@@ -98,8 +98,8 @@ Single live coordination document for Claude/Codex refactor work.
 | `0` | Preparation and guardrails | `Codex` | `codex/refactor-arch-foundation` | `DONE / VERIFYING` | `DOC` | Encoding guard, `python -m compileall ...`, import smoke for new packages and DB provider |
 | `1` | Stabilize backend boundaries | `Codex` | `codex/refactor-arch-foundation` | `CLOSING` | `0` | Duplicate-definition search, direct-service import search, `python -m compileall ...`, backend import smoke |
 | `2` | Split chat and agent services | `Codex` | `codex/refactor-arch-foundation` | `CLOSING` | `1` | Chat request, chat stream, routing, and facade checks |
-| `3` | Split code-agent runtime | `Codex` | `codex/refactor-arch-foundation` | `NEXT` | `1` | Code-agent import smoke, python-lab tests, route contract smoke |
-| `4` | Split workflow engine | `Codex` | `codex/refactor-arch-foundation` | `VERIFYING` | `1`, `3` | Workflow engine facade/runtime tests and Agent OS workflow tests |
+| `3` | Split code-agent runtime | `Codex` | `codex/refactor-arch-foundation` | `DONE / VERIFYING` | `1` | Code-agent import smoke, python-lab tests, route contract smoke |
+| `4` | Split workflow engine | `Codex` | `codex/refactor-arch-foundation` | `NEXT` | `1`, `3` | Workflow engine facade/runtime tests and Agent OS workflow tests |
 | `5` | Route consolidation | `Codex` | `codex/refactor-arch-foundation` | `PENDING` | `1`-`4` | Route discovery, OpenAPI/smoke contract check, focused API tests |
 | `6` | Frontend TypeScript migration | `Codex` | `codex/refactor-arch-foundation` | `PENDING` | `5` | Frontend package scripts, TypeScript/build checks |
 | `7` | Tauri cleanup | `Codex` | `codex/refactor-arch-foundation` | `PENDING` | `6` | Tauri metadata/startup inspection and available build/check commands |
@@ -565,6 +565,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-13 16:14:54 +05:00` | `DONE` | Switched the plan from accelerated refactor execution to release closure mode. Future work is limited to dirty-tree reconciliation, final verification, release blockers, and merge/PR handoff; remaining frontend TypeScript migration and compatibility cleanup are deferred post-release. |
 | `2026-05-13 16:29:00 +05:00` | `DONE` | Superseded release closure with Completion Sprint mode per user directive: all planned phases remain in scope, execution is accelerated by gap-sized batches, and phases cannot be closed without implementation, docs, commit/push, and focused verification. |
 | `2026-05-13 16:39:00 +05:00` | `DONE` | Closed the first Completion Sprint gap by repairing frontend source mojibake in `EliraChatShell.jsx`, `styles.css`, and `styles/markdown.css`; expanded the source encoding guard to `backend/app`, `frontend/src`, and Tauri source files. Verification passed with targeted unittest (`7 tests OK`), `npm --prefix frontend run build`, and `git diff --check`. |
+| `2026-05-13 16:51:00 +05:00` | `DONE` | Closed Phase 3 code-agent split by extracting `application/code_agent/execution.py` and `application/code_agent/generation.py`, reducing `python_lab.py` to a compatibility re-export, and adding facade identity coverage. Verification passed with focused unittest (`109 tests OK`), compileall on code-agent/core agent paths, import smoke, and `git diff --check`. |
 
 ## 8. Commit Ledger
 
