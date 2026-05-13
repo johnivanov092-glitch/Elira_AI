@@ -102,8 +102,8 @@ Single live coordination document for Claude/Codex refactor work.
 | `4` | Split workflow engine | `Codex` | `codex/refactor-arch-foundation` | `DONE / VERIFYING` | `1`, `3` | Workflow engine facade/runtime tests and Agent OS workflow tests |
 | `5` | Route consolidation | `Codex` | `codex/refactor-arch-foundation` | `DONE / VERIFYING` | `1`-`4` | Route discovery, OpenAPI/smoke contract check, focused API tests |
 | `6` | Frontend TypeScript migration | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `5` | Frontend package scripts, TypeScript/build checks |
-| `7` | Tauri cleanup | `Codex` | `codex/refactor-arch-foundation` | `PENDING` | `6` | Tauri metadata/startup inspection and available build/check commands |
-| `8` | Contract stabilization and cleanup | `Codex` | `codex/refactor-arch-foundation` | `PENDING` | `1`-`7` | Smoke tests, backend discovery, frontend checks, encoding guard, dirty-tree review |
+| `7` | Tauri cleanup | `Codex` | `codex/refactor-arch-foundation` | `DONE / VERIFYING` | `6` | Tauri metadata/startup inspection and available build/check commands |
+| `8` | Contract stabilization and cleanup | `Codex` | `codex/refactor-arch-foundation` | `NEXT` | `1`-`7` | Smoke tests, backend discovery, frontend checks, encoding guard, dirty-tree review |
 
 ## 6. Archived Branch Agreements From Earlier Agent OS Work
 
@@ -571,6 +571,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-13 17:24:00 +05:00` | `DONE` | Started Phase 6 by converting the shared frontend API transport from `client.js` to typed `client.ts`, adding `tsconfig.json`, Vite env types, TypeScript/React 18 type dependencies, and a `typecheck` script. Verification passed with `npm --prefix frontend run typecheck`, `npm --prefix frontend run build`, and `git diff --check`. |
 | `2026-05-13 17:30:00 +05:00` | `DONE` | Continued Phase 6 by moving the terminal API endpoint group from `api/ide.js` into typed `api/terminal.ts` while keeping legacy re-exports and `api` object compatibility. Verification passed with frontend typecheck, frontend build, and `git diff --check`. |
 | `2026-05-13 17:36:00 +05:00` | `DONE` | Continued Phase 6 shell migration by converting `TerminalPanel.jsx` to typed `TerminalPanel.tsx` and switching it to direct `api/terminal.ts` imports. Verification passed with frontend typecheck, frontend build, and `git diff --check`. |
+| `2026-05-13 17:44:00 +05:00` | `DONE` | Closed Phase 7 Tauri cleanup by removing unused tracked Tauri artifacts: duplicate root `src-tauri/main.rs`, stale `Cargo.toml.snippet.txt`, and the non-Python launch note under `src-tauri/src`. Verification passed with `cargo check`, frontend typecheck, and `git diff --check`. |
 
 ## 8. Commit Ledger
 

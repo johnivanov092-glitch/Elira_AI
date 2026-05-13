@@ -1920,3 +1920,17 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   Phase 6 now includes both a typed endpoint group and a real TSX component consuming it, while existing `./TerminalPanel` imports remain extensionless and compatible.
+
+### 133. Tauri startup cleanup
+- Status: completed
+- Scope: closed Phase 7 by removing tracked Tauri files that were not part of the active Cargo/Tauri startup path.
+- Finish:
+  deleted duplicate unused `src-tauri/main.rs`; Cargo uses [src-tauri/src/main.rs](/D:/AIWork/Elira_AI/src-tauri/src/main.rs);
+  deleted stale `src-tauri/Cargo.toml.snippet.txt`, which described a Tauri 2 dependency while the actual [src-tauri/Cargo.toml](/D:/AIWork/Elira_AI/src-tauri/Cargo.toml) uses Tauri 1;
+  deleted `src-tauri/src/Запуск Агента.py`, which contained batch launch commands rather than Python code and was not referenced by Cargo or the app.
+- Verification:
+  `cargo check` from `D:\AIWork\Elira_AI\src-tauri` -> passed;
+  `npm --prefix frontend run typecheck` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Tauri startup now has a single Rust entrypoint under `src-tauri/src/main.rs` and no tracked misleading launch/snippet files in the Tauri source tree.
