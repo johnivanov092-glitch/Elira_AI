@@ -1,4 +1,7 @@
 import { buildApiUrl, request, safeRequest } from "./client";
+import { executeTerminal, getTerminalCwd } from "./terminal";
+
+export { executeTerminal, getTerminalCwd } from "./terminal";
 
 function normalizeArray(payload) {
   if (Array.isArray(payload)) return payload;
@@ -654,14 +657,6 @@ export async function searchSmartMemory(query, limit = 20) {
     body: { query, limit },
   });
   return payload?.items || [];
-}
-
-export async function getTerminalCwd() {
-  return safeRequest("/api/terminal/cwd", {}, null);
-}
-
-export async function executeTerminal(body = {}) {
-  return request("/api/terminal/exec", { method: "POST", body });
 }
 
 export const api = {

@@ -1893,3 +1893,16 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   frontend now has a real TypeScript baseline and buildable typed API transport while the existing `api/ide.js` facade remains compatible for current JSX components.
+
+### 131. Frontend terminal API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving the first endpoint group out of the legacy `api/ide.js` facade.
+- Finish:
+  added [frontend/src/api/terminal.ts](/D:/AIWork/Elira_AI/frontend/src/api/terminal.ts) with typed terminal cwd and command execution request/response contracts;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to import and re-export the terminal API functions while preserving the existing `api.getTerminalCwd` and `api.executeTerminal` object shape.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  the frontend API migration now has one real typed endpoint group behind the legacy facade, reducing `ide.js` without breaking existing components.
