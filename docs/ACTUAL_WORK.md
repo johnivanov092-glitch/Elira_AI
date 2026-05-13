@@ -1850,3 +1850,17 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   Phase 3 now has canonical execution/generation modules while existing `app.application.code_agent.python_lab` and `app.core.agents` imports remain stable.
+
+### 128. Workflow engine split verification
+- Status: completed
+- Scope: closed Phase 4 verification after the workflow engine had already been extracted to application modules.
+- Finish:
+  added facade identity coverage in [backend/tests/test_agent_os_phase4.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase4.py), proving `app.services.workflow_engine` is the same module object as `app.application.workflow_engine.runtime`;
+  verified legacy multi-agent workflow constants are still canonical through the compatibility path;
+  left the existing workflow service facade intact as a deliberate shipping adapter.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase4 backend.tests.test_workflows_lifecycle_multi_agent backend.tests.test_workflows_event_monitoring_pure backend.tests.test_workflows_store_sandbox_registry_pure backend.tests.test_project_brain_workflows_identity_pure` -> 305 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\workflow_engine backend\app\application\workflows backend\app\services\workflow_engine.py backend\tests\test_agent_os_phase4.py` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Phase 4 is no longer a code-movement gap; it is covered as a verified compatibility facade over canonical workflow application/runtime modules.

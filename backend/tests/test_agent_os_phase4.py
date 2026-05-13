@@ -17,10 +17,26 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
+from app.application.workflow_engine import runtime as workflow_engine_runtime  # noqa: E402
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
 from app.services import autopipeline_service  # noqa: E402
 from app.services import event_bus as bus  # noqa: E402
 from app.services import workflow_engine  # noqa: E402
+
+
+class WorkflowEngineFacadeTest(unittest.TestCase):
+    def test_service_path_aliases_application_runtime(self) -> None:
+        self.assertIs(workflow_engine, workflow_engine_runtime)
+
+    def test_legacy_constants_are_canonical(self) -> None:
+        self.assertEqual(
+            workflow_engine.MULTI_AGENT_DEFAULT_WORKFLOW_ID,
+            workflow_engine_runtime.MULTI_AGENT_DEFAULT_WORKFLOW_ID,
+        )
+        self.assertEqual(
+            workflow_engine.MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
+            workflow_engine_runtime.MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
+        )
 
 
 class WorkflowDbMixin(unittest.TestCase):
