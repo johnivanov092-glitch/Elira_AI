@@ -14,6 +14,8 @@ export type ExecuteTerminalRequest = {
 };
 
 export type ExecuteTerminalResponse = {
+  cwd?: string;
+  error?: string;
   ok?: boolean;
   stdout?: string;
   stderr?: string;

@@ -1,18 +1,26 @@
-import { useEffect, useRef, useState } from "react";
-import { api } from "../api/ide";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { executeTerminal, getTerminalCwd } from "../api/terminal";
+
+type TerminalHistoryItem = {
+  type: "cmd" | "error" | "info" | "stderr" | "stdout";
+  text: string;
+  cwd?: string;
+};
 
 export default function TerminalPanel() {
-  const [history, setHistory] = useState([{ type: "info", text: "Elira Terminal. Введи команду." }]);
+  const [history, setHistory] = useState<TerminalHistoryItem[]>([
+    { type: "info", text: "Elira Terminal. Введи команду." },
+  ]);
   const [input, setInput] = useState("");
   const [cwd, setCwd] = useState("");
   const [running, setRunning] = useState(false);
-  const [cmdHistory, setCmdHistory] = useState([]);
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState(-1);
-  const endRef = useRef(null);
-  const inputRef = useRef(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
-    api.getTerminalCwd()
+    getTerminalCwd()
       .then((data) => {
         if (data?.cwd) setCwd(data.cwd);
       })
@@ -33,28 +41,34 @@ export default function TerminalPanel() {
     setHistory((prev) => [...prev, { type: "cmd", text: cmd, cwd }]);
 
     try {
-      const data = await api.executeTerminal({ command: cmd, cwd });
+      const data = await executeTerminal({ command: cmd, cwd });
 
-      if (data.cwd) setCwd(data.cwd);
+      const nextCwd = typeof data.cwd === "string" ? data.cwd : "";
+      const stdout = typeof data.stdout === "string" ? data.stdout : "";
+      const stderr = typeof data.stderr === "string" ? data.stderr : "";
+
+      if (nextCwd) setCwd(nextCwd);
 
       if (data.ok) {
-        if (data.stdout) setHistory((prev) => [...prev, { type: "stdout", text: data.stdout }]);
-        if (data.stderr) setHistory((prev) => [...prev, { type: "stderr", text: data.stderr }]);
-        if (!data.stdout && !data.stderr) {
+        if (stdout) setHistory((prev) => [...prev, { type: "stdout", text: stdout }]);
+        if (stderr) setHistory((prev) => [...prev, { type: "stderr", text: stderr }]);
+        if (!stdout && !stderr) {
           setHistory((prev) => [...prev, { type: "info", text: "(нет вывода)" }]);
         }
       } else {
-        setHistory((prev) => [...prev, { type: "error", text: data.error || "Ошибка" }]);
+        const message = typeof data.error === "string" ? data.error : "Ошибка";
+        setHistory((prev) => [...prev, { type: "error", text: message }]);
       }
     } catch (e) {
-      setHistory((prev) => [...prev, { type: "error", text: e.message }]);
+      const message = e instanceof Error ? e.message : String(e);
+      setHistory((prev) => [...prev, { type: "error", text: message }]);
     } finally {
       setRunning(false);
       inputRef.current?.focus();
     }
   }
 
-  function handleKeyDown(e) {
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
       e.preventDefault();
       handleExec();
@@ -126,7 +140,7 @@ export default function TerminalPanel() {
   );
 }
 
-const prePre = {
+const prePre: CSSProperties = {
   margin: 0,
   whiteSpace: "pre-wrap",
   wordBreak: "break-word",

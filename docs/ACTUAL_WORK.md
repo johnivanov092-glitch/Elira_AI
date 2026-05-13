@@ -1906,3 +1906,17 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   the frontend API migration now has one real typed endpoint group behind the legacy facade, reducing `ide.js` without breaking existing components.
+
+### 132. Frontend TerminalPanel TSX migration
+- Status: completed
+- Scope: continued Phase 6 shell decomposition by migrating the first small UI component to TypeScript.
+- Finish:
+  renamed `frontend/src/components/TerminalPanel.jsx` to [frontend/src/components/TerminalPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/TerminalPanel.tsx);
+  switched the component from the legacy `api` facade to direct typed imports from [frontend/src/api/terminal.ts](/D:/AIWork/Elira_AI/frontend/src/api/terminal.ts);
+  added local history/ref/input types and tightened terminal response handling for `cwd`, `stdout`, `stderr`, and `error`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Phase 6 now includes both a typed endpoint group and a real TSX component consuming it, while existing `./TerminalPanel` imports remain extensionless and compatible.

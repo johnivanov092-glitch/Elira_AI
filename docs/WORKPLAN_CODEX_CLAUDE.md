@@ -570,6 +570,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-13 17:12:00 +05:00` | `DONE` | Closed Phase 5 route consolidation by adding `api.routes.registry.ALL_ROUTERS`, preserving existing router order, reducing `main.py` to a registry loop, and adding route registry coverage. Verification passed with route/encoding tests (`9 tests OK`), smoke contract check (`207 OpenAPI paths`), compileall, and `git diff --check`. |
 | `2026-05-13 17:24:00 +05:00` | `DONE` | Started Phase 6 by converting the shared frontend API transport from `client.js` to typed `client.ts`, adding `tsconfig.json`, Vite env types, TypeScript/React 18 type dependencies, and a `typecheck` script. Verification passed with `npm --prefix frontend run typecheck`, `npm --prefix frontend run build`, and `git diff --check`. |
 | `2026-05-13 17:30:00 +05:00` | `DONE` | Continued Phase 6 by moving the terminal API endpoint group from `api/ide.js` into typed `api/terminal.ts` while keeping legacy re-exports and `api` object compatibility. Verification passed with frontend typecheck, frontend build, and `git diff --check`. |
+| `2026-05-13 17:36:00 +05:00` | `DONE` | Continued Phase 6 shell migration by converting `TerminalPanel.jsx` to typed `TerminalPanel.tsx` and switching it to direct `api/terminal.ts` imports. Verification passed with frontend typecheck, frontend build, and `git diff --check`. |
 
 ## 8. Commit Ledger
 
