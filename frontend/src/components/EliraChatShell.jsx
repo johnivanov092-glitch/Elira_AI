@@ -100,9 +100,9 @@ function deriveChatTitle(t) { const c = String(t || "").trim().replace(/\s+/g, "
 
 function shortModelName(name) {
   if (!name) return "model";
-  // YandexGPT-5-Lite-8B-instruct-GGUF в†' YandexGPT
+  // YandexGPT-5-Lite-8B-instruct-GGUF -> YandexGPT
   if (name.toLowerCase().includes("yandex")) return "YandexGPT";
-  // nemotron-mini в†' Nemotron Mini, etc.
+  // nemotron-mini -> Nemotron Mini, etc.
   return name;
 }
 
@@ -696,7 +696,7 @@ export default function EliraChatShell() {
       const [m, c, settings] = await Promise.all([api.listOllamaModels(), api.listChats(), api.getSettings()]);
       const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
       const savedModel = settings?.default_model || "gemma3:4b";
-      const savedProfile = settings?.agent_profile || "РЈРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№";
+      const savedProfile = settings?.agent_profile || "Универсальный";
       const savedCtx = settings?.ollama_context || 8192;
       const getName = (item) => typeof item === "string" ? item : (item.name || item.model || "");
       const preferred = ml.find((item) => getName(item) === savedModel);
@@ -894,7 +894,7 @@ export default function EliraChatShell() {
 
   async function autoRenameChat(targetChatId, text, chatList = chats) {
     const a = chatList.find(c => String(c.id) === String(targetChatId));
-    if (!targetChatId || !a || (a.title && a.title !== "РќРѕРІС‹Р№ С‡Р°С‚")) return;
+    if (!targetChatId || !a || (a.title && a.title !== "Новый чат")) return;
     try {
       await api.renameChat({ id: targetChatId, title: deriveChatTitle(text) });
       await loadChats(targetChatId);
@@ -997,7 +997,7 @@ export default function EliraChatShell() {
       const wantsProjectContext = (
         tl.includes("проект") || tl.includes("project") ||
         tl.includes("repo") || tl.includes("repository") || tl.includes("репозитор") ||
-        tl.includes("РєРѕРґ") || tl.includes("codebase") ||
+        tl.includes("код") || tl.includes("codebase") ||
         tl.includes("backend") || tl.includes("frontend") ||
         tl.includes("структур") || tl.includes("tree") ||
         tl.includes("директор") || tl.includes("каталог") || tl.includes("папк") ||
@@ -1795,7 +1795,7 @@ export default function EliraChatShell() {
 <button className="soft-btn" style={{fontSize:11,padding:"4px 14px",background:"var(--accent)",color:"#fff",border:"none",borderRadius:6}} onClick={createPipeline}>Создать</button>
               </div>
 
-              {/* РЎРїРёСЃРѕРє */}
+              {/* Список */}
               {pipelinesList.length===0 && !pipelinesError && <div style={{fontSize:11,color:"var(--text-muted)",padding:"12px 0",textAlign:"center"}}>Пайплайнов пока нет</div>}
               {pipelinesList.map(p=>(
                 <div key={p.id} style={{padding:"10px 12px",borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6}}>

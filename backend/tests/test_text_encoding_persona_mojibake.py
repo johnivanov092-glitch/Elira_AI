@@ -138,9 +138,32 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
         self.assertIn(readable, row[0])
         self.assertEqual(row[1], readable)
 
-    def test_backend_source_files_do_not_contain_mojibake(self) -> None:
+    def test_project_source_files_do_not_contain_mojibake(self) -> None:
         bad_files = []
-        for path in (ROOT / "backend" / "app").rglob("*.py"):
+        source_roots = (
+            (ROOT / "backend" / "app", {".py"}),
+            (ROOT / "frontend" / "src", {".css", ".js", ".jsx", ".ts", ".tsx"}),
+            (ROOT / "src-tauri" / "src", {".py", ".rs"}),
+        )
+        source_files = (
+            ROOT / "src-tauri" / "main.rs",
+            ROOT / "src-tauri" / "Cargo.toml",
+            ROOT / "src-tauri" / "tauri.conf.json",
+        )
+
+        for root, suffixes in source_roots:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                if path.is_file() and path.suffix in suffixes:
+                    text = path.read_text(encoding="utf-8")
+                    score = mojibake_score(text)
+                    if score:
+                        bad_files.append(f"{path.relative_to(ROOT)}:{score}")
+
+        for path in source_files:
+            if not path.exists():
+                continue
             text = path.read_text(encoding="utf-8")
             score = mojibake_score(text)
             if score:

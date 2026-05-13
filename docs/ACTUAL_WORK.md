@@ -1820,3 +1820,17 @@ Live repair log for concrete backend/runtime fixes.
   documentation-only change; verified with `git diff --check` and the live docs UTF-8 guard.
 - Result:
   the project is back on the full plan, but execution is now optimized for closing real remaining gaps quickly instead of continuing open-ended micro-refactors.
+
+### 126. Frontend source UTF-8 guard
+- Status: completed
+- Scope: closed the first Completion Sprint gap in the Russian-context encoding rule.
+- Finish:
+  repaired mojibake in [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx), including readable defaults for `Универсальный`, `Новый чат`, `код`, and `Список`;
+  repaired mojibake comments and cursor content in [frontend/src/styles.css](/D:/AIWork/Elira_AI/frontend/src/styles.css) and [frontend/src/styles/markdown.css](/D:/AIWork/Elira_AI/frontend/src/styles/markdown.css);
+  expanded [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) so the mojibake guard now covers `backend/app`, `frontend/src`, and Tauri source files, while excluding generated build artifacts.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 7 tests OK;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  frontend/Tauri source is now included in the same readable UTF-8 rule as backend/persona/docs, preventing future unreadable Russian context from being staged unnoticed.
