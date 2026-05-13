@@ -1879,3 +1879,17 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   route inclusion now has one canonical registry, lowering future route drift risk while keeping all existing API contracts intact.
+
+### 130. Frontend typed API transport baseline
+- Status: completed
+- Scope: started Phase 6 frontend TypeScript migration with the shared API transport.
+- Finish:
+  renamed `frontend/src/api/client.js` to [frontend/src/api/client.ts](/D:/AIWork/Elira_AI/frontend/src/api/client.ts) and added typed request options, response parsing, error normalization, and safe fallback handling;
+  added [frontend/tsconfig.json](/D:/AIWork/Elira_AI/frontend/tsconfig.json) and [frontend/src/vite-env.d.ts](/D:/AIWork/Elira_AI/frontend/src/vite-env.d.ts);
+  added `typescript`, React 18 type packages, and a `typecheck` script to [frontend/package.json](/D:/AIWork/Elira_AI/frontend/package.json), with lockfile updates in [frontend/package-lock.json](/D:/AIWork/Elira_AI/frontend/package-lock.json).
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  frontend now has a real TypeScript baseline and buildable typed API transport while the existing `api/ide.js` facade remains compatible for current JSX components.
