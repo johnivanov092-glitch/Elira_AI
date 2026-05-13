@@ -1864,3 +1864,18 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   Phase 4 is no longer a code-movement gap; it is covered as a verified compatibility facade over canonical workflow application/runtime modules.
+
+### 129. Route registry consolidation
+- Status: completed
+- Scope: closed Phase 5 route wiring consolidation without changing public URLs.
+- Finish:
+  added [backend/app/api/routes/registry.py](/D:/AIWork/Elira_AI/backend/app/api/routes/registry.py) as the single ordered registry for all routers previously imported directly by `main.py`;
+  reduced [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) from individual router imports/includes to a loop over `ALL_ROUTERS`, preserving the existing registration order;
+  added [backend/tests/test_route_registry.py](/D:/AIWork/Elira_AI/backend/tests/test_route_registry.py) to verify router uniqueness and that the FastAPI app registers every registry route.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_route_registry backend.tests.test_text_encoding_persona_mojibake` -> 9 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed, 207 OpenAPI paths;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\main.py backend\app\api\routes\registry.py backend\tests\test_route_registry.py` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  route inclusion now has one canonical registry, lowering future route drift risk while keeping all existing API contracts intact.
