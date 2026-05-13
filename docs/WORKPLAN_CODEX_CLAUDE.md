@@ -12,7 +12,7 @@ Single live coordination document for Claude/Codex refactor work.
 - `origin/main` at snapshot: `755072177138c5c7bd9f022eb62f43b6b11ace57`
 - Protected paths: `.claude/`, `.claude/worktrees/`
 - Encoding rule: keep this file in UTF-8; if a terminal shows mojibake, reopen the file in UTF-8 and do not rewrite it through ANSI tooling.
-- Russian context encoding hard rule: source code, tests, docs, prompt text, persona evolution text, and SQLite JSON/text payloads must stay readable UTF-8. Any imported Claude/Codex text containing mojibake markers such as `Рџ`, `РЎ`, `вЂ`, `Ð`, or `Ñ` must be repaired before staging; persona JSON read/write paths must normalize through `app.utils.text_encoding`.
+- Russian context encoding hard rule: source code, tests, docs, prompt text, persona evolution text, and SQLite JSON/text payloads must stay readable UTF-8. Any imported Claude/Codex text containing known mojibake marker patterns must be repaired before staging; persona JSON read/write paths must normalize through `app.utils.text_encoding`.
 
 ## 1. Update Rules
 
@@ -544,6 +544,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-08 18:21:16 +05:00` | `DONE` | Extended the UTF-8 guard to the backend Python source tree: repaired mojibake literals/comments in 23 `backend/app/**/*.py` files and expanded `test_text_encoding_persona_mojibake` to fail on any remaining source marker hits. Verification passed with targeted unittest (`6 tests OK`), `python -m compileall backend/app`, smoke contract check, and full backend unittest discovery (`2220 tests OK`). |
 | `2026-05-08 18:27:15 +05:00` | `DONE` | Moved `ProjectBrainService` into `application.project_brain.service`, left `services.project_brain_service` as a compatibility re-export, and added facade/runtime coverage. Verification passed with targeted unittest (`5 tests OK`) and compileall on the touched Project Brain files; the prior full backend discovery already included this new test and runtime (`2220 tests OK`). |
 | `2026-05-08 18:33:42 +05:00` | `DONE` | Moved chat/workflow tool execution imports off `services.tool_service` to `application.tool_registry.service`, updated the Agent OS workflow patch target, and confirmed application/domain/infrastructure code has no real `app.services.*` imports left. Verification passed with targeted unittest (`14 tests OK`), compileall on touched files, smoke contract check, and full backend unittest discovery (`2220 tests OK`). |
+| `2026-05-13 16:12:28 +05:00` | `DONE` | Extended the UTF-8/mojibake guard to the live coordination docs: normalized `docs/ACTUAL_WORK.md` and `docs/WORKPLAN_CODEX_CLAUDE.md`, removed literal marker examples from the workplan rule, and expanded `test_text_encoding_persona_mojibake` to enforce zero marker hits in both files. Verification passed with targeted unittest (`7 tests OK`), smoke contract check, and full backend unittest discovery (`2221 tests OK`). |
 
 ## 8. Commit Ledger
 

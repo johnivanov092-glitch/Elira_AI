@@ -91,7 +91,7 @@ Live repair log for concrete backend/runtime fixes.
   critical action buttons display real icons instead of `?`;
   Russian UI labels are consistent across the main user-facing panels.
 - Marker:
-  current desktop UI baseline is marked as `РёРґРµР°Р»СЊРЅС‹Р№ РІРёР·СѓР°Р»` for this stabilization wave.
+  current desktop UI baseline is marked as `идеальный визуал` for this stabilization wave.
 
 ### 9. UI verification
 - Status: completed
@@ -126,7 +126,7 @@ Live repair log for concrete backend/runtime fixes.
   wired prompt composition in [backend/app/services/chat_service.py](/D:/AIWork/Elira_AI/backend/app/services/chat_service.py) and [backend/app/core/llm.py](/D:/AIWork/Elira_AI/backend/app/core/llm.py) so system prompts are now built as `active persona snapshot -> profile overlay -> model calibration -> runtime constraints`;
   connected runtime learning hooks in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) and [backend/app/core/agents.py](/D:/AIWork/Elira_AI/backend/app/core/agents.py);
   added persona routes in [backend/app/api/routes/persona.py](/D:/AIWork/Elira_AI/backend/app/api/routes/persona.py) and registered them in [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py);
-  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) and [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so dashboard now shows `Р›РёС‡РЅРѕСЃС‚СЊ Elira`, model consistency, quarantined candidates, and rollback action;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) and [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so dashboard now shows `Личность Elira`, model consistency, quarantined candidates, and rollback action;
   preserved compatibility for existing `agent_profile` and `route_model_map` settings while normalizing default profile handling in [backend/app/services/elira_memory_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_memory_sqlite.py) and [backend/app/services/elira_settings_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_settings_sqlite.py).
 - Result:
   Elira now has one rooted personality per local installation;
@@ -223,7 +223,7 @@ Live repair log for concrete backend/runtime fixes.
   added [backend/tests/test_temporal_internet_mode.py](/D:/AIWork/Elira_AI/backend/tests/test_temporal_internet_mode.py) to lock future-year routing, stable historical behavior, cache freshness rules, provenance cleanup, and hidden memory formatting.
 - Result:
   temporal/current-world requests now trigger web-enabled planning without hardcoding a specific calendar year;
-  stable historical questions such as past-year event lookups are no longer forced into mandatory web-search just because they start with `С‡С‚Рѕ` or `what`;
+  stable historical questions such as past-year event lookups are no longer forced into mandatory web-search just because they start with `что` or `what`;
   normal chat output is post-processed to remove raw `[fact]`, `RAG`, and technical memory/source markers, while provenance questions are rewritten into natural language instead of internal prompt jargon;
   internet is now treated as a freshness-aware second knowledge base in the planning layer, while ordinary answers stay human-style by default instead of becoming a link dump.
 
@@ -270,16 +270,16 @@ Live repair log for concrete backend/runtime fixes.
 ### 20. Internal time awareness without unsolicited date/time replies
 - Status: completed
 - Scope: kept Elira aware of current local date/time internally, but stopped ordinary chat from blurting out the current date or time unless the user explicitly asks.
-- Start: the backend prompt builder in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) prepended a visible `РЎРµР№С‡Р°СЃ: ...` line to every chat prompt, which encouraged replies like `РЎРµРіРѕРґРЅСЏ РїРѕРЅРµРґРµР»СЊРЅРёРє... Рё СЃРµР№С‡Р°СЃ 4:19` even in normal greetings.
+- Start: the backend prompt builder in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) prepended a visible `Сейчас: ...` line to every chat prompt, which encouraged replies like `Сегодня понедельник... и сейчас 4:19` even in normal greetings.
 - Finish:
   replaced the always-visible prompt line with an internal runtime datetime context in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py);
-  added an explicit detector for direct date/time questions such as `РєР°РєР°СЏ СЃРµРіРѕРґРЅСЏ РґР°С‚Р°`, `РєР°РєРѕРµ СЃРµРіРѕРґРЅСЏ С‡РёСЃР»Рѕ`, `РєРѕС‚РѕСЂС‹Р№ С‡Р°СЃ`, and `СЃРєРѕР»СЊРєРѕ РІСЂРµРјРµРЅРё`;
+  added an explicit detector for direct date/time questions such as `какая сегодня дата`, `какое сегодня число`, `который час`, and `сколько времени`;
   changed the prompt rules so ordinary chat must not mention the current date, time, or weekday unless the user directly asked for them, while direct date/time questions still receive a precise natural answer;
   added regression coverage in [backend/tests/test_runtime_datetime_prompt.py](/D:/AIWork/Elira_AI/backend/tests/test_runtime_datetime_prompt.py).
 - Result:
   Elira now keeps local runtime date/time as internal awareness rather than a default visible greeting element;
-  normal prompts like `РџСЂРёРІРµС‚` no longer need to trigger date/time small talk;
-  direct questions such as `РљР°РєР°СЏ СЃРµРіРѕРґРЅСЏ РґР°С‚Р°?` or `РљРѕС‚РѕСЂС‹Р№ С‡Р°СЃ?` still get an exact answer using current local runtime time;
+  normal prompts like `Привет` no longer need to trigger date/time small talk;
+  direct questions such as `Какая сегодня дата?` or `Который час?` still get an exact answer using current local runtime time;
   backend verification for this change passed with `compileall`, targeted unit tests, full backend test discovery, and smoke-contract checks.
 
 ### 21. Draft-first chat creation in the sidebar
@@ -288,18 +288,18 @@ Live repair log for concrete backend/runtime fixes.
 - Start: the shell created a new sidebar chat immediately on startup, which made the left panel fill up with empty conversations even before the first user message.
 - Finish:
   updated [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so app bootstrap opens into an empty draft state instead of forcing a new persisted chat on launch;
-  changed send flow to materialize the chat only when the first message is actually submitted, while keeping the `РќРѕРІС‹Р№ С‡Р°С‚` button as an explicit independent action;
+  changed send flow to materialize the chat only when the first message is actually submitted, while keeping the `Новый чат` button as an explicit independent action;
   updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) so message creation and chat creation stay aligned with the backend response shape when a draft becomes a real chat.
 - Result:
   startup now opens into a clean empty draft without polluting the sidebar;
   the first user message creates the real chat automatically and only then makes it appear in the chat list;
-  the `РќРѕРІС‹Р№ С‡Р°С‚` button still creates a separate new chat immediately when the user wants that behavior explicitly.
+  the `Новый чат` button still creates a separate new chat immediately when the user wants that behavior explicitly.
 ### 22. N-intent web planner for 1-4+ current-world subtopics
 - Status: completed
 - Scope: generalized current-world web planning from a narrow `finance + local news` case into a true `N-intent` planner with overflow handling for `4+` live subtopics.
 - Start: combined current-world prompts could already be split into two focused web searches, but anything beyond that still risked collapsing into a single search string or silently dropping extra live subtopics.
 - Finish:
-  rebuilt [backend/app/services/web_query_planner.py](/D:/AIWork/Elira_AI/backend/app/services/web_query_planner.py) into a general extractor that classifies subtopics as `finance`, `geo_news`, `general_news`, `status_current`, `price_rate`, `historical`, or `general_web`, merges same-intent finance fragments like `РєСѓСЂСЃ РґРѕР»Р»Р°СЂР° Рё РµРІСЂРѕ Рє С‚РµРЅРіРµ`, ranks subtopics by current-world priority, caps the total at `6`, and emits `passes`, `pass_count`, `overflow_applied`, and `uncovered_subqueries` in `web_plan`;
+  rebuilt [backend/app/services/web_query_planner.py](/D:/AIWork/Elira_AI/backend/app/services/web_query_planner.py) into a general extractor that classifies subtopics as `finance`, `geo_news`, `general_news`, `status_current`, `price_rate`, `historical`, or `general_web`, merges same-intent finance fragments like `курс доллара и евро к тенге`, ranks subtopics by current-world priority, caps the total at `6`, and emits `passes`, `pass_count`, `overflow_applied`, and `uncovered_subqueries` in `web_plan`;
   extended the active multi-intent orchestration in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) so `_do_web_search` now executes `pass_1` and `pass_2` when needed, preserves partial success, emits richer `tool_results.web_search` metadata such as `passes`, `total_subqueries`, `overflow_applied`, and weak `uncovered_subqueries`, and keeps the final answer human-style instead of exposing planner/debug details;
   added regression coverage in [backend/tests/test_web_query_planner.py](/D:/AIWork/Elira_AI/backend/tests/test_web_query_planner.py) and [backend/tests/test_web_multi_intent_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_web_multi_intent_runtime.py), while keeping [backend/tests/test_temporal_internet_mode.py](/D:/AIWork/Elira_AI/backend/tests/test_temporal_internet_mode.py) and [backend/tests/test_web_engine_stack.py](/D:/AIWork/Elira_AI/backend/tests/test_web_engine_stack.py) green.
 - Result:
@@ -307,28 +307,28 @@ Live repair log for concrete backend/runtime fixes.
   the runtime now exposes which subqueries went into `pass_1` and `pass_2`, whether overflow policy was applied, and which subtopics remained weak or uncovered;
   live verification of a `4`-subtopic prompt confirmed `2` passes with separate coverage for local incidents, finance, fuel price, and flight-status queries in one combined backend run.
 
-### 23. Agent OS Phase 1 вЂ” Agent Registry with persistent state
+### 23. Agent OS Phase 1 — Agent Registry with persistent state
 - Status: completed
-- Scope: built the foundation layer of the Agent OS вЂ” a persistent agent registry with identity, state, and run history tracking.
+- Scope: built the foundation layer of the Agent OS — a persistent agent registry with identity, state, and run history tracking.
 - Start: agents were stateless single-shot functions with hardcoded roles (Researcher, Programmer, Analyst), no persistent identity, no state between calls, and no inter-agent discoverability.
 - Finish:
   added [backend/app/schemas/agent_registry.py](/D:/AIWork/Elira_AI/backend/app/schemas/agent_registry.py) with Pydantic models for agent definitions, state, run records, and API responses;
   added [backend/app/services/agent_registry.py](/D:/AIWork/Elira_AI/backend/app/services/agent_registry.py) with SQLite-backed CRUD (`data/agent_registry.db`), persistent agent state (JSON blob per agent), run history with duration/model/route tracking, builtin agent seeding from `AGENT_PROFILES`, and `resolve_agent()` for integration;
   added [backend/app/api/routes/agent_registry_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agent_registry_routes.py) with REST endpoints under `/api/agent-os/agents/*` (register, list, get, update, delete, state CRUD, run history);
-  integrated optional `agent_id` parameter into `run_agent()` in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) вЂ” when provided, loads agent definition from registry, applies its system prompt and model preference, and records the run result (success or failure) with duration;
+  integrated optional `agent_id` parameter into `run_agent()` in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) — when provided, loads agent definition from registry, applies its system prompt and model preference, and records the run result (success or failure) with duration;
   registered the new router and builtin agent seeding in [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py);
-  added [backend/tests/test_agent_os_phase1.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase1.py) with 15 tests covering CRUD, state persistence, run history, seed idempotency, and agent resolution вЂ” all passing.
+  added [backend/tests/test_agent_os_phase1.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase1.py) with 15 tests covering CRUD, state persistence, run history, seed idempotency, and agent resolution — all passing.
 - Result:
   agents now have persistent identity, discoverable via API, with state that survives between calls;
   every agent run can be tracked with input/output summary, route, model, and duration;
   builtin agents (Universal, Researcher, Programmer, Analyst, Socrat) are auto-seeded on startup;
-  existing chat flow is fully backward-compatible вЂ” `agent_id` is optional;
+  existing chat flow is fully backward-compatible — `agent_id` is optional;
   branch `feat/agent-os-phase1-registry` pushed to origin.
 - Next phases planned:
-  Phase 2 вЂ” Tool Registry with JSON Schema (replace hardcoded tool dispatch);
-  Phase 3 вЂ” Event Bus + inter-agent messaging;
-  Phase 4 вЂ” Workflow Engine (DAG-based multi-step orchestration);
-  Phase 5 вЂ” Monitoring + Sandboxing.
+  Phase 2 — Tool Registry with JSON Schema (replace hardcoded tool dispatch);
+  Phase 3 — Event Bus + inter-agent messaging;
+  Phase 4 — Workflow Engine (DAG-based multi-step orchestration);
+  Phase 5 — Monitoring + Sandboxing.
 
 ### 24. Agent OS Phase 3 - Event Bus + inter-agent messaging
 - Status: completed
@@ -1781,3 +1781,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
 - Result:
   application/domain code now depends directly on the Tool Registry application service while the legacy `services.tool_service` facade remains available for compatibility.
+
+### 123. Live docs UTF-8 mojibake guard
+- Status: completed
+- Scope: extended the UTF-8/mojibake rule to the live coordination documents.
+- Finish:
+  normalized historical mojibake text in [docs/ACTUAL_WORK.md](/D:/AIWork/Elira_AI/docs/ACTUAL_WORK.md) and [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md);
+  removed literal mojibake marker examples from the workplan rule text so the rule itself remains readable UTF-8;
+  expanded [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) to fail if the live coordination docs contain mojibake markers.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 7 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2221 tests OK.
+- Result:
+  both live coordination docs now have zero `mojibake_score` marker hits under the repository encoding guard.

@@ -148,6 +148,19 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
 
         self.assertEqual(bad_files, [])
 
+    def test_live_coordination_docs_do_not_contain_mojibake(self) -> None:
+        bad_files = []
+        for relative_path in (
+            "docs/ACTUAL_WORK.md",
+            "docs/WORKPLAN_CODEX_CLAUDE.md",
+        ):
+            text = (ROOT / relative_path).read_text(encoding="utf-8")
+            score = mojibake_score(text)
+            if score:
+                bad_files.append(f"{relative_path}:{score}")
+
+        self.assertEqual(bad_files, [])
+
 
 if __name__ == "__main__":
     unittest.main()
