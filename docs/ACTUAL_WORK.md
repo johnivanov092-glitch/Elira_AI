@@ -1808,3 +1808,15 @@ Live repair log for concrete backend/runtime fixes.
   documentation-only change; verified with `git diff --check`.
 - Result:
   future work is now bounded to finishing the release rather than continuing the two-month refactor expansion.
+
+### 125. Completion sprint mode
+- Status: completed
+- Scope: restored the full refactor plan after the user explicitly rejected stopping at release closure.
+- Finish:
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) so all planned phases remain in scope;
+  replaced release-closure deferrals with a Completion Sprint protocol: work in larger gap-sized batches, keep compatibility paths stable, and do not mark a phase complete without implementation, documentation, commit/push, and focused verification;
+  restored the next queue around Phase 3-8 completion: code-agent runtime, workflow verification, route/API consolidation, frontend TypeScript/API migration, Tauri cleanup, and final contract stabilization.
+- Verification:
+  documentation-only change; verified with `git diff --check` and the live docs UTF-8 guard.
+- Result:
+  the project is back on the full plan, but execution is now optimized for closing real remaining gaps quickly instead of continuing open-ended micro-refactors.
