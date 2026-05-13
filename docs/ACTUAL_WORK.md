@@ -1795,3 +1795,16 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2221 tests OK.
 - Result:
   both live coordination docs now have zero `mojibake_score` marker hits under the repository encoding guard.
+
+### 124. Release closure mode
+- Status: completed
+- Scope: stopped the open-ended refactor track and switched the project plan to release closeout.
+- Finish:
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) with `RELEASE CLOSURE` rules;
+  froze new architecture cleanup unless it blocks release checks;
+  deferred frontend TypeScript migration, compatibility renaming, remaining facade cleanup, and non-blocking module extraction to post-release work;
+  replaced the next queue with a closure checklist: dirty-tree reconciliation, final backend verification, frontend/app verification, and merge/PR handoff.
+- Verification:
+  documentation-only change; verified with `git diff --check`.
+- Result:
+  future work is now bounded to finishing the release rather than continuing the two-month refactor expansion.

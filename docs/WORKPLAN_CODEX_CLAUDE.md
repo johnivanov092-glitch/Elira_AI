@@ -36,6 +36,7 @@ Single live coordination document for Claude/Codex refactor work.
 
 ## 2A. Acceleration Protocol
 
+- Status as of `2026-05-13`: superseded by Release Closure Protocol. Do not use this section to justify new refactor slices unless a release blocker requires code movement.
 - Refactor execution is now in `ACCELERATED` mode because the current micro-slice cadence is too slow for the remaining scope.
 - Default unit of change is no longer a single helper unless it is the last isolated tail of a bounded context; prefer one whole handler family, one whole runtime cluster, or one whole medium-sized module per commit.
 - Prefer reducing the largest active backend modules first: `domain/agents/orchestrator.py`, `services/agents_service.py`, `services/agent_monitor.py`, `services/persona_service.py`, `api/routes/project_brain.py`, and `infrastructure/search/web_search.py`.
@@ -44,6 +45,19 @@ Single live coordination document for Claude/Codex refactor work.
 - Mandatory verification for accelerated slices: source-level syntax check, `python -m compileall` on touched runtime files, focused import smoke, and `git diff --check`. Defer broader tests unless the slice changes route contracts or persistence behavior.
 - Workplan logging remains required, but compress future entries: one acceleration note plus one result note per commit is sufficient unless a risk or blocker changes.
 - If a module falls below roughly `350-450` lines and only small wrappers remain, stop splitting it further unless a concrete coupling problem remains.
+
+## 2B. Release Closure Protocol
+
+- Refactor work is now in `RELEASE CLOSURE` mode. Default answer to new architecture cleanup is `defer`.
+- No new feature work, broad renames, compatibility refactors, facade cleanup, frontend TypeScript migration, or module extraction unless it blocks release checks.
+- Closure work is limited to:
+  1. reconcile or explicitly defer dirty working-tree artifacts;
+  2. run and record final verification commands;
+  3. fix only failing tests, broken imports, broken startup, unreadable Russian encoding, or merge blockers;
+  4. prepare the final merge/PR handoff with known residual risks.
+- Existing service facades and compatibility aliases are acceptable if tests pass and public contracts are stable.
+- Runtime SQLite DB files under `data/` are treated as local state and must not be staged unless a schema/data migration is explicitly required and reviewed.
+- The project is ready to stop refactor work when final smoke, backend discovery, encoding guard, and chosen frontend/build checks pass or are explicitly documented as unavailable.
 
 ## 3. Source Docs
 
@@ -81,12 +95,12 @@ Single live coordination document for Claude/Codex refactor work.
 | `0` | Preparation and guardrails | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `DOC` | `python -m compileall ...`, import smoke for new packages and DB provider |
 | `1` | Stabilize backend boundaries | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `0` | Duplicate-definition search, `python -m compileall ...`, backend import smoke |
 | `2` | Split chat and agent services | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `1` | Chat request, chat stream, and routing checks |
-| `3` | Split code-agent runtime | `TBD` | `TBD` | `PLANNED` | `2` | Code-agent execute, verify, and cancellation checks |
-| `4` | Split workflow engine | `TBD` | `TBD` | `PLANNED` | `1`, `3` | Workflow run start/finish tests |
-| `5` | Route consolidation | `TBD` | `TBD` | `PLANNED` | `1`, `2`, `3`, `4` | Route registration and smoke contract checks |
-| `6` | Frontend TypeScript migration | `TBD` | `TBD` | `PLANNED` | `5` | `npm --prefix frontend run build`, typed API verification |
-| `7` | Tauri cleanup | `TBD` | `TBD` | `PLANNED` | `1`, `6` | Tauri startup and backend launch checks |
-| `8` | Contract stabilization and cleanup | `TBD` | `TBD` | `PLANNED` | `1`-`7` | Smoke tests, typed frontend build, cleanup review |
+| `3` | Split code-agent runtime | `TBD` | `TBD` | `DEFERRED` | Release closure | Deferred unless it blocks final checks |
+| `4` | Split workflow engine | `TBD` | `TBD` | `DEFERRED` | Release closure | Existing compatibility runtime accepted |
+| `5` | Route consolidation | `TBD` | `TBD` | `DEFERRED` | Release closure | Only fix broken route contracts |
+| `6` | Frontend TypeScript migration | `TBD` | `TBD` | `DEFERRED` | Release closure | Not part of current release closeout |
+| `7` | Tauri cleanup | `TBD` | `TBD` | `DEFERRED` | Release closure | Only fix startup blockers |
+| `8` | Contract stabilization and cleanup | `Codex` | `codex/refactor-arch-foundation` | `CLOSING` | `1`-`2` | Smoke tests, backend discovery, encoding guard, dirty-tree review |
 
 ## 6. Archived Branch Agreements From Earlier Agent OS Work
 
@@ -545,6 +559,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-08 18:27:15 +05:00` | `DONE` | Moved `ProjectBrainService` into `application.project_brain.service`, left `services.project_brain_service` as a compatibility re-export, and added facade/runtime coverage. Verification passed with targeted unittest (`5 tests OK`) and compileall on the touched Project Brain files; the prior full backend discovery already included this new test and runtime (`2220 tests OK`). |
 | `2026-05-08 18:33:42 +05:00` | `DONE` | Moved chat/workflow tool execution imports off `services.tool_service` to `application.tool_registry.service`, updated the Agent OS workflow patch target, and confirmed application/domain/infrastructure code has no real `app.services.*` imports left. Verification passed with targeted unittest (`14 tests OK`), compileall on touched files, smoke contract check, and full backend unittest discovery (`2220 tests OK`). |
 | `2026-05-13 16:12:28 +05:00` | `DONE` | Extended the UTF-8/mojibake guard to the live coordination docs: normalized `docs/ACTUAL_WORK.md` and `docs/WORKPLAN_CODEX_CLAUDE.md`, removed literal marker examples from the workplan rule, and expanded `test_text_encoding_persona_mojibake` to enforce zero marker hits in both files. Verification passed with targeted unittest (`7 tests OK`), smoke contract check, and full backend unittest discovery (`2221 tests OK`). |
+| `2026-05-13 16:14:54 +05:00` | `DONE` | Switched the plan from accelerated refactor execution to release closure mode. Future work is limited to dirty-tree reconciliation, final verification, release blockers, and merge/PR handoff; remaining frontend TypeScript migration and compatibility cleanup are deferred post-release. |
 
 ## 8. Commit Ledger
 
@@ -599,13 +614,12 @@ Single live coordination document for Claude/Codex refactor work.
 
 | Priority | Task | Target branch | Notes |
 | --- | --- | --- | --- |
-| `1` | Continue small compatibility-import cleanup around workflow/runtime facades | `codex/refactor-arch-foundation` | `services/image_gen.py` is already a thin facade to `application/media/flux_schnell_runtime.py`; continue only with concrete callers or facades that still hide active application-layer runtimes |
-| `2` | Start frontend TypeScript migration (Task 10+) | `TBD` | Not started; depends on backend stabilization |
-| `3` | Keep SQLite connection handling centralized in `app.infrastructure.db.connection` | `codex/refactor-arch-foundation` | service-level consumers, extracted `application/memory/*` and `domain/memory/*` helpers, and the current route-level sweep (`api/routes/library_sqlite.py`, `api/routes/elira_execution_state.py`, `api/routes/elira_execution_controller.py`, `api/routes/elira_task_runner.py`, `api/routes/elira_multi_file_loop.py`, `api/routes/elira_execution_loop.py`, `api/routes/elira_supervisor.py`, `api/routes/elira_execute.py`, `api/routes/elira_patch.py`) are migrated; do not reopen this wave without a new concrete target |
-| `4` | Continue shrinking compatibility imports around workflow orchestration (Task 14) | `codex/refactor-arch-foundation` | `services/workflow_engine.py` is now mostly intentional public compatibility for tests/routes; touch it only through small, concrete caller migrations |
-| `5` | Confirm or add lint, formatting, and smoke-test commands from the master refactor plan | `TBD` | Keep behavior stable and avoid broad rewrites |
-| `6` | Reconcile the current deleted docs and archive move before the first focused docs commit | `codex/workplan-codex-claude` | Do not mix unrelated deleted docs into a backend refactor commit |
-| `7` | Check whether `code_agent_service.py` still exists or has already been removed/replaced before adding a freeze step for it | `codex/refactor-arch-foundation` | Current filesystem snapshot does not show this file under `backend/app/services` |
+| `1` | Freeze refactor scope and stop adding architecture cleanup | `codex/refactor-arch-foundation` | In effect. New refactors are deferred unless they block release checks. |
+| `2` | Reconcile dirty working tree for release handoff | `codex/refactor-arch-foundation` | Classify existing DB changes, deleted docs, `.claude` worktree artifacts, and untracked docs/assets as commit, restore, archive, or ignore. |
+| `3` | Run final backend verification bundle | `codex/refactor-arch-foundation` | Required: encoding guard, smoke contract check, full backend unittest discovery. |
+| `4` | Run final frontend/app verification where available | `codex/refactor-arch-foundation` | Confirm exact frontend build/test commands from package metadata; record unavailable commands explicitly. |
+| `5` | Prepare merge/PR handoff | `codex/refactor-arch-foundation` | Summarize commits, known residual risks, deferred work, and release blockers. |
+| `6` | Defer frontend TypeScript migration and remaining compatibility naming cleanup | `TBD` | Not part of current closeout. Track only as post-release work. |
 
 ## 12. Verification Checklist For This Document
 
