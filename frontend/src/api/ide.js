@@ -1,5 +1,16 @@
 import { buildApiUrl, request, safeRequest } from "./client";
 import {
+  diffFile,
+  extractUploadedFileText,
+  writeFile,
+} from "./fileOps";
+import {
+  createGitCommit,
+  getGitDiff,
+  getGitLog,
+  getGitStatus,
+} from "./git";
+import {
   addSmartMemory,
   deleteSmartMemory,
   getSmartMemoryStats,
@@ -7,7 +18,23 @@ import {
   searchSmartMemory,
 } from "./smartMemory";
 import { executeTerminal, getTerminalCwd } from "./terminal";
+import {
+  analyzeCode,
+  listToolRuns,
+  runPythonCode,
+} from "./tools";
 
+export {
+  diffFile,
+  extractUploadedFileText,
+  writeFile,
+} from "./fileOps";
+export {
+  createGitCommit,
+  getGitDiff,
+  getGitLog,
+  getGitStatus,
+} from "./git";
 export {
   addSmartMemory,
   deleteSmartMemory,
@@ -16,6 +43,11 @@ export {
   searchSmartMemory,
 } from "./smartMemory";
 export { executeTerminal, getTerminalCwd } from "./terminal";
+export {
+  analyzeCode,
+  listToolRuns,
+  runPythonCode,
+} from "./tools";
 
 function normalizeArray(payload) {
   if (Array.isArray(payload)) return payload;
@@ -436,12 +468,6 @@ export async function verifyPatch(body = {}) {
   return request("/api/elira/patch/verify", { method: "POST", body });
 }
 
-export async function extractUploadedFileText(file) {
-  const formData = new FormData();
-  formData.append("file", file);
-  return request("/api/files/extract-text", { method: "POST", body: formData });
-}
-
 export async function listLibraryFiles() {
   return safeRequest("/api/lib/list", {}, null);
 }
@@ -609,43 +635,6 @@ export async function closeAdvancedProject() {
 
 export async function runAdvancedMultiAgent(body = {}) {
   return request("/api/advanced/multi-agent", { method: "POST", body });
-}
-
-export async function getGitStatus() {
-  return request("/api/git/status");
-}
-
-export async function getGitLog(limit = 20) {
-  return request(withParams("/api/git/log", { limit }));
-}
-
-export async function getGitDiff(body = { repo_path: "", file_path: "" }) {
-  return request("/api/git/diff", { method: "POST", body });
-}
-
-export async function createGitCommit(body = {}) {
-  return request("/api/git/commit", { method: "POST", body });
-}
-
-export async function listToolRuns(limit = 50) {
-  const payload = await request(withParams("/api/tools/run-history", { limit }));
-  return payload?.runs || [];
-}
-
-export async function runPythonCode(code) {
-  return request("/api/tools/run-python", { method: "POST", body: { code } });
-}
-
-export async function analyzeCode(body = {}) {
-  return request("/api/tools/analyze-code", { method: "POST", body });
-}
-
-export async function diffFile(body = {}) {
-  return request("/api/file-ops/diff", { method: "POST", body });
-}
-
-export async function writeFile(body = {}) {
-  return request("/api/file-ops/write", { method: "POST", body });
 }
 
 export const api = {

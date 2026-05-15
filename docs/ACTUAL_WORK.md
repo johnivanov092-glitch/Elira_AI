@@ -1975,3 +1975,17 @@ Live repair log for concrete backend/runtime fixes.
   `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_router_v8_planner_graphs_extra_pure backend.tests.test_llm_build_prompt_workflows_store_run_pure backend.tests.test_workflows_cache_search_monitoring_pure backend.tests.test_core_files_workflow_exec_pure` -> 230 tests OK.
 - Result:
   the useful unmerged Claude coverage tail is now on the current branch without wholesale-merging stale Claude branches that would revert newer architecture, frontend TypeScript, route registry, and encoding guard work.
+
+### 137. Frontend git/tools/file API typed groups
+- Status: completed
+- Scope: continued Phase 6 by moving IDE-oriented API groups out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/git.ts](/D:/AIWork/Elira_AI/frontend/src/api/git.ts) for typed Git status/log/diff/commit calls;
+  added [frontend/src/api/tools.ts](/D:/AIWork/Elira_AI/frontend/src/api/tools.ts) for typed tool run history, Python execution, and code analysis calls;
+  added [frontend/src/api/fileOps.ts](/D:/AIWork/Elira_AI/frontend/src/api/fileOps.ts) for file text extraction, diff, and write calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export these functions while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  IDE workspace and artifact panel endpoints now have build-checked TypeScript transports without changing JSX components in this slice.
