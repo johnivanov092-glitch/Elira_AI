@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter
 
-from app.services.run_history_service import RunHistoryService
+from app.infrastructure.db.run_history_service import RunHistoryService
 
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -57,7 +57,7 @@ def dashboard_stats() -> dict:
 
     memory_stats = {"total": 0, "categories": {}}
     try:
-        from app.services.smart_memory import get_stats
+        from app.application.memory.smart_memory import get_stats
 
         memory_stats = get_stats()
     except Exception:
@@ -66,7 +66,7 @@ def dashboard_stats() -> dict:
     chat_count = 0
     message_count = 0
     try:
-        from app.services.elira_memory_sqlite import get_messages, list_chats
+        from app.infrastructure.db.elira_memory_sqlite import get_messages, list_chats
 
         chats = list_chats()
         chat_count = len(chats)
@@ -77,7 +77,7 @@ def dashboard_stats() -> dict:
 
     plugin_count = 0
     try:
-        from app.services.plugin_system import list_plugins
+        from app.infrastructure.plugins.plugin_system import list_plugins
 
         plugin_count = list_plugins().get("count", 0)
     except Exception:

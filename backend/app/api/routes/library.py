@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from pydantic import BaseModel
 
-from app.services.library_service import (
+from app.application.library.library_service import (
     list_library_files,
     set_library_active,
     delete_library_file,

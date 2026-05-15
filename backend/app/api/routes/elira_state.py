@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.elira_memory_sqlite import (
+from app.infrastructure.db.elira_memory_sqlite import (
     init_db,
     list_chats,
     create_chat,
@@ -13,8 +13,8 @@ from app.services.elira_memory_sqlite import (
     get_messages,
     add_message,
 )
-from app.services.elira_settings_sqlite import get_settings, save_settings
-from app.services.ollama_runtime_service import list_ollama_models
+from app.infrastructure.db.elira_settings_sqlite import get_settings, save_settings
+from app.infrastructure.runtime.ollama_runtime_service import list_ollama_models
 
 router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 

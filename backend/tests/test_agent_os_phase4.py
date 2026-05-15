@@ -243,7 +243,7 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
             "reflection": "reflection",
         }
 
-        with patch("app.services.workflow_engine.run_legacy_multi_agent_workflow", return_value=expected):
+        with patch("app.application.workflows.engine.run_legacy_multi_agent_workflow", return_value=expected):
             result = core_agents.run_multi_agent(
                 task="legacy",
                 model_name="test-model",

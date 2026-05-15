@@ -2600,7 +2600,7 @@ def run_agent_v8(
         pass
 
     try:
-        from app.services.persona_service import observe_dialogue
+        from app.application.persona.persona_service import observe_dialogue
 
         persona_meta = observe_dialogue(
             dialog_id=run_id,
@@ -2827,7 +2827,7 @@ Reflection:
         pass
 
     try:
-        from app.services.persona_service import observe_dialogue
+        from app.application.persona.persona_service import observe_dialogue
 
         persona_meta = observe_dialogue(
             dialog_id=run_id or f"self-improve-{memory_profile}",
@@ -2871,7 +2871,7 @@ def run_multi_agent(
     project_context: str = "",
     file_context: str = "",
 ) -> Dict[str, Any]:
-    from app.services.workflow_engine import run_legacy_multi_agent_workflow
+    from app.application.workflows.engine import run_legacy_multi_agent_workflow
 
     return run_legacy_multi_agent_workflow(
         task=task,

@@ -5,7 +5,7 @@ tools.py route — эндпоинты для Python exec и анализа ко�
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.services.python_runner import execute_python
+from app.infrastructure.runtime.python_runner import execute_python
 
 router = APIRouter(prefix="/api/tools", tags=["tools-exec"])
 
@@ -83,7 +83,7 @@ def analyze_code(payload: AnalyzeRequest):
 def get_run_history(limit: int = 50):
     """История запусков агента — последние N записей."""
     try:
-        from app.services.run_history_service import RunHistoryService
+        from app.infrastructure.db.run_history_service import RunHistoryService
         svc = RunHistoryService()
         runs = svc.list_runs(limit=limit)
         return {"ok": True, "runs": list(reversed(runs)), "count": len(runs)}

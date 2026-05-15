@@ -26,7 +26,7 @@ class FetchRequest(BaseModel):
 @router.post("/search")
 async def web_search(req: SearchRequest):
     """Мульти-поиск: DDG + Bing + Google (с дедупликацией)."""
-    from app.services.web_multisearch_service import multi_search
+    from app.infrastructure.search.web_multisearch_service import multi_search
     engines = tuple(req.engines) if req.engines else ("tavily", "duckduckgo", "wikipedia")
     return multi_search(req.query, engines=engines, max_results=req.max_results)
 
@@ -34,7 +34,7 @@ async def web_search(req: SearchRequest):
 @router.post("/deep-search")
 async def web_deep_search(req: DeepSearchRequest):
     """Поиск + параллельная загрузка содержимого страниц."""
-    from app.services.web_multisearch_service import deep_search
+    from app.infrastructure.search.web_multisearch_service import deep_search
     engines = tuple(req.engines) if req.engines else ("tavily", "duckduckgo", "wikipedia")
     return deep_search(req.query, engines=engines, max_results=req.max_results, pages_to_read=req.pages_to_read)
 
@@ -42,14 +42,14 @@ async def web_deep_search(req: DeepSearchRequest):
 @router.post("/news")
 async def web_news(req: SearchRequest):
     """Поиск свежих новостей через DDG News."""
-    from app.services.web_multisearch_service import news_search
+    from app.infrastructure.search.web_multisearch_service import news_search
     return news_search(req.query, max_results=req.max_results)
 
 
 @router.post("/fetch")
 async def web_fetch(req: FetchRequest):
     """Загрузка и извлечение текста одной страницы."""
-    from app.services.web_multisearch_service import fetch_page
+    from app.infrastructure.search.web_multisearch_service import fetch_page
     return fetch_page(req.url, max_chars=req.max_chars)
 
 
