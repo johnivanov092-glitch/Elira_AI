@@ -111,7 +111,11 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 00:00:00 +05:00` | `DONE` | Fixed pre-existing test regression in `test_web_multi_intent_runtime.py`: updated mock path from `agents_service._build_single_web_subquery_context` to `infrastructure.search.web_search.build_single_web_subquery_context`. |
 | `2026-05-15 00:00:00 +05:00` | `DONE` | Verified: `python -m compileall backend/app` clean, `python -m unittest discover` 87/87 OK. |
 | `2026-05-15 00:01:00 +05:00` | `DONE` | Created `backend/app/application/chat/auto_skills.py` (~622 lines): `_run_auto_skills`, `_pending_attachments`, `_get_and_clear_attachments`, `_build_prompt`, `_maybe_auto_exec_python`, `_maybe_generate_files` with all skill constants. `agents_service.py` reduced from ~1560 to 974 lines. |
-| `2026-05-15 00:01:00 +05:00` | `NEXT` | Continue Phase 2: extract `run_agent` and `run_agent_stream` orchestration bodies into `application/chat/service.py` and `application/chat/stream_service.py`, leaving `agents_service.py` as a thin routing facade. |
+| `2026-05-15 00:01:00 +05:00` | `DONE` | Extracted `run_agent` body into `application/chat/service.py` as `execute_chat_agent`. All helpers (_tl, guards, monitoring, memory recall, history) now live in service.py; service.py also re-exports them for stream_service.py. |
+| `2026-05-15 00:01:00 +05:00` | `DONE` | Extracted `run_agent_stream` body into `application/chat/stream_service.py` as `execute_chat_agent_stream`. stream_service.py imports shared helpers from service.py. |
+| `2026-05-15 00:01:00 +05:00` | `DONE` | `agents_service.py` reduced from 974 to ~260 lines — now a pure routing facade with `run_agent → execute_chat_agent` and `run_agent_stream → execute_chat_agent_stream` delegation. |
+| `2026-05-15 00:01:00 +05:00` | `DONE` | Updated mock patch targets in `test_agent_os_phase3.py` and `test_agent_os_phase5.py` from `agents_service.*` to the actual execution modules. All 87 tests green. Commit `a20c5de` pushed to `claude/peaceful-mayer-456e15`. |
+| `2026-05-15 00:02:00 +05:00` | `NEXT` | Phase 3: split `code_agent_service.py` (if it exists) or the remaining large service files. Then evaluate Phase 4 (workflow engine split) and Phase 5 (route consolidation). |
 
 ## 8. Commit Ledger
 
