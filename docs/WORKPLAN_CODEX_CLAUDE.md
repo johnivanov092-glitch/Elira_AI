@@ -104,7 +104,13 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-04-10 13:16:26 +05:00` | `NEXT` | Start the first extraction from `agents_service.py`: move chat context-building into a dedicated application-layer module while leaving the legacy file as a facade. |
 | `2026-04-10 13:27:00 +05:00` | `DONE` | Added `backend/app/application/chat/context_builder.py` and switched `agents_service.py` to use it for frontend-project stripping and tool-driven context assembly. |
 | `2026-04-10 13:27:00 +05:00` | `DONE` | Renamed the old local `_strip_frontend_project_context` and `_collect_context` implementations to legacy-only names, keeping the monolith as a compatibility facade instead of a duplicate source of truth. |
-| `2026-04-10 13:27:00 +05:00` | `NEXT` | Extract the next smallest chat slice from `agents_service.py`: request/stream orchestration or web-search helper wiring, whichever keeps the public contract stable. |
+| `2026-04-10 13:27:00 +05:00` | `DONE` | Extract the next smallest chat slice from `agents_service.py`: request/stream orchestration or web-search helper wiring, whichever keeps the public contract stable. |
+| `2026-05-15 00:00:00 +05:00` | `DONE` | Created `backend/app/application/chat/prompt_builder.py` with stateless helpers: `compose_human_style_rules`, `wants_explicit_datetime_answer`, `build_runtime_datetime_context`, `build_prompt_with_context`. |
+| `2026-05-15 00:00:00 +05:00` | `DONE` | Removed 811 lines of dead code from `agents_service.py`: first duplicate `_compose_human_style_rules`, first duplicate `_build_prompt`, `_build_single_web_subquery_context_legacy`, `_do_web_search_legacy_frozen`, `_do_temporal_web_search_legacy_frozen`, `_do_web_search_frozen`, `_do_temporal_web_search_frozen`. File reduced from 2368 to ~1560 lines. |
+| `2026-05-15 00:00:00 +05:00` | `DONE` | Added import aliases for `prompt_builder` functions at top of `agents_service.py`; inline definitions replaced by facade imports. |
+| `2026-05-15 00:00:00 +05:00` | `DONE` | Fixed pre-existing test regression in `test_web_multi_intent_runtime.py`: updated mock path from `agents_service._build_single_web_subquery_context` to `infrastructure.search.web_search.build_single_web_subquery_context`. |
+| `2026-05-15 00:00:00 +05:00` | `DONE` | Verified: `python -m compileall backend/app` clean, `python -m unittest discover` 87/87 OK. |
+| `2026-05-15 00:00:00 +05:00` | `NEXT` | Continue Phase 2 extraction: extract `_run_auto_skills` + `_pending_attachments` + `_build_prompt` into `application/chat/auto_skills.py` to further thin the `agents_service.py` facade (~350 lines remaining in this cluster). |
 
 ## 8. Commit Ledger
 
