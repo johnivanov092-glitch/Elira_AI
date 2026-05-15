@@ -16,6 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.monitoring.agent_monitor as _am  # noqa: E402
 import app.application.workflows.engine as _wfe  # noqa: E402
 
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router  # noqa: E402
@@ -33,34 +34,34 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         tmp_root = Path(self._tmpdir.name)
 
-        self._original_monitor_db = agent_monitor.DB_PATH
+        self._original_monitor_db = _am.DB_PATH
         self._original_registry_db = agent_registry.DB_PATH
         self._original_event_bus_db = bus.DB_PATH
         self._original_workflow_db = _wfe.DB_PATH
-        self._original_limit_seed = agent_monitor._LIMIT_SEED_DONE
+        self._original_limit_seed = _am._LIMIT_SEED_DONE
         self._original_agent_seed = agent_registry._BUILTIN_AGENTS_SEEDED
         self._original_workflow_seed = _wfe._BUILTIN_WORKFLOWS_SEEDED
 
-        agent_monitor.DB_PATH = tmp_root / "agent_monitor.db"
+        _am.DB_PATH = tmp_root / "agent_monitor.db"
         agent_registry.DB_PATH = tmp_root / "agent_registry.db"
         bus.DB_PATH = tmp_root / "event_bus.db"
         _wfe.DB_PATH = tmp_root / "workflow_engine.db"
 
-        agent_monitor._LIMIT_SEED_DONE = False
+        _am._LIMIT_SEED_DONE = False
         agent_registry._BUILTIN_AGENTS_SEEDED = False
         _wfe._BUILTIN_WORKFLOWS_SEEDED = False
 
-        agent_monitor._init_db()
+        _am._init_db()
         agent_registry._init_db()
         bus._init_db()
         _wfe._init_db()
 
     def tearDown(self) -> None:
-        agent_monitor.DB_PATH = self._original_monitor_db
+        _am.DB_PATH = self._original_monitor_db
         agent_registry.DB_PATH = self._original_registry_db
         bus.DB_PATH = self._original_event_bus_db
         _wfe.DB_PATH = self._original_workflow_db
-        agent_monitor._LIMIT_SEED_DONE = self._original_limit_seed
+        _am._LIMIT_SEED_DONE = self._original_limit_seed
         agent_registry._BUILTIN_AGENTS_SEEDED = self._original_agent_seed
         _wfe._BUILTIN_WORKFLOWS_SEEDED = self._original_workflow_seed
         self._tmpdir.cleanup()
