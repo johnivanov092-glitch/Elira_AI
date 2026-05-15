@@ -1950,3 +1950,15 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   runtime seed paths now self-heal stale builtin Agent OS registry/limit rows instead of leaking unreadable historical IDs into health/smoke output.
+
+### 135. Frontend Smart Memory typed API group
+- Status: completed
+- Scope: continued Phase 6 by moving another endpoint family out of the legacy frontend API facade.
+- Finish:
+  added [frontend/src/api/smartMemory.ts](/D:/AIWork/Elira_AI/frontend/src/api/smartMemory.ts) with typed Smart Memory list/search/stats/add/delete contracts;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to import and re-export the Smart Memory API functions while preserving the existing `api.*` object shape for current JSX consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  `ide.js` is smaller and the Smart Memory endpoint group now has a build-checked TypeScript transport without changing the Memory panel contract.

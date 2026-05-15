@@ -1,6 +1,20 @@
 import { buildApiUrl, request, safeRequest } from "./client";
+import {
+  addSmartMemory,
+  deleteSmartMemory,
+  getSmartMemoryStats,
+  listSmartMemory,
+  searchSmartMemory,
+} from "./smartMemory";
 import { executeTerminal, getTerminalCwd } from "./terminal";
 
+export {
+  addSmartMemory,
+  deleteSmartMemory,
+  getSmartMemoryStats,
+  listSmartMemory,
+  searchSmartMemory,
+} from "./smartMemory";
 export { executeTerminal, getTerminalCwd } from "./terminal";
 
 function normalizeArray(payload) {
@@ -632,31 +646,6 @@ export async function diffFile(body = {}) {
 
 export async function writeFile(body = {}) {
   return request("/api/file-ops/write", { method: "POST", body });
-}
-
-export async function listSmartMemory(limit = 100) {
-  const payload = await request(withParams("/api/smart-memory/list", { limit }));
-  return payload?.items || [];
-}
-
-export async function getSmartMemoryStats() {
-  return request("/api/smart-memory/stats");
-}
-
-export async function addSmartMemory(body = {}) {
-  return request("/api/smart-memory/add", { method: "POST", body });
-}
-
-export async function deleteSmartMemory(id) {
-  return request(`/api/smart-memory/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-export async function searchSmartMemory(query, limit = 20) {
-  const payload = await request("/api/smart-memory/search", {
-    method: "POST",
-    body: { query, limit },
-  });
-  return payload?.items || [];
 }
 
 export const api = {

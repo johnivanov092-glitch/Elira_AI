@@ -574,6 +574,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-13 17:44:00 +05:00` | `DONE` | Closed Phase 7 Tauri cleanup by removing unused tracked Tauri artifacts: duplicate root `src-tauri/main.rs`, stale `Cargo.toml.snippet.txt`, and the non-Python launch note under `src-tauri/src`. Verification passed with `cargo check`, frontend typecheck, and `git diff --check`. |
 | `2026-05-13 18:02:00 +05:00` | `DONE` | Closed a Phase 8 Agent OS data hygiene gap: builtin agent seeding now updates canonical builtins and removes unknown stale `builtin-*` registry rows; monitoring limit seeding removes corresponding stale builtin limits. Verification passed with Agent OS phase tests (`31 tests OK`), smoke contract check, compileall, and `git diff --check`. |
 | `2026-05-13 18:11:00 +05:00` | `DONE` | Recorded a Phase 8 verification snapshot after the data hygiene fix: full backend unittest discovery (`2229 tests OK`), smoke contract check (`207 OpenAPI paths`), frontend typecheck/build, Tauri `cargo check`, and `git diff --check` passed. Remaining dirty tree items are pre-existing runtime DB/docs/worktree artifacts and are not staged. |
+| `2026-05-15 21:59:00 +05:00` | `DONE` | Continued Phase 6 by moving the Smart Memory endpoint group into `frontend/src/api/smartMemory.ts` and keeping legacy `api.*` compatibility through `api/ide.js`. Verification passed with frontend typecheck and frontend build. |
 
 ## 8. Commit Ledger
 
