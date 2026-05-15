@@ -2087,3 +2087,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   frontend API transport now has typed endpoint modules plus a TypeScript compatibility facade without changing JSX consumers.
+
+### 146. Frontend MemoryPanel converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting a small JSX consumer of the typed Smart Memory API.
+- Finish:
+  renamed `frontend/src/components/MemoryPanel.jsx` to [frontend/src/components/MemoryPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/MemoryPanel.tsx);
+  added local Smart Memory item/stat typing, category typing, typed CSS style objects, and unknown-safe error formatting while preserving the existing component UI and extensionless import from `EliraChatShell`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  the memory side panel is now a TypeScript consumer of the typed frontend API without touching the large chat shell.

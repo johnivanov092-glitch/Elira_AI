@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { api } from "../api/ide";
+import type { SmartMemoryId, SmartMemoryItem, SmartMemoryStats } from "../api/smartMemory";
 
 const CATEGORIES = [
   { id: "all", label: "Все", icon: "🧠" },
@@ -7,15 +8,25 @@ const CATEGORIES = [
   { id: "preference", label: "Предпочтения", icon: "❤️" },
   { id: "instruction", label: "Инструкции", icon: "📝" },
   { id: "context", label: "Контекст", icon: "🧭" },
-];
+] as const;
+
+type CategoryId = (typeof CATEGORIES)[number]["id"];
+type MemoryStats = SmartMemoryStats & {
+  by_category?: Record<string, number | string>;
+  total?: number;
+};
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
 
 export default function MemoryPanel() {
-  const [memories, setMemories] = useState([]);
-  const [stats, setStats] = useState(null);
+  const [memories, setMemories] = useState<SmartMemoryItem[]>([]);
+  const [stats, setStats] = useState<MemoryStats | null>(null);
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("all");
+  const [category, setCategory] = useState<CategoryId>("all");
   const [newText, setNewText] = useState("");
-  const [newCat, setNewCat] = useState("fact");
+  const [newCat, setNewCat] = useState<CategoryId>("fact");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -29,8 +40,8 @@ export default function MemoryPanel() {
     setError("");
     try {
       setMemories(await api.listSmartMemory(100));
-    } catch (e) {
-      setError(e.message || "Не удалось загрузить память");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Не удалось загрузить память"));
     } finally {
       setLoading(false);
     }
@@ -39,9 +50,9 @@ export default function MemoryPanel() {
   async function loadStats() {
     try {
       const data = await api.getSmartMemoryStats();
-      setStats(data);
-    } catch (e) {
-      setError(e.message || "Не удалось загрузить статистику");
+      setStats(data as MemoryStats);
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Не удалось загрузить статистику"));
     }
   }
 
@@ -54,19 +65,20 @@ export default function MemoryPanel() {
       setNewText("");
       await loadMemories();
       await loadStats();
-    } catch (e) {
-      setError(e.message || "Не удалось добавить запись");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Не удалось добавить запись"));
     }
   }
 
-  async function handleDelete(id) {
+  async function handleDelete(id: SmartMemoryId | undefined) {
+    if (id === undefined) return;
     setError("");
     try {
       await api.deleteSmartMemory(id);
       setMemories((prev) => prev.filter((item) => item.id !== id));
       await loadStats();
-    } catch (e) {
-      setError(e.message || "Не удалось удалить запись");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Не удалось удалить запись"));
     }
   }
 
@@ -79,8 +91,8 @@ export default function MemoryPanel() {
     setError("");
     try {
       setMemories(await api.searchSmartMemory(search, 20));
-    } catch (e) {
-      setError(e.message || "Не удалось выполнить поиск");
+    } catch (e: unknown) {
+      setError(errorMessage(e, "Не удалось выполнить поиск"));
     } finally {
       setLoading(false);
     }
@@ -91,7 +103,7 @@ export default function MemoryPanel() {
     return memories.filter((item) => item.category === category);
   }, [memories, category]);
 
-  const catIcon = (cat) => CATEGORIES.find((entry) => entry.id === cat)?.icon || "🧠";
+  const catIcon = (cat?: string | null) => CATEGORIES.find((entry) => entry.id === cat)?.icon || "🧠";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 20px", overflow: "auto", flex: 1 }}>
@@ -135,7 +147,7 @@ export default function MemoryPanel() {
             style={inputStyle}
           />
         </div>
-        <select value={newCat} onChange={(e) => setNewCat(e.target.value)} style={{ ...inputStyle, width: 140 }}>
+        <select value={newCat} onChange={(e) => setNewCat(e.target.value as CategoryId)} style={{ ...inputStyle, width: 140 }}>
           <option value="fact">Факт</option>
           <option value="preference">Предпочтение</option>
           <option value="instruction">Инструкция</option>
@@ -192,7 +204,7 @@ export default function MemoryPanel() {
                     <span>{memory.source}</span>
                     <span>•</span>
                     <span>Важность: {memory.importance}/10</span>
-                    {memory.access_count > 0 && (
+                    {typeof memory.access_count === "number" && memory.access_count > 0 && (
                       <>
                         <span>•</span>
                         <span>Использовано: {memory.access_count}x</span>
@@ -216,7 +228,7 @@ export default function MemoryPanel() {
   );
 }
 
-const statChip = {
+const statChip: CSSProperties = {
   padding: "4px 10px",
   borderRadius: 99,
   fontSize: 10,
@@ -225,7 +237,7 @@ const statChip = {
   color: "var(--text-secondary)",
 };
 
-const inputStyle = {
+const inputStyle: CSSProperties = {
   padding: "6px 10px",
   borderRadius: 8,
   fontSize: 12,
@@ -236,7 +248,7 @@ const inputStyle = {
   width: "100%",
 };
 
-const btnSmall = {
+const btnSmall: CSSProperties = {
   padding: "6px 10px",
   borderRadius: 8,
   fontSize: 11,
@@ -247,7 +259,7 @@ const btnSmall = {
   whiteSpace: "nowrap",
 };
 
-const memCard = {
+const memCard: CSSProperties = {
   padding: "8px 10px",
   borderRadius: 8,
   border: "1px solid var(--border)",
