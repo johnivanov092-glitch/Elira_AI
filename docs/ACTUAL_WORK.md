@@ -2063,3 +2063,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   system dashboard and Agent OS consumers keep the same facade while their transport and aggregation helpers are now covered by TypeScript.
+
+### 144. Frontend chat API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving chat session, chat message, agent execution, model list, settings, and local API asset helpers out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/chat.ts](/D:/AIWork/Elira_AI/frontend/src/api/chat.ts) for typed Elira chat CRUD/message calls, `/api/chat/send`, `/api/chat/stream`, Ollama model list, settings calls, and local API asset URL detection;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the chat endpoint group while preserving existing `api.*` consumers and direct `executeStream` imports.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  chat shell consumers keep the same facade while the remaining non-facade transport logic has moved into TypeScript.
