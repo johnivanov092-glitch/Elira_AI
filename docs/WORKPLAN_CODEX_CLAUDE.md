@@ -115,7 +115,13 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 00:01:00 +05:00` | `DONE` | Extracted `run_agent_stream` body into `application/chat/stream_service.py` as `execute_chat_agent_stream`. stream_service.py imports shared helpers from service.py. |
 | `2026-05-15 00:01:00 +05:00` | `DONE` | `agents_service.py` reduced from 974 to ~260 lines — now a pure routing facade with `run_agent → execute_chat_agent` and `run_agent_stream → execute_chat_agent_stream` delegation. |
 | `2026-05-15 00:01:00 +05:00` | `DONE` | Updated mock patch targets in `test_agent_os_phase3.py` and `test_agent_os_phase5.py` from `agents_service.*` to the actual execution modules. All 87 tests green. Commit `a20c5de` pushed to `claude/peaceful-mayer-456e15`. |
-| `2026-05-15 00:02:00 +05:00` | `NEXT` | Phase 3: split `code_agent_service.py` (if it exists) or the remaining large service files. Then evaluate Phase 4 (workflow engine split) and Phase 5 (route consolidation). |
+| `2026-05-15 00:02:00 +05:00` | `DONE` | Extracted `workflow_engine` into `application/workflows/engine.py`. `services/workflow_engine.py` is now a thin facade. Phase4/5 test mixins updated to mutate `_wfe.DB_PATH` on the application module. Commit `132b31e`. |
+| `2026-05-16 00:00:00 +05:00` | `DONE` | Extracted `smart_memory` into `application/memory/smart_memory.py`. `services/smart_memory.py` is now a thin facade. No test updates needed (no mutable state). Commit `188cfa5`. |
+| `2026-05-16 00:01:00 +05:00` | `DONE` | Extracted `agent_monitor` into `application/monitoring/agent_monitor.py`. `services/agent_monitor.py` is a thin facade. Phase5 test mixin updated to mutate `_am.DB_PATH` and `_am._LIMIT_SEED_DONE`. Commit `47316f7`. |
+| `2026-05-16 00:02:00 +05:00` | `DONE` | Extracted `persona_service` into `application/persona/persona_service.py`. `services/persona_service.py` is a thin facade. No test updates needed. Commit `38658dc`. |
+| `2026-05-16 00:03:00 +05:00` | `DONE` | Extracted `event_bus` into `application/event_bus.py`. `services/event_bus.py` is a thin facade. Phase3/4/5 test mixins updated to mutate `_eb.DB_PATH`. Commit `ac657b2`. |
+| `2026-05-16 00:04:00 +05:00` | `DONE` | Extracted `agent_registry` into `application/agents/agent_registry.py`. `services/agent_registry.py` is a thin facade. Phase5 test mixin updated to mutate `_ar.DB_PATH` and `_ar._BUILTIN_AGENTS_SEEDED`. Commit `854a133`. |
+| `2026-05-16 00:05:00 +05:00` | `NEXT` | Extract remaining large services: `web_query_planner.py` (467 lines) → `application/planning/`, `planner_v2_service.py` (331 lines) → `application/planning/`, `tool_registry.py` (468 lines) → `application/tools/`, `autopipeline_service.py` (365 lines) → `application/autopipeline/`. |
 
 ## 8. Commit Ledger
 
