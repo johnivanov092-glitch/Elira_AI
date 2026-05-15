@@ -11,6 +11,18 @@ import {
   getGitStatus,
 } from "./git";
 import {
+  closeAdvancedProject,
+  getAdvancedProjectInfo,
+  getAdvancedProjectTree,
+  getProjectBrainStatus,
+  getProjectFile,
+  getProjectSnapshot,
+  openAdvancedProject,
+  readAdvancedProjectFile,
+  runAdvancedMultiAgent,
+  searchAdvancedProject,
+} from "./project";
+import {
   addSmartMemory,
   deleteSmartMemory,
   getSmartMemoryStats,
@@ -35,6 +47,18 @@ export {
   getGitLog,
   getGitStatus,
 } from "./git";
+export {
+  closeAdvancedProject,
+  getAdvancedProjectInfo,
+  getAdvancedProjectTree,
+  getProjectBrainStatus,
+  getProjectFile,
+  getProjectSnapshot,
+  openAdvancedProject,
+  readAdvancedProjectFile,
+  runAdvancedMultiAgent,
+  searchAdvancedProject,
+} from "./project";
 export {
   addSmartMemory,
   deleteSmartMemory,
@@ -325,19 +349,6 @@ export async function updateSettings(body = {}) {
   return request("/api/elira/settings", { method: "PUT", body });
 }
 
-export async function getProjectSnapshot() {
-  const payload = await request("/api/project-brain/snapshot");
-  return { ...payload, files: Array.isArray(payload?.files) ? payload.files : [] };
-}
-
-export async function getProjectFile(path) {
-  return request(`/api/project-brain/file?path=${encodeURIComponent(path)}`);
-}
-
-export async function getProjectBrainStatus() {
-  return safeRequest("/api/project-brain/status", {}, { status: "unknown" });
-}
-
 export async function getPersonaStatus() {
   return safeRequest("/api/persona/status", {}, { ok: false, active_version: 1, quarantine_candidates: 0, latest_traits: [], model_consistency: [] });
 }
@@ -602,39 +613,6 @@ export async function reloadPlugins() {
 export async function setPluginEnabled(name, enabled) {
   const action = enabled ? "enable" : "disable";
   return request(`/api/extra/plugins/${action}/${encodeURIComponent(name)}`, { method: "POST" });
-}
-
-export async function getAdvancedProjectInfo() {
-  return request("/api/advanced/project/info");
-}
-
-export async function openAdvancedProject(path) {
-  return request("/api/advanced/project/open", { method: "POST", body: { path } });
-}
-
-export async function getAdvancedProjectTree({ maxDepth = 3, maxItems = 300 } = {}) {
-  return request(withParams("/api/advanced/project/tree", {
-    max_depth: maxDepth,
-    max_items: maxItems,
-  }));
-}
-
-export async function readAdvancedProjectFile(path, maxChars) {
-  const body = { path };
-  if (maxChars) body.max_chars = maxChars;
-  return request("/api/advanced/project/read", { method: "POST", body });
-}
-
-export async function searchAdvancedProject(query) {
-  return request("/api/advanced/project/search", { method: "POST", body: { query } });
-}
-
-export async function closeAdvancedProject() {
-  return request("/api/advanced/project/close");
-}
-
-export async function runAdvancedMultiAgent(body = {}) {
-  return request("/api/advanced/multi-agent", { method: "POST", body });
 }
 
 export const api = {

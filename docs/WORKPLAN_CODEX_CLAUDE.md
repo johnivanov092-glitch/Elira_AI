@@ -577,6 +577,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 21:59:00 +05:00` | `DONE` | Continued Phase 6 by moving the Smart Memory endpoint group into `frontend/src/api/smartMemory.ts` and keeping legacy `api.*` compatibility through `api/ide.js`. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 22:07:00 +05:00` | `DONE` | Reconciled the remaining Claude coverage tail by selectively importing batches `#122`-`#125` from `origin/claude/extract-skills-extra` as four test files, with one current-path adaptation for RAG cosine similarity. Verification passed with targeted unittest (`230 tests OK`). Large stale Claude branches were not merged wholesale because their diffs would revert newer current-branch architecture and frontend TypeScript work. |
 | `2026-05-15 22:18:00 +05:00` | `DONE` | Continued Phase 6 by moving Git, tools, and file operations endpoint groups into typed frontend API modules while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
+| `2026-05-15 22:52:00 +05:00` | `DONE` | Continued Phase 6 by moving Project Brain and advanced project endpoint groups into `frontend/src/api/project.ts` while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
 
 ## 8. Commit Ledger
 

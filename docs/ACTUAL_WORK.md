@@ -1989,3 +1989,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   IDE workspace and artifact panel endpoints now have build-checked TypeScript transports without changing JSX components in this slice.
+
+### 138. Frontend project API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving Project Brain and advanced project endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/project.ts](/D:/AIWork/Elira_AI/frontend/src/api/project.ts) for typed Project Brain snapshot/file/status calls, advanced project open/tree/read/search/close calls, and multi-agent project execution;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the project API functions while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  `ProjectPanel`, `IdeWorkspaceShell`, chat project context, and dashboard project status keep the same API surface while their transport now has a TypeScript module behind the facade.
