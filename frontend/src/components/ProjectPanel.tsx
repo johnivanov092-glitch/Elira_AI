@@ -1,14 +1,68 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api/ide";
+import type { ProjectResponse } from "../api/project";
+
+type ProjectInfo = ProjectResponse & {
+  name?: string;
+  ok?: boolean;
+  path?: string;
+};
+
+type ProjectTreeItem = {
+  ext?: string;
+  name: string;
+  path: string;
+  type?: string;
+  [key: string]: unknown;
+};
+
+type ProjectSearchResult = {
+  line?: number | string;
+  path: string;
+  text?: string;
+  [key: string]: unknown;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown, fallback = ""): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function normalizeTreeItems(items: unknown): ProjectTreeItem[] {
+  if (!Array.isArray(items)) return [];
+  return items.filter(isRecord).map((item) => {
+    const path = String(item.path ?? "");
+    return {
+      ...item,
+      ext: typeof item.ext === "string" ? item.ext : "",
+      name: String(item.name ?? path),
+      path,
+      type: typeof item.type === "string" ? item.type : "",
+    };
+  });
+}
+
+function normalizeSearchResults(items: unknown): ProjectSearchResult[] {
+  if (!Array.isArray(items)) return [];
+  return items.filter(isRecord).map((item) => ({
+    ...item,
+    line: typeof item.line === "number" || typeof item.line === "string" ? item.line : "",
+    path: String(item.path ?? ""),
+    text: typeof item.text === "string" ? item.text : String(item.text ?? ""),
+  }));
+}
 
 export default function ProjectPanel() {
-  const [project, setProject] = useState(null);
-  const [tree, setTree] = useState([]);
+  const [project, setProject] = useState<ProjectInfo | null>(null);
+  const [tree, setTree] = useState<ProjectTreeItem[]>([]);
   const [pathInput, setPathInput] = useState("");
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState("");
   const [search, setSearch] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
+  const [searchResults, setSearchResults] = useState<ProjectSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -16,11 +70,11 @@ export default function ProjectPanel() {
     api.getAdvancedProjectInfo()
       .then((data) => {
         if (!data?.ok) return;
-        setProject(data);
+        setProject(data as ProjectInfo);
         return loadTree();
       })
-      .catch((e) => {
-        setError(`Не удалось загрузить проект: ${e.message || ""}`);
+      .catch((e: unknown) => {
+        setError(`Не удалось загрузить проект: ${errorMessage(e)}`);
       });
   }, []);
 
@@ -32,11 +86,11 @@ export default function ProjectPanel() {
     try {
       const data = await api.openAdvancedProject(path);
       if (data?.ok) {
-        setProject(data);
+        setProject(data as ProjectInfo);
         await loadTree();
       }
-    } catch (e) {
-      setError(`Не удалось открыть проект: ${e.message || ""}`);
+    } catch (e: unknown) {
+      setError(`Не удалось открыть проект: ${errorMessage(e)}`);
     } finally {
       setLoading(false);
     }
@@ -45,24 +99,24 @@ export default function ProjectPanel() {
   async function loadTree() {
     try {
       const data = await api.getAdvancedProjectTree({ maxDepth: 3, maxItems: 300 });
-      if (data?.ok) setTree(data.items || []);
-    } catch (e) {
-      setError(`Не удалось загрузить дерево файлов: ${e.message || ""}`);
+      if (data?.ok) setTree(normalizeTreeItems(data.items));
+    } catch (e: unknown) {
+      setError(`Не удалось загрузить дерево файлов: ${errorMessage(e)}`);
     }
   }
 
-  async function readFile(path) {
+  async function readFile(path: string) {
     setSelectedFile(path);
     setError("");
     try {
       const data = await api.readAdvancedProjectFile(path);
       if (data?.ok) {
-        setFileContent(data.content || "");
+        setFileContent(typeof data.content === "string" ? data.content : String(data.content ?? ""));
       } else {
-        setFileContent(`Ошибка: ${data?.error || "неизвестно"}`);
+        setFileContent(`Ошибка: ${typeof data?.error === "string" ? data.error : "неизвестно"}`);
       }
-    } catch (e) {
-      const message = e.message || "Ошибка чтения";
+    } catch (e: unknown) {
+      const message = errorMessage(e, "Ошибка чтения");
       setError(message);
       setFileContent(`Ошибка: ${message}`);
     }
@@ -73,9 +127,9 @@ export default function ProjectPanel() {
     setError("");
     try {
       const data = await api.searchAdvancedProject(search);
-      setSearchResults(data.items || []);
-    } catch (e) {
-      setError(`Не удалось выполнить поиск: ${e.message || ""}`);
+      setSearchResults(normalizeSearchResults(data.items));
+    } catch (e: unknown) {
+      setError(`Не удалось выполнить поиск: ${errorMessage(e)}`);
     }
   }
 
@@ -88,14 +142,14 @@ export default function ProjectPanel() {
       setFileContent("");
       setSearchResults([]);
       setError("");
-    } catch (e) {
-      setError(`Не удалось закрыть проект: ${e.message || ""}`);
+    } catch (e: unknown) {
+      setError(`Не удалось закрыть проект: ${errorMessage(e)}`);
     }
   }
 
   const dirs = tree.filter((item) => item.type === "dir");
   const files = tree.filter((item) => item.type === "file");
-  const iconFor = (ext) => {
+  const iconFor = (ext = "") => {
     if ([".py", ".js", ".jsx", ".ts", ".tsx"].includes(ext)) return "●";
     if ([".css", ".html", ".yml", ".json"].includes(ext)) return "◆";
     if ([".md", ".txt"].includes(ext)) return "📄";
@@ -309,7 +363,7 @@ export default function ProjectPanel() {
   );
 }
 
-const treeItem = (active) => ({
+const treeItem = (active: boolean): CSSProperties => ({
   display: "flex",
   alignItems: "center",
   gap: 6,

@@ -587,6 +587,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 23:20:00 +05:00` | `DONE` | Finished the frontend API transport split by renaming the compatibility facade from `frontend/src/api/ide.js` to `frontend/src/api/ide.ts` after endpoint implementations moved into typed modules. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 23:24:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/components/MemoryPanel.jsx` to `frontend/src/components/MemoryPanel.tsx` with Smart Memory item/stat/category typing and unknown-safe error handling. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 23:26:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/components/MarkdownRenderer.jsx` to `frontend/src/components/MarkdownRenderer.tsx` with explicit parser/render/download typing. Verification passed with frontend typecheck and frontend build. |
+| `2026-05-15 23:29:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/components/ProjectPanel.jsx` to `frontend/src/components/ProjectPanel.tsx` with typed project info/tree/search boundaries and unknown-safe error handling. Verification passed with frontend typecheck and frontend build. |
 
 ## 8. Commit Ledger
 
