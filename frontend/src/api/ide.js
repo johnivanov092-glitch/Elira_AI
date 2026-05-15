@@ -23,6 +23,11 @@ import {
   searchAdvancedProject,
 } from "./project";
 import {
+  deleteLibraryFile,
+  listLibraryFiles,
+  uploadLibraryFile,
+} from "./library";
+import {
   addSmartMemory,
   deleteSmartMemory,
   getSmartMemoryStats,
@@ -59,6 +64,11 @@ export {
   runAdvancedMultiAgent,
   searchAdvancedProject,
 } from "./project";
+export {
+  deleteLibraryFile,
+  listLibraryFiles,
+  uploadLibraryFile,
+} from "./library";
 export {
   addSmartMemory,
   deleteSmartMemory,
@@ -477,21 +487,6 @@ export async function rollbackPatch(body = {}) {
 
 export async function verifyPatch(body = {}) {
   return request("/api/elira/patch/verify", { method: "POST", body });
-}
-
-export async function listLibraryFiles() {
-  return safeRequest("/api/lib/list", {}, null);
-}
-
-export async function uploadLibraryFile(file, { useInContext = false } = {}) {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("use_in_context", String(useInContext));
-  return request("/api/lib/add", { method: "POST", body: formData });
-}
-
-export async function deleteLibraryFile(id) {
-  return request(`/api/lib/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function listTasks(status) {

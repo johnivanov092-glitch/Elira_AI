@@ -2001,3 +2001,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   `ProjectPanel`, `IdeWorkspaceShell`, chat project context, and dashboard project status keep the same API surface while their transport now has a TypeScript module behind the facade.
+
+### 139. Frontend library API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving library list/upload/delete endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/library.ts](/D:/AIWork/Elira_AI/frontend/src/api/library.ts) for typed library file list, upload, and delete calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the library API functions while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  library upload/delete consumers keep the same facade while the transport is now covered by TypeScript.
