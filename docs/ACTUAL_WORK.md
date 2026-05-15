@@ -2013,3 +2013,16 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   library upload/delete consumers keep the same facade while the transport is now covered by TypeScript.
+
+### 140. Frontend tasks and pipelines API typed groups
+- Status: completed
+- Scope: continued Phase 6 by moving task planning and pipeline endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/tasks.ts](/D:/AIWork/Elira_AI/frontend/src/api/tasks.ts) for typed task list/stats/overview/create/update/delete calls;
+  added [frontend/src/api/pipelines.ts](/D:/AIWork/Elira_AI/frontend/src/api/pipelines.ts) for typed pipeline list/create/run/update/delete calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export both endpoint groups while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  task and pipeline dashboard controls keep the same facade while their transport is now covered by TypeScript modules.
