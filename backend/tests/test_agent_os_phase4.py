@@ -16,6 +16,8 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.workflows.engine as _wfe  # noqa: E402
+
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
 from app.services import autopipeline_service  # noqa: E402
 from app.services import event_bus as bus  # noqa: E402
@@ -26,19 +28,19 @@ class WorkflowDbMixin(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._original_workflow_db = workflow_engine.DB_PATH
+        self._original_workflow_db = _wfe.DB_PATH
         self._original_event_bus_db = bus.DB_PATH
-        self._original_seeded = workflow_engine._BUILTIN_WORKFLOWS_SEEDED
-        workflow_engine.DB_PATH = Path(self._tmpdir.name) / "workflow_engine.db"
+        self._original_seeded = _wfe._BUILTIN_WORKFLOWS_SEEDED
+        _wfe.DB_PATH = Path(self._tmpdir.name) / "workflow_engine.db"
         bus.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = False
-        workflow_engine._init_db()
+        _wfe._BUILTIN_WORKFLOWS_SEEDED = False
+        _wfe._init_db()
         bus._init_db()
 
     def tearDown(self) -> None:
-        workflow_engine.DB_PATH = self._original_workflow_db
+        _wfe.DB_PATH = self._original_workflow_db
         bus.DB_PATH = self._original_event_bus_db
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = self._original_seeded
+        _wfe._BUILTIN_WORKFLOWS_SEEDED = self._original_seeded
         self._tmpdir.cleanup()
         super().tearDown()
 
@@ -218,9 +220,9 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
         }
         fake_template = {"graph": {"steps": [{"id": "plan", "save_as": "plan", "config": {"label": "Plan"}}]}}
 
-        with patch("app.services.workflow_engine.seed_builtin_workflows", return_value=0), \
-             patch("app.services.workflow_engine.start_workflow_run", return_value=fake_run), \
-             patch("app.services.workflow_engine.get_workflow_template", return_value=fake_template):
+        with patch("app.application.workflows.engine.seed_builtin_workflows", return_value=0), \
+             patch("app.application.workflows.engine.start_workflow_run", return_value=fake_run), \
+             patch("app.application.workflows.engine.get_workflow_template", return_value=fake_template):
             result = multi_agent_chain.run_multi_agent("hello", use_reflection=True, use_orchestrator=True)
 
         self.assertTrue(result["ok"])
