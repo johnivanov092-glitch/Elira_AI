@@ -110,7 +110,8 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 00:00:00 +05:00` | `DONE` | Added import aliases for `prompt_builder` functions at top of `agents_service.py`; inline definitions replaced by facade imports. |
 | `2026-05-15 00:00:00 +05:00` | `DONE` | Fixed pre-existing test regression in `test_web_multi_intent_runtime.py`: updated mock path from `agents_service._build_single_web_subquery_context` to `infrastructure.search.web_search.build_single_web_subquery_context`. |
 | `2026-05-15 00:00:00 +05:00` | `DONE` | Verified: `python -m compileall backend/app` clean, `python -m unittest discover` 87/87 OK. |
-| `2026-05-15 00:00:00 +05:00` | `NEXT` | Continue Phase 2 extraction: extract `_run_auto_skills` + `_pending_attachments` + `_build_prompt` into `application/chat/auto_skills.py` to further thin the `agents_service.py` facade (~350 lines remaining in this cluster). |
+| `2026-05-15 00:01:00 +05:00` | `DONE` | Created `backend/app/application/chat/auto_skills.py` (~622 lines): `_run_auto_skills`, `_pending_attachments`, `_get_and_clear_attachments`, `_build_prompt`, `_maybe_auto_exec_python`, `_maybe_generate_files` with all skill constants. `agents_service.py` reduced from ~1560 to 974 lines. |
+| `2026-05-15 00:01:00 +05:00` | `NEXT` | Continue Phase 2: extract `run_agent` and `run_agent_stream` orchestration bodies into `application/chat/service.py` and `application/chat/stream_service.py`, leaving `agents_service.py` as a thin routing facade. |
 
 ## 8. Commit Ledger
 
