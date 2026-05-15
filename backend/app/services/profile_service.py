@@ -1,13 +1,6 @@
-# DEPRECATED: логика перенесена в profiles_service.py и memory_service.py
-from ..core.memory import list_mem_profiles, create_mem_profile, delete_mem_profile
-
-def get_profiles():
-    return list_mem_profiles()
-
-def create_profile(name: str, emoji: str = "👤"):
-    ok = create_mem_profile(name=name, emoji=emoji)
-    return {"ok": ok, "name": name, "emoji": emoji}
-
-def remove_profile(name: str):
-    delete_mem_profile(name)
-    return {"ok": True, "name": name}
+"""Thin facade — all profile service logic lives in application/users/profile_service.py."""
+from app.application.users.profile_service import (  # noqa: F401
+    create_profile,
+    get_profiles,
+    remove_profile,
+)

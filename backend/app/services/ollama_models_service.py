@@ -1,20 +1,5 @@
-# DEPRECATED: дублирует models_service.py. Используй models_service.get_models()
-
-import httpx
-
-OLLAMA = "http://localhost:11434"
-
-async def list_models():
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{OLLAMA}/api/tags")
-        data = r.json()
-
-        models = []
-
-        for m in data.get("models", []):
-            models.append({
-                "name": m["name"],
-                "type": "local"
-            })
-
-        return models
+"""Thin facade — all ollama models service logic lives in infrastructure/models/ollama_models_service.py."""
+from app.infrastructure.models.ollama_models_service import (  # noqa: F401
+    OLLAMA,
+    list_models,
+)
