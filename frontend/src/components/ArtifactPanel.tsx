@@ -1,13 +1,94 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { api } from "../api/ide";
 
-function extractCodeBlocks(messages) {
-  const blocks = [];
+type ArtifactMessage = {
+  content?: unknown;
+  id?: string | number;
+  role?: string;
+};
+
+type CodeBlockArtifact = {
+  code: string;
+  id: string;
+  lang: string;
+  name: string;
+};
+
+type RunOutput = {
+  error?: unknown;
+  locals?: Record<string, unknown>;
+  ok?: boolean;
+  stderr?: string;
+  stdout?: string;
+  traceback?: unknown;
+};
+
+type AnalysisEntry = {
+  line?: ReactNode;
+  name?: ReactNode;
+};
+
+type AnalysisImport = {
+  text?: ReactNode;
+};
+
+type CodeAnalysis = {
+  blank_lines?: ReactNode;
+  classes?: AnalysisEntry[];
+  code_lines?: ReactNode;
+  comment_lines?: ReactNode;
+  error?: ReactNode;
+  filename?: ReactNode;
+  functions?: AnalysisEntry[];
+  imports?: AnalysisImport[];
+  language?: ReactNode;
+  [key: string]: unknown;
+};
+
+type SaveResult = {
+  diff?: unknown;
+  error?: unknown;
+  ok?: boolean;
+  path?: unknown;
+  size?: unknown;
+  stats?: Record<string, unknown>;
+};
+
+type ArtifactPanelProps = {
+  messages?: ArtifactMessage[];
+  onClose: () => void;
+  streamingCode?: string;
+};
+
+type TabId = "analysis" | "code" | "output" | "save";
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: "code", label: "Код" },
+  { id: "output", label: "Вывод" },
+  { id: "analysis", label: "Анализ" },
+  { id: "save", label: "Сохранить" },
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error || "");
+}
+
+function displayValue(value: unknown, fallback = "—"): string {
+  if (value === undefined || value === null || value === "") return fallback;
+  return String(value);
+}
+
+function extractCodeBlocks(messages: ArtifactMessage[] = []): CodeBlockArtifact[] {
+  const blocks: CodeBlockArtifact[] = [];
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
-    const content = msg.content || "";
+    const content = typeof msg.content === "string" ? msg.content : String(msg.content || "");
     const regex = /```(\w*)\n([\s\S]*?)```/g;
-    let match;
+    let match: RegExpExecArray | null;
     while ((match = regex.exec(content)) !== null) {
       const lang = match[1] || "text";
       const code = match[2].trim();
@@ -41,26 +122,26 @@ function extractCodeBlocks(messages) {
   return blocks;
 }
 
-function isRunnable(lang) {
+function isRunnable(lang?: string) {
   return ["python", "py"].includes((lang || "").toLowerCase());
 }
 
-export default function ArtifactPanel({ messages, streamingCode, onClose }) {
+export default function ArtifactPanel({ messages = [], streamingCode = "", onClose }: ArtifactPanelProps) {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [running, setRunning] = useState(false);
-  const [output, setOutput] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
+  const [output, setOutput] = useState<RunOutput | null>(null);
+  const [analysis, setAnalysis] = useState<CodeAnalysis | null>(null);
   const [copied, setCopied] = useState(false);
-  const [tab, setTab] = useState("code");
+  const [tab, setTab] = useState<TabId>("code");
   const [saving, setSaving] = useState(false);
   const [savePath, setSavePath] = useState("");
-  const [saveResult, setSaveResult] = useState(null);
+  const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
 
   const blocks = useMemo(() => {
     const fromMessages = extractCodeBlocks(messages);
     if (streamingCode) {
       const regex = /```(\w*)\n([\s\S]*?)```/g;
-      let match;
+      let match: RegExpExecArray | null;
       while ((match = regex.exec(streamingCode)) !== null) {
         const lang = match[1] || "text";
         const code = match[2].trim();
@@ -111,9 +192,9 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
     setTab("output");
     try {
       const data = await api.runPythonCode(current.code);
-      setOutput(data);
-    } catch (e) {
-      setOutput({ ok: false, error: e.message, stdout: "", stderr: "" });
+      setOutput(data as RunOutput);
+    } catch (e: unknown) {
+      setOutput({ ok: false, error: errorMessage(e), stdout: "", stderr: "" });
     } finally {
       setRunning(false);
     }
@@ -129,9 +210,9 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
         language: current.lang,
         filename: current.name,
       });
-      setAnalysis(data.analysis || data);
-    } catch (e) {
-      setAnalysis({ error: e.message });
+      setAnalysis((isRecord(data.analysis) ? data.analysis : data) as CodeAnalysis);
+    } catch (e: unknown) {
+      setAnalysis({ error: errorMessage(e) });
     }
   }
 
@@ -147,9 +228,13 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
         content: current.code,
         create_dirs: true,
       });
-      setSaveResult({ ...writeData, diff: diffData.diff, stats: diffData.stats });
-    } catch (e) {
-      setSaveResult({ ok: false, error: e.message });
+      setSaveResult({
+        ...writeData,
+        diff: diffData.diff,
+        stats: isRecord(diffData.stats) ? diffData.stats : {},
+      });
+    } catch (e: unknown) {
+      setSaveResult({ ok: false, error: errorMessage(e) });
     } finally {
       setSaving(false);
     }
@@ -247,12 +332,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
       )}
 
       <div style={{ display: "flex", gap: 2, padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>
-        {[
-          { id: "code", label: "Код" },
-          { id: "output", label: "Вывод" },
-          { id: "analysis", label: "Анализ" },
-          { id: "save", label: "Сохранить" },
-        ].map((item) => (
+        {TABS.map((item) => (
           <button
             key={item.id}
             onClick={() => setTab(item.id)}
@@ -314,7 +394,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
                     <div style={sectionTitle}>Переменные</div>
                     {Object.entries(output.locals).map(([k, v]) => (
                       <div key={k} style={{ fontFamily: "var(--font-mono)", fontSize: 11, marginBottom: 2 }}>
-                        <span style={{ color: "var(--accent)" }}>{k}</span> = {v}
+                        <span style={{ color: "var(--accent)" }}>{k}</span> = {displayValue(v)}
                       </div>
                     ))}
                   </div>
@@ -326,7 +406,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
             ) : (
               <>
                 <div style={{ color: "#ff6b6b", fontSize: 12, marginBottom: 6 }}>Ошибка выполнения</div>
-                <pre style={{ ...outputPre, color: "#ff6b6b" }}>{output.error || output.traceback || "Unknown error"}</pre>
+                <pre style={{ ...outputPre, color: "#ff6b6b" }}>{displayValue(output.error || output.traceback, "Unknown error")}</pre>
               </>
             )
           ) : (
@@ -352,10 +432,10 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
                 <div style={statRow}><span>Пустых строк:</span><strong>{analysis.blank_lines ?? "—"}</strong></div>
                 <div style={statRow}><span>Комментариев:</span><strong>{analysis.comment_lines ?? "—"}</strong></div>
 
-                {analysis.functions?.length > 0 && (
+                {(analysis.functions?.length ?? 0) > 0 && (
                   <div>
-                    <div style={sectionTitle}>Функции ({analysis.functions.length})</div>
-                    {analysis.functions.map((f, i) => (
+                    <div style={sectionTitle}>Функции ({analysis.functions?.length ?? 0})</div>
+                    {analysis.functions?.map((f, i) => (
                       <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 11, marginBottom: 2 }}>
                         <span style={{ color: "var(--accent)" }}>{f.name}</span>
                         <span style={{ color: "var(--text-muted)" }}> :L{f.line}</span>
@@ -364,10 +444,10 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
                   </div>
                 )}
 
-                {analysis.classes?.length > 0 && (
+                {(analysis.classes?.length ?? 0) > 0 && (
                   <div>
-                    <div style={sectionTitle}>Классы ({analysis.classes.length})</div>
-                    {analysis.classes.map((c, i) => (
+                    <div style={sectionTitle}>Классы ({analysis.classes?.length ?? 0})</div>
+                    {analysis.classes?.map((c, i) => (
                       <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 11, marginBottom: 2 }}>
                         <span style={{ color: "#e2b93d" }}>{c.name}</span>
                         <span style={{ color: "var(--text-muted)" }}> :L{c.line}</span>
@@ -376,10 +456,10 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
                   </div>
                 )}
 
-                {analysis.imports?.length > 0 && (
+                {(analysis.imports?.length ?? 0) > 0 && (
                   <div>
-                    <div style={sectionTitle}>Импорты ({analysis.imports.length})</div>
-                    {analysis.imports.map((imp, i) => (
+                    <div style={sectionTitle}>Импорты ({analysis.imports?.length ?? 0})</div>
+                    {analysis.imports?.map((imp, i) => (
                       <div key={i} style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--text-secondary)", marginBottom: 1 }}>
                         {imp.text}
                       </div>
@@ -417,19 +497,19 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
               {saveResult.ok ? (
                 <>
                   <div style={{ color: "#4ade80", fontSize: 12, marginBottom: 8 }}>
-                    Готово: {saveResult.path} ({saveResult.size} байт)
+                    Готово: {displayValue(saveResult.path, "")} ({displayValue(saveResult.size, "0")} байт)
                   </div>
                   {saveResult.diff && (
                     <div>
                       <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>
-                        Diff: +{saveResult.stats?.added || 0} / -{saveResult.stats?.removed || 0}
+                        Diff: +{displayValue(saveResult.stats?.added, "0")} / -{displayValue(saveResult.stats?.removed, "0")}
                       </div>
-                      <pre style={diffPre}>{saveResult.diff}</pre>
+                      <pre style={diffPre}>{displayValue(saveResult.diff, "")}</pre>
                     </div>
                   )}
                 </>
               ) : (
-                <div style={{ color: "#ff6b6b", fontSize: 12 }}>Ошибка: {saveResult.error}</div>
+                <div style={{ color: "#ff6b6b", fontSize: 12 }}>Ошибка: {displayValue(saveResult.error, "")}</div>
               )}
             </div>
           )}
@@ -445,7 +525,7 @@ export default function ArtifactPanel({ messages, streamingCode, onClose }) {
   );
 }
 
-const btnStyle = (bg, color) => ({
+const btnStyle = (bg?: string, color?: string): CSSProperties => ({
   padding: "3px 8px",
   borderRadius: 6,
   border: "1px solid var(--border)",
@@ -455,7 +535,7 @@ const btnStyle = (bg, color) => ({
   fontSize: 11,
 });
 
-const outputPre = {
+const outputPre: CSSProperties = {
   margin: 0,
   fontFamily: "var(--font-mono)",
   fontSize: 11,
@@ -465,7 +545,7 @@ const outputPre = {
   color: "var(--text-primary)",
 };
 
-const statRow = {
+const statRow: CSSProperties = {
   display: "flex",
   justifyContent: "space-between",
   padding: "4px 0",
@@ -473,13 +553,13 @@ const statRow = {
   color: "var(--text-secondary)",
 };
 
-const sectionTitle = {
+const sectionTitle: CSSProperties = {
   fontSize: 10,
   color: "var(--text-muted)",
   marginBottom: 4,
 };
 
-const saveInput = {
+const saveInput: CSSProperties = {
   flex: 1,
   padding: "6px 10px",
   borderRadius: 8,
@@ -490,7 +570,7 @@ const saveInput = {
   outline: "none",
 };
 
-const saveBtnStyle = {
+const saveBtnStyle: CSSProperties = {
   padding: "6px 14px",
   borderRadius: 8,
   fontSize: 11,
@@ -501,7 +581,7 @@ const saveBtnStyle = {
   whiteSpace: "nowrap",
 };
 
-const diffPre = {
+const diffPre: CSSProperties = {
   margin: 0,
   fontFamily: "var(--font-mono)",
   fontSize: 10,
@@ -516,7 +596,7 @@ const diffPre = {
   background: "rgba(0,0,0,0.2)",
 };
 
-const inlineCode = {
+const inlineCode: CSSProperties = {
   background: "rgba(255,255,255,0.06)",
   padding: "1px 4px",
   borderRadius: 3,

@@ -2123,3 +2123,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   project open/tree/read/search UI is now a typed consumer without changing the large chat shell import path.
+
+### 149. Frontend ArtifactPanel converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting the code artifact side panel to TypeScript.
+- Finish:
+  renamed `frontend/src/components/ArtifactPanel.jsx` to [frontend/src/components/ArtifactPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/ArtifactPanel.tsx);
+  added local message, code block, run output, analysis, save result, tab, and style typing plus display normalization for unknown API values.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  artifact extraction, Python run output, code analysis, and save-to-file UI are now typechecked while preserving the chat shell integration.
