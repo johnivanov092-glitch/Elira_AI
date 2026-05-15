@@ -2038,3 +2038,16 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   Telegram dashboard controls keep the same facade while their transport is now covered by TypeScript.
+
+### 142. Frontend patch and plugins API typed groups
+- Status: completed
+- Scope: continued Phase 6 by moving patch workflow and plugin management endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/patch.ts](/D:/AIWork/Elira_AI/frontend/src/api/patch.ts) for typed patch history, preview, apply, rollback, and verify calls;
+  added [frontend/src/api/plugins.ts](/D:/AIWork/Elira_AI/frontend/src/api/plugins.ts) for typed plugin list/reload/enable/disable calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export both endpoint groups while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  patch and plugin controls keep the same facade while their transports are now covered by TypeScript.

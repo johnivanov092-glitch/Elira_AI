@@ -35,6 +35,18 @@ import {
   updatePipeline,
 } from "./pipelines";
 import {
+  applyPatch,
+  listPatchHistory,
+  previewPatch,
+  rollbackPatch,
+  verifyPatch,
+} from "./patch";
+import {
+  listPlugins,
+  reloadPlugins,
+  setPluginEnabled,
+} from "./plugins";
+import {
   addSmartMemory,
   deleteSmartMemory,
   getSmartMemoryStats,
@@ -102,6 +114,18 @@ export {
   runPipeline,
   updatePipeline,
 } from "./pipelines";
+export {
+  applyPatch,
+  listPatchHistory,
+  previewPatch,
+  rollbackPatch,
+  verifyPatch,
+} from "./patch";
+export {
+  listPlugins,
+  reloadPlugins,
+  setPluginEnabled,
+} from "./plugins";
 export {
   addSmartMemory,
   deleteSmartMemory,
@@ -518,41 +542,6 @@ export async function getDashboardOverview() {
   }
 
   return { stats, projectBrainStatus, personaStatus, runtimeStatus, agentOsHealth, agentOsDashboard, agentOsLimits, errors };
-}
-
-export async function listPatchHistory({ path = "", limit = 20 } = {}) {
-  const payload = await safeRequest(withParams("/api/elira/patch/history/list", { path, limit }), {}, { items: [] });
-  return { ...payload, items: normalizeArray(payload) };
-}
-
-export async function previewPatch(body = {}) {
-  return request("/api/elira/patch/diff", { method: "POST", body });
-}
-
-export async function applyPatch(body = {}) {
-  return request("/api/elira/patch/apply", { method: "POST", body });
-}
-
-export async function rollbackPatch(body = {}) {
-  return request("/api/elira/patch/rollback", { method: "POST", body });
-}
-
-export async function verifyPatch(body = {}) {
-  return request("/api/elira/patch/verify", { method: "POST", body });
-}
-
-export async function listPlugins() {
-  const payload = await request("/api/extra/plugins/list");
-  return payload?.plugins || [];
-}
-
-export async function reloadPlugins() {
-  return request("/api/extra/plugins/reload", { method: "POST" });
-}
-
-export async function setPluginEnabled(name, enabled) {
-  const action = enabled ? "enable" : "disable";
-  return request(`/api/extra/plugins/${action}/${encodeURIComponent(name)}`, { method: "POST" });
 }
 
 export const api = {
