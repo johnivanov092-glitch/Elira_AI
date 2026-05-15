@@ -49,6 +49,17 @@ import {
   listTasks,
   updateTask,
 } from "./tasks";
+import {
+  getTelegramConfig,
+  getTelegramLog,
+  getTelegramOverview,
+  listTelegramUsers,
+  startTelegramBot,
+  stopTelegramBot,
+  testTelegramBot,
+  toggleTelegramUser,
+  updateTelegramConfig,
+} from "./telegram";
 import { executeTerminal, getTerminalCwd } from "./terminal";
 import {
   analyzeCode,
@@ -106,6 +117,17 @@ export {
   listTasks,
   updateTask,
 } from "./tasks";
+export {
+  getTelegramConfig,
+  getTelegramLog,
+  getTelegramOverview,
+  listTelegramUsers,
+  startTelegramBot,
+  stopTelegramBot,
+  testTelegramBot,
+  toggleTelegramUser,
+  updateTelegramConfig,
+} from "./telegram";
 export { executeTerminal, getTerminalCwd } from "./terminal";
 export {
   analyzeCode,
@@ -517,53 +539,6 @@ export async function rollbackPatch(body = {}) {
 
 export async function verifyPatch(body = {}) {
   return request("/api/elira/patch/verify", { method: "POST", body });
-}
-
-export async function getTelegramConfig() {
-  return request("/api/telegram/config");
-}
-
-export async function listTelegramUsers() {
-  return request("/api/telegram/users");
-}
-
-export async function getTelegramLog(limit = 30) {
-  return request(withParams("/api/telegram/log", { limit }));
-}
-
-export async function getTelegramOverview(limit = 30) {
-  const [config, users, log] = await Promise.all([
-    getTelegramConfig(),
-    listTelegramUsers(),
-    getTelegramLog(limit),
-  ]);
-  return {
-    config,
-    users: users?.users || [],
-    log: log?.log || [],
-  };
-}
-
-export async function startTelegramBot() {
-  const payload = await request("/api/telegram/start", { method: "POST" });
-  if (payload?.ok === false) throw new Error(payload.error || "Failed to start Telegram bot");
-  return payload;
-}
-
-export async function stopTelegramBot() {
-  return request("/api/telegram/stop", { method: "POST" });
-}
-
-export async function testTelegramBot() {
-  return request("/api/telegram/test");
-}
-
-export async function updateTelegramConfig(body = {}) {
-  return request("/api/telegram/config", { method: "PUT", body });
-}
-
-export async function toggleTelegramUser(body = {}) {
-  return request("/api/telegram/users/toggle", { method: "POST", body });
 }
 
 export async function listPlugins() {

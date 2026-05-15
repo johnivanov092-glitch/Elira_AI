@@ -580,6 +580,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 22:52:00 +05:00` | `DONE` | Continued Phase 6 by moving Project Brain and advanced project endpoint groups into `frontend/src/api/project.ts` while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 22:53:00 +05:00` | `DONE` | Continued Phase 6 by moving library list/upload/delete calls into `frontend/src/api/library.ts` while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 22:56:00 +05:00` | `DONE` | Continued Phase 6 by moving task planning and pipeline endpoint groups into typed frontend API modules while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
+| `2026-05-15 22:58:00 +05:00` | `DONE` | Continued Phase 6 by moving Telegram endpoint group into `frontend/src/api/telegram.ts` while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
 
 ## 8. Commit Ledger
 

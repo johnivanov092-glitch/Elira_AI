@@ -2026,3 +2026,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   task and pipeline dashboard controls keep the same facade while their transport is now covered by TypeScript modules.
+
+### 141. Frontend Telegram API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving Telegram bot configuration, user, log, lifecycle, and test endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/telegram.ts](/D:/AIWork/Elira_AI/frontend/src/api/telegram.ts) for typed Telegram config/users/log/overview/start/stop/test/update/toggle calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the Telegram endpoint group while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  Telegram dashboard controls keep the same facade while their transport is now covered by TypeScript.
