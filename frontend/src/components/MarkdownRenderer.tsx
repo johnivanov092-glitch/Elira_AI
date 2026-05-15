@@ -6,18 +6,36 @@
  *   • Regex-паттерны вынесены на уровень модуля (не создаются каждый рендер)
  *   • CopyButton и CodeBlock мемоизированы
  */
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, type ReactNode } from "react";
 import { buildApiUrl, request } from "../api/client";
 import { isLocalApiAssetUrl } from "../api/ide";
 
-// ─── Утилиты (создаются один раз) ──────────────────────────────
-const extractFilename = (url) => { const p = url.split("/"); const l = p[p.length - 1]; return l && l.includes(".") ? decodeURIComponent(l) : null; };
-const isFilename = (s) => /\.\w{1,5}$/.test(s);
+type InlinePattern = {
+  re: RegExp;
+  render: (match: RegExpMatchArray, key: string) => ReactNode;
+};
 
-function doDownload(url, label) {
+type CopyButtonProps = {
+  text: string;
+};
+
+type CodeBlockProps = {
+  code: string;
+  language?: string;
+};
+
+type MarkdownRendererProps = {
+  content?: unknown;
+};
+
+// ─── Утилиты (создаются один раз) ──────────────────────────────
+const extractFilename = (url: string): string | null => { const p = url.split("/"); const l = p[p.length - 1]; return l && l.includes(".") ? decodeURIComponent(l) : null; };
+const isFilename = (s: string): boolean => /\.\w{1,5}$/.test(s);
+
+function doDownload(url: string, label: string) {
   const full = buildApiUrl(url);
   const fname = isFilename(label) ? label : extractFilename(url) || label || "download";
-  request(full, { responseType: "blob" })
+  request<Blob>(full, { responseType: "blob" })
     .then(blob => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -36,7 +54,7 @@ function doDownload(url, label) {
 }
 
 // ─── Inline regex patterns (создаются один раз на уровне модуля) ───
-const INLINE_PATTERNS = [
+const INLINE_PATTERNS: InlinePattern[] = [
   { re: /`([^`]+)`/, render: (m, k) => <code key={k} className="md-inline-code">{m[1]}</code> },
   { re: /\*\*(.+?)\*\*/, render: (m, k) => <strong key={k}>{m[1]}</strong> },
   { re: /\*(.+?)\*/, render: (m, k) => <em key={k}>{m[1]}</em> },
@@ -63,7 +81,7 @@ const OL_RE = /^\s*\d+[.)]\s/;
 const CODE_FENCE_SPLIT_RE = /(```[\s\S]*?```)/g;
 const DOUBLE_NEWLINE_RE = /\n{2,}/;
 
-function normalizeInlineEnumerations(block) {
+function normalizeInlineEnumerations(block: string): string {
   if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
   const markers = block.match(/\d+[.)]\s/g) || [];
   if (markers.length < 2) return block;
@@ -75,7 +93,7 @@ function normalizeInlineEnumerations(block) {
   return normalized;
 }
 
-function normalizeStructuredMarkdown(text) {
+function normalizeStructuredMarkdown(text: unknown): string {
   const parts = String(text || "").split(CODE_FENCE_SPLIT_RE);
   return parts.map((part, index) => {
     if (index % 2 === 1) return part;
@@ -87,7 +105,7 @@ function normalizeStructuredMarkdown(text) {
 }
 
 // ─── Компоненты (мемоизированы) ─────────────────────────────────
-const CopyButton = React.memo(function CopyButton({ text }) {
+const CopyButton = React.memo(function CopyButton({ text }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(text).then(() => {
@@ -98,7 +116,7 @@ const CopyButton = React.memo(function CopyButton({ text }) {
   return <button className="md-copy-btn" onClick={handleCopy} title="Копировать">{copied ? "✓" : "⧉"}</button>;
 });
 
-const CodeBlock = React.memo(function CodeBlock({ language, code }) {
+const CodeBlock = React.memo(function CodeBlock({ language, code }: CodeBlockProps) {
   return (
     <div className="md-code-block">
       <div className="md-code-header">
@@ -111,16 +129,19 @@ const CodeBlock = React.memo(function CodeBlock({ language, code }) {
 });
 
 // ─── Inline parser ──────────────────────────────────────────────
-function parseInline(text, keyPrefix = "il") {
+function parseInline(text: string, keyPrefix = "il"): ReactNode[] {
   if (!text) return [text];
-  const parts = [];
+  const parts: ReactNode[] = [];
   let remaining = text;
   let idx = 0;
   while (remaining.length > 0) {
-    let earliest = null, earliestIndex = Infinity, matchedPattern = null;
+    let earliest: RegExpMatchArray | null = null;
+    let earliestIndex = Infinity;
+    let matchedPattern: InlinePattern | null = null;
     for (const pat of INLINE_PATTERNS) {
       const match = remaining.match(pat.re);
-      if (match && match.index < earliestIndex) { earliest = match; earliestIndex = match.index; matchedPattern = pat; }
+      const matchIndex = match?.index ?? Infinity;
+      if (match && matchIndex < earliestIndex) { earliest = match; earliestIndex = matchIndex; matchedPattern = pat; }
     }
     if (!earliest || !matchedPattern) { parts.push(remaining); break; }
     if (earliestIndex > 0) parts.push(remaining.slice(0, earliestIndex));
@@ -131,7 +152,7 @@ function parseInline(text, keyPrefix = "il") {
   return parts;
 }
 
-function stripOuterCodeFence(text) {
+function stripOuterCodeFence(text: string): string {
   const trimmed = text.trim();
   const match = trimmed.match(OUTER_FENCE_RE);
   if (match) return match[1];
@@ -139,13 +160,13 @@ function stripOuterCodeFence(text) {
 }
 
 // ─── Главный компонент (React.memo) ────────────────────────────
-function MarkdownRendererInner({ content }) {
+function MarkdownRendererInner({ content }: MarkdownRendererProps) {
   if (!content) return null;
 
   const text = normalizeStructuredMarkdown(stripOuterCodeFence(String(content)));
   if (!text) return null;
 
-  const elements = [];
+  const elements: ReactNode[] = [];
   let i = 0;
   const lines = text.split("\n");
   let lineIdx = 0;
@@ -155,7 +176,7 @@ function MarkdownRendererInner({ content }) {
 
     if (line.trimStart().startsWith("```")) {
       const lang = line.trimStart().slice(3).trim();
-      const codeLines = [];
+      const codeLines: string[] = [];
       lineIdx++;
       while (lineIdx < lines.length && !lines[lineIdx].trimStart().startsWith("```")) {
         codeLines.push(lines[lineIdx]);
@@ -173,13 +194,13 @@ function MarkdownRendererInner({ content }) {
 
     const hm = line.match(HEADING_RE);
     if (hm) {
-      const Tag = `h${hm[1].length}`;
+      const Tag = `h${hm[1].length}` as "h1" | "h2" | "h3" | "h4";
       elements.push(<Tag key={`h-${i}`} className={`md-heading md-h${hm[1].length}`}>{parseInline(hm[2], `h${i}`)}</Tag>);
       i++; lineIdx++; continue;
     }
 
     if (UL_RE.test(line)) {
-      const items = [];
+      const items: ReactNode[] = [];
       while (lineIdx < lines.length && UL_RE.test(lines[lineIdx])) {
         items.push(<li key={`li-${i}-${items.length}`}>{parseInline(lines[lineIdx].replace(/^\s*[-*+]\s/, ""), `li${i}${items.length}`)}</li>);
         lineIdx++;
@@ -189,7 +210,7 @@ function MarkdownRendererInner({ content }) {
     }
 
     if (OL_RE.test(line)) {
-      const items = [];
+      const items: ReactNode[] = [];
       while (lineIdx < lines.length && OL_RE.test(lines[lineIdx])) {
         items.push(<li key={`oli-${i}-${items.length}`}>{parseInline(lines[lineIdx].replace(/^\s*\d+[.)]\s/, ""), `oli${i}${items.length}`)}</li>);
         lineIdx++;
@@ -200,7 +221,7 @@ function MarkdownRendererInner({ content }) {
 
     if (!line.trim()) { lineIdx++; continue; }
 
-    const paraLines = [];
+    const paraLines: string[] = [];
     while (
       lineIdx < lines.length && lines[lineIdx].trim() &&
       !lines[lineIdx].trimStart().startsWith("```") &&

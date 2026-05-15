@@ -2099,3 +2099,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   the memory side panel is now a TypeScript consumer of the typed frontend API without touching the large chat shell.
+
+### 147. Frontend MarkdownRenderer converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting another isolated JSX consumer to TypeScript.
+- Finish:
+  renamed `frontend/src/components/MarkdownRenderer.jsx` to [frontend/src/components/MarkdownRenderer.tsx](/D:/AIWork/Elira_AI/frontend/src/components/MarkdownRenderer.tsx);
+  added explicit prop, inline parser, code block, copy button, download blob, and dynamic heading tag typing while preserving extensionless imports from existing JSX components.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  markdown rendering and local API asset download handling are now typechecked without changing the chat shell call sites.
