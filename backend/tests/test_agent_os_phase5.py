@@ -143,6 +143,19 @@ class AgentMonitorServiceTest(AgentOsPhase5DbMixin):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["payload"]["agent_id"], "builtin-universal")
 
+    def test_seed_removes_unknown_builtin_limits(self) -> None:
+        stale_id = "builtin-stale-from-old-seed"
+        agent_monitor.monitoring_store.upsert_limit(
+            agent_monitor.DB_PATH,
+            agent_monitor.monitoring_store.default_limit_payload(stale_id),
+        )
+
+        agent_monitor.seed_default_limits()
+
+        ids = {item["agent_id"] for item in agent_monitor.list_agent_limits()}
+        self.assertNotIn(stale_id, ids)
+        self.assertIn("builtin-universal", ids)
+
     def test_context_limit_block_records_metric_and_event(self) -> None:
         agent_monitor.update_agent_limit(
             "builtin-universal",

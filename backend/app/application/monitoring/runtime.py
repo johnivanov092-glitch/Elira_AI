@@ -32,6 +32,7 @@ def seed_default_limits() -> int:
 
     created = 0
     agent_ids: list[str] = []
+    loaded_registry = False
     try:
         from app.application.agent_registry.runtime import list_agents, seed_builtin_agents
 
@@ -40,11 +41,15 @@ def seed_default_limits() -> int:
             str(item.get("id", "")).strip()
             for item in list_agents(enabled_only=False)
         ]
+        loaded_registry = True
     except Exception:
         agent_ids = []
 
     if WORKFLOW_ENGINE_AGENT_ID not in agent_ids:
         agent_ids.append(WORKFLOW_ENGINE_AGENT_ID)
+
+    if loaded_registry:
+        monitoring_store.delete_unknown_builtin_limits(DB_PATH, set(agent_ids))
 
     for agent_id in agent_ids:
         if not agent_id:

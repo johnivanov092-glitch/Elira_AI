@@ -168,6 +168,32 @@ def list_agent_limits(db_path: str | Path) -> list[dict[str, Any]]:
     return [item for item in items if item]
 
 
+def delete_unknown_builtin_limits(
+    db_path: str | Path,
+    valid_agent_ids: set[str],
+) -> int:
+    valid_ids = {str(agent_id).strip() for agent_id in valid_agent_ids if str(agent_id).strip()}
+    if not valid_ids:
+        return 0
+
+    with get_connection(db_path) as con:
+        rows = con.execute(
+            "SELECT agent_id FROM agent_limits WHERE agent_id LIKE 'builtin-%'"
+        ).fetchall()
+        stale_ids = [
+            str(row["agent_id"])
+            for row in rows
+            if str(row["agent_id"]) not in valid_ids
+        ]
+        if not stale_ids:
+            return 0
+        con.executemany(
+            "DELETE FROM agent_limits WHERE agent_id = ?",
+            [(agent_id,) for agent_id in stale_ids],
+        )
+    return len(stale_ids)
+
+
 def get_agent_limit(db_path: str | Path, agent_id: str) -> dict[str, Any] | None:
     with get_connection(db_path) as con:
         row = con.execute(

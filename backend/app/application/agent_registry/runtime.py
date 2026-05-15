@@ -162,11 +162,18 @@ def seed_builtin_agents() -> int:
         return 0
 
     created = 0
-    for agent_def in agent_builtins.iter_builtin_agent_defs():
-        if get_agent(agent_def["id"]):
-            continue
+    agent_defs = agent_builtins.iter_builtin_agent_defs()
+    valid_ids = {str(agent_def.get("id", "")).strip() for agent_def in agent_defs}
+    registry_store.delete_unknown_builtin_agents(
+        conn_factory=_conn,
+        valid_agent_ids=valid_ids,
+    )
+
+    for agent_def in agent_defs:
+        existed = bool(get_agent(agent_def["id"]))
         register_agent(agent_def)
-        created += 1
+        if not existed:
+            created += 1
 
     _BUILTIN_AGENTS_SEEDED = True
     return created

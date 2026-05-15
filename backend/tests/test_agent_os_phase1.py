@@ -166,6 +166,28 @@ class TestSeedBuiltinAgents(AgentRegistryTestCase):
         count = reg.seed_builtin_agents()
         self.assertEqual(count, 0)
 
+    def test_seed_updates_canonical_builtins_and_removes_stale_builtin_ids(self) -> None:
+        stale_id = "builtin-stale-from-old-registry"
+        reg.register_agent({"id": stale_id, "name": "Stale", "role": "custom"})
+        reg.register_agent(
+            {
+                "id": "builtin-universal",
+                "name": "Broken",
+                "name_ru": "Broken",
+                "role": "custom",
+            }
+        )
+
+        reg._BUILTIN_AGENTS_SEEDED = False
+        reg.seed_builtin_agents()
+
+        self.assertIsNone(reg.get_agent(stale_id))
+        universal = reg.get_agent("builtin-universal")
+        self.assertIsNotNone(universal)
+        assert universal is not None
+        self.assertEqual(universal["name"], "Universal")
+        self.assertNotEqual(universal["name_ru"], "Broken")
+
 
 class TestResolveAgent(AgentRegistryTestCase):
     def test_resolve_by_id(self) -> None:

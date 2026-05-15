@@ -1934,3 +1934,19 @@ Live repair log for concrete backend/runtime fixes.
   `git diff --check` -> passed.
 - Result:
   Tauri startup now has a single Rust entrypoint under `src-tauri/src/main.rs` and no tracked misleading launch/snippet files in the Tauri source tree.
+
+### 134. Agent OS stale builtin cleanup
+- Status: completed
+- Scope: closed a Phase 8 data hygiene gap found during smoke verification: stale `builtin-*` Agent OS rows from old mojibake-era seeds were still visible in local SQLite runtime output.
+- Finish:
+  updated [backend/app/application/agent_registry/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/runtime.py) so builtin seeding updates existing canonical builtins instead of leaving stale names/prompts untouched;
+  added `delete_unknown_builtin_agents` in [backend/app/application/agent_registry/store.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/store.py) to remove unknown stale `builtin-*` registry rows while preserving non-builtin custom agents;
+  added `delete_unknown_builtin_limits` in [backend/app/application/monitoring/store.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/store.py) and wired [backend/app/application/monitoring/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/runtime.py) so stale limits are removed only after Agent Registry loads successfully;
+  added regression coverage in [backend/tests/test_agent_os_phase1.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase1.py) and [backend/tests/test_agent_os_phase5.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase5.py).
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase1 backend.tests.test_agent_os_phase5 backend.tests.test_text_encoding_persona_mojibake` -> 31 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed, Agent Registry reported 7 active builtins and Agent Monitor 8 limits with stale mojibake-era `builtin-*` rows removed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\agent_registry backend\app\application\monitoring backend\tests\test_agent_os_phase1.py backend\tests\test_agent_os_phase5.py` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  runtime seed paths now self-heal stale builtin Agent OS registry/limit rows instead of leaking unreadable historical IDs into health/smoke output.

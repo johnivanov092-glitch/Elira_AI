@@ -105,6 +105,31 @@ def list_agents(
     return agents
 
 
+def delete_unknown_builtin_agents(
+    *,
+    conn_factory: Callable[[], Any],
+    valid_agent_ids: set[str],
+) -> int:
+    valid_ids = {str(agent_id).strip() for agent_id in valid_agent_ids if str(agent_id).strip()}
+    if not valid_ids:
+        return 0
+
+    with conn_factory() as con:
+        rows = con.execute("SELECT id FROM agents WHERE id LIKE 'builtin-%'").fetchall()
+        stale_ids = [
+            str(row["id"])
+            for row in rows
+            if str(row["id"]) not in valid_ids
+        ]
+        if not stale_ids:
+            return 0
+        for agent_id in stale_ids:
+            con.execute("DELETE FROM agent_runs WHERE agent_id = ?", (agent_id,))
+            con.execute("DELETE FROM agent_state WHERE agent_id = ?", (agent_id,))
+            con.execute("DELETE FROM agents WHERE id = ?", (agent_id,))
+    return len(stale_ids)
+
+
 def update_agent(
     *,
     conn_factory: Callable[[], Any],
