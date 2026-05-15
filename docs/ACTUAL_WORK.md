@@ -1962,3 +1962,16 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   `ide.js` is smaller and the Smart Memory endpoint group now has a build-checked TypeScript transport without changing the Memory panel contract.
+
+### 136. Claude coverage tail reconciliation
+- Status: completed
+- Scope: checked the remaining unmerged Claude branches and selectively imported only the safe coverage-only tail from `origin/claude/extract-skills-extra`.
+- Finish:
+  added [backend/tests/test_router_v8_planner_graphs_extra_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_router_v8_planner_graphs_extra_pure.py) from Claude batch `#122`, adapted `_cosine_sim` to the current `app.application.rag_memory.service` path;
+  added [backend/tests/test_llm_build_prompt_workflows_store_run_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_llm_build_prompt_workflows_store_run_pure.py) from Claude batch `#123`;
+  added [backend/tests/test_workflows_cache_search_monitoring_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_cache_search_monitoring_pure.py) from Claude batch `#124`;
+  added [backend/tests/test_core_files_workflow_exec_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_core_files_workflow_exec_pure.py) from Claude batch `#125`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_router_v8_planner_graphs_extra_pure backend.tests.test_llm_build_prompt_workflows_store_run_pure backend.tests.test_workflows_cache_search_monitoring_pure backend.tests.test_core_files_workflow_exec_pure` -> 230 tests OK.
+- Result:
+  the useful unmerged Claude coverage tail is now on the current branch without wholesale-merging stale Claude branches that would revert newer architecture, frontend TypeScript, route registry, and encoding guard work.
