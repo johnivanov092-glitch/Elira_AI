@@ -2051,3 +2051,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   patch and plugin controls keep the same facade while their transports are now covered by TypeScript.
+
+### 143. Frontend system API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving persona, runtime, Agent OS, and dashboard overview endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/system.ts](/D:/AIWork/Elira_AI/frontend/src/api/system.ts) for typed persona status/version/candidate/rollback calls, runtime status, Agent OS health/dashboard/limits calls, and dashboard overview aggregation;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the system endpoint group while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  system dashboard and Agent OS consumers keep the same facade while their transport and aggregation helpers are now covered by TypeScript.
