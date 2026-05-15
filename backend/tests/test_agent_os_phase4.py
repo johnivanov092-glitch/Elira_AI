@@ -16,6 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.event_bus as _eb  # noqa: E402
 import app.application.workflows.engine as _wfe  # noqa: E402
 
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
@@ -29,17 +30,17 @@ class WorkflowDbMixin(unittest.TestCase):
         super().setUp()
         self._tmpdir = tempfile.TemporaryDirectory()
         self._original_workflow_db = _wfe.DB_PATH
-        self._original_event_bus_db = bus.DB_PATH
+        self._original_event_bus_db = _eb.DB_PATH
         self._original_seeded = _wfe._BUILTIN_WORKFLOWS_SEEDED
         _wfe.DB_PATH = Path(self._tmpdir.name) / "workflow_engine.db"
-        bus.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
+        _eb.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
         _wfe._BUILTIN_WORKFLOWS_SEEDED = False
         _wfe._init_db()
-        bus._init_db()
+        _eb._init_db()
 
     def tearDown(self) -> None:
         _wfe.DB_PATH = self._original_workflow_db
-        bus.DB_PATH = self._original_event_bus_db
+        _eb.DB_PATH = self._original_event_bus_db
         _wfe._BUILTIN_WORKFLOWS_SEEDED = self._original_seeded
         self._tmpdir.cleanup()
         super().tearDown()

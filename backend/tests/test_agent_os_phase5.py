@@ -16,6 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.event_bus as _eb  # noqa: E402
 import app.application.monitoring.agent_monitor as _am  # noqa: E402
 import app.application.workflows.engine as _wfe  # noqa: E402
 
@@ -36,7 +37,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
 
         self._original_monitor_db = _am.DB_PATH
         self._original_registry_db = agent_registry.DB_PATH
-        self._original_event_bus_db = bus.DB_PATH
+        self._original_event_bus_db = _eb.DB_PATH
         self._original_workflow_db = _wfe.DB_PATH
         self._original_limit_seed = _am._LIMIT_SEED_DONE
         self._original_agent_seed = agent_registry._BUILTIN_AGENTS_SEEDED
@@ -44,7 +45,7 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
 
         _am.DB_PATH = tmp_root / "agent_monitor.db"
         agent_registry.DB_PATH = tmp_root / "agent_registry.db"
-        bus.DB_PATH = tmp_root / "event_bus.db"
+        _eb.DB_PATH = tmp_root / "event_bus.db"
         _wfe.DB_PATH = tmp_root / "workflow_engine.db"
 
         _am._LIMIT_SEED_DONE = False
@@ -53,13 +54,13 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
 
         _am._init_db()
         agent_registry._init_db()
-        bus._init_db()
+        _eb._init_db()
         _wfe._init_db()
 
     def tearDown(self) -> None:
         _am.DB_PATH = self._original_monitor_db
         agent_registry.DB_PATH = self._original_registry_db
-        bus.DB_PATH = self._original_event_bus_db
+        _eb.DB_PATH = self._original_event_bus_db
         _wfe.DB_PATH = self._original_workflow_db
         _am._LIMIT_SEED_DONE = self._original_limit_seed
         agent_registry._BUILTIN_AGENTS_SEEDED = self._original_agent_seed

@@ -16,6 +16,8 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.event_bus as _eb  # noqa: E402
+
 from app.api.routes.event_bus_routes import router as event_bus_router  # noqa: E402
 from app.services import agents_service  # noqa: E402
 from app.services import event_bus as bus  # noqa: E402
@@ -25,12 +27,12 @@ class EventBusDbMixin(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._original_db_path = bus.DB_PATH
-        bus.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
-        bus._init_db()
+        self._original_db_path = _eb.DB_PATH
+        _eb.DB_PATH = Path(self._tmpdir.name) / "event_bus.db"
+        _eb._init_db()
 
     def tearDown(self) -> None:
-        bus.DB_PATH = self._original_db_path
+        _eb.DB_PATH = self._original_db_path
         self._tmpdir.cleanup()
         super().tearDown()
 
