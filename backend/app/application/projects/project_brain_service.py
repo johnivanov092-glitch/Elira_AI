@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.project_service import list_project_tree, search_project, read_project_file
-from app.services.project_patch_service import ProjectPatchService
-from app.services.git_service import GitService
+from app.infrastructure.files.project_service import list_project_tree, search_project, read_project_file
+from app.application.projects.project_patch_service import ProjectPatchService
+from app.infrastructure.vcs.git_service import GitService
 
 
 class ProjectBrainService:

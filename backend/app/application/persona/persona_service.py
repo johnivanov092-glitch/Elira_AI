@@ -20,7 +20,7 @@ from app.core.persona_defaults import (
     PROFILE_MODE_OVERLAYS,
     PROFILE_UI,
 )
-from app.services.elira_memory_sqlite import DB_PATH, init_db as init_state_db
+from app.infrastructure.db.elira_memory_sqlite import DB_PATH, init_db as init_state_db
 
 
 logger = logging.getLogger(__name__)

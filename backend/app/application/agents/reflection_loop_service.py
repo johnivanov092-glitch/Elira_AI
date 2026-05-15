@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.chat_service import run_chat
+from app.application.chat.chat_service import run_chat
 
 
 def run_reflection_loop(

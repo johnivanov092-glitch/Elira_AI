@@ -37,13 +37,13 @@ from app.application.chat.service import (
     get_rag_context,
 )
 from app.core.config import pick_model_for_route
-from app.services.agent_sandbox import preflight_or_raise, resolve_effective_agent_id
-from app.services.chat_service import run_chat_stream
-from app.services.persona_service import observe_dialogue
-from app.services.planner_v2_service import PlannerV2Service
-from app.services.reflection_loop_service import run_reflection_loop
-from app.services.response_cache import get_cached, set_cached, should_cache
-from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
+from app.application.monitoring.agent_sandbox import preflight_or_raise, resolve_effective_agent_id
+from app.application.chat.chat_service import run_chat_stream
+from app.application.persona.persona_service import observe_dialogue
+from app.application.planning.planner_v2_service import PlannerV2Service
+from app.application.agents.reflection_loop_service import run_reflection_loop
+from app.infrastructure.cache.response_cache import get_cached, set_cached, should_cache
+from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
 
 
 # ─── stream meta helpers (kept for backward compatibility) ───────────────────

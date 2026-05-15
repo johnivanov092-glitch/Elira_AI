@@ -8,8 +8,8 @@ from typing import Any
 
 from app.core.data_files import DATA_DIR
 from app.core.web import get_web_engine_status
-from app.services.elira_memory_sqlite import DB_PATH, count_chats, init_db
-from app.services.persona_service import get_persona_status
+from app.infrastructure.db.elira_memory_sqlite import DB_PATH, count_chats, init_db
+from app.application.persona.persona_service import get_persona_status
 
 
 ROOT_DATA_DIR = DATA_DIR.resolve()

@@ -16,13 +16,13 @@ from typing import Any, Callable
 
 from app.core.data_files import sqlite_data_file
 from app.infrastructure.db.connection import connect_sqlite
-from app.services.agent_monitor import (
+from app.application.monitoring.agent_monitor import (
     WORKFLOW_ENGINE_AGENT_ID,
     record_resource_usage,
     record_workflow_run_metric,
     record_workflow_step_metric,
 )
-from app.services.agent_sandbox import SandboxPolicyError, preflight_or_raise
+from app.application.monitoring.agent_sandbox import SandboxPolicyError, preflight_or_raise
 
 
 DB_PATH: Path = sqlite_data_file("workflow_engine.db")
@@ -423,7 +423,7 @@ def _create_workflow_run_record(
 
 def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload: dict[str, Any] | None = None) -> None:
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus import emit_event
 
         emit_event(
             event_type=event_type,
@@ -567,7 +567,7 @@ def _execute_agent_step(
     run_context: dict[str, Any],
     run_id: str,
 ) -> dict[str, Any]:
-    from app.services.agents_service import run_agent
+    from app.application.agents.agents_service import run_agent
 
     config = step.get("config", {}) or {}
     prompt_template = str(config.get("prompt_template", "")).strip()
@@ -622,7 +622,7 @@ def _execute_tool_step(
     workflow_id: str,
     run_id: str,
 ) -> dict[str, Any]:
-    from app.services.tool_service import run_tool
+    from app.application.tools.tool_service import run_tool
 
     tool_name = str(step.get("tool_name", "")).strip()
     args = mapped_inputs if isinstance(mapped_inputs, dict) else {"input": mapped_inputs}

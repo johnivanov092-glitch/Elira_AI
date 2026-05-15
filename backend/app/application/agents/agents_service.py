@@ -67,27 +67,27 @@ from app.infrastructure.search.web_search import (
 )
 
 # ─── other service imports (kept for any remaining callers) ──────────────────
-from app.services.agent_monitor import record_agent_run_metric
-from app.services.agent_sandbox import (
+from app.application.monitoring.agent_monitor import record_agent_run_metric
+from app.application.monitoring.agent_sandbox import (
     SandboxPolicyError,
     preflight_or_raise,
     resolve_effective_agent_id,
 )
-from app.services.chat_service import run_chat, run_chat_stream
-from app.services.identity_guard import guard_identity_response
-from app.services.persona_service import observe_dialogue
-from app.services.planner_v2_service import PlannerV2Service
-from app.services.provenance_guard import guard_provenance_response
-from app.services.reflection_loop_service import run_reflection_loop
-from app.services.response_cache import get_cached, set_cached, should_cache
-from app.services.run_history_service import RunHistoryService
-from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
-from app.services.temporal_intent import detect_temporal_intent
-from app.services.tool_service import run_tool
+from app.application.chat.chat_service import run_chat, run_chat_stream
+from app.application.policy.identity_guard import guard_identity_response
+from app.application.persona.persona_service import observe_dialogue
+from app.application.planning.planner_v2_service import PlannerV2Service
+from app.application.policy.provenance_guard import guard_provenance_response
+from app.application.agents.reflection_loop_service import run_reflection_loop
+from app.infrastructure.cache.response_cache import get_cached, set_cached, should_cache
+from app.infrastructure.db.run_history_service import RunHistoryService
+from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
+from app.application.planning.temporal_intent import detect_temporal_intent
+from app.application.tools.tool_service import run_tool
 from app.core.config import pick_model_for_route, DEFAULT_MODEL
 
 try:
-    from app.services.rag_memory_service import add_to_rag, get_rag_context
+    from app.application.memory.rag_memory_service import add_to_rag, get_rag_context
     _HAS_RAG = True
 except ImportError:
     _HAS_RAG = False

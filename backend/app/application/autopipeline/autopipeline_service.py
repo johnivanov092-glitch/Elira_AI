@@ -207,7 +207,7 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             model = task_data.get("model", "")
             if not prompt:
                 return {"ok": False, "error": "Нет промпта"}
-            from app.services.agents_service import run_agent
+            from app.application.agents.agents_service import run_agent
             result = run_agent(
                 model_name=model or "gemma3:4b",
                 profile_name=task_data.get("profile", "Универсальный"),
@@ -222,21 +222,21 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             query = task_data.get("query", "")
             if not query:
                 return {"ok": False, "error": "Нет запроса"}
-            from app.services.web_multisearch_service import multi_search
+            from app.infrastructure.search.web_multisearch_service import multi_search
             return multi_search(query, max_results=task_data.get("max_results", 5))
 
         elif task_type == "plugin":
             name = task_data.get("plugin_name", "")
             if not name:
                 return {"ok": False, "error": "Нет имени плагина"}
-            from app.services.plugin_system import run_plugin
+            from app.infrastructure.plugins.plugin_system import run_plugin
             return run_plugin(name, task_data.get("args", {}))
 
         elif task_type == "workflow":
             workflow_id = str(task_data.get("workflow_id", "")).strip()
             if not workflow_id:
                 return {"ok": False, "error": "Нет workflow_id"}
-            from app.services.workflow_engine import start_workflow_run
+            from app.application.workflows.engine import start_workflow_run
 
             run = start_workflow_run(
                 workflow_id=workflow_id,

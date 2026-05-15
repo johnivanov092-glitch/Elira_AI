@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.services.project_service import BASE_DIR, read_project_file, write_project_file
+from app.infrastructure.files.project_service import BASE_DIR, read_project_file, write_project_file
 
 
 class ProjectPatchService:

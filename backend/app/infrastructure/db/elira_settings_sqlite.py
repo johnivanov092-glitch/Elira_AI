@@ -3,7 +3,7 @@ import sqlite3
 
 from app.core.data_files import sqlite_data_file
 from app.core.persona_defaults import DEFAULT_PROFILE
-from app.services.elira_memory_sqlite import init_db as init_state_db
+from app.infrastructure.db.elira_memory_sqlite import init_db as init_state_db
 
 
 DB_PATH = sqlite_data_file("elira_state.db", key_tables=("chats", "messages"))

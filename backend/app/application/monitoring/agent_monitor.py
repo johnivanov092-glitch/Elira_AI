@@ -138,7 +138,7 @@ def _planner_tool_aliases() -> list[str]:
 def _all_known_tools() -> list[str]:
     tool_names: list[str] = []
     try:
-        from app.services.tool_service import list_tools
+        from app.application.tools.tool_service import list_tools
 
         payload = list_tools()
         for item in payload.get("tools", []):
@@ -209,7 +209,7 @@ def _upsert_limit(payload: dict[str, Any], *, emit_event_bus: bool = False) -> d
     updated = get_agent_limit(agent_id) or {}
     if emit_event_bus:
         try:
-            from app.services.event_bus import emit_event
+            from app.application.event_bus import emit_event
 
             emit_event(
                 event_type="agent.limit.updated",
@@ -241,7 +241,7 @@ def seed_default_limits() -> int:
     created = 0
     agent_ids: list[str] = []
     try:
-        from app.services.agent_registry import list_agents, seed_builtin_agents
+        from app.application.agents.agent_registry import list_agents, seed_builtin_agents
 
         seed_builtin_agents()
         agent_ids = [str(item.get("id", "")).strip() for item in list_agents(enabled_only=False)]
@@ -476,7 +476,7 @@ def record_sandbox_block(
         details=payload,
     )
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus import emit_event
 
         emit_event(
             event_type="sandbox.policy.blocked",
@@ -522,9 +522,9 @@ def get_agent_os_health() -> dict[str, Any]:
     components: list[dict[str, Any]] = []
 
     checks = [
-        ("agent_registry", lambda: __import__("app.services.agent_registry", fromlist=["list_agents"]).list_agents(enabled_only=False)),
-        ("event_bus", lambda: __import__("app.services.event_bus", fromlist=["list_events"]).list_events(limit=1)),
-        ("workflow_engine", lambda: __import__("app.services.workflow_engine", fromlist=["list_workflow_templates"]).list_workflow_templates(include_disabled=True)),
+        ("agent_registry", lambda: __import__("app.application.agents.agent_registry", fromlist=["list_agents"]).list_agents(enabled_only=False)),
+        ("event_bus", lambda: __import__("app.application.event_bus", fromlist=["list_events"]).list_events(limit=1)),
+        ("workflow_engine", lambda: __import__("app.application.workflows.engine", fromlist=["list_workflow_templates"]).list_workflow_templates(include_disabled=True)),
         ("agent_monitor", lambda: list_agent_limits()),
     ]
 

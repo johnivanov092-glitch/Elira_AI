@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.services.agent_monitor import ensure_agent_limit, count_agent_runs_last_hour, record_sandbox_block
+from app.application.monitoring.agent_monitor import ensure_agent_limit, count_agent_runs_last_hour, record_sandbox_block
 
 
 _PROFILE_AGENT_HINTS: list[tuple[tuple[str, ...], str]] = [

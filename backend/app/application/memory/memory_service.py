@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.smart_memory import (
+from app.application.memory.smart_memory import (
     add_memory as _sm_add_memory,
     delete_memory as _sm_delete_memory,
     get_relevant_context as _sm_get_relevant_context,

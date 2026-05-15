@@ -31,24 +31,24 @@ from app.core.config import pick_model_for_route
 from app.infrastructure.search.web_search import (
     do_temporal_web_search as _infra_do_temporal_web_search,
 )
-from app.services.agent_monitor import record_agent_run_metric
-from app.services.agent_sandbox import (
+from app.application.monitoring.agent_monitor import record_agent_run_metric
+from app.application.monitoring.agent_sandbox import (
     SandboxPolicyError,
     preflight_or_raise,
     resolve_effective_agent_id,
 )
-from app.services.chat_service import run_chat
-from app.services.identity_guard import guard_identity_response
-from app.services.persona_service import observe_dialogue
-from app.services.planner_v2_service import PlannerV2Service
-from app.services.provenance_guard import guard_provenance_response
-from app.services.reflection_loop_service import run_reflection_loop
-from app.services.run_history_service import RunHistoryService
-from app.services.smart_memory import extract_and_save, get_relevant_context, is_memory_command
-from app.services.tool_service import run_tool
+from app.application.chat.chat_service import run_chat
+from app.application.policy.identity_guard import guard_identity_response
+from app.application.persona.persona_service import observe_dialogue
+from app.application.planning.planner_v2_service import PlannerV2Service
+from app.application.policy.provenance_guard import guard_provenance_response
+from app.application.agents.reflection_loop_service import run_reflection_loop
+from app.infrastructure.db.run_history_service import RunHistoryService
+from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
+from app.application.tools.tool_service import run_tool
 
 try:
-    from app.services.rag_memory_service import get_rag_context
+    from app.application.memory.rag_memory_service import get_rag_context
     _HAS_RAG = True
 except ImportError:
     _HAS_RAG = False
@@ -105,7 +105,7 @@ def _emit_agent_os_event(
     *, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None
 ) -> None:
     try:
-        from app.services.event_bus import emit_event
+        from app.application.event_bus import emit_event
         emit_event(event_type=event_type, source_agent_id=source_agent_id, payload=payload or {})
     except Exception:
         logger.debug("event_bus_emit_failed", exc_info=True)
@@ -342,7 +342,7 @@ def execute_chat_agent(
     _registry_agent = None
     if agent_id:
         try:
-            from app.services.agent_registry import resolve_agent
+            from app.application.agents.agent_registry import resolve_agent
             _registry_agent = resolve_agent(agent_id=agent_id)
             if _registry_agent:
                 if _registry_agent.get("system_prompt"):
@@ -541,7 +541,7 @@ def execute_chat_agent(
 
         if agent_id or _registry_agent:
             try:
-                from app.services.agent_registry import record_agent_run
+                from app.application.agents.agent_registry import record_agent_run
                 record_agent_run({
                     "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
                     "run_id": run["run_id"],
@@ -637,7 +637,7 @@ def execute_chat_agent(
         )
         if agent_id or _registry_agent:
             try:
-                from app.services.agent_registry import record_agent_run
+                from app.application.agents.agent_registry import record_agent_run
                 record_agent_run({
                     "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
                     "run_id": run["run_id"],

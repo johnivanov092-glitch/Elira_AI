@@ -254,19 +254,19 @@ def seed_builtin_tools() -> int:
     if _BUILTIN_SEEDED:
         return 0
 
-    from app.services.tool_service import (
+    from app.application.tools.tool_service import (
         search_memory_tool,
     )
-    from app.services.web_service import search_web, research_web
-    from app.services.python_runner import execute_python
-    from app.services.project_service import (
+    from app.application.web.web_service import search_web, research_web
+    from app.infrastructure.runtime.python_runner import execute_python
+    from app.infrastructure.files.project_service import (
         list_project_tree, read_project_file, write_project_file, search_project,
     )
-    from app.services.project_patch_service import ProjectPatchService
-    from app.services.library_service import list_library_files, build_library_context
-    from app.services.git_service import git_status as _git_status_fn, git_commit as _git_commit_fn
-    from app.services.project_map_service import ProjectMapService
-    from app.services.project_brain_loop_service import ProjectBrainLoopService
+    from app.application.projects.project_patch_service import ProjectPatchService
+    from app.application.library.library_service import list_library_files, build_library_context
+    from app.infrastructure.vcs.git_service import git_status as _git_status_fn, git_commit as _git_commit_fn
+    from app.application.projects.project_map_service import ProjectMapService
+    from app.application.projects.project_brain_loop_service import ProjectBrainLoopService
 
     _patch = ProjectPatchService()
     _map_svc = ProjectMapService()
@@ -313,7 +313,7 @@ def seed_builtin_tools() -> int:
         },
         {
             "name": "multi_web_search",
-            "handler": lambda a: __import__("app.services.web_multisearch_service", fromlist=["WebMultiSearchService"]).WebMultiSearchService().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
+            "handler": lambda a: __import__("app.infrastructure.search.web_multisearch_service", fromlist=["WebMultiSearchService"]).WebMultiSearchService().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
             "display_name": "Multi Web Search", "display_name_ru": "Мульти-поиск",
             "category": "web",
             "description": "Search across multiple web engines",

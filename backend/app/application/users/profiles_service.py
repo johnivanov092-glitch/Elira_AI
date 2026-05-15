@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS, PROFILE_UI
-from app.services.persona_service import build_persona_prompt
+from app.application.persona.persona_service import build_persona_prompt
 
 
 def get_profiles() -> dict[str, Any]:
