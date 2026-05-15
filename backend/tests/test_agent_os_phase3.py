@@ -170,14 +170,14 @@ class EventBusIntegrationTest(EventBusDbMixin):
         }
 
     def test_run_agent_emits_started_and_completed(self) -> None:
+        import app.application.chat.service as _svc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat", return_value={"ok": True, "answer": "hello from agent"}), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"):
+             patch.object(_svc, "_collect_context", return_value=""), \
+             patch.object(_svc, "run_chat", return_value={"ok": True, "answer": "hello from agent"}), \
+             patch.object(_svc, "observe_dialogue", return_value={"ok": True}), \
+             patch.object(_svc, "_get_and_clear_attachments", return_value=""), \
+             patch.object(_svc, "_maybe_generate_files", return_value=""), \
+             patch.object(_svc, "pick_model_for_route", return_value="test-model"):
             result = agents_service.run_agent(
                 model_name="test-model",
                 profile_name="Universal",
@@ -199,10 +199,11 @@ class EventBusIntegrationTest(EventBusDbMixin):
         self.assertEqual(completed["payload"]["model_used"], "test-model")
 
     def test_run_agent_emits_failed_completion_event(self) -> None:
+        import app.application.chat.service as _svc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat", return_value={"ok": False, "warnings": ["boom"]}), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"):
+             patch.object(_svc, "_collect_context", return_value=""), \
+             patch.object(_svc, "run_chat", return_value={"ok": False, "warnings": ["boom"]}), \
+             patch.object(_svc, "pick_model_for_route", return_value="test-model"):
             result = agents_service.run_agent(
                 model_name="test-model",
                 profile_name="Universal",
@@ -221,15 +222,16 @@ class EventBusIntegrationTest(EventBusDbMixin):
         self.assertIn("boom", completed["payload"]["error"])
 
     def test_run_agent_stream_emits_started_and_completed(self) -> None:
+        import app.application.chat.stream_service as _ssvc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat_stream", return_value=iter(["hello", " world"])), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"), \
-             patch.object(agents_service, "should_cache", return_value=False):
+             patch.object(_ssvc, "_collect_context", return_value=""), \
+             patch.object(_ssvc, "run_chat_stream", return_value=iter(["hello", " world"])), \
+             patch.object(_ssvc, "observe_dialogue", return_value={"ok": True}), \
+             patch.object(_ssvc, "_get_and_clear_attachments", return_value=""), \
+             patch.object(_ssvc, "_maybe_generate_files", return_value=""), \
+             patch.object(_ssvc, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
+             patch.object(_ssvc, "pick_model_for_route", return_value="test-model"), \
+             patch.object(_ssvc, "should_cache", return_value=False):
             events = list(
                 agents_service.run_agent_stream(
                     model_name="test-model",
