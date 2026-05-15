@@ -11,6 +11,8 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.tools.tool_registry as _tr  # noqa: E402
+
 from app.services import tool_registry as reg  # noqa: E402
 
 
@@ -142,7 +144,7 @@ class TestRegisterFromDict(ToolRegistryTestCase):
 
 class TestSeedBuiltinTools(ToolRegistryTestCase):
     def test_seed_creates_tools(self) -> None:
-        reg._BUILTIN_SEEDED = False
+        _tr._BUILTIN_SEEDED = False
         count = reg.seed_builtin_tools()
         self.assertGreater(count, 0)
 
@@ -153,9 +155,9 @@ class TestSeedBuiltinTools(ToolRegistryTestCase):
         self.assertIn("git_status", names)
 
     def test_seed_idempotent(self) -> None:
-        reg._BUILTIN_SEEDED = False
+        _tr._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        reg._BUILTIN_SEEDED = False
+        _tr._BUILTIN_SEEDED = False
         count2 = reg.seed_builtin_tools()
         # Re-registration updates, doesn't fail
         self.assertGreaterEqual(count2, 0)
