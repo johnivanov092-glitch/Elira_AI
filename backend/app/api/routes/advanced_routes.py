@@ -30,7 +30,7 @@ class MultiAgentRequest(BaseModel):
 
 @router.post("/multi-agent")
 def run_multi(payload: MultiAgentRequest):
-    from app.services.multi_agent_chain import run_multi_agent
+    from app.application.agents.multi_agent_chain import run_multi_agent
     try:
         result = run_multi_agent(
             query=payload.query,

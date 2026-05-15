@@ -280,7 +280,7 @@ def get_agent_runs(
 
         rows = con.execute(
             """SELECT * FROM agent_runs WHERE agent_id = ?
-               ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+               ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?""",
             (agent_id, limit, offset),
         ).fetchall()
 
