@@ -584,6 +584,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 23:11:00 +05:00` | `DONE` | Continued Phase 6 by moving patch workflow and plugin management endpoint groups into typed frontend API modules while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 23:14:00 +05:00` | `DONE` | Continued Phase 6 by moving persona, runtime, Agent OS, and dashboard overview endpoints into `frontend/src/api/system.ts` while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 23:18:00 +05:00` | `DONE` | Continued Phase 6 by moving chat session/message, agent execution, model list, settings, and local API asset helpers into `frontend/src/api/chat.ts` while preserving `api/ide.js` compatibility. Verification passed with frontend typecheck and frontend build. |
+| `2026-05-15 23:20:00 +05:00` | `DONE` | Finished the frontend API transport split by renaming the compatibility facade from `frontend/src/api/ide.js` to `frontend/src/api/ide.ts` after endpoint implementations moved into typed modules. Verification passed with frontend typecheck and frontend build. |
 
 ## 8. Commit Ledger
 

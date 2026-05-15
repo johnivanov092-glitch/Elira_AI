@@ -2075,3 +2075,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   chat shell consumers keep the same facade while the remaining non-facade transport logic has moved into TypeScript.
+
+### 145. Frontend API facade converted to TypeScript
+- Status: completed
+- Scope: finished the Phase 6 API transport split by converting the compatibility facade itself from JavaScript to TypeScript.
+- Finish:
+  renamed `frontend/src/api/ide.js` to [frontend/src/api/ide.ts](/D:/AIWork/Elira_AI/frontend/src/api/ide.ts) after all endpoint implementations had moved into typed modules;
+  preserved extensionless imports such as `../api/ide`, named exports, default export, and the legacy `api.*` object shape.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  frontend API transport now has typed endpoint modules plus a TypeScript compatibility facade without changing JSX consumers.
