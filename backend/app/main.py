@@ -19,9 +19,7 @@ from app.api.routes.library_sqlite import router as library_sqlite_router
 from app.api.routes.advanced_routes import router as advanced_router
 from app.api.routes.skills_routes import router as skills_router
 from app.api.routes.skills_extra_routes import router as skills_extra_router
-from app.api.routes.image_routes import router as image_router
 from app.api.routes.git_routes import router as git_router
-from app.api.routes.web_search_routes import router as web_search_router
 from app.api.routes.dashboard_routes import router as dashboard_router
 from app.api.routes.autopipeline_routes import router as autopipeline_router
 from app.api.routes.task_planner_routes import router as task_planner_router
@@ -71,9 +69,7 @@ app.include_router(library_sqlite_router)
 app.include_router(advanced_router)
 app.include_router(skills_router)
 app.include_router(skills_extra_router)
-app.include_router(image_router)
 app.include_router(git_router)
-app.include_router(web_search_router)
 app.include_router(dashboard_router)
 app.include_router(autopipeline_router)
 app.include_router(task_planner_router)
