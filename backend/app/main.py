@@ -3,17 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.elira_state import router as elira_state_router
 from app.api.routes.project_brain import router as project_brain_router
-from app.api.routes.elira_execute import router as elira_execute_router
 from app.api.routes.elira_patch import router as elira_patch_router
-from app.api.routes.elira_devtools import router as elira_devtools_router
-from app.api.routes.elira_task_runner import router as elira_task_runner_router
-from app.api.routes.elira_supervisor import router as elira_supervisor_router
-from app.api.routes.elira_phase19 import router as elira_phase19_router
-from app.api.routes.elira_phase20 import router as elira_phase20_router
-from app.api.routes.elira_phase20_queue import router as elira_phase20_queue_router
-from app.api.routes.elira_phase20_state import router as elira_phase20_state_router
-from app.api.routes.elira_phase21 import router as elira_phase21_router
-from app.api.routes.elira_stabilization import router as elira_stabilization_router
 
 from app.api.routes.chat import router as chat_router
 from app.api.routes.models import router as models_router
@@ -69,17 +59,7 @@ app.add_middleware(
 
 app.include_router(elira_state_router)
 app.include_router(project_brain_router)
-app.include_router(elira_execute_router)
 app.include_router(elira_patch_router)
-app.include_router(elira_devtools_router)
-app.include_router(elira_task_runner_router)
-app.include_router(elira_supervisor_router)
-app.include_router(elira_phase19_router)
-app.include_router(elira_phase20_router)
-app.include_router(elira_phase20_queue_router)
-app.include_router(elira_phase20_state_router)
-app.include_router(elira_phase21_router)
-app.include_router(elira_stabilization_router)
 
 app.include_router(chat_router)
 app.include_router(models_router)
