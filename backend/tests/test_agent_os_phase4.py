@@ -247,7 +247,7 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
 
         with patch("app.application.workflows.engine.start_workflow_run", return_value=fake_run), \
              patch("app.application.workflows.engine.seed_builtin_workflows", return_value=0), \
-             patch("app.core.memory.build_memory_context", return_value=""):
+             patch("app.infrastructure.db.memory.build_memory_context", return_value=""):
             result = workflow_engine.run_legacy_multi_agent_workflow(
                 task="legacy",
                 model_name="test-model",

@@ -1297,7 +1297,7 @@ def run_legacy_multi_agent_workflow(
     project_context: str = "",
     file_context: str = "",
 ) -> dict[str, Any]:
-    from app.core.memory import build_memory_context
+    from app.infrastructure.db.memory import build_memory_context
 
     seed_builtin_workflows()
     memory_context = build_memory_context(task, memory_profile, top_k=5)
