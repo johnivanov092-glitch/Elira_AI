@@ -59,12 +59,6 @@ def _save_config(config: dict):
         logger.warning(f"Plugin config save error: {e}")
 
 
-def _get_plugin_config(name: str) -> dict:
-    """Конфиг конкретного плагина."""
-    config = _load_config()
-    return config.get(name, {})
-
-
 def _set_plugin_config(name: str, data: dict):
     """Обновляет конфиг плагина."""
     config = _load_config()
