@@ -12,8 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 import app.application.tools.tool_registry as _tr  # noqa: E402
-
-from app.services import tool_registry as reg  # noqa: E402
+import app.application.tools.tool_registry as reg  # noqa: E402
 
 
 def _dummy_handler(args: dict) -> dict:

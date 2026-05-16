@@ -20,9 +20,9 @@ import app.application.event_bus as _eb  # noqa: E402
 import app.application.workflows.engine as _wfe  # noqa: E402
 
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
-from app.services import autopipeline_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+import app.application.autopipeline.autopipeline_service as autopipeline_service  # noqa: E402
+import app.application.event_bus as bus  # noqa: E402
+import app.application.workflows.engine as workflow_engine  # noqa: E402
 
 
 class WorkflowDbMixin(unittest.TestCase):
@@ -206,7 +206,7 @@ class WorkflowRoutesTest(WorkflowDbMixin):
 
 class WorkflowCompatibilityShimTest(WorkflowDbMixin):
     def test_multi_agent_chain_uses_workflow_engine(self) -> None:
-        from app.services import multi_agent_chain
+        import app.application.agents.multi_agent_chain as multi_agent_chain
 
         fake_run = {
             "status": "completed",

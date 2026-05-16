@@ -22,12 +22,12 @@ import app.application.monitoring.agent_monitor as _am  # noqa: E402
 import app.application.workflows.engine as _wfe  # noqa: E402
 
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router  # noqa: E402
-from app.services import agent_monitor  # noqa: E402
-from app.services import agent_registry  # noqa: E402
-from app.services import agent_sandbox  # noqa: E402
-from app.services import agents_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+import app.application.monitoring.agent_monitor as agent_monitor  # noqa: E402
+import app.application.agents.agent_registry as agent_registry  # noqa: E402
+import app.application.monitoring.agent_sandbox as agent_sandbox  # noqa: E402
+import app.application.agents.agents_service as agents_service  # noqa: E402
+import app.application.event_bus as bus  # noqa: E402
+import app.application.workflows.engine as workflow_engine  # noqa: E402
 
 
 class AgentOsPhase5DbMixin(unittest.TestCase):
