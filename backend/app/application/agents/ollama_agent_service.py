@@ -6,17 +6,11 @@ HTTP layer; all state, helpers, and execution logic live here.
 from __future__ import annotations
 
 import hashlib
-import html
 import re
-import tempfile
 import time
 import uuid
-import zipfile
 from pathlib import Path
 from typing import Any
-from urllib import parse as urlparse
-from urllib import request as urlrequest
-
 from fastapi import HTTPException
 
 # ---------------------------------------------------------------------------
@@ -131,29 +125,8 @@ def _safe_filename(name: str) -> str:
     return cleaned[:120] or "attachment"
 
 
-def _extract_text_from_docx(data: bytes) -> str:
-    try:
-        with tempfile.TemporaryDirectory(prefix="elira_docx_") as tmp:
-            path = Path(tmp) / "file.docx"
-            path.write_bytes(data)
-            with zipfile.ZipFile(path, "r") as zf:
-                xml = zf.read("word/document.xml").decode("utf-8", errors="ignore")
-        xml = re.sub(r"</w:p>", "\n", xml)
-        xml = re.sub(r"<[^>]+>", "", xml)
-        return html.unescape(xml)
-    except Exception:
-        return ""
-
-
-def _extract_text_from_pdf(data: bytes) -> str:
-    text = data.decode("latin-1", errors="ignore")
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"[^\x20-\x7E\n\r]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
 def extract_upload_text(filename: str, data: bytes) -> tuple[str, str]:
+    from app.infrastructure.files.file_extractor import extract_docx, extract_pdf
     suffix = Path(filename).suffix.lower()
     if suffix in TEXT_SUFFIXES or suffix in {".pyw", ".log"}:
         try:
@@ -161,9 +134,9 @@ def extract_upload_text(filename: str, data: bytes) -> tuple[str, str]:
         except UnicodeDecodeError:
             return data.decode("utf-8", errors="replace"), "utf-8/replace"
     if suffix == ".docx":
-        return _extract_text_from_docx(data), "docx-text"
+        return extract_docx(data), "docx-text"
     if suffix == ".pdf":
-        return _extract_text_from_pdf(data), "pdf-text"
+        return extract_pdf(data), "pdf-text"
     return "", "binary"
 
 
@@ -321,70 +294,7 @@ def route_task(
     return {"mode": "chat", "reason": "default"}
 
 
-def _clean_html_text(raw_html: str) -> str:
-    text = re.sub(r"<script.*?</script>", " ", raw_html, flags=re.S | re.I)
-    text = re.sub(r"<style.*?</style>", " ", text, flags=re.S | re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def _search_web(query: str, limit: int = 5) -> list[dict[str, str]]:
-    url = f"https://html.duckduckgo.com/html/?q={urlparse.quote_plus(query[:300])}"
-    req = urlrequest.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urlrequest.urlopen(req, timeout=20) as response:
-            html_text = response.read().decode("utf-8", errors="ignore")
-    except Exception:
-        return []
-    pattern = re.compile(
-        r'<a[^>]*class="result__a"[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>.*?'
-        r'<a[^>]*class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
-        re.S,
-    )
-    results = []
-    for match in pattern.finditer(html_text):
-        href = html.unescape(match.group("href"))
-        title = _clean_html_text(match.group("title"))
-        snippet = _clean_html_text(match.group("snippet"))
-        if href.startswith("//"):
-            href = "https:" + href
-        if "duckduckgo.com/l/?uddg=" in href:
-            parsed = urlparse.urlparse(href)
-            query_params = urlparse.parse_qs(parsed.query)
-            href = urlparse.unquote(query_params.get("uddg", [href])[0])
-        if href.startswith("http"):
-            results.append({"title": title, "url": href, "snippet": snippet})
-        if len(results) >= limit:
-            break
-    return results
-
-
-def _fetch_web_page_text(url: str) -> str:
-    req = urlrequest.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urlrequest.urlopen(req, timeout=20) as response:
-            content_type = response.headers.get("Content-Type", "")
-            if "text/html" not in content_type and "text/plain" not in content_type:
-                return ""
-            raw = response.read().decode("utf-8", errors="ignore")
-            return _clean_html_text(raw)[:6000]
-    except Exception:
-        return ""
-
-
-def collect_web_context(query: str) -> list[dict[str, str]]:
-    results = _search_web(query, limit=4)
-    return [
-        {
-            "title": item["title"],
-            "url": item["url"],
-            "snippet": item["snippet"],
-            "page_text": _fetch_web_page_text(item["url"]),
-        }
-        for item in results[:3]
-    ]
+from app.infrastructure.search.ddg_scraper import collect_web_context  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
