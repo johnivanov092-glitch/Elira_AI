@@ -172,13 +172,6 @@ def _rerank_results(
     )
 
 
-def count_preferred_domain_hits(results: Iterable[Dict[str, str]], preferred_domains: Iterable[str] | None = None) -> int:
-    preferred = tuple(preferred_domains or ())
-    if not preferred:
-        return 0
-    return sum(1 for item in results if _domain_matches(_extract_domain(item.get("href", "")), preferred))
-
-
 def _dedupe_results(results: Iterable[Dict[str, str]], max_results: int | None = None) -> List[Dict[str, str]]:
     unique: list[Dict[str, str]] = []
     seen = set()

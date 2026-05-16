@@ -12,20 +12,22 @@ from app.application.agents.ollama_agent_service import (
     LEGACY_AGENT_CATALOG,
     MAX_ATTACHMENT_BYTES,
     MAX_READ_BYTES,
-    OLLAMA_BASE_URL,
     PROJECT_ROOT,
     UPLOAD_ROOT,
     attachment_summary,
     execute_chat_send,
     execute_ollama_plan,
     execute_ollama_run,
-    fetch_ollama_tags,
     hash_bytes,
     looks_text_file,
-    pick_model,
     read_text_file,
     resolve_project_file,
     store_attachment,
+)
+from app.infrastructure.runtime.ollama_client import (
+    OLLAMA_BASE_URL,
+    fetch_ollama_tags,
+    pick_model,
 )
 
 router = APIRouter(prefix="/api/project-brain", tags=["project-brain"])
