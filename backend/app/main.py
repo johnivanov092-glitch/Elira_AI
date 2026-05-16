@@ -30,11 +30,15 @@ from app.api.routes.workflow_routes import router as workflow_router
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router
 from app.api.routes.tool_registry_routes import router as tool_registry_router
 from app.infrastructure.runtime.runtime_service import init_runtime_state
+from app.application.agents.agent_registry import seed_builtin_agents
+from app.application.workflows.engine import seed_builtin_workflows
+from app.application.monitoring.agent_monitor import seed_default_limits
+from app.application.tools.tool_registry import seed_builtin_tools
 
 app = FastAPI(title="Elira AI API")
 
-# CORS: localhost + LAN (РґР»СЏ mobile mode).
-# Regex РїРѕРєСЂС‹РІР°РµС‚: 127.0.0.1, localhost, Рё Р»СЋР±РѕР№ LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+# CORS: localhost + LAN (for mobile mode).
+# Regex covers: 127.0.0.1, localhost, and any LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -81,17 +85,11 @@ app.include_router(agent_monitor_router)
 app.include_router(tool_registry_router)
 
 init_runtime_state()
-
-# Seed встроенных агентов в Agent Registry при старте
-from app.application.agents.agent_registry import seed_builtin_agents
-from app.application.workflows.engine import seed_builtin_workflows
-from app.application.monitoring.agent_monitor import seed_default_limits
 seed_builtin_agents()
 seed_builtin_workflows()
 seed_default_limits()
-
-from app.application.tools.tool_registry import seed_builtin_tools
 seed_builtin_tools()
+
 
 @app.get("/health")
 def health():
