@@ -2172,3 +2172,16 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   only [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) remains as a JavaScript/JSX source in `frontend/src`.
+
+### 153. Frontend EliraChatShell converted to TSX
+- Status: completed
+- Scope: finished the active Phase 6 frontend source conversion by typing the large chat shell.
+- Finish:
+  renamed `frontend/src/components/EliraChatShell.jsx` to [frontend/src/components/EliraChatShell.tsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.tsx);
+  added local boundary typing for chats, messages, library files, model routing, charts, DOM events, lucide icon tuple maps, and unknown API payloads while preserving the existing UI behavior.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `rg --files frontend/src | rg '\.(jsx|js)$'` -> no active JS/JSX sources found.
+- Result:
+  all active React frontend sources under `frontend/src` are now TypeScript/TSX.

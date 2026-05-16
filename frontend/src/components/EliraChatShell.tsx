@@ -7,7 +7,7 @@
  *   • Code tab работает как артефакты Claude
  */
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback, type CSSProperties, type ReactNode } from "react";
 import {
   BarChart3,
   BookOpen,
@@ -41,6 +41,7 @@ import {
   Trash2,
   Users,
   Workflow,
+  type LucideIcon,
 } from "lucide-react";
 import { api, executeStream } from "../api/ide";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
@@ -55,7 +56,72 @@ const CHAT_CONTEXT_KEY = "elira_chat_context_map_v7";
 
 const MAX_HISTORY_PAIRS = 10;
 
-const PROFILE_DESCRIPTIONS = {
+type AnyRecord = Record<string, any>;
+type ChatMessage = AnyRecord & {
+  content?: any;
+  id?: any;
+  role?: any;
+};
+type ChatItem = AnyRecord & {
+  id?: any;
+  memory_saved?: boolean;
+  pinned?: boolean;
+  title?: any;
+};
+type LibraryFile = AnyRecord & {
+  id: string;
+  name: string;
+  preview?: any;
+  size?: any;
+  type?: any;
+};
+type RouteMap = Record<string, string[]>;
+type ChartData = {
+  labels: string[];
+  valueLabel?: string;
+  values: number[];
+};
+type StreamController = {
+  abort: () => void;
+};
+type NoticeTone = "error" | "info" | "warning";
+type IconComponent = LucideIcon;
+type SidebarNavItem = readonly [string, string, IconComponent];
+
+function asRecord(value: unknown): AnyRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as AnyRecord : {};
+}
+
+function asRecordArray(value: unknown): AnyRecord[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => (typeof item === "string" ? { name: item, model: item } : asRecord(item)));
+}
+
+function modelOptionsFrom(payload: unknown): AnyRecord[] {
+  const record = asRecord(payload);
+  if (Array.isArray(record.models)) return asRecordArray(record.models);
+  if (Array.isArray(payload)) return asRecordArray(payload);
+  return [];
+}
+
+function modelOptionName(item: unknown): string {
+  if (typeof item === "string") return item;
+  const record = asRecord(item);
+  return String(record.name || record.model || "");
+}
+
+function routeMapFrom(value: unknown): RouteMap | null {
+  const record = asRecord(value);
+  if (!Object.keys(record).length) return null;
+  return Object.fromEntries(
+    Object.entries(record).map(([key, models]) => [
+      key,
+      Array.isArray(models) ? models.map(String) : [],
+    ]),
+  ) as RouteMap;
+}
+
+const PROFILE_DESCRIPTIONS: Record<string, string> = {
   "Универсальный": "Ясный, структурированный и профессиональный тон.",
   "Программист": "Код, исправления, архитектура, рефакторинг.",
   "Исследователь": "Факты, источники, web-поиск.",
@@ -89,24 +155,25 @@ const SKILLS = [
 ];
 
 // Tauri window controls
-function loadJson(k, f) { try { return JSON.parse(localStorage.getItem(k) || JSON.stringify(f)); } catch { return f; } }
-function saveJson(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn("localStorage quota exceeded:", e); } }
-function loadLibraryFiles() { return loadJson(LIBRARY_KEY, []); }
-function saveLibraryFiles(i) { saveJson(LIBRARY_KEY, i); }
-function loadChatContextMap() { return loadJson(CHAT_CONTEXT_KEY, {}); }
-function saveChatContextMap(v) { saveJson(CHAT_CONTEXT_KEY, v); }
-function makeId(p = "id") { return `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
-function deriveChatTitle(t) { const c = String(t || "").trim().replace(/\s+/g, " "); return !c ? "Новый чат" : c.length > 28 ? `${c.slice(0, 28)}…` : c; }
+function loadJson<T>(k: string, f: T): T { try { return JSON.parse(localStorage.getItem(k) || JSON.stringify(f)) as T; } catch { return f; } }
+function saveJson(k: string, v: unknown) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn("localStorage quota exceeded:", e); } }
+function loadLibraryFiles(): LibraryFile[] { return loadJson<LibraryFile[]>(LIBRARY_KEY, []); }
+function saveLibraryFiles(i: LibraryFile[]) { saveJson(LIBRARY_KEY, i); }
+function loadChatContextMap(): Record<string, string[]> { return loadJson<Record<string, string[]>>(CHAT_CONTEXT_KEY, {}); }
+function saveChatContextMap(v: Record<string, string[]>) { saveJson(CHAT_CONTEXT_KEY, v); }
+function makeId(p = "id"): string { return `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
+function deriveChatTitle(t: unknown): string { const c = String(t || "").trim().replace(/\s+/g, " "); return !c ? "Новый чат" : c.length > 28 ? `${c.slice(0, 28)}…` : c; }
 
-function shortModelName(name) {
-  if (!name) return "model";
+function shortModelName(name: unknown): string {
+  const value = String(name || "");
+  if (!value) return "model";
   // YandexGPT-5-Lite-8B-instruct-GGUF -> YandexGPT
-  if (name.toLowerCase().includes("yandex")) return "YandexGPT";
+  if (value.toLowerCase().includes("yandex")) return "YandexGPT";
   // nemotron-mini -> Nemotron Mini, etc.
-  return name;
+  return value;
 }
 
-function normalizeErrorMessage(e, fb = "Ошибка") {
+function normalizeErrorMessage(e: any, fb = "Ошибка"): string {
   const v = e?.message ?? e?.detail ?? e;
   if (!v) return fb;
   if (typeof v === "string") return v;
@@ -115,62 +182,80 @@ function normalizeErrorMessage(e, fb = "Ошибка") {
   return String(v);
 }
 
-function humanizeValue(value) {
+function humanizeValue(value: unknown): string {
   return String(value || "")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
-function capabilityLabel(key) {
-  return {
+function capabilityLabel(key: string): string {
+  return ({
     vector_memory: "Векторная память",
     screenshot: "Скриншоты",
-  }[key] || humanizeValue(key);
+  } as Record<string, string>)[key] || humanizeValue(key);
 }
 
-function capabilityStateText(capability = {}) {
+function capabilityStateText(capability: AnyRecord = {}): string {
   if (capability.available) return "Доступно";
   if (capability.reason === "optional_dependency_missing") return "Не хватает модулей";
   if (capability.reason) return humanizeValue(capability.reason);
   return "Недоступно";
 }
 
-function capabilityModeText(mode) {
-  return {
+function capabilityModeText(mode: unknown): string {
+  return ({
     keyword_fallback: "Резервный поиск по ключевым словам",
-  }[mode] || humanizeValue(mode);
+  } as Record<string, string>)[String(mode || "")] || humanizeValue(mode);
 }
 
-function runtimeStorageModeText(mode) {
-  return {
+function runtimeStorageModeText(mode: unknown): string {
+  return ({
     rooted_sqlite: "Корневой data/",
     rooted_sqlite_with_legacy_archive: "Корневой data/ + legacy archive",
     custom_data_dir: "Пользовательский data dir",
     unknown: "Неизвестно",
-  }[mode] || humanizeValue(mode);
+  } as Record<string, string>)[String(mode || "")] || humanizeValue(mode);
 }
 
-function engineListText(items) {
+function pipelineTaskDataKey(taskType: unknown): string {
+  return ({
+    prompt: "prompt",
+    web_search: "query",
+    plugin: "plugin_name",
+    http: "url",
+  } as Record<string, string>)[String(taskType)] || "prompt";
+}
+
+function pipelineTaskTypeLabel(taskType: unknown): string {
+  return ({
+    prompt: "Промпт",
+    web_search: "Веб-поиск",
+    plugin: "Плагин",
+    http: "HTTP",
+  } as Record<string, string>)[String(taskType)] || String(taskType || "");
+}
+
+function engineListText(items: unknown): string {
   if (!Array.isArray(items) || !items.length) return "—";
   return items.map((item) => humanizeValue(item)).join(", ");
 }
 
-function yesNoText(value) {
+function yesNoText(value: unknown): string {
   return value ? "Да" : "Нет";
 }
 
-function formatDurationMs(value) {
+function formatDurationMs(value: unknown): string {
   const ms = Number(value || 0);
   if (!ms) return "0 мс";
   if (ms >= 1000) return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} с`;
   return `${ms} мс`;
 }
 
-function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }) {
+function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }: { icon: IconComponent; size?: number; strokeWidth?: number; style?: CSSProperties }) {
   return <Icon size={size} strokeWidth={strokeWidth} style={{ display: "block", flexShrink: 0, ...style }} aria-hidden="true" />;
 }
 
-function IconText({ icon, children, size = 14, gap = 6, style, textStyle }) {
+function IconText({ icon, children, size = 14, gap = 6, style, textStyle }: { children: ReactNode; gap?: number; icon: IconComponent; size?: number; style?: CSSProperties; textStyle?: CSSProperties }) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap, ...style }}>
       <UiIcon icon={icon} size={size} />
@@ -179,7 +264,7 @@ function IconText({ icon, children, size = 14, gap = 6, style, textStyle }) {
   );
 }
 
-function PanelNotice({ title, message, onRetry, tone = "error" }) {
+function PanelNotice({ title, message, onRetry, tone = "error" }: { message?: string; onRetry?: () => void; title: string; tone?: NoticeTone }) {
   if (!message) return null;
 
   const palette = {
@@ -221,8 +306,8 @@ function PanelNotice({ title, message, onRetry, tone = "error" }) {
   );
 }
 
-function CapabilityStatusSection({ status }) {
-  const entries = Object.entries(status?.capabilities || {});
+function CapabilityStatusSection({ status }: { status?: AnyRecord | null }) {
+  const entries = Object.entries(status?.capabilities || {}) as [string, AnyRecord][];
   if (!entries.length) return null;
 
   return (
@@ -267,7 +352,7 @@ function CapabilityStatusSection({ status }) {
   );
 }
 
-function PersonaStatusSection({ status, busy = false, onRollback }) {
+function PersonaStatusSection({ status, busy = false, onRollback }: { busy?: boolean; onRollback?: (version: string | number) => void; status?: AnyRecord | null }) {
   if (!status?.active_version) return null;
 
   const traits = Array.isArray(status?.latest_traits) ? status.latest_traits : [];
@@ -335,7 +420,7 @@ function PersonaStatusSection({ status, busy = false, onRollback }) {
   );
 }
 
-function RuntimeStatusSection({ status }) {
+function RuntimeStatusSection({ status }: { status?: AnyRecord | null }) {
   if (!status?.ok) return null;
 
   const warning = status?.warning || "";
@@ -385,7 +470,7 @@ function RuntimeStatusSection({ status }) {
   );
 }
 
-function AgentOsStatusSection({ health, dashboard, limits }) {
+function AgentOsStatusSection({ health, dashboard, limits }: { dashboard?: AnyRecord | null; health?: AnyRecord | null; limits?: AnyRecord | null }) {
   const hasHealth = Boolean(health && (Array.isArray(health.components) || Array.isArray(health.warnings)));
   const hasDashboard = Boolean(dashboard && (dashboard.ok || dashboard.total_agent_runs || dashboard.workflow_runs || dashboard.blocked_runs || (dashboard.top_agents || []).length || (dashboard.limits_summary || []).length));
   const limitItems = Array.isArray(limits?.items) ? limits.items : Array.isArray(dashboard?.limits_summary) ? dashboard.limits_summary : [];
@@ -504,10 +589,10 @@ function AgentOsStatusSection({ health, dashboard, limits }) {
   );
 }
 
-async function fileToLibraryRecord(file) {
+async function fileToLibraryRecord(file: File): Promise<LibraryFile> {
   let preview = "";
   const name = file.name || "";
-  const ext = name.split(".").pop().toLowerCase();
+  const ext = (name.split(".").pop() || "").toLowerCase();
 
   // Текстовые файлы — читаем на клиенте
   // UTF-8 файлы — читаем на клиенте
@@ -526,43 +611,44 @@ async function fileToLibraryRecord(file) {
 }
 
 /** Files included in context only for the current chat */
-function getChatContextFiles(lib, chatId) {
+function getChatContextFiles(lib: LibraryFile[], chatId: string) {
   if (!chatId) return [];
   const map = loadChatContextMap();
   const ids = new Set(map[chatId] || []);
   return lib.filter(i => ids.has(i.id) && i.preview);
 }
-function buildHistory(msgs) { if (!msgs?.length) return []; const p = msgs.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ role: m.role, content: m.content || "" })); return p.length > MAX_HISTORY_PAIRS * 2 ? p.slice(-MAX_HISTORY_PAIRS * 2) : p; }
+function buildHistory(msgs: ChatMessage[]) { if (!msgs?.length) return []; const p = msgs.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ role: m.role, content: m.content || "" })); return p.length > MAX_HISTORY_PAIRS * 2 ? p.slice(-MAX_HISTORY_PAIRS * 2) : p; }
 
 
 // Мемоизированный компонент сообщения — не пере-рендерится при стриминге нового
-const MessageItem = React.memo(function MessageItem({ msg }) {
+const MessageItem = React.memo(function MessageItem({ msg }: { msg: ChatMessage }) {
+  const content = String(msg.content || "");
   return (
     <div className={`message-row ${msg.role}`}>
       <div className={`message-bubble smaller-text ${msg.role === "assistant" ? "assistant-bubble" : "user-bubble"}`}>
-        {msg.role === "assistant" ? <MarkdownRenderer content={msg.content}/> : msg.content}
+        {msg.role === "assistant" ? <MarkdownRenderer content={content}/> : content}
       </div>
     </div>
   );
 });
 
 export default function EliraChatShell() {
-  const fileRef = useRef(null);
-  const msgRef = useRef(null);
-  const taRef = useRef(null);
-  const streamRef = useRef(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const msgRef = useRef<HTMLDivElement | null>(null);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
+  const streamRef = useRef<StreamController | null>(null);
   const stoppedRef = useRef(false);
   const initRef = useRef(false);
 
   const [mainTab, setMainTab] = useState("chat");
   const [sideTab, setSideTab] = useState("chats");
   const [model, setModel] = useState("gemma3:4b");
-  const [modelOpts, setModelOpts] = useState([]);
+  const [modelOpts, setModelOpts] = useState<AnyRecord[]>([]);
   const [profile, setProfile] = useState("Универсальный");
   const [skills, setSkills] = useState(["web_search", "file_context", "memory", "pdf_reader", "python_exec", "code_analysis", "file_gen", "translator", "converter", "archiver", "http_api", "screenshot", "image_gen"]);
-  const [chats, setChats] = useState([]);
+  const [chats, setChats] = useState<ChatItem[]>([]);
   const [chatId, setChatId] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sideSearch, setSideSearch] = useState("");
   const [libSearch, setLibSearch] = useState("");
@@ -572,48 +658,48 @@ export default function EliraChatShell() {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [phase, setPhase] = useState(""); // "searching" | "thinking" | "reflecting" | ""
-  const [libraryFiles, setLibraryFiles] = useState(loadLibraryFiles());
+  const [libraryFiles, setLibraryFiles] = useState<LibraryFile[]>(loadLibraryFiles());
   const [selLibId, setSelLibId] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [renameVal, setRenameVal] = useState("");
   const [showPanel, setShowPanel] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [mobileSidebar, setMobileSidebar] = useState(false);
-  const [pluginList, setPluginList] = useState([]);
-  const [dashData, setDashData] = useState(null);
-  const [projectBrainStatus, setProjectBrainStatus] = useState(null);
-  const [personaStatus, setPersonaStatus] = useState(null);
-  const [runtimeStatus, setRuntimeStatus] = useState(null);
-  const [agentOsHealth, setAgentOsHealth] = useState(null);
-  const [agentOsDashboard, setAgentOsDashboard] = useState(null);
-  const [agentOsLimits, setAgentOsLimits] = useState(null);
+  const [pluginList, setPluginList] = useState<AnyRecord[]>([]);
+  const [dashData, setDashData] = useState<AnyRecord | null>(null);
+  const [projectBrainStatus, setProjectBrainStatus] = useState<AnyRecord | null>(null);
+  const [personaStatus, setPersonaStatus] = useState<AnyRecord | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<AnyRecord | null>(null);
+  const [agentOsHealth, setAgentOsHealth] = useState<AnyRecord | null>(null);
+  const [agentOsDashboard, setAgentOsDashboard] = useState<AnyRecord | null>(null);
+  const [agentOsLimits, setAgentOsLimits] = useState<AnyRecord | null>(null);
   const [personaBusy, setPersonaBusy] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
-  const [pipelinesList, setPipelinesList] = useState([]);
+  const [pipelinesList, setPipelinesList] = useState<AnyRecord[]>([]);
   const [pipelinesError, setPipelinesError] = useState("");
-  const [pipeForm, setPipeForm] = useState({name:"",task_type:"prompt",interval_minutes:60,task_data:{prompt:""}});
-  const [tasksList, setTasksList] = useState([]);
+  const [pipeForm, setPipeForm] = useState<AnyRecord>({name:"",task_type:"prompt",interval_minutes:60,task_data:{prompt:""}});
+  const [tasksList, setTasksList] = useState<AnyRecord[]>([]);
   const [tasksError, setTasksError] = useState("");
   const [taskFilter, setTaskFilter] = useState("active");
-  const [taskForm, setTaskForm] = useState({title:"",description:"",category:"general",priority:"medium",due_date:""});
-  const [taskStats, setTaskStats] = useState(null);
-  const [editingTask, setEditingTask] = useState(null);
-  const [tgConfig, setTgConfig] = useState(null);
-  const [tgUsers, setTgUsers] = useState([]);
-  const [tgLog, setTgLog] = useState([]);
+  const [taskForm, setTaskForm] = useState<AnyRecord>({title:"",description:"",category:"general",priority:"medium",due_date:""});
+  const [taskStats, setTaskStats] = useState<AnyRecord | null>(null);
+  const [editingTask, setEditingTask] = useState<string | number | null>(null);
+  const [tgConfig, setTgConfig] = useState<AnyRecord | null>(null);
+  const [tgUsers, setTgUsers] = useState<AnyRecord[]>([]);
+  const [tgLog, setTgLog] = useState<AnyRecord[]>([]);
   const [telegramError, setTelegramError] = useState("");
   const [tgTokenInput, setTgTokenInput] = useState("");
   const [tgTab, setTgTab] = useState("setup");
   const [multiAgent, setMultiAgent] = useState(false);
   const [lastInput, setLastInput] = useState("");
   const [lastModel, setLastModel] = useState("");
-  const [chartData, setChartData] = useState(null);
+  const [chartData, setChartData] = useState<ChartData | null>(null);
   const [ollamaContext, setOllamaContext] = useState(8192);
   const [settingsModel, setSettingsModel] = useState("gemma3:4b");
   const [settingsProfile, setSettingsProfile] = useState("Универсальный");
   const [settingsContext, setSettingsContext] = useState(8192);
   const [settingsSaved, setSettingsSaved] = useState(false);
-  const [routeMap, setRouteMap] = useState({ code: [], project: [], research: [], chat: [] });
+  const [routeMap, setRouteMap] = useState<RouteMap>({ code: [], project: [], research: [], chat: [] });
   const [theme, setTheme] = useState(() => localStorage.getItem("elira_theme") || "dark");
 
 
@@ -632,7 +718,10 @@ export default function EliraChatShell() {
   // Закрытие export dropdown при клике снаружи
   useEffect(() => {
     if (!showExportMenu) return;
-    const h = (e) => { if (!e.target.closest(".export-dropdown-wrap")) setShowExportMenu(false); };
+    const h = (e: MouseEvent) => {
+      const target = e.target instanceof Element ? e.target : null;
+      if (!target?.closest(".export-dropdown-wrap")) setShowExportMenu(false);
+    };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, [showExportMenu]);
@@ -647,7 +736,7 @@ export default function EliraChatShell() {
   const workingRef = useRef(false);
   workingRef.current = working;
   useEffect(() => {
-    function onGlobalKey(e) {
+    function onGlobalKey(e: KeyboardEvent) {
       // Ctrl+N — новый чат
       if ((e.ctrlKey || e.metaKey) && e.key === "n") { e.preventDefault(); newChat(false); }
       // Escape — остановить стриминг
@@ -667,12 +756,14 @@ export default function EliraChatShell() {
   // Sync library from SQLite backend on mount (optional)
   useEffect(() => {
     api.listLibraryFiles().then(d => {
-      if (d?.ok && d.items?.length) {
+      const record = asRecord(d);
+      const items = Array.isArray(record.items) ? record.items : [];
+      if (record.ok && items.length) {
         const ctxMap = loadChatContextMap();
         const activeIds = new Set(Object.values(ctxMap).flat());
         setLibraryFiles(prev => {
-          const merged = [...d.items.map(i => ({...i, id: `db-${i.id}`, source: "sqlite", use_in_context: activeIds.has(`db-${i.id}`)})), ...prev.filter(f => f.source !== "sqlite")];
-          const seen = new Set();
+          const merged = [...items.map((i: any) => ({...i, id: `db-${i.id}`, source: "sqlite", use_in_context: activeIds.has(`db-${i.id}`)})), ...prev.filter(f => f.source !== "sqlite")];
+          const seen = new Set<string>();
           const unique = merged.filter(f => { const k = f.name + f.size; if (seen.has(k)) return false; seen.add(k); return true; });
           saveLibraryFiles(unique);
           return unique;
@@ -694,24 +785,26 @@ export default function EliraChatShell() {
     initRef.current = true;
     try {
       const [m, c, settings] = await Promise.all([api.listOllamaModels(), api.listChats(), api.getSettings()]);
-      const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
-      const savedModel = settings?.default_model || "gemma3:4b";
+      const settingsRecord = asRecord(settings);
+      const ml = modelOptionsFrom(m);
+      const savedModel = String(settingsRecord.default_model || "gemma3:4b");
       const savedProfile = settings?.agent_profile || "Универсальный";
-      const savedCtx = settings?.ollama_context || 8192;
-      const getName = (item) => typeof item === "string" ? item : (item.name || item.model || "");
+      const savedCtx = Number(settingsRecord.ollama_context || 8192);
+      const getName = (item: unknown) => modelOptionName(item);
       const preferred = ml.find((item) => getName(item) === savedModel);
       const chosenModel = preferred ? getName(preferred) : ml.length ? getName(ml[0]) : "gemma3:4b";
 
       setModelOpts(ml);
       setModel(chosenModel);
-      setProfile(savedProfile);
+      setProfile(String(savedProfile));
       setOllamaContext(savedCtx);
       setSettingsModel(savedModel);
-      setSettingsProfile(savedProfile);
+      setSettingsProfile(String(savedProfile));
       setSettingsContext(savedCtx);
-      if (settings?.route_model_map) setRouteMap(settings.route_model_map);
+      const savedRouteMap = routeMapFrom(settingsRecord.route_model_map);
+      if (savedRouteMap) setRouteMap(savedRouteMap);
 
-      setChats(c || []);
+      setChats((c || []) as ChatItem[]);
       setChatId("");
       setMessages([]);
       setInput("");
@@ -729,29 +822,31 @@ export default function EliraChatShell() {
     initRef.current = true;
     try {
       const [m, c, settings] = await Promise.all([api.listOllamaModels(), api.listChats(), api.getSettings()]);
-      const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
+      const settingsRecord = asRecord(settings);
+      const ml = modelOptionsFrom(m);
       setModelOpts(ml);
 
       // Загружаем сохранённые настройки из backend
-      const savedModel = settings?.default_model || "gemma3:4b";
+      const savedModel = String(settingsRecord.default_model || "gemma3:4b");
       const savedProfile = settings?.agent_profile || "Универсальный";
-      const savedCtx = settings?.ollama_context || 8192;
+      const savedCtx = Number(settingsRecord.ollama_context || 8192);
 
       // Устанавливаем модель из настроек (если доступна в Ollama)
-      const getName = i => typeof i === "string" ? i : (i.name || i.model || "");
-      const pref = ml.find(i => getName(i) === savedModel);
+      const getName = (i: unknown) => modelOptionName(i);
+      const pref = ml.find((i) => getName(i) === savedModel);
       const chosenModel = pref ? getName(pref) : ml.length ? getName(ml[0]) : "gemma3:4b";
       setModel(chosenModel);
-      setProfile(savedProfile);
+      setProfile(String(savedProfile));
       setOllamaContext(savedCtx);
 
       // Синхронизируем панель настроек
       setSettingsModel(savedModel);
-      setSettingsProfile(savedProfile);
+      setSettingsProfile(String(savedProfile));
       setSettingsContext(savedCtx);
-      if (settings?.route_model_map) setRouteMap(settings.route_model_map);
+      const savedRouteMap = routeMapFrom(settingsRecord.route_model_map);
+      if (savedRouteMap) setRouteMap(savedRouteMap);
 
-      if (c?.length) { setChats(c); }
+      if (c?.length) { setChats(c as ChatItem[]); }
       // Всегда новый чат при запуске
       const n = await newChat(true); if (n?.id) setMessages([]);
     } catch (e) { setError(normalizeErrorMessage(e)); }
@@ -760,7 +855,7 @@ export default function EliraChatShell() {
   async function refreshModels() {
     try {
       const m = await api.listOllamaModels();
-      const ml = Array.isArray(m?.models) ? m.models : Array.isArray(m) ? m : [];
+      const ml = modelOptionsFrom(m);
       setModelOpts(ml);
       return ml;
     } catch { return []; }
@@ -793,7 +888,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function loadTasks(filter) {
+  async function loadTasks(filter: string = taskFilter) {
     const f = filter || taskFilter;
     setTasksError("");
     try {
@@ -836,7 +931,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function handlePersonaRollback(version) {
+  async function handlePersonaRollback(version: string | number) {
     if (!version) return;
     setPersonaBusy(true);
     try {
@@ -881,18 +976,18 @@ export default function EliraChatShell() {
   }
   async function newChat(silent = false) {
     try { setMessages([]); setInput(""); setRenaming(false); setStreamText(""); setStreaming(false); setPhase("");
-      const c = await api.createChat({ title: "Новый чат", clean: true }); await loadChats(c.id); setChatId(c.id); setSideTab("chats"); if (!silent) setError(""); return c;
+      const c = await api.createChat({ title: "Новый чат", clean: true }); await loadChats(String(c.id)); setChatId(String(c.id)); setSideTab("chats"); if (!silent) setError(""); return c;
     } catch (e) { setError(normalizeErrorMessage(e)); return null; }
   }
-  async function openChat(id) {
-    try { streamRef.current?.abort(); setStreamText(""); setStreaming(false); setPhase(""); setChatId(id); setMessages(await api.getMessages({ chatId: id }) || []); setSideTab("chats"); setMainTab("chat"); setRenaming(false); setMobileSidebar(false);
+  async function openChat(id: any) {
+    try { streamRef.current?.abort(); setStreamText(""); setStreaming(false); setPhase(""); setChatId(String(id)); setMessages((await api.getMessages({ chatId: id }) || []) as ChatMessage[]); setSideTab("chats"); setMainTab("chat"); setRenaming(false); setMobileSidebar(false);
     } catch (e) { setError(normalizeErrorMessage(e)); }
   }
   async function renameActive() { const t = renameVal.trim(); if (!t || !chatId) return; try { await api.renameChat({ id: chatId, title: t }); await loadChats(chatId); setRenaming(false); } catch (e) { setError(normalizeErrorMessage(e)); } }
-  async function autoRename(text) { const a = chats.find(c => c.id === chatId); if (!chatId || !a || (a.title && a.title !== "Новый чат")) return; try { await api.renameChat({ id: chatId, title: deriveChatTitle(text) }); await loadChats(chatId); } catch {} }
+  async function autoRename(text: any) { const a = chats.find(c => c.id === chatId); if (!chatId || !a || (a.title && a.title !== "Новый чат")) return; try { await api.renameChat({ id: chatId, title: deriveChatTitle(text) }); await loadChats(chatId); } catch {} }
 
 
-  async function autoRenameChat(targetChatId, text, chatList = chats) {
+  async function autoRenameChat(targetChatId: any, text: any, chatList: ChatItem[] = chats) {
     const a = chatList.find(c => String(c.id) === String(targetChatId));
     if (!targetChatId || !a || (a.title && a.title !== "Новый чат")) return;
     try {
@@ -901,7 +996,7 @@ export default function EliraChatShell() {
     } catch {}
   }
 
-  function exportChat(fmt) {
+  function exportChat(fmt: string) {
     if (!messages.length) return;
     const title = chats.find(c => c.id === chatId)?.title || "Чат Elira AI";
     const safe = title.slice(0,40).replace(/[^\w\u0400-\u04FF]/g,"_");
@@ -919,7 +1014,7 @@ export default function EliraChatShell() {
       const msgs = messages.map(m => {
         const who = m.role==="user" ? "Вы" : "Elira";
         const bg = m.role==="user" ? "#e3f2fd" : "#f5f5f5";
-        const content = m.content.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
+        const content = String(m.content || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\n/g,"<br>");
         return `<div style="margin:12px 0;padding:12px 16px;border-radius:10px;background:${bg}"><strong>${who}</strong><div style="margin-top:6px;white-space:pre-wrap">${content}</div></div>`;
       }).join("\n");
       const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:800px;margin:0 auto;padding:24px;background:#fff;color:#333}h1{font-size:22px;border-bottom:2px solid #1976d2;padding-bottom:8px}.meta{color:#888;font-size:13px;margin-bottom:24px}</style></head><body><h1>${title}</h1><div class="meta">${ts} | ${messages.length} сообщений</div>${msgs}</body></html>`;
@@ -938,15 +1033,15 @@ export default function EliraChatShell() {
     URL.revokeObjectURL(a.href);
   }
 
-  function handleResend(withModel) {
+  function handleResend(withModel: string) {
     if (!lastInput || working) return;
     if (withModel) setModel(withModel);
     setInput(lastInput);
     setTimeout(() => { taRef.current?.focus(); }, 80);
   }
 
-  function detectTableInText(text) {
-    const rows = (text||"").match(/\|.+\|/g);
+  function detectTableInText(text: any): ChartData | null {
+    const rows = String(text || "").match(/\|.+\|/g);
     if (!rows || rows.length < 3) return null;
     const data = rows
       .filter(r => !/^\s*\|[-:| ]+\|\s*$/.test(r))
@@ -1007,11 +1102,12 @@ export default function EliraChatShell() {
       // Контекст проекта — только для запросов про код/репозиторий
       if (wantsProjectContext) {
         try {
-          const projInfo = await api.getAdvancedProjectInfo();
+          const projInfo = asRecord(await api.getAdvancedProjectInfo());
           if (projInfo.ok) {
-            const projTree = await api.getAdvancedProjectTree({ maxDepth: 2, maxItems: 50 });
-            if (projTree.ok && projTree.items?.length) {
-              const fileList = projTree.items.filter(i => i.type === "file").map(i => i.path).join(", ");
+            const projTree = asRecord(await api.getAdvancedProjectTree({ maxDepth: 2, maxItems: 50 }));
+            const treeItems = Array.isArray(projTree.items) ? projTree.items as AnyRecord[] : [];
+            if (projTree.ok && treeItems.length) {
+              const fileList = treeItems.filter((i) => i.type === "file").map((i) => i.path).join(", ");
               cp += `\n\nОткрыт проект: ${projInfo.name} (${projTree.count} файлов)\nФайлы: ${fileList.slice(0, 800)}`;
             }
           }
@@ -1025,16 +1121,16 @@ export default function EliraChatShell() {
         const modeLabel = [useOrch && "Оркестратор", "Агенты", useRefl && "Рефлексия"].filter(Boolean).join(" → ");
         setPhase(`✨ ${modeLabel}...`);
         try {
-          const data = await api.runAdvancedMultiAgent({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"], use_reflection: useRefl, use_orchestrator: useOrch });
+          const data = asRecord(await api.runAdvancedMultiAgent({ query: `${text}${cp}`, model_name: model, context: "", agents: ["researcher","programmer","analyst"], use_reflection: useRefl, use_orchestrator: useOrch }));
           if (data?.ok === false) throw new Error(normalizeErrorMessage(data?.error || data?.detail || "HTTP error"));
-          const final = (data?.report || "").trim() || "Multi-agent не вернул результат";
+          const final = String(data?.report || "").trim() || "Multi-agent не вернул результат";
           try { await api.addMessage({ chatId: activeChatId, role: "assistant", content: final }); } catch {}
           setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]);
           setError("");
           setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
           return;
         } catch (e) {
-          const msg = e?.message === "Failed to fetch"
+          const msg = e instanceof Error && e.message === "Failed to fetch"
             ? "Multi-agent: backend недоступен или процесс упал во время выполнения. Проверь, жив ли FastAPI/Ollama."
             : normalizeErrorMessage(e);
           setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); return;
@@ -1046,14 +1142,14 @@ export default function EliraChatShell() {
       const ctrl = executeStream(
         { model_name: model, profile_name: profile, user_input: `${text}${cp}`, session_id: activeChatId || null, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
-          onToken(t) { fullText += t; setStreamText(fullText); setPhase(""); },
+          onToken(t) { fullText += String(t); setStreamText(fullText); setPhase(""); },
           onPhase(ev) {
-            if (ev.phase === "reflection_replace" && ev.full_text) { fullText = ev.full_text; setStreamText(fullText); }
-            else if (ev.message) { setPhase(ev.message); }
+            if (ev.phase === "reflection_replace" && ev.full_text) { fullText = String(ev.full_text); setStreamText(fullText); }
+            else if (ev.message) { setPhase(String(ev.message)); }
           },
           onDone({ full_text }) {
             if (stoppedRef.current) return;
-            const final = full_text || fullText;
+            const final = String(full_text || fullText);
             // Оптимистичное обновление — показываем сразу, сохраняем в фоне
             const tempId = `a-${Date.now()}`;
             setMessages(prev => [...prev, { id: tempId, role: "assistant", content: final }]);
@@ -1069,13 +1165,13 @@ export default function EliraChatShell() {
     } catch (e) { setError(normalizeErrorMessage(e)); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); }
   }
 
-  async function deleteChat(id) { try { await api.deleteChat({ id }); const next = chats.filter(c => c.id !== id); setChats(next); if (chatId === id) { if (next.length) await openChat(next[0].id); else resetDraftChat(); } } catch (e) { setError(normalizeErrorMessage(e)); } }
-  async function pinChat(id, p) { try { await api.pinChat({ id, pinned: !p }); await loadChats(chatId); } catch (e) { setError(normalizeErrorMessage(e)); } }
-  async function saveToMemory(id, s) { try { await api.saveChatToMemory({ id, saved: !s }); await loadChats(chatId); } catch (e) { setError(normalizeErrorMessage(e)); } }
+  async function deleteChat(id: any) { try { await api.deleteChat({ id }); const next = chats.filter(c => c.id !== id); setChats(next); if (chatId === id) { if (next.length) await openChat(next[0].id); else resetDraftChat(); } } catch (e) { setError(normalizeErrorMessage(e)); } }
+  async function pinChat(id: any, p: any) { try { await api.pinChat({ id, pinned: !p }); await loadChats(chatId); } catch (e) { setError(normalizeErrorMessage(e)); } }
+  async function saveToMemory(id: any, s: any) { try { await api.saveChatToMemory({ id, saved: !s }); await loadChats(chatId); } catch (e) { setError(normalizeErrorMessage(e)); } }
 
-  async function handleFiles(fl) {
-    const files = Array.from(fl || []); if (!files.length) return;
-    const recs = []; for (const f of files) {
+  async function handleFiles(fl: FileList | File[] | null | undefined) {
+    const files = Array.from(fl || []) as File[]; if (!files.length) return;
+    const recs: LibraryFile[] = []; for (const f of files) {
       recs.push(await fileToLibraryRecord(f));
       // Сохраняем в SQLite бекенд
       try { await api.uploadLibraryFile(f, { useInContext: false }); } catch {}
@@ -1083,10 +1179,10 @@ export default function EliraChatShell() {
     const next = [...recs, ...libraryFiles]; setLibraryFiles(next); saveLibraryFiles(next); setSideTab("library"); setSelLibId(recs[0]?.id || "");
     if (chatId) { const map = loadChatContextMap(); map[chatId] = Array.from(new Set([...recs.map(r => r.id), ...(map[chatId] || [])])); saveChatContextMap(map); }
   }
-  function onDrop(e) { e.preventDefault(); e.stopPropagation(); setDrag(false); handleFiles(e.dataTransfer.files); }
-  function onDragOver(e) { e.preventDefault(); e.stopPropagation(); setDrag(true); }
-  function onDragLeave(e) { e.preventDefault(); e.stopPropagation(); setDrag(false); }
-  async function removeLib(id) {
+  function onDrop(e: React.DragEvent<HTMLDivElement>) { e.preventDefault(); e.stopPropagation(); setDrag(false); handleFiles(e.dataTransfer.files); }
+  function onDragOver(e: React.DragEvent<HTMLDivElement>) { e.preventDefault(); e.stopPropagation(); setDrag(true); }
+  function onDragLeave(e: React.DragEvent<HTMLDivElement>) { e.preventDefault(); e.stopPropagation(); setDrag(false); }
+  async function removeLib(id: string) {
     try {
       if (String(id).startsWith("db-")) {
         const dbId = String(id).slice(3);
@@ -1100,7 +1196,7 @@ export default function EliraChatShell() {
     saveChatContextMap(Object.fromEntries(Object.entries(m).map(([k,v]) => [k,(v||[]).filter(x=>x!==id)])));
     if (selLibId === id) setSelLibId(n[0]?.id || "");
   }
-  function toggleCtx(id, on) {
+  function toggleCtx(id: string, on: boolean) {
     const n = libraryFiles.map(i => i.id === id ? {...i, use_in_context: on} : i);
     setLibraryFiles(n);
     saveLibraryFiles(n);
@@ -1111,7 +1207,7 @@ export default function EliraChatShell() {
     m[chatId] = Array.from(s);
     saveChatContextMap(m);
   }
-  function toggleSkill(id) { setSkills(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]); }
+  function toggleSkill(id: string) { setSkills(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]); }
   function handleStop() {
     stoppedRef.current = true;
     if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
@@ -1122,7 +1218,7 @@ export default function EliraChatShell() {
     setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
   }
 
-  function selectAllLib(on) {
+  function selectAllLib(on: boolean) {
     const next = libraryFiles.map(i => ({ ...i, use_in_context: on }));
     setLibraryFiles(next);
     saveLibraryFiles(next);
@@ -1152,7 +1248,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function updateTaskStatus(taskId, status) {
+  async function updateTaskStatus(taskId: any, status: string) {
     try {
       await api.updateTask(taskId, { status });
       setTasksError("");
@@ -1165,7 +1261,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function deleteTaskItem(taskId) {
+  async function deleteTaskItem(taskId: any) {
     if (!confirm("Удалить задачу?")) return;
     try {
       await api.deleteTask(taskId);
@@ -1183,7 +1279,7 @@ export default function EliraChatShell() {
     try {
       const data = await api.startTelegramBot();
       setTelegramError("");
-      if (data?.ok === false) throw new Error(data.error || "Ошибка запуска");
+      if (data?.ok === false) throw new Error(String(data.error || "Ошибка запуска"));
       setError("");
       await loadTelegram();
     } catch (e) {
@@ -1238,7 +1334,7 @@ export default function EliraChatShell() {
 
   async function saveTelegramSettings() {
     try {
-      const upd = {};
+      const upd: AnyRecord = {};
       if (tgConfig?.model !== undefined) upd.model = tgConfig.model;
       if (tgConfig?.profile) upd.profile = tgConfig.profile;
       if (tgConfig?.use_memory !== undefined) upd.use_memory = tgConfig.use_memory;
@@ -1255,7 +1351,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function updateTelegramAllowedUsers(val) {
+  async function updateTelegramAllowedUsers(val: string) {
     try {
       await api.updateTelegramConfig({ allowed_users: val });
       setTelegramError("");
@@ -1268,7 +1364,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function toggleTelegramUserAccess(user) {
+  async function toggleTelegramUserAccess(user: AnyRecord) {
     try {
       await api.toggleTelegramUser({ chat_id: user.chat_id, allowed: !user.allowed });
       setTelegramError("");
@@ -1296,7 +1392,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function runPipelineNow(pipelineId) {
+  async function runPipelineNow(pipelineId: any) {
     try {
       await api.runPipeline(pipelineId);
       setPipelinesError("");
@@ -1309,7 +1405,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function togglePipelineEnabled(pipeline) {
+  async function togglePipelineEnabled(pipeline: AnyRecord) {
     try {
       await api.updatePipeline(pipeline.id, { enabled: !pipeline.enabled });
       setPipelinesError("");
@@ -1322,7 +1418,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function deletePipeline(pipelineId) {
+  async function deletePipeline(pipelineId: any) {
     if (!confirm("Удалить?")) return;
     try {
       await api.deletePipeline(pipelineId);
@@ -1338,8 +1434,9 @@ export default function EliraChatShell() {
 
   async function reloadPlugins() {
     try {
-      const data = await api.reloadPlugins();
-      setPluginList(data.loaded?.map(n => ({ name:n, enabled:true })) || []);
+      const data = asRecord(await api.reloadPlugins());
+      const loaded = Array.isArray(data.loaded) ? data.loaded : [];
+      setPluginList(loaded.map((n) => ({ name:n, enabled:true })) || []);
       setError("");
       await loadPluginList();
     } catch (e) {
@@ -1347,7 +1444,7 @@ export default function EliraChatShell() {
     }
   }
 
-  async function togglePluginState(plugin) {
+  async function togglePluginState(plugin: AnyRecord) {
     try {
       await api.setPluginEnabled(plugin.name, !plugin.enabled);
       setError("");
@@ -1357,7 +1454,7 @@ export default function EliraChatShell() {
     }
   }
 
-  function handleKeyDown(e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }
 
   const fChats = useMemo(() => { const q = sideSearch.trim().toLowerCase(); return q ? chats.filter(c => (c.title||"").toLowerCase().includes(q)) : chats; }, [sideSearch, chats]);
   const pinned = useMemo(() => fChats.filter(c => c.pinned), [fChats]);
@@ -1375,7 +1472,7 @@ export default function EliraChatShell() {
       <aside className={`elira-sidebar ${mobileSidebar?"mobile-open":""}`}>
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>
         <div className="sidebar-nav">
-          {[
+          {([
             ["chats", "Чаты", MessageSquare],
             ["project", "Проекты", FolderOpen],
             ["library", "Файлы", Files],
@@ -1385,7 +1482,7 @@ export default function EliraChatShell() {
             ["pipelines", "Пайплайны", Workflow],
             ["telegram", "Telegram", Send],
             ["settings", "Настройки", Settings],
-          ].map(([k, l, Icon]) => (
+          ] as SidebarNavItem[]).map(([k, l, Icon]) => (
             <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => { setSideTab(k); setMobileSidebar(false); if(k==="settings"){setSettingsModel(model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();loadPluginList();}if(k==="dashboard"){loadDashboard();}if(k==="pipelines"){loadPipelines();}if(k==="tasks"){loadTasks();}if(k==="telegram"){loadTelegram();} }}>
               <IconText icon={Icon}>{l}</IconText>
             </button>
@@ -1456,7 +1553,7 @@ export default function EliraChatShell() {
             <div className="settings-main-card" style={{overflow:"auto"}}>
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
                 <div style={{fontSize:15,fontWeight:700,color:"var(--text)"}}><IconText icon={ListTodo} size={15}>Задачи</IconText></div>
-                <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={loadTasks} title="Обновить"><UiIcon icon={RefreshCw} size={13} /></button>
+                <button className="soft-btn" style={{fontSize:10,padding:"3px 10px",border:"1px solid var(--border)"}} onClick={() => loadTasks()} title="Обновить"><UiIcon icon={RefreshCw} size={13} /></button>
               </div>
               <PanelNotice title="Раздел задач временно недоступен" message={tasksError} onRetry={() => loadTasks()} />
 
@@ -1529,7 +1626,7 @@ export default function EliraChatShell() {
               {/* Список задач */}
               {tasksList.length===0 && !tasksError && <div style={{fontSize:11,color:"var(--text-muted)",padding:"12px 0",textAlign:"center"}}>Нет задач</div>}
               {tasksList.map(t=>{
-                const prioColor = {urgent:"#f44336",high:"#ff9800",medium:"#f5a623",low:"#4caf50"}[t.priority]||"var(--text-muted)";
+                const prioColor = ({urgent:"#f44336",high:"#ff9800",medium:"#f5a623",low:"#4caf50"} as Record<string, string>)[String(t.priority)]||"var(--text-muted)";
                 const isOverdue = t.due_date && t.status!=="done" && t.status!=="cancelled" && new Date(t.due_date) < new Date();
                 return (
                   <div key={t.id} style={{padding:"10px 12px",borderRadius:10,border:`1px solid ${isOverdue?"#f44336":"var(--border)"}`,background:"var(--bg-surface)",marginBottom:6,opacity:t.status==="done"||t.status==="cancelled"?0.6:1}}>
@@ -1556,8 +1653,8 @@ export default function EliraChatShell() {
                       </div>
                     </div>
                     <div style={{display:"flex",gap:8,alignItems:"center",fontSize:10,color:"var(--text-muted)",marginTop:2}}>
-                      <span style={{color:prioColor}}>{({ urgent:"Срочный", high:"Высокий", medium:"Средний", low:"Низкий" }[t.priority] || t.priority)}</span>
-                      <span>{({ general:"Общее", work:"Работа", personal:"Личное", study:"Учёба", project:"Проект", idea:"Идея" }[t.category] || t.category)}</span>
+                      <span style={{color:prioColor}}>{(({ urgent:"Срочный", high:"Высокий", medium:"Средний", low:"Низкий" } as Record<string, string>)[String(t.priority)] || t.priority)}</span>
+                      <span>{(({ general:"Общее", work:"Работа", personal:"Личное", study:"Учёба", project:"Проект", idea:"Идея" } as Record<string, string>)[String(t.category)] || t.category)}</span>
                       {t.due_date && <span style={{color:isOverdue?"#f44336":"var(--text-muted)",display:"inline-flex",alignItems:"center",gap:4}}><UiIcon icon={CalendarDays} size={12} />{new Date(t.due_date).toLocaleDateString("ru-RU")}{isOverdue?" просрочено":""}</span>}
                       {t.status==="in_progress" && <span style={{color:"#f5a623",display:"inline-flex",alignItems:"center",gap:4}}><UiIcon icon={RefreshCw} size={11} />в работе</span>}
                       {t.status==="done" && t.completed_at && <span style={{color:"#4caf50"}}>Готово {new Date(t.completed_at).toLocaleDateString("ru-RU")}</span>}
@@ -1576,7 +1673,7 @@ export default function EliraChatShell() {
 
               {/* Внутренние табы */}
               <div style={{display:"flex",gap:4,marginBottom:14}}>
-                {[["setup","Настройка", Settings],["users","Пользователи", Users],["log","Лог", ScrollText],["guide","Инструкция", BookOpen]].map(([k,l,Icon])=>(
+                {([["setup","Настройка", Settings],["users","Пользователи", Users],["log","Лог", ScrollText],["guide","Инструкция", BookOpen]] as SidebarNavItem[]).map(([k,l,Icon])=>(
                   <button key={k} className="soft-btn" style={{fontSize:10,padding:"3px 10px",background:tgTab===k?"var(--accent)":"transparent",color:tgTab===k?"#fff":"var(--text)",border:"1px solid var(--border)",borderRadius:6}} onClick={()=>setTgTab(k)}><IconText icon={Icon} size={12} gap={5}>{l}</IconText></button>
                 ))}
               </div>
@@ -1697,7 +1794,7 @@ export default function EliraChatShell() {
                     </div>
                     <button className="soft-btn" style={{fontSize:11,padding:"4px 14px",background:"var(--accent)",color:"#fff",border:"none",borderRadius:6}} onClick={async()=>{
                       try{
-                        const upd = {};
+                        const upd: AnyRecord = {};
                         if(tgConfig?.model !== undefined) upd.model = tgConfig.model;
                         if(tgConfig?.profile) upd.profile = tgConfig.profile;
                         if(tgConfig?.use_memory !== undefined) upd.use_memory = tgConfig.use_memory;
@@ -1791,7 +1888,7 @@ export default function EliraChatShell() {
                     <option value={1440}>24 часа</option>
                   </select>
                 </div>
-                <input placeholder={pipeForm.task_type==="prompt"?"Промпт для LLM":pipeForm.task_type==="web_search"?"Поисковый запрос":pipeForm.task_type==="plugin"?"Имя плагина":"URL"} value={pipeForm.task_data.prompt||pipeForm.task_data.query||pipeForm.task_data.plugin_name||pipeForm.task_data.url||""} onChange={e=>{const key={prompt:"prompt",web_search:"query",plugin:"plugin_name",http:"url"}[pipeForm.task_type]||"prompt";setPipeForm({...pipeForm,task_data:{[key]:e.target.value}})}} className="rename-input" style={{width:"100%",fontSize:11,padding:"4px 8px",marginBottom:6}}/>
+                <input placeholder={pipeForm.task_type==="prompt"?"Промпт для LLM":pipeForm.task_type==="web_search"?"Поисковый запрос":pipeForm.task_type==="plugin"?"Имя плагина":"URL"} value={pipeForm.task_data.prompt||pipeForm.task_data.query||pipeForm.task_data.plugin_name||pipeForm.task_data.url||""} onChange={e=>{const key=pipelineTaskDataKey(pipeForm.task_type);setPipeForm({...pipeForm,task_data:{[key]:e.target.value}})}} className="rename-input" style={{width:"100%",fontSize:11,padding:"4px 8px",marginBottom:6}}/>
 <button className="soft-btn" style={{fontSize:11,padding:"4px 14px",background:"var(--accent)",color:"#fff",border:"none",borderRadius:6}} onClick={createPipeline}>Создать</button>
               </div>
 
@@ -1802,7 +1899,7 @@ export default function EliraChatShell() {
                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
                     <div>
                       <span style={{fontWeight:600,fontSize:12,color:"var(--text)"}}>{p.name}</span>
-                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{({ prompt:"Промпт", web_search:"Веб-поиск", plugin:"Плагин", http:"HTTP" }[p.task_type] || p.task_type)} • каждые {p.interval_minutes} мин</span>
+                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{pipelineTaskTypeLabel(p.task_type)} • каждые {p.interval_minutes} мин</span>
                       <span style={{fontSize:9,color:p.enabled?"#4caf50":"#f44336",marginLeft:6}}>{p.enabled?"● вкл":"○ выкл"}</span>
                     </div>
                     <div style={{display:"flex",gap:4}}>
@@ -1858,8 +1955,8 @@ export default function EliraChatShell() {
                     <div style={{marginBottom:16}}>
                       <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:8}}>Активность (14 дней)</div>
                       <div style={{display:"flex",alignItems:"flex-end",gap:3,height:80,padding:"0 4px"}}>
-                        {dashData.daily_activity.map((d,i)=>{
-                          const max = Math.max(...dashData.daily_activity.map(x=>x.count),1);
+                        {(dashData.daily_activity as AnyRecord[]).map((d: AnyRecord, i: number)=>{
+                          const max = Math.max(...(dashData.daily_activity as AnyRecord[]).map((x: AnyRecord)=>Number(x.count || 0)),1);
                           const h = Math.max(4, (d.count/max)*70);
                           return <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
                             <div style={{fontSize:8,color:"var(--text-muted)"}}>{d.count||""}</div>
@@ -1875,7 +1972,7 @@ export default function EliraChatShell() {
                   {dashData.top_models?.length > 0 && (
                     <div style={{marginBottom:16}}>
                       <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:6}}>Модели</div>
-                      {dashData.top_models.map(m=>{
+                      {(dashData.top_models as AnyRecord[]).map((m: AnyRecord)=>{
                         const pct = dashData.total_runs ? Math.round(m.count/dashData.total_runs*100) : 0;
                         return <div key={m.model} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
                           <div style={{fontSize:11,color:"var(--text)",minWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.model}</div>
@@ -1890,7 +1987,7 @@ export default function EliraChatShell() {
                   {dashData.top_routes?.length > 0 && (
                     <div style={{marginBottom:16}}>
                       <div style={{fontSize:12,fontWeight:600,color:"var(--text)",marginBottom:6}}>Типы задач</div>
-                      {dashData.top_routes.map(r=>(
+                      {(dashData.top_routes as AnyRecord[]).map((r: AnyRecord)=>(
                         <div key={r.route} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"3px 0",borderBottom:"1px solid var(--border)"}}>
                           <span style={{color:"var(--text)"}}>{r.route || "—"}</span>
                           <span style={{color:"var(--text-muted)"}}>{r.count}</span>
@@ -1951,10 +2048,10 @@ export default function EliraChatShell() {
                   <div className="settings-title">Оркестрация моделей</div>
                   <div className="settings-desc" style={{marginBottom:8}}>Какая модель отвечает за какой тип задачи. Первая в списке — приоритетная.</div>
                   {["code","project","research","chat"].map(route => {
-                    const routeLabels = {code:"Код",project:"Проект",research:"Исследование",chat:"Чат"};
-                    const routeDescs = {code:"Написание, ревью и отладка кода",project:"Работа с файлами проекта",research:"Поиск, анализ, факты",chat:"Обычные вопросы и диалог"};
+                    const routeLabels: Record<string, string> = {code:"Код",project:"Проект",research:"Исследование",chat:"Чат"};
+                    const routeDescs: Record<string, string> = {code:"Написание, ревью и отладка кода",project:"Работа с файлами проекта",research:"Поиск, анализ, факты",chat:"Обычные вопросы и диалог"};
                     const current = routeMap[route] || [];
-                    const getName = i => typeof i === "string" ? i : (i.name || i.model || "");
+                    const getName = (i: any) => typeof i === "string" ? i : (i.name || i.model || "");
                     const allModels = (modelOpts?.length ? modelOpts : []).map(getName);
                     return (
                       <div key={route} style={{padding:"8px 10px",borderRadius:8,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6}}>
@@ -2061,7 +2158,7 @@ export default function EliraChatShell() {
               </div>
 
               {error && <div className="error-banner smaller-text">{error}</div>}
-              {chartData?.values?.length > 0 && !working && (
+              {chartData && chartData.values.length > 0 && !working && (
                 <div style={{background:"var(--bg-surface)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 14px",marginTop:4}}>
                   <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:6,display:"flex",justifyContent:"space-between"}}>
                     <IconText icon={BarChart3} size={13}>{chartData.valueLabel}</IconText>
