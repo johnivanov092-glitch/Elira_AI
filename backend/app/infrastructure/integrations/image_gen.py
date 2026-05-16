@@ -201,11 +201,6 @@ def _cleanup_vram():
         pass
 
 
-def unload_model() -> dict:
-    """Р’С‹РіСЂСѓР¶Р°РµС‚ РјРѕРґРµР»СЊ РёР· РїР°РјСЏС‚Рё."""
-    _cleanup_vram()
-    return {"ok": True, "message": "РњРѕРґРµР»СЊ РІС‹РіСЂСѓР¶РµРЅР°, VRAM РѕСЃРІРѕР±РѕР¶РґРµРЅР°"}
-
 
 def get_status() -> dict:
     """РЎС‚Р°С‚СѓСЃ РіРµРЅРµСЂР°С‚РѕСЂР°."""

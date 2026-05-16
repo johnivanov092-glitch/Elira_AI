@@ -92,15 +92,6 @@ def count_chats(path: str | Path | None = None) -> int:
         conn.close()
 
 
-def count_messages(path: str | Path | None = None) -> int:
-    conn = _connect(path)
-    try:
-        if not _table_exists(conn, "messages"):
-            return 0
-        return int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-    finally:
-        conn.close()
-
 
 def _chat_row(conn, chat_id: int):
     return conn.execute(
