@@ -5,6 +5,7 @@ thin re-export facade; all logic lives here.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 import sqlite3
@@ -59,39 +60,42 @@ def list_library_files() -> dict[str, Any]:
     return {"ok": True, "files": files, "count": len(files)}
 
 
-def set_library_active(filename: str, active: bool) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        row = conn.execute("SELECT id, name FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
-        if row:
-            conn.execute("UPDATE files SET use_in_context = ? WHERE id = ?", (1 if active else 0, row["id"]))
-            conn.commit()
-            return {"ok": True, "filename": filename, "active": bool(active)}
-        return {"ok": False, "error": f"Файл не найден: {filename}"}
-    finally:
-        conn.close()
+def add_library_file(filename: str, contents: bytes, file_type: str, use_in_context: bool = True) -> dict[str, Any]:
+    """Store uploaded file on disk, extract preview, insert metadata into DB. Returns metadata dict."""
+    from app.application.library.document_preview import extract_preview, safe_disk_name
+    from app.infrastructure.db.library_db import insert_file
+
+    disk_name = safe_disk_name(filename, contents)
+    disk_path = LEGACY_UPLOADS_DIR / disk_name
+    LEGACY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    disk_path.write_bytes(contents)
+
+    preview = extract_preview(filename, contents)
+    sha256 = hashlib.sha256(contents).hexdigest()
+
+    file_id = insert_file(filename, len(contents), file_type, preview, use_in_context, str(disk_path), sha256)
+    return {
+        "ok": True,
+        "id": file_id,
+        "name": filename,
+        "preview_len": len(preview),
+        "stored_path": str(disk_path),
+    }
 
 
-def delete_library_file(filename: str) -> dict[str, Any]:
-    conn = _conn()
-    try:
-        row = conn.execute("SELECT id, stored_path FROM files WHERE name = ? ORDER BY id DESC LIMIT 1", (filename,)).fetchone()
-        if not row:
-            return {"ok": False, "error": f"Файл не найден: {filename}"}
-        conn.execute("DELETE FROM files WHERE id = ?", (row["id"],))
-        conn.commit()
-    finally:
-        conn.close()
+def remove_library_file_by_id(file_id: int) -> dict[str, Any]:
+    """Delete file record from DB and remove the file from disk."""
+    from app.infrastructure.db.library_db import delete_file
 
-    stored_path = row["stored_path"] or ""
+    stored_path = delete_file(file_id)
     if stored_path:
         try:
-            path = Path(stored_path)
-            if path.exists() and path.is_file():
-                path.unlink()
+            p = Path(stored_path)
+            if p.exists() and p.is_file():
+                p.unlink()
         except Exception:
             pass
-    return {"ok": True, "filename": filename}
+    return {"ok": True, "deleted_id": file_id}
 
 
 def build_library_context(max_files: int = 3, max_chars_per_file: int = 4000) -> dict[str, Any]:
