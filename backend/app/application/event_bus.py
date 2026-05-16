@@ -18,21 +18,6 @@ from app.infrastructure.db.connection import connect_sqlite
 
 DB_PATH: Path = sqlite_data_file("event_bus.db")
 
-SUPPORTED_EVENT_TYPES = (
-    "agent.run.started",
-    "agent.run.completed",
-    "agent.limit.updated",
-    "sandbox.policy.blocked",
-    "tool.executed",
-    "workflow.run.started",
-    "workflow.run.paused",
-    "workflow.run.resumed",
-    "workflow.run.completed",
-    "workflow.run.cancelled",
-    "workflow.step.started",
-    "workflow.step.completed",
-    "workflow.step.failed",
-)
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS events (

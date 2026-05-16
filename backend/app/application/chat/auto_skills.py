@@ -26,8 +26,7 @@ def _maybe_auto_exec_python(user_input, answer, timeline, enabled: bool = True):
     ql = user_input.lower()
     if not any(t in ql for t in _EXEC_TRIGGERS):
         return answer
-    import re as _re
-    match = _re.search(r"```python\n([\s\S]*?)```", answer)
+    match = re.search(r"```python\n([\s\S]*?)```", answer)
     if not match:
         return answer
     code = match.group(1).strip()
@@ -109,10 +108,10 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
     if wants_excel and len(llm_answer) > 30:
         try:
             from app.application.skills.skills_service import generate_excel
-            import re as _re
+        
 
             # Парсим markdown таблицы из ответа LLM
-            table_pattern = _re.findall(r'\|(.+)\|', llm_answer)
+            table_pattern = re.findall(r'\|(.+)\|', llm_answer)
             if table_pattern and len(table_pattern) >= 2:
                 rows = []
                 headers = []
@@ -153,11 +152,11 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
 
 def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     """Авто-детект скиллов по ключевым словам. disabled — набор ID отключённых скиллов."""
-    import re as _re
+
     disabled = disabled or set()
     ql = user_input.lower()
     parts = []
-    url_match = _re.search(r"(https?://\S+)", user_input)
+    url_match = re.search(r"(https?://\S+)", user_input)
     API_BASE = ""  # relative URLs
 
     # ─── 🌐 HTTP/API ───
@@ -182,7 +181,7 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     if "sql" not in disabled and any(t in ql for t in sql_triggers):
         try:
             from app.application.skills.skills_service import list_databases, describe_db, run_sql
-            sql_match = _re.search(r"(SELECT\s+.+)", user_input, _re.IGNORECASE)
+            sql_match = re.search(r"(SELECT\s+.+)", user_input, re.IGNORECASE)
             if sql_match:
                 dbs = list_databases()
                 if dbs.get("databases"):
@@ -354,9 +353,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         try:
             from app.application.skills.skills_extra import convert_file
             # Парсим: "конвертируй data.csv в xlsx"
-            match = _re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, _re.IGNORECASE)
+            match = re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, re.IGNORECASE)
             if not match:
-                match = _re.search(r"(\S+\.\w+)\s+to\s+(\w+)", user_input, _re.IGNORECASE)
+                match = re.search(r"(\S+\.\w+)\s+to\s+(\w+)", user_input, re.IGNORECASE)
             if match:
                 result = convert_file(match.group(1), match.group(2))
                 if result.get("ok"):
@@ -372,9 +371,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         try:
             from app.application.skills.skills_extra import test_regex
             # Парсим: "проверь regex \d+ на строке abc123def"
-            match = _re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, _re.IGNORECASE)
+            match = re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, re.IGNORECASE)
             if not match:
-                match = _re.search(r"регуляр\S*[:\s]+(.+?)\s+(?:на|в|for)[:\s]+(.+)", user_input, _re.IGNORECASE)
+                match = re.search(r"регуляр\S*[:\s]+(.+?)\s+(?:на|в|for)[:\s]+(.+)", user_input, re.IGNORECASE)
             if match:
                 result = test_regex(match.group(1).strip(), match.group(2).strip())
                 if result.get("ok"):
@@ -390,7 +389,7 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         try:
             from app.application.skills.skills_extra import analyze_csv
             # Ищем имя файла
-            file_match = _re.search(r"(\S+\.csv)", user_input, _re.IGNORECASE)
+            file_match = re.search(r"(\S+\.csv)", user_input, re.IGNORECASE)
             if file_match:
                 result = analyze_csv(file_match.group(1))
                 if result.get("ok"):
@@ -442,9 +441,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
             # 2. Запуск плагина вручную
             run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
             if any(t in ql for t in run_plugin_triggers):
-                name_match = _re.search(r"плагин\s+(\S+)", user_input, _re.IGNORECASE)
+                name_match = re.search(r"плагин\s+(\S+)", user_input, re.IGNORECASE)
                 if not name_match:
-                    name_match = _re.search(r"plugin\s+(\S+)", user_input, _re.IGNORECASE)
+                    name_match = re.search(r"plugin\s+(\S+)", user_input, re.IGNORECASE)
                 if name_match:
                     result = run_plugin(name_match.group(1), {"text": user_input})
                     parts.append(f"🔌 {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")

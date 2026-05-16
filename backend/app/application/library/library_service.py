@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 import sqlite3
 
+from app.application.library.document_preview import extract_preview, safe_disk_name
 from app.core.config import DATA_DIR, UPLOAD_DIR
+from app.infrastructure.db.library_db import delete_file, insert_file
 
 SQLITE_DB = DATA_DIR / "library.db"
 LEGACY_UPLOADS_DIR = UPLOAD_DIR
@@ -62,9 +64,6 @@ def list_library_files() -> dict[str, Any]:
 
 def add_library_file(filename: str, contents: bytes, file_type: str, use_in_context: bool = True) -> dict[str, Any]:
     """Store uploaded file on disk, extract preview, insert metadata into DB. Returns metadata dict."""
-    from app.application.library.document_preview import extract_preview, safe_disk_name
-    from app.infrastructure.db.library_db import insert_file
-
     disk_name = safe_disk_name(filename, contents)
     disk_path = LEGACY_UPLOADS_DIR / disk_name
     LEGACY_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,8 +84,6 @@ def add_library_file(filename: str, contents: bytes, file_type: str, use_in_cont
 
 def remove_library_file_by_id(file_id: int) -> dict[str, Any]:
     """Delete file record from DB and remove the file from disk."""
-    from app.infrastructure.db.library_db import delete_file
-
     stored_path = delete_file(file_id)
     if stored_path:
         try:

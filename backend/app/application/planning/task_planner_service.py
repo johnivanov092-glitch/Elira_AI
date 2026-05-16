@@ -50,9 +50,6 @@ def _init_db():
 
 _init_db()
 
-PRIORITIES = ["low", "medium", "high", "urgent"]
-STATUSES = ["todo", "in_progress", "done", "cancelled"]
-
 
 # ═══════════════════════════════════════════════════════════════
 # CRUD

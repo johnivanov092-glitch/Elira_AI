@@ -11,7 +11,12 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+
 from fastapi import HTTPException
+
+from app.infrastructure.files.file_extractor import extract_docx, extract_pdf
+from app.infrastructure.runtime.ollama_client import call_ollama_json, fetch_ollama_tags, pick_model
+from app.infrastructure.search.ddg_scraper import collect_web_context
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -126,7 +131,6 @@ def _safe_filename(name: str) -> str:
 
 
 def extract_upload_text(filename: str, data: bytes) -> tuple[str, str]:
-    from app.infrastructure.files.file_extractor import extract_docx, extract_pdf
     suffix = Path(filename).suffix.lower()
     if suffix in TEXT_SUFFIXES or suffix in {".pyw", ".log"}:
         try:
@@ -253,17 +257,6 @@ def attach_project_file(path: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Ollama client — delegated to infrastructure layer
-# ---------------------------------------------------------------------------
-
-from app.infrastructure.runtime.ollama_client import (  # noqa: E402
-    call_ollama_json,
-    fetch_ollama_tags,
-    pick_model,
-)
-
-
-# ---------------------------------------------------------------------------
 # Task routing + web search
 # ---------------------------------------------------------------------------
 
@@ -293,8 +286,6 @@ def route_task(
         return {"mode": "research", "reason": "research markers"}
     return {"mode": "chat", "reason": "default"}
 
-
-from app.infrastructure.search.ddg_scraper import collect_web_context  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
