@@ -208,7 +208,7 @@ def _collect_context_legacy(
 
                 if not project_ctx:
                     try:
-                        from app.api.routes.advanced_routes import _project_path
+                        from app.application.projects.project_explorer import _project_path
                         if _project_path:
                             from pathlib import Path
                             root = Path(_project_path)
