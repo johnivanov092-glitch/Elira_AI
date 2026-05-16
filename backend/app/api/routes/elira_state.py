@@ -18,6 +18,8 @@ from app.infrastructure.runtime.ollama_runtime_service import list_ollama_models
 
 router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 
+init_db()
+
 
 class ChatCreateRequest(BaseModel):
     title: str = "РќРѕРІС‹Р№ С‡Р°С‚"
@@ -42,11 +44,6 @@ class SettingsRequest(BaseModel):
     route_model_map: dict | None = None
 
 
-@router.on_event("startup")
-def _startup():
-    init_db()
-
-
 @router.get("/models")
 async def models():
     return await list_ollama_models()
@@ -54,13 +51,11 @@ async def models():
 
 @router.get("/settings")
 def settings_get():
-    init_db()
     return get_settings()
 
 
 @router.put("/settings")
 def settings_put(payload: SettingsRequest):
-    init_db()
     return save_settings(
         payload.ollama_context,
         payload.default_model,
@@ -71,19 +66,16 @@ def settings_put(payload: SettingsRequest):
 
 @router.get("/chats")
 def chats_list():
-    init_db()
     return {"items": list_chats()}
 
 
 @router.post("/chats")
 def chats_create(payload: ChatCreateRequest):
-    init_db()
     return create_chat(payload.title)
 
 
 @router.patch("/chats/{chat_id}")
 def chats_patch(chat_id: int, payload: ChatPatchRequest):
-    init_db()
     item = update_chat(
         chat_id,
         title=payload.title,
@@ -97,7 +89,6 @@ def chats_patch(chat_id: int, payload: ChatPatchRequest):
 
 @router.patch("/chats/{chat_id}/pin")
 def chats_pin(chat_id: int, payload: ChatPatchRequest):
-    init_db()
     item = set_chat_pinned(chat_id, bool(payload.pinned))
     if not item:
         raise HTTPException(status_code=404, detail="Р§Р°С‚ РЅРµ РЅР°Р№РґРµРЅ")
@@ -106,7 +97,6 @@ def chats_pin(chat_id: int, payload: ChatPatchRequest):
 
 @router.patch("/chats/{chat_id}/memory")
 def chats_memory(chat_id: int, payload: ChatPatchRequest):
-    init_db()
     item = set_chat_memory_saved(chat_id, bool(payload.memory_saved))
     if not item:
         raise HTTPException(status_code=404, detail="Р§Р°С‚ РЅРµ РЅР°Р№РґРµРЅ")
@@ -115,24 +105,20 @@ def chats_memory(chat_id: int, payload: ChatPatchRequest):
 
 @router.delete("/chats/{chat_id}")
 def chats_delete(chat_id: int):
-    init_db()
     delete_chat(chat_id)
     return {"status": "ok"}
 
 
 @router.get("/chats/{chat_id}/messages")
 def chats_messages(chat_id: int):
-    init_db()
     return {"items": get_messages(chat_id)}
 
 
 @router.post("/messages")
 def messages_add(payload: ChatMessageRequest):
-    init_db()
     chat_id = payload.chat_id
     if not chat_id:
         created = create_chat("РќРѕРІС‹Р№ С‡Р°С‚")
         chat_id = int(created["id"])
     message = add_message(chat_id, payload.role, payload.content)
     return {"status": "ok", "chat_id": chat_id, "message": message}
-
