@@ -155,14 +155,6 @@ def fetch_page_text(url: str, max_chars: int = 4000) -> str:
 # ---------------------------------------------------------------------------
 
 
-def count_hits_for_domains(items: list[dict], preferred_domains: tuple[str, ...]) -> int:
-    try:
-        from app.core.web import count_preferred_domain_hits
-        return count_preferred_domain_hits(items, preferred_domains)
-    except Exception:
-        return 0
-
-
 def get_web_search_result(tool_results: list[dict]) -> dict[str, Any]:
     """Return the last web_search tool result payload from *tool_results*."""
     for item in reversed(tool_results or []):

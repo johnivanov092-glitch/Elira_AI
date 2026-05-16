@@ -705,9 +705,4 @@ def get_persona_status() -> dict[str, Any]:
     }
 
 
-def init_persona_store() -> dict[str, Any]:
-    _bootstrap_if_needed()
-    return get_persona_status()
-
-
 _bootstrap_if_needed()
