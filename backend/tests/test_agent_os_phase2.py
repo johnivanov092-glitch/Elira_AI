@@ -168,7 +168,7 @@ class TestBackwardCompatibility(ToolRegistryTestCase):
     def test_tool_service_list(self) -> None:
         reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        from app.services.tool_service import list_tools
+        from app.application.tools.tool_service import list_tools
         result = list_tools()
         self.assertTrue(result["ok"])
         self.assertGreater(result["count"], 0)
@@ -176,7 +176,7 @@ class TestBackwardCompatibility(ToolRegistryTestCase):
     def test_tool_service_run(self) -> None:
         reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        from app.services.tool_service import run_tool
+        from app.application.tools.tool_service import run_tool
         result = run_tool("git_status")
         # git_status might fail if not in a git repo, but should not crash
         self.assertIsInstance(result, dict)

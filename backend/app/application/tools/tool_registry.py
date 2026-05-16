@@ -299,14 +299,14 @@ def seed_builtin_tools() -> int:
         },
         {
             "name": "browser_search",
-            "handler": lambda a: __import__("app.services.browser_agent", fromlist=["BrowserAgent"]).BrowserAgent().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
+            "handler": lambda a: __import__("app.application.agents.browser_agent", fromlist=["BrowserAgent"]).BrowserAgent().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
             "display_name": "Browser Search", "display_name_ru": "Поиск через браузер",
             "category": "web",
             "description": "Search using headless browser",
         },
         {
             "name": "browser_run",
-            "handler": lambda a: __import__("app.services.browser_agent", fromlist=["BrowserAgent"]).BrowserAgent().run(start_url=str(a.get("start_url", "")), steps=a.get("steps", []) if isinstance(a.get("steps", []), list) else [], headless=bool(a.get("headless", True))),
+            "handler": lambda a: __import__("app.application.agents.browser_agent", fromlist=["BrowserAgent"]).BrowserAgent().run(start_url=str(a.get("start_url", "")), steps=a.get("steps", []) if isinstance(a.get("steps", []), list) else [], headless=bool(a.get("headless", True))),
             "display_name": "Browser Run", "display_name_ru": "Запуск браузера",
             "category": "web",
             "description": "Run browser automation steps",
