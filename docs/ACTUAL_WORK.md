@@ -2160,3 +2160,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   the frontend entrypoint is now TypeScript; `EliraChatShell.jsx` remains the only large JSX source in the active React path.
+
+### 152. Frontend label module converted to TypeScript
+- Status: completed
+- Scope: continued Phase 6 by converting the remaining small frontend JavaScript module.
+- Finish:
+  renamed `frontend/src/elira_ru_labels.js` to [frontend/src/elira_ru_labels.ts](/D:/AIWork/Elira_AI/frontend/src/elira_ru_labels.ts);
+  added a simple `Record<string, string>` export type without changing label values.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  only [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) remains as a JavaScript/JSX source in `frontend/src`.
