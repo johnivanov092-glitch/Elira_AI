@@ -231,20 +231,24 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
         self.assertTrue(result["orchestrator_used"])
         self.assertTrue(result["reflection_used"])
 
-    def test_core_agents_legacy_path_uses_workflow_engine(self) -> None:
-        from app.core import agents as core_agents
-
-        expected = {
-            "plan": "plan",
-            "research": "research",
-            "coding": "coding",
-            "review": "analysis",
-            "final": "final",
-            "reflection": "reflection",
+    def test_legacy_multi_agent_workflow_delegates_to_engine(self) -> None:
+        fake_run = {
+            "status": "completed",
+            "run_id": "wfr-legacy",
+            "step_results": {
+                "plan": {"ok": True, "answer": "plan"},
+                "research": {"ok": True, "answer": "research"},
+                "coding": {"ok": True, "answer": "coding"},
+                "analysis": {"ok": True, "answer": "analysis"},
+                "final": {"ok": True, "answer": "final"},
+                "reflection": {"ok": True, "answer": "reflection"},
+            },
         }
 
-        with patch("app.application.workflows.engine.run_legacy_multi_agent_workflow", return_value=expected):
-            result = core_agents.run_multi_agent(
+        with patch("app.application.workflows.engine.start_workflow_run", return_value=fake_run), \
+             patch("app.application.workflows.engine.seed_builtin_workflows", return_value=0), \
+             patch("app.core.memory.build_memory_context", return_value=""):
+            result = workflow_engine.run_legacy_multi_agent_workflow(
                 task="legacy",
                 model_name="test-model",
                 memory_profile="default",

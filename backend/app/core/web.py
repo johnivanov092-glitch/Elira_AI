@@ -17,9 +17,12 @@ try:
 except ImportError:  # pragma: no cover - compatibility fallback
     from duckduckgo_search import DDGS
 
-from .files import truncate_text
-
 logger = logging.getLogger(__name__)
+
+
+def truncate_text(text: str, max_chars: int = 12000) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= max_chars else text[:max_chars] + "\n\n[Текст обрезан]"
 
 
 SUPPORTED_SEARCH_ENGINES = ("tavily", "duckduckgo", "wikipedia")
