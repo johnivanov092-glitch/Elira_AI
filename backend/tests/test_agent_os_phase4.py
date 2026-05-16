@@ -260,7 +260,7 @@ class WorkflowCompatibilityShimTest(WorkflowDbMixin):
 
 class WorkflowAutopipelineTest(WorkflowDbMixin):
     def test_autopipeline_workflow_task_type(self) -> None:
-        with patch("app.application.workflows.engine.start_workflow_run", return_value={"run_id": "wfr-123", "status": "completed", "error": {}}):
+        with patch("app.application.autopipeline.autopipeline_service.start_workflow_run", return_value={"run_id": "wfr-123", "status": "completed", "error": {}}):
             result = autopipeline_service._execute_task(
                 "workflow",
                 {"workflow_id": "builtin.workflow.multi_agent.default", "input": {"query": "hello"}},

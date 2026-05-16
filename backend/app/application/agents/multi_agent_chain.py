@@ -8,6 +8,8 @@ once the workflow engine became the active backend.
 from __future__ import annotations
 from typing import Any
 
+from app.application.workflows.engine import run_multi_agent_workflow
+
 
 def run_multi_agent(
     query: str,
@@ -17,8 +19,6 @@ def run_multi_agent(
     use_reflection: bool = False,
     use_orchestrator: bool = False,
 ) -> dict[str, Any]:
-    from app.application.workflows.engine import run_multi_agent_workflow
-
     return run_multi_agent_workflow(
         query=query,
         model_name=model_name,
