@@ -2147,3 +2147,16 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   IDE artifact browser, Git panel, project file tree, tool history, and terminal host are now typechecked; the remaining large Phase 6 JSX target is `EliraChatShell.jsx`.
+
+### 151. Frontend app entrypoints converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting small React entrypoint files after the workspace shell conversion.
+- Finish:
+  renamed `frontend/src/App.jsx` to [frontend/src/App.tsx](/D:/AIWork/Elira_AI/frontend/src/App.tsx);
+  renamed `frontend/src/main.jsx` to [frontend/src/main.tsx](/D:/AIWork/Elira_AI/frontend/src/main.tsx);
+  updated [frontend/index.html](/D:/AIWork/Elira_AI/frontend/index.html) to load `/src/main.tsx` and added a root-element guard before `ReactDOM.createRoot`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  the frontend entrypoint is now TypeScript; `EliraChatShell.jsx` remains the only large JSX source in the active React path.

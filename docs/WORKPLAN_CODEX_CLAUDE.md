@@ -590,6 +590,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-15 23:29:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/components/ProjectPanel.jsx` to `frontend/src/components/ProjectPanel.tsx` with typed project info/tree/search boundaries and unknown-safe error handling. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-15 23:36:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/components/ArtifactPanel.jsx` to `frontend/src/components/ArtifactPanel.tsx` with typed artifact/code/output/analysis/save-result boundaries. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-17 00:37:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/components/IdeWorkspaceShell.jsx` to `frontend/src/components/IdeWorkspaceShell.tsx` with typed artifact/library/file-tree/history/Git boundaries. Verification passed with frontend typecheck and frontend build. |
+| `2026-05-17 00:39:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/App.jsx` and `frontend/src/main.jsx` to TSX, updating `frontend/index.html` to `/src/main.tsx`, and adding a root-element guard. Verification passed with frontend typecheck and frontend build. |
 
 ## 8. Commit Ledger
 
