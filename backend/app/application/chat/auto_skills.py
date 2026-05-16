@@ -160,9 +160,8 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     API_BASE = ""  # relative URLs
 
     # ─── 🌐 HTTP/API ───
-    if "http_api" not in disabled:
-     http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
-     if "http_api" not in disabled and url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
+    http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
+    if "http_api" not in disabled and url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
         try:
             from app.application.skills.skills_service import http_request
             method = "POST" if "post" in ql else "GET"
