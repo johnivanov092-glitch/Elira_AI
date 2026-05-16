@@ -8,18 +8,19 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.application.agents.ollama_agent_service import (
-    ATTACHMENT_INDEX,
     LEGACY_AGENT_CATALOG,
     MAX_ATTACHMENT_BYTES,
     MAX_READ_BYTES,
     PROJECT_ROOT,
     UPLOAD_ROOT,
+    attach_project_file,
     attachment_summary,
     execute_chat_send,
     execute_ollama_plan,
     execute_ollama_run,
     hash_bytes,
     looks_text_file,
+    project_file_snapshot,
     read_text_file,
     resolve_project_file,
     store_attachment,
@@ -86,28 +87,7 @@ def project_brain_status():
 
 @router.get("/snapshot")
 def project_snapshot():
-    from app.application.agents.ollama_agent_service import is_allowed, EXCLUDED_PARTS
-    files = []
-    for p in PROJECT_ROOT.rglob("*"):
-        if not p.is_file():
-            continue
-        try:
-            rel = p.relative_to(PROJECT_ROOT)
-        except Exception:
-            continue
-        if not is_allowed(rel):
-            continue
-        try:
-            stat = p.stat()
-        except OSError:
-            continue
-        files.append({
-            "path": str(rel).replace("\\", "/"),
-            "name": p.name,
-            "suffix": p.suffix.lower(),
-            "size": stat.st_size,
-        })
-    files.sort(key=lambda x: x["path"])
+    files = project_file_snapshot()
     return {"status": "ok", "project_root": str(PROJECT_ROOT), "files": files, "files_count": len(files)}
 
 
@@ -163,29 +143,8 @@ async def upload_chat_attachment(file: UploadFile = File(...), source: str = For
 
 
 @router.post("/chat/project-file")
-def attach_project_file(path: str = Form(...)):
-    import time, uuid
-    full_path, rel_path = resolve_project_file(path)
-    if not looks_text_file(full_path):
-        raise HTTPException(status_code=415, detail="Only text-like project files can be attached")
-    if full_path.stat().st_size > MAX_READ_BYTES:
-        raise HTTPException(status_code=413, detail="Project file is too large")
-    content, _, raw = read_text_file(full_path)
-    item = {
-        "id": uuid.uuid4().hex[:16],
-        "name": str(rel_path).replace("\\", "/"),
-        "size": len(raw),
-        "suffix": full_path.suffix.lower(),
-        "path": str(full_path),
-        "source": "project",
-        "encoding": "utf-8",
-        "text": content[:40000],
-        "text_available": True,
-        "sha256": hash_bytes(raw),
-        "created_at": time.time(),
-        "project_path": str(rel_path).replace("\\", "/"),
-    }
-    ATTACHMENT_INDEX[item["id"]] = item
+def route_attach_project_file(path: str = Form(...)):
+    item = attach_project_file(path)
     return {"status": "ok", "attachment": attachment_summary(item) | {"project_path": item["project_path"]}}
 
 

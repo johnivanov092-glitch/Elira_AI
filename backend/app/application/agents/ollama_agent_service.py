@@ -229,6 +229,56 @@ def attachment_summary(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def project_file_snapshot() -> list[dict[str, Any]]:
+    files = []
+    for p in PROJECT_ROOT.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            rel = p.relative_to(PROJECT_ROOT)
+        except Exception:
+            continue
+        if not is_allowed(rel):
+            continue
+        try:
+            stat = p.stat()
+        except OSError:
+            continue
+        files.append({
+            "path": str(rel).replace("\\", "/"),
+            "name": p.name,
+            "suffix": p.suffix.lower(),
+            "size": stat.st_size,
+        })
+    files.sort(key=lambda x: x["path"])
+    return files
+
+
+def attach_project_file(path: str) -> dict[str, Any]:
+    full_path, rel_path = resolve_project_file(path)
+    if not looks_text_file(full_path):
+        raise HTTPException(status_code=415, detail="Only text-like project files can be attached")
+    if full_path.stat().st_size > MAX_READ_BYTES:
+        raise HTTPException(status_code=413, detail="Project file is too large")
+    content, _, raw = read_text_file(full_path)
+    item = {
+        "id": uuid.uuid4().hex[:16],
+        "name": str(rel_path).replace("\\", "/"),
+        "size": len(raw),
+        "suffix": full_path.suffix.lower(),
+        "path": str(full_path),
+        "source": "project",
+        "encoding": "utf-8",
+        "text": content[:40000],
+        "text_available": True,
+        "sha256": hash_bytes(raw),
+        "created_at": time.time(),
+        "project_path": str(rel_path).replace("\\", "/"),
+    }
+    ATTACHMENT_INDEX[item["id"]] = item
+    return item
+
+
 # ---------------------------------------------------------------------------
 # Ollama client — delegated to infrastructure layer
 # ---------------------------------------------------------------------------
