@@ -22,7 +22,7 @@ class RuntimeDatetimePromptTest(unittest.TestCase):
         self.assertFalse(_wants_explicit_datetime_answer("Привет, как дела?"))
 
     def test_regular_prompt_keeps_time_internal_only(self) -> None:
-        with patch("app.application.agents.agents_service._run_auto_skills", return_value=""):
+        with patch("app.application.chat.auto_skills._run_auto_skills", return_value=""):
             prompt = _build_prompt("Привет", "")
 
         self.assertIn("ВНУТРЕННИЙ RUNTIME-КОНТЕКСТ", prompt)
@@ -31,7 +31,7 @@ class RuntimeDatetimePromptTest(unittest.TestCase):
         self.assertIn("НЕ упоминай дату, время", prompt)
 
     def test_direct_datetime_question_gets_precise_runtime_context(self) -> None:
-        with patch("app.application.agents.agents_service._run_auto_skills", return_value=""):
+        with patch("app.application.chat.auto_skills._run_auto_skills", return_value=""):
             prompt = _build_prompt("Какая сегодня дата?", "")
 
         self.assertIn("Пользователь прямо спросил о дате или времени", prompt)
