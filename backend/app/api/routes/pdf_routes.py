@@ -17,6 +17,7 @@ from app.infrastructure.files.pdf_pro import (
     pdf_tables_to_excel,
     pdf_to_word,
     analyze_pdf,
+    render_pdf_pages,
 )
 
 router = APIRouter(prefix="/api/pdf", tags=["pdf-pro"])
@@ -75,7 +76,6 @@ async def api_analyze(file: UploadFile = File(...)):
 async def api_preview(file: UploadFile = File(...), pages: str = "1,2,3"):
     """Рендерит страницы PDF как PNG картинки."""
     try:
-        from app.infrastructure.files.pdf_pro import render_pdf_pages
         data = await file.read()
         page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
         return render_pdf_pages(data, page_list or None)

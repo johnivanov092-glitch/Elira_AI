@@ -25,11 +25,13 @@ from app.application.agents.ollama_agent_service import (
     resolve_project_file,
     store_attachment,
 )
+from app.infrastructure.db.memory import vector_memory_capability_status
 from app.infrastructure.runtime.ollama_client import (
     OLLAMA_BASE_URL,
     fetch_ollama_tags,
     pick_model,
 )
+from app.application.skills.skills_service import screenshot_capability_status
 
 router = APIRouter(prefix="/api/project-brain", tags=["project-brain"])
 
@@ -70,9 +72,6 @@ class LocalAgentPlanRequest(BaseModel):
 
 @router.get("/status")
 def project_brain_status():
-    from app.infrastructure.db.memory import vector_memory_capability_status
-    from app.application.skills.skills_service import screenshot_capability_status
-
     return {
         "status": "ok",
         "project_root": str(PROJECT_ROOT),

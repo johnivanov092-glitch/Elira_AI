@@ -3,6 +3,12 @@
 Extracted from services/task_planner_service.py.  services/task_planner_service.py is now
 a thin re-export facade; all logic lives here.
 """
+import json
+import logging
+import sqlite3
+import uuid
+from datetime import datetime
+
 from app.core.config import DATA_DIR
 
 logger = logging.getLogger(__name__)

@@ -16,6 +16,14 @@ from app.application.projects.project_explorer import (
     read_project_file,
     search_project,
 )
+from app.application.agents.multi_agent_chain import run_multi_agent
+from app.application.memory.rag_memory_service import (
+    add_to_rag,
+    delete_rag,
+    list_rag,
+    rag_stats,
+    search_rag,
+)
 
 router = APIRouter(prefix="/api/advanced", tags=["advanced"])
 logger = logging.getLogger(__name__)
@@ -34,7 +42,6 @@ class MultiAgentRequest(BaseModel):
 
 @router.post("/multi-agent")
 def run_multi(payload: MultiAgentRequest):
-    from app.application.agents.multi_agent_chain import run_multi_agent
     try:
         result = run_multi_agent(
             query=payload.query,
@@ -68,31 +75,26 @@ class RagSearchRequest(BaseModel):
 
 @router.post("/rag/add")
 def rag_add(payload: RagAddRequest):
-    from app.application.memory.rag_memory_service import add_to_rag
     return add_to_rag(payload.text, payload.category, payload.importance)
 
 
 @router.post("/rag/search")
 def rag_search(payload: RagSearchRequest):
-    from app.application.memory.rag_memory_service import search_rag
     return search_rag(payload.query, payload.limit)
 
 
 @router.get("/rag/list")
 def rag_list(limit: int = 50):
-    from app.application.memory.rag_memory_service import list_rag
     return list_rag(limit)
 
 
 @router.delete("/rag/{item_id}")
 def rag_delete(item_id: int):
-    from app.application.memory.rag_memory_service import delete_rag
     return delete_rag(item_id)
 
 
 @router.get("/rag/stats")
 def rag_get_stats():
-    from app.application.memory.rag_memory_service import rag_stats
     return rag_stats()
 
 
