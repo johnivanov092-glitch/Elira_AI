@@ -9,7 +9,7 @@
  *   6. История запусков агента
  *   7. Браузер файлов проекта
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import {
   ArrowLeft,
   BarChart3,
@@ -32,21 +32,134 @@ import {
   Terminal,
   TestTube2,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { api } from "../api/ide";
 import TerminalPanel from "./TerminalPanel";
 
 const LIBRARY_KEY = "elira_library_files_v7";
 
-function makeId(p="id"){return`${p}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;}
-function saveJson(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{}}
+type ChatMessage = {
+  content?: unknown;
+  id?: string | number;
+  role?: string;
+};
 
-function extractCodeBlocks(messages){
-  const blocks=[];
+type LibraryFile = {
+  id: string;
+  name: string;
+  preview?: string;
+  size?: number;
+  source?: string;
+  type?: string;
+  [key: string]: unknown;
+};
+
+type Artifact = {
+  content?: string;
+  id: string;
+  lang?: string;
+  name: string;
+  preview?: string;
+  size?: number;
+  source?: string;
+  type?: string;
+};
+
+type FileTreeItem = {
+  ext?: string;
+  name: string;
+  path: string;
+  type?: string;
+};
+
+type ToolRunHistoryItem = {
+  answer_len?: number;
+  finished_at?: string;
+  model?: string;
+  ok?: boolean;
+  route?: string;
+  run_id?: string;
+};
+
+type GitStatusFile = {
+  file?: string;
+  status?: string;
+};
+
+type GitStatusData = {
+  branch?: string;
+  clean?: boolean;
+  error?: unknown;
+  files?: GitStatusFile[];
+  ok?: boolean;
+  repo?: string;
+};
+
+type GitLogCommit = {
+  hash?: string;
+  message?: string;
+};
+
+type GitLogData = {
+  commits?: GitLogCommit[];
+  error?: unknown;
+  ok?: boolean;
+  repo?: string;
+};
+
+type GitDiffData = {
+  diff?: unknown;
+  error?: unknown;
+  ok?: boolean;
+  stat?: unknown;
+};
+
+type GitData = {
+  diff?: GitDiffData;
+  log?: GitLogData;
+  status?: GitStatusData;
+};
+
+type MainView = "artifacts" | "filetree" | "git" | "history";
+type FilterTab = "all" | "code" | "files";
+type GitTab = "diff" | "log" | "status";
+type SaveStatus = "error" | "ok" | "saving" | null;
+
+type IdeWorkspaceShellProps = {
+  libraryFiles?: LibraryFile[];
+  messages?: ChatMessage[];
+  onBackToChat?: () => void;
+  onSendToChat?: (text: string) => void;
+  setLibraryFiles?: (files: LibraryFile[]) => void;
+};
+
+type HighlightJs = {
+  highlightElement: (element: HTMLElement) => void;
+};
+
+type IconComponent = LucideIcon;
+
+declare global {
+  interface Window {
+    hljs?: HighlightJs;
+  }
+}
+
+function makeId(p = "id"): string { return `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
+function saveJson(k: string, v: unknown): void { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+function displayText(value: unknown, fallback = ""): string {
+  if (value === undefined || value === null || value === "") return fallback;
+  return String(value);
+}
+
+function extractCodeBlocks(messages: ChatMessage[]): Artifact[] {
+  const blocks: Artifact[] = [];
   for(const msg of messages){
     if(msg.role!=="assistant")continue;
-    const regex=/```(\w*)\n([\s\S]*?)```/g;let m;
-    while((m=regex.exec(msg.content||""))!==null){
+    const content = typeof msg.content === "string" ? msg.content : String(msg.content || "");
+    const regex=/```(\w*)\n([\s\S]*?)```/g;let m: RegExpExecArray | null;
+    while((m=regex.exec(content))!==null){
       const lang=m[1]||"text";const code=m[2].trim();
       if(code.length<10)continue;
       const ext={python:"py",javascript:"js",jsx:"jsx",typescript:"ts",tsx:"tsx",rust:"rs",go:"go",java:"java",css:"css",html:"html",json:"json",yaml:"yml",bash:"sh",sql:"sql",markdown:"md"}[lang]||lang||"txt";
@@ -56,7 +169,7 @@ function extractCodeBlocks(messages){
   return blocks;
 }
 
-async function fileToRecord(file){
+async function fileToRecord(file: File): Promise<LibraryFile> {
   let preview="";
   const isText=file.type.startsWith("text/")||/\.(txt|md|json|js|jsx|ts|tsx|py|css|html|yml|yaml|xml|csv|log|ini|toml|rs|go|java|c|cpp|h|rb|sh|bat|sql)$/i.test(file.name);
   if(isText)try{preview=(await file.text()).slice(0,12000);}catch{}
@@ -64,8 +177,24 @@ async function fileToRecord(file){
   return{id:makeId("lib"),name:file.name,size:file.size,type:file.type||"unknown",uploaded_at:new Date().toISOString(),preview,use_in_context:true,source:"code-upload"};
 }
 
-let _hljs=null,_hljsP=null;
-function loadHljs(){
+function normalizeFileTree(items: unknown): FileTreeItem[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map((item) => {
+      const path = String(item.path ?? "");
+      return {
+        ext: typeof item.ext === "string" ? item.ext : "",
+        name: String(item.name ?? path),
+        path,
+        type: typeof item.type === "string" ? item.type : "",
+      };
+    });
+}
+
+let _hljs: HighlightJs | null = null;
+let _hljsP: Promise<HighlightJs | null> | null = null;
+function loadHljs(): Promise<HighlightJs | null> {
   if(_hljs)return Promise.resolve(_hljs);
   if(_hljsP)return _hljsP;
   _hljsP=new Promise(res=>{
@@ -74,17 +203,17 @@ function loadHljs(){
       l.href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css";
       document.head.appendChild(l);
     }
-    if(window.hljs){_hljs=window.hljs;res(_hljs);return;}
+    if(window.hljs){_hljs=window.hljs ?? null;res(_hljs);return;}
     const s=document.createElement("script");
     s.src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js";
-    s.onload=()=>{_hljs=window.hljs;res(_hljs);};s.onerror=()=>res(null);
+    s.onload=()=>{_hljs=window.hljs ?? null;res(_hljs);};s.onerror=()=>res(null);
     document.head.appendChild(s);
   });
   return _hljsP;
 }
 
-function CodeView({code,lang}){
-  const ref=useRef(null);
+function CodeView({code,lang}: { code?: string; lang?: string }) {
+  const ref=useRef<HTMLElement | null>(null);
   const safeCode = code || "";
   useEffect(()=>{
     let alive=true;
@@ -98,15 +227,15 @@ function CodeView({code,lang}){
   );
 }
 
-const SB=(e={})=>({padding:"3px 9px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:11,...e});
+const SB=(e: CSSProperties = {}): CSSProperties => ({padding:"3px 9px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:11,...e});
 const SBG=SB({color:"#4ade80",borderColor:"rgba(74,222,128,0.35)"});
 const SBB=SB({color:"#60a5fa",borderColor:"rgba(96,165,250,0.35)"});
 
-function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }) {
+function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }: { icon: IconComponent; size?: number; strokeWidth?: number; style?: CSSProperties }) {
   return <Icon size={size} strokeWidth={strokeWidth} style={{ display: "block", flexShrink: 0, ...style }} aria-hidden="true" />;
 }
 
-function IconText({ icon, children, size = 14, gap = 6, style }) {
+function IconText({ icon, children, size = 14, gap = 6, style }: { children: ReactNode; gap?: number; icon: IconComponent; size?: number; style?: CSSProperties }) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap, ...style }}>
       <UiIcon icon={icon} size={size} />
@@ -115,33 +244,33 @@ function IconText({ icon, children, size = 14, gap = 6, style }) {
   );
 }
 
-export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat}){
-  const fileRef=useRef(null);
+export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat}: IdeWorkspaceShellProps){
+  const fileRef=useRef<HTMLInputElement | null>(null);
   const [drag,setDrag]=useState(false);
   const [selectedId,setSelectedId]=useState("");
   const [copied,setCopied]=useState(false);
-  const [filterTab,setFilterTab]=useState("all");
+  const [filterTab,setFilterTab]=useState<FilterTab>("all");
   const [search,setSearch]=useState("");
   const [showTerminal,setShowTerminal]=useState(false);
-  const [mainView,setMainView]=useState("artifacts");
+  const [mainView,setMainView]=useState<MainView>("artifacts");
   const [editing,setEditing]=useState(false);
   const [editVal,setEditVal]=useState("");
-  const [saveStatus,setSaveStatus]=useState(null);
-  const [gitTab,setGitTab]=useState("status");
-  const [gitData,setGitData]=useState({});
+  const [saveStatus,setSaveStatus]=useState<SaveStatus>(null);
+  const [gitTab,setGitTab]=useState<GitTab>("status");
+  const [gitData,setGitData]=useState<GitData>({});
   const [gitLoading,setGitLoading]=useState(false);
   const [commitMsg,setCommitMsg]=useState("");
-  const [runHistory,setRunHistory]=useState(null);
-  const [fileTree,setFileTree]=useState(null);
+  const [runHistory,setRunHistory]=useState<ToolRunHistoryItem[] | null>(null);
+  const [fileTree,setFileTree]=useState<FileTreeItem[] | null>(null);
   const [ftLoading,setFtLoading]=useState(false);
-  const [ftSelected,setFtSelected]=useState(null);
-  const [ftContent,setFtContent]=useState(null);
+  const [ftSelected,setFtSelected]=useState<string | null>(null);
+  const [ftContent,setFtContent]=useState<string | null>(null);
 
   const libraryFiles=propLib||[];
-  function setLibraryFiles(next){if(propSetLib)propSetLib(next);saveJson(LIBRARY_KEY,next);}
+  function setLibraryFiles(next: LibraryFile[]){if(propSetLib)propSetLib(next);saveJson(LIBRARY_KEY,next);}
 
   const codeBlocks=useMemo(()=>extractCodeBlocks(messages),[messages]);
-  const fileArtifacts=useMemo(()=>libraryFiles.map(f=>({...f,type:"file",content:f.preview||"",lang:f.name.split(".").pop()||"txt",source:"library"})),[libraryFiles]);
+  const fileArtifacts=useMemo<Artifact[]>(()=>libraryFiles.map(f=>({...f,type:"file",content:f.preview||"",lang:f.name.split(".").pop()||"txt",source:"library"})),[libraryFiles]);
   const allArtifacts=useMemo(()=>{
     let base=filterTab==="code"?codeBlocks:filterTab==="files"?fileArtifacts:[...codeBlocks,...fileArtifacts];
     const q=search.trim().toLowerCase();
@@ -152,23 +281,24 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
 
   useEffect(()=>{setEditing(false);setSaveStatus(null);},[selectedId]);
 
-  async function handleFiles(fl){
+  async function handleFiles(fl: FileList | File[] | null | undefined){
     const files=Array.from(fl||[]);if(!files.length)return;
     const recs=[];for(const f of files)recs.push(await fileToRecord(f));
     setLibraryFiles([...recs,...libraryFiles]);setSelectedId(recs[0]?.id||"");
   }
-  function removeFile(id){setLibraryFiles(libraryFiles.filter(f=>f.id!==id));if(selectedId===id)setSelectedId("");}
+  function removeFile(id: string){setLibraryFiles(libraryFiles.filter(f=>f.id!==id));if(selectedId===id)setSelectedId("");}
   const handleCopy=useCallback(()=>{
     if(!selected?.content)return;
     navigator.clipboard.writeText(selected.content).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);});
   },[selected]);
-  function onDrop(e){e.preventDefault();e.stopPropagation();setDrag(false);handleFiles(e.dataTransfer.files);}
-  function onDragOver(e){e.preventDefault();e.stopPropagation();setDrag(true);}
-  function onDragLeave(e){e.preventDefault();e.stopPropagation();setDrag(false);}
+  function onDrop(e: DragEvent<HTMLDivElement>){e.preventDefault();e.stopPropagation();setDrag(false);handleFiles(e.dataTransfer.files);}
+  function onDragOver(e: DragEvent<HTMLDivElement>){e.preventDefault();e.stopPropagation();setDrag(true);}
+  function onDragLeave(e: DragEvent<HTMLDivElement>){e.preventDefault();e.stopPropagation();setDrag(false);}
 
   function startEdit(){setEditVal(selected?.content||"");setEditing(true);setSaveStatus(null);}
   function cancelEdit(){setEditing(false);setSaveStatus(null);}
   async function applyEdit(){
+    if(!selected)return;
     setSaveStatus("saving");
     try{
       const d=await api.writeFile({path:selected.name,content:editVal,create_dirs:true});
@@ -177,18 +307,17 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     }catch{setSaveStatus("error");}
   }
 
-  function askElira(prompt){
+  function askElira(prompt: string){
     if(!selected||!onSendToChat)return;
     onSendToChat(`${prompt}\n\`\`\`${selected.lang||""}\n${(selected.content||"").slice(0,3000)}\n\`\`\``);
   }
 
-  async function fetchGit(tab){
+  async function fetchGit(tab: GitTab){
     setGitTab(tab);setGitLoading(true);
     try{
-      let r,d;
-      if(tab==="status"){r=await api.getGitStatus();d=r;setGitData(p=>({...p,status:d}));}
-      else if(tab==="log"){r=await api.getGitLog(20);d=r;setGitData(p=>({...p,log:d}));}
-      else if(tab==="diff"){r=await api.getGitDiff({repo_path:"",file_path:""});d=r;setGitData(p=>({...p,diff:d}));}
+      if(tab==="status"){const d=await api.getGitStatus() as GitStatusData;setGitData(p=>({...p,status:d}));}
+      else if(tab==="log"){const d=await api.getGitLog(20) as GitLogData;setGitData(p=>({...p,log:d}));}
+      else if(tab==="diff"){const d=await api.getGitDiff({repo_path:"",file_path:""}) as GitDiffData;setGitData(p=>({...p,diff:d}));}
     }catch(e){setGitData(p=>({...p,[tab]:{ok:false,error:String(e)}}));}
     finally{setGitLoading(false);}
   }
@@ -196,32 +325,32 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     if(!commitMsg.trim())return;setGitLoading(true);
     try{
       const d=await api.createGitCommit({message:commitMsg,add_all:true});
-      if(d.ok){setCommitMsg("");fetchGit("status");}else alert("Ошибка Git: "+d.error);
+      if(d.ok){setCommitMsg("");fetchGit("status");}else alert("Ошибка Git: "+String(d.error || ""));
     }catch(e){alert(String(e));}finally{setGitLoading(false);}
   }
   useEffect(()=>{if(mainView==="git"&&!gitData.status)fetchGit("status");},[mainView]);
 
   useEffect(()=>{
     if(mainView!=="history"||runHistory!==null)return;
-    api.listToolRuns(50).then(d=>setRunHistory(d||[])).catch(()=>setRunHistory([]));
+    api.listToolRuns(50).then(d=>setRunHistory((d||[]) as ToolRunHistoryItem[])).catch(()=>setRunHistory([]));
   },[mainView]);
 
   useEffect(()=>{
     if(mainView!=="filetree"||fileTree!==null)return;
     setFtLoading(true);
-    api.getAdvancedProjectTree({maxDepth:3,maxItems:300}).then(d=>{setFileTree(d.items||[]);setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
+    api.getAdvancedProjectTree({maxDepth:3,maxItems:300}).then(d=>{setFileTree(normalizeFileTree(d.items));setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
   },[mainView]);
 
-  async function openFtFile(item){
+  async function openFtFile(item: FileTreeItem){
     if(item.type!=="file")return;
     setFtSelected(item.path);setFtContent(null);
     try{
       const r={json: async()=>await api.readAdvancedProjectFile(item.path, 20000)};
-      const d=await r.json();setFtContent(d.ok?d.content:"Ошибка: "+d.error);
+      const d=await r.json();setFtContent(d.ok?String(d.content || ""):"Ошибка: "+String(d.error || ""));
     }catch(e){setFtContent("Ошибка: "+String(e));}
   }
 
-  const iconFor = (a) =>
+  const iconFor = (a: Artifact): IconComponent =>
     a.type === "code"
       ? Code2
       : /\.pdf$/i.test(a.name || "")
@@ -229,7 +358,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
         : /\.(js|jsx|ts|tsx|py|rs|go|java|c|cpp)$/i.test(a.name || "")
           ? FileCode2
           : Files;
-  const gitColor=s=>({M:"#e2b93d",A:"#4ade80",D:"#ff6b6b","?":"#888"}[s?.[0]]||"#aaa");
+  const gitColor=(s?: string)=>({M:"#e2b93d",A:"#4ade80",D:"#ff6b6b","?":"#888"}[s?.[0] as "?" | "A" | "D" | "M"]||"#aaa");
 
   return(
     <div className="ide-shell" style={{display:"flex",flexDirection:"column",height:"100%",padding:0}}>
@@ -240,13 +369,13 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
         <span style={{fontSize:13,fontWeight:600}}>Код</span>
         <div style={{display:"flex",gap:2,marginLeft:6}}>
           {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["history","История", History]].map(([k,l,Icon])=>(
-            <button key={k} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k)} style={{fontSize:11,padding:"3px 9px"}}><IconText icon={Icon} size={12} gap={5}>{l}</IconText></button>
+            <button key={String(k)} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k as MainView)} style={{fontSize:11,padding:"3px 9px"}}><IconText icon={Icon as IconComponent} size={12} gap={5}>{String(l)}</IconText></button>
           ))}
         </div>
         {mainView==="artifacts"&&(
           <div style={{display:"flex",gap:2,marginLeft:6}}>
             {[["all","Всё"],["code","Код "+codeBlocks.length],["files","Файлы "+fileArtifacts.length]].map(([k,l])=>(
-              <button key={k} className={`soft-btn ${filterTab===k?"active":""}`} onClick={()=>setFilterTab(k)} style={{fontSize:11,padding:"3px 9px"}}>{l}</button>
+              <button key={String(k)} className={`soft-btn ${filterTab===k?"active":""}`} onClick={()=>setFilterTab(k as FilterTab)} style={{fontSize:11,padding:"3px 9px"}}>{String(l)}</button>
             ))}
           </div>
         )}
@@ -282,7 +411,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                   <span style={{fontSize:13,opacity:0.6}}><UiIcon icon={iconFor(a)} size={14} /></span>
                   <div style={{flex:1,minWidth:0}}>
                     <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:selectedId===a.id?500:400}}>{a.name}</div>
-                    <div style={{fontSize:10,color:"var(--text-muted)",marginTop:1}}>{a.source==="chat"?"из чата":a.type==="file"?`${Math.round(a.size/1024)||0}K`:""}{a.lang?` · ${a.lang}`:""}</div>
+                    <div style={{fontSize:10,color:"var(--text-muted)",marginTop:1}}>{a.source==="chat"?"из чата":a.type==="file"?`${Math.round((a.size ?? 0)/1024)||0}K`:""}{a.lang?` · ${a.lang}`:""}</div>
                   </div>
                   {a.source==="library"&&<button onClick={e=>{e.stopPropagation();removeFile(a.id);}} style={{border:"none",background:"transparent",color:"var(--text-muted)",cursor:"pointer",fontSize:11,padding:0}}>X</button>}
                 </button>
@@ -342,18 +471,18 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"auto"}}>
           <div style={{display:"flex",gap:4,padding:"10px 14px 0",borderBottom:"1px solid var(--border)"}}>
             {[["status","Статус", BarChart3],["log","История", History],["diff","Изменения", FileText]].map(([k,l,Icon])=>(
-              <button key={k} className={`soft-btn ${gitTab===k?"active":""}`} onClick={()=>fetchGit(k)} style={{fontSize:11,padding:"4px 12px",marginBottom:-1}}><IconText icon={Icon} size={12} gap={5}>{l}</IconText></button>
+              <button key={String(k)} className={`soft-btn ${gitTab===k?"active":""}`} onClick={()=>fetchGit(k as GitTab)} style={{fontSize:11,padding:"4px 12px",marginBottom:-1}}><IconText icon={Icon as IconComponent} size={12} gap={5}>{String(l)}</IconText></button>
             ))}
             {gitLoading&&<span style={{fontSize:11,color:"var(--text-muted)",alignSelf:"center",marginLeft:8}}><UiIcon icon={Loader2} size={13} /></span>}
           </div>
           <div style={{flex:1,padding:16,overflow:"auto"}}>
             {gitTab==="status"&&(()=>{const d=gitData.status;if(!d)return null;
-              if(!d.ok)return<div style={{color:"#ff6b6b",fontSize:12}}>{d.error}</div>;
+              if(!d.ok)return<div style={{color:"#ff6b6b",fontSize:12}}>{displayText(d.error)}</div>;
               return(
                 <div>
                   <div style={{fontSize:12,marginBottom:12}}>
-                    <span style={{color:"var(--text-muted)"}}>Ветка: </span><strong style={{color:"var(--accent)"}}>{d.branch}</strong>
-                    <span style={{color:"var(--text-muted)",marginLeft:16,fontSize:11}}>{d.repo}</span>
+                    <span style={{color:"var(--text-muted)"}}>Ветка: </span><strong style={{color:"var(--accent)"}}>{displayText(d.branch)}</strong>
+                    <span style={{color:"var(--text-muted)",marginLeft:16,fontSize:11}}>{displayText(d.repo)}</span>
                   </div>
                   {d.clean
                     ?<div style={{color:"#4ade80",fontSize:12,marginBottom:12}}>✓ Рабочая директория чистая</div>
@@ -381,10 +510,10 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
               );
             })()}
             {gitTab==="log"&&(()=>{const d=gitData.log;if(!d)return null;
-              if(!d.ok)return<div style={{color:"#ff6b6b",fontSize:12}}>{d.error}</div>;
+              if(!d.ok)return<div style={{color:"#ff6b6b",fontSize:12}}>{displayText(d.error)}</div>;
               return(
                 <div>
-                  <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:10}}>{(d.commits||[]).length} коммитов — {d.repo}</div>
+                  <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:10}}>{(d.commits||[]).length} коммитов — {displayText(d.repo)}</div>
                   {(d.commits||[]).map((c,i)=>(
                     <div key={i} style={{display:"flex",gap:10,padding:"6px 0",borderBottom:"1px solid var(--border-light)"}}>
                       <code style={{fontSize:11,color:"var(--accent)",flexShrink:0,fontFamily:"var(--font-mono)"}}>{c.hash}</code>
@@ -395,12 +524,12 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
               );
             })()}
             {gitTab==="diff"&&(()=>{const d=gitData.diff;if(!d)return null;
-              if(!d.ok)return<div style={{color:"#ff6b6b",fontSize:12}}>{d.error}</div>;
+              if(!d.ok)return<div style={{color:"#ff6b6b",fontSize:12}}>{displayText(d.error)}</div>;
               return(
                 <div>
-                  {d.stat&&<div style={{fontSize:12,color:"var(--text-muted)",marginBottom:10,whiteSpace:"pre-wrap",fontFamily:"var(--font-mono)"}}>{d.stat}</div>}
+                  {Boolean(d.stat)&&<div style={{fontSize:12,color:"var(--text-muted)",marginBottom:10,whiteSpace:"pre-wrap",fontFamily:"var(--font-mono)"}}>{displayText(d.stat)}</div>}
                   <pre style={{margin:0,fontFamily:"var(--font-mono)",fontSize:11,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-primary)",background:"rgba(0,0,0,0.15)",padding:12,borderRadius:8,overflow:"auto",maxHeight:500}}>
-                    {d.diff||"Нет изменений"}
+                    {displayText(d.diff, "Нет изменений")}
                   </pre>
                 </div>
               );
@@ -450,7 +579,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                 <span style={{fontSize:10,padding:"1px 7px",borderRadius:20,background:r.ok?"rgba(74,222,128,0.15)":"rgba(255,107,107,0.15)",color:r.ok?"#4ade80":"#ff6b6b"}}>{r.ok?"Готово":"Ошибка"}</span>
                 {r.route&&<span style={{fontSize:10,color:"var(--text-muted)"}}>маршрут: {r.route}</span>}
                 {r.model&&<span style={{fontSize:10,color:"var(--text-muted)"}}>модель: {r.model}</span>}
-                {r.answer_len>0&&<span style={{fontSize:10,color:"var(--text-muted)"}}>{r.answer_len} симв.</span>}
+                {(r.answer_len ?? 0)>0&&<span style={{fontSize:10,color:"var(--text-muted)"}}>{r.answer_len} симв.</span>}
                 <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:"auto"}}>{(r.finished_at||"").replace("T"," ").slice(0,19)}</span>
               </div>
             </div>

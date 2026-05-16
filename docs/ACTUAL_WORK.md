@@ -2135,3 +2135,15 @@ Live repair log for concrete backend/runtime fixes.
   `npm --prefix frontend run build` -> passed.
 - Result:
   artifact extraction, Python run output, code analysis, and save-to-file UI are now typechecked while preserving the chat shell integration.
+
+### 150. Frontend IdeWorkspaceShell converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting the IDE workspace shell to TypeScript.
+- Finish:
+  renamed `frontend/src/components/IdeWorkspaceShell.jsx` to [frontend/src/components/IdeWorkspaceShell.tsx](/D:/AIWork/Elira_AI/frontend/src/components/IdeWorkspaceShell.tsx);
+  added local message, library artifact, file tree, run history, Git panel, highlight.js loader, icon, style, and prop typing while preserving extensionless import from `EliraChatShell`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  IDE artifact browser, Git panel, project file tree, tool history, and terminal host are now typechecked; the remaining large Phase 6 JSX target is `EliraChatShell.jsx`.
