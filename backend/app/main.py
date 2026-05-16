@@ -6,10 +6,7 @@ from app.api.routes.project_brain import router as project_brain_router
 from app.api.routes.elira_patch import router as elira_patch_router
 
 from app.api.routes.chat import router as chat_router
-from app.api.routes.models import router as models_router
 from app.api.routes.memory import router as memory_router
-from app.api.routes.profiles import router as profiles_router
-from app.api.routes.agents import router as agents_router
 from app.api.routes.files import router as files_router
 from app.api.routes.persona import router as persona_router
 from app.api.routes.runtime import router as runtime_router
@@ -61,10 +58,7 @@ app.include_router(project_brain_router)
 app.include_router(elira_patch_router)
 
 app.include_router(chat_router)
-app.include_router(models_router)
 app.include_router(memory_router)
-app.include_router(profiles_router)
-app.include_router(agents_router)
 app.include_router(files_router)
 app.include_router(persona_router)
 app.include_router(runtime_router)
