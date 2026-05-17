@@ -175,15 +175,11 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
     return "".join(extra_parts)
 
 
-def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
-    """Авто-детект скиллов по ключевым словам. disabled — набор ID отключённых скиллов."""
 
-    disabled = disabled or set()
-    ql = user_input.lower()
-    parts = []
-    url_match = re.search(r"(https?://\S+)", user_input)
-    API_BASE = ""  # relative URLs
-
+def _run_network_skills(
+    user_input: str, ql: str, url_match, disabled: set, parts: list
+) -> None:
+    """HTTP/API, SQL, screenshot."""
     # ─── 🌐 HTTP/API ───
     http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
     if "http_api" not in disabled and url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
@@ -235,6 +231,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         except Exception as e:
             parts.append(f"SKILL_ERROR:🖼 Скриншот: {e}")
 
+
+def _run_media_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    """Image generation and Word/Excel file hints."""
     # ─── 🎨 Генерация картинок ───
     img_triggers = ["нарисуй", "нарисуй мне", "сгенерируй картинк", "сгенерируй изображен",
                     "создай картинк", "создай изображен", "generate image", "draw me",
@@ -276,6 +275,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     if "file_gen" not in disabled and any(t in ql for t in excel_triggers):
         parts.append("SKILL_HINT: Пользователь хочет Excel файл. Напиши данные в формате markdown-таблицы (| col1 | col2 |). После ответа файл .xlsx будет создан автоматически.")
 
+
+def _run_text_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    """Translate, encrypt, decrypt."""
     # ─── 🌍 Переводчик ───
     translate_triggers = ["переведи на ", "переведи в ", "translate to ", "перевод на ", "переведи текст"]
     if "translator" not in disabled:
@@ -327,6 +329,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         except Exception as e:
             parts.append(f"SKILL_ERROR:🔓 Ошибка: {e}")
 
+
+def _run_file_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    """Zip, unzip, convert, regex, CSV analysis."""
     # ─── 📦 Архиватор ───
     zip_triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
     if "archiver" not in disabled and any(t in ql for t in zip_triggers):
@@ -414,6 +419,11 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         except Exception as e:
             parts.append(f"SKILL_ERROR:📈 CSV: {e}")
 
+
+def _run_webhook_plugin_skills(
+    user_input: str, ql: str, disabled: set, parts: list
+) -> None:
+    """Webhook list and plugin execution."""
     # ─── 📡 Webhook ───
     webhook_triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
     if "webhook" not in disabled and any(t in ql for t in webhook_triggers):
@@ -471,6 +481,9 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         except Exception as e:
             parts.append(f"SKILL_ERROR:🔌 Плагины: {e}")
 
+
+def _run_system_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    """PDF hints, git, GPU status, generated files list."""
     # ─── 📑 PDF Pro ───
     pdf_word_triggers = ["конвертируй pdf в word", "pdf в word", "pdf to word", "pdf в docx"]
     if any(t in ql for t in pdf_word_triggers):
@@ -530,8 +543,22 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
         except Exception:
             pass
 
-    return "\n\n".join(parts)
 
+def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
+    """Auto-detect skills by keyword. disabled — set of disabled skill IDs."""
+    disabled = disabled or set()
+    ql = user_input.lower()
+    parts: list[str] = []
+    url_match = re.search(r"(https?://\S+)", user_input)
+
+    _run_network_skills(user_input, ql, url_match, disabled, parts)
+    _run_media_skills(user_input, ql, disabled, parts)
+    _run_text_skills(user_input, ql, disabled, parts)
+    _run_file_skills(user_input, ql, disabled, parts)
+    _run_webhook_plugin_skills(user_input, ql, disabled, parts)
+    _run_system_skills(user_input, ql, disabled, parts)
+
+    return "\n\n".join(parts)
 
 
 def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
