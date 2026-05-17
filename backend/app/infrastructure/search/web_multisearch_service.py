@@ -81,17 +81,6 @@ def news_search(query: str, max_results: int = 5) -> dict[str, Any]:
         return {"ok": False, "error": str(e), "items": [], "count": 0}
 
 
-def fetch_page(url: str, max_chars: int = 10000) -> dict[str, Any]:
-    """Загрузка и извлечение текста одной страницы."""
-    try:
-        text = fetch_page_text(url)
-        if text and max_chars and len(text) > max_chars:
-            text = text[:max_chars]
-        return {"ok": True, "url": url, "text": text, "length": len(text) if text else 0}
-    except Exception as e:
-        return {"ok": False, "url": url, "error": str(e), "text": ""}
-
-
 class WebMultiSearchService:
     def search(self, query: str, max_results: int = 10, engines: tuple[str, ...] | None = None) -> dict[str, Any]:
         return multi_search(query, engines=engines or ("tavily", "duckduckgo", "wikipedia"), max_results=max_results)
