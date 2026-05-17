@@ -211,6 +211,28 @@ def _fetch_deep_content(
     return deep_content, fetched_urls
 
 
+def _has_weak_subquery_coverage(
+    *,
+    normalized_search: list[dict[str, Any]],
+    news_results: list[dict[str, Any]],
+    needs_news_feed: bool,
+    local_first: bool,
+    preferred_domains: tuple[str, ...],
+    local_source_hits: int,
+) -> bool:
+    return (
+        len(normalized_search) < 3
+        or (needs_news_feed and not news_results)
+        or (local_first and preferred_domains and local_source_hits == 0)
+    )
+
+
+def _select_deep_search_engines(intent_kind: str) -> tuple[str, str, str]:
+    if intent_kind == "historical":
+        return ("wikipedia", "tavily", "duckduckgo")
+    return ("tavily", "duckduckgo", "wikipedia")
+
+
 def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
     """Execute a single web sub-query and return context + debug info."""
     from app.core.web import (
@@ -258,25 +280,23 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
         [{"href": item.get("url", "")} for item in normalized_search + news_results],
         preferred_domains,
     )
-    weak_coverage = (
-        len(normalized_search) < 3
-        or (needs_news_feed and not news_results)
-        or (local_first and preferred_domains and local_source_hits == 0)
+    weak_coverage = _has_weak_subquery_coverage(
+        normalized_search=normalized_search,
+        news_results=news_results,
+        needs_news_feed=needs_news_feed,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+        local_source_hits=local_source_hits,
     )
 
     deeper_search = False
     deep_context = ""
     if needs_deep_search and weak_coverage:
-        deep_engines = (
-            ("wikipedia", "tavily", "duckduckgo")
-            if intent_kind == "historical"
-            else ("tavily", "duckduckgo", "wikipedia")
-        )
         deep_context = research_web(
             query,
             max_results=6,
             pages_to_read=3,
-            engines=deep_engines,
+            engines=_select_deep_search_engines(intent_kind),
             intent_kind=intent_kind,
             geo_scope=geo_scope,
             local_first=local_first,
