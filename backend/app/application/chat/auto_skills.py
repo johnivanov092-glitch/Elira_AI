@@ -279,20 +279,20 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     # ─── 🌍 Переводчик ───
     translate_triggers = ["переведи на ", "переведи в ", "translate to ", "перевод на ", "переведи текст"]
     if "translator" not in disabled:
-     for t in translate_triggers:
-      if t in ql:
-            try:
-                after = user_input[ql.find(t) + len(t):].strip()
-                lang_text = after.split(":", 1) if ":" in after else after.split(" ", 1)
-                target_lang = lang_text[0].strip() if lang_text else "english"
-                text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
-                if text_to_translate and len(text_to_translate) > 2:
-                    result = translate_text(text_to_translate, target_lang)
-                    if result.get("ok"):
-                        parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
-            except Exception as e:
-                parts.append(f"SKILL_ERROR:🌍 Перевод: {e}")
-            break
+        for t in translate_triggers:
+            if t in ql:
+                try:
+                    after = user_input[ql.find(t) + len(t):].strip()
+                    lang_text = after.split(":", 1) if ":" in after else after.split(" ", 1)
+                    target_lang = lang_text[0].strip() if lang_text else "english"
+                    text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
+                    if text_to_translate and len(text_to_translate) > 2:
+                        result = translate_text(text_to_translate, target_lang)
+                        if result.get("ok"):
+                            parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
+                except Exception as e:
+                    parts.append(f"SKILL_ERROR:🌍 Перевод: {e}")
+                break
 
     # ─── 🔐 Шифрование ───
     if "encrypt" not in disabled and any(t in ql for t in ["зашифруй", "шифрование", "encrypt"]):
