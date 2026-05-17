@@ -2269,3 +2269,15 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   `build_single_web_subquery_context()` keeps the same debug payload while delegating engine and coverage label assembly to focused helpers.
+
+### 161. Legacy web row normalizers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup by reducing legacy single-pass result-shaping code.
+- Finish:
+  extracted `_normalize_duckduckgo_text_results()` and `_normalize_legacy_news_results()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), and reused `_normalize_core_search_results()` inside `do_web_search_legacy()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search_legacy()` keeps the same legacy search/news payload behavior while raw row shaping is isolated behind focused helpers.

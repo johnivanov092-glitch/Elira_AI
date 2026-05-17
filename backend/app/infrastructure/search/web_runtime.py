@@ -177,6 +177,43 @@ def _normalize_core_news_results(
     return news_results
 
 
+def _normalize_duckduckgo_text_results(
+    raw_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    search_results: list[dict[str, Any]] = []
+    for result in raw_results:
+        url = result.get("href") or result.get("url") or ""
+        if url:
+            search_results.append(
+                {
+                    "title": result.get("title", ""),
+                    "url": url,
+                    "snippet": result.get("body", ""),
+                    "engine": "duckduckgo",
+                }
+            )
+    return search_results
+
+
+def _normalize_legacy_news_results(
+    raw_news: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    news_results: list[dict[str, Any]] = []
+    for item in raw_news:
+        url = item.get("href") or item.get("url") or ""
+        if url and url.startswith("http"):
+            news_results.append(
+                {
+                    "title": item.get("title", ""),
+                    "url": url,
+                    "snippet": item.get("body", ""),
+                    "date": item.get("date", ""),
+                    "source": item.get("source", ""),
+                }
+            )
+    return news_results
+
+
 def _select_fetch_candidates(
     normalized_search: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -392,17 +429,7 @@ def do_web_search_legacy(
         from app.core.web import search_web as multi_search
 
         raw = multi_search(search_query, max_results=12)
-        for result in raw:
-            href = result.get("href", "")
-            if href and href.startswith("http"):
-                search_results.append(
-                    {
-                        "title": result.get("title", ""),
-                        "url": href,
-                        "snippet": result.get("body", ""),
-                        "engine": result.get("engine", ""),
-                    }
-                )
+        search_results.extend(_normalize_core_search_results(raw))
         engines_used = sorted(
             {result.get("engine", "") for result in raw if result.get("engine")}
         )
@@ -418,17 +445,7 @@ def do_web_search_legacy(
 
             with DDGS() as ddgs:
                 raw = list(ddgs.text(search_query, max_results=8))
-            for result in raw:
-                url = result.get("href") or result.get("url") or ""
-                if url:
-                    search_results.append(
-                        {
-                            "title": result.get("title", ""),
-                            "url": url,
-                            "snippet": result.get("body", ""),
-                            "engine": "duckduckgo",
-                        }
-                    )
+            search_results.extend(_normalize_duckduckgo_text_results(raw))
             engines_used = ["duckduckgo"]
         except Exception as exc:
             logger.warning("DDG fallback also failed: %s", exc)
@@ -436,18 +453,7 @@ def do_web_search_legacy(
     news_results: list[dict[str, Any]] = []
     try:
         news_raw = core_search_news(search_query, max_results=5)  # type: ignore[possibly-undefined]
-        for item in news_raw:
-            url = item.get("href") or item.get("url") or ""
-            if url and url.startswith("http"):
-                news_results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "url": url,
-                        "snippet": item.get("body", ""),
-                        "date": item.get("date", ""),
-                        "source": item.get("source", ""),
-                    }
-                )
+        news_results = _normalize_legacy_news_results(news_raw)
         if news_results and "ddg-news" not in engines_used:
             engines_used.append("ddg-news")
     except Exception:
