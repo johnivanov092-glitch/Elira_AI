@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.core.web import fetch_page_text, format_search_results, research_web, search_news, search_web
+from app.core.web import format_search_results, research_web, search_news, search_web
 
 logger = logging.getLogger(__name__)
 
