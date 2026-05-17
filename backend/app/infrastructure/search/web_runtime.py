@@ -142,6 +142,41 @@ def default_tl(
     )
 
 
+def _normalize_core_search_results(
+    search_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "title": item.get("title", ""),
+            "url": item.get("href", ""),
+            "snippet": item.get("body", ""),
+            "engine": item.get("engine", ""),
+        }
+        for item in search_results
+        if item.get("href", "").startswith("http")
+    ]
+
+
+def _normalize_core_news_results(
+    raw_news: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    news_results: list[dict[str, Any]] = []
+    for item in raw_news:
+        href = item.get("href") or item.get("url") or ""
+        if href.startswith("http"):
+            news_results.append(
+                {
+                    "title": item.get("title", ""),
+                    "url": href,
+                    "snippet": item.get("body", ""),
+                    "date": item.get("date", ""),
+                    "source": item.get("source", ""),
+                    "engine": item.get("engine", "ddg-news"),
+                }
+            )
+    return news_results
+
+
 def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
     """Execute a single web sub-query and return context + debug info."""
     from app.core.web import (
@@ -168,16 +203,7 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
         local_first=local_first,
         preferred_domains=preferred_domains,
     )
-    normalized_search = [
-        {
-            "title": item.get("title", ""),
-            "url": item.get("href", ""),
-            "snippet": item.get("body", ""),
-            "engine": item.get("engine", ""),
-        }
-        for item in search_results
-        if item.get("href", "").startswith("http")
-    ]
+    normalized_search = _normalize_core_search_results(search_results)
 
     news_results: list[dict[str, Any]] = []
     if needs_news_feed:
@@ -189,19 +215,7 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
             local_first=local_first,
             preferred_domains=preferred_domains,
         )
-        for item in raw_news:
-            href = item.get("href") or item.get("url") or ""
-            if href.startswith("http"):
-                news_results.append(
-                    {
-                        "title": item.get("title", ""),
-                        "url": href,
-                        "snippet": item.get("body", ""),
-                        "date": item.get("date", ""),
-                        "source": item.get("source", ""),
-                        "engine": item.get("engine", "ddg-news"),
-                    }
-                )
+        news_results = _normalize_core_news_results(raw_news)
 
     fetch_candidates: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
