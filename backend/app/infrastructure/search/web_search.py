@@ -271,22 +271,17 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
 
 
 # ---------------------------------------------------------------------------
-# Multi-pass web search (planner-driven subquery execution)
-# ---------------------------------------------------------------------------
-# (Legacy single-pass do_web_search_legacy removed — zero callers)
 
-def do_web_search(
+def _normalize_search_plan(
     query: str,
-    timeline: list,
-    tool_results: list,
-    web_plan: dict[str, Any] | None = None,
-    *,
-    tl: TimelineAppender | None = None,
-) -> str:
-    """Execute a planner-driven multi-pass web search."""
-    _tl = tl or _default_tl
+    web_plan: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Normalise the caller-supplied web_plan into a canonical plan + passes.
+
+    Returns ``(search_query, plan, raw_subqueries, passes)``.
+    """
     search_query = clean_query(query)
-    plan = web_plan or {
+    plan: dict[str, Any] = web_plan or {
         "is_multi_intent": False,
         "subqueries": [{
             "label": "Web search",
@@ -300,7 +295,6 @@ def do_web_search(
             "preferred_domains": [],
         }],
     }
-
     raw_subqueries = list(plan.get("subqueries") or [])[:6]
     if not raw_subqueries:
         raw_subqueries = [{
@@ -315,7 +309,6 @@ def do_web_search(
             "preferred_domains": [],
             "priority": 0,
         }]
-
     passes = list(plan.get("passes") or [])
     if not passes:
         passes = [
@@ -325,6 +318,25 @@ def do_web_search(
             }
             for pass_index, offset in enumerate(range(0, len(raw_subqueries), 3))
         ]
+    return search_query, plan, raw_subqueries, passes
+
+
+# Multi-pass web search (planner-driven subquery execution)
+# ---------------------------------------------------------------------------
+# (Legacy single-pass do_web_search_legacy removed — zero callers)
+
+def do_web_search(
+    query: str,
+    timeline: list,
+    tool_results: list,
+    web_plan: dict[str, Any] | None = None,
+    *,
+    tl: TimelineAppender | None = None,
+) -> str:
+    """Execute a planner-driven multi-pass web search."""
+    _tl = tl or _default_tl
+    search_query, plan, raw_subqueries, passes = _normalize_search_plan(query, web_plan)
+
 
     sections: list[str] = []
     debug_rows: list[dict] = []
