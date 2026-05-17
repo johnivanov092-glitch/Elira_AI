@@ -2233,3 +2233,15 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   `build_single_web_subquery_context()` keeps the same search/news behavior while delegating raw result shaping to small pure helpers.
+
+### 158. Web deep-fetch helpers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with a bounded fetch/read helper extraction.
+- Finish:
+  extracted `_select_fetch_candidates()` and `_fetch_deep_content()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving URL dedupe/skip-domain filtering and first-page content reads out of `build_single_web_subquery_context()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `build_single_web_subquery_context()` keeps the same fetch limits and skip-domain behavior while delegating deep page fetch setup to focused helpers.

@@ -597,6 +597,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-17 18:43:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_build_web_search_result_payload()` from `do_web_search()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 | `2026-05-17 18:52:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_execute_web_search_pass()` from `do_web_search()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 | `2026-05-17 18:56:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_normalize_core_search_results()` and `_normalize_core_news_results()` from `build_single_web_subquery_context()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
+| `2026-05-17 19:13:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_select_fetch_candidates()` and `_fetch_deep_content()` from `build_single_web_subquery_context()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 
 ## 8. Commit Ledger
 

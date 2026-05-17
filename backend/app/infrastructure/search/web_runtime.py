@@ -177,6 +177,40 @@ def _normalize_core_news_results(
     return news_results
 
 
+def _select_fetch_candidates(
+    normalized_search: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    fetch_candidates: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in normalized_search:
+        url = item["url"]
+        if (
+            not url
+            or url in seen_urls
+            or any(domain in url for domain in WEB_SKIP_FETCH_DOMAINS)
+        ):
+            continue
+        seen_urls.add(url)
+        fetch_candidates.append(item)
+        if len(fetch_candidates) >= 4:
+            break
+    return fetch_candidates
+
+
+def _fetch_deep_content(
+    fetch_candidates: list[dict[str, Any]],
+    fetch_page_func: Callable[[str], str],
+) -> tuple[list[str], set[str]]:
+    deep_content: list[str] = []
+    fetched_urls: set[str] = set()
+    for item in fetch_candidates[:2]:
+        text = (fetch_page_func(item["url"]) or "")[:3000]
+        if text and len(text) > 100:
+            deep_content.append("--- " + item["title"] + " ---\n" + text)
+            fetched_urls.add(item["url"])
+    return deep_content, fetched_urls
+
+
 def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
     """Execute a single web sub-query and return context + debug info."""
     from app.core.web import (
@@ -217,24 +251,8 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
         )
         news_results = _normalize_core_news_results(raw_news)
 
-    fetch_candidates: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-    for item in normalized_search:
-        url = item["url"]
-        if not url or url in seen_urls or any(domain in url for domain in WEB_SKIP_FETCH_DOMAINS):
-            continue
-        seen_urls.add(url)
-        fetch_candidates.append(item)
-        if len(fetch_candidates) >= 4:
-            break
-
-    deep_content: list[str] = []
-    fetched_urls: set[str] = set()
-    for item in fetch_candidates[:2]:
-        text = (core_fetch(item["url"]) or "")[:3000]
-        if text and len(text) > 100:
-            deep_content.append("--- " + item["title"] + " ---\n" + text)
-            fetched_urls.add(item["url"])
+    fetch_candidates = _select_fetch_candidates(normalized_search)
+    deep_content, fetched_urls = _fetch_deep_content(fetch_candidates, core_fetch)
 
     local_source_hits = count_hits_for_domains(
         [{"href": item.get("url", "")} for item in normalized_search + news_results],
