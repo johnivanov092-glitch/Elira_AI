@@ -507,6 +507,61 @@ def _update_model_calibration(conn: sqlite3.Connection, model_name: str, version
     return {"model": model_name or "default", "version_id": version_id, "calibration": calibration, "consistency_score": consistency, "updated_at": now}
 
 
+def _upsert_persona_candidate(
+    conn: sqlite3.Connection,
+    active_payload: dict[str, Any],
+    item: dict[str, Any],
+    profile_name: str,
+    version_id: int,
+) -> None:
+    """Insert or update a single persona candidate row in the DB."""
+    summary = item.get("summary", item.get("trait_key", ""))
+    contradiction = _contradiction_score(active_payload, summary)
+    row = conn.execute(
+        """
+        SELECT * FROM persona_candidates
+        WHERE trait_key = ? AND layer = ? AND status = 'quarantine'
+        LIMIT 1
+        """,
+        (item["trait_key"], item["layer"]),
+    ).fetchone()
+    now = _utc_now()
+    if row:
+        evidence_count = int(row["evidence_count"]) + 1
+        confidence_avg = round(
+            ((float(row["confidence_avg"]) * int(row["evidence_count"])) + float(item["confidence"])) / evidence_count,
+            3,
+        )
+        candidate_payload = _json_loads(row["candidate_json"], {})
+        candidate_payload.update({"summary": summary, "last_profile": profile_name or DEFAULT_PROFILE})
+        conn.execute(
+            """
+            UPDATE persona_candidates
+            SET candidate_json = ?, evidence_count = ?, confidence_avg = ?, contradiction_score = ?, last_seen = ?
+            WHERE id = ?
+            """,
+            (_json_dumps(candidate_payload), evidence_count, confidence_avg, contradiction, now, row["id"]),
+        )
+    else:
+        conn.execute(
+            """
+            INSERT INTO persona_candidates(trait_key, layer, candidate_json, evidence_count, confidence_avg, contradiction_score, first_seen, last_seen, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'quarantine')
+            """,
+            (
+                item["trait_key"],
+                item["layer"],
+                _json_dumps({"summary": summary, "last_profile": profile_name or DEFAULT_PROFILE}),
+                1,
+                float(item["confidence"]),
+                contradiction,
+                now,
+                now,
+            ),
+        )
+        _audit(conn, "candidate_created", version=version_id, trait_key=item["trait_key"], payload=item)
+
+
 def observe_dialogue(
     *,
     dialog_id: str,
@@ -553,51 +608,7 @@ def observe_dialogue(
         )
 
         for item in persona_items:
-            summary = item.get("summary", item.get("trait_key", ""))
-            contradiction = _contradiction_score(active.get("payload") or ELIRA_PERSONA_BASE_PAYLOAD, summary)
-            row = conn.execute(
-                """
-                SELECT * FROM persona_candidates
-                WHERE trait_key = ? AND layer = ? AND status = 'quarantine'
-                LIMIT 1
-                """,
-                (item["trait_key"], item["layer"]),
-            ).fetchone()
-            now = _utc_now()
-            if row:
-                evidence_count = int(row["evidence_count"]) + 1
-                confidence_avg = round(
-                    ((float(row["confidence_avg"]) * int(row["evidence_count"])) + float(item["confidence"])) / evidence_count,
-                    3,
-                )
-                candidate_payload = _json_loads(row["candidate_json"], {})
-                candidate_payload.update({"summary": summary, "last_profile": profile_name or DEFAULT_PROFILE})
-                conn.execute(
-                    """
-                    UPDATE persona_candidates
-                    SET candidate_json = ?, evidence_count = ?, confidence_avg = ?, contradiction_score = ?, last_seen = ?
-                    WHERE id = ?
-                    """,
-                    (_json_dumps(candidate_payload), evidence_count, confidence_avg, contradiction, now, row["id"]),
-                )
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO persona_candidates(trait_key, layer, candidate_json, evidence_count, confidence_avg, contradiction_score, first_seen, last_seen, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'quarantine')
-                    """,
-                    (
-                        item["trait_key"],
-                        item["layer"],
-                        _json_dumps({"summary": summary, "last_profile": profile_name or DEFAULT_PROFILE}),
-                        1,
-                        float(item["confidence"]),
-                        contradiction,
-                        now,
-                        now,
-                    ),
-                )
-                _audit(conn, "candidate_created", version=version_id, trait_key=item["trait_key"], payload=item)
+            _upsert_persona_candidate(conn, active.get("payload") or ELIRA_PERSONA_BASE_PAYLOAD, item, profile_name, version_id)
 
         calibration = _update_model_calibration(conn, model_name, version_id, extracted.get("model_calibration", []))
         promoted_version = _maybe_promote_candidates(conn)
