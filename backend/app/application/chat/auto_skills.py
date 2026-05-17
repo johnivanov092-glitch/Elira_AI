@@ -10,6 +10,37 @@ import re
 from typing import Any
 
 from app.application.chat.prompt_builder import build_runtime_datetime_context
+from app.application.skills.skills_extra import (
+    analyze_csv,
+    convert_file,
+    create_zip,
+    decrypt_text,
+    encrypt_text,
+    extract_zip,
+    list_webhooks,
+    test_regex,
+    translate_text,
+)
+from app.application.skills.skills_service import (
+    describe_db,
+    generate_excel,
+    generate_word,
+    http_request,
+    list_databases,
+    run_sql,
+    screenshot_url,
+)
+from app.core.config import GENERATED_DIR
+from app.infrastructure.integrations.image_gen import generate_image, get_status
+from app.infrastructure.plugins.plugin_system import (
+    fire_hook,
+    list_plugins,
+    run_plugin,
+    run_triggered,
+)
+from app.infrastructure.runtime.python_runner import execute_python
+from app.infrastructure.vcs.git_service import format_git_context, git_diff, git_log
+
 _build_runtime_datetime_context = build_runtime_datetime_context
 
 def _tl(timeline: list, step: str, title: str, status: str, detail: str) -> None:
@@ -33,7 +64,6 @@ def _maybe_auto_exec_python(user_input, answer, timeline, enabled: bool = True):
     if not code or len(code) < 10:
         return answer
     try:
-        from app.infrastructure.runtime.python_runner import execute_python
         result = execute_python(code)
         _tl(timeline, "auto_exec", "Python exec", "done" if result.get("ok") else "error", "")
         parts = ["\n\n**Результат выполнения:**"]
@@ -73,7 +103,6 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
     """После ответа LLM: если пользователь хотел Word/Excel — создаём файлы из ответа."""
     if not enabled:
         return ""
-    import time
     ql = user_input.lower()
 
     extra_parts = []
@@ -82,7 +111,6 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
     wants_word = any(t in ql for t in _FILE_TRIGGERS_WORD)
     if wants_word and len(llm_answer) > 50:
         try:
-            from app.application.skills.skills_service import generate_word
             # Извлекаем заголовок из первой строки ответа
             lines = llm_answer.strip().split("\n")
             title = ""
@@ -107,9 +135,6 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
     wants_excel = any(t in ql for t in _FILE_TRIGGERS_EXCEL)
     if wants_excel and len(llm_answer) > 30:
         try:
-            from app.application.skills.skills_service import generate_excel
-        
-
             # Парсим markdown таблицы из ответа LLM
             table_pattern = re.findall(r'\|(.+)\|', llm_answer)
             if table_pattern and len(table_pattern) >= 2:
@@ -163,7 +188,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
     if "http_api" not in disabled and url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
         try:
-            from app.application.skills.skills_service import http_request
             method = "POST" if "post" in ql else "GET"
             result = http_request(url_match.group(1), method=method, timeout=10)
             if result.get("ok"):
@@ -179,7 +203,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     sql_triggers = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу", "select ", "покажи записи", "покажи данные из"]
     if "sql" not in disabled and any(t in ql for t in sql_triggers):
         try:
-            from app.application.skills.skills_service import list_databases, describe_db, run_sql
             sql_match = re.search(r"(SELECT\s+.+)", user_input, re.IGNORECASE)
             if sql_match:
                 dbs = list_databases()
@@ -204,7 +227,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     screenshot_triggers = ["скриншот", "screenshot", "покажи как выглядит", "сделай снимок"]
     if "screenshot" not in disabled and url_match and any(t in ql for t in screenshot_triggers):
         try:
-            from app.application.skills.skills_service import screenshot_url
             result = screenshot_url(url_match.group(1))
             if result.get("ok"):
                 parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:Скриншот {result.get('title','')}")
@@ -219,7 +241,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
                     "сделай картинк", "покажи картинк", "нарисовать"]
     if "image_gen" not in disabled and any(t in ql for t in img_triggers):
         try:
-            from app.infrastructure.integrations.image_gen import generate_image
             prompt = user_input
             for t in img_triggers:
                 idx = ql.find(t)
@@ -266,7 +287,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
                 target_lang = lang_text[0].strip() if lang_text else "english"
                 text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
                 if text_to_translate and len(text_to_translate) > 2:
-                    from app.application.skills.skills_extra import translate_text
                     result = translate_text(text_to_translate, target_lang)
                     if result.get("ok"):
                         parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
@@ -277,7 +297,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     # ─── 🔐 Шифрование ───
     if "encrypt" not in disabled and any(t in ql for t in ["зашифруй", "шифрование", "encrypt"]):
         try:
-            from app.application.skills.skills_extra import encrypt_text
             text = user_input
             for t in ["зашифруй:", "зашифруй ", "encrypt:", "encrypt "]:
                 idx = ql.find(t)
@@ -293,7 +312,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
 
     if "encrypt" not in disabled and any(t in ql for t in ["расшифруй", "дешифруй", "decrypt"]):
         try:
-            from app.application.skills.skills_extra import decrypt_text
             token = user_input
             for t in ["расшифруй:", "расшифруй ", "decrypt:", "decrypt ", "дешифруй "]:
                 idx = ql.find(t)
@@ -313,7 +331,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     zip_triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
     if "archiver" not in disabled and any(t in ql for t in zip_triggers):
         try:
-            from app.application.skills.skills_extra import create_zip
             path = user_input
             for t in zip_triggers:
                 idx = ql.find(t)
@@ -332,7 +349,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     unzip_triggers = ["распакуй", "разархивируй", "извлеки архив"]
     if "archiver" not in disabled and any(t in ql for t in unzip_triggers):
         try:
-            from app.application.skills.skills_extra import extract_zip
             path = user_input
             for t in unzip_triggers:
                 idx = ql.find(t)
@@ -350,7 +366,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     convert_triggers = ["конвертируй", "преобразуй", "конвертировать", "convert "]
     if "converter" not in disabled and any(t in ql for t in convert_triggers):
         try:
-            from app.application.skills.skills_extra import convert_file
             # Парсим: "конвертируй data.csv в xlsx"
             match = re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, re.IGNORECASE)
             if not match:
@@ -368,7 +383,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     regex_triggers = ["проверь regex", "тест regex", "regex тест", "test regex", "регулярка", "регулярное выражение"]
     if "regex" not in disabled and any(t in ql for t in regex_triggers):
         try:
-            from app.application.skills.skills_extra import test_regex
             # Парсим: "проверь regex \d+ на строке abc123def"
             match = re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, re.IGNORECASE)
             if not match:
@@ -386,7 +400,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     csv_triggers = ["проанализируй csv", "анализ csv", "статистика csv", "analyze csv", "проанализируй файл", "покажи статистику"]
     if "csv_analysis" not in disabled and any(t in ql for t in csv_triggers):
         try:
-            from app.application.skills.skills_extra import analyze_csv
             # Ищем имя файла
             file_match = re.search(r"(\S+\.csv)", user_input, re.IGNORECASE)
             if file_match:
@@ -405,7 +418,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     webhook_triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
     if "webhook" not in disabled and any(t in ql for t in webhook_triggers):
         try:
-            from app.application.skills.skills_extra import list_webhooks
             result = list_webhooks(10)
             items = result.get("items", [])
             if items:
@@ -421,8 +433,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     # ─── 🔌 Плагины v2 ───
     if "plugins" not in disabled:
         try:
-            from app.infrastructure.plugins.plugin_system import list_plugins, run_plugin, run_triggered, fire_hook
-
             # 1. Список плагинов
             plugin_list_triggers = ["список плагинов", "покажи плагины", "plugins list", "мои плагины"]
             if any(t in ql for t in plugin_list_triggers):
@@ -474,15 +484,13 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     _git_st = ['git status', 'статус git', 'что изменилось в git', 'покажи git', 'git изменения', 'ветка git']
     if 'git' not in disabled and any(t in ql for t in _git_st):
         try:
-            from app.infrastructure.vcs.git_service import format_git_context
             parts.append(format_git_context())
         except Exception as _e:
             parts.append('SKILL_ERROR:Git: ' + str(_e))
     _git_lg = ['git log', 'история коммитов', 'последние коммиты', 'покажи коммиты']
     if 'git' not in disabled and any(t in ql for t in _git_lg):
         try:
-            from app.infrastructure.vcs.git_service import git_log as _gl
-            _r = _gl(limit=10)
+            _r = git_log(limit=10)
             if _r.get('ok'):
                 _rows = ['Git log (' + _r['repo'] + '):'] + ['  ' + c['hash'] + ' - ' + c['message'] for c in _r.get('commits', [])]
                 parts.append(chr(10).join(_rows))
@@ -491,8 +499,7 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     _git_df = ['git diff', 'покажи diff', 'что я изменил', 'изменения в коде']
     if 'git' not in disabled and any(t in ql for t in _git_df):
         try:
-            from app.infrastructure.vcs.git_service import git_diff as _gdf
-            _r = _gdf()
+            _r = git_diff()
             if _r.get('ok'):
                 parts.append('Git diff:' + chr(10) + _r.get('stat','') + chr(10) + _r.get('diff','')[:3000])
         except Exception as _e:
@@ -502,7 +509,6 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     gpu_triggers = ["статус gpu", "gpu status", "сколько vram", "видеопамять"]
     if any(t in ql for t in gpu_triggers):
         try:
-            from app.infrastructure.integrations.image_gen import get_status
             result = get_status()
             parts.append(f"🖥 GPU: {result.get('gpu','?')}\n"
                          f"VRAM: {result.get('vram_used_mb',0)} / {result.get('vram_total_mb',0)} MB\n"
@@ -514,9 +520,8 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     files_triggers = ["покажи файлы", "список файлов", "сгенерированные файлы", "мои файлы"]
     if any(t in ql for t in files_triggers):
         try:
-            from app.core.config import GENERATED_DIR as gen_dir
-            if gen_dir.exists():
-                files = sorted(gen_dir.iterdir())[-10:]
+            if GENERATED_DIR.exists():
+                files = sorted(GENERATED_DIR.iterdir())[-10:]
                 if files:
                     lines = ["📊 Последние файлы:"]
                     for f in files:
