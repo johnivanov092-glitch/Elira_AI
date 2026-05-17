@@ -11,6 +11,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from app.application.agents.agent_registry import list_agents, seed_builtin_agents
+from app.application.event_bus import emit_event
+from app.application.tools.tool_service import list_tools
 from app.core.data_files import sqlite_data_file
 from app.infrastructure.db.connection import connect_sqlite
 
@@ -138,8 +141,6 @@ def _planner_tool_aliases() -> list[str]:
 def _all_known_tools() -> list[str]:
     tool_names: list[str] = []
     try:
-        from app.application.tools.tool_service import list_tools
-
         payload = list_tools()
         for item in payload.get("tools", []):
             name = str((item or {}).get("name", "")).strip()
@@ -209,8 +210,6 @@ def _upsert_limit(payload: dict[str, Any], *, emit_event_bus: bool = False) -> d
     updated = get_agent_limit(agent_id) or {}
     if emit_event_bus:
         try:
-            from app.application.event_bus import emit_event
-
             emit_event(
                 event_type="agent.limit.updated",
                 source_agent_id=agent_id,
@@ -241,8 +240,6 @@ def seed_default_limits() -> int:
     created = 0
     agent_ids: list[str] = []
     try:
-        from app.application.agents.agent_registry import list_agents, seed_builtin_agents
-
         seed_builtin_agents()
         agent_ids = [str(item.get("id", "")).strip() for item in list_agents(enabled_only=False)]
     except Exception:
@@ -476,8 +473,6 @@ def record_sandbox_block(
         details=payload,
     )
     try:
-        from app.application.event_bus import emit_event
-
         emit_event(
             event_type="sandbox.policy.blocked",
             source_agent_id=agent_id,

@@ -11,6 +11,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.core.web import fetch_page_text, format_search_results, research_web, search_news, search_web
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,6 @@ def multi_search(
 ) -> dict[str, Any]:
     """Мульти-поиск через несколько поисковиков с дедупликацией."""
     try:
-        from app.core.web import search_web, format_search_results
         results = search_web(query, max_results=max_results, engines=engines, per_engine=per_engine)
         engines_found = list({r.get("engine", "") for r in results if r.get("engine")})
         return {
@@ -46,7 +47,6 @@ def deep_search(
 ) -> dict[str, Any]:
     """Поиск + параллельная загрузка содержимого страниц."""
     try:
-        from app.core.web import research_web
         text = research_web(query, max_results=max_results, pages_to_read=pages_to_read, engines=engines)
         return {
             "ok": True,
@@ -62,8 +62,6 @@ def deep_search(
 def news_search(query: str, max_results: int = 5) -> dict[str, Any]:
     """Поиск свежих новостей через DDG News."""
     try:
-        from app.core.web import search_news
-
         raw = search_news(query, max_results=max_results)
 
         items = []
@@ -86,7 +84,6 @@ def news_search(query: str, max_results: int = 5) -> dict[str, Any]:
 def fetch_page(url: str, max_chars: int = 10000) -> dict[str, Any]:
     """Загрузка и извлечение текста одной страницы."""
     try:
-        from app.core.web import fetch_page_text
         text = fetch_page_text(url)
         if text and max_chars and len(text) > max_chars:
             text = text[:max_chars]

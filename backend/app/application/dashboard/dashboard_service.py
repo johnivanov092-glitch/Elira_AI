@@ -4,7 +4,10 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timedelta
 
+from app.application.memory.smart_memory import get_stats as get_memory_stats
+from app.infrastructure.db.elira_memory_sqlite import get_messages, list_chats
 from app.infrastructure.db.run_history_service import RunHistoryService
+from app.infrastructure.plugins.plugin_system import list_plugins
 
 _HISTORY = RunHistoryService()
 
@@ -44,14 +47,12 @@ def get_dashboard_stats() -> dict:
 
     memory_stats: dict = {"total": 0, "categories": {}}
     try:
-        from app.application.memory.smart_memory import get_stats
-        memory_stats = get_stats()
+        memory_stats = get_memory_stats()
     except Exception:
         pass
 
     chat_count = message_count = 0
     try:
-        from app.infrastructure.db.elira_memory_sqlite import get_messages, list_chats
         chats = list_chats()
         chat_count = len(chats)
         for chat in chats[:50]:
@@ -61,7 +62,6 @@ def get_dashboard_stats() -> dict:
 
     plugin_count = 0
     try:
-        from app.infrastructure.plugins.plugin_system import list_plugins
         plugin_count = list_plugins().get("count", 0)
     except Exception:
         pass

@@ -20,6 +20,7 @@ from typing import Any
 
 import requests
 
+from app.application.agents.agents_service import run_agent
 from app.core.config import DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -318,7 +319,6 @@ def _process_message(token: str, message: dict):
         use_memory = _get_config("use_memory", "true") == "true"
         use_web = _get_config("use_web_search", "false") == "true"
 
-        from app.application.agents.agents_service import run_agent
         result = run_agent(
             model_name=model or "gemma3:4b",
             profile_name=profile,

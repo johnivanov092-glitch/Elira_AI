@@ -12,7 +12,16 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from typing import Any
+
+from app.application.planning.temporal_intent import detect_temporal_intent
+from app.core.web import (
+    fetch_page_text as core_fetch,
+    research_web,
+    search_news as core_search_news,
+    search_web as core_search,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +46,6 @@ WEB_SKIP_FETCH_DOMAINS = [
 
 def clean_query(query: str) -> str:
     """Clean and improve a raw user query for web search engines."""
-    from datetime import datetime
-
-    from app.application.planning.temporal_intent import detect_temporal_intent
-
     q = query.strip()
     for p in _QUERY_NOISE:
         q = re.sub(p, "", q, flags=re.IGNORECASE).strip()
@@ -183,13 +188,6 @@ def _default_tl(timeline: list, step: str, title: str, status: str, detail: str)
 
 def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
     """Execute a single web sub-query and return context + debug info."""
-    from app.core.web import (
-        fetch_page_text as core_fetch,
-        research_web,
-        search_news as core_search_news,
-        search_web as core_search,
-    )
-
     query = subquery.get("query", "")
     label = subquery.get("label", "Поиск")
     intent_kind = subquery.get("intent_kind", "")
@@ -550,8 +548,6 @@ def _try_deep_research(
     """Attempt an additional deep research pass if coverage is weak."""
     _tl_fn = tl or _default_tl
     try:
-        from app.core.web import research_web
-
         deep_engines = (
             ("wikipedia", "tavily", "duckduckgo")
             if temporal.get("stable_historical")

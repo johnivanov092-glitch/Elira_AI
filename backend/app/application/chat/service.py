@@ -45,6 +45,8 @@ from app.application.agents.reflection_loop_service import run_reflection_loop
 from app.infrastructure.db.run_history_service import RunHistoryService
 from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
 from app.application.tools.tool_service import run_tool
+from app.application.event_bus import emit_event
+from app.application.agents.agent_registry import record_agent_run, resolve_agent
 
 try:
     from app.application.memory.rag_memory_service import get_rag_context
@@ -104,7 +106,6 @@ def _emit_agent_os_event(
     *, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None
 ) -> None:
     try:
-        from app.application.event_bus import emit_event
         emit_event(event_type=event_type, source_agent_id=source_agent_id, payload=payload or {})
     except Exception:
         logger.debug("event_bus_emit_failed", exc_info=True)
@@ -232,7 +233,6 @@ def execute_chat_agent(
     _registry_agent = None
     if agent_id:
         try:
-            from app.application.agents.agent_registry import resolve_agent
             _registry_agent = resolve_agent(agent_id=agent_id)
             if _registry_agent:
                 if _registry_agent.get("system_prompt"):
@@ -431,7 +431,6 @@ def execute_chat_agent(
 
         if agent_id or _registry_agent:
             try:
-                from app.application.agents.agent_registry import record_agent_run
                 record_agent_run({
                     "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
                     "run_id": run["run_id"],
@@ -527,7 +526,6 @@ def execute_chat_agent(
         )
         if agent_id or _registry_agent:
             try:
-                from app.application.agents.agent_registry import record_agent_run
                 record_agent_run({
                     "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
                     "run_id": run["run_id"],

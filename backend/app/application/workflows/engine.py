@@ -16,6 +16,9 @@ from typing import Any, Callable
 
 from app.core.data_files import sqlite_data_file
 from app.infrastructure.db.connection import connect_sqlite
+from app.application.agents.agents_service import run_agent
+from app.application.event_bus import emit_event
+from app.application.memory.smart_memory import get_relevant_context
 from app.application.monitoring.agent_monitor import (
     WORKFLOW_ENGINE_AGENT_ID,
     record_resource_usage,
@@ -23,6 +26,7 @@ from app.application.monitoring.agent_monitor import (
     record_workflow_step_metric,
 )
 from app.application.monitoring.agent_sandbox import SandboxPolicyError, preflight_or_raise
+from app.application.tools.tool_service import run_tool
 
 
 DB_PATH: Path = sqlite_data_file("workflow_engine.db")
@@ -423,8 +427,6 @@ def _create_workflow_run_record(
 
 def _emit_workflow_event(event_type: str, workflow_id: str, run_id: str, payload: dict[str, Any] | None = None) -> None:
     try:
-        from app.application.event_bus import emit_event
-
         emit_event(
             event_type=event_type,
             source_agent_id=workflow_id,
@@ -567,8 +569,6 @@ def _execute_agent_step(
     run_context: dict[str, Any],
     run_id: str,
 ) -> dict[str, Any]:
-    from app.application.agents.agents_service import run_agent
-
     config = step.get("config", {}) or {}
     prompt_template = str(config.get("prompt_template", "")).strip()
     prompt = _render_prompt_template(prompt_template, mapped_inputs) if prompt_template else _stringify_template_value(mapped_inputs)
@@ -622,8 +622,6 @@ def _execute_tool_step(
     workflow_id: str,
     run_id: str,
 ) -> dict[str, Any]:
-    from app.application.tools.tool_service import run_tool
-
     tool_name = str(step.get("tool_name", "")).strip()
     args = mapped_inputs if isinstance(mapped_inputs, dict) else {"input": mapped_inputs}
     preflight_or_raise(
@@ -1297,8 +1295,6 @@ def run_legacy_multi_agent_workflow(
     project_context: str = "",
     file_context: str = "",
 ) -> dict[str, Any]:
-    from app.application.memory.smart_memory import get_relevant_context
-
     seed_builtin_workflows()
     memory_context = get_relevant_context(query=task, profile_name=memory_profile, max_items=5)
     run = start_workflow_run(

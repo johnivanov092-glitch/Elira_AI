@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.infrastructure.runtime.python_runner import execute_python
 from app.application.tools.code_analyzer import analyze_code
+from app.infrastructure.db.run_history_service import RunHistoryService
 
 router = APIRouter(prefix="/api/tools", tags=["tools-exec"])
 
@@ -32,12 +33,13 @@ def route_analyze_code(payload: AnalyzeRequest):
     return {"ok": True, "analysis": analysis}
 
 
+_HISTORY = RunHistoryService()
+
+
 @router.get("/run-history")
 def get_run_history(limit: int = 50):
     try:
-        from app.infrastructure.db.run_history_service import RunHistoryService
-        svc = RunHistoryService()
-        runs = svc.list_runs(limit=limit)
+        runs = _HISTORY.list_runs(limit=limit)
         return {"ok": True, "runs": list(reversed(runs)), "count": len(runs)}
     except Exception as e:
         return {"ok": False, "runs": [], "error": str(e)}
