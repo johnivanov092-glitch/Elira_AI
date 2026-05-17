@@ -2197,3 +2197,15 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   the planner fallback/subquery/pass normalization is isolated behind a small helper while preserving the existing web-search contract.
+
+### 155. Web search result payload extracted
+- Status: completed
+- Scope: continued the backend web-search cleanup in the current branch with a low-risk helper extraction.
+- Finish:
+  extracted `_build_web_search_result_payload()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving result metadata assembly out of `do_web_search()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search()` is narrower: pass execution and timeline emission stay in the main function, while payload assembly is isolated behind a pure helper.

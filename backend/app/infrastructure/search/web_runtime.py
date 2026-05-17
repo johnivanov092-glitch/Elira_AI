@@ -517,6 +517,50 @@ def _normalize_search_plan(
     return search_query, plan, raw_subqueries, passes
 
 
+def _build_web_search_result_payload(
+    *,
+    search_query: str,
+    plan: dict[str, Any],
+    raw_subqueries: list[dict[str, Any]],
+    debug_rows: list[dict[str, Any]],
+    pass_summaries: list[dict[str, Any]],
+    engines_used: set[str],
+    total_found: int,
+    total_news: int,
+    total_fetched: int,
+    total_local_hits: int,
+    deeper_search_used: bool,
+    uncovered_subqueries: list[str],
+) -> dict[str, Any]:
+    unique_uncovered = list(dict.fromkeys(item for item in uncovered_subqueries if item))
+    return {
+        "query": search_query,
+        "count": total_found,
+        "found": total_found,
+        "news": total_news,
+        "fetched_pages": total_fetched,
+        "engines": sorted(engines_used),
+        "subqueries": [debug.get("query", "") for debug in debug_rows],
+        "coverage_by_subquery": {
+            debug.get("query", f"subquery_{idx + 1}"): debug.get("coverage", "weak")
+            for idx, debug in enumerate(debug_rows)
+        },
+        "engines_by_subquery": {
+            debug.get("query", f"subquery_{idx + 1}"): debug.get("engines", [])
+            for idx, debug in enumerate(debug_rows)
+        },
+        "local_source_hits": total_local_hits,
+        "news_hits": total_news,
+        "deeper_search_used": deeper_search_used,
+        "is_multi_intent": bool(plan.get("is_multi_intent")),
+        "passes": pass_summaries,
+        "pass_count": len(pass_summaries),
+        "total_subqueries": len(raw_subqueries),
+        "overflow_applied": bool(plan.get("overflow_applied") or len(raw_subqueries) > 3),
+        "uncovered_subqueries": unique_uncovered,
+    }
+
+
 def do_web_search(
     query: str,
     timeline: list,
@@ -625,33 +669,20 @@ def do_web_search(
             f"{len(pass_queries)} подтем, found={pass_found}, news={pass_news}, pages={pass_pages}",
         )
 
-    unique_uncovered = list(dict.fromkeys(item for item in uncovered_subqueries if item))
-    result_payload: dict[str, Any] = {
-        "query": search_query,
-        "count": total_found,
-        "found": total_found,
-        "news": total_news,
-        "fetched_pages": total_fetched,
-        "engines": sorted(engines_used),
-        "subqueries": [debug.get("query", "") for debug in debug_rows],
-        "coverage_by_subquery": {
-            debug.get("query", f"subquery_{idx + 1}"): debug.get("coverage", "weak")
-            for idx, debug in enumerate(debug_rows)
-        },
-        "engines_by_subquery": {
-            debug.get("query", f"subquery_{idx + 1}"): debug.get("engines", [])
-            for idx, debug in enumerate(debug_rows)
-        },
-        "local_source_hits": total_local_hits,
-        "news_hits": total_news,
-        "deeper_search_used": deeper_search_used,
-        "is_multi_intent": bool(plan.get("is_multi_intent")),
-        "passes": pass_summaries,
-        "pass_count": len(pass_summaries),
-        "total_subqueries": len(raw_subqueries),
-        "overflow_applied": bool(plan.get("overflow_applied") or len(raw_subqueries) > 3),
-        "uncovered_subqueries": unique_uncovered,
-    }
+    result_payload = _build_web_search_result_payload(
+        search_query=search_query,
+        plan=plan,
+        raw_subqueries=raw_subqueries,
+        debug_rows=debug_rows,
+        pass_summaries=pass_summaries,
+        engines_used=engines_used,
+        total_found=total_found,
+        total_news=total_news,
+        total_fetched=total_fetched,
+        total_local_hits=total_local_hits,
+        deeper_search_used=deeper_search_used,
+        uncovered_subqueries=uncovered_subqueries,
+    )
     tool_results.append({"tool": "web_search", "result": result_payload})
 
     if not sections:
