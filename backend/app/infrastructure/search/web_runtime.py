@@ -233,6 +233,29 @@ def _select_deep_search_engines(intent_kind: str) -> tuple[str, str, str]:
     return ("tavily", "duckduckgo", "wikipedia")
 
 
+def _collect_subquery_engines(
+    normalized_search: list[dict[str, Any]],
+    news_results: list[dict[str, Any]],
+) -> list[str]:
+    return sorted(
+        {
+            item.get("engine", "")
+            for item in normalized_search + news_results
+            if item.get("engine")
+        }
+    )
+
+
+def _classify_subquery_coverage(
+    normalized_search: list[dict[str, Any]],
+    news_results: list[dict[str, Any]],
+    deep_content: list[str],
+) -> str:
+    if len(normalized_search) >= 3 or news_results or deep_content:
+        return "strong"
+    return "weak"
+
+
 def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
     """Execute a single web sub-query and return context + debug info."""
     from app.core.web import (
@@ -326,13 +349,7 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
     if not normalized_search and not news_results and not deep_context:
         parts.append("Недостаточно свежих подтвержденных данных по этой подтеме.")
 
-    engines_used = sorted(
-        {
-            item.get("engine", "")
-            for item in normalized_search + news_results
-            if item.get("engine")
-        }
-    )
+    engines_used = _collect_subquery_engines(normalized_search, news_results)
 
     return {
         "context": "\n\n".join(part for part in parts if part.strip()),
@@ -347,7 +364,11 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
             "engines": engines_used,
             "local_source_hits": local_source_hits,
             "deeper_search_used": deeper_search,
-            "coverage": "strong" if (len(normalized_search) >= 3 or news_results or deep_content) else "weak",
+            "coverage": _classify_subquery_coverage(
+                normalized_search,
+                news_results,
+                deep_content,
+            ),
         },
     }
 

@@ -599,6 +599,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-17 18:56:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_normalize_core_search_results()` and `_normalize_core_news_results()` from `build_single_web_subquery_context()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 | `2026-05-17 19:13:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_select_fetch_candidates()` and `_fetch_deep_content()` from `build_single_web_subquery_context()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 | `2026-05-17 19:17:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_has_weak_subquery_coverage()` and `_select_deep_search_engines()` from `build_single_web_subquery_context()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
+| `2026-05-17 19:22:00 +05:00` | `DONE` | Continued the web-search runtime cleanup by extracting `_collect_subquery_engines()` and `_classify_subquery_coverage()` from `build_single_web_subquery_context()` in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 
 ## 8. Commit Ledger
 
