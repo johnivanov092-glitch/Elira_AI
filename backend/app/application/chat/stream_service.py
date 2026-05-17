@@ -46,6 +46,93 @@ from app.infrastructure.cache.response_cache import get_cached, set_cached, shou
 from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
 
 
+
+def _apply_guards_and_complete_stream(
+    *,
+    raw_user_input: str,
+    full_text: str,
+    planner_input: str,
+    effective_model: str,
+    profile_name: str,
+    route: str,
+    selected: list,
+    run: dict,
+    session_id,
+    timeline: list,
+    _effective_agent_id: str,
+    _agent_start: float,
+    num_ctx: int,
+    temporal: dict,
+    web_plan: dict,
+) -> tuple[str, dict, bool]:
+    """Apply guards, cache, persona, finish run; emit completion events.
+
+    Returns ``(full_text, meta, guard_changed)``. If *guard_changed* is True
+    the caller should yield a ``reflection_replace`` event before ``done``.
+    """
+    identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
+    guarded_text = identity_guard.get("text", full_text)
+    provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
+    guarded_text = provenance_guard.get("text", guarded_text)
+    guard_changed = guarded_text != full_text
+    if guard_changed:
+        full_text = guarded_text
+    if should_cache(planner_input, route) and full_text.strip():
+        try:
+            set_cached(planner_input, effective_model, profile_name, full_text)
+        except Exception:
+            pass
+    persona_meta = observe_dialogue(
+        dialog_id=run["run_id"],
+        session_id=str(session_id or run["run_id"]),
+        profile_name=profile_name,
+        model_name=effective_model,
+        user_input=raw_user_input,
+        answer_text=full_text,
+        route=route,
+        outcome_ok=True,
+    )
+    meta = {
+        "model_name": effective_model,
+        "profile_name": profile_name,
+        "route": route,
+        "tools": selected,
+        "run_id": run["run_id"],
+        "persona": persona_meta,
+        "temporal": temporal,
+        "web_plan": web_plan,
+        "identity_guard": identity_guard if identity_guard.get("changed") else None,
+        "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+    }
+    _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
+    _record_agent_os_monitoring(
+        agent_id=_effective_agent_id,
+        run_id=run["run_id"],
+        route=route,
+        model_name=effective_model,
+        ok=True,
+        duration_ms=int((_time.monotonic() - _agent_start) * 1000),
+        streaming=True,
+        num_ctx=num_ctx,
+        selected_tools=selected,
+    )
+    _emit_agent_os_event(
+        event_type="agent.run.completed",
+        source_agent_id=_effective_agent_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "route": route,
+            "ok": True,
+            "model_used": effective_model,
+            "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
+            "session_id": str(session_id or ""),
+            "streaming": True,
+        },
+    )
+    return full_text, meta, guard_changed
+
+
 # ─── execute_chat_agent_stream (streaming) ───────────────────────────────────
 
 
@@ -280,66 +367,25 @@ def execute_chat_agent_stream(
             post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
             if post_files:
                 full_text += post_files
-            identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
-            guarded_text = identity_guard.get("text", full_text)
-            provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
-            guarded_text = provenance_guard.get("text", guarded_text)
-            if guarded_text != full_text:
-                full_text = guarded_text
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
-            if should_cache(planner_input, route) and full_text.strip():
-                try:
-                    set_cached(planner_input, effective_model, profile_name, full_text)
-                except Exception:
-                    pass
-            persona_meta = observe_dialogue(
-                dialog_id=run["run_id"],
-                session_id=str(session_id or run["run_id"]),
+            full_text, meta, guard_changed = _apply_guards_and_complete_stream(
+                raw_user_input=raw_user_input,
+                full_text=full_text,
+                planner_input=planner_input,
+                effective_model=effective_model,
                 profile_name=profile_name,
-                model_name=effective_model,
-                user_input=raw_user_input,
-                answer_text=full_text,
                 route=route,
-                outcome_ok=True,
-            )
-            meta = {
-                "model_name": effective_model,
-                "profile_name": profile_name,
-                "route": route,
-                "tools": selected,
-                "run_id": run["run_id"],
-                "persona": persona_meta,
-                "temporal": temporal,
-                "web_plan": web_plan,
-                "identity_guard": identity_guard if identity_guard.get("changed") else None,
-                "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
-            }
-            _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
-            _record_agent_os_monitoring(
-                agent_id=_effective_agent_id,
-                run_id=run["run_id"],
-                route=route,
-                model_name=effective_model,
-                ok=True,
-                duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-                streaming=True,
+                selected=selected,
+                run=run,
+                session_id=session_id,
+                timeline=timeline,
+                _effective_agent_id=_effective_agent_id,
+                _agent_start=_agent_start,
                 num_ctx=num_ctx,
-                selected_tools=selected,
+                temporal=temporal,
+                web_plan=web_plan,
             )
-            _emit_agent_os_event(
-                event_type="agent.run.completed",
-                source_agent_id=_effective_agent_id,
-                payload={
-                    "run_id": run["run_id"],
-                    "profile_name": profile_name,
-                    "route": route,
-                    "ok": True,
-                    "model_used": effective_model,
-                    "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                    "session_id": str(session_id or ""),
-                    "streaming": True,
-                },
-            )
+            if guard_changed:
+                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
         else:
             if should_reflect and full_text.strip() and not has_generated_files:
@@ -371,68 +417,25 @@ def execute_chat_agent_stream(
             if post_files:
                 full_text += post_files
 
-            identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
-            guarded_text = identity_guard.get("text", full_text)
-            provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
-            guarded_text = provenance_guard.get("text", guarded_text)
-            if guarded_text != full_text:
-                full_text = guarded_text
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
-
-            if should_cache(planner_input, route) and full_text.strip():
-                try:
-                    set_cached(planner_input, effective_model, profile_name, full_text)
-                except Exception:
-                    pass
-
-            persona_meta = observe_dialogue(
-                dialog_id=run["run_id"],
-                session_id=str(session_id or run["run_id"]),
+            full_text, meta, guard_changed = _apply_guards_and_complete_stream(
+                raw_user_input=raw_user_input,
+                full_text=full_text,
+                planner_input=planner_input,
+                effective_model=effective_model,
                 profile_name=profile_name,
-                model_name=effective_model,
-                user_input=raw_user_input,
-                answer_text=full_text,
                 route=route,
-                outcome_ok=True,
-            )
-            meta = {
-                "model_name": effective_model,
-                "profile_name": profile_name,
-                "route": route,
-                "tools": selected,
-                "run_id": run["run_id"],
-                "persona": persona_meta,
-                "temporal": temporal,
-                "web_plan": web_plan,
-                "identity_guard": identity_guard if identity_guard.get("changed") else None,
-                "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
-            }
-            _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
-            _record_agent_os_monitoring(
-                agent_id=_effective_agent_id,
-                run_id=run["run_id"],
-                route=route,
-                model_name=effective_model,
-                ok=True,
-                duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-                streaming=True,
+                selected=selected,
+                run=run,
+                session_id=session_id,
+                timeline=timeline,
+                _effective_agent_id=_effective_agent_id,
+                _agent_start=_agent_start,
                 num_ctx=num_ctx,
-                selected_tools=selected,
+                temporal=temporal,
+                web_plan=web_plan,
             )
-            _emit_agent_os_event(
-                event_type="agent.run.completed",
-                source_agent_id=_effective_agent_id,
-                payload={
-                    "run_id": run["run_id"],
-                    "profile_name": profile_name,
-                    "route": route,
-                    "ok": True,
-                    "model_used": effective_model,
-                    "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                    "session_id": str(session_id or ""),
-                    "streaming": True,
-                },
-            )
+            if guard_changed:
+                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
 
     except Exception as exc:

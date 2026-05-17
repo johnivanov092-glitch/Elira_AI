@@ -197,6 +197,104 @@ def _collect_context(**kwargs):
     )
 
 
+
+def _complete_chat_run(
+    *,
+    raw_user_input: str,
+    answer: str,
+    timeline: list,
+    tool_results: list,
+    run: dict,
+    session_id,
+    profile_name: str,
+    effective_model: str,
+    route: str,
+    selected: list,
+    temporal: dict,
+    web_plan: dict,
+    _effective_agent_id: str,
+    _agent_start: float,
+    num_ctx: int,
+    agent_id,
+    _registry_agent,
+) -> dict:
+    """Apply guards, build result, finish run, emit completion events."""
+    identity_guard = _apply_identity_guard(raw_user_input, answer, timeline)
+    answer = identity_guard.get("text", answer)
+    provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
+    answer = provenance_guard.get("text", answer)
+    persona_meta = observe_dialogue(
+        dialog_id=run["run_id"],
+        session_id=str(session_id or run["run_id"]),
+        profile_name=profile_name,
+        model_name=effective_model,
+        user_input=raw_user_input,
+        answer_text=answer,
+        route=route,
+        outcome_ok=True,
+    )
+    result = {
+        "ok": True,
+        "answer": answer,
+        "timeline": timeline,
+        "tool_results": tool_results,
+        "meta": {
+            "model_name": effective_model,
+            "profile_name": profile_name,
+            "route": route,
+            "tools": selected,
+            "run_id": run["run_id"],
+            "persona": persona_meta,
+            "temporal": temporal,
+            "web_plan": web_plan,
+            "identity_guard": identity_guard if identity_guard.get("changed") else None,
+            "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+        },
+    }
+    _HISTORY.finish_run(run["run_id"], result)
+    _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
+    _record_agent_os_monitoring(
+        agent_id=_effective_agent_id,
+        run_id=run["run_id"],
+        route=route,
+        model_name=effective_model,
+        ok=True,
+        duration_ms=_duration_ms,
+        streaming=False,
+        num_ctx=num_ctx,
+        selected_tools=selected,
+    )
+    if agent_id or _registry_agent:
+        try:
+            record_agent_run({
+                "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
+                "run_id": run["run_id"],
+                "input_summary": raw_user_input[:500],
+                "output_summary": answer[:500],
+                "ok": True,
+                "route": route,
+                "model_used": effective_model,
+                "duration_ms": _duration_ms,
+            })
+        except Exception:
+            pass
+    _emit_agent_os_event(
+        event_type="agent.run.completed",
+        source_agent_id=_effective_agent_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "route": route,
+            "ok": True,
+            "model_used": effective_model,
+            "duration_ms": _duration_ms,
+            "session_id": str(session_id or ""),
+            "streaming": False,
+        },
+    )
+    return result
+
+
 # ─── execute_chat_agent (non-streaming) ──────────────────────────────────────
 
 
@@ -382,83 +480,25 @@ def execute_chat_agent(
         if post_files:
             answer += post_files
 
-        identity_guard = _apply_identity_guard(raw_user_input, answer, timeline)
-        answer = identity_guard.get("text", answer)
-        provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
-        answer = provenance_guard.get("text", answer)
-
-        persona_meta = observe_dialogue(
-            dialog_id=run["run_id"],
-            session_id=str(session_id or run["run_id"]),
+        return _complete_chat_run(
+            raw_user_input=raw_user_input,
+            answer=answer,
+            timeline=timeline,
+            tool_results=tool_results,
+            run=run,
+            session_id=session_id,
             profile_name=profile_name,
-            model_name=effective_model,
-            user_input=raw_user_input,
-            answer_text=answer,
+            effective_model=effective_model,
             route=route,
-            outcome_ok=True,
-        )
-        result = {
-            "ok": True,
-            "answer": answer,
-            "timeline": timeline,
-            "tool_results": tool_results,
-            "meta": {
-                "model_name": effective_model,
-                "profile_name": profile_name,
-                "route": route,
-                "tools": selected,
-                "run_id": run["run_id"],
-                "persona": persona_meta,
-                "temporal": temporal,
-                "web_plan": web_plan,
-                "identity_guard": identity_guard if identity_guard.get("changed") else None,
-                "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
-            },
-        }
-        _HISTORY.finish_run(run["run_id"], result)
-        _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
-            run_id=run["run_id"],
-            route=route,
-            model_name=effective_model,
-            ok=True,
-            duration_ms=_duration_ms,
-            streaming=False,
+            selected=selected,
+            temporal=temporal,
+            web_plan=web_plan,
+            _effective_agent_id=_effective_agent_id,
+            _agent_start=_agent_start,
             num_ctx=num_ctx,
-            selected_tools=selected,
+            agent_id=agent_id,
+            _registry_agent=_registry_agent,
         )
-
-        if agent_id or _registry_agent:
-            try:
-                record_agent_run({
-                    "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-                    "run_id": run["run_id"],
-                    "input_summary": raw_user_input[:500],
-                    "output_summary": answer[:500],
-                    "ok": True,
-                    "route": route,
-                    "model_used": effective_model,
-                    "duration_ms": _duration_ms,
-                })
-            except Exception:
-                pass
-
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
-            source_agent_id=_agent_os_source_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": route,
-                "ok": True,
-                "model_used": effective_model,
-                "duration_ms": _duration_ms,
-                "session_id": str(session_id or ""),
-                "streaming": False,
-            },
-        )
-        return result
 
     except SandboxPolicyError as exc:
         err = {
