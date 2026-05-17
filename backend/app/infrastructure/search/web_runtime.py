@@ -214,6 +214,52 @@ def _normalize_legacy_news_results(
     return news_results
 
 
+def _select_legacy_fetch_targets(
+    search_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    all_urls_seen: set[str] = set()
+    fetch_candidates: list[dict[str, Any]] = []
+    for item in search_results[:7]:
+        url = item["url"]
+        if url not in all_urls_seen and not any(
+            domain in url for domain in WEB_SKIP_FETCH_DOMAINS
+        ):
+            all_urls_seen.add(url)
+            fetch_candidates.append(item)
+    return fetch_candidates[:5]
+
+
+def _fetch_legacy_deep_content(
+    targets: list[dict[str, Any]],
+    fetch_page_func: Callable[[str], str],
+) -> tuple[list[str], set[str]]:
+    deep_content: list[str] = []
+    fetched_urls: set[str] = set()
+    page_results: dict[str, tuple[dict[str, Any], str]] = {}
+
+    with ThreadPoolExecutor(max_workers=min(len(targets), 4)) as executor:
+        future_map = {
+            executor.submit(fetch_page_func, target["url"]): target
+            for target in targets
+        }
+        for future in as_completed(future_map):
+            item = future_map[future]
+            try:
+                text = (future.result() or "")[:3000]
+                if text and len(text) > 100:
+                    page_results[item["url"]] = (item, text)
+            except Exception:
+                pass
+
+    for target in targets:
+        if target["url"] in page_results and len(deep_content) < 3:
+            item, text = page_results[target["url"]]
+            deep_content.append("--- " + item["title"] + " ---\n" + text)
+            fetched_urls.add(item["url"])
+
+    return deep_content, fetched_urls
+
+
 def _select_fetch_candidates(
     normalized_search: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -467,38 +513,14 @@ def do_web_search_legacy(
     deep_content: list[str] = []
     fetched_urls: set[str] = set()
 
-    all_urls_seen: set[str] = set()
-    fetch_candidates: list[dict[str, Any]] = []
-    for item in search_results[:7]:
-        url = item["url"]
-        if url not in all_urls_seen and not any(domain in url for domain in WEB_SKIP_FETCH_DOMAINS):
-            all_urls_seen.add(url)
-            fetch_candidates.append(item)
-
-    targets = fetch_candidates[:5]
+    targets = _select_legacy_fetch_targets(search_results)
     if targets:
         try:
             from app.core.web import fetch_page_text as core_fetch_fn
         except ImportError:
             core_fetch_fn = fetch_page_text  # type: ignore[assignment]
 
-        page_results: dict[str, tuple[dict, str]] = {}
-        with ThreadPoolExecutor(max_workers=min(len(targets), 4)) as executor:
-            future_map = {executor.submit(core_fetch_fn, target["url"]): target for target in targets}
-            for future in as_completed(future_map):
-                item = future_map[future]
-                try:
-                    text = (future.result() or "")[:3000]
-                    if text and len(text) > 100:
-                        page_results[item["url"]] = (item, text)
-                except Exception:
-                    pass
-
-        for target in targets:
-            if target["url"] in page_results and len(deep_content) < 3:
-                item, text = page_results[target["url"]]
-                deep_content.append("--- " + item["title"] + " ---\n" + text)
-                fetched_urls.add(item["url"])
+        deep_content, fetched_urls = _fetch_legacy_deep_content(targets, core_fetch_fn)
 
     fetched_count = len(deep_content)
     engines_str = ", ".join(engines_used) if engines_used else "search"

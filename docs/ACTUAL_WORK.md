@@ -2281,3 +2281,15 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   `do_web_search_legacy()` keeps the same legacy search/news payload behavior while raw row shaping is isolated behind focused helpers.
+
+### 162. Legacy web deep-fetch helpers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with a larger bounded legacy fetch extraction.
+- Finish:
+  extracted `_select_legacy_fetch_targets()` and `_fetch_legacy_deep_content()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving legacy URL de-dupe, skip-domain filtering, parallel page fetch, ordered result assembly, and fetched-url tracking out of `do_web_search_legacy()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search_legacy()` keeps the same fetch limits, parallelism, and output ordering while delegating legacy deep-page reads to focused helpers.
