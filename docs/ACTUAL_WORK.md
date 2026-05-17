@@ -2209,3 +2209,15 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   `do_web_search()` is narrower: pass execution and timeline emission stay in the main function, while payload assembly is isolated behind a pure helper.
+
+### 156. Web search pass execution extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with another bounded helper extraction.
+- Finish:
+  extracted `_execute_web_search_pass()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving per-pass subquery execution, counters, weak-coverage collection, and timeline emission out of `do_web_search()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search()` now owns orchestration and final payload assembly while pass execution is isolated behind a focused helper.

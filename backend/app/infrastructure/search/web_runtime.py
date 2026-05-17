@@ -517,6 +517,104 @@ def _normalize_search_plan(
     return search_query, plan, raw_subqueries, passes
 
 
+def _execute_web_search_pass(
+    *,
+    pass_spec: dict[str, Any],
+    pass_index: int,
+    timeline: list,
+    build_single_web_subquery_context_func: SubqueryBuilderFunc,
+    tl: TimelineAppender,
+) -> dict[str, Any]:
+    pass_name = str(pass_spec.get("name") or f"pass_{pass_index}")
+    pass_found = 0
+    pass_news = 0
+    pass_pages = 0
+    pass_local_hits = 0
+    pass_deeper_search_used = False
+    pass_engines: set[str] = set()
+    pass_queries: list[str] = []
+    pass_uncovered: list[str] = []
+    pass_sections: list[str] = []
+    pass_debug_rows: list[dict[str, Any]] = []
+
+    for subquery in list(pass_spec.get("subqueries") or [])[:3]:
+        subquery_result = build_single_web_subquery_context_func(subquery)
+        context = (subquery_result.get("context") or "").strip()
+        debug = dict(subquery_result.get("debug") or {})
+        debug["pass_name"] = pass_name
+        pass_debug_rows.append(debug)
+        pass_queries.append(debug.get("query", ""))
+
+        if context:
+            pass_sections.append(context)
+
+        found = int(debug.get("found", 0) or 0)
+        news_hits = int(debug.get("news_hits", 0) or 0)
+        fetched_pages = int(debug.get("fetched_pages", 0) or 0)
+        local_hits = int(debug.get("local_source_hits", 0) or 0)
+        coverage = str(debug.get("coverage", "weak") or "weak")
+
+        pass_found += found
+        pass_news += news_hits
+        pass_pages += fetched_pages
+        pass_local_hits += local_hits
+        pass_deeper_search_used = pass_deeper_search_used or bool(
+            debug.get("deeper_search_used")
+        )
+        pass_engines.update(debug.get("engines", []) or [])
+
+        if coverage != "strong":
+            pass_uncovered.append(debug.get("query", ""))
+
+        step_id = f"tool_web_{pass_name}_{len(pass_queries)}"
+        if found or news_hits or fetched_pages:
+            tl(
+                timeline,
+                step_id,
+                f"Веб-поиск {pass_name}",
+                "done",
+                f"{debug.get('query', '')}: found={found}, news={news_hits}, pages={fetched_pages}",
+            )
+        else:
+            tl(
+                timeline,
+                step_id,
+                f"Веб-поиск {pass_name}",
+                "error",
+                f"{debug.get('query', '')}: no confirmed results",
+            )
+
+    pass_summary = {
+        "name": pass_name,
+        "subqueries": pass_queries,
+        "found": pass_found,
+        "news_hits": pass_news,
+        "fetched_pages": pass_pages,
+        "engines": sorted(pass_engines),
+        "uncovered_subqueries": [item for item in pass_uncovered if item],
+    }
+    tl(
+        timeline,
+        f"tool_web_{pass_name}",
+        f"Веб-проход {pass_index}",
+        "done",
+        f"{len(pass_queries)} подтем, found={pass_found}, news={pass_news}, pages={pass_pages}",
+    )
+
+    return {
+        "sections": pass_sections,
+        "debug_rows": pass_debug_rows,
+        "summary": pass_summary,
+        "engines": pass_engines,
+        "found": pass_found,
+        "news": pass_news,
+        "fetched_pages": pass_pages,
+        "local_hits": pass_local_hits,
+        "deeper_search_used": pass_deeper_search_used,
+        "uncovered_subqueries": pass_uncovered,
+    }
+
+
 def _build_web_search_result_payload(
     *,
     search_query: str,
@@ -591,83 +689,23 @@ def do_web_search(
     uncovered_subqueries: list[str] = list(plan.get("uncovered_subqueries") or [])
 
     for pass_index, pass_spec in enumerate(passes, start=1):
-        pass_name = str(pass_spec.get("name") or f"pass_{pass_index}")
-        pass_found = 0
-        pass_news = 0
-        pass_pages = 0
-        pass_engines: set[str] = set()
-        pass_queries: list[str] = []
-        pass_uncovered: list[str] = []
-
-        for subquery in list(pass_spec.get("subqueries") or [])[:3]:
-            subquery_result = build_single_web_subquery_context_func(subquery)
-            context = (subquery_result.get("context") or "").strip()
-            debug = dict(subquery_result.get("debug") or {})
-            debug["pass_name"] = pass_name
-            debug_rows.append(debug)
-            pass_queries.append(debug.get("query", ""))
-
-            if context:
-                sections.append(context)
-
-            found = int(debug.get("found", 0) or 0)
-            news_hits = int(debug.get("news_hits", 0) or 0)
-            fetched_pages = int(debug.get("fetched_pages", 0) or 0)
-            local_hits = int(debug.get("local_source_hits", 0) or 0)
-            coverage = str(debug.get("coverage", "weak") or "weak")
-
-            total_found += found
-            total_news += news_hits
-            total_fetched += fetched_pages
-            total_local_hits += local_hits
-            deeper_search_used = deeper_search_used or bool(debug.get("deeper_search_used"))
-            engines_used.update(debug.get("engines", []) or [])
-
-            pass_found += found
-            pass_news += news_hits
-            pass_pages += fetched_pages
-            pass_engines.update(debug.get("engines", []) or [])
-
-            if coverage != "strong":
-                pass_uncovered.append(debug.get("query", ""))
-                uncovered_subqueries.append(debug.get("query", ""))
-
-            step_id = f"tool_web_{pass_name}_{len(pass_queries)}"
-            if found or news_hits or fetched_pages:
-                _tl(
-                    timeline,
-                    step_id,
-                    f"Веб-поиск {pass_name}",
-                    "done",
-                    f"{debug.get('query', '')}: found={found}, news={news_hits}, pages={fetched_pages}",
-                )
-            else:
-                _tl(
-                    timeline,
-                    step_id,
-                    f"Веб-поиск {pass_name}",
-                    "error",
-                    f"{debug.get('query', '')}: no confirmed results",
-                )
-
-        pass_summaries.append(
-            {
-                "name": pass_name,
-                "subqueries": pass_queries,
-                "found": pass_found,
-                "news_hits": pass_news,
-                "fetched_pages": pass_pages,
-                "engines": sorted(pass_engines),
-                "uncovered_subqueries": [item for item in pass_uncovered if item],
-            }
+        pass_result = _execute_web_search_pass(
+            pass_spec=pass_spec,
+            pass_index=pass_index,
+            timeline=timeline,
+            build_single_web_subquery_context_func=build_single_web_subquery_context_func,
+            tl=_tl,
         )
-        _tl(
-            timeline,
-            f"tool_web_{pass_name}",
-            f"Веб-проход {pass_index}",
-            "done",
-            f"{len(pass_queries)} подтем, found={pass_found}, news={pass_news}, pages={pass_pages}",
-        )
+        sections.extend(pass_result["sections"])
+        debug_rows.extend(pass_result["debug_rows"])
+        pass_summaries.append(pass_result["summary"])
+        engines_used.update(pass_result["engines"])
+        total_found += int(pass_result["found"] or 0)
+        total_news += int(pass_result["news"] or 0)
+        total_fetched += int(pass_result["fetched_pages"] or 0)
+        total_local_hits += int(pass_result["local_hits"] or 0)
+        deeper_search_used = deeper_search_used or bool(pass_result["deeper_search_used"])
+        uncovered_subqueries.extend(pass_result["uncovered_subqueries"])
 
     result_payload = _build_web_search_result_payload(
         search_query=search_query,
