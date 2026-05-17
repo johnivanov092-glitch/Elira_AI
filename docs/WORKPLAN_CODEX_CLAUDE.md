@@ -593,6 +593,7 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-17 00:39:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/App.jsx` and `frontend/src/main.jsx` to TSX, updating `frontend/index.html` to `/src/main.tsx`, and adding a root-element guard. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-17 00:41:00 +05:00` | `DONE` | Continued Phase 6 by renaming `frontend/src/elira_ru_labels.js` to `frontend/src/elira_ru_labels.ts` with a typed `Record<string, string>` export. Verification passed with frontend typecheck and frontend build. |
 | `2026-05-17 00:56:00 +05:00` | `DONE` | Finished the active frontend source conversion by renaming `frontend/src/components/EliraChatShell.jsx` to TSX with local boundary types for chats/messages/library/model routing/charts/DOM events. Verification passed with frontend typecheck, frontend build, and no remaining JS/JSX files in `frontend/src`. |
+| `2026-05-17 18:33:00 +05:00` | `DONE` | Continued after Claude's backend cleanup by adapting the web-search plan-normalization extraction to the current Codex branch: `_normalize_search_plan()` now owns fallback plan/subquery/pass setup in `infrastructure/search/web_runtime.py`. Verification passed with compileall, focused web-search tests, and full backend unittest discovery (`2459 tests OK`). |
 
 ## 8. Commit Ledger
 

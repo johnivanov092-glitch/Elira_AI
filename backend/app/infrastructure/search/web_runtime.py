@@ -463,18 +463,12 @@ def do_web_search_legacy(
     return "\n\n".join(parts)
 
 
-def do_web_search(
+def _normalize_search_plan(
     query: str,
-    timeline: list,
-    tool_results: list,
-    web_plan: dict[str, Any] | None = None,
+    web_plan: dict[str, Any] | None,
     *,
     clean_query_func: CleanQueryFunc,
-    build_single_web_subquery_context_func: SubqueryBuilderFunc,
-    tl: TimelineAppender | None = None,
-) -> str:
-    """Execute a planner-driven multi-pass web search."""
-    _tl = tl or default_tl
+) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     search_query = clean_query_func(query)
     plan = web_plan or {
         "is_multi_intent": False,
@@ -519,6 +513,27 @@ def do_web_search(
             }
             for pass_index, offset in enumerate(range(0, len(raw_subqueries), 3))
         ]
+
+    return search_query, plan, raw_subqueries, passes
+
+
+def do_web_search(
+    query: str,
+    timeline: list,
+    tool_results: list,
+    web_plan: dict[str, Any] | None = None,
+    *,
+    clean_query_func: CleanQueryFunc,
+    build_single_web_subquery_context_func: SubqueryBuilderFunc,
+    tl: TimelineAppender | None = None,
+) -> str:
+    """Execute a planner-driven multi-pass web search."""
+    _tl = tl or default_tl
+    search_query, plan, raw_subqueries, passes = _normalize_search_plan(
+        query,
+        web_plan,
+        clean_query_func=clean_query_func,
+    )
 
     sections: list[str] = []
     debug_rows: list[dict[str, Any]] = []

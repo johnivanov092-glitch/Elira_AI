@@ -2185,3 +2185,15 @@ Live repair log for concrete backend/runtime fixes.
   `rg --files frontend/src | rg '\.(jsx|js)$'` -> no active JS/JSX sources found.
 - Result:
   all active React frontend sources under `frontend/src` are now TypeScript/TSX.
+
+### 154. Web search plan normalization extracted
+- Status: completed
+- Scope: continued the Claude backend cleanup on the current Codex branch without merging Claude's incompatible frontend state.
+- Finish:
+  extracted `_normalize_search_plan()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py) so `do_web_search()` focuses on executing passes and building result payloads.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  the planner fallback/subquery/pass normalization is isolated behind a small helper while preserving the existing web-search contract.
