@@ -363,6 +363,55 @@ def build_chat_prompt(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_code_target(
+    attachments: list[dict],
+    selected_project_paths: list[str],
+) -> dict | None:
+    """Return the best code target from attachments or selected paths, or None."""
+    target = next(
+        (item for item in attachments if item.get("source") == "project" and item.get("project_path")),
+        None,
+    )
+    if target is None and selected_project_paths:
+        try:
+            full_path, rel_path = resolve_project_file(selected_project_paths[0])
+            content, _, _ = read_text_file(full_path)
+            target = {"project_path": str(rel_path).replace("\\", "/"), "text": content}
+        except HTTPException:
+            target = None
+    return target
+
+
+def _build_code_response(
+    result: dict,
+    route: dict,
+    model: str,
+    session_id: str,
+    attachments: list[dict],
+    selected_project_paths: list[str],
+    web_results: list,
+    target_path: str,
+) -> dict[str, Any]:
+    """Assemble the JSON response dict for code-mode requests."""
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "model": model,
+        "route": route,
+        "answer": str(result.get("answer", "")),
+        "plan": result.get("plan") if isinstance(result.get("plan"), list) else [],
+        "attachment_summaries": [attachment_summary(x) for x in attachments],
+        "selected_project_paths": selected_project_paths,
+        "web_results": web_results,
+        "agents_used": ["coder_agent", "reflection_v2"],
+        "code_suggestion": {
+            "target_path": str(result.get("target_path") or target_path),
+            "updated_content": str(result.get("updated_content") or ""),
+            "notes": str(result.get("notes") or ""),
+        },
+    }
+
+
 def _handle_code_mode(
     message: str,
     model: str,
@@ -379,18 +428,7 @@ def _handle_code_mode(
     If response is not None the caller should return it immediately.
     If response is None no suitable file was found and route has been set to 'analyze'.
     """
-    target = next(
-        (item for item in attachments if item.get("source") == "project" and item.get("project_path")),
-        None,
-    )
-    if target is None and selected_project_paths:
-        try:
-            full_path, rel_path = resolve_project_file(selected_project_paths[0])
-            content, _, _ = read_text_file(full_path)
-            target = {"project_path": str(rel_path).replace("\\", "/"), "text": content}
-        except HTTPException:
-            target = None
-
+    target = _resolve_code_target(attachments, selected_project_paths)
     if target is None:
         return None, {"mode": "analyze", "reason": "no project file attached for code mode"}
 
@@ -404,23 +442,10 @@ def _handle_code_mode(
         model, system_prompt,
         build_code_prompt(message, target["project_path"], target["text"], refs),
     )
-    response: dict[str, Any] = {
-        "status": "ok",
-        "session_id": actual_session_id,
-        "model": model,
-        "route": route,
-        "answer": str(result.get("answer", "")),
-        "plan": result.get("plan") if isinstance(result.get("plan"), list) else [],
-        "attachment_summaries": [attachment_summary(x) for x in attachments],
-        "selected_project_paths": selected_project_paths,
-        "web_results": web_results,
-        "agents_used": ["coder_agent", "reflection_v2"],
-        "code_suggestion": {
-            "target_path": str(result.get("target_path") or target["project_path"]),
-            "updated_content": str(result.get("updated_content") or ""),
-            "notes": str(result.get("notes") or ""),
-        },
-    }
+    response = _build_code_response(
+        result, route, model, actual_session_id, attachments,
+        selected_project_paths, web_results, target["project_path"],
+    )
     session["messages"].append({"role": "user", "content": message, "ts": time.time()})
     session["messages"].append({"role": "assistant", "content": response["answer"], "ts": time.time(), "route": route})
     return response, route

@@ -114,6 +114,37 @@ def add_to_rag(text: str, category: str = "fact", importance: int = 5) -> dict:
     return {"ok": True, "id": item_id, "has_embedding": bool(embedding)}
 
 
+def _score_rag_rows(
+    rows: list,
+    query: str,
+    query_embedding: list | None,
+    min_score: float,
+) -> list[tuple[float, dict]]:
+    """Score RAG rows by cosine similarity or keyword match, filtered by min_score."""
+    scored: list[tuple[float, dict]] = []
+    for row in rows:
+        row_dict = dict(row)
+        score = 0.0
+        if query_embedding and row_dict.get("embedding"):
+            try:
+                item_embedding = json.loads(row_dict["embedding"])
+                score = _cosine_sim(query_embedding, item_embedding)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if score < 0.1:
+            text_lower = row_dict["text"].lower()
+            query_lower = query.lower()
+            keywords = [word for word in query_lower.split() if len(word) > 2]
+            if keywords:
+                matches = sum(1 for keyword in keywords if keyword in text_lower)
+                score = max(score, matches / len(keywords) * 0.5)
+        score *= 1 + row_dict.get("importance", 5) / 20.0
+        if score >= min_score:
+            row_dict.pop("embedding", None)
+            scored.append((score, row_dict))
+    return scored
+
+
 def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
     """Run semantic or keyword fallback search over RAG memory."""
     query = (query or "").strip()
@@ -131,32 +162,7 @@ def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
     if not rows:
         return {"ok": True, "items": [], "count": 0}
 
-    scored: list[tuple[float, dict]] = []
-    for row in rows:
-        row_dict = dict(row)
-        score = 0.0
-
-        if query_embedding and row_dict.get("embedding"):
-            try:
-                item_embedding = json.loads(row_dict["embedding"])
-                score = _cosine_sim(query_embedding, item_embedding)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if score < 0.1:
-            text_lower = row_dict["text"].lower()
-            query_lower = query.lower()
-            keywords = [word for word in query_lower.split() if len(word) > 2]
-            if keywords:
-                matches = sum(1 for keyword in keywords if keyword in text_lower)
-                score = max(score, matches / len(keywords) * 0.5)
-
-        score *= 1 + row_dict.get("importance", 5) / 20.0
-
-        if score >= min_score:
-            row_dict.pop("embedding", None)
-            scored.append((score, row_dict))
-
+    scored = _score_rag_rows(rows, query, query_embedding, min_score)
     scored.sort(key=lambda item: -item[0])
     items = [{"score": round(score, 3), **item} for score, item in scored[:limit]]
 

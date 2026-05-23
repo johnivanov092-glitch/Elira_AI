@@ -119,6 +119,42 @@ def _similarity(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
 
 
+def _maybe_update_duplicate(
+    normalized_text: str,
+    profile_name: str,
+) -> "dict[str, Any] | None":
+    """If a near-duplicate already exists, bump its importance and return its record.
+
+    Returns None when no near-duplicate is found (Jaccard similarity threshold 0.85).
+    """
+    existing = search_memory(normalized_text, limit=3, profile_name=profile_name)
+    for item in existing.get("items", []):
+        if _similarity(normalized_text.lower(), item["text"].lower()) > 0.85:
+            conn = _conn()
+            try:
+                conn.execute(
+                    """
+                    UPDATE memories
+                    SET importance = MIN(importance + 1, 10),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND profile_name = ?
+                    """,
+                    (item["id"], profile_name),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return {
+                "ok": True,
+                "action": "updated",
+                "id": item["id"],
+                "text": normalized_text,
+                "category": item["category"],
+                "profile_name": profile_name,
+            }
+    return None
+
+
 def add_memory(
     text: str,
     category: str = "fact",
@@ -132,31 +168,9 @@ def add_memory(
     if len(normalized_text) < 3:
         return {"ok": False, "error": "Text is too short", "profile_name": normalized_profile}
 
-    existing = search_memory(normalized_text, limit=3, profile_name=normalized_profile)
-    for item in existing.get("items", []):
-        if _similarity(normalized_text.lower(), item["text"].lower()) > 0.85:
-            conn = _conn()
-            try:
-                conn.execute(
-                    """
-                    UPDATE memories
-                    SET importance = MIN(importance + 1, 10),
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND profile_name = ?
-                    """,
-                    (item["id"], normalized_profile),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            return {
-                "ok": True,
-                "action": "updated",
-                "id": item["id"],
-                "text": normalized_text,
-                "category": item["category"],
-                "profile_name": normalized_profile,
-            }
+    duplicate = _maybe_update_duplicate(normalized_text, normalized_profile)
+    if duplicate is not None:
+        return duplicate
 
     conn = _conn()
     try:

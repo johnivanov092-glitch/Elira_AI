@@ -178,60 +178,72 @@ def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True
 
 
 
+def _handle_http_skill(url_match, ql: str, disabled: set, parts: list) -> None:
+    _TRIGGERS = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api",
+                 "get запрос", "post запрос", "покажи сайт", "загрузи url", "открой ссылку"]
+    if "http_api" in disabled or not url_match or not any(t in ql for t in _TRIGGERS):
+        return
+    try:
+        method = "POST" if "post" in ql else "GET"
+        result = http_request(url_match.group(1), method=method, timeout=10)
+        if result.get("ok"):
+            body = result.get("body", "")
+            body_str = json.dumps(body, ensure_ascii=False, indent=2)[:3000] if isinstance(body, (dict, list)) else str(body)[:3000]
+            parts.append(f"HTTP {method} {url_match.group(1)} → статус {result.get('status')} ({result.get('elapsed_ms')}ms):\n{body_str}")
+        else:
+            parts.append(f"SKILL_ERROR:🌐 HTTP ошибка: {result.get('error')}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:🌐 HTTP ошибка: {e}")
+
+
+def _handle_sql_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    _TRIGGERS = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу",
+                 "select ", "покажи записи", "покажи данные из"]
+    if "sql" in disabled or not any(t in ql for t in _TRIGGERS):
+        return
+    try:
+        sql_match = re.search(r"(SELECT\s+.+)", user_input, re.IGNORECASE)
+        if sql_match:
+            dbs = list_databases()
+            if dbs.get("databases"):
+                result = run_sql(dbs["databases"][0]["path"], sql_match.group(1), max_rows=20)
+                if result.get("ok"):
+                    parts.append(f"SQL результат ({result.get('count',0)} строк):\n{json.dumps(result.get('rows',[]), ensure_ascii=False, indent=2)[:3000]}")
+        else:
+            dbs = list_databases()
+            if dbs.get("databases"):
+                lines = ["Доступные базы данных:"]
+                for db in dbs["databases"]:
+                    desc = describe_db(db["path"])
+                    for tbl, info in desc.get("tables", {}).items():
+                        cols = ", ".join(c["name"] for c in info["columns"])
+                        lines.append(f"  📁 {db['name']} → {tbl} ({info['rows']} строк): {cols}")
+                parts.append("\n".join(lines))
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:🗄 SQL ошибка: {e}")
+
+
+def _handle_screenshot_skill(url_match, ql: str, disabled: set, parts: list) -> None:
+    _TRIGGERS = ["скриншот", "screenshot", "покажи как выглядит", "сделай снимок"]
+    if "screenshot" in disabled or not url_match or not any(t in ql for t in _TRIGGERS):
+        return
+    try:
+        result = screenshot_url(url_match.group(1))
+        if result.get("ok"):
+            parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:Скриншот {result.get('title','')}")
+        else:
+            parts.append(f"SKILL_ERROR:🖼 Скриншот: {result.get('error')}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:🖼 Скриншот: {e}")
+
+
 def _run_network_skills(
     user_input: str, ql: str, url_match, disabled: set, parts: list
 ) -> None:
     """HTTP/API, SQL, screenshot."""
-    # ─── 🌐 HTTP/API ───
-    http_triggers = ["запрос к api", "api запрос", "fetch", "http запрос", "вызови api", "get запрос", "post запрос"]
-    if "http_api" not in disabled and url_match and any(t in ql for t in http_triggers + ["покажи сайт", "загрузи url", "открой ссылку"]):
-        try:
-            method = "POST" if "post" in ql else "GET"
-            result = http_request(url_match.group(1), method=method, timeout=10)
-            if result.get("ok"):
-                body = result.get("body", "")
-                body_str = json.dumps(body, ensure_ascii=False, indent=2)[:3000] if isinstance(body, (dict, list)) else str(body)[:3000]
-                parts.append(f"HTTP {method} {url_match.group(1)} → статус {result.get('status')} ({result.get('elapsed_ms')}ms):\n{body_str}")
-            else:
-                parts.append(f"SKILL_ERROR:🌐 HTTP ошибка: {result.get('error')}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:🌐 HTTP ошибка: {e}")
-
-    # ─── 🗄 SQL ───
-    sql_triggers = ["покажи таблиц", "запрос к базе", "sql запрос", "база данных", "покажи базу", "select ", "покажи записи", "покажи данные из"]
-    if "sql" not in disabled and any(t in ql for t in sql_triggers):
-        try:
-            sql_match = re.search(r"(SELECT\s+.+)", user_input, re.IGNORECASE)
-            if sql_match:
-                dbs = list_databases()
-                if dbs.get("databases"):
-                    result = run_sql(dbs["databases"][0]["path"], sql_match.group(1), max_rows=20)
-                    if result.get("ok"):
-                        parts.append(f"SQL результат ({result.get('count',0)} строк):\n{json.dumps(result.get('rows',[]), ensure_ascii=False, indent=2)[:3000]}")
-            else:
-                dbs = list_databases()
-                if dbs.get("databases"):
-                    lines = ["Доступные базы данных:"]
-                    for db in dbs["databases"]:
-                        desc = describe_db(db["path"])
-                        for tbl, info in desc.get("tables", {}).items():
-                            cols = ", ".join(c["name"] for c in info["columns"])
-                            lines.append(f"  📁 {db['name']} → {tbl} ({info['rows']} строк): {cols}")
-                    parts.append("\n".join(lines))
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:🗄 SQL ошибка: {e}")
-
-    # ─── 🖼 Скриншот ───
-    screenshot_triggers = ["скриншот", "screenshot", "покажи как выглядит", "сделай снимок"]
-    if "screenshot" not in disabled and url_match and any(t in ql for t in screenshot_triggers):
-        try:
-            result = screenshot_url(url_match.group(1))
-            if result.get("ok"):
-                parts.append(f"IMAGE_GENERATED:{result.get('view_url','')}:{result.get('filename','')}:Скриншот {result.get('title','')}")
-            else:
-                parts.append(f"SKILL_ERROR:🖼 Скриншот: {result.get('error')}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:🖼 Скриншот: {e}")
+    _handle_http_skill(url_match, ql, disabled, parts)
+    _handle_sql_skill(user_input, ql, disabled, parts)
+    _handle_screenshot_skill(url_match, ql, disabled, parts)
 
 
 def _run_media_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
