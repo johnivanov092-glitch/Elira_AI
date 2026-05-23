@@ -648,64 +648,71 @@ def rollback_persona(version: int) -> dict[str, Any]:
     return get_persona_status()
 
 
+def _query_persona_status_data(conn: Any, active_version_id: int) -> tuple[int, Any, list, list]:
+    """Run the four status queries inside a caller-managed connection.
+
+    Returns (quarantine_count, previous_version, promoted_rows, calibration_rows).
+    """
+    quarantine_count = int(
+        conn.execute("SELECT COUNT(*) FROM persona_candidates WHERE status = 'quarantine'").fetchone()[0]
+    )
+    previous_version = _get_previous_version(conn, active_version_id)
+    promoted = conn.execute(
+        """
+        SELECT trait_key, candidate_json, promoted_version, last_seen
+        FROM persona_candidates
+        WHERE status = 'promoted'
+        ORDER BY COALESCE(promoted_version, 0) DESC, last_seen DESC
+        LIMIT 5
+        """
+    ).fetchall()
+    calibrations = conn.execute(
+        """
+        SELECT model, version_id, calibration_json, consistency_score, updated_at
+        FROM persona_model_calibrations
+        WHERE version_id = ?
+        ORDER BY updated_at DESC
+        """,
+        (active_version_id,),
+    ).fetchall()
+    return quarantine_count, previous_version, promoted, calibrations
+
+
 def get_persona_status() -> dict[str, Any]:
     _bootstrap_if_needed()
     active = get_persona_version()
+    active_version_id = int(active.get("version", 1) or 1)
     conn = _connect()
     try:
-        quarantine_count = int(
-            conn.execute("SELECT COUNT(*) FROM persona_candidates WHERE status = 'quarantine'").fetchone()[0]
+        quarantine_count, previous_version, promoted, calibrations = _query_persona_status_data(
+            conn, active_version_id,
         )
-        previous_version = _get_previous_version(conn, int(active.get("version", 1) or 1))
-        promoted = conn.execute(
-            """
-            SELECT trait_key, candidate_json, promoted_version, last_seen
-            FROM persona_candidates
-            WHERE status = 'promoted'
-            ORDER BY COALESCE(promoted_version, 0) DESC, last_seen DESC
-            LIMIT 5
-            """
-        ).fetchall()
-        calibrations = conn.execute(
-            """
-            SELECT model, version_id, calibration_json, consistency_score, updated_at
-            FROM persona_model_calibrations
-            WHERE version_id = ?
-            ORDER BY updated_at DESC
-            """,
-            (int(active.get("version", 1) or 1),),
-        ).fetchall()
     finally:
         conn.close()
 
-    latest_traits = []
-    for row in promoted:
-        data = _json_loads(row["candidate_json"], {})
-        latest_traits.append(
-            {
-                "trait_key": row["trait_key"],
-                "summary": data.get("summary", row["trait_key"]),
-                "promoted_version": row["promoted_version"],
-                "last_seen": row["last_seen"],
-            }
-        )
-
-    model_consistency = []
-    for row in calibrations:
-        model_consistency.append(
-            {
-                "model": row["model"],
-                "version_id": row["version_id"],
-                "consistency_score": row["consistency_score"],
-                "updated_at": row["updated_at"],
-                "calibration": _json_loads(row["calibration_json"], DEFAULT_MODEL_CALIBRATION),
-            }
-        )
-
+    latest_traits = [
+        {
+            "trait_key": row["trait_key"],
+            "summary": _json_loads(row["candidate_json"], {}).get("summary", row["trait_key"]),
+            "promoted_version": row["promoted_version"],
+            "last_seen": row["last_seen"],
+        }
+        for row in promoted
+    ]
+    model_consistency = [
+        {
+            "model": row["model"],
+            "version_id": row["version_id"],
+            "consistency_score": row["consistency_score"],
+            "updated_at": row["updated_at"],
+            "calibration": _json_loads(row["calibration_json"], DEFAULT_MODEL_CALIBRATION),
+        }
+        for row in calibrations
+    ]
     return {
         "ok": True,
         "persona_name": active.get("payload", {}).get("identity", {}).get("name", "Elira"),
-        "active_version": int(active.get("version", 1) or 1),
+        "active_version": active_version_id,
         "status": active.get("status", "active"),
         "last_evolution_at": active.get("promoted_at") or active.get("created_at"),
         "quarantine_candidates": quarantine_count,

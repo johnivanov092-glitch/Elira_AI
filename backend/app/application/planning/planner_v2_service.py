@@ -265,14 +265,54 @@ def _needs_web(query: str, temporal: dict[str, Any]) -> bool:
     return False
 
 
+def _compute_route_and_tools(
+    scores: dict[str, int],
+    normalized_query: str,
+    temporal: dict[str, Any],
+) -> tuple[str, list[str]]:
+    """Derive routing decision and tool list from keyword scores.
+
+    Returns (route, tools) where tools contains no duplicates.
+    """
+    tools: list[str] = []
+    route = "chat"
+
+    main = {"research": scores["research"], "project": scores["project"], "code": scores["code"]}
+    best = max(main, key=main.get)
+    if main[best] > 0:
+        route = best
+    if scores["code"] > 0 and scores["project"] > 0:
+        route = "code"
+    if scores["python"] > 0 and route == "chat":
+        route = "code"
+
+    if route == "research":
+        tools.append("web_search")
+    if route in ("project", "code"):
+        tools.append("project_mode")
+    if route == "code":
+        tools.append("project_patch")
+    if scores["python"] > 0:
+        tools.append("python_executor")
+
+    if route == "chat" and "web_search" not in tools and _needs_web(normalized_query, temporal):
+        route = "research"
+        tools.append("web_search")
+
+    if scores["memory"] > 0 or route in ("project", "code", "research"):
+        tools.append("memory_search")
+    if scores["library"] > 0 or route in ("project", "code"):
+        tools.append("library_context")
+
+    return route, list(dict.fromkeys(tools))
+
+
 class PlannerV2Service:
     def plan(self, query: str) -> dict[str, Any]:
         normalized_query = (query or "").lower().strip()
         if not normalized_query:
             return {
-                "route": "chat",
-                "tools": [],
-                "query": query,
+                "route": "chat", "tools": [], "query": query,
                 "strategy": "planner_v4_empty",
                 "temporal": detect_temporal_intent(query),
                 "web_plan": {"is_multi_intent": False, "subqueries": []},
@@ -288,49 +328,13 @@ class PlannerV2Service:
             "library": _count(normalized_query, _LIBRARY_WORDS),
         }
 
-        tools: list[str] = []
-        route = "chat"
-
-        main = {
-            "research": scores["research"],
-            "project": scores["project"],
-            "code": scores["code"],
-        }
-        best = max(main, key=main.get)
-        if main[best] > 0:
-            route = best
-        if scores["code"] > 0 and scores["project"] > 0:
-            route = "code"
-        if scores["python"] > 0 and route == "chat":
-            route = "code"
-
-        if route == "research":
-            tools.append("web_search")
-        if route in ("project", "code"):
-            tools.append("project_mode")
-        if route == "code":
-            tools.append("project_patch")
-        if scores["python"] > 0:
-            tools.append("python_executor")
-
-        if route == "chat" and "web_search" not in tools and _needs_web(normalized_query, temporal):
-            route = "research"
-            tools.append("web_search")
-
-        if scores["memory"] > 0 or route in ("project", "code", "research"):
-            tools.append("memory_search")
-        if scores["library"] > 0 or route in ("project", "code"):
-            tools.append("library_context")
-
-        tools = list(dict.fromkeys(tools))
-        web_plan = plan_web_query(query, temporal) if "web_search" in tools else {"is_multi_intent": False, "subqueries": []}
-
+        route, tools = _compute_route_and_tools(scores, normalized_query, temporal)
+        web_plan = (
+            plan_web_query(query, temporal) if "web_search" in tools
+            else {"is_multi_intent": False, "subqueries": []}
+        )
         return {
-            "route": route,
-            "tools": tools,
-            "query": query,
-            "strategy": "planner_v4",
-            "scores": scores,
-            "temporal": temporal,
-            "web_plan": web_plan,
+            "route": route, "tools": tools, "query": query,
+            "strategy": "planner_v4", "scores": scores,
+            "temporal": temporal, "web_plan": web_plan,
         }
