@@ -99,80 +99,82 @@ _FILE_TRIGGERS_EXCEL = ["в excel", "в эксель", "xlsx", "в таблиц�
                         "создай excel", "сделай excel"]
 
 
+def _try_generate_word(ql: str, llm_answer: str) -> str:
+    """Generate a Word document from the LLM answer if the user requested one.
+
+    Returns the appendix string (e.g. a download link line) or "".
+    """
+    if not (any(t in ql for t in _FILE_TRIGGERS_WORD) and len(llm_answer) > 50):
+        return ""
+    try:
+        lines = llm_answer.strip().split("\n")
+        title = ""
+        for line in lines:
+            clean = line.strip().strip("#").strip("*").strip()
+            if clean and len(clean) > 3:
+                title = clean[:80]
+                break
+        title = title or "Документ Elira"
+        result = generate_word(title, llm_answer)
+        if result.get("ok"):
+            fname = result.get("filename", "")
+            dl = result.get("download_url", "")
+            return f"\n\n📄 **Word документ создан:** [{fname}]({dl})"
+    except Exception as e:
+        return f"\n\n⚠️ Word ошибка: {e}"
+    return ""
+
+
+def _try_generate_excel(ql: str, llm_answer: str) -> str:
+    """Generate an Excel file from the LLM answer if the user requested one.
+
+    Parses markdown tables when present; falls back to a plain text export.
+    Returns the appendix string (e.g. a download link line) or "".
+    """
+    if not (any(t in ql for t in _FILE_TRIGGERS_EXCEL) and len(llm_answer) > 30):
+        return ""
+    try:
+        table_pattern = re.findall(r'\|(.+)\|', llm_answer)
+        if table_pattern and len(table_pattern) >= 2:
+            rows: list[list[str]] = []
+            headers: list[str] = []
+            for row_str in table_pattern:
+                cells = [c.strip() for c in row_str.split("|") if c.strip()]
+                if cells and all(set(c) <= {'-', ':', ' '} for c in cells):
+                    continue  # skip separator rows
+                if not headers:
+                    headers = cells
+                else:
+                    rows.append(cells)
+            if headers and rows:
+                result = generate_excel("Данные", rows, headers)
+                if result.get("ok"):
+                    fname = result.get("filename", "")
+                    dl = result.get("download_url", "")
+                    return f"\n\n📊 **Excel файл создан:** [{fname}]({dl})"
+        else:
+            lines_data = [
+                [line.strip()]
+                for line in llm_answer.split("\n")
+                if line.strip() and not line.strip().startswith(("#", "---"))
+            ]
+            if lines_data:
+                result = generate_excel("Экспорт", lines_data, ["Содержимое"])
+                if result.get("ok"):
+                    fname = result.get("filename", "")
+                    dl = result.get("download_url", "")
+                    return f"\n\n📊 **Excel файл создан:** [{fname}]({dl})"
+    except Exception as e:
+        return f"\n\n⚠️ Excel ошибка: {e}"
+    return ""
+
+
 def _maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True) -> str:
     """После ответа LLM: если пользователь хотел Word/Excel — создаём файлы из ответа."""
     if not enabled:
         return ""
     ql = user_input.lower()
-
-    extra_parts = []
-
-    # Word
-    wants_word = any(t in ql for t in _FILE_TRIGGERS_WORD)
-    if wants_word and len(llm_answer) > 50:
-        try:
-            # Извлекаем заголовок из первой строки ответа
-            lines = llm_answer.strip().split("\n")
-            title = ""
-            for line in lines:
-                clean = line.strip().strip("#").strip("*").strip()
-                if clean and len(clean) > 3:
-                    title = clean[:80]
-                    break
-            title = title or "Документ Elira"
-
-            # Убираем markdown-разметку для чистого текста в Word
-            content = llm_answer
-            result = generate_word(title, content)
-            if result.get("ok"):
-                fname = result.get("filename", "")
-                dl = result.get("download_url", "")
-                extra_parts.append(f"\n\n📄 **Word документ создан:** [{fname}]({dl})")
-        except Exception as e:
-            extra_parts.append(f"\n\n⚠️ Word ошибка: {e}")
-
-    # Excel
-    wants_excel = any(t in ql for t in _FILE_TRIGGERS_EXCEL)
-    if wants_excel and len(llm_answer) > 30:
-        try:
-            # Парсим markdown таблицы из ответа LLM
-            table_pattern = re.findall(r'\|(.+)\|', llm_answer)
-            if table_pattern and len(table_pattern) >= 2:
-                rows = []
-                headers = []
-                for i, row_str in enumerate(table_pattern):
-                    cells = [c.strip() for c in row_str.split("|") if c.strip()]
-                    # Пропускаем разделители (---)
-                    if cells and all(set(c) <= {'-', ':', ' '} for c in cells):
-                        continue
-                    if not headers:
-                        headers = cells
-                    else:
-                        rows.append(cells)
-
-                if headers and rows:
-                    result = generate_excel("Данные", rows, headers)
-                    if result.get("ok"):
-                        fname = result.get("filename", "")
-                        dl = result.get("download_url", "")
-                        extra_parts.append(f"\n\n📊 **Excel файл создан:** [{fname}]({dl})")
-            else:
-                # Нет таблицы в ответе — создаём простой Excel из текста
-                lines_data = []
-                for line in llm_answer.split("\n"):
-                    clean = line.strip()
-                    if clean and not clean.startswith("#") and not clean.startswith("---"):
-                        lines_data.append([clean])
-                if lines_data:
-                    result = generate_excel("Экспорт", lines_data, ["Содержимое"])
-                    if result.get("ok"):
-                        fname = result.get("filename", "")
-                        dl = result.get("download_url", "")
-                        extra_parts.append(f"\n\n📊 **Excel файл создан:** [{fname}]({dl})")
-        except Exception as e:
-            extra_parts.append(f"\n\n⚠️ Excel ошибка: {e}")
-
-    return "".join(extra_parts)
+    return _try_generate_word(ql, llm_answer) + _try_generate_excel(ql, llm_answer)
 
 
 

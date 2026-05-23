@@ -277,6 +277,41 @@ def clear_all_memories(profile_name: str | None = None) -> dict[str, Any]:
     return {"ok": True, "deleted": deleted}
 
 
+def _tfidf_rank(
+    query_tokens: list[str],
+    all_rows: list[Any],
+    min_score: float,
+    safe_limit: int,
+) -> list[dict[str, Any]]:
+    """Score *all_rows* against *query_tokens* with TF-IDF + importance boost.
+
+    Returns the top *safe_limit* rows (as plain dicts) sorted by score descending.
+    """
+    doc_freq: Counter[str] = Counter()
+    doc_tokens_list: list[set[str]] = []
+    for row in all_rows:
+        tokens = set(_tokenize(row["text"]))
+        doc_tokens_list.append(tokens)
+        for token in tokens:
+            doc_freq[token] += 1
+
+    n_docs = len(all_rows)
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for index, row in enumerate(all_rows):
+        doc_tokens = doc_tokens_list[index]
+        score = 0.0
+        for query_token in query_tokens:
+            if query_token in doc_tokens:
+                idf = math.log(n_docs / (1 + doc_freq.get(query_token, 0)))
+                score += 1 + idf
+        score *= 1 + row["importance"] / 20.0
+        if score >= min_score:
+            scored.append((score, dict(row)))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [item for _, item in scored[:safe_limit]]
+
+
 def search_memory(
     query: str,
     limit: int = 10,
@@ -290,11 +325,9 @@ def search_memory(
     safe_limit = max(1, int(limit))
     params: tuple[Any, ...] = ()
     sql = "SELECT * FROM memories"
-
     if profile_name is not None:
         sql += " WHERE profile_name = ?"
         params = (_normalize_profile(profile_name),)
-
     sql += " ORDER BY importance DESC, updated_at DESC"
 
     conn = _conn()
@@ -310,32 +343,7 @@ def search_memory(
     if not query_tokens:
         return {"ok": True, "items": [], "count": 0, "query": normalized_query}
 
-    doc_freq: Counter[str] = Counter()
-    doc_tokens_list: list[set[str]] = []
-
-    for row in all_rows:
-        tokens = set(_tokenize(row["text"]))
-        doc_tokens_list.append(tokens)
-        for token in tokens:
-            doc_freq[token] += 1
-
-    n_docs = len(all_rows)
-    scored: list[tuple[float, dict[str, Any]]] = []
-
-    for index, row in enumerate(all_rows):
-        doc_tokens = doc_tokens_list[index]
-        score = 0.0
-        for query_token in query_tokens:
-            if query_token in doc_tokens:
-                idf = math.log(n_docs / (1 + doc_freq.get(query_token, 0)))
-                score += 1 + idf
-
-        score *= 1 + row["importance"] / 20.0
-        if score >= min_score:
-            scored.append((score, dict(row)))
-
-    scored.sort(key=lambda item: item[0], reverse=True)
-    items = [item for _, item in scored[:safe_limit]]
+    items = _tfidf_rank(query_tokens, all_rows, min_score, safe_limit)
 
     if items:
         conn = _conn()
