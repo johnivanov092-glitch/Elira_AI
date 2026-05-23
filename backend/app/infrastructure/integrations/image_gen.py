@@ -91,6 +91,44 @@ def _clip_prompt(prompt: str, max_words: int = 60) -> str:
     return clipped
 
 
+
+def _clamp_dimensions(width: int, height: int) -> tuple[int, int]:
+    """Clamp to 8GB VRAM limit and align both axes to multiples of 8."""
+    max_pixels = 1024 * 1024
+    if width * height > max_pixels:
+        ratio = (max_pixels / (width * height)) ** 0.5
+        width = int(width * ratio // 8) * 8
+        height = int(height * ratio // 8) * 8
+    return (width // 8) * 8, (height // 8) * 8
+
+
+def _save_image_and_return(
+    image, fname: str, width: int, height: int,
+    steps: int, seed: int, elapsed: float, prompt: str,
+) -> dict:
+    """Save PNG to OUTPUT_DIR, flush VRAM, and return success dict."""
+    path = OUTPUT_DIR / fname
+    image.save(str(path))
+    try:
+        if _HAS_TORCH and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "filename": fname,
+        "path": str(path),
+        "width": width,
+        "height": height,
+        "steps": steps,
+        "seed": seed,
+        "elapsed_sec": elapsed,
+        "prompt": prompt,
+        "view_url": f"/api/skills/view/{fname}",
+        "download_url": f"/api/skills/download/{fname}",
+    }
+
 def generate_image(
     prompt: str,
     width: int = 768,
@@ -101,37 +139,24 @@ def generate_image(
     filename: str = "",
 ) -> dict:
     """
-    Р“РµРЅРµСЂРёСЂСѓРµС‚ РёР·РѕР±СЂР°Р¶РµРЅРёРµ РїРѕ С‚РµРєСЃС‚РѕРІРѕРјСѓ РѕРїРёСЃР°РЅРёСЋ.
+    Генерирует изображение по текстовому описанию.
 
-    FLUX.1-schnell РѕРїС‚РёРјР°Р»РµРЅ РЅР° 4 С€Р°РіР°С…, guidance_scale=0.0
-    РњР°РєСЃРёРјСѓРј РґР»СЏ 8GB VRAM: 1024x1024
+    FLUX.1-schnell оптимален на 4 шагах, guidance_scale=0.0
+    Максимум для 8GB VRAM: 1024x1024
     """
     if not prompt or not prompt.strip():
-        return {"ok": False, "error": "РџСѓСЃС‚РѕР№ РїСЂРѕРјРїС‚"}
+        return {"ok": False, "error": "Пустой промпт"}
 
-    # CLIP РѕР±СЂРµР·Р°РµС‚ РґРѕ 77 С‚РѕРєРµРЅРѕРІ вЂ” РѕР±СЂРµР·Р°РµРј Р·Р°СЂР°РЅРµРµ С‡С‚РѕР±С‹ РёР·Р±РµР¶Р°С‚СЊ РѕС€РёР±РѕРє
+    # CLIP обрезает до 77 токенов — обрезаем заранее чтобы избежать ошибок
     prompt = _clip_prompt(prompt.strip())
-
-    # РћРіСЂР°РЅРёС‡РµРЅРёСЏ РґР»СЏ 8GB VRAM
-    max_pixels = 1024 * 1024
-    if width * height > max_pixels:
-        ratio = (max_pixels / (width * height)) ** 0.5
-        width = int(width * ratio // 8) * 8
-        height = int(height * ratio // 8) * 8
-
-    # Р Р°Р·РјРµСЂС‹ РґРѕР»Р¶РЅС‹ Р±С‹С‚СЊ РєСЂР°С‚РЅС‹ 8
-    width = (width // 8) * 8
-    height = (height // 8) * 8
+    width, height = _clamp_dimensions(width, height)
 
     try:
         if not _HAS_TORCH:
-            return {"ok": False, "error": "torch РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ: pip install torch"}
+            return {"ok": False, "error": "torch не установлен: pip install torch"}
 
         pipe = _get_pipe()
-
-        generator = None
-        if seed >= 0:
-            generator = torch.Generator("cpu").manual_seed(seed)
+        generator = torch.Generator("cpu").manual_seed(seed) if seed >= 0 else None
 
         logger.info(f"Generating: {width}x{height}, steps={steps}, prompt='{prompt[:60]}'")
         start = time.time()
@@ -146,47 +171,16 @@ def generate_image(
         )
 
         elapsed = round(time.time() - start, 1)
-        image = result.images[0]
-
-        # РЎРѕС…СЂР°РЅСЏРµРј
         fname = filename or f"elira_img_{int(time.time())}.png"
         if not fname.endswith(".png"):
             fname += ".png"
-        path = OUTPUT_DIR / fname
-        image.save(str(path))
+        return _save_image_and_return(result.images[0], fname, width, height, steps, seed, elapsed, prompt)
 
-        # РћС‡РёСЃС‚РєР° VRAM
-        try:
-            if _HAS_TORCH and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            gc.collect()
-        except Exception:
-            pass
-
-        return {
-            "ok": True,
-            "filename": fname,
-            "path": str(path),
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "seed": seed,
-            "elapsed_sec": elapsed,
-            "prompt": prompt,
-            "view_url": f"/api/skills/view/{fname}",
-            "download_url": f"/api/skills/download/{fname}",
-        }
-
-    except Exception as _oom_err:
-        if 'out of memory' not in str(_oom_err).lower() and 'CUDA' not in str(_oom_err):
-            _cleanup_vram()
-            return {"ok": False, "error": str(_oom_err)}
+    except Exception as exc:
         _cleanup_vram()
-        return {"ok": False, "error": f"РќРµ С…РІР°С‚Р°РµС‚ VRAM РґР»СЏ {width}x{height}. РџРѕРїСЂРѕР±СѓР№ РјРµРЅСЊС€РёР№ СЂР°Р·РјРµСЂ (512x512)."}
-    except Exception as e:
-        _cleanup_vram()
-        return {"ok": False, "error": str(e)}
-
+        if "out of memory" in str(exc).lower() or "CUDA" in str(exc):
+            return {"ok": False, "error": f"Не хватает VRAM для {width}x{height}. Попробуй меньший размер (512x512)."}
+        return {"ok": False, "error": str(exc)}
 
 def _cleanup_vram():
     """РћСЃРІРѕР±РѕР¶РґР°РµС‚ VRAM."""

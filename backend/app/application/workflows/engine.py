@@ -753,6 +753,62 @@ def _try_record_step_metrics(
         pass
 
 
+def _handle_workflow_pause(
+    run_id: str, workflow_id: str, current_step_id: str, next_step_id: str,
+    step_results: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist paused state and emit pause event; return the updated run."""
+    paused_run = _update_workflow_run(
+        run_id, status="paused", current_step_id=next_step_id,
+        step_results=step_results, pending_steps=[next_step_id], requested_pause=False,
+    )
+    _record_workflow_run_state(
+        paused_run, status="paused",
+        details={"current_step_id": next_step_id, "after_step_id": current_step_id},
+    )
+    _emit_workflow_event("workflow.run.paused", workflow_id, run_id, payload={"current_step_id": next_step_id})
+    return paused_run
+
+
+def _handle_workflow_failure(
+    run_id: str, workflow_id: str, current_step_id: str,
+    step_result: dict[str, Any], step_results: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist failed state and emit completion event; return the updated run."""
+    failed_run = _update_workflow_run(
+        run_id, status="failed", current_step_id=current_step_id,
+        step_results=step_results, pending_steps=[],
+        error={"step_id": current_step_id, "message": step_result.get("error", "step failed")},
+        finished_at=_now(),
+    )
+    _record_workflow_run_state(failed_run, status="failed", details={"current_step_id": current_step_id})
+    _emit_workflow_event(
+        "workflow.run.completed", workflow_id, run_id,
+        payload={"ok": False, "status": "failed", "step_id": current_step_id},
+    )
+    return failed_run
+
+
+def _handle_workflow_completion(
+    run_id: str, workflow_id: str, current_step_id: str,
+    step_results: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist completed state and emit completion event; return the updated run."""
+    completed_run = _update_workflow_run(
+        run_id, status="completed", current_step_id="",
+        step_results=step_results, pending_steps=[], error={}, finished_at=_now(),
+    )
+    _record_workflow_run_state(
+        completed_run, status="completed",
+        details={"completed_from_step_id": current_step_id},
+    )
+    _emit_workflow_event(
+        "workflow.run.completed", workflow_id, run_id,
+        payload={"ok": True, "status": "completed"},
+    )
+    return completed_run
+
+
 def _decide_step_outcome(
     run_id: str,
     workflow_id: str,
@@ -783,66 +839,18 @@ def _decide_step_outcome(
 
     should_pause = bool(step.get("pause_after")) or bool(step_result.get("pause_requested"))
     if should_pause and success and next_step_id:
-        paused_run = _update_workflow_run(
-            run_id,
-            status="paused",
-            current_step_id=next_step_id,
-            step_results=step_results,
-            pending_steps=[next_step_id],
-            requested_pause=False,
-        )
-        _record_workflow_run_state(
-            paused_run, status="paused",
-            details={"current_step_id": next_step_id, "after_step_id": current_step_id},
-        )
-        _emit_workflow_event("workflow.run.paused", workflow_id, run_id, payload={"current_step_id": next_step_id})
-        return None, paused_run
+        return None, _handle_workflow_pause(run_id, workflow_id, current_step_id, next_step_id, step_results)
 
     if not success and not next_step_id:
-        failed_run = _update_workflow_run(
-            run_id,
-            status="failed",
-            current_step_id=current_step_id,
-            step_results=step_results,
-            pending_steps=[],
-            error={"step_id": current_step_id, "message": step_result.get("error", "step failed")},
-            finished_at=_now(),
-        )
-        _record_workflow_run_state(failed_run, status="failed", details={"current_step_id": current_step_id})
-        _emit_workflow_event(
-            "workflow.run.completed", workflow_id, run_id,
-            payload={"ok": False, "status": "failed", "step_id": current_step_id},
-        )
-        return None, failed_run
+        return None, _handle_workflow_failure(run_id, workflow_id, current_step_id, step_result, step_results)
 
     if not next_step_id:
-        completed_run = _update_workflow_run(
-            run_id,
-            status="completed",
-            current_step_id="",
-            step_results=step_results,
-            pending_steps=[],
-            error={},
-            finished_at=_now(),
-        )
-        _record_workflow_run_state(
-            completed_run, status="completed",
-            details={"completed_from_step_id": current_step_id},
-        )
-        _emit_workflow_event(
-            "workflow.run.completed", workflow_id, run_id,
-            payload={"ok": True, "status": "completed"},
-        )
-        return None, completed_run
+        return None, _handle_workflow_completion(run_id, workflow_id, current_step_id, step_results)
 
     # Continue to next step
     _update_workflow_run(
-        run_id,
-        status="running",
-        current_step_id=next_step_id,
-        step_results=step_results,
-        pending_steps=[next_step_id],
-        error={},
+        run_id, status="running", current_step_id=next_step_id,
+        step_results=step_results, pending_steps=[next_step_id], error={},
     )
     return next_step_id, None
 
