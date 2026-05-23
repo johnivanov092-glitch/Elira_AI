@@ -29,6 +29,7 @@ from app.api.routes.event_bus_routes import router as event_bus_router
 from app.api.routes.workflow_routes import router as workflow_router
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router
 from app.api.routes.tool_registry_routes import router as tool_registry_router
+from app.api.routes.web_routes import router as web_router
 from app.infrastructure.runtime.runtime_service import init_runtime_state
 from app.application.agents.agent_registry import seed_builtin_agents
 from app.application.workflows.engine import seed_builtin_workflows
@@ -83,6 +84,7 @@ app.include_router(event_bus_router)
 app.include_router(workflow_router)
 app.include_router(agent_monitor_router)
 app.include_router(tool_registry_router)
+app.include_router(web_router)
 
 init_runtime_state()
 seed_builtin_agents()
