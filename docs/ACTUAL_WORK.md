@@ -2293,3 +2293,15 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   `do_web_search_legacy()` keeps the same fetch limits, parallelism, and output ordering while delegating legacy deep-page reads to focused helpers.
+
+### 163. Tool registry builtins grouped after Claude sweep
+- Status: completed
+- Scope: continued after Claude's 2026-05-23 backend sweep by adapting a compatible tool-registry split to the current Codex branch instead of merging the incompatible 109-commit Claude branch directly.
+- Finish:
+  split [backend/app/application/tool_registry/builtins.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/builtins.py) so `build_builtin_tools()` now assembles eight grouped helper lists while preserving the original 25 builtin tool definitions and order.
+- Verification:
+  `python -m compileall backend/app/application/tool_registry/builtins.py backend/app/application/tool_registry/runtime.py backend/app/application/tool_registry/service.py` -> passed;
+  `python -m unittest backend.tests.test_tool_registry_application_imports backend.tests.test_agent_os_phase2 -v` -> 20 tests OK;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  the tool registry builtin factory is now a small assembler, with category-specific helper builders and no public contract change.

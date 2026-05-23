@@ -3,34 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def build_builtin_tools() -> list[dict[str, Any]]:
-    from app.application.git.runtime import git_commit as _git_commit_fn
-    from app.application.git.runtime import git_status as _git_status_fn
-    from app.application.library.runtime import build_library_context, list_library_files
-    from app.application.project_brain.loop_service import ProjectBrainLoopService
-    from app.application.project_brain.map_service import ProjectMapService
-    from app.application.project_patch.service import ProjectPatchService
-    from app.application.smart_memory import search_memory as smart_search_memory
-    from app.domain.runtime.python_runner import execute_python
-    from app.infrastructure.browser.agent import BrowserAgent
-    from app.infrastructure.search.multisearch import WebMultiSearchService
-    from app.infrastructure.search.web_search import research_web, search_web
-    from app.infrastructure.storage.project_files import (
-        list_project_tree,
-        read_project_file,
-        search_project,
-        write_project_file,
-    )
-
-    def search_memory_tool(profile: str, query: str, limit: int = 5) -> dict[str, Any]:
-        result = smart_search_memory(query=query, limit=max(1, int(limit)))
-        result["profile"] = str(profile or "default")
-        return result
-
-    patch_service = ProjectPatchService()
-    map_service = ProjectMapService()
-    brain_service = ProjectBrainLoopService()
-
+def _build_memory_search_tools(search_memory_tool) -> list[dict[str, Any]]:
     return [
         {
             "name": "search_memory",
@@ -41,6 +14,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "description": "Search semantic memory for relevant facts",
             "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}, "profile": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]},
         },
+    ]
+
+
+def _build_web_tools(search_web, research_web, BrowserAgent, WebMultiSearchService) -> list[dict[str, Any]]:
+    return [
         {
             "name": "search_web",
             "handler": lambda a: {"ok": True, "query": str(a.get("query", "")), "results": search_web(str(a.get("query", "")), max_results=int(a.get("max_results", 5)))},
@@ -83,6 +61,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "category": "web",
             "description": "Search across multiple web engines",
         },
+    ]
+
+
+def _build_code_tools(execute_python) -> list[dict[str, Any]]:
+    return [
         {
             "name": "python_execute",
             "handler": lambda a: execute_python(str(a.get("code", ""))),
@@ -92,6 +75,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "description": "Execute Python code in a sandboxed subprocess",
             "parameters_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
         },
+    ]
+
+
+def _build_project_file_tools(list_project_tree, read_project_file, write_project_file, search_project) -> list[dict[str, Any]]:
+    return [
         {
             "name": "list_project_tree",
             "handler": lambda a: list_project_tree(int(a.get("max_depth", 3)), int(a.get("max_items", 400))),
@@ -127,6 +115,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "description": "Search project files by content",
             "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
         },
+    ]
+
+
+def _build_project_patch_tools(patch_service) -> list[dict[str, Any]]:
+    return [
         {
             "name": "preview_project_patch",
             "handler": lambda a: patch_service.preview_patch(str(a.get("path", "")), str(a.get("new_content", "")), int(a.get("max_chars", 20000))),
@@ -175,6 +168,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "category": "project",
             "description": "List available patch backups",
         },
+    ]
+
+
+def _build_system_tools(_git_status_fn, _git_commit_fn) -> list[dict[str, Any]]:
+    return [
         {
             "name": "git_status",
             "handler": lambda a: _git_status_fn(),
@@ -191,6 +189,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "category": "system",
             "description": "Commit and push changes",
         },
+    ]
+
+
+def _build_library_tools(list_library_files, build_library_context) -> list[dict[str, Any]]:
+    return [
         {
             "name": "list_library",
             "handler": lambda a: list_library_files(),
@@ -207,6 +210,11 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "category": "memory",
             "description": "Build context from indexed library",
         },
+    ]
+
+
+def _build_project_brain_tools(map_service, brain_service) -> list[dict[str, Any]]:
+    return [
         {
             "name": "project_map_scan",
             "handler": lambda a: map_service.build_map(max_depth=int(a.get("max_depth", 4)), max_items=int(a.get("max_items", 500))),
@@ -239,4 +247,44 @@ def build_builtin_tools() -> list[dict[str, Any]]:
             "category": "project",
             "description": "Iterative project development loop",
         },
+    ]
+
+
+def build_builtin_tools() -> list[dict[str, Any]]:
+    from app.application.git.runtime import git_commit as _git_commit_fn
+    from app.application.git.runtime import git_status as _git_status_fn
+    from app.application.library.runtime import build_library_context, list_library_files
+    from app.application.project_brain.loop_service import ProjectBrainLoopService
+    from app.application.project_brain.map_service import ProjectMapService
+    from app.application.project_patch.service import ProjectPatchService
+    from app.application.smart_memory import search_memory as smart_search_memory
+    from app.domain.runtime.python_runner import execute_python
+    from app.infrastructure.browser.agent import BrowserAgent
+    from app.infrastructure.search.multisearch import WebMultiSearchService
+    from app.infrastructure.search.web_search import research_web, search_web
+    from app.infrastructure.storage.project_files import (
+        list_project_tree,
+        read_project_file,
+        search_project,
+        write_project_file,
+    )
+
+    def search_memory_tool(profile: str, query: str, limit: int = 5) -> dict[str, Any]:
+        result = smart_search_memory(query=query, limit=max(1, int(limit)))
+        result["profile"] = str(profile or "default")
+        return result
+
+    patch_service = ProjectPatchService()
+    map_service = ProjectMapService()
+    brain_service = ProjectBrainLoopService()
+
+    return [
+        *_build_memory_search_tools(search_memory_tool),
+        *_build_web_tools(search_web, research_web, BrowserAgent, WebMultiSearchService),
+        *_build_code_tools(execute_python),
+        *_build_project_file_tools(list_project_tree, read_project_file, write_project_file, search_project),
+        *_build_project_patch_tools(patch_service),
+        *_build_system_tools(_git_status_fn, _git_commit_fn),
+        *_build_library_tools(list_library_files, build_library_context),
+        *_build_project_brain_tools(map_service, brain_service),
     ]
