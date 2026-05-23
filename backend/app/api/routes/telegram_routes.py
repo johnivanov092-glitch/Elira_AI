@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.infrastructure.integrations.telegram_service import (
+from app.application.integrations.telegram_service import (
     get_telegram_config,
     update_telegram_config,
     telegram_bot_status,
