@@ -15,35 +15,10 @@ from __future__ import annotations
 from typing import Any
 
 
-def get_builtin_tool_definitions() -> list[dict[str, Any]]:
-    """Return built-in tool dicts ready for ``register_tool(**d)``."""
-    # Lazy imports — intentional: avoid circular dependency between
-    # tool_registry <-> tool_service.
-    from app.application.tools.tool_service import search_memory_tool
-    from app.application.web.web_service import research_web, search_web
-    from app.infrastructure.runtime.python_runner import execute_python
-    from app.infrastructure.files.project_service import (
-        list_project_tree,
-        read_project_file,
-        search_project,
-        write_project_file,
-    )
-    from app.application.projects.project_patch_service import ProjectPatchService
-    from app.application.library.library_service import (
-        build_library_context,
-        list_library_files,
-    )
-    from app.infrastructure.vcs.git_service import (
-        git_commit as _git_commit_fn,
-        git_status as _git_status_fn,
-    )
-    from app.application.projects.project_map_service import ProjectMapService
-    from app.application.projects.project_brain_loop_service import ProjectBrainLoopService
+# ─── per-category helpers ─────────────────────────────────────────────────────
 
-    _patch = ProjectPatchService()
-    _map_svc = ProjectMapService()
-    _brain_svc = ProjectBrainLoopService()
 
+def _memory_tool_defs(search_memory_tool, list_library_files, build_library_context) -> list:
     return [
         {
             "name": "search_memory",
@@ -53,6 +28,25 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
             "description": "Search semantic memory for relevant facts",
             "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}, "profile": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["query"]},
         },
+        {
+            "name": "list_library",
+            "handler": lambda a: list_library_files(),
+            "display_name": "List Library", "display_name_ru": "Библиотека",
+            "category": "memory",
+            "description": "List indexed library files",
+        },
+        {
+            "name": "build_library_context",
+            "handler": lambda a: build_library_context(),
+            "display_name": "Library Context", "display_name_ru": "Контекст библиотеки",
+            "category": "memory",
+            "description": "Build context from indexed library",
+        },
+    ]
+
+
+def _web_tool_defs(search_web, research_web) -> list:
+    return [
         {
             "name": "search_web",
             "handler": lambda a: {"ok": True, "query": str(a.get("query", "")), "results": search_web(str(a.get("query", "")), max_results=int(a.get("max_results", 5)))},
@@ -90,6 +84,11 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
             "category": "web",
             "description": "Search across multiple web engines",
         },
+    ]
+
+
+def _code_tool_defs(execute_python) -> list:
+    return [
         {
             "name": "python_execute",
             "handler": lambda a: execute_python(str(a.get("code", ""))),
@@ -98,6 +97,11 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
             "description": "Execute Python code in a sandboxed subprocess",
             "parameters_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]},
         },
+    ]
+
+
+def _project_file_tool_defs(list_project_tree, read_project_file, search_project, write_project_file) -> list:
+    return [
         {
             "name": "list_project_tree",
             "handler": lambda a: list_project_tree(int(a.get("max_depth", 3)), int(a.get("max_items", 400))),
@@ -129,6 +133,11 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
             "description": "Search project files by content",
             "parameters_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
         },
+    ]
+
+
+def _project_patch_tool_defs(_patch) -> list:
+    return [
         {
             "name": "preview_project_patch",
             "handler": lambda a: _patch.preview_patch(str(a.get("path", "")), str(a.get("new_content", "")), int(a.get("max_chars", 20000))),
@@ -171,34 +180,11 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
             "category": "project",
             "description": "List available patch backups",
         },
-        {
-            "name": "git_status",
-            "handler": lambda a: _git_status_fn(),
-            "display_name": "Git Status", "display_name_ru": "Статус Git",
-            "category": "system",
-            "description": "Show git repository status",
-        },
-        {
-            "name": "git_commit_push",
-            "handler": lambda a: _git_commit_fn(message=str(a.get("message", "AI update")), add_all=True),
-            "display_name": "Git Commit", "display_name_ru": "Git коммит",
-            "category": "system",
-            "description": "Commit and push changes",
-        },
-        {
-            "name": "list_library",
-            "handler": lambda a: list_library_files(),
-            "display_name": "List Library", "display_name_ru": "Библиотека",
-            "category": "memory",
-            "description": "List indexed library files",
-        },
-        {
-            "name": "build_library_context",
-            "handler": lambda a: build_library_context(),
-            "display_name": "Library Context", "display_name_ru": "Контекст библиотеки",
-            "category": "memory",
-            "description": "Build context from indexed library",
-        },
+    ]
+
+
+def _project_brain_tool_defs(_map_svc, _brain_svc) -> list:
+    return [
         {
             "name": "project_map_scan",
             "handler": lambda a: _map_svc.build_map(max_depth=int(a.get("max_depth", 4)), max_items=int(a.get("max_items", 500))),
@@ -227,4 +213,66 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
             "category": "project",
             "description": "Iterative project development loop",
         },
+    ]
+
+
+def _system_tool_defs(_git_status_fn, _git_commit_fn) -> list:
+    return [
+        {
+            "name": "git_status",
+            "handler": lambda a: _git_status_fn(),
+            "display_name": "Git Status", "display_name_ru": "Статус Git",
+            "category": "system",
+            "description": "Show git repository status",
+        },
+        {
+            "name": "git_commit_push",
+            "handler": lambda a: _git_commit_fn(message=str(a.get("message", "AI update")), add_all=True),
+            "display_name": "Git Commit", "display_name_ru": "Git коммит",
+            "category": "system",
+            "description": "Commit and push changes",
+        },
+    ]
+
+
+# ─── public factory ───────────────────────────────────────────────────────────
+
+
+def get_builtin_tool_definitions() -> list[dict[str, Any]]:
+    """Return built-in tool dicts ready for ``register_tool(**d)``."""
+    # Lazy imports — intentional: avoid circular dependency between
+    # tool_registry <-> tool_service.
+    from app.application.tools.tool_service import search_memory_tool
+    from app.application.web.web_service import research_web, search_web
+    from app.infrastructure.runtime.python_runner import execute_python
+    from app.infrastructure.files.project_service import (
+        list_project_tree,
+        read_project_file,
+        search_project,
+        write_project_file,
+    )
+    from app.application.projects.project_patch_service import ProjectPatchService
+    from app.application.library.library_service import (
+        build_library_context,
+        list_library_files,
+    )
+    from app.infrastructure.vcs.git_service import (
+        git_commit as _git_commit_fn,
+        git_status as _git_status_fn,
+    )
+    from app.application.projects.project_map_service import ProjectMapService
+    from app.application.projects.project_brain_loop_service import ProjectBrainLoopService
+
+    _patch = ProjectPatchService()
+    _map_svc = ProjectMapService()
+    _brain_svc = ProjectBrainLoopService()
+
+    return [
+        *_memory_tool_defs(search_memory_tool, list_library_files, build_library_context),
+        *_web_tool_defs(search_web, research_web),
+        *_code_tool_defs(execute_python),
+        *_project_file_tool_defs(list_project_tree, read_project_file, search_project, write_project_file),
+        *_project_patch_tool_defs(_patch),
+        *_project_brain_tool_defs(_map_svc, _brain_svc),
+        *_system_tool_defs(_git_status_fn, _git_commit_fn),
     ]
