@@ -238,6 +238,7 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
         self.assertEqual(dashboard["blocked_runs"], 0)
 
     def test_run_agent_stream_records_metric(self) -> None:
+        import app.application.chat.service as _svc
         import app.application.chat.stream_service as _ssvc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
              patch.object(_ssvc, "_collect_context", return_value=""), \
@@ -246,7 +247,7 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
              patch.object(_ssvc, "_get_and_clear_attachments", return_value=""), \
              patch.object(_ssvc, "_maybe_generate_files", return_value=""), \
              patch.object(_ssvc, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(_ssvc, "pick_model_for_route", return_value="test-model"), \
+             patch.object(_svc, "pick_model_for_route", return_value="test-model"), \
              patch.object(_ssvc, "should_cache", return_value=False):
             events = list(
                 agents_service.run_agent_stream(

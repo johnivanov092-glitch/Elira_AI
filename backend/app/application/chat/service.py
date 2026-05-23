@@ -295,6 +295,44 @@ def _complete_chat_run(
     return result
 
 
+def _resolve_plan_and_tools(
+    planner_input: str,
+    run_id: str,
+    model_name: str,
+    *,
+    use_memory: bool,
+    use_library: bool,
+    use_web_search: bool,
+) -> tuple[str, dict, dict, list[str], str]:
+    """Run planner, filter tools by capability flags, pick effective model.
+
+    Returns (route, temporal, web_plan, selected_tools, effective_model).
+    """
+    plan = PlannerV2Service().plan(planner_input)
+    _HISTORY.add_event(run_id, "planner", plan)
+    route = plan.get("route", "chat")
+    temporal = plan.get("temporal", {})
+    web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
+    selected = [
+        t for t in plan.get("tools", [])
+        if not (t == "memory_search" and not use_memory)
+        and not (t == "library_context" and not use_library)
+        and not (t == "web_search" and not use_web_search)
+    ]
+    if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
+        selected.append("web_search")
+    strict_web_only = (
+        route == "research"
+        and temporal.get("mode") == "hard"
+        and temporal.get("freshness_sensitive")
+    )
+    if strict_web_only:
+        selected = [t for t in selected if t != "memory_search"]
+    if is_memory_command(planner_input):
+        selected = [t for t in selected if t != "memory_search"]
+    effective_model = pick_model_for_route(route, model_name)
+    return route, temporal, web_plan, selected, effective_model
+
 # ─── execute_chat_agent (non-streaming) ──────────────────────────────────────
 
 
@@ -356,7 +394,6 @@ def execute_chat_agent(
     }
     _disabled_skills = {k for k, v in _skill_flags.items() if not v}
     timeline, tool_results = [], []
-    planner = PlannerV2Service()
     raw_user_input = user_input
     planner_input = _strip_frontend_project_context(user_input)
     run = _HISTORY.start_run(raw_user_input)
@@ -373,29 +410,10 @@ def execute_chat_agent(
         },
     )
     try:
-        plan = planner.plan(planner_input)
-        _HISTORY.add_event(run["run_id"], "planner", plan)
-        route = plan.get("route", "chat")
-        temporal = plan.get("temporal", {})
-        web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
-        effective_model = pick_model_for_route(route, model_name)
-        selected = [
-            t for t in plan.get("tools", [])
-            if not (t == "memory_search" and not use_memory)
-            and not (t == "library_context" and not use_library)
-            and not (t == "web_search" and not use_web_search)
-        ]
-        if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
-            selected.append("web_search")
-        strict_web_only = (
-            route == "research"
-            and temporal.get("mode") == "hard"
-            and temporal.get("freshness_sensitive")
+        route, temporal, web_plan, selected, effective_model = _resolve_plan_and_tools(
+            planner_input, run["run_id"], model_name,
+            use_memory=use_memory, use_library=use_library, use_web_search=use_web_search,
         )
-        if strict_web_only:
-            selected = [t for t in selected if t != "memory_search"]
-        if is_memory_command(planner_input):
-            selected = [t for t in selected if t != "memory_search"]
 
         try:
             saved = extract_and_save(planner_input)
