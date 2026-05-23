@@ -420,128 +420,130 @@ def _run_file_skills(user_input: str, ql: str, disabled: set, parts: list) -> No
     _handle_csv_skill(user_input, ql, disabled, parts)
 
 
+def _handle_webhook_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    _triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
+    if "webhook" in disabled or not any(t in ql for t in _triggers):
+        return
+    try:
+        result = list_webhooks(10)
+        items = result.get("items", [])
+        if items:
+            lines = [f"📡 Webhook ({len(items)} последних):"]
+            for w in items[-5:]:
+                lines.append(f"  • [{w.get('source','')}] {w.get('received_at','')} — {json.dumps(w.get('data',{}), ensure_ascii=False)[:200]}")
+            parts.append("\n".join(lines))
+        else:
+            parts.append("📡 Вебхуки пусты. Отправь POST на /api/extra/webhook/{source}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:📡 Webhook: {e}")
+
+
+def _handle_plugins_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    if "plugins" in disabled:
+        return
+    try:
+        _list_triggers = ["список плагинов", "покажи плагины", "plugins list", "мои плагины"]
+        if any(t in ql for t in _list_triggers):
+            plugins = list_plugins().get("plugins", [])
+            if plugins:
+                lines = [f"🔌 Плагины ({len(plugins)}):"]
+                for p in plugins:
+                    st = "✅" if p.get("enabled") else "⛔"
+                    lines.append(f"  {st} {p.get('icon','🔌')} {p['name']} v{p.get('version','1.0')} — {p.get('description','')}")
+                parts.append("\n".join(lines))
+            else:
+                parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
+
+        _run_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
+        if any(t in ql for t in _run_triggers):
+            nm = re.search(r"плагин\s+(\S+)", user_input, re.IGNORECASE) or re.search(r"plugin\s+(\S+)", user_input, re.IGNORECASE)
+            if nm:
+                result = run_plugin(nm.group(1), {"text": user_input})
+                parts.append(f"🔌 {nm.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
+
+        for tr in run_triggered(user_input):
+            parts.append(f"🔌 [{tr['plugin']}]: {json.dumps(tr, ensure_ascii=False)[:2000]}")
+        for hr in fire_hook("on_message", user_input):
+            if hr.get("result"):
+                parts.append(f"🔌 [{hr['plugin']}]: {hr['result']}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:🔌 Плагины: {e}")
+
+
 def _run_webhook_plugin_skills(
     user_input: str, ql: str, disabled: set, parts: list
 ) -> None:
     """Webhook list and plugin execution."""
-    # ─── 📡 Webhook ───
-    webhook_triggers = ["покажи вебхуки", "покажи webhook", "что пришло на webhook", "список вебхуков"]
-    if "webhook" not in disabled and any(t in ql for t in webhook_triggers):
+    _handle_webhook_skill(user_input, ql, disabled, parts)
+    _handle_plugins_skill(user_input, ql, disabled, parts)
+
+
+def _handle_pdf_hints(ql: str, parts: list) -> None:
+    if any(t in ql for t in ["конвертируй pdf в word", "pdf в word", "pdf to word", "pdf в docx"]):
+        parts.append("SKILL_HINT: Чтобы конвертировать PDF в Word — загрузи PDF через кнопку + и напиши 'конвертируй в word'. PDF будет обработан автоматически через /api/pdf/to-word.")
+    if any(t in ql for t in ["извлеки таблицы из pdf", "таблицы из pdf", "pdf таблицы в excel"]):
+        parts.append("SKILL_HINT: Чтобы извлечь таблицы из PDF — загрузи PDF через кнопку + и напиши 'извлеки таблицы'. Таблицы будут сохранены в Excel через /api/pdf/tables.")
+
+
+def _handle_git_skills(ql: str, disabled: set, parts: list) -> None:
+    if "git" in disabled:
+        return
+    if any(t in ql for t in ["git status", "статус git", "что изменилось в git", "покажи git", "git изменения", "ветка git"]):
         try:
-            result = list_webhooks(10)
-            items = result.get("items", [])
-            if items:
-                lines = [f"📡 Webhook ({len(items)} последних):"]
-                for w in items[-5:]:
-                    lines.append(f"  • [{w.get('source','')}] {w.get('received_at','')} — {json.dumps(w.get('data',{}), ensure_ascii=False)[:200]}")
+            parts.append(format_git_context())
+        except Exception as e:
+            parts.append("SKILL_ERROR:Git: " + str(e))
+    if any(t in ql for t in ["git log", "история коммитов", "последние коммиты", "покажи коммиты"]):
+        try:
+            r = git_log(limit=10)
+            if r.get("ok"):
+                rows = ["Git log (" + r["repo"] + "):"] + ["  " + c["hash"] + " - " + c["message"] for c in r.get("commits", [])]
+                parts.append("\n".join(rows))
+        except Exception as e:
+            parts.append("SKILL_ERROR:Git log: " + str(e))
+    if any(t in ql for t in ["git diff", "покажи diff", "что я изменил", "изменения в коде"]):
+        try:
+            r = git_diff()
+            if r.get("ok"):
+                parts.append("Git diff:\n" + r.get("stat", "") + "\n" + r.get("diff", "")[:3000])
+        except Exception as e:
+            parts.append("SKILL_ERROR:Git diff: " + str(e))
+
+
+def _handle_gpu_skill(ql: str, parts: list) -> None:
+    if not any(t in ql for t in ["статус gpu", "gpu status", "сколько vram", "видеопамять"]):
+        return
+    try:
+        result = get_status()
+        parts.append(
+            f"🖥 GPU: {result.get('gpu','?')}\n"
+            f"VRAM: {result.get('vram_used_mb',0)} / {result.get('vram_total_mb',0)} MB\n"
+            f"Модель загружена: {'да' if result.get('loaded') else 'нет'}"
+        )
+    except Exception as e:
+        parts.append(f"GPU: {e}")
+
+
+def _handle_files_skill(parts: list) -> None:
+    try:
+        if GENERATED_DIR.exists():
+            files = sorted(GENERATED_DIR.iterdir())[-10:]
+            if files:
+                lines = ["📊 Последние файлы:"]
+                for f in files:
+                    lines.append(f"  • [{f.name}]({API_BASE}/api/skills/download/{f.name}) ({f.stat().st_size} байт)")
                 parts.append("\n".join(lines))
-            else:
-                parts.append("📡 Вебхуки пусты. Отправь POST на /api/extra/webhook/{source}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:📡 Webhook: {e}")
-
-    # ─── 🔌 Плагины v2 ───
-    if "plugins" not in disabled:
-        try:
-            # 1. Список плагинов
-            plugin_list_triggers = ["список плагинов", "покажи плагины", "plugins list", "мои плагины"]
-            if any(t in ql for t in plugin_list_triggers):
-                result = list_plugins()
-                plugins = result.get("plugins", [])
-                if plugins:
-                    lines = [f"🔌 Плагины ({len(plugins)}):"]
-                    for p in plugins:
-                        status = "✅" if p.get("enabled") else "⛔"
-                        lines.append(f"  {status} {p.get('icon','🔌')} {p['name']} v{p.get('version','1.0')} — {p.get('description','')}")
-                    parts.append("\n".join(lines))
-                else:
-                    parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
-
-            # 2. Запуск плагина вручную
-            run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
-            if any(t in ql for t in run_plugin_triggers):
-                name_match = re.search(r"плагин\s+(\S+)", user_input, re.IGNORECASE)
-                if not name_match:
-                    name_match = re.search(r"plugin\s+(\S+)", user_input, re.IGNORECASE)
-                if name_match:
-                    result = run_plugin(name_match.group(1), {"text": user_input})
-                    parts.append(f"🔌 {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
-
-            # 3. Авто-триггеры — плагины сами определяют на что реагировать
-            triggered = run_triggered(user_input)
-            for tr in triggered:
-                parts.append(f"🔌 [{tr['plugin']}]: {json.dumps(tr, ensure_ascii=False)[:2000]}")
-
-            # 4. on_message хук — каждый плагин может добавить контекст
-            hook_results = fire_hook("on_message", user_input)
-            for hr in hook_results:
-                if hr.get("result"):
-                    parts.append(f"🔌 [{hr['plugin']}]: {hr['result']}")
-
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:🔌 Плагины: {e}")
+    except Exception:
+        pass
 
 
 def _run_system_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
     """PDF hints, git, GPU status, generated files list."""
-    # ─── 📑 PDF Pro ───
-    pdf_word_triggers = ["конвертируй pdf в word", "pdf в word", "pdf to word", "pdf в docx"]
-    if any(t in ql for t in pdf_word_triggers):
-        parts.append("SKILL_HINT: Чтобы конвертировать PDF в Word — загрузи PDF через кнопку + и напиши 'конвертируй в word'. PDF будет обработан автоматически через /api/pdf/to-word.")
-
-    pdf_table_triggers = ["извлеки таблицы из pdf", "таблицы из pdf", "pdf таблицы в excel"]
-    if any(t in ql for t in pdf_table_triggers):
-        parts.append("SKILL_HINT: Чтобы извлечь таблицы из PDF — загрузи PDF через кнопку + и напиши 'извлеки таблицы'. Таблицы будут сохранены в Excel через /api/pdf/tables.")
-
-    # --- Git skill ---
-    _git_st = ['git status', 'статус git', 'что изменилось в git', 'покажи git', 'git изменения', 'ветка git']
-    if 'git' not in disabled and any(t in ql for t in _git_st):
-        try:
-            parts.append(format_git_context())
-        except Exception as _e:
-            parts.append('SKILL_ERROR:Git: ' + str(_e))
-    _git_lg = ['git log', 'история коммитов', 'последние коммиты', 'покажи коммиты']
-    if 'git' not in disabled and any(t in ql for t in _git_lg):
-        try:
-            _r = git_log(limit=10)
-            if _r.get('ok'):
-                _rows = ['Git log (' + _r['repo'] + '):'] + ['  ' + c['hash'] + ' - ' + c['message'] for c in _r.get('commits', [])]
-                parts.append(chr(10).join(_rows))
-        except Exception as _e:
-            parts.append('SKILL_ERROR:Git log: ' + str(_e))
-    _git_df = ['git diff', 'покажи diff', 'что я изменил', 'изменения в коде']
-    if 'git' not in disabled and any(t in ql for t in _git_df):
-        try:
-            _r = git_diff()
-            if _r.get('ok'):
-                parts.append('Git diff:' + chr(10) + _r.get('stat','') + chr(10) + _r.get('diff','')[:3000])
-        except Exception as _e:
-            parts.append('SKILL_ERROR:Git diff: ' + str(_e))
-
-    # ─── 🎨 GPU статус ───
-    gpu_triggers = ["статус gpu", "gpu status", "сколько vram", "видеопамять"]
-    if any(t in ql for t in gpu_triggers):
-        try:
-            result = get_status()
-            parts.append(f"🖥 GPU: {result.get('gpu','?')}\n"
-                         f"VRAM: {result.get('vram_used_mb',0)} / {result.get('vram_total_mb',0)} MB\n"
-                         f"Модель загружена: {'да' if result.get('loaded') else 'нет'}")
-        except Exception as e:
-            parts.append(f"GPU: {e}")
-
-    # ─── 📊 Сгенерированные файлы ───
-    files_triggers = ["покажи файлы", "список файлов", "сгенерированные файлы", "мои файлы"]
-    if any(t in ql for t in files_triggers):
-        try:
-            if GENERATED_DIR.exists():
-                files = sorted(GENERATED_DIR.iterdir())[-10:]
-                if files:
-                    lines = ["📊 Последние файлы:"]
-                    for f in files:
-                        lines.append(f"  • [{f.name}]({API_BASE}/api/skills/download/{f.name}) ({f.stat().st_size} байт)")
-                    parts.append("\n".join(lines))
-        except Exception:
-            pass
+    _handle_pdf_hints(ql, parts)
+    _handle_git_skills(ql, disabled, parts)
+    _handle_gpu_skill(ql, parts)
+    if any(t in ql for t in ["покажи файлы", "список файлов", "сгенерированные файлы", "мои файлы"]):
+        _handle_files_skill(parts)
 
 
 def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
