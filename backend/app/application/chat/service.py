@@ -236,6 +236,61 @@ def _gather_run_context(
     return ctx
 
 
+def _run_llm_and_finish_answer(
+    *,
+    raw_user_input: str,
+    prompt: str,
+    history: list,
+    effective_model: str,
+    profile_name: str,
+    num_ctx: int,
+    task_context: str,
+    route: str,
+    use_reflection: bool,
+    ctx: str,
+    use_file_gen: bool,
+) -> str:
+    """Call LLM, optionally run reflection, apply attachments and file generation.
+
+    Returns the final answer string.  Raises RuntimeError on LLM failure so the
+    caller's except handlers can handle it uniformly.
+    """
+    draft = run_chat(
+        model_name=effective_model,
+        profile_name=profile_name,
+        user_input=prompt,
+        history=history,
+        num_ctx=num_ctx,
+        task_context=task_context,
+    )
+    if not draft.get("ok"):
+        raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
+    answer = draft.get("answer", "")
+
+    has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
+    should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
+    if should_reflect and answer.strip() and not has_generated_files:
+        ref = run_reflection_loop(
+            model_name=effective_model,
+            profile_name=profile_name,
+            user_input=raw_user_input,
+            draft_text=answer,
+            review_text="Улучши.",
+            context=ctx,
+        )
+        answer = ref.get("answer") or answer
+
+    attachments = _get_and_clear_attachments()
+    if attachments:
+        answer += attachments
+
+    post_files = _maybe_generate_files(raw_user_input, answer, enabled=use_file_gen)
+    if post_files:
+        answer += post_files
+
+    return answer
+
+
 def _setup_chat_agent_run(
     *,
     user_input: str,
@@ -618,38 +673,13 @@ def execute_chat_agent(
             + (", ".join(selected) if selected else "нет дополнительных инструментов")
             + "."
         )
-        draft = run_chat(
-            model_name=effective_model,
-            profile_name=profile_name,
-            user_input=prompt,
-            history=history,
-            num_ctx=num_ctx,
-            task_context=task_context,
+        answer = _run_llm_and_finish_answer(
+            raw_user_input=raw_user_input, prompt=prompt,
+            history=history, effective_model=effective_model,
+            profile_name=profile_name, num_ctx=num_ctx,
+            task_context=task_context, route=route,
+            use_reflection=use_reflection, ctx=ctx, use_file_gen=use_file_gen,
         )
-        if not draft.get("ok"):
-            raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
-        answer = draft.get("answer", "")
-
-        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
-        should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
-        if should_reflect and answer.strip() and not has_generated_files:
-            ref = run_reflection_loop(
-                model_name=effective_model,
-                profile_name=profile_name,
-                user_input=raw_user_input,
-                draft_text=answer,
-                review_text="Улучши.",
-                context=ctx,
-            )
-            answer = ref.get("answer") or answer
-
-        attachments = _get_and_clear_attachments()
-        if attachments:
-            answer += attachments
-
-        post_files = _maybe_generate_files(raw_user_input, answer, enabled=use_file_gen)
-        if post_files:
-            answer += post_files
 
         return _complete_chat_run(
             raw_user_input=raw_user_input,
