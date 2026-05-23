@@ -92,13 +92,19 @@ def project_snapshot():
 
 @router.get("/file")
 def read_project_file(path: str = Query(..., min_length=1)):
-    full_path, rel_path = resolve_project_file(path)
+    try:
+        full_path, rel_path = resolve_project_file(path)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not looks_text_file(full_path):
         raise HTTPException(status_code=415, detail="Only text-like source files are readable")
     size = full_path.stat().st_size
     if size > MAX_READ_BYTES:
         raise HTTPException(status_code=413, detail=f"File is too large to open ({size} bytes)")
-    content, encoding, raw = read_text_file(full_path)
+    try:
+        content, encoding, raw = read_text_file(full_path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Cannot read file: {exc}") from exc
     return {
         "status": "ok",
         "path": str(rel_path).replace("\\", "/"),

@@ -94,13 +94,16 @@ def apply_batch(payload: BatchApplyPayload):
             raise HTTPException(status_code=404, detail=f"Target file not found: {item.path}")
 
     results = []
-    for item in payload.items:
-        result = apply_file(item.path, item.content, action="apply-batch")
-        results.append({
-            "path": item.path,
-            "history_id": result["history_id"],
-            "backup_path": result["backup_path"],
-        })
+    try:
+        for item in payload.items:
+            result = apply_file(item.path, item.content, action="apply-batch")
+            results.append({
+                "path": item.path,
+                "history_id": result["history_id"],
+                "backup_path": result["backup_path"],
+            })
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "ok",
@@ -123,7 +126,12 @@ def rollback_patch(payload: RollbackPayload):
 
 @router.post("/verify")
 def verify_patch(payload: VerifyPayload):
-    result = verify_file(payload.path, payload.content)
+    try:
+        result = verify_file(payload.path, payload.content)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     line_count = result["line_count"]
     file_size = result["file_size"]
     changed = result["changed_vs_disk"]
@@ -152,17 +160,22 @@ def verify_batch(payload: BatchVerifyPayload):
 
     results = []
     total_added = total_removed = 0
-    for item in payload.items:
-        result = verify_file(item.path, item.content)
-        stats = result["stats"]
-        total_added += stats["added"]
-        total_removed += stats["removed"]
-        results.append({
-            "path": item.path,
-            "changed_vs_disk": result["changed_vs_disk"],
-            "stats": stats,
-            "diff_text": result["diff_text"],
-        })
+    try:
+        for item in payload.items:
+            result = verify_file(item.path, item.content)
+            stats = result["stats"]
+            total_added += stats["added"]
+            total_removed += stats["removed"]
+            results.append({
+                "path": item.path,
+                "changed_vs_disk": result["changed_vs_disk"],
+                "stats": stats,
+                "diff_text": result["diff_text"],
+            })
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "status": "ok",

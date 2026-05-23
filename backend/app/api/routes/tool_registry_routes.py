@@ -68,7 +68,10 @@ def execute_tool(name: str, body: ToolExecuteRequest):
     if not tool:
         raise HTTPException(404, f"Tool '{name}' not found")
 
-    result = registry.execute_tool(name, body.args)
+    try:
+        result = registry.execute_tool(name, body.args)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Tool execution failed: {exc}") from exc
     ok = result.get("ok", False) if isinstance(result, dict) else False
     errors = [result.get("error", "")] if not ok and isinstance(result, dict) and result.get("error") else []
 
