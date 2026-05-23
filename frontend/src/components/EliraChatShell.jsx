@@ -49,481 +49,27 @@ import ArtifactPanel from "./ArtifactPanel";
 import MemoryPanel from "./MemoryPanel";
 import ProjectPanel from "./ProjectPanel";
 import "../styles/markdown.css";
-
-const LIBRARY_KEY = "elira_library_files_v7";
-const CHAT_CONTEXT_KEY = "elira_chat_context_map_v7";
-
-const MAX_HISTORY_PAIRS = 10;
-
-const PROFILE_DESCRIPTIONS = {
-  "Универсальный": "Ясный, структурированный и профессиональный тон.",
-  "Программист": "Код, исправления, архитектура, рефакторинг.",
-  "Исследователь": "Факты, источники, web-поиск.",
-  "Аналитик": "Выводы, риски, декомпозиция.",
-  "Сократ": "Обучение через наводящие вопросы.",
-};
-
-const SKILLS = [
-  { id: "web_search", label: "Веб-поиск", desc: "Поиск в интернете" },
-  { id: "code_analysis", label: "Анализ кода", desc: "Разбор структуры кода" },
-  { id: "file_context", label: "Контекст файлов", desc: "Загруженные файлы в ответах" },
-  { id: "memory", label: "Память", desc: "Запоминание между чатами" },
-  { id: "python_exec", label: "Python", desc: "Выполнение скриптов" },
-  { id: "project_patch", label: "Патчинг", desc: "Изменение файлов проекта" },
-  { id: "pdf_reader", label: "PDF", desc: "Извлечение текста из PDF" },
-  { id: "reflection", label: "Рефлексия", desc: "Двойная проверка ответов" },
-  { id: "http_api", label: "HTTP/API", desc: "GET/POST запросы к API" },
-  { id: "sql_query", label: "SQL", desc: "Запросы к базе данных" },
-  { id: "file_gen", label: "Word/Excel", desc: "Генерация документов" },
-  { id: "screenshot", label: "Скриншот", desc: "Снимок веб-страницы" },
-  { id: "encrypt", label: "Шифрование", desc: "AES шифрование заметок" },
-  { id: "archiver", label: "Архиватор", desc: "ZIP создание/распаковка" },
-  { id: "converter", label: "Конвертер", desc: "CSV→XLSX, MD→DOCX, JSON→CSV" },
-  { id: "regex", label: "Regex", desc: "Тестирование регулярок" },
-  { id: "translator", label: "Переводчик", desc: "Перевод через LLM" },
-  { id: "csv_analysis", label: "CSV анализ", desc: "Статистика и агрегации" },
-  { id: "webhook", label: "Webhook", desc: "Приём входящих вебхуков" },
-  { id: "plugins", label: "Плагины", desc: "Пользовательские .py скрипты" },
-  { id: "image_gen", label: "Картинки", desc: "FLUX.1 генерация изображений" },
-  { id: "git", label: "Git", desc: "Статус, log, diff репозитория" },
-];
-
-// Tauri window controls
-function loadJson(k, f) { try { return JSON.parse(localStorage.getItem(k) || JSON.stringify(f)); } catch { return f; } }
-function saveJson(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { console.warn("localStorage quota exceeded:", e); } }
-function loadLibraryFiles() { return loadJson(LIBRARY_KEY, []); }
-function saveLibraryFiles(i) { saveJson(LIBRARY_KEY, i); }
-function loadChatContextMap() { return loadJson(CHAT_CONTEXT_KEY, {}); }
-function saveChatContextMap(v) { saveJson(CHAT_CONTEXT_KEY, v); }
-function makeId(p = "id") { return `${p}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; }
-function deriveChatTitle(t) { const c = String(t || "").trim().replace(/\s+/g, " "); return !c ? "Новый чат" : c.length > 28 ? `${c.slice(0, 28)}…` : c; }
-
-function shortModelName(name) {
-  if (!name) return "model";
-  // YandexGPT-5-Lite-8B-instruct-GGUF в†' YandexGPT
-  if (name.toLowerCase().includes("yandex")) return "YandexGPT";
-  // nemotron-mini в†' Nemotron Mini, etc.
-  return name;
-}
-
-function normalizeErrorMessage(e, fb = "Ошибка") {
-  const v = e?.message ?? e?.detail ?? e;
-  if (!v) return fb;
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return v.map(i => normalizeErrorMessage(i, "")).filter(Boolean).join(" | ") || fb;
-  if (typeof v === "object") return v.message || v.msg || JSON.stringify(v);
-  return String(v);
-}
-
-function humanizeValue(value) {
-  return String(value || "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function capabilityLabel(key) {
-  return {
-    vector_memory: "Векторная память",
-    screenshot: "Скриншоты",
-  }[key] || humanizeValue(key);
-}
-
-function capabilityStateText(capability = {}) {
-  if (capability.available) return "Доступно";
-  if (capability.reason === "optional_dependency_missing") return "Не хватает модулей";
-  if (capability.reason) return humanizeValue(capability.reason);
-  return "Недоступно";
-}
-
-function capabilityModeText(mode) {
-  return {
-    keyword_fallback: "Резервный поиск по ключевым словам",
-  }[mode] || humanizeValue(mode);
-}
-
-function runtimeStorageModeText(mode) {
-  return {
-    rooted_sqlite: "Корневой data/",
-    rooted_sqlite_with_legacy_archive: "Корневой data/ + legacy archive",
-    custom_data_dir: "Пользовательский data dir",
-    unknown: "Неизвестно",
-  }[mode] || humanizeValue(mode);
-}
-
-function engineListText(items) {
-  if (!Array.isArray(items) || !items.length) return "—";
-  return items.map((item) => humanizeValue(item)).join(", ");
-}
-
-function yesNoText(value) {
-  return value ? "Да" : "Нет";
-}
-
-function formatDurationMs(value) {
-  const ms = Number(value || 0);
-  if (!ms) return "0 мс";
-  if (ms >= 1000) return `${(ms / 1000).toFixed(ms >= 10000 ? 0 : 1)} с`;
-  return `${ms} мс`;
-}
-
-function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }) {
-  return <Icon size={size} strokeWidth={strokeWidth} style={{ display: "block", flexShrink: 0, ...style }} aria-hidden="true" />;
-}
-
-function IconText({ icon, children, size = 14, gap = 6, style, textStyle }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap, ...style }}>
-      <UiIcon icon={icon} size={size} />
-      <span style={textStyle}>{children}</span>
-    </span>
-  );
-}
-
-function PanelNotice({ title, message, onRetry, tone = "error" }) {
-  if (!message) return null;
-
-  const palette = {
-    error: {
-      border: "rgba(244,67,54,0.45)",
-      background: "rgba(244,67,54,0.08)",
-      title: "#f44336",
-    },
-    warning: {
-      border: "rgba(245,166,35,0.45)",
-      background: "rgba(245,166,35,0.08)",
-      title: "#f5a623",
-    },
-    info: {
-      border: "rgba(99,102,241,0.35)",
-      background: "rgba(99,102,241,0.08)",
-      title: "var(--accent)",
-    },
-  }[tone] || {
-    border: "rgba(244,67,54,0.45)",
-    background: "rgba(244,67,54,0.08)",
-    title: "#f44336",
-  };
-
-  return (
-    <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 10, border: `1px solid ${palette.border}`, background: palette.background }}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: palette.title, marginBottom: 4 }}>{title}</div>
-          <div style={{ fontSize: 11, color: "var(--text)", wordBreak: "break-word", whiteSpace: "pre-wrap" }}>{message}</div>
-        </div>
-        {onRetry && (
-          <button className="soft-btn" style={{ fontSize: 10, padding: "3px 10px", border: "1px solid var(--border)", borderRadius: 6, flexShrink: 0 }} onClick={onRetry}>
-            Повторить
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CapabilityStatusSection({ status }) {
-  const entries = Object.entries(status?.capabilities || {});
-  if (!entries.length) return null;
-
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Возможности Project Brain</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 8 }}>
-        {entries.map(([key, capability]) => {
-          const packages = Array.isArray(capability?.missing_packages) ? capability.missing_packages.filter(Boolean) : [];
-          const available = Boolean(capability?.available);
-          const tone = available ? "#4caf50" : "#f5a623";
-          return (
-            <div key={key} style={{ padding: 12, borderRadius: 10, border: `1px solid ${available ? "rgba(76,175,80,0.28)" : "rgba(245,166,35,0.32)"}`, background: "var(--bg-surface)" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{capabilityLabel(key)}</div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: tone }}>{capabilityStateText(capability)}</div>
-              </div>
-              {capability?.mode && (
-                <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>
-                  Режим: {capabilityModeText(capability.mode)}
-                </div>
-              )}
-              {!available && capability?.reason && (
-                <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: packages.length || capability?.hint ? 4 : 0 }}>
-                  Причина: {capabilityStateText(capability)}
-                </div>
-              )}
-              {packages.length > 0 && (
-                <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: capability?.hint ? 4 : 0 }}>
-                  Не хватает: <code style={{ fontSize: 10 }}>{packages.join(", ")}</code>
-                </div>
-              )}
-              {capability?.hint && (
-                <div style={{ fontSize: 10, color: "var(--text-muted)", wordBreak: "break-word" }}>
-                  Подсказка: <code style={{ fontSize: 10 }}>{capability.hint}</code>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function PersonaStatusSection({ status, busy = false, onRollback }) {
-  if (!status?.active_version) return null;
-
-  const traits = Array.isArray(status?.latest_traits) ? status.latest_traits : [];
-  const models = Array.isArray(status?.model_consistency) ? status.model_consistency : [];
-
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Личность Elira</div>
-      <div style={{ padding: 12, borderRadius: 10, border: "1px solid rgba(99,102,241,0.28)", background: "var(--bg-surface)" }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 10 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>
-              Версия v{status.active_version}
-            </div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
-              Последняя эволюция: {status.last_evolution_at ? new Date(status.last_evolution_at).toLocaleString("ru-RU") : "—"}
-            </div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-              Кандидатов в карантине: {status.quarantine_candidates ?? 0}
-            </div>
-          </div>
-          {status.previous_version ? (
-            <button
-              className="soft-btn"
-              style={{ fontSize: 10, padding: "4px 10px", border: "1px solid var(--border)", borderRadius: 6, flexShrink: 0 }}
-              onClick={() => onRollback?.(status.previous_version)}
-              disabled={busy}
-            >
-              {busy ? "Откат..." : `Откат к v${status.previous_version}`}
-            </button>
-          ) : null}
-        </div>
-
-        {traits.length ? (
-          <div style={{ marginBottom: models.length ? 10 : 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>Последние принятые черты</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {traits.map((trait) => (
-                <span key={`${trait.trait_key}-${trait.promoted_version || trait.last_seen}`} style={{ fontSize: 10, color: "var(--text)", padding: "4px 8px", borderRadius: 999, border: "1px solid var(--border)", background: "rgba(99,102,241,0.08)" }}>
-                  {trait.summary || trait.trait_key}
-                </span>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {models.length ? (
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>Согласованность по моделям</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
-              {models.map((item) => (
-                <div key={`${item.model}-${item.version_id}`} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 4 }}>{item.model}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Consistency: {item.consistency_score}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-                    Обновлено: {item.updated_at ? new Date(item.updated_at).toLocaleString("ru-RU") : "—"}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function RuntimeStatusSection({ status }) {
-  if (!status?.ok) return null;
-
-  const warning = status?.warning || "";
-  const webWarnings = Array.isArray(status?.web_warnings) ? status.web_warnings.filter(Boolean) : [];
-  const rows = [
-    { label: "Data dir", value: status.data_dir || "—" },
-    { label: "Режим хранения", value: runtimeStorageModeText(status.storage_mode) },
-    { label: "Активных чатов", value: status.active_chat_count ?? 0 },
-    { label: "Persona v", value: status.persona_version ?? "—" },
-    { label: "Web primary", value: humanizeValue(status.primary_engine || "") || "—" },
-    { label: "Web fallback", value: engineListText(status.fallback_engines) },
-    { label: "Available engines", value: engineListText(status.available_engines) },
-    { label: "Tavily key", value: yesNoText(Boolean(status.api_keys_present?.tavily)) },
-    { label: "Degraded mode", value: yesNoText(Boolean(status.degraded_mode)) },
-    { label: "Python", value: status.python_executable || "—" },
-    { label: "Backend origin", value: status.backend_origin || status.cwd || "—" },
-  ];
-
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Runtime</div>
-      <div style={{ padding: 12, borderRadius: 10, border: `1px solid ${warning ? "rgba(245,166,35,0.35)" : "rgba(99,102,241,0.28)"}`, background: "var(--bg-surface)" }}>
-        {warning ? (
-          <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(245,166,35,0.35)", background: "rgba(245,166,35,0.08)", fontSize: 10, color: "var(--text)" }}>
-            {warning}
-          </div>
-        ) : null}
-        {webWarnings.length ? (
-          <div style={{ marginBottom: 10, display: "grid", gap: 6 }}>
-            {webWarnings.map((item, index) => (
-              <div key={`${item}-${index}`} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(99,102,241,0.25)", background: "rgba(99,102,241,0.08)", fontSize: 10, color: "var(--text)" }}>
-                {item}
-              </div>
-            ))}
-          </div>
-        ) : null}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 8 }}>
-          {rows.map((row) => (
-            <div key={row.label} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
-              <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>{row.label}</div>
-              <div style={{ fontSize: 11, color: "var(--text)", wordBreak: "break-word" }}>{row.value}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AgentOsStatusSection({ health, dashboard, limits }) {
-  const hasHealth = Boolean(health && (Array.isArray(health.components) || Array.isArray(health.warnings)));
-  const hasDashboard = Boolean(dashboard && (dashboard.ok || dashboard.total_agent_runs || dashboard.workflow_runs || dashboard.blocked_runs || (dashboard.top_agents || []).length || (dashboard.limits_summary || []).length));
-  const limitItems = Array.isArray(limits?.items) ? limits.items : Array.isArray(dashboard?.limits_summary) ? dashboard.limits_summary : [];
-  if (!hasHealth && !hasDashboard && !limitItems.length) return null;
-
-  const healthComponents = Array.isArray(health?.components) ? health.components : [];
-  const topAgents = Array.isArray(dashboard?.top_agents) ? dashboard.top_agents : [];
-  const recentViolations = Array.isArray(dashboard?.recent_violations) ? dashboard.recent_violations : [];
-  const warnings = [
-    ...(Array.isArray(health?.warnings) ? health.warnings : []),
-    ...(Array.isArray(dashboard?.warnings) ? dashboard.warnings : []),
-  ].filter(Boolean);
-  const keyLimits = limitItems.filter((item) => [
-    "builtin-universal",
-    "builtin-researcher",
-    "builtin-programmer",
-    "builtin-analyst",
-    "builtin-orchestrator",
-    "workflow-engine",
-  ].includes(item?.agent_id)).slice(0, 6);
-
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Agent OS</div>
-      <div style={{ padding: 12, borderRadius: 10, border: `1px solid ${warnings.length ? "rgba(245,166,35,0.35)" : "rgba(16,185,129,0.28)"}`, background: "var(--bg-surface)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 8, marginBottom: warnings.length || topAgents.length || recentViolations.length || keyLimits.length ? 12 : 0 }}>
-          {[
-            { label: "Health", value: health?.ok ? "OK" : "Check", icon: Bot },
-            { label: "Agent runs / 24ч", value: dashboard?.total_agent_runs ?? 0, icon: BrainCircuit },
-            { label: "Workflow runs / 24ч", value: dashboard?.workflow_runs ?? 0, icon: Workflow },
-            { label: "Blocked / 24ч", value: dashboard?.blocked_runs ?? 0, icon: Square },
-            { label: "Avg duration", value: formatDurationMs(dashboard?.avg_duration_ms ?? 0), icon: BarChart3 },
-          ].map((item) => (
-            <div key={item.label} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-muted)", marginBottom: 4 }}>
-                <UiIcon icon={item.icon} size={12} />
-                <span>{item.label}</span>
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text)", fontWeight: 600 }}>{item.value}</div>
-            </div>
-          ))}
-        </div>
-
-        {warnings.length ? (
-          <div style={{ display: "grid", gap: 6, marginBottom: 12 }}>
-            {warnings.map((warning, index) => (
-              <div key={`${warning}-${index}`} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(245,166,35,0.35)", background: "rgba(245,166,35,0.08)", fontSize: 10, color: "var(--text)" }}>
-                {warning}
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {healthComponents.length ? (
-          <div style={{ marginBottom: topAgents.length || recentViolations.length || keyLimits.length ? 12 : 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>Components</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
-              {healthComponents.map((item) => (
-                <div key={item.component} style={{ padding: 10, borderRadius: 8, border: `1px solid ${item.ok ? "rgba(16,185,129,0.26)" : "rgba(245,166,35,0.30)"}`, background: "rgba(255,255,255,0.01)" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
-                    <div style={{ fontSize: 11, color: "var(--text)", fontWeight: 600 }}>{humanizeValue(item.component)}</div>
-                    <div style={{ fontSize: 10, color: item.ok ? "#10b981" : "#f5a623" }}>{item.ok ? "OK" : "Warn"}</div>
-                  </div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", wordBreak: "break-word" }}>{item.detail || "—"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {topAgents.length ? (
-          <div style={{ marginBottom: recentViolations.length || keyLimits.length ? 12 : 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>Top agents</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
-              {topAgents.map((item) => (
-                <div key={item.agent_id} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
-                  <div style={{ fontSize: 11, color: "var(--text)", fontWeight: 600 }}>{item.agent_id}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 4 }}>Запусков: {item.run_count}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {recentViolations.length ? (
-          <div style={{ marginBottom: keyLimits.length ? 12 : 0 }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>Recent violations</div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {recentViolations.slice(0, 5).map((item, index) => (
-                <div key={`${item.id || item.created_at || index}`} style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid rgba(244,67,54,0.28)", background: "rgba(244,67,54,0.08)" }}>
-                  <div style={{ fontSize: 11, color: "var(--text)", fontWeight: 600 }}>{item.agent_id || "unknown-agent"}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>{item.details?.reason || item.details?.error || "policy_blocked"}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {keyLimits.length ? (
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>Key limits</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 8 }}>
-              {keyLimits.map((item) => (
-                <div key={item.agent_id} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--border)", background: "rgba(255,255,255,0.01)" }}>
-                  <div style={{ fontSize: 11, color: "var(--text)", fontWeight: 600, marginBottom: 4 }}>{item.agent_id}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)" }}>Runs/hour: {item.max_runs_per_hour}</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>Max exec: {item.max_execution_seconds}s</div>
-                  <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>Context: {item.max_context_tokens}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-async function fileToLibraryRecord(file) {
-  let preview = "";
-  const name = file.name || "";
-  const ext = name.split(".").pop().toLowerCase();
-
-  // Текстовые файлы — читаем на клиенте
-  // UTF-8 файлы — читаем на клиенте
-  const textExts = ["txt","md","json","js","jsx","ts","tsx","py","css","html","htm","yml","yaml","xml","csv","log","ini","toml","bat","cmd","ps1","sh","sql","rb","php","java","c","cpp","h","hpp","cs","go","rs","swift","kt","r","m","lua","pl","tcl","asm","cfg","conf","env"];
-  const isText = file.type.startsWith("text/") || textExts.includes(ext);
-  if (isText) try { preview = (await file.text()).slice(0, 12000); } catch {}
-
-  // Бинарные + файлы с другими кодировками → на бекенд
-  const serverExts = ["pdf","docx","doc","xlsx","xls","xlsm","zip","bas","vbs","vba","cls","frm","rsc"];
-  if (serverExts.includes(ext)) try {
-    const d = await api.extractUploadedFileText(file);
-    preview = (d.text || "").slice(0, 12000);
-  } catch {}
-
-  return { id: makeId("lib"), name: file.name, size: file.size, type: file.type || ext || "unknown", uploaded_at: new Date().toISOString(), preview, use_in_context: true, source: "upload" };
-}
+import { PROFILE_DESCRIPTIONS, SKILLS } from "../chatConstants";
+import {
+  loadLibraryFiles,
+  saveLibraryFiles,
+  loadChatContextMap,
+  saveChatContextMap,
+  makeId,
+  deriveChatTitle,
+  shortModelName,
+  normalizeErrorMessage,
+  buildHistory,
+} from "../chatUtils";
+import {
+  UiIcon,
+  IconText,
+  PanelNotice,
+  CapabilityStatusSection,
+  PersonaStatusSection,
+  RuntimeStatusSection,
+  AgentOsStatusSection,
+} from "./StatusPanels";
 
 /** Files included in context only for the current chat */
 function getChatContextFiles(lib, chatId) {
@@ -532,8 +78,24 @@ function getChatContextFiles(lib, chatId) {
   const ids = new Set(map[chatId] || []);
   return lib.filter(i => ids.has(i.id) && i.preview);
 }
-function buildHistory(msgs) { if (!msgs?.length) return []; const p = msgs.filter(m => m.role === "user" || m.role === "assistant").map(m => ({ role: m.role, content: m.content || "" })); return p.length > MAX_HISTORY_PAIRS * 2 ? p.slice(-MAX_HISTORY_PAIRS * 2) : p; }
 
+async function fileToLibraryRecord(file) {
+  let preview = "";
+  const name = file.name || "";
+  const ext = name.split(".").pop().toLowerCase();
+
+  const textExts = ["txt","md","json","js","jsx","ts","tsx","py","css","html","htm","yml","yaml","xml","csv","log","ini","toml","bat","cmd","ps1","sh","sql","rb","php","java","c","cpp","h","hpp","cs","go","rs","swift","kt","r","m","lua","pl","tcl","asm","cfg","conf","env"];
+  const isText = file.type.startsWith("text/") || textExts.includes(ext);
+  if (isText) try { preview = (await file.text()).slice(0, 12000); } catch {}
+
+  const serverExts = ["pdf","docx","doc","xlsx","xls","xlsm","zip","bas","vbs","vba","cls","frm","rsc"];
+  if (serverExts.includes(ext)) try {
+    const d = await api.extractUploadedFileText(file);
+    preview = (d.text || "").slice(0, 12000);
+  } catch {}
+
+  return { id: makeId("lib"), name: file.name, size: file.size, type: file.type || ext || "unknown", uploaded_at: new Date().toISOString(), preview, use_in_context: true, source: "upload" };
+}
 
 // Мемоизированный компонент сообщения — не пере-рендерится при стриминге нового
 const MessageItem = React.memo(function MessageItem({ msg }) {
