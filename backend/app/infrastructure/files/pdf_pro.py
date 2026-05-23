@@ -220,6 +220,49 @@ def pdf_tables_to_excel(data: bytes, filename: str = "") -> dict:
 # PDF → WORD КОНВЕРТАЦИЯ
 # ═══════════════════════════════════════════════════════════════
 
+
+def _add_text_to_doc(doc: "Document", text: str) -> None:  # type: ignore[name-defined]
+    """Parse page-delimited text and add paragraphs/headings to a docx Document."""
+    current_page = ""
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("--- Страница") or stripped.startswith("--- OCR страница"):
+            if current_page:
+                doc.add_page_break()
+            current_page = stripped
+            continue
+        if not stripped:
+            continue
+        if len(stripped) < 80 and (stripped.isupper() or stripped.endswith(":")):
+            doc.add_heading(stripped, level=2)
+        else:
+            doc.add_paragraph(stripped)
+
+
+def _add_tables_to_doc(doc: "Document", tables: list) -> None:  # type: ignore[name-defined]
+    """Render a list of extracted PDF tables into a docx Document."""
+    for tbl in tables:
+        headers = tbl.get("headers", [])
+        rows = tbl.get("rows", [])
+        if not headers and not rows:
+            continue
+        doc.add_paragraph("")
+        doc.add_heading(f"Таблица (стр. {tbl.get('page', '?')})", level=3)
+        all_rows = [headers] + rows if headers else rows
+        max_cols = max(len(r) for r in all_rows) if all_rows else 0
+        if max_cols == 0:
+            continue
+        table = doc.add_table(rows=len(all_rows), cols=max_cols)
+        table.style = "Table Grid"
+        for r, row in enumerate(all_rows):
+            for c, val in enumerate(row[:max_cols]):
+                cell = table.rows[r].cells[c]
+                cell.text = str(val or "")
+                if r == 0 and headers:
+                    for run in cell.paragraphs[0].runs:
+                        run.bold = True
+
+
 def pdf_to_word(data: bytes, filename: str = "") -> dict:
     """Конвертирует PDF → DOCX. Сохраняет текст, заголовки и таблицы."""
     try:
@@ -244,49 +287,8 @@ def pdf_to_word(data: bytes, filename: str = "") -> dict:
     style.font.name = "Arial"
     style.font.size = Pt(11)
 
-    # Текст: парсим постранично
-    current_page = ""
-    for line in text.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith("--- Страница") or stripped.startswith("--- OCR страница"):
-            if current_page:
-                doc.add_page_break()
-            current_page = stripped
-            continue
-        if not stripped:
-            continue
-
-        # Угадываем заголовки (короткие, в верхнем регистре или с большим шрифтом)
-        if len(stripped) < 80 and (stripped.isupper() or stripped.endswith(":")):
-            doc.add_heading(stripped, level=2)
-        else:
-            doc.add_paragraph(stripped)
-
-    # Таблицы
-    for tbl in tables:
-        headers = tbl.get("headers", [])
-        rows = tbl.get("rows", [])
-        if not headers and not rows:
-            continue
-
-        doc.add_paragraph("")  # Отступ
-        doc.add_heading(f"Таблица (стр. {tbl.get('page', '?')})", level=3)
-
-        all_rows = [headers] + rows if headers else rows
-        max_cols = max(len(r) for r in all_rows) if all_rows else 0
-        if max_cols == 0:
-            continue
-
-        table = doc.add_table(rows=len(all_rows), cols=max_cols)
-        table.style = "Table Grid"
-
-        for r, row in enumerate(all_rows):
-            for c, val in enumerate(row[:max_cols]):
-                cell = table.rows[r].cells[c]
-                cell.text = str(val or "")
-                if r == 0 and headers:
-                    for run in cell.paragraphs[0].runs:
-                        run.bold = True
+    _add_text_to_doc(doc, text)
+    _add_tables_to_doc(doc, tables)
 
     fname = filename or f"pdf_converted_{int(time.time())}.docx"
     if not fname.endswith(".docx"):
