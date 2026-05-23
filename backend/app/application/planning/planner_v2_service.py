@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.application.planning.temporal_intent import detect_temporal_intent
+from app.core.temporal_intent import detect_temporal_intent
 from app.application.planning.web_query_planner import plan_web_query
 
 

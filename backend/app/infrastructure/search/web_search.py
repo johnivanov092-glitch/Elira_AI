@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
-from app.application.planning.temporal_intent import detect_temporal_intent
+from app.core.temporal_intent import detect_temporal_intent
 from app.core.web import (
     fetch_page_text as core_fetch,
     research_web,

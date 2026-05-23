@@ -11,7 +11,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.planning.temporal_intent import detect_temporal_intent  # noqa: E402
+from app.core.temporal_intent import detect_temporal_intent  # noqa: E402
 from app.application.planning.web_query_planner import plan_web_query  # noqa: E402
 
 
