@@ -430,10 +430,11 @@ def _maybe_record_agent_run(
     _registry_agent,
     run_id: str,
     raw_user_input: str,
-    answer: str,
+    output_summary: str,
     route: str,
     effective_model: str,
     duration_ms: int,
+    ok: bool = True,
 ) -> None:
     """Record a registry-agent run if an agent_id or registry_agent is present."""
     if not (agent_id or _registry_agent):
@@ -443,8 +444,8 @@ def _maybe_record_agent_run(
             "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
             "run_id": run_id,
             "input_summary": raw_user_input[:500],
-            "output_summary": answer[:500],
-            "ok": True,
+            "output_summary": output_summary[:500],
+            "ok": ok,
             "route": route,
             "model_used": effective_model,
             "duration_ms": duration_ms,
@@ -495,8 +496,9 @@ def _complete_chat_run(
     )
     _maybe_record_agent_run(
         agent_id=agent_id, _registry_agent=_registry_agent,
-        run_id=run["run_id"], raw_user_input=raw_user_input, answer=answer,
-        route=route, effective_model=effective_model, duration_ms=_duration_ms,
+        run_id=run["run_id"], raw_user_input=raw_user_input,
+        output_summary=answer, route=route,
+        effective_model=effective_model, duration_ms=_duration_ms,
     )
     _emit_agent_os_event(
         event_type="agent.run.completed",
@@ -605,20 +607,13 @@ def _handle_chat_run_failure(
         num_ctx=num_ctx,
         selected_tools=selected or [],
     )
-    if agent_id or _registry_agent:
-        try:
-            record_agent_run({
-                "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-                "run_id": run["run_id"],
-                "input_summary": raw_user_input[:500],
-                "output_summary": str(exc)[:500],
-                "ok": False,
-                "route": "",
-                "model_used": effective_model or model_name,
-                "duration_ms": _duration_ms,
-            })
-        except Exception:
-            pass
+    _maybe_record_agent_run(
+        agent_id=agent_id, _registry_agent=_registry_agent,
+        run_id=run["run_id"], raw_user_input=raw_user_input,
+        output_summary=str(exc), route=route,
+        effective_model=effective_model or model_name, duration_ms=_duration_ms,
+        ok=False,
+    )
     _emit_agent_os_event(
         event_type="agent.run.completed",
         source_agent_id=_agent_os_source_id,
@@ -749,26 +744,19 @@ def execute_chat_agent(
             _registry_agent=_registry_agent,
         )
 
-    except SandboxPolicyError as exc:
-        return _handle_chat_run_failure(
-            exc=exc, run=run, timeline=timeline, tool_results=tool_results,
-            _effective_agent_id=_effective_agent_id, _agent_os_source_id=_agent_os_source_id,
-            _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
-            session_id=session_id, num_ctx=num_ctx, streaming=False,
-            tl_step={"step": "sandbox", "title": "Sandbox", "status": "error", "detail": str(exc)},
-            extra_meta={"sandbox_reason": exc.reason, "sandbox_details": exc.details},
-            route=route, effective_model=effective_model, selected=selected,
-            raw_user_input=raw_user_input,
-        )
-
     except Exception as exc:
+        _is_sandbox = isinstance(exc, SandboxPolicyError)
         return _handle_chat_run_failure(
             exc=exc, run=run, timeline=timeline, tool_results=tool_results,
             _effective_agent_id=_effective_agent_id, _agent_os_source_id=_agent_os_source_id,
             _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
             session_id=session_id, num_ctx=num_ctx, streaming=False,
-            tl_step={"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)},
-            agent_id=agent_id, _registry_agent=_registry_agent,
+            tl_step={"step": "sandbox" if _is_sandbox else "error",
+                     "title": "Sandbox" if _is_sandbox else "Ошибка",
+                     "status": "error", "detail": str(exc)},
+            extra_meta={"sandbox_reason": exc.reason, "sandbox_details": exc.details} if _is_sandbox else None,
+            agent_id=None if _is_sandbox else agent_id,
+            _registry_agent=None if _is_sandbox else _registry_agent,
             route=route, effective_model=effective_model, selected=selected,
             raw_user_input=raw_user_input,
         )

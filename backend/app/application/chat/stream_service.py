@@ -47,7 +47,7 @@ from app.application.memory.smart_memory import extract_and_save, get_relevant_c
 
 
 
-def _apply_guards_and_complete_stream(
+def _build_stream_meta(
     *,
     raw_user_input: str,
     full_text: str,
@@ -59,16 +59,12 @@ def _apply_guards_and_complete_stream(
     run: dict,
     session_id,
     timeline: list,
-    _effective_agent_id: str,
-    _agent_start: float,
-    num_ctx: int,
     temporal: dict,
     web_plan: dict,
 ) -> tuple[str, dict, bool]:
-    """Apply guards, cache, persona, finish run; emit completion events.
+    """Apply guards, maybe write cache, observe persona, assemble meta dict.
 
-    Returns ``(full_text, meta, guard_changed)``. If *guard_changed* is True
-    the caller should yield a ``reflection_replace`` event before ``done``.
+    Returns ``(full_text_after_guards, meta, guard_changed)``.
     """
     identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
     guarded_text = identity_guard.get("text", full_text)
@@ -104,6 +100,39 @@ def _apply_guards_and_complete_stream(
         "identity_guard": identity_guard if identity_guard.get("changed") else None,
         "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
     }
+    return full_text, meta, guard_changed
+
+
+def _apply_guards_and_complete_stream(
+    *,
+    raw_user_input: str,
+    full_text: str,
+    planner_input: str,
+    effective_model: str,
+    profile_name: str,
+    route: str,
+    selected: list,
+    run: dict,
+    session_id,
+    timeline: list,
+    _effective_agent_id: str,
+    _agent_start: float,
+    num_ctx: int,
+    temporal: dict,
+    web_plan: dict,
+) -> tuple[str, dict, bool]:
+    """Apply guards, cache, persona, finish run; emit completion events.
+
+    Returns ``(full_text, meta, guard_changed)``. If *guard_changed* is True
+    the caller should yield a ``reflection_replace`` event before ``done``.
+    """
+    full_text, meta, guard_changed = _build_stream_meta(
+        raw_user_input=raw_user_input, full_text=full_text,
+        planner_input=planner_input, effective_model=effective_model,
+        profile_name=profile_name, route=route, selected=selected,
+        run=run, session_id=session_id, timeline=timeline,
+        temporal=temporal, web_plan=web_plan,
+    )
     _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
     _record_agent_os_monitoring(
         agent_id=_effective_agent_id,
