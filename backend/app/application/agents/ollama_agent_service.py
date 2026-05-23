@@ -359,6 +359,74 @@ def build_chat_prompt(
 
 
 # ---------------------------------------------------------------------------
+# High-level execution – private helpers
+# ---------------------------------------------------------------------------
+
+
+def _handle_code_mode(
+    message: str,
+    model: str,
+    selected_project_paths: list[str],
+    attachments: list[dict],
+    actual_session_id: str,
+    route: dict,
+    session: dict,
+    web_results: list,
+) -> tuple[dict[str, Any] | None, dict]:
+    """Attempt code-mode execution; update route when no target file is available.
+
+    Returns (response | None, route).
+    If response is not None the caller should return it immediately.
+    If response is None no suitable file was found and route has been set to 'analyze'.
+    """
+    target = next(
+        (item for item in attachments if item.get("source") == "project" and item.get("project_path")),
+        None,
+    )
+    if target is None and selected_project_paths:
+        try:
+            full_path, rel_path = resolve_project_file(selected_project_paths[0])
+            content, _, _ = read_text_file(full_path)
+            target = {"project_path": str(rel_path).replace("\\", "/"), "text": content}
+        except HTTPException:
+            target = None
+
+    if target is None:
+        return None, {"mode": "analyze", "reason": "no project file attached for code mode"}
+
+    refs = read_reference_context(selected_project_paths, selected_path=target["project_path"])
+    system_prompt = (
+        "You are Elira coder agent. Return JSON only with keys: answer, plan, target_path, "
+        "updated_content, notes. updated_content must contain the full replacement file content "
+        "for target_path. Do not return markdown."
+    )
+    result = call_ollama_json(
+        model, system_prompt,
+        build_code_prompt(message, target["project_path"], target["text"], refs),
+    )
+    response: dict[str, Any] = {
+        "status": "ok",
+        "session_id": actual_session_id,
+        "model": model,
+        "route": route,
+        "answer": str(result.get("answer", "")),
+        "plan": result.get("plan") if isinstance(result.get("plan"), list) else [],
+        "attachment_summaries": [attachment_summary(x) for x in attachments],
+        "selected_project_paths": selected_project_paths,
+        "web_results": web_results,
+        "agents_used": ["coder_agent", "reflection_v2"],
+        "code_suggestion": {
+            "target_path": str(result.get("target_path") or target["project_path"]),
+            "updated_content": str(result.get("updated_content") or ""),
+            "notes": str(result.get("notes") or ""),
+        },
+    }
+    session["messages"].append({"role": "user", "content": message, "ts": time.time()})
+    session["messages"].append({"role": "assistant", "content": response["answer"], "ts": time.time(), "route": route})
+    return response, route
+
+
+# ---------------------------------------------------------------------------
 # High-level execution
 # ---------------------------------------------------------------------------
 
@@ -386,50 +454,11 @@ def execute_chat_send(
     session = CHAT_SESSIONS.setdefault(actual_session_id, {"messages": []})
 
     if route["mode"] == "code":
-        target = next(
-            (item for item in attachments if item.get("source") == "project" and item.get("project_path")),
-            None,
+        response, route = _handle_code_mode(
+            message, model, selected_project_paths, attachments,
+            actual_session_id, route, session, web_results,
         )
-        if target is None and selected_project_paths:
-            try:
-                full_path, rel_path = resolve_project_file(selected_project_paths[0])
-                content, _, _ = read_text_file(full_path)
-                target = {"project_path": str(rel_path).replace("\\", "/"), "text": content}
-            except HTTPException:
-                target = None
-
-        if target is None:
-            route = {"mode": "analyze", "reason": "no project file attached for code mode"}
-        else:
-            refs = read_reference_context(selected_project_paths, selected_path=target["project_path"])
-            system_prompt = (
-                "You are Elira coder agent. Return JSON only with keys: answer, plan, target_path, "
-                "updated_content, notes. updated_content must contain the full replacement file content "
-                "for target_path. Do not return markdown."
-            )
-            result = call_ollama_json(
-                model, system_prompt,
-                build_code_prompt(message, target["project_path"], target["text"], refs),
-            )
-            response: dict[str, Any] = {
-                "status": "ok",
-                "session_id": actual_session_id,
-                "model": model,
-                "route": route,
-                "answer": str(result.get("answer", "")),
-                "plan": result.get("plan") if isinstance(result.get("plan"), list) else [],
-                "attachment_summaries": [attachment_summary(x) for x in attachments],
-                "selected_project_paths": selected_project_paths,
-                "web_results": web_results,
-                "agents_used": ["coder_agent", "reflection_v2"],
-                "code_suggestion": {
-                    "target_path": str(result.get("target_path") or target["project_path"]),
-                    "updated_content": str(result.get("updated_content") or ""),
-                    "notes": str(result.get("notes") or ""),
-                },
-            }
-            session["messages"].append({"role": "user", "content": message, "ts": time.time()})
-            session["messages"].append({"role": "assistant", "content": response["answer"], "ts": time.time(), "route": route})
+        if response is not None:
             return response
 
     system_prompt = (
