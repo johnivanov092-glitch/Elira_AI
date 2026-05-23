@@ -9,11 +9,23 @@ from typing import Any
 from app.core.data_files import DATA_DIR
 from app.core.web import get_web_engine_status
 from app.infrastructure.db.elira_memory_sqlite import DB_PATH, count_chats, init_db
-from app.application.persona.persona_service import get_persona_status
 
 
 ROOT_DATA_DIR = DATA_DIR.resolve()
 ACTIVE_DB_PATH = Path(DB_PATH).resolve()
+
+
+def _active_persona_version() -> int:
+    try:
+        conn = sqlite3.connect(str(ACTIVE_DB_PATH))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT version FROM persona_versions WHERE status = 'active' ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        return int(row["version"]) if row else 1
+    except sqlite3.Error:
+        return 1
 
 
 def init_runtime_state() -> dict[str, Any]:
@@ -36,7 +48,6 @@ def _chat_count_for(path: Path) -> int:
 
 def get_runtime_status() -> dict[str, Any]:
     init_db()
-    persona_status = get_persona_status()
     web_status = get_web_engine_status()
     active_chat_count = _chat_count_for(ACTIVE_DB_PATH)
     warnings = list(web_status.get("warnings", []))
@@ -51,7 +62,7 @@ def get_runtime_status() -> dict[str, Any]:
         "active_db_path": str(ACTIVE_DB_PATH),
         "active_chat_count": active_chat_count,
         "storage_mode": _storage_mode(),
-        "persona_version": int(persona_status.get("active_version", 1) or 1),
+        "persona_version": _active_persona_version(),
         "backend_origin": str((ROOT_DATA_DIR.parent / "backend").resolve()),
         "primary_engine": web_status.get("primary_engine"),
         "fallback_engines": web_status.get("fallback_engines", []),
