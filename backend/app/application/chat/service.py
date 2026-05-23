@@ -12,8 +12,6 @@ import time as _time
 from typing import Any
 
 from app.application.chat.auto_skills import (
-    _FILE_TRIGGERS_EXCEL,
-    _FILE_TRIGGERS_WORD,
     _build_prompt,
     _get_and_clear_attachments,
     _maybe_generate_files,

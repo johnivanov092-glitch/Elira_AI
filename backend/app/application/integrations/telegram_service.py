@@ -9,14 +9,12 @@ telegram_service.py — Telegram-бот интеграция Elira AI.
 """
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import threading
 import time
 import re
 from datetime import datetime
-from typing import Any
 
 import requests
 

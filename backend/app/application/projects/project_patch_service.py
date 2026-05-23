@@ -7,9 +7,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import shutil
 import time
-from pathlib import Path
 from typing import Any
 
 from app.infrastructure.files.project_service import BASE_DIR, read_project_file, write_project_file

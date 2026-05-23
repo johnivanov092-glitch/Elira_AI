@@ -4,7 +4,6 @@ Extracted from services/skills_service.py.  services/skills_service.py is now a
 thin re-export facade; all logic lives here.
 """
 from __future__ import annotations
-import io
 import json
 import logging
 import sqlite3

@@ -241,7 +241,6 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
         import app.application.chat.service as _svc
         import app.application.chat.stream_service as _ssvc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(_ssvc, "_collect_context", return_value=""), \
              patch.object(_ssvc, "run_chat_stream", return_value=iter(["hello", " world"])), \
              patch.object(_ssvc, "observe_dialogue", return_value={"ok": True}), \
              patch.object(_ssvc, "_get_and_clear_attachments", return_value=""), \

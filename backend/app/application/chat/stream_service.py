@@ -25,28 +25,23 @@ from app.application.chat.prompt_builder import (
 )
 from app.application.chat.service import (
     _HISTORY,
-    _HAS_RAG,
     _REFLECTION_ROUTES,
     _apply_identity_guard,
     _apply_provenance_guard,
-    _collect_context,
     _emit_agent_os_event,
     _gather_run_context,
-    _get_memory_recall_limits,
     _handle_chat_run_failure,
     _record_agent_os_monitoring,
     _resolve_plan_and_tools,
     _setup_chat_agent_run,
-    _should_recall_memory_context,
     _tl,
-    get_rag_context,
 )
 from app.application.monitoring.agent_sandbox import preflight_or_raise
 from app.application.chat.chat_service import run_chat_stream
 from app.application.persona.persona_service import observe_dialogue
 from app.application.agents.reflection_loop_service import run_reflection_loop
 from app.infrastructure.cache.response_cache import get_cached, set_cached, should_cache
-from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
+from app.application.memory.smart_memory import extract_and_save
 
 
 

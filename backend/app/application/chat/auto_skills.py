@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
 
 from app.application.chat.prompt_builder import build_runtime_datetime_context
 from app.application.skills.skills_extra import (

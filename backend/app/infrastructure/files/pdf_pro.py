@@ -19,7 +19,6 @@ from __future__ import annotations
 import io
 import logging
 import time
-from typing import Any
 
 from app.core.config import GENERATED_DIR
 
@@ -268,7 +267,6 @@ def pdf_to_word(data: bytes, filename: str = "") -> dict:
     try:
         from docx import Document
         from docx.shared import Pt
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
     except ImportError:
         return {"ok": False, "error": "pip install python-docx"}
 

@@ -18,7 +18,6 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
 
 from app.application.agents.agents_service import run_agent
 from app.application.workflows.engine import start_workflow_run

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
