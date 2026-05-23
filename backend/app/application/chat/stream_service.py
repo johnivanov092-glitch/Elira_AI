@@ -29,6 +29,7 @@ from app.application.chat.service import (
     _collect_context,
     _emit_agent_os_event,
     _get_memory_recall_limits,
+    _handle_chat_run_failure,
     _record_agent_os_monitoring,
     _resolve_plan_and_tools,
     _should_recall_memory_context,
@@ -189,6 +190,7 @@ def execute_chat_agent_stream(
             "streaming": True,
         },
     )
+    route, temporal, web_plan, selected, effective_model = "", {}, {}, [], model_name
     try:
         yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
 
@@ -417,31 +419,13 @@ def execute_chat_agent_stream(
             yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
 
     except Exception as exc:
-        _HISTORY.finish_run(run["run_id"], {"ok": False, "error": str(exc)})
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
-            run_id=run["run_id"],
-            route=locals().get("route", ""),
-            model_name=locals().get("effective_model", model_name),
-            ok=False,
-            duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-            streaming=True,
-            num_ctx=num_ctx,
-            selected_tools=locals().get("selected", []),
-        )
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
-            source_agent_id=_effective_agent_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": locals().get("route", ""),
-                "ok": False,
-                "model_used": locals().get("effective_model", model_name),
-                "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                "error": str(exc)[:500],
-                "session_id": str(session_id or ""),
-                "streaming": True,
-            },
+        _handle_chat_run_failure(
+            exc=exc, run=run, timeline=timeline, tool_results=tool_results,
+            _effective_agent_id=_effective_agent_id, _agent_os_source_id=_effective_agent_id,
+            _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
+            session_id=session_id, num_ctx=num_ctx, streaming=True,
+            tl_step={"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)},
+            route=route, effective_model=effective_model, selected=selected,
+            raw_user_input=raw_user_input,
         )
         yield {"token": "", "done": True, "error": str(exc), "full_text": ""}

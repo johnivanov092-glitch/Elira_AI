@@ -333,6 +333,90 @@ def _resolve_plan_and_tools(
     effective_model = pick_model_for_route(route, model_name)
     return route, temporal, web_plan, selected, effective_model
 
+
+def _handle_chat_run_failure(
+    *,
+    exc: Exception,
+    run: dict,
+    timeline: list,
+    tool_results: list,
+    _effective_agent_id: str,
+    _agent_os_source_id: str,
+    _agent_start: float,
+    model_name: str,
+    profile_name: str,
+    session_id,
+    num_ctx: int,
+    streaming: bool,
+    tl_step: dict,
+    extra_meta: dict | None = None,
+    agent_id: str | None = None,
+    _registry_agent: dict | None = None,
+    route: str = "",
+    effective_model: str | None = None,
+    selected: list | None = None,
+    raw_user_input: str = "",
+) -> dict:
+    """Build error result dict, finish run, record monitoring and emit completion event.
+
+    tl_step    – timeline entry to append (e.g. {"step": "sandbox", ...})
+    extra_meta – additional keys merged into meta (sandbox_reason / sandbox_details)
+    """
+    meta: dict = {"error": str(exc), "run_id": run["run_id"]}
+    if extra_meta:
+        meta.update(extra_meta)
+    err = {
+        "ok": False,
+        "answer": "",
+        "timeline": list(timeline) + [tl_step],
+        "tool_results": tool_results,
+        "meta": meta,
+    }
+    _HISTORY.finish_run(run["run_id"], err)
+    _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
+    _record_agent_os_monitoring(
+        agent_id=_effective_agent_id,
+        run_id=run["run_id"],
+        route=route,
+        model_name=effective_model or model_name,
+        ok=False,
+        duration_ms=_duration_ms,
+        streaming=streaming,
+        num_ctx=num_ctx,
+        selected_tools=selected or [],
+    )
+    if agent_id or _registry_agent:
+        try:
+            record_agent_run({
+                "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
+                "run_id": run["run_id"],
+                "input_summary": raw_user_input[:500],
+                "output_summary": str(exc)[:500],
+                "ok": False,
+                "route": "",
+                "model_used": effective_model or model_name,
+                "duration_ms": _duration_ms,
+            })
+        except Exception:
+            pass
+    _emit_agent_os_event(
+        event_type="agent.run.completed",
+        source_agent_id=_agent_os_source_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "route": route,
+            "ok": False,
+            "model_used": effective_model or model_name,
+            "duration_ms": _duration_ms,
+            "error": str(exc)[:500],
+            "session_id": str(session_id or ""),
+            "streaming": streaming,
+        },
+    )
+    return err
+
+
 # ─── execute_chat_agent (non-streaming) ──────────────────────────────────────
 
 
@@ -409,6 +493,7 @@ def execute_chat_agent(
             "streaming": False,
         },
     )
+    route, temporal, web_plan, selected, effective_model = "", {}, {}, [], model_name
     try:
         route, temporal, web_plan, selected, effective_model = _resolve_plan_and_tools(
             planner_input, run["run_id"], model_name,
@@ -519,96 +604,25 @@ def execute_chat_agent(
         )
 
     except SandboxPolicyError as exc:
-        err = {
-            "ok": False,
-            "answer": "",
-            "timeline": timeline + [{"step": "sandbox", "title": "Sandbox", "status": "error", "detail": str(exc)}],
-            "tool_results": tool_results,
-            "meta": {
-                "error": str(exc),
-                "run_id": run["run_id"],
-                "sandbox_reason": exc.reason,
-                "sandbox_details": exc.details,
-            },
-        }
-        _HISTORY.finish_run(run["run_id"], err)
-        _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
-            run_id=run["run_id"],
-            route=locals().get("route", ""),
-            model_name=locals().get("effective_model", model_name),
-            ok=False,
-            duration_ms=_duration_ms,
-            streaming=False,
-            num_ctx=num_ctx,
-            selected_tools=locals().get("selected", []),
+        return _handle_chat_run_failure(
+            exc=exc, run=run, timeline=timeline, tool_results=tool_results,
+            _effective_agent_id=_effective_agent_id, _agent_os_source_id=_agent_os_source_id,
+            _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
+            session_id=session_id, num_ctx=num_ctx, streaming=False,
+            tl_step={"step": "sandbox", "title": "Sandbox", "status": "error", "detail": str(exc)},
+            extra_meta={"sandbox_reason": exc.reason, "sandbox_details": exc.details},
+            route=route, effective_model=effective_model, selected=selected,
+            raw_user_input=raw_user_input,
         )
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
-            source_agent_id=_agent_os_source_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": locals().get("route", ""),
-                "ok": False,
-                "model_used": locals().get("effective_model", model_name),
-                "duration_ms": _duration_ms,
-                "error": str(exc)[:500],
-                "session_id": str(session_id or ""),
-                "streaming": False,
-            },
-        )
-        return err
 
     except Exception as exc:
-        err = {
-            "ok": False,
-            "answer": "",
-            "timeline": timeline + [{"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)}],
-            "tool_results": tool_results,
-            "meta": {"error": str(exc), "run_id": run["run_id"]},
-        }
-        _HISTORY.finish_run(run["run_id"], err)
-        _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-        _record_agent_os_monitoring(
-            agent_id=_effective_agent_id,
-            run_id=run["run_id"],
-            route=locals().get("route", ""),
-            model_name=locals().get("effective_model", model_name),
-            ok=False,
-            duration_ms=_duration_ms,
-            streaming=False,
-            num_ctx=num_ctx,
-            selected_tools=locals().get("selected", []),
+        return _handle_chat_run_failure(
+            exc=exc, run=run, timeline=timeline, tool_results=tool_results,
+            _effective_agent_id=_effective_agent_id, _agent_os_source_id=_agent_os_source_id,
+            _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
+            session_id=session_id, num_ctx=num_ctx, streaming=False,
+            tl_step={"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)},
+            agent_id=agent_id, _registry_agent=_registry_agent,
+            route=route, effective_model=effective_model, selected=selected,
+            raw_user_input=raw_user_input,
         )
-        if agent_id or _registry_agent:
-            try:
-                record_agent_run({
-                    "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-                    "run_id": run["run_id"],
-                    "input_summary": (raw_user_input if "raw_user_input" in dir() else user_input)[:500],
-                    "output_summary": str(exc)[:500],
-                    "ok": False,
-                    "route": "",
-                    "model_used": model_name,
-                    "duration_ms": _duration_ms,
-                })
-            except Exception:
-                pass
-        _emit_agent_os_event(
-            event_type="agent.run.completed",
-            source_agent_id=_agent_os_source_id,
-            payload={
-                "run_id": run["run_id"],
-                "profile_name": profile_name,
-                "route": locals().get("route", ""),
-                "ok": False,
-                "model_used": locals().get("effective_model", model_name),
-                "duration_ms": _duration_ms,
-                "error": str(exc)[:500],
-                "session_id": str(session_id or ""),
-                "streaming": False,
-            },
-        )
-        return err
