@@ -405,6 +405,40 @@ def _default_single_query(query: str, temporal: dict[str, Any], geo: dict[str, s
     }
 
 
+def _build_multi_pass_result(
+    kept: list[dict[str, Any]],
+    dropped: list[dict[str, Any]],
+    overall_geo: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize subquery list, paginate into passes, and assemble the plan result dict."""
+    normalized_subqueries: list[dict[str, Any]] = []
+    for item in kept:
+        payload = dict(item)
+        payload.pop("_segment", None)
+        payload.pop("_original_index", None)
+        normalized_subqueries.append(payload)
+    passes = [
+        {
+            "name": f"pass_{pass_index + 1}",
+            "subqueries": normalized_subqueries[offset : offset + PASS_SIZE],
+        }
+        for pass_index, offset in enumerate(range(0, len(normalized_subqueries), PASS_SIZE))
+    ]
+    freshness_class = "current" if any(item["freshness_class"] == "current" for item in normalized_subqueries) else "stable"
+    uncovered = [item["query"] for item in dropped]
+    return {
+        "is_multi_intent": len(normalized_subqueries) > 1,
+        "geo_scope": overall_geo.get("scope", ""),
+        "freshness_class": freshness_class,
+        "total_subqueries": len(normalized_subqueries),
+        "pass_count": len(passes),
+        "overflow_applied": len(normalized_subqueries) > PASS_SIZE,
+        "passes": passes,
+        "subqueries": normalized_subqueries,
+        "uncovered_subqueries": uncovered,
+    }
+
+
 def plan_web_query(user_input: str, temporal: dict[str, Any] | None = None) -> dict[str, Any]:
     temporal = temporal or {}
     query = (user_input or "").strip()
@@ -438,35 +472,4 @@ def plan_web_query(user_input: str, temporal: dict[str, Any] | None = None) -> d
         merged_candidates,
         key=lambda item: (-int(item.get("priority", 0)), int(item.get("_original_index", 0))),
     )
-
-    kept = ordered[:MAX_SUBQUERIES]
-    dropped = ordered[MAX_SUBQUERIES:]
-    normalized_subqueries: list[dict[str, Any]] = []
-    for item in kept:
-        payload = dict(item)
-        payload.pop("_segment", None)
-        payload.pop("_original_index", None)
-        normalized_subqueries.append(payload)
-
-    passes = [
-        {
-            "name": f"pass_{pass_index + 1}",
-            "subqueries": normalized_subqueries[offset : offset + PASS_SIZE],
-        }
-        for pass_index, offset in enumerate(range(0, len(normalized_subqueries), PASS_SIZE))
-    ]
-
-    freshness_class = "current" if any(item["freshness_class"] == "current" for item in normalized_subqueries) else "stable"
-    uncovered = [item["query"] for item in dropped]
-
-    return {
-        "is_multi_intent": len(normalized_subqueries) > 1,
-        "geo_scope": overall_geo.get("scope", ""),
-        "freshness_class": freshness_class,
-        "total_subqueries": len(normalized_subqueries),
-        "pass_count": len(passes),
-        "overflow_applied": len(normalized_subqueries) > PASS_SIZE,
-        "passes": passes,
-        "subqueries": normalized_subqueries,
-        "uncovered_subqueries": uncovered,
-    }
+    return _build_multi_pass_result(ordered[:MAX_SUBQUERIES], ordered[MAX_SUBQUERIES:], overall_geo)

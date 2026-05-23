@@ -70,6 +70,30 @@ def _set_plugin_config(name: str, data: dict):
 # ЗАГРУЗКА / ПЕРЕЗАГРУЗКА
 # ═══════════════════════════════════════════════════════════════
 
+def _build_plugin_record(name: str, mod, py_file, config: dict) -> dict:
+    """Build the _plugins registry entry for a loaded plugin module."""
+    triggers = getattr(mod, "TRIGGERS", [])
+    hooks = getattr(mod, "HOOKS", {})
+    default_config = getattr(mod, "CONFIG", {})
+    plugin_conf = config.get(name, {})
+    enabled = plugin_conf.get("enabled", True)
+    user_settings = plugin_conf.get("settings", {})
+    return {
+        "module": mod,
+        "path": str(py_file),
+        "description": getattr(mod, "DESCRIPTION", ""),
+        "author": getattr(mod, "AUTHOR", ""),
+        "version": getattr(mod, "VERSION", "1.0"),
+        "category": getattr(mod, "CATEGORY", "utility"),
+        "icon": getattr(mod, "ICON", "🔌"),
+        "triggers": triggers if isinstance(triggers, list) else [],
+        "hooks": hooks if isinstance(hooks, dict) else {},
+        "default_config": default_config,
+        "user_settings": {**default_config, **user_settings},
+        "enabled": enabled,
+    }
+
+
 def load_plugins() -> dict:
     """Загружает все плагины из data/plugins/."""
     global _plugins, _plugin_states
@@ -91,37 +115,12 @@ def load_plugins() -> dict:
                 errors.append({"name": name, "error": "Нет функции run(args)"})
                 continue
 
-            # Извлекаем метаданные
-            triggers = getattr(mod, "TRIGGERS", [])
-            hooks = getattr(mod, "HOOKS", {})
-            default_config = getattr(mod, "CONFIG", {})
-            category = getattr(mod, "CATEGORY", "utility")
-            icon = getattr(mod, "ICON", "🔌")
-
-            # Состояние включения (из конфига, по умолчанию — включён)
-            plugin_conf = config.get(name, {})
-            enabled = plugin_conf.get("enabled", True)
-            user_settings = plugin_conf.get("settings", {})
-
-            _plugins[name] = {
-                "module": mod,
-                "path": str(py_file),
-                "description": getattr(mod, "DESCRIPTION", ""),
-                "author": getattr(mod, "AUTHOR", ""),
-                "version": getattr(mod, "VERSION", "1.0"),
-                "category": category,
-                "icon": icon,
-                "triggers": triggers if isinstance(triggers, list) else [],
-                "hooks": hooks if isinstance(hooks, dict) else {},
-                "default_config": default_config,
-                "user_settings": {**default_config, **user_settings},
-                "enabled": enabled,
-            }
-            _plugin_states[name] = enabled
+            _plugins[name] = _build_plugin_record(name, mod, py_file, config)
+            _plugin_states[name] = _plugins[name]["enabled"]
             loaded.append(name)
 
             # Вызываем on_start хук если есть
-            if enabled and hasattr(mod, "on_start") and callable(mod.on_start):
+            if _plugins[name]["enabled"] and hasattr(mod, "on_start") and callable(mod.on_start):
                 try:
                     mod.on_start()
                 except Exception as e:

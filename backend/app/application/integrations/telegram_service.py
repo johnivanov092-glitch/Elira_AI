@@ -278,6 +278,30 @@ def test_telegram_connection() -> dict:
 # ОБРАБОТКА СООБЩЕНИЙ
 # ═══════════════════════════════════════════════════════════════
 
+def _run_llm_for_telegram(token: str, chat_id: int, text: str) -> None:
+    """Call the LLM with current bot config and send the answer to chat_id."""
+    _send_typing(token, chat_id)
+    try:
+        model = _get_config("model", "")
+        profile = _get_config("profile", "Универсальный")
+        use_memory = _get_config("use_memory", "true") == "true"
+        use_web = _get_config("use_web_search", "false") == "true"
+        result = run_agent(
+            model_name=model or "gemma3:4b",
+            profile_name=profile,
+            user_input=text,
+            use_memory=use_memory,
+            use_web_search=use_web,
+        )
+        answer = result.get("answer", "Не удалось получить ответ 😔")
+        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
+        _log_message(chat_id, "out", answer)
+        _send_message(token, chat_id, answer)
+    except Exception as e:
+        logger.error(f"TG process error: {e}")
+        _send_message(token, chat_id, f"⚠️ Ошибка: {str(e)[:200]}", "")
+
+
 def _process_message(token: str, message: dict):
     """Обрабатывает входящее сообщение."""
     chat = message.get("chat", {})
@@ -309,35 +333,7 @@ def _process_message(token: str, message: dict):
         _handle_command(token, chat_id, text)
         return
 
-    # Показываем "печатает..."
-    _send_typing(token, chat_id)
-
-    # Генерируем ответ через LLM
-    try:
-        model = _get_config("model", "")
-        profile = _get_config("profile", "Универсальный")
-        use_memory = _get_config("use_memory", "true") == "true"
-        use_web = _get_config("use_web_search", "false") == "true"
-
-        result = run_agent(
-            model_name=model or "gemma3:4b",
-            profile_name=profile,
-            user_input=text,
-            use_memory=use_memory,
-            use_web_search=use_web,
-        )
-        answer = result.get("answer", "Не удалось получить ответ 😔")
-
-        # Убираем HTML-теги и <think> блоки
-        answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
-
-        # Логируем и отправляем
-        _log_message(chat_id, "out", answer)
-        _send_message(token, chat_id, answer)
-
-    except Exception as e:
-        logger.error(f"TG process error: {e}")
-        _send_message(token, chat_id, f"⚠️ Ошибка: {str(e)[:200]}", "")
+    _run_llm_for_telegram(token, chat_id, text)
 
 
 def _handle_command(token: str, chat_id: int, text: str):
