@@ -115,21 +115,22 @@ def _default_tl(timeline: list, step: str, title: str, status: str, detail: str)
 
 
 # ---------------------------------------------------------------------------
-# Single subquery context builder
+# Single subquery context builder – private helpers
 # ---------------------------------------------------------------------------
 
 
-def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
-    """Execute a single web sub-query and return context + debug info."""
-    query = subquery.get("query", "")
-    label = subquery.get("label", "Поиск")
-    intent_kind = subquery.get("intent_kind", "")
-    geo_scope = subquery.get("geo_scope", "")
-    local_first = bool(subquery.get("local_first"))
-    needs_news_feed = bool(subquery.get("needs_news_feed"))
-    needs_deep_search = bool(subquery.get("needs_deep_search"))
-    preferred_domains = tuple(subquery.get("preferred_domains", []) or [])
+def _search_and_fetch_pages(
+    query: str,
+    intent_kind: str,
+    geo_scope: str,
+    local_first: bool,
+    preferred_domains: tuple,
+    needs_news_feed: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str], set[str]]:
+    """Run web search, optional news search, and fetch top result pages.
 
+    Returns (normalized_search, news_results, deep_content, fetched_urls).
+    """
     search_results = core_search(
         query,
         max_results=6,
@@ -190,6 +191,24 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
             deep_content.append("--- " + item["title"] + " ---\n" + text)
             fetched_urls.add(item["url"])
 
+    return normalized_search, news_results, deep_content, fetched_urls
+
+
+def _check_coverage_and_deepen(
+    normalized_search: list[dict[str, Any]],
+    news_results: list[dict[str, Any]],
+    preferred_domains: tuple,
+    needs_news_feed: bool,
+    needs_deep_search: bool,
+    query: str,
+    intent_kind: str,
+    geo_scope: str,
+    local_first: bool,
+) -> tuple[int, str, bool]:
+    """Assess result coverage; optionally run deep multi-engine research.
+
+    Returns (local_source_hits, deep_context, deeper_search_was_used).
+    """
     local_source_hits = count_hits_for_domains(
         [{"href": item.get("url", "")} for item in normalized_search + news_results],
         preferred_domains,
@@ -199,28 +218,37 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
         or (needs_news_feed and not news_results)
         or (local_first and preferred_domains and local_source_hits == 0)
     )
+    if not (needs_deep_search and weak_coverage):
+        return local_source_hits, "", False
+    deep_engines = (
+        ("wikipedia", "tavily", "duckduckgo")
+        if intent_kind == "historical"
+        else ("tavily", "duckduckgo", "wikipedia")
+    )
+    deep_context = research_web(
+        query,
+        max_results=6,
+        pages_to_read=3,
+        engines=deep_engines,
+        intent_kind=intent_kind,
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+    )
+    return local_source_hits, deep_context, bool(deep_context)
 
-    deeper_search = False
-    deep_context = ""
-    if needs_deep_search and weak_coverage:
-        deep_engines = (
-            ("wikipedia", "tavily", "duckduckgo")
-            if intent_kind == "historical"
-            else ("tavily", "duckduckgo", "wikipedia")
-        )
-        deep_context = research_web(
-            query,
-            max_results=6,
-            pages_to_read=3,
-            engines=deep_engines,
-            intent_kind=intent_kind,
-            geo_scope=geo_scope,
-            local_first=local_first,
-            preferred_domains=preferred_domains,
-        )
-        deeper_search = bool(deep_context)
 
-    parts = [f"=== ПОДТЕМА: {label} ===", f"Запрос: {query}"]
+def _assemble_subquery_context_parts(
+    label: str,
+    query: str,
+    normalized_search: list[dict[str, Any]],
+    news_results: list[dict[str, Any]],
+    deep_content: list[str],
+    fetched_urls: set[str],
+    deep_context: str,
+) -> list[str]:
+    """Build the ordered list of formatted text sections for a subquery."""
+    parts: list[str] = [f"=== ПОДТЕМА: {label} ===", f"Запрос: {query}"]
     if deep_content:
         parts.append("СОДЕРЖИМОЕ ВЕБ-СТРАНИЦ:\n" + "\n\n".join(deep_content))
     if news_results:
@@ -230,17 +258,43 @@ def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any
             source_str = f" ({item['source']})" if item.get("source") else ""
             lines.append(f"- {item['title']}{date_str}{source_str}: {item['snippet']}")
         parts.append("СВЕЖИЕ НОВОСТИ:\n" + "\n".join(lines))
-
     remaining = [item for item in normalized_search if item["url"] not in fetched_urls][:4]
     if remaining:
         lines = [f"- {item['title']}: {item['snippet']}" for item in remaining]
         parts.append("ОСТАЛЬНЫЕ РЕЗУЛЬТАТЫ:\n" + "\n".join(lines))
-
     if deep_context:
         parts.append("УГЛУБЛЕННЫЙ ПОИСК:\n" + deep_context)
-
     if not normalized_search and not news_results and not deep_context:
         parts.append("Недостаточно свежих подтвержденных данных по этой подтеме.")
+    return parts
+
+
+# ---------------------------------------------------------------------------
+# Single subquery context builder
+# ---------------------------------------------------------------------------
+
+
+def build_single_web_subquery_context(subquery: dict[str, Any]) -> dict[str, Any]:
+    """Execute a single web sub-query and return context + debug info."""
+    query = subquery.get("query", "")
+    label = subquery.get("label", "Поиск")
+    intent_kind = subquery.get("intent_kind", "")
+    geo_scope = subquery.get("geo_scope", "")
+    local_first = bool(subquery.get("local_first"))
+    needs_news_feed = bool(subquery.get("needs_news_feed"))
+    needs_deep_search = bool(subquery.get("needs_deep_search"))
+    preferred_domains = tuple(subquery.get("preferred_domains", []) or [])
+
+    normalized_search, news_results, deep_content, fetched_urls = _search_and_fetch_pages(
+        query, intent_kind, geo_scope, local_first, preferred_domains, needs_news_feed,
+    )
+    local_source_hits, deep_context, deeper_search = _check_coverage_and_deepen(
+        normalized_search, news_results, preferred_domains, needs_news_feed, needs_deep_search,
+        query, intent_kind, geo_scope, local_first,
+    )
+    parts = _assemble_subquery_context_parts(
+        label, query, normalized_search, news_results, deep_content, fetched_urls, deep_context,
+    )
 
     engines_used = sorted({
         item.get("engine", "")
