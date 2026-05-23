@@ -17,10 +17,10 @@ COMPONENTS_ROOT = FRONTEND_ROOT / "components"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.core.memory import vector_memory_capability_status  # noqa: E402
+from app.infrastructure.db.memory import vector_memory_capability_status  # noqa: E402
 from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES  # noqa: E402
 from app.main import app  # noqa: E402
-from app.services.skills_service import screenshot_capability_status  # noqa: E402
+from app.application.skills.skills_service import screenshot_capability_status  # noqa: E402
 
 
 REQUIRED_PATHS = {

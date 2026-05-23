@@ -17,9 +17,12 @@ try:
 except ImportError:  # pragma: no cover - compatibility fallback
     from duckduckgo_search import DDGS
 
-from .files import truncate_text
-
 logger = logging.getLogger(__name__)
+
+
+def truncate_text(text: str, max_chars: int = 12000) -> str:
+    text = (text or "").strip()
+    return text if len(text) <= max_chars else text[:max_chars] + "\n\n[Текст обрезан]"
 
 
 SUPPORTED_SEARCH_ENGINES = ("tavily", "duckduckgo", "wikipedia")
@@ -167,13 +170,6 @@ def _rerank_results(
             str(item.get("title", "")).strip().lower(),
         ),
     )
-
-
-def count_preferred_domain_hits(results: Iterable[Dict[str, str]], preferred_domains: Iterable[str] | None = None) -> int:
-    preferred = tuple(preferred_domains or ())
-    if not preferred:
-        return 0
-    return sum(1 for item in results if _domain_matches(_extract_domain(item.get("href", "")), preferred))
 
 
 def _dedupe_results(results: Iterable[Dict[str, str]], max_results: int | None = None) -> List[Dict[str, str]]:
@@ -477,6 +473,50 @@ def _tavily_research(query: str, max_results: int) -> List[Dict[str, str]]:
         return []
 
 
+def _fetch_research_pages(
+    advanced_items: list[Dict[str, str]],
+    to_fetch: list[Dict[str, str]],
+) -> Dict[str, str]:
+    """Build url→text map: use Tavily raw_content first, then parallel HTTP fetch for the rest."""
+    page_texts: Dict[str, str] = {
+        item["href"]: item["raw_content"]
+        for item in advanced_items
+        if item.get("raw_content") and item.get("href")
+    }
+    remaining = [item for item in to_fetch if item.get("href") not in page_texts]
+    if remaining:
+        with ThreadPoolExecutor(max_workers=min(len(remaining), 5)) as executor:
+            future_map = {executor.submit(fetch_page_text, item["href"]): item["href"] for item in remaining}
+            for future in as_completed(future_map):
+                href = future_map[future]
+                try:
+                    page_texts[href] = future.result()
+                except Exception as exc:
+                    page_texts[href] = f"Ошибка: {exc}"
+    return page_texts
+
+
+def _format_research_output(
+    merged_results: list[Dict[str, str]],
+    page_texts: Dict[str, str],
+    pages_to_read: int,
+) -> str:
+    """Render per-source sections and truncate to 22 000 chars."""
+    parts = ["Результаты веб-исследования:"]
+    for index, item in enumerate(merged_results[:pages_to_read], start=1):
+        href = item.get("href", "")
+        parts.extend([
+            f"\n=== Источник {index} ===",
+            f"Поисковик: {ENGINE_LABELS.get(item.get('engine', ''), item.get('engine', '') or '-')}",
+            f"Заголовок: {item.get('title', '')}",
+            f"Ссылка: {href}",
+            f"Описание: {item.get('body', '')}",
+        ])
+        if href and href in page_texts:
+            parts.extend(["Текст страницы:", page_texts[href]])
+    return truncate_text("\n".join(parts), 22000)
+
+
 def research_web(
     query: str,
     max_results: int = 5,
@@ -494,58 +534,16 @@ def research_web(
         advanced_items = _tavily_research(query, max_results=min(max_results, pages_to_read))
 
     merged_results = _dedupe_results(
-        [
-            *advanced_items,
-            *search_web(
-                query,
-                max_results=max_results,
-                engines=engine_list,
-                intent_kind=intent_kind,
-                geo_scope=geo_scope,
-                local_first=local_first,
-                preferred_domains=preferred_domains,
-            ),
-        ],
+        [*advanced_items, *search_web(query, max_results=max_results, engines=engine_list,
+                                       intent_kind=intent_kind, geo_scope=geo_scope,
+                                       local_first=local_first, preferred_domains=preferred_domains)],
         max_results=max(max_results, pages_to_read * max(1, len(engine_list))),
     )
     merged_results = _rerank_results(
-        merged_results,
-        intent_kind=intent_kind,
-        geo_scope=geo_scope,
-        local_first=local_first,
-        preferred_domains=preferred_domains,
+        merged_results, intent_kind=intent_kind, geo_scope=geo_scope,
+        local_first=local_first, preferred_domains=preferred_domains,
     )[:max_results]
+
     to_fetch = [item for item in merged_results[:pages_to_read] if item.get("href")]
-
-    page_texts: Dict[str, str] = {}
-    for item in advanced_items:
-        if item.get("raw_content"):
-            page_texts[item["href"]] = item["raw_content"]
-
-    remaining = [item for item in to_fetch if item.get("href") not in page_texts]
-    if remaining:
-        with ThreadPoolExecutor(max_workers=min(len(remaining), 5)) as executor:
-            future_map = {executor.submit(fetch_page_text, item["href"]): item["href"] for item in remaining}
-            for future in as_completed(future_map):
-                href = future_map[future]
-                try:
-                    page_texts[href] = future.result()
-                except Exception as exc:
-                    page_texts[href] = f"Ошибка: {exc}"
-
-    parts = ["Результаты веб-исследования:"]
-    for index, item in enumerate(merged_results[:pages_to_read], start=1):
-        href = item.get("href", "")
-        parts.extend(
-            [
-                f"\n=== Источник {index} ===",
-                f"Поисковик: {ENGINE_LABELS.get(item.get('engine', ''), item.get('engine', '') or '-')}",
-                f"Заголовок: {item.get('title', '')}",
-                f"Ссылка: {href}",
-                f"Описание: {item.get('body', '')}",
-            ]
-        )
-        if href and href in page_texts:
-            parts.extend(["Текст страницы:", page_texts[href]])
-
-    return truncate_text("\n".join(parts), 22000)
+    page_texts = _fetch_research_pages(advanced_items, to_fetch)
+    return _format_research_output(merged_results, page_texts, pages_to_read)

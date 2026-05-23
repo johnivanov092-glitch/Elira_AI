@@ -50,9 +50,8 @@ def _build_project_context_from_tools(
 
 
 def _build_project_context_from_open_project() -> str:
-    # TODO: move this state lookup out of the API route module during route consolidation.
     try:
-        from app.api.routes.advanced_routes import _project_path
+        from app.application.projects.project_explorer import _project_path
 
         if not _project_path:
             return ""

@@ -12,7 +12,7 @@ from app.schemas.workflow import (
     WorkflowTemplateCreate,
     WorkflowTemplateUpdate,
 )
-from app.services import workflow_engine
+import app.application.workflows.engine as workflow_engine
 
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])

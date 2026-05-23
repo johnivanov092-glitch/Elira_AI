@@ -2,15 +2,14 @@
 skills_routes.py — API скиллов: генерация файлов, SQL, HTTP, скриншоты.
 """
 from __future__ import annotations
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.core.config import GENERATED_DIR
-from app.services.skills_service import (
+from app.application.skills.skills_service import (
     generate_word, generate_excel,
     run_sql, list_databases, describe_db,
     http_request, screenshot_url,

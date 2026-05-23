@@ -3,24 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.elira_state import router as elira_state_router
 from app.api.routes.project_brain import router as project_brain_router
-from app.api.routes.elira_execute import router as elira_execute_router
 from app.api.routes.elira_patch import router as elira_patch_router
-from app.api.routes.elira_devtools import router as elira_devtools_router
-from app.api.routes.elira_task_runner import router as elira_task_runner_router
-from app.api.routes.elira_supervisor import router as elira_supervisor_router
-from app.api.routes.elira_phase19 import router as elira_phase19_router
-from app.api.routes.elira_phase20 import router as elira_phase20_router
-from app.api.routes.elira_phase20_queue import router as elira_phase20_queue_router
-from app.api.routes.elira_phase20_state import router as elira_phase20_state_router
-from app.api.routes.elira_phase21 import router as elira_phase21_router
-from app.api.routes.elira_stabilization import router as elira_stabilization_router
 
 from app.api.routes.chat import router as chat_router
-from app.api.routes.models import router as models_router
 from app.api.routes.memory import router as memory_router
-from app.api.routes.library import router as library_router
-from app.api.routes.profiles import router as profiles_router
-from app.api.routes.agents import router as agents_router
 from app.api.routes.files import router as files_router
 from app.api.routes.persona import router as persona_router
 from app.api.routes.runtime import router as runtime_router
@@ -33,9 +19,7 @@ from app.api.routes.library_sqlite import router as library_sqlite_router
 from app.api.routes.advanced_routes import router as advanced_router
 from app.api.routes.skills_routes import router as skills_router
 from app.api.routes.skills_extra_routes import router as skills_extra_router
-from app.api.routes.image_routes import router as image_router
 from app.api.routes.git_routes import router as git_router
-from app.api.routes.web_search_routes import router as web_search_router
 from app.api.routes.dashboard_routes import router as dashboard_router
 from app.api.routes.autopipeline_routes import router as autopipeline_router
 from app.api.routes.task_planner_routes import router as task_planner_router
@@ -45,12 +29,17 @@ from app.api.routes.event_bus_routes import router as event_bus_router
 from app.api.routes.workflow_routes import router as workflow_router
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router
 from app.api.routes.tool_registry_routes import router as tool_registry_router
-from app.services.runtime_service import init_runtime_state
+from app.api.routes.web_routes import router as web_router
+from app.infrastructure.runtime.runtime_service import init_runtime_state
+from app.application.agents.agent_registry import seed_builtin_agents
+from app.application.workflows.engine import seed_builtin_workflows
+from app.application.monitoring.agent_monitor import seed_default_limits
+from app.application.tools.tool_registry import seed_builtin_tools
 
 app = FastAPI(title="Elira AI API")
 
-# CORS: localhost + LAN (РґР»СЏ mobile mode).
-# Regex РїРѕРєСЂС‹РІР°РµС‚: 127.0.0.1, localhost, Рё Р»СЋР±РѕР№ LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+# CORS: localhost + LAN (for mobile mode).
+# Regex covers: 127.0.0.1, localhost, and any LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -69,24 +58,10 @@ app.add_middleware(
 
 app.include_router(elira_state_router)
 app.include_router(project_brain_router)
-app.include_router(elira_execute_router)
 app.include_router(elira_patch_router)
-app.include_router(elira_devtools_router)
-app.include_router(elira_task_runner_router)
-app.include_router(elira_supervisor_router)
-app.include_router(elira_phase19_router)
-app.include_router(elira_phase20_router)
-app.include_router(elira_phase20_queue_router)
-app.include_router(elira_phase20_state_router)
-app.include_router(elira_phase21_router)
-app.include_router(elira_stabilization_router)
 
 app.include_router(chat_router)
-app.include_router(models_router)
 app.include_router(memory_router)
-app.include_router(library_router)
-app.include_router(profiles_router)
-app.include_router(agents_router)
 app.include_router(files_router)
 app.include_router(persona_router)
 app.include_router(runtime_router)
@@ -99,9 +74,7 @@ app.include_router(library_sqlite_router)
 app.include_router(advanced_router)
 app.include_router(skills_router)
 app.include_router(skills_extra_router)
-app.include_router(image_router)
 app.include_router(git_router)
-app.include_router(web_search_router)
 app.include_router(dashboard_router)
 app.include_router(autopipeline_router)
 app.include_router(task_planner_router)
@@ -111,19 +84,14 @@ app.include_router(event_bus_router)
 app.include_router(workflow_router)
 app.include_router(agent_monitor_router)
 app.include_router(tool_registry_router)
+app.include_router(web_router)
 
 init_runtime_state()
-
-# Seed встроенных агентов в Agent Registry при старте
-from app.services.agent_registry import seed_builtin_agents
-from app.services.workflow_engine import seed_builtin_workflows
-from app.services.agent_monitor import seed_default_limits
 seed_builtin_agents()
 seed_builtin_workflows()
 seed_default_limits()
-
-from app.services.tool_registry import seed_builtin_tools
 seed_builtin_tools()
+
 
 @app.get("/health")
 def health():

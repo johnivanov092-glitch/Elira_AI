@@ -9,7 +9,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.services.agents_service import run_agent, run_agent_stream
+from app.application.agents.agents_service import run_agent, run_agent_stream
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 

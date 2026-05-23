@@ -16,13 +16,18 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import app.application.agents.agent_registry as _ar  # noqa: E402
+import app.application.event_bus as _eb  # noqa: E402
+import app.application.monitoring.agent_monitor as _am  # noqa: E402
+import app.application.workflows.engine as _wfe  # noqa: E402
+
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router  # noqa: E402
-from app.services import agent_monitor  # noqa: E402
-from app.services import agent_registry  # noqa: E402
-from app.services import agent_sandbox  # noqa: E402
-from app.services import agents_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+import app.application.monitoring.agent_monitor as agent_monitor  # noqa: E402
+import app.application.agents.agent_registry as agent_registry  # noqa: E402
+import app.application.monitoring.agent_sandbox as agent_sandbox  # noqa: E402
+import app.application.agents.agents_service as agents_service  # noqa: E402
+import app.application.event_bus as bus  # noqa: E402
+import app.application.workflows.engine as workflow_engine  # noqa: E402
 
 
 class AgentOsPhase5DbMixin(unittest.TestCase):
@@ -31,36 +36,36 @@ class AgentOsPhase5DbMixin(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         tmp_root = Path(self._tmpdir.name)
 
-        self._original_monitor_db = agent_monitor.DB_PATH
-        self._original_registry_db = agent_registry.DB_PATH
-        self._original_event_bus_db = bus.DB_PATH
-        self._original_workflow_db = workflow_engine.DB_PATH
-        self._original_limit_seed = agent_monitor._LIMIT_SEED_DONE
-        self._original_agent_seed = agent_registry._BUILTIN_AGENTS_SEEDED
-        self._original_workflow_seed = workflow_engine._BUILTIN_WORKFLOWS_SEEDED
+        self._original_monitor_db = _am.DB_PATH
+        self._original_registry_db = _ar.DB_PATH
+        self._original_event_bus_db = _eb.DB_PATH
+        self._original_workflow_db = _wfe.DB_PATH
+        self._original_limit_seed = _am._LIMIT_SEED_DONE
+        self._original_agent_seed = _ar._BUILTIN_AGENTS_SEEDED
+        self._original_workflow_seed = _wfe._BUILTIN_WORKFLOWS_SEEDED
 
-        agent_monitor.DB_PATH = tmp_root / "agent_monitor.db"
-        agent_registry.DB_PATH = tmp_root / "agent_registry.db"
-        bus.DB_PATH = tmp_root / "event_bus.db"
-        workflow_engine.DB_PATH = tmp_root / "workflow_engine.db"
+        _am.DB_PATH = tmp_root / "agent_monitor.db"
+        _ar.DB_PATH = tmp_root / "agent_registry.db"
+        _eb.DB_PATH = tmp_root / "event_bus.db"
+        _wfe.DB_PATH = tmp_root / "workflow_engine.db"
 
-        agent_monitor._LIMIT_SEED_DONE = False
-        agent_registry._BUILTIN_AGENTS_SEEDED = False
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = False
+        _am._LIMIT_SEED_DONE = False
+        _ar._BUILTIN_AGENTS_SEEDED = False
+        _wfe._BUILTIN_WORKFLOWS_SEEDED = False
 
-        agent_monitor._init_db()
-        agent_registry._init_db()
-        bus._init_db()
-        workflow_engine._init_db()
+        _am._init_db()
+        _ar._init_db()
+        _eb._init_db()
+        _wfe._init_db()
 
     def tearDown(self) -> None:
-        agent_monitor.DB_PATH = self._original_monitor_db
-        agent_registry.DB_PATH = self._original_registry_db
-        bus.DB_PATH = self._original_event_bus_db
-        workflow_engine.DB_PATH = self._original_workflow_db
-        agent_monitor._LIMIT_SEED_DONE = self._original_limit_seed
-        agent_registry._BUILTIN_AGENTS_SEEDED = self._original_agent_seed
-        workflow_engine._BUILTIN_WORKFLOWS_SEEDED = self._original_workflow_seed
+        _am.DB_PATH = self._original_monitor_db
+        _ar.DB_PATH = self._original_registry_db
+        _eb.DB_PATH = self._original_event_bus_db
+        _wfe.DB_PATH = self._original_workflow_db
+        _am._LIMIT_SEED_DONE = self._original_limit_seed
+        _ar._BUILTIN_AGENTS_SEEDED = self._original_agent_seed
+        _wfe._BUILTIN_WORKFLOWS_SEEDED = self._original_workflow_seed
         self._tmpdir.cleanup()
         super().tearDown()
 
@@ -209,14 +214,14 @@ class AgentMonitorServiceTest(AgentOsPhase5DbMixin):
 
 class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
     def test_run_agent_records_metric(self) -> None:
+        import app.application.chat.service as _svc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat", return_value={"ok": True, "answer": "hello from agent"}), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"):
+             patch.object(_svc, "_collect_context", return_value=""), \
+             patch.object(_svc, "run_chat", return_value={"ok": True, "answer": "hello from agent"}), \
+             patch.object(_svc, "observe_dialogue", return_value={"ok": True}), \
+             patch.object(_svc, "_get_and_clear_attachments", return_value=""), \
+             patch.object(_svc, "_maybe_generate_files", return_value=""), \
+             patch.object(_svc, "pick_model_for_route", return_value="test-model"):
             result = agents_service.run_agent(
                 model_name="test-model",
                 profile_name="Universal",
@@ -233,15 +238,16 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
         self.assertEqual(dashboard["blocked_runs"], 0)
 
     def test_run_agent_stream_records_metric(self) -> None:
+        import app.application.chat.service as _svc
+        import app.application.chat.stream_service as _ssvc
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat_stream", return_value=iter(["hello", " world"])), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"), \
-             patch.object(agents_service, "should_cache", return_value=False):
+             patch.object(_ssvc, "run_chat_stream", return_value=iter(["hello", " world"])), \
+             patch.object(_ssvc, "observe_dialogue", return_value={"ok": True}), \
+             patch.object(_ssvc, "_get_and_clear_attachments", return_value=""), \
+             patch.object(_ssvc, "_maybe_generate_files", return_value=""), \
+             patch.object(_ssvc, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
+             patch.object(_svc, "pick_model_for_route", return_value="test-model"), \
+             patch.object(_ssvc, "should_cache", return_value=False):
             events = list(
                 agents_service.run_agent_stream(
                     model_name="test-model",
