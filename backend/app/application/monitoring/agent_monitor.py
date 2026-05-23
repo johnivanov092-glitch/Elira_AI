@@ -543,9 +543,11 @@ def get_agent_os_health() -> dict[str, Any]:
     return {"ok": ok, "components": components, "warnings": warnings}
 
 
-def get_agent_os_dashboard(window_hours: int = 24) -> dict[str, Any]:
-    seed_default_limits()
-    since = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+def _query_agent_os_stats(since: str) -> tuple[dict[str, int], Any, list, list]:
+    """Run all dashboard DB queries in one connection.
+
+    Returns (totals, avg_row, top_rows, violation_rows).
+    """
     with _conn() as con:
         totals = {
             "total_agent_runs": int(
@@ -595,6 +597,13 @@ def get_agent_os_dashboard(window_hours: int = 24) -> dict[str, Any]:
             """,
             (since,),
         ).fetchall()
+    return totals, avg_row, top_rows, violation_rows
+
+
+def get_agent_os_dashboard(window_hours: int = 24) -> dict[str, Any]:
+    seed_default_limits()
+    since = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+    totals, avg_row, top_rows, violation_rows = _query_agent_os_stats(since)
 
     top_agents = [
         {"agent_id": str(row["agent_id"]), "run_count": int(row["run_count"])}
