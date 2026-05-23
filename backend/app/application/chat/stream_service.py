@@ -33,13 +33,12 @@ from app.application.chat.service import (
     _handle_chat_run_failure,
     _record_agent_os_monitoring,
     _resolve_plan_and_tools,
+    _setup_chat_agent_run,
     _should_recall_memory_context,
-    _strip_frontend_project_context,
     _tl,
-    _trim_history,
     get_rag_context,
 )
-from app.application.monitoring.agent_sandbox import preflight_or_raise, resolve_effective_agent_id
+from app.application.monitoring.agent_sandbox import preflight_or_raise
 from app.application.chat.chat_service import run_chat_stream
 from app.application.persona.persona_service import observe_dialogue
 from app.application.agents.reflection_loop_service import run_reflection_loop
@@ -295,32 +294,18 @@ def execute_chat_agent_stream(
     use_webhook=True,
     use_plugins=True,
 ) -> Generator[dict[str, Any], None, None]:
-    _agent_start = _time.monotonic()
-    _effective_agent_id = resolve_effective_agent_id(profile_name=profile_name)
-    history = _trim_history(history or [])
-    _skill_flags = {
-        "web_search": use_web_search, "python_exec": use_python_exec,
-        "image_gen": use_image_gen, "file_gen": use_file_gen,
-        "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot,
-        "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter,
-        "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv,
-        "webhook": use_webhook, "plugins": use_plugins,
-    }
-    _disabled_skills = {k for k, v in _skill_flags.items() if not v}
-    timeline, tool_results = [], []
-    raw_user_input = user_input
-    planner_input = _strip_frontend_project_context(user_input)
-    run = _HISTORY.start_run(raw_user_input)
-    _emit_agent_os_event(
-        event_type="agent.run.started",
-        source_agent_id=_effective_agent_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "requested_model": model_name,
-            "session_id": str(session_id or ""),
-            "streaming": True,
-        },
+    (
+        _agent_start, _, _effective_agent_id, profile_name, model_name,
+        history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run,
+    ) = _setup_chat_agent_run(
+        user_input=user_input, profile_name=profile_name, model_name=model_name,
+        session_id=session_id, history=history, streaming=True,
+        use_web_search=use_web_search, use_python_exec=use_python_exec,
+        use_image_gen=use_image_gen, use_file_gen=use_file_gen,
+        use_http_api=use_http_api, use_sql=use_sql, use_screenshot=use_screenshot,
+        use_encrypt=use_encrypt, use_archiver=use_archiver, use_converter=use_converter,
+        use_regex=use_regex, use_translator=use_translator, use_csv=use_csv,
+        use_webhook=use_webhook, use_plugins=use_plugins,
     )
     route, temporal, web_plan, selected, effective_model = "", {}, {}, [], model_name
     try:

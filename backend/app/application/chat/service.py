@@ -236,6 +236,85 @@ def _gather_run_context(
     return ctx
 
 
+def _setup_chat_agent_run(
+    *,
+    user_input: str,
+    profile_name: str,
+    model_name: str,
+    session_id,
+    history,
+    streaming: bool,
+    agent_id=None,
+    use_web_search=True,
+    use_python_exec=True,
+    use_image_gen=True,
+    use_file_gen=True,
+    use_http_api=True,
+    use_sql=True,
+    use_screenshot=True,
+    use_encrypt=True,
+    use_archiver=True,
+    use_converter=True,
+    use_regex=True,
+    use_translator=True,
+    use_csv=True,
+    use_webhook=True,
+    use_plugins=True,
+) -> tuple:
+    """Resolve registry agent, build skill flags, start run history, emit started event.
+
+    Returns (_agent_start, _registry_agent, _effective_agent_id, profile_name, model_name,
+             history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run).
+    profile_name and model_name may be overridden by the registry agent's preferences.
+    """
+    _agent_start = _time.monotonic()
+
+    _registry_agent = None
+    if agent_id:
+        try:
+            _registry_agent = resolve_agent(agent_id=agent_id)
+            if _registry_agent:
+                if _registry_agent.get("system_prompt"):
+                    profile_name = _registry_agent.get("name_ru") or profile_name
+                if _registry_agent.get("model_preference"):
+                    model_name = _registry_agent["model_preference"]
+        except Exception:
+            pass
+
+    _effective_agent_id = resolve_effective_agent_id(
+        agent_id=agent_id, profile_name=profile_name, registry_agent=_registry_agent,
+    )
+    history = _trim_history(history or [])
+    _skill_flags = {
+        "web_search": use_web_search, "python_exec": use_python_exec,
+        "image_gen": use_image_gen, "file_gen": use_file_gen,
+        "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot,
+        "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter,
+        "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv,
+        "webhook": use_webhook, "plugins": use_plugins,
+    }
+    _disabled_skills = {k for k, v in _skill_flags.items() if not v}
+    timeline, tool_results = [], []
+    raw_user_input = user_input
+    planner_input = _strip_frontend_project_context(user_input)
+    run = _HISTORY.start_run(raw_user_input)
+    _emit_agent_os_event(
+        event_type="agent.run.started",
+        source_agent_id=_effective_agent_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "requested_model": model_name,
+            "session_id": str(session_id or ""),
+            "streaming": streaming,
+        },
+    )
+    return (
+        _agent_start, _registry_agent, _effective_agent_id, profile_name, model_name,
+        history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run,
+    )
+
+
 def _complete_chat_run(
     *,
     raw_user_input: str,
@@ -486,51 +565,20 @@ def execute_chat_agent(
     use_webhook=True,
     use_plugins=True,
 ):
-    _agent_start = _time.monotonic()
-
-    _registry_agent = None
-    if agent_id:
-        try:
-            _registry_agent = resolve_agent(agent_id=agent_id)
-            if _registry_agent:
-                if _registry_agent.get("system_prompt"):
-                    profile_name = _registry_agent.get("name_ru") or profile_name
-                if _registry_agent.get("model_preference"):
-                    model_name = _registry_agent["model_preference"]
-        except Exception:
-            pass
-
-    _effective_agent_id = resolve_effective_agent_id(
-        agent_id=agent_id,
-        profile_name=profile_name,
-        registry_agent=_registry_agent,
+    (
+        _agent_start, _registry_agent, _effective_agent_id, profile_name, model_name,
+        history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run,
+    ) = _setup_chat_agent_run(
+        user_input=user_input, profile_name=profile_name, model_name=model_name,
+        session_id=session_id, history=history, streaming=False, agent_id=agent_id,
+        use_web_search=use_web_search, use_python_exec=use_python_exec,
+        use_image_gen=use_image_gen, use_file_gen=use_file_gen,
+        use_http_api=use_http_api, use_sql=use_sql, use_screenshot=use_screenshot,
+        use_encrypt=use_encrypt, use_archiver=use_archiver, use_converter=use_converter,
+        use_regex=use_regex, use_translator=use_translator, use_csv=use_csv,
+        use_webhook=use_webhook, use_plugins=use_plugins,
     )
-    history = _trim_history(history or [])
-    _skill_flags = {
-        "web_search": use_web_search, "python_exec": use_python_exec,
-        "image_gen": use_image_gen, "file_gen": use_file_gen,
-        "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot,
-        "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter,
-        "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv,
-        "webhook": use_webhook, "plugins": use_plugins,
-    }
-    _disabled_skills = {k for k, v in _skill_flags.items() if not v}
-    timeline, tool_results = [], []
-    raw_user_input = user_input
-    planner_input = _strip_frontend_project_context(user_input)
-    run = _HISTORY.start_run(raw_user_input)
     _agent_os_source_id = _effective_agent_id
-    _emit_agent_os_event(
-        event_type="agent.run.started",
-        source_agent_id=_agent_os_source_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "requested_model": model_name,
-            "session_id": str(session_id or ""),
-            "streaming": False,
-        },
-    )
     route, temporal, web_plan, selected, effective_model = "", {}, {}, [], model_name
     try:
         route, temporal, web_plan, selected, effective_model = _resolve_plan_and_tools(
