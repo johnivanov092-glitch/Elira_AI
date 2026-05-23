@@ -45,7 +45,7 @@ def _memory_tool_defs(search_memory_tool, list_library_files, build_library_cont
     ]
 
 
-def _web_tool_defs(search_web, research_web) -> list:
+def _web_tool_defs(search_web, research_web, multi_search) -> list:
     return [
         {
             "name": "search_web",
@@ -79,7 +79,7 @@ def _web_tool_defs(search_web, research_web) -> list:
         },
         {
             "name": "multi_web_search",
-            "handler": lambda a: __import__("app.infrastructure.search.web_multisearch_service", fromlist=["WebMultiSearchService"]).WebMultiSearchService().search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
+            "handler": lambda a: multi_search(str(a.get("query", "")), max_results=int(a.get("max_results", 5))),
             "display_name": "Multi Web Search", "display_name_ru": "Мульти-поиск",
             "category": "web",
             "description": "Search across multiple web engines",
@@ -244,6 +244,7 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
     # tool_registry <-> tool_service.
     from app.application.tools.tool_service import search_memory_tool
     from app.application.web.web_service import research_web, search_web
+    from app.infrastructure.search.web_multisearch_service import multi_search
     from app.infrastructure.runtime.python_runner import execute_python
     from app.infrastructure.files.project_service import (
         list_project_tree,
@@ -269,7 +270,7 @@ def get_builtin_tool_definitions() -> list[dict[str, Any]]:
 
     return [
         *_memory_tool_defs(search_memory_tool, list_library_files, build_library_context),
-        *_web_tool_defs(search_web, research_web),
+        *_web_tool_defs(search_web, research_web, multi_search),
         *_code_tool_defs(execute_python),
         *_project_file_tool_defs(list_project_tree, read_project_file, search_project, write_project_file),
         *_project_patch_tool_defs(_patch),

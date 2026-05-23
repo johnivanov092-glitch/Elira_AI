@@ -231,8 +231,8 @@ def _gather_run_context(
             if mem_ctx:
                 ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
                 _tl(timeline, "memory_recall", "Память", "done", "Найдены релевантные заметки")
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("memory_recall failed: %s", _exc)
     return ctx
 
 
@@ -333,8 +333,8 @@ def _setup_chat_agent_run(
                     profile_name = _registry_agent.get("name_ru") or profile_name
                 if _registry_agent.get("model_preference"):
                     model_name = _registry_agent["model_preference"]
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("registry_agent resolve failed: %s", _exc)
 
     _effective_agent_id = resolve_effective_agent_id(
         agent_id=agent_id, profile_name=profile_name, registry_agent=_registry_agent,
@@ -450,8 +450,8 @@ def _maybe_record_agent_run(
             "model_used": effective_model,
             "duration_ms": duration_ms,
         })
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("record_agent_run failed: %s", _exc)
 
 
 def _complete_chat_run(
@@ -688,8 +688,8 @@ def execute_chat_agent(
             saved = extract_and_save(planner_input)
             if saved:
                 _tl(timeline, "memory_save", "Память", "done", "Сохранено: " + str(len(saved)))
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("memory_save failed: %s", _exc)
 
         preflight_or_raise(
             agent_id=_effective_agent_id,

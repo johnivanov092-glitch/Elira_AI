@@ -5,8 +5,11 @@ service.py to avoid duplication.
 """
 from __future__ import annotations
 
+import logging
 import time as _time
 from typing import Any, Generator
+
+logger = logging.getLogger(__name__)
 
 from app.application.chat.auto_skills import (
     _FILE_TRIGGERS_EXCEL,
@@ -76,8 +79,8 @@ def _build_stream_meta(
     if should_cache(planner_input, route) and full_text.strip():
         try:
             set_cached(planner_input, effective_model, profile_name, full_text)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("cache_write failed: %s", _exc)
     persona_meta = observe_dialogue(
         dialog_id=run["run_id"],
         session_id=str(session_id or run["run_id"]),
@@ -264,8 +267,8 @@ def _complete_stream_with_guards(
     """Run python-exec, file generation, guards, then yield the final done event."""
     try:
         full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("auto_exec_python failed: %s", _exc)
     if needs_file_gen:
         yield {"token": "", "done": False, "phase": "generating_file", "message": "Готовлю файл..."}
     post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
@@ -371,8 +374,8 @@ def execute_chat_agent_stream(
 
         try:
             extract_and_save(planner_input)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("memory_save failed: %s", _exc)
 
         if "web_search" in selected:
             yield {"token": "", "done": False, "phase": "searching", "message": "Ищу..."}
@@ -444,8 +447,8 @@ def execute_chat_agent_stream(
                     if refined and refined != full_text:
                         full_text = refined
                         yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("reflection failed: %s", _exc)
             yield from _complete_stream_with_guards(full_text, needs_file_gen=needs_file_gen, **_guards_kwargs)
 
     except Exception as exc:
