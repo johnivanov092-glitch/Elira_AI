@@ -455,6 +455,38 @@ def _handle_code_mode(
 # High-level execution
 # ---------------------------------------------------------------------------
 
+def _build_chat_send_response(
+    result: dict,
+    route: dict,
+    model: str,
+    session_id: str,
+    attachments: list[dict],
+    selected_project_paths: list[str],
+    web_results: list,
+) -> dict[str, Any]:
+    """Assemble the chat-mode JSON response dict."""
+    answer = str(result.get("answer") or "") or "No response from model."
+    plan = result.get("plan") if isinstance(result.get("plan"), list) else []
+    return {
+        "status": "ok",
+        "session_id": session_id,
+        "model": model,
+        "route": route,
+        "answer": answer,
+        "plan": plan,
+        "sources_note": str(result.get("sources_note") or ""),
+        "suggested_agent": str(result.get("suggested_agent") or ""),
+        "image_prompt": str(result.get("image_prompt") or ""),
+        "attachment_summaries": [attachment_summary(x) for x in attachments],
+        "selected_project_paths": selected_project_paths,
+        "web_results": web_results,
+        "agents_used": [x for x in [
+            "planner_agent" if route["mode"] == "plan" else "chat_agent",
+            "browser_agent" if web_results else None,
+        ] if x],
+    }
+
+
 def execute_chat_send(
     *,
     message: str,
@@ -495,29 +527,9 @@ def execute_chat_send(
         model, system_prompt,
         build_chat_prompt(message, route["mode"], attachments, project_refs, web_results),
     )
-    answer = str(result.get("answer") or "") or "No response from model."
-    plan = result.get("plan") if isinstance(result.get("plan"), list) else []
-
-    response = {
-        "status": "ok",
-        "session_id": actual_session_id,
-        "model": model,
-        "route": route,
-        "answer": answer,
-        "plan": plan,
-        "sources_note": str(result.get("sources_note") or ""),
-        "suggested_agent": str(result.get("suggested_agent") or ""),
-        "image_prompt": str(result.get("image_prompt") or ""),
-        "attachment_summaries": [attachment_summary(x) for x in attachments],
-        "selected_project_paths": selected_project_paths,
-        "web_results": web_results,
-        "agents_used": [x for x in [
-            "planner_agent" if route["mode"] == "plan" else "chat_agent",
-            "browser_agent" if web_results else None,
-        ] if x],
-    }
+    response = _build_chat_send_response(result, route, model, actual_session_id, attachments, selected_project_paths, web_results)
     session["messages"].append({"role": "user", "content": message, "ts": time.time()})
-    session["messages"].append({"role": "assistant", "content": answer, "ts": time.time(), "route": route})
+    session["messages"].append({"role": "assistant", "content": response["answer"], "ts": time.time(), "route": route})
     return response
 
 

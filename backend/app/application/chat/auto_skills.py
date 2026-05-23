@@ -290,28 +290,30 @@ def _run_media_skills(user_input: str, ql: str, disabled: set, parts: list) -> N
         parts.append("SKILL_HINT: Пользователь хочет Excel файл. Напиши данные в формате markdown-таблицы (| col1 | col2 |). После ответа файл .xlsx будет создан автоматически.")
 
 
-def _run_text_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
-    """Translate, encrypt, decrypt."""
-    # ─── 🌍 Переводчик ───
-    translate_triggers = ["переведи на ", "переведи в ", "translate to ", "перевод на ", "переведи текст"]
-    if "translator" not in disabled:
-        for t in translate_triggers:
-            if t in ql:
-                try:
-                    after = user_input[ql.find(t) + len(t):].strip()
-                    lang_text = after.split(":", 1) if ":" in after else after.split(" ", 1)
-                    target_lang = lang_text[0].strip() if lang_text else "english"
-                    text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
-                    if text_to_translate and len(text_to_translate) > 2:
-                        result = translate_text(text_to_translate, target_lang)
-                        if result.get("ok"):
-                            parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
-                except Exception as e:
-                    parts.append(f"SKILL_ERROR:🌍 Перевод: {e}")
-                break
+def _handle_translate_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    _TRIGGERS = ["переведи на ", "переведи в ", "translate to ", "перевод на ", "переведи текст"]
+    if "translator" in disabled:
+        return
+    for t in _TRIGGERS:
+        if t in ql:
+            try:
+                after = user_input[ql.find(t) + len(t):].strip()
+                lang_text = after.split(":", 1) if ":" in after else after.split(" ", 1)
+                target_lang = lang_text[0].strip() if lang_text else "english"
+                text_to_translate = lang_text[1].strip() if len(lang_text) > 1 else ""
+                if text_to_translate and len(text_to_translate) > 2:
+                    result = translate_text(text_to_translate, target_lang)
+                    if result.get("ok"):
+                        parts.append(f"Перевод ({target_lang}):\n{result.get('translated', '')}")
+            except Exception as e:
+                parts.append(f"SKILL_ERROR:🌍 Перевод: {e}")
+            break
 
-    # ─── 🔐 Шифрование ───
-    if "encrypt" not in disabled and any(t in ql for t in ["зашифруй", "шифрование", "encrypt"]):
+
+def _handle_encrypt_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    if "encrypt" in disabled:
+        return
+    if any(t in ql for t in ["зашифруй", "шифрование", "encrypt"]):
         try:
             text = user_input
             for t in ["зашифруй:", "зашифруй ", "encrypt:", "encrypt "]:
@@ -325,8 +327,7 @@ def _run_text_skills(user_input: str, ql: str, disabled: set, parts: list) -> No
                     parts.append(f"🔐 Зашифровано:\n`{result.get('encrypted','')}`\n\nДля расшифровки скажи: расшифруй [токен]")
         except Exception as e:
             parts.append(f"SKILL_ERROR:🔐 Шифрование: {e}")
-
-    if "encrypt" not in disabled and any(t in ql for t in ["расшифруй", "дешифруй", "decrypt"]):
+    if any(t in ql for t in ["расшифруй", "дешифруй", "decrypt"]):
         try:
             token = user_input
             for t in ["расшифруй:", "расшифруй ", "decrypt:", "decrypt ", "дешифруй "]:
@@ -342,6 +343,12 @@ def _run_text_skills(user_input: str, ql: str, disabled: set, parts: list) -> No
                     parts.append(f"SKILL_ERROR:🔓 Расшифровка: {result.get('error','')}")
         except Exception as e:
             parts.append(f"SKILL_ERROR:🔓 Ошибка: {e}")
+
+
+def _run_text_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    """Translate, encrypt, decrypt."""
+    _handle_translate_skill(user_input, ql, disabled, parts)
+    _handle_encrypt_skill(user_input, ql, disabled, parts)
 
 
 def _handle_zip_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
@@ -575,41 +582,46 @@ def _run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     return "\n\n".join(parts)
 
 
+def _parse_skill_output(skill_results: str) -> tuple[str, list[dict]]:
+    """Parse skill result string into clean text and a list of pending attachment records."""
+    clean_parts: list[str] = []
+    attachments: list[dict] = []
+    for line in skill_results.split("\n\n"):
+        if line.startswith("IMAGE_GENERATED:"):
+            p = line.split(":", 4)
+            if len(p) >= 4:
+                attachments.append({
+                    "type": "image",
+                    "view_url": p[1] + ":" + p[2] if "http" in p[1] else p[1],
+                    "filename": p[2] if "http" not in p[1] else p[3],
+                    "prompt": p[-1],
+                })
+        elif line.startswith("FILE_GENERATED:"):
+            p = line.split(":", 4)
+            if len(p) >= 4:
+                attachments.append({
+                    "type": "file",
+                    "file_type": p[1],
+                    "download_url": p[2] + ":" + p[3] if "http" in p[2] else p[2],
+                    "filename": p[3] if "http" not in p[2] else p[4] if len(p) > 4 else p[3],
+                })
+        elif line.startswith("SKILL_HINT:"):
+            clean_parts.append(line)
+        elif line.startswith("SKILL_ERROR:"):
+            attachments.append({"type": "error", "message": line[len("SKILL_ERROR:"):]})
+        else:
+            clean_parts.append(line)
+    return "\n\n".join(clean_parts), attachments
+
+
 def _build_prompt(user_input, context_bundle, mode="default", disabled_skills: set | None = None):
     runtime_context = _build_runtime_datetime_context(user_input)
-
     skill_results = _run_auto_skills(user_input, disabled=disabled_skills or set())
 
     _pending_attachments.clear()
     if skill_results:
-        clean_parts = []
-        for line in skill_results.split("\n\n"):
-            if line.startswith("IMAGE_GENERATED:"):
-                p = line.split(":", 4)
-                if len(p) >= 4:
-                    _pending_attachments.append({
-                        "type": "image",
-                        "view_url": p[1] + ":" + p[2] if "http" in p[1] else p[1],
-                        "filename": p[2] if "http" not in p[1] else p[3],
-                        "prompt": p[-1],
-                    })
-            elif line.startswith("FILE_GENERATED:"):
-                p = line.split(":", 4)
-                if len(p) >= 4:
-                    _pending_attachments.append({
-                        "type": "file",
-                        "file_type": p[1],
-                        "download_url": p[2] + ":" + p[3] if "http" in p[2] else p[2],
-                        "filename": p[3] if "http" not in p[2] else p[4] if len(p) > 4 else p[3],
-                    })
-            elif line.startswith("SKILL_HINT:"):
-                clean_parts.append(line)
-            elif line.startswith("SKILL_ERROR:"):
-                error_msg = line[len("SKILL_ERROR:"):]
-                _pending_attachments.append({"type": "error", "message": error_msg})
-            else:
-                clean_parts.append(line)
-        skill_results = "\n\n".join(clean_parts)
+        skill_results, parsed_attachments = _parse_skill_output(skill_results)
+        _pending_attachments.extend(parsed_attachments)
 
     if skill_results:
         context_bundle = (context_bundle + "\n\n" + skill_results) if context_bundle.strip() else skill_results

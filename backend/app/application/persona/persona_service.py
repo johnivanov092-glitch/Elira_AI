@@ -373,6 +373,31 @@ def _append_trait(payload: dict[str, Any], layer: str, summary: str) -> bool:
     return True
 
 
+def _copy_calibrations(
+    conn: sqlite3.Connection,
+    from_version_id: int,
+    to_version_id: int,
+    now: str,
+) -> None:
+    """Copy all model calibrations from one persona version to another."""
+    rows = conn.execute(
+        """
+        SELECT model, calibration_json, consistency_score
+        FROM persona_model_calibrations
+        WHERE version_id = ?
+        """,
+        (from_version_id,),
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """
+            INSERT INTO persona_model_calibrations(model, version_id, calibration_json, consistency_score, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (row["model"], to_version_id, row["calibration_json"], row["consistency_score"], now),
+        )
+
+
 def _promote_candidate(conn: sqlite3.Connection, candidate_row: sqlite3.Row) -> int | None:
     active = _row_to_version(
         conn.execute(
@@ -404,28 +429,7 @@ def _promote_candidate(conn: sqlite3.Connection, candidate_row: sqlite3.Row) -> 
             f"Accepted trait {candidate_row['trait_key']}: {candidate.get('summary', '')}",
         ),
     )
-    calibration_rows = conn.execute(
-        """
-        SELECT model, calibration_json, consistency_score
-        FROM persona_model_calibrations
-        WHERE version_id = ?
-        """,
-        (active["version"],),
-    ).fetchall()
-    for calibration_row in calibration_rows:
-        conn.execute(
-            """
-            INSERT INTO persona_model_calibrations(model, version_id, calibration_json, consistency_score, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                calibration_row["model"],
-                next_version,
-                calibration_row["calibration_json"],
-                calibration_row["consistency_score"],
-                now,
-            ),
-        )
+    _copy_calibrations(conn, int(active["version"]), next_version, now)
     conn.execute(
         """
         UPDATE persona_candidates
