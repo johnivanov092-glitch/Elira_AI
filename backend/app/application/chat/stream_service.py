@@ -28,6 +28,7 @@ from app.application.chat.service import (
     _apply_provenance_guard,
     _collect_context,
     _emit_agent_os_event,
+    _gather_run_context,
     _get_memory_recall_limits,
     _handle_chat_run_failure,
     _record_agent_os_monitoring,
@@ -364,29 +365,12 @@ def execute_chat_agent_stream(
         elif selected:
             yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
 
-        ctx = _collect_context(
-            profile_name=profile_name,
-            user_input=planner_input,
-            tools=selected,
-            tool_results=tool_results,
-            timeline=timeline,
-            use_reflection=use_reflection,
-            temporal=temporal,
-            web_plan=web_plan,
+        ctx = _gather_run_context(
+            profile_name=profile_name, planner_input=planner_input,
+            route=route, temporal=temporal, selected=selected,
+            tool_results=tool_results, timeline=timeline,
+            use_reflection=use_reflection, web_plan=web_plan,
         )
-
-        if _should_recall_memory_context(planner_input, route, temporal):
-            try:
-                mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
-                mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
-                if _HAS_RAG and rag_limit > 0:
-                    rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
-                    if rag_ctx:
-                        mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-                if mem_ctx:
-                    ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-            except Exception:
-                pass
 
         yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
 

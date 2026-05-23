@@ -197,6 +197,44 @@ def _collect_context(**kwargs):
     )
 
 
+def _gather_run_context(
+    *,
+    profile_name: str,
+    planner_input: str,
+    route: str,
+    temporal: dict,
+    selected: list,
+    tool_results: list,
+    timeline: list,
+    use_reflection: bool,
+    web_plan: dict,
+) -> str:
+    """Collect tool / RAG context then augment with memory recall if applicable."""
+    ctx = _collect_context(
+        profile_name=profile_name,
+        user_input=planner_input,
+        tools=selected,
+        tool_results=tool_results,
+        timeline=timeline,
+        use_reflection=use_reflection,
+        temporal=temporal,
+        web_plan=web_plan,
+    )
+    if _should_recall_memory_context(planner_input, route, temporal):
+        try:
+            mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
+            mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
+            if _HAS_RAG and rag_limit > 0:
+                rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
+                if rag_ctx:
+                    mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
+            if mem_ctx:
+                ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
+                _tl(timeline, "memory_recall", "Память", "done", "Найдены релевантные заметки")
+        except Exception:
+            pass
+    return ctx
+
 
 def _complete_chat_run(
     *,
@@ -516,30 +554,12 @@ def execute_chat_agent(
             streaming=False,
         )
 
-        ctx = _collect_context(
-            profile_name=profile_name,
-            user_input=planner_input,
-            tools=selected,
-            tool_results=tool_results,
-            timeline=timeline,
-            use_reflection=use_reflection,
-            temporal=temporal,
-            web_plan=web_plan,
+        ctx = _gather_run_context(
+            profile_name=profile_name, planner_input=planner_input,
+            route=route, temporal=temporal, selected=selected,
+            tool_results=tool_results, timeline=timeline,
+            use_reflection=use_reflection, web_plan=web_plan,
         )
-
-        if _should_recall_memory_context(planner_input, route, temporal):
-            try:
-                mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
-                mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
-                if _HAS_RAG and rag_limit > 0:
-                    rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
-                    if rag_ctx:
-                        mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-                if mem_ctx:
-                    ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-                    _tl(timeline, "memory_recall", "Память", "done", "Найдены релевантные заметки")
-            except Exception:
-                pass
 
         prompt = (
             _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
