@@ -847,6 +847,75 @@ def _decide_step_outcome(
     return next_step_id, None
 
 
+def _emit_workflow_run_init(
+    run: dict[str, Any],
+    run_id: str,
+    run_state: dict[str, Any],
+    resume_event: bool,
+    current_step_id: str,
+    total_steps: int,
+) -> None:
+    """Emit start/resume event and record initial run state + resource usage."""
+    if resume_event:
+        _emit_workflow_event("workflow.run.resumed", run["workflow_id"], run_id,
+                             payload={"current_step_id": current_step_id})
+        _record_workflow_run_state(run_state, status="resumed",
+                                   details={"current_step_id": current_step_id})
+    else:
+        _emit_workflow_event("workflow.run.started", run["workflow_id"], run_id,
+                             payload={"current_step_id": current_step_id})
+        _record_workflow_run_state(run_state, status="started",
+                                   details={"current_step_id": current_step_id, "total_steps": total_steps})
+        try:
+            record_resource_usage(
+                agent_id=WORKFLOW_ENGINE_AGENT_ID,
+                run_id=run_id,
+                workflow_id=run["workflow_id"],
+                resource="workflow_total_steps",
+                amount=total_steps,
+                unit="count",
+                details={"trigger_source": run.get("trigger_source", "api")},
+            )
+        except Exception:
+            pass
+
+
+def _execute_step_safely(
+    step: dict[str, Any],
+    workflow_id: str,
+    workflow_input: dict[str, Any],
+    context: dict[str, Any],
+    step_results: dict[str, Any],
+    run_id: str,
+) -> tuple[dict[str, Any], int]:
+    """Call _execute_step with error handling; return (step_result, duration_ms)."""
+    step_started = time.monotonic()
+    try:
+        step_result = _execute_step(
+            step,
+            workflow_id=workflow_id,
+            workflow_input=workflow_input,
+            context=context,
+            step_results=step_results,
+            run_id=run_id,
+        )
+    except SandboxPolicyError as exc:
+        step_result = {
+            "ok": False,
+            "error": str(exc),
+            "sandbox_reason": exc.reason,
+            "sandbox_details": exc.details,
+            "raw": {"ok": False, "error": str(exc)},
+        }
+    except Exception as exc:
+        step_result = {
+            "ok": False,
+            "error": str(exc),
+            "raw": {"ok": False, "error": str(exc)},
+        }
+    return step_result, int((time.monotonic() - step_started) * 1000)
+
+
 def _execute_workflow_run(
     run_id: str,
     *,
@@ -869,24 +938,7 @@ def _execute_workflow_run(
     current_step_id = str(run.get("current_step_id", "")).strip()
     run_state = get_workflow_run(run_id) or run
 
-    if resume_event:
-        _emit_workflow_event("workflow.run.resumed", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
-        _record_workflow_run_state(run_state, status="resumed", details={"current_step_id": current_step_id})
-    else:
-        _emit_workflow_event("workflow.run.started", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
-        _record_workflow_run_state(run_state, status="started", details={"current_step_id": current_step_id, "total_steps": total_steps})
-        try:
-            record_resource_usage(
-                agent_id=WORKFLOW_ENGINE_AGENT_ID,
-                run_id=run_id,
-                workflow_id=run["workflow_id"],
-                resource="workflow_total_steps",
-                amount=total_steps,
-                unit="count",
-                details={"trigger_source": run.get("trigger_source", "api")},
-            )
-        except Exception:
-            pass
+    _emit_workflow_run_init(run, run_id, run_state, resume_event, current_step_id, total_steps)
 
     while current_step_id:
         step = steps_by_id.get(current_step_id)
@@ -909,31 +961,9 @@ def _execute_workflow_run(
             progress_callback(step_index, total_steps, _step_label(step))
 
         _emit_workflow_event("workflow.step.started", run["workflow_id"], run_id, payload={"step_id": current_step_id, "index": step_index})
-        step_started = time.monotonic()
-        try:
-            step_result = _execute_step(
-                step,
-                workflow_id=run["workflow_id"],
-                workflow_input=workflow_input,
-                context=context,
-                step_results=step_results,
-                run_id=run_id,
-            )
-        except SandboxPolicyError as exc:
-            step_result = {
-                "ok": False,
-                "error": str(exc),
-                "sandbox_reason": exc.reason,
-                "sandbox_details": exc.details,
-                "raw": {"ok": False, "error": str(exc)},
-            }
-        except Exception as exc:
-            step_result = {
-                "ok": False,
-                "error": str(exc),
-                "raw": {"ok": False, "error": str(exc)},
-            }
-        step_duration_ms = int((time.monotonic() - step_started) * 1000)
+        step_result, step_duration_ms = _execute_step_safely(
+            step, run["workflow_id"], workflow_input, context, step_results, run_id,
+        )
 
         save_key = str(step.get("save_as") or current_step_id)
         step_results[save_key] = step_result
