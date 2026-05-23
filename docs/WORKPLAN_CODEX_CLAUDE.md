@@ -65,12 +65,12 @@ Single live coordination document for Claude/Codex refactor work.
 | Phase | Scope | Owner | Branch | Status | Dependencies | Verification |
 | --- | --- | --- | --- | --- | --- | --- |
 | `DOC` | Maintain this single coordination workplan | Codex | `codex/workplan-codex-claude` | `IN PROGRESS` | None | `git status --short --branch`, `git worktree list --porcelain`, `git log -- docs` |
-| `0` | Preparation and guardrails | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `DOC` | `python -m compileall ...`, import smoke for new packages and DB provider |
-| `1` | Stabilize backend boundaries | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `0` | Duplicate-definition search, `python -m compileall ...`, backend import smoke |
-| `2` | Split chat and agent services | `Codex` | `codex/refactor-arch-foundation` | `IN PROGRESS` | `1` | Chat request, chat stream, and routing checks |
-| `3` | Split code-agent runtime | `TBD` | `TBD` | `PLANNED` | `2` | Code-agent execute, verify, and cancellation checks |
-| `4` | Split workflow engine | `TBD` | `TBD` | `PLANNED` | `1`, `3` | Workflow run start/finish tests |
-| `5` | Route consolidation | `TBD` | `TBD` | `PLANNED` | `1`, `2`, `3`, `4` | Route registration and smoke contract checks |
+| `0` | Preparation and guardrails | `Claude` | `claude/peaceful-mayer-456e15` | `DONE` | `DOC` | `python -m compileall ...`, import smoke for new packages and DB provider |
+| `1` | Stabilize backend boundaries | `Claude` | `claude/peaceful-mayer-456e15` | `DONE` | `0` | Duplicate-definition search, `python -m compileall ...`, backend import smoke |
+| `2` | Split chat and agent services | `Claude` | `claude/peaceful-mayer-456e15` | `DONE` | `1` | Chat request, chat stream, and routing checks |
+| `3` | Split code-agent runtime | `Claude` | `claude/peaceful-mayer-456e15` | `DONE` | `2` | Code-agent execute, verify, and cancellation checks |
+| `4` | Split workflow engine | `Claude` | `claude/peaceful-mayer-456e15` | `DONE` | `1`, `3` | Workflow run start/finish tests |
+| `5` | Route consolidation | `Claude` | `claude/peaceful-mayer-456e15` | `DONE` | `1`, `2`, `3`, `4` | Route registration and smoke contract checks — 164 OpenAPI paths verified, smoke exits 0 |
 | `6` | Frontend TypeScript migration | `TBD` | `TBD` | `PLANNED` | `5` | `npm --prefix frontend run build`, typed API verification |
 | `7` | Tauri cleanup | `TBD` | `TBD` | `PLANNED` | `1`, `6` | Tauri startup and backend launch checks |
 | `8` | Contract stabilization and cleanup | `TBD` | `TBD` | `PLANNED` | `1`-`7` | Smoke tests, typed frontend build, cleanup review |
@@ -177,11 +177,14 @@ Single live coordination document for Claude/Codex refactor work.
 | `2026-05-23 03:01:00 +05:00` | `DONE` | `_complete_chat_run` 95L→60L: extracted `_build_run_result` (52L, guards+persona+result dict) and `_maybe_record_agent_run` (28L, conditional registry recording). Generalised `_maybe_record_agent_run` with `output_summary`/`ok` params; reused from `_handle_chat_run_failure` (81L→74L) eliminating 14-line inline duplicate. Unified two identical except blocks in `execute_chat_agent` via isinstance check (132L→125L). `_run_file_skills` 88L→7L: extracted 5 per-skill handlers (_handle_zip/unzip/convert/regex/csv_skill, each ≤17L). Commits `641aba8`, `7b0343e`. |
 | `2026-05-23 03:02:00 +05:00` | `DONE` | `_apply_guards_and_complete_stream` 84L→57L: extracted `_build_stream_meta` (54L, guards+cache+persona+meta dict). `_decide_step_outcome` 92L→40L: extracted `_handle_workflow_pause`, `_handle_workflow_failure`, `_handle_workflow_completion` (14-17L each). `generate_image` 95L→52L: extracted `_clamp_dimensions` (8L) and `_save_image_and_return` (26L); consolidated dead-code second `except Exception`. Commits `c6ffa6a`, `7b0343e`. |
 | `2026-05-23 03:03:00 +05:00` | `STATUS` | Architecture health: Functions >= 80L: 2 total — `execute_chat_agent_stream` (163L, streaming generator at practical floor, interleaved yields), `execute_chat_agent` (125L, orchestrator at practical floor, 27L sig/22 kwargs). Zero `locals().get()` antipatterns. Zero infra→app violations. All extracted helpers ≤61L. Branch `claude/peaceful-mayer-456e15`. |
+| `2026-05-23 04:00:00 +05:00` | `DONE` | Restored `GET /api/web/engines` contract: created `backend/app/api/routes/web_routes.py` with static engine list (tavily, duckduckgo, wikipedia); registered router in `main.py`. Route was deleted with `web_search_routes.py` in the dead-route purge wave. `python scripts/smoke_contract_check.py` → 164 OpenAPI paths, exits 0. Commit `df22aac` pushed. |
+| `2026-05-23 04:01:00 +05:00` | `STATUS` | Phase Board updated: Phases 0–5 marked DONE on `claude/peaceful-mayer-456e15`. Large-function sweep complete (2 practical floors remain). Smoke contract passing. Branch is 103 commits ahead of `origin/main` and can fast-forward cleanly. Phase 6 (Frontend TypeScript migration) is next in queue but is out-of-scope for this branch. |
 
 ## 8. Commit Ledger
 
 | Branch | Short SHA | Title | Merged state | Note |
 | --- | --- | --- | --- | --- |
+| `claude/peaceful-mayer-456e15` | `df22aac` | `fix(routes): restore GET /api/web/engines endpoint; smoke check passes` | `pushed` | Phase 5 closure: restores deleted web-engines contract; 164 paths verified |
 | `main`, `origin/main`, `codex/workplan-codex-claude`, `feat/agent-os-phase2-tools`, `claude/zealous-goldwasser` | `755072177138` | `feat(agent-os): Phase 2 — Tool Registry with JSON Schema` | `current HEAD` | Shared current tip; Phase 2 status still needs reconciliation against the legacy workplan |
 | `historical mainline` | `283345d` | `feat(agent-os): finish phase 5 monitoring dashboard` | `present in docs history` | UI/dashboard completion for Agent OS monitoring |
 | `historical mainline` | `2b44a67` | `feat(agent-os): add phase 5 monitoring backend` | `present in docs history` | Backend half of Agent OS monitoring |
