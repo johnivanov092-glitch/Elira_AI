@@ -370,7 +370,7 @@ def _setup_chat_agent_run(
     )
 
 
-def _complete_chat_run(
+def _build_run_result(
     *,
     raw_user_input: str,
     answer: str,
@@ -384,13 +384,11 @@ def _complete_chat_run(
     selected: list,
     temporal: dict,
     web_plan: dict,
-    _effective_agent_id: str,
-    _agent_start: float,
-    num_ctx: int,
-    agent_id,
-    _registry_agent,
-) -> dict:
-    """Apply guards, build result, finish run, emit completion events."""
+) -> tuple[str, dict]:
+    """Apply identity/provenance guards, observe persona, assemble result dict.
+
+    Returns ``(guarded_answer, result_dict)``.
+    """
     identity_guard = _apply_identity_guard(raw_user_input, answer, timeline)
     answer = identity_guard.get("text", answer)
     provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
@@ -423,6 +421,65 @@ def _complete_chat_run(
             "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
         },
     }
+    return answer, result
+
+
+def _maybe_record_agent_run(
+    *,
+    agent_id,
+    _registry_agent,
+    run_id: str,
+    raw_user_input: str,
+    answer: str,
+    route: str,
+    effective_model: str,
+    duration_ms: int,
+) -> None:
+    """Record a registry-agent run if an agent_id or registry_agent is present."""
+    if not (agent_id or _registry_agent):
+        return
+    try:
+        record_agent_run({
+            "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
+            "run_id": run_id,
+            "input_summary": raw_user_input[:500],
+            "output_summary": answer[:500],
+            "ok": True,
+            "route": route,
+            "model_used": effective_model,
+            "duration_ms": duration_ms,
+        })
+    except Exception:
+        pass
+
+
+def _complete_chat_run(
+    *,
+    raw_user_input: str,
+    answer: str,
+    timeline: list,
+    tool_results: list,
+    run: dict,
+    session_id,
+    profile_name: str,
+    effective_model: str,
+    route: str,
+    selected: list,
+    temporal: dict,
+    web_plan: dict,
+    _effective_agent_id: str,
+    _agent_start: float,
+    num_ctx: int,
+    agent_id,
+    _registry_agent,
+) -> dict:
+    """Apply guards, build result, finish run, emit completion events."""
+    answer, result = _build_run_result(
+        raw_user_input=raw_user_input, answer=answer, timeline=timeline,
+        tool_results=tool_results, run=run, session_id=session_id,
+        profile_name=profile_name, effective_model=effective_model,
+        route=route, selected=selected, temporal=temporal, web_plan=web_plan,
+    )
     _HISTORY.finish_run(run["run_id"], result)
     _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
     _record_agent_os_monitoring(
@@ -436,20 +493,11 @@ def _complete_chat_run(
         num_ctx=num_ctx,
         selected_tools=selected,
     )
-    if agent_id or _registry_agent:
-        try:
-            record_agent_run({
-                "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-                "run_id": run["run_id"],
-                "input_summary": raw_user_input[:500],
-                "output_summary": answer[:500],
-                "ok": True,
-                "route": route,
-                "model_used": effective_model,
-                "duration_ms": _duration_ms,
-            })
-        except Exception:
-            pass
+    _maybe_record_agent_run(
+        agent_id=agent_id, _registry_agent=_registry_agent,
+        run_id=run["run_id"], raw_user_input=raw_user_input, answer=answer,
+        route=route, effective_model=effective_model, duration_ms=_duration_ms,
+    )
     _emit_agent_os_event(
         event_type="agent.run.completed",
         source_agent_id=_effective_agent_id,

@@ -330,94 +330,92 @@ def _run_text_skills(user_input: str, ql: str, disabled: set, parts: list) -> No
             parts.append(f"SKILL_ERROR:🔓 Ошибка: {e}")
 
 
+def _handle_zip_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
+    if "archiver" in disabled or not any(t in ql for t in triggers):
+        return
+    try:
+        path = next((user_input[ql.find(t) + len(t):].strip().strip(":").strip() for t in triggers if ql.find(t) >= 0), user_input)
+        if path:
+            result = create_zip(path)
+            parts.append(f"FILE_GENERATED:zip:{result.get('download_url','')}:{result.get('filename','')}" if result.get("ok") else f"SKILL_ERROR:📦 Архив: {result.get('error')}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:📦 Архив: {e}")
+
+
+def _handle_unzip_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    triggers = ["распакуй", "разархивируй", "извлеки архив"]
+    if "archiver" in disabled or not any(t in ql for t in triggers):
+        return
+    try:
+        path = next((user_input[ql.find(t) + len(t):].strip().strip(":").strip() for t in triggers if ql.find(t) >= 0), user_input)
+        if path:
+            result = extract_zip(path)
+            if result.get("ok"):
+                parts.append(f"📦 Распаковано в {result.get('dest','')}: {result.get('count',0)} файлов")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:📦 Распаковка: {e}")
+
+
+def _handle_convert_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    triggers = ["конвертируй", "преобразуй", "конвертировать", "convert "]
+    if "converter" in disabled or not any(t in ql for t in triggers):
+        return
+    try:
+        # Парсим: "конвертируй data.csv в xlsx"
+        match = re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, re.IGNORECASE) or \
+                re.search(r"(\S+\.\w+)\s+to\s+(\w+)", user_input, re.IGNORECASE)
+        if match:
+            result = convert_file(match.group(1), match.group(2))
+            parts.append(f"FILE_GENERATED:convert:{result.get('download_url','')}:{result.get('filename','')}" if result.get("ok") else f"SKILL_ERROR:🔄 Конвертация: {result.get('error')}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:🔄 Конвертация: {e}")
+
+
+def _handle_regex_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    triggers = ["проверь regex", "тест regex", "regex тест", "test regex", "регулярка", "регулярное выражение"]
+    if "regex" in disabled or not any(t in ql for t in triggers):
+        return
+    try:
+        # Парсим: "проверь regex \d+ на строке abc123def"
+        match = re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, re.IGNORECASE) or \
+                re.search(r"регуляр\S*[:\s]+(.+?)\s+(?:на|в|for)[:\s]+(.+)", user_input, re.IGNORECASE)
+        if match:
+            result = test_regex(match.group(1).strip(), match.group(2).strip())
+            if result.get("ok"):
+                matches = result.get("matches", [])
+                parts.append(f"📐 Regex `{match.group(1).strip()}`: {result.get('count',0)} совпадений\n" +
+                             "\n".join(f"  • `{m['match']}` (позиция {m['start']}-{m['end']})" for m in matches[:10]))
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:📐 Regex: {e}")
+
+
+def _handle_csv_skill(user_input: str, ql: str, disabled: set, parts: list) -> None:
+    triggers = ["проанализируй csv", "анализ csv", "статистика csv", "analyze csv", "проанализируй файл", "покажи статистику"]
+    if "csv_analysis" in disabled or not any(t in ql for t in triggers):
+        return
+    try:
+        file_match = re.search(r"(\S+\.csv)", user_input, re.IGNORECASE)
+        if file_match:
+            result = analyze_csv(file_match.group(1))
+            if result.get("ok"):
+                shape = result.get("shape", {})
+                desc = result.get("describe", {})
+                parts.append(f"📈 CSV: {result.get('filename','')} — {shape.get('rows',0)} строк × {shape.get('columns',0)} колонок\n"
+                             f"Колонки: {', '.join(result.get('columns',[]))}\n"
+                             f"Пустые: {json.dumps(result.get('nulls',{}), ensure_ascii=False)}\n"
+                             f"Статистика: {json.dumps(desc, ensure_ascii=False, indent=2)[:2000]}")
+    except Exception as e:
+        parts.append(f"SKILL_ERROR:📈 CSV: {e}")
+
+
 def _run_file_skills(user_input: str, ql: str, disabled: set, parts: list) -> None:
     """Zip, unzip, convert, regex, CSV analysis."""
-    # ─── 📦 Архиватор ───
-    zip_triggers = ["запакуй", "архивируй", "создай архив", "создай zip", "сделай zip"]
-    if "archiver" not in disabled and any(t in ql for t in zip_triggers):
-        try:
-            path = user_input
-            for t in zip_triggers:
-                idx = ql.find(t)
-                if idx >= 0:
-                    path = user_input[idx + len(t):].strip().strip(":").strip()
-                    break
-            if path:
-                result = create_zip(path)
-                if result.get("ok"):
-                    parts.append(f"FILE_GENERATED:zip:{result.get('download_url','')}:{result.get('filename','')}")
-                else:
-                    parts.append(f"SKILL_ERROR:📦 Архив: {result.get('error')}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:📦 Архив: {e}")
-
-    unzip_triggers = ["распакуй", "разархивируй", "извлеки архив"]
-    if "archiver" not in disabled and any(t in ql for t in unzip_triggers):
-        try:
-            path = user_input
-            for t in unzip_triggers:
-                idx = ql.find(t)
-                if idx >= 0:
-                    path = user_input[idx + len(t):].strip().strip(":").strip()
-                    break
-            if path:
-                result = extract_zip(path)
-                if result.get("ok"):
-                    parts.append(f"📦 Распаковано в {result.get('dest','')}: {result.get('count',0)} файлов")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:📦 Распаковка: {e}")
-
-    # ─── 🔄 Конвертер ───
-    convert_triggers = ["конвертируй", "преобразуй", "конвертировать", "convert "]
-    if "converter" not in disabled and any(t in ql for t in convert_triggers):
-        try:
-            # Парсим: "конвертируй data.csv в xlsx"
-            match = re.search(r"(\S+\.\w+)\s+в\s+(\w+)", user_input, re.IGNORECASE)
-            if not match:
-                match = re.search(r"(\S+\.\w+)\s+to\s+(\w+)", user_input, re.IGNORECASE)
-            if match:
-                result = convert_file(match.group(1), match.group(2))
-                if result.get("ok"):
-                    parts.append(f"FILE_GENERATED:convert:{result.get('download_url','')}:{result.get('filename','')}")
-                else:
-                    parts.append(f"SKILL_ERROR:🔄 Конвертация: {result.get('error')}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:🔄 Конвертация: {e}")
-
-    # ─── 📐 Regex ───
-    regex_triggers = ["проверь regex", "тест regex", "regex тест", "test regex", "регулярка", "регулярное выражение"]
-    if "regex" not in disabled and any(t in ql for t in regex_triggers):
-        try:
-            # Парсим: "проверь regex \d+ на строке abc123def"
-            match = re.search(r"regex[:\s]+(.+?)\s+(?:на строке|на тексте|on|text)[:\s]+(.+)", user_input, re.IGNORECASE)
-            if not match:
-                match = re.search(r"регуляр\S*[:\s]+(.+?)\s+(?:на|в|for)[:\s]+(.+)", user_input, re.IGNORECASE)
-            if match:
-                result = test_regex(match.group(1).strip(), match.group(2).strip())
-                if result.get("ok"):
-                    matches = result.get("matches", [])
-                    parts.append(f"📐 Regex `{match.group(1).strip()}`: {result.get('count',0)} совпадений\n" +
-                                 "\n".join(f"  • `{m['match']}` (позиция {m['start']}-{m['end']})" for m in matches[:10]))
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:📐 Regex: {e}")
-
-    # ─── 📈 CSV анализ ───
-    csv_triggers = ["проанализируй csv", "анализ csv", "статистика csv", "analyze csv", "проанализируй файл", "покажи статистику"]
-    if "csv_analysis" not in disabled and any(t in ql for t in csv_triggers):
-        try:
-            # Ищем имя файла
-            file_match = re.search(r"(\S+\.csv)", user_input, re.IGNORECASE)
-            if file_match:
-                result = analyze_csv(file_match.group(1))
-                if result.get("ok"):
-                    shape = result.get("shape", {})
-                    desc = result.get("describe", {})
-                    parts.append(f"📈 CSV: {result.get('filename','')} — {shape.get('rows',0)} строк × {shape.get('columns',0)} колонок\n"
-                                 f"Колонки: {', '.join(result.get('columns',[]))}\n"
-                                 f"Пустые: {json.dumps(result.get('nulls',{}), ensure_ascii=False)}\n"
-                                 f"Статистика: {json.dumps(desc, ensure_ascii=False, indent=2)[:2000]}")
-        except Exception as e:
-            parts.append(f"SKILL_ERROR:📈 CSV: {e}")
+    _handle_zip_skill(user_input, ql, disabled, parts)
+    _handle_unzip_skill(user_input, ql, disabled, parts)
+    _handle_convert_skill(user_input, ql, disabled, parts)
+    _handle_regex_skill(user_input, ql, disabled, parts)
+    _handle_csv_skill(user_input, ql, disabled, parts)
 
 
 def _run_webhook_plugin_skills(
