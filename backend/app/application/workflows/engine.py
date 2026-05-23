@@ -1102,6 +1102,39 @@ def _build_multi_agent_timeline(template: dict[str, Any], step_results: dict[str
     return timeline
 
 
+def _collect_step_results(step_results: dict[str, Any]) -> dict[str, str]:
+    """Map well-known step save-keys to canonical role names."""
+    results: dict[str, str] = {}
+    if "plan" in step_results:
+        results["orchestrator"] = _step_answer(step_results, "plan")
+    if "research" in step_results:
+        results["researcher"] = _step_answer(step_results, "research")
+    if "coding" in step_results:
+        results["programmer"] = _step_answer(step_results, "coding")
+    if "analysis" in step_results:
+        results["analyst"] = _step_answer(step_results, "analysis")
+    if "reflection" in step_results:
+        results["reflection"] = _step_answer(step_results, "reflection")
+    return results
+
+
+def _build_multi_agent_report(results: dict[str, str], final_answer: str) -> str:
+    """Assemble the human-readable report from per-role results."""
+    parts: list[str] = []
+    if results.get("orchestrator"):
+        parts.append(f"## План\n{results['orchestrator'][:2500]}")
+    if results.get("researcher"):
+        parts.append(f"## Исследование\n{results['researcher'][:2500]}")
+    if results.get("programmer"):
+        parts.append(f"## Техническое решение\n{results['programmer'][:2500]}")
+    if results.get("analyst"):
+        parts.append(f"## Анализ\n{results['analyst'][:2500]}")
+    report = final_answer.strip() or "\n\n---\n\n".join(parts).strip()
+    if results.get("reflection"):
+        report = (report + f"\n\n---\n\n## Рефлексия\n{results['reflection'][:2500]}").strip()
+    return report
+
+
 def run_multi_agent_workflow(
     *,
     query: str,
@@ -1119,60 +1152,25 @@ def run_multi_agent_workflow(
         context={"model_name": model_name},
         trigger_source="advanced.multi_agent",
     )
-
-    if run.get("status") != "completed":
-        return {
-            "ok": False,
-            "error": run.get("error", {}).get("message", "Workflow failed"),
-            "results": run.get("step_results", {}),
-            "timeline": [],
-            "agents_used": agents or ["researcher", "programmer", "analyst"],
-            "orchestrator_used": use_orchestrator,
-            "reflection_used": use_reflection,
-            "workflow_run_id": run.get("run_id", ""),
-            "workflow_id": workflow_id,
-        }
-
-    template = get_workflow_template(workflow_id) or {"graph": {"steps": []}}
-    step_results = run.get("step_results", {})
-    results: dict[str, str] = {}
-    if "plan" in step_results:
-        results["orchestrator"] = _step_answer(step_results, "plan")
-    if "research" in step_results:
-        results["researcher"] = _step_answer(step_results, "research")
-    if "coding" in step_results:
-        results["programmer"] = _step_answer(step_results, "coding")
-    if "analysis" in step_results:
-        results["analyst"] = _step_answer(step_results, "analysis")
-    if "reflection" in step_results:
-        results["reflection"] = _step_answer(step_results, "reflection")
-
-    final_answer = _step_answer(step_results, "final")
-    parts: list[str] = []
-    if results.get("orchestrator"):
-        parts.append(f"## План\n{results['orchestrator'][:2500]}")
-    if results.get("researcher"):
-        parts.append(f"## Исследование\n{results['researcher'][:2500]}")
-    if results.get("programmer"):
-        parts.append(f"## Техническое решение\n{results['programmer'][:2500]}")
-    if results.get("analyst"):
-        parts.append(f"## Анализ\n{results['analyst'][:2500]}")
-
-    report = final_answer.strip() or "\n\n---\n\n".join(parts).strip()
-    if results.get("reflection"):
-        report = (report + f"\n\n---\n\n## Рефлексия\n{results['reflection'][:2500]}").strip()
-
-    return {
-        "ok": True,
-        "report": report,
-        "results": results,
-        "timeline": _build_multi_agent_timeline(template, step_results),
+    _common = {
         "agents_used": agents or ["researcher", "programmer", "analyst"],
         "orchestrator_used": use_orchestrator,
         "reflection_used": use_reflection,
         "workflow_run_id": run.get("run_id", ""),
         "workflow_id": workflow_id,
     }
+
+    if run.get("status") != "completed":
+        return {"ok": False, "error": run.get("error", {}).get("message", "Workflow failed"),
+                "results": run.get("step_results", {}), "timeline": [], **_common}
+
+    template = get_workflow_template(workflow_id) or {"graph": {"steps": []}}
+    step_results = run.get("step_results", {})
+    results = _collect_step_results(step_results)
+    report = _build_multi_agent_report(results, _step_answer(step_results, "final"))
+
+    return {"ok": True, "report": report, "results": results,
+            "timeline": _build_multi_agent_timeline(template, step_results), **_common}
 
 
 def run_legacy_multi_agent_workflow(

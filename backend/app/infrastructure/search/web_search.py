@@ -119,6 +119,33 @@ def _default_tl(timeline: list, step: str, title: str, status: str, detail: str)
 # ---------------------------------------------------------------------------
 
 
+def _fetch_news_items(
+    query: str,
+    intent_kind: str,
+    geo_scope: str,
+    local_first: bool,
+    preferred_domains: tuple,
+) -> list[dict[str, Any]]:
+    """Run a news-specific search and return normalised result dicts."""
+    raw_news = core_search_news(
+        query, max_results=5, intent_kind=intent_kind, geo_scope=geo_scope,
+        local_first=local_first, preferred_domains=preferred_domains,
+    )
+    results: list[dict[str, Any]] = []
+    for item in raw_news:
+        href = item.get("href") or item.get("url") or ""
+        if href.startswith("http"):
+            results.append({
+                "title": item.get("title", ""),
+                "url": href,
+                "snippet": item.get("body", ""),
+                "date": item.get("date", ""),
+                "source": item.get("source", ""),
+                "engine": item.get("engine", "ddg-news"),
+            })
+    return results
+
+
 def _search_and_fetch_pages(
     query: str,
     intent_kind: str,
@@ -132,45 +159,20 @@ def _search_and_fetch_pages(
     Returns (normalized_search, news_results, deep_content, fetched_urls).
     """
     search_results = core_search(
-        query,
-        max_results=6,
-        intent_kind=intent_kind,
-        geo_scope=geo_scope,
-        local_first=local_first,
-        preferred_domains=preferred_domains,
+        query, max_results=6, intent_kind=intent_kind, geo_scope=geo_scope,
+        local_first=local_first, preferred_domains=preferred_domains,
     )
     normalized_search = [
-        {
-            "title": item.get("title", ""),
-            "url": item.get("href", ""),
-            "snippet": item.get("body", ""),
-            "engine": item.get("engine", ""),
-        }
+        {"title": item.get("title", ""), "url": item.get("href", ""),
+         "snippet": item.get("body", ""), "engine": item.get("engine", "")}
         for item in search_results
         if item.get("href", "").startswith("http")
     ]
 
-    news_results: list[dict[str, Any]] = []
-    if needs_news_feed:
-        raw_news = core_search_news(
-            query,
-            max_results=5,
-            intent_kind=intent_kind,
-            geo_scope=geo_scope,
-            local_first=local_first,
-            preferred_domains=preferred_domains,
-        )
-        for item in raw_news:
-            href = item.get("href") or item.get("url") or ""
-            if href.startswith("http"):
-                news_results.append({
-                    "title": item.get("title", ""),
-                    "url": href,
-                    "snippet": item.get("body", ""),
-                    "date": item.get("date", ""),
-                    "source": item.get("source", ""),
-                    "engine": item.get("engine", "ddg-news"),
-                })
+    news_results: list[dict[str, Any]] = (
+        _fetch_news_items(query, intent_kind, geo_scope, local_first, preferred_domains)
+        if needs_news_feed else []
+    )
 
     fetch_candidates: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
