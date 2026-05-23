@@ -133,6 +133,137 @@ def _apply_guards_and_complete_stream(
     return full_text, meta, guard_changed
 
 
+def _build_cache_hit_stream(
+    *,
+    cached: str,
+    raw_user_input: str,
+    effective_model: str,
+    profile_name: str,
+    route: str,
+    run: dict,
+    session_id,
+    timeline: list,
+    temporal: dict,
+    web_plan: dict,
+    _effective_agent_id: str,
+    _agent_start: float,
+    num_ctx: int,
+    selected: list,
+) -> "Generator[dict, None, None]":
+    """Stream a cached response: apply guards, record monitoring, yield tokens."""
+    _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
+    identity_guard = _apply_identity_guard(raw_user_input, cached, timeline)
+    cached = identity_guard.get("text", cached)
+    provenance_guard = _apply_provenance_guard(raw_user_input, cached, timeline)
+    cached = provenance_guard.get("text", cached)
+    meta = {
+        "model_name": effective_model,
+        "profile_name": profile_name,
+        "route": route,
+        "tools": [],
+        "run_id": run["run_id"],
+        "cached": True,
+        "temporal": temporal,
+        "web_plan": web_plan,
+        "identity_guard": identity_guard if identity_guard.get("changed") else None,
+        "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+    }
+    persona_meta = observe_dialogue(
+        dialog_id=run["run_id"],
+        session_id=str(session_id or run["run_id"]),
+        profile_name=profile_name,
+        model_name=effective_model,
+        user_input=raw_user_input,
+        answer_text=cached,
+        route=route,
+        outcome_ok=True,
+    )
+    meta["persona"] = persona_meta
+    _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": cached, "meta": meta})
+    _record_agent_os_monitoring(
+        agent_id=_effective_agent_id,
+        run_id=run["run_id"],
+        route=route,
+        model_name=effective_model,
+        ok=True,
+        duration_ms=int((_time.monotonic() - _agent_start) * 1000),
+        streaming=True,
+        num_ctx=num_ctx,
+        selected_tools=selected,
+    )
+    _emit_agent_os_event(
+        event_type="agent.run.completed",
+        source_agent_id=_effective_agent_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "route": route,
+            "ok": True,
+            "model_used": effective_model,
+            "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
+            "session_id": str(session_id or ""),
+            "streaming": True,
+        },
+    )
+    words = cached.split(" ")
+    for i, word in enumerate(words):
+        yield {"token": word if i == 0 else " " + word, "done": False}
+    yield {"token": "", "done": True, "full_text": cached, "meta": meta, "timeline": timeline}
+
+
+def _complete_stream_with_guards(
+    full_text: str,
+    *,
+    raw_user_input: str,
+    planner_input: str,
+    effective_model: str,
+    profile_name: str,
+    route: str,
+    selected: list,
+    run: dict,
+    session_id,
+    timeline: list,
+    _effective_agent_id: str,
+    _agent_start: float,
+    num_ctx: int,
+    temporal: dict,
+    web_plan: dict,
+    needs_file_gen: bool,
+    use_python_exec: bool,
+    use_file_gen: bool,
+) -> "Generator[dict, None, None]":
+    """Run python-exec, file generation, guards, then yield the final done event."""
+    try:
+        full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
+    except Exception:
+        pass
+    if needs_file_gen:
+        yield {"token": "", "done": False, "phase": "generating_file", "message": "Готовлю файл..."}
+    post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
+    if post_files:
+        full_text += post_files
+    full_text, meta, guard_changed = _apply_guards_and_complete_stream(
+        raw_user_input=raw_user_input,
+        full_text=full_text,
+        planner_input=planner_input,
+        effective_model=effective_model,
+        profile_name=profile_name,
+        route=route,
+        selected=selected,
+        run=run,
+        session_id=session_id,
+        timeline=timeline,
+        _effective_agent_id=_effective_agent_id,
+        _agent_start=_agent_start,
+        num_ctx=num_ctx,
+        temporal=temporal,
+        web_plan=web_plan,
+    )
+    if guard_changed:
+        yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
+    yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
+
+
 # ─── execute_chat_agent_stream (streaming) ───────────────────────────────────
 
 
@@ -213,64 +344,14 @@ def execute_chat_agent_stream(
         if should_cache(planner_input, route) and not history:
             cached = get_cached(planner_input, effective_model, profile_name)
             if cached:
-                _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
-                identity_guard = _apply_identity_guard(raw_user_input, cached, timeline)
-                cached = identity_guard.get("text", cached)
-                provenance_guard = _apply_provenance_guard(raw_user_input, cached, timeline)
-                cached = provenance_guard.get("text", cached)
-                meta = {
-                    "model_name": effective_model,
-                    "profile_name": profile_name,
-                    "route": route,
-                    "tools": [],
-                    "run_id": run["run_id"],
-                    "cached": True,
-                    "temporal": temporal,
-                    "web_plan": web_plan,
-                    "identity_guard": identity_guard if identity_guard.get("changed") else None,
-                    "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
-                }
-                persona_meta = observe_dialogue(
-                    dialog_id=run["run_id"],
-                    session_id=str(session_id or run["run_id"]),
-                    profile_name=profile_name,
-                    model_name=effective_model,
-                    user_input=raw_user_input,
-                    answer_text=cached,
-                    route=route,
-                    outcome_ok=True,
+                yield from _build_cache_hit_stream(
+                    cached=cached, raw_user_input=raw_user_input,
+                    effective_model=effective_model, profile_name=profile_name,
+                    route=route, run=run, session_id=session_id, timeline=timeline,
+                    temporal=temporal, web_plan=web_plan,
+                    _effective_agent_id=_effective_agent_id, _agent_start=_agent_start,
+                    num_ctx=num_ctx, selected=selected,
                 )
-                meta["persona"] = persona_meta
-                _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": cached, "meta": meta})
-                _record_agent_os_monitoring(
-                    agent_id=_effective_agent_id,
-                    run_id=run["run_id"],
-                    route=route,
-                    model_name=effective_model,
-                    ok=True,
-                    duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-                    streaming=True,
-                    num_ctx=num_ctx,
-                    selected_tools=selected,
-                )
-                _emit_agent_os_event(
-                    event_type="agent.run.completed",
-                    source_agent_id=_effective_agent_id,
-                    payload={
-                        "run_id": run["run_id"],
-                        "profile_name": profile_name,
-                        "route": route,
-                        "ok": True,
-                        "model_used": effective_model,
-                        "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-                        "session_id": str(session_id or ""),
-                        "streaming": True,
-                    },
-                )
-                words = cached.split(" ")
-                for i, word in enumerate(words):
-                    yield {"token": word if i == 0 else " " + word, "done": False}
-                yield {"token": "", "done": True, "full_text": cached, "meta": meta, "timeline": timeline}
                 return
 
         try:
@@ -339,34 +420,16 @@ def execute_chat_agent_stream(
         ql_check = raw_user_input.lower()
         needs_file_gen = any(t in ql_check for t in _FILE_TRIGGERS_WORD + _FILE_TRIGGERS_EXCEL)
 
+        _guards_kwargs = dict(
+            raw_user_input=raw_user_input, planner_input=planner_input,
+            effective_model=effective_model, profile_name=profile_name,
+            route=route, selected=selected, run=run, session_id=session_id,
+            timeline=timeline, _effective_agent_id=_effective_agent_id,
+            _agent_start=_agent_start, num_ctx=num_ctx, temporal=temporal,
+            web_plan=web_plan, use_python_exec=use_python_exec, use_file_gen=use_file_gen,
+        )
         if not should_reflect and not needs_file_gen:
-            try:
-                full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-            except Exception:
-                pass
-            post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
-            if post_files:
-                full_text += post_files
-            full_text, meta, guard_changed = _apply_guards_and_complete_stream(
-                raw_user_input=raw_user_input,
-                full_text=full_text,
-                planner_input=planner_input,
-                effective_model=effective_model,
-                profile_name=profile_name,
-                route=route,
-                selected=selected,
-                run=run,
-                session_id=session_id,
-                timeline=timeline,
-                _effective_agent_id=_effective_agent_id,
-                _agent_start=_agent_start,
-                num_ctx=num_ctx,
-                temporal=temporal,
-                web_plan=web_plan,
-            )
-            if guard_changed:
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
-            yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
+            yield from _complete_stream_with_guards(full_text, needs_file_gen=False, **_guards_kwargs)
         else:
             if should_reflect and full_text.strip() and not has_generated_files:
                 yield {"token": "", "done": False, "phase": "reflecting", "message": "Проверяю..."}
@@ -385,38 +448,7 @@ def execute_chat_agent_stream(
                         yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
                 except Exception:
                     pass
-
-            try:
-                full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-            except Exception:
-                pass
-
-            if needs_file_gen:
-                yield {"token": "", "done": False, "phase": "generating_file", "message": "Готовлю файл..."}
-            post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
-            if post_files:
-                full_text += post_files
-
-            full_text, meta, guard_changed = _apply_guards_and_complete_stream(
-                raw_user_input=raw_user_input,
-                full_text=full_text,
-                planner_input=planner_input,
-                effective_model=effective_model,
-                profile_name=profile_name,
-                route=route,
-                selected=selected,
-                run=run,
-                session_id=session_id,
-                timeline=timeline,
-                _effective_agent_id=_effective_agent_id,
-                _agent_start=_agent_start,
-                num_ctx=num_ctx,
-                temporal=temporal,
-                web_plan=web_plan,
-            )
-            if guard_changed:
-                yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
-            yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
+            yield from _complete_stream_with_guards(full_text, needs_file_gen=needs_file_gen, **_guards_kwargs)
 
     except Exception as exc:
         _handle_chat_run_failure(
