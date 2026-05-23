@@ -29,9 +29,3 @@ class ProjectMapService:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    # Legacy stubs kept for backward compatibility
-    def build(self, *a: Any, **kw: Any) -> dict[str, Any]:
-        return self.build_map()
-
-    def get_map(self, *a: Any, **kw: Any) -> dict[str, Any]:
-        return self.build_map()
