@@ -592,9 +592,7 @@ export default function EliraChatShell(): JSX.Element {
           setError(""); setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
           return;
         } catch (e) {
-          const msg = (e as Error)?.message === "Failed to fetch"
-            ? "Multi-agent: backend недоступен. Проверь, жив ли FastAPI/Ollama."
-            : normalizeErrorMessage(e);
+          const msg = normalizeErrorMessage(e);
           setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); return;
         }
       }
@@ -616,7 +614,7 @@ export default function EliraChatShell(): JSX.Element {
             setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null;
             api.addMessage({ chatId: activeChatId, role: "assistant", content: final }).catch(() => {});
           },
-          onError(msg: string) { setError(msg); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null; },
+          onError(msg: string) { setError(normalizeErrorMessage(msg)); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null; },
         }
       );
       streamRef.current = ctrl;

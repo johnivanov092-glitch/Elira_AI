@@ -8,8 +8,12 @@ export type ApiRequestOptions = Omit<RequestInit, "body"> & {
 
 export type FallbackValue<T> = T | ((error: unknown) => T | Promise<T>);
 
+// Always use the explicit IPv4 loopback address for the backend.
+// Tauri desktop app: backend is always on 127.0.0.1:8000.
+// Using window.location.hostname risks picking up "localhost" which on Windows
+// resolves to ::1 (IPv6) — the backend only listens on IPv4 (127.0.0.1:8000).
 export const API_BASE: string =
-  import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
+  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
 export function buildApiUrl(path = ""): string {
   if (!path) return API_BASE;

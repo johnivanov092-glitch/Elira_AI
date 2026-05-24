@@ -39,7 +39,12 @@ export function shortModelName(name: string | null | undefined): string {
 export function normalizeErrorMessage(e: unknown, fb = "Ошибка"): string {
   const v = (e as Record<string, unknown>)?.message ?? (e as Record<string, unknown>)?.detail ?? e;
   if (!v) return fb;
-  if (typeof v === "string") return v;
+  if (typeof v === "string") {
+    if (v === "Failed to fetch" || v.toLowerCase().includes("failed to fetch") || v.toLowerCase().includes("networkerror")) {
+      return "Бэкенд недоступен — убедитесь, что Elira.bat запущен и порт 8000 свободен";
+    }
+    return v;
+  }
   if (Array.isArray(v)) return v.map((i) => normalizeErrorMessage(i, "")).filter(Boolean).join(" | ") || fb;
   if (typeof v === "object") {
     const obj = v as Record<string, unknown>;
