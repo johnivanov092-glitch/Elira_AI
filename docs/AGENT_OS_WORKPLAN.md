@@ -190,3 +190,4 @@ subscriptions (
 | 2026-03-30 | Codex | Phase 5 завершена: read-only `Agent OS` секция добавлена в dashboard, UI подтягивает health/dashboard/limits, `npm --prefix frontend run build` зелёный, фаза помечена как DONE |
 | 2026-05-24 | Claude Code | Phase 2 подтверждена DONE: `app/application/tool_registry/{store,runtime,builtins,service}.py` + routes + compat facade на `main`, 17/17 тестов зелёные |
 | 2026-05-24 | Claude Code | Phase 6 (Frontend TypeScript): 23 `.ts`/`.tsx` файла, `tsc --noEmit` = 0 ошибок, ветка `claude/phase6-ts` запушена (PR ожидает ревью) |
+| 2026-05-24 | Claude Code | Phase 2 завершена финально: `plugin_system.py` регистрирует плагины в Tool Registry как `source='plugin'`; enable/disable синхронизируют флаг; 22/22 тестов зелёные; ветка `feat/agent-os-phase2-plugin-wire` |
