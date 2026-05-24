@@ -2318,3 +2318,13 @@ Live repair log for concrete backend/runtime fixes.
   `python -m pytest backend/tests/ -q` -> 2463 tests OK.
 - Result:
   event bus now records every tool invocation; context_builder has no API-layer imports.
+### 165. Fix "Failed to fetch" on all frontend tabs
+- Status: completed
+- Scope: frontend API base URL and error message quality.
+- Diagnosis: all backend endpoints return 200 OK; root cause was `API_BASE` falling back to `http://${window.location.hostname}:8000`. On Windows, "localhost" resolves to ::1 (IPv6 loopback) while uvicorn listens on 127.0.0.1 (IPv4 only), causing immediate "Failed to fetch" on every tab-load call.
+- Finish:
+  1. `frontend/src/api/client.ts` — replaced dynamic `window.location.hostname` fallback with explicit `http://127.0.0.1:8000`. VITE_API_BASE_URL env var still overrides for custom deployments.
+  2. `frontend/src/chatUtils.ts` — `normalizeErrorMessage()` now maps the raw JS "Failed to fetch" / "NetworkError" to a user-readable Russian message pointing to Elira.bat.
+  3. `frontend/src/components/EliraChatShell.tsx` — streaming `onError` and multi-agent error handlers now go through `normalizeErrorMessage` for consistent friendly messages.
+- Verification: `npm run build` passes clean (1773 modules, 0 errors).
+- Result: explicit IPv4 address eliminates IPv4/IPv6 mismatch; error messages guide the user to the correct fix when the backend is genuinely unreachable.
