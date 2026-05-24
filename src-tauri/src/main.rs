@@ -146,13 +146,24 @@ fn main() {
             backend_status
         ])
         .setup(|app| {
-            let handle = app.handle();
-            let state: tauri::State<BackendState> = handle.state();
-            match start_backend(handle.clone(), state) {
-                Ok(msg) => eprintln!("[Elira] {}", msg),
-                Err(e) => {
-                    eprintln!("[Elira] WARNING: Backend failed to start: {}", e);
-                    eprintln!("[Elira] Проверь: 1) backend/.venv/ существует  2) pip install -r requirements.txt  3) порт 8000 свободен");
+            // When ELIRA_EXTERNAL_BACKEND=1 the launcher script (run_tauri_dev.bat or
+            // equivalent) already started the backend process.  Skip auto-start so we
+            // don't race against the externally-managed process.
+            let skip = std::env::var("ELIRA_EXTERNAL_BACKEND")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+
+            if skip {
+                eprintln!("[Elira] External backend detected (ELIRA_EXTERNAL_BACKEND=1); skipping auto-start.");
+            } else {
+                let handle = app.handle();
+                let state: tauri::State<BackendState> = handle.state();
+                match start_backend(handle.clone(), state) {
+                    Ok(msg) => eprintln!("[Elira] {}", msg),
+                    Err(e) => {
+                        eprintln!("[Elira] WARNING: Backend failed to start: {}", e);
+                        eprintln!("[Elira] Check: 1) backend/.venv/ exists  2) pip install -r requirements.txt  3) port 8000 is free");
+                    }
                 }
             }
             Ok(())
