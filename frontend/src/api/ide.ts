@@ -105,6 +105,11 @@ import {
   listToolRuns,
   runPythonCode,
 } from "./tools";
+import {
+  DEFAULT_CODE_AGENT_MAX_STEPS,
+  DEFAULT_CODE_AGENT_MODEL,
+  runCodeAgent,
+} from "./codeAgent";
 
 export {
   addMessage,
@@ -213,6 +218,16 @@ export {
   listToolRuns,
   runPythonCode,
 } from "./tools";
+export {
+  DEFAULT_CODE_AGENT_MAX_STEPS,
+  DEFAULT_CODE_AGENT_MODEL,
+  runCodeAgent,
+} from "./codeAgent";
+export type {
+  CodeAgentResponse,
+  CodeAgentRunArgs,
+  CodeAgentToolCall,
+} from "./codeAgent";
 
 export const api = {
   listChats,
@@ -297,6 +312,9 @@ export const api = {
   getTerminalCwd,
   executeTerminal,
   isLocalApiAssetUrl,
+  runCodeAgent,
+  DEFAULT_CODE_AGENT_MODEL,
+  DEFAULT_CODE_AGENT_MAX_STEPS,
 };
 
 export default api;
