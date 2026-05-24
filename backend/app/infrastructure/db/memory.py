@@ -3,31 +3,21 @@
 The active memory implementation lives in app.application.memory.smart_memory.
 This module retains only the dependency-probe used by the status endpoint.
 """
+import importlib.util
 from typing import Any, Dict, List
 
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
 
-try:
-    import faiss
-except Exception:
-    faiss = None
-
-try:
-    import numpy as np
-except Exception:
-    np = None
+def _has(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
 
 
 def vector_memory_capability_status() -> Dict[str, Any]:
     missing: List[str] = []
-    if SentenceTransformer is None:
+    if not _has("sentence_transformers"):
         missing.append("sentence-transformers")
-    if faiss is None:
+    if not _has("faiss"):
         missing.append("faiss-cpu")
-    if np is None:
+    if not _has("numpy"):
         missing.append("numpy")
 
     available = not missing

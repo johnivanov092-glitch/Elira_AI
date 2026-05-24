@@ -22,13 +22,19 @@ logger = logging.getLogger(__name__)
 
 # Compatibility runtime extracted from app.services.image_gen.
 
-# torch импортируем на уровне модуля — безопасно
-try:
-    import torch
-    _HAS_TORCH = True
-except ImportError:
-    torch = None
-    _HAS_TORCH = False
+# torch is heavy (~1s + huge RAM) — deferred until generate_image() actually runs.
+import importlib.util as _ilu
+
+torch = None
+_HAS_TORCH = _ilu.find_spec("torch") is not None
+
+
+def _load_torch():
+    global torch
+    if torch is None and _HAS_TORCH:
+        import torch as _t
+        torch = _t
+    return torch
 
 OUTPUT_DIR = GENERATED_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,6 +56,7 @@ def _get_pipe():
 
     logger.info(f"Loading FLUX.1-schnell (first time may take a few minutes)...")
 
+    _load_torch()
     cuda_available = _HAS_TORCH and torch.cuda.is_available()
     dtype = torch.float16 if cuda_available else torch.float32
     logger.info("CUDA доступна: %s", cuda_available)
@@ -129,6 +136,7 @@ def generate_image(
         if not _HAS_TORCH:
             return {"ok": False, "error": "torch не установлен: pip install torch"}
 
+        _load_torch()
         pipe = _get_pipe()
 
         generator = None
