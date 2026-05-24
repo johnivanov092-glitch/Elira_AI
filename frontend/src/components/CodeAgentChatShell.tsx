@@ -31,7 +31,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { ChevronDown, ChevronRight, Loader2, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
+import { BookmarkPlus, ChevronDown, ChevronRight, Loader2, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
 import type {
   CodeAgentStreamEvent,
@@ -41,6 +41,50 @@ import type {
 import { UiIcon, IconText } from "./StatusPanels";
 
 const HISTORY_KEY = "elira_code_agent_history_v2";
+const SAVED_PROMPTS_KEY = "elira_code_agent_saved_prompts_v1";
+
+type SavedPrompt = {
+  id: string;
+  label: string;
+  text: string;
+  ts: number;
+};
+
+const DEFAULT_SAVED_PROMPTS: SavedPrompt[] = [
+  {
+    id: "tpl-tests",
+    label: "Тесты для файла",
+    text: "Напиши pytest-тесты для всего публичного API файла <путь к файлу>. Запусти их и убедись что зелёные.",
+    ts: 0,
+  },
+  {
+    id: "tpl-review",
+    label: "Code review",
+    text: "Проведи code review файла <путь>. Найди баги, security issues, плохой стиль. В конце дай короткий verdict.",
+    ts: 0,
+  },
+  {
+    id: "tpl-refactor",
+    label: "Рефакторинг",
+    text: "Рефактор файла <путь>: убери дубликаты, разбей длинные функции, добавь type hints где их нет. Запусти тесты до и после чтобы убедиться что ничего не сломалось.",
+    ts: 0,
+  },
+];
+
+function loadSavedPrompts(): SavedPrompt[] {
+  try {
+    const raw = localStorage.getItem(SAVED_PROMPTS_KEY);
+    if (!raw) return DEFAULT_SAVED_PROMPTS;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length ? (parsed as SavedPrompt[]) : DEFAULT_SAVED_PROMPTS;
+  } catch {
+    return DEFAULT_SAVED_PROMPTS;
+  }
+}
+
+function persistSavedPrompts(prompts: SavedPrompt[]): void {
+  try { localStorage.setItem(SAVED_PROMPTS_KEY, JSON.stringify(prompts.slice(0, 50))); } catch {}
+}
 
 type UserTurn = {
   kind: "user";
@@ -303,9 +347,29 @@ export default function CodeAgentChatShell({
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [liveStep, setLiveStep] = useState<number | null>(null);
+  const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>(() => loadSavedPrompts());
+  const [promptsOpen, setPromptsOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => { persistSavedPrompts(savedPrompts); }, [savedPrompts]);
+
+  function applySavedPrompt(p: SavedPrompt) {
+    setInput((cur) => (cur.trim() ? cur + "\n\n" + p.text : p.text));
+    setPromptsOpen(false);
+  }
+  function saveCurrentAsPrompt() {
+    const text = input.trim();
+    if (!text) return;
+    const label = text.split("\n")[0].slice(0, 50) || "Без названия";
+    const newPrompt: SavedPrompt = { id: `tpl-${Date.now().toString(36)}`, label, text, ts: Date.now() };
+    setSavedPrompts((prev) => [newPrompt, ...prev]);
+    setPromptsOpen(true);
+  }
+  function deletePrompt(id: string) {
+    setSavedPrompts((prev) => prev.filter((p) => p.id !== id));
+  }
 
   useEffect(() => {
     saveHistory(history);
@@ -623,8 +687,113 @@ export default function CodeAgentChatShell({
         })}
       </div>
 
+      {/* Saved prompts drawer */}
+      {promptsOpen && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderTop: "1px solid var(--border)",
+            background: "var(--bg-surface)",
+            flexShrink: 0,
+            maxHeight: 180,
+            overflow: "auto",
+          }}
+        >
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.4 }}>
+            Шаблоны задач (клик — вставить в ввод)
+          </div>
+          {savedPrompts.length === 0 ? (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "4px 0" }}>Шаблоны пустые. Введи задачу и нажми «Сохранить как шаблон».</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {savedPrompts.map((p) => (
+                <div
+                  key={p.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 6,
+                    padding: "5px 8px",
+                    borderRadius: 6,
+                    background: "var(--bg-input)",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  <button
+                    onClick={() => applySavedPrompt(p)}
+                    style={{
+                      flex: 1,
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      textAlign: "left",
+                      color: "var(--text-primary)",
+                      padding: 0,
+                      minWidth: 0,
+                    }}
+                  >
+                    <div style={{ fontSize: 11, fontWeight: 500, marginBottom: 2 }}>
+                      <UiIcon icon={Star} size={10} /> {p.label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "var(--text-muted)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontFamily: "var(--font-mono)",
+                      }}
+                    >
+                      {p.text.split("\n")[0]}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => deletePrompt(p.id)}
+                    style={{
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      color: "var(--text-muted)",
+                      padding: 2,
+                      flexShrink: 0,
+                    }}
+                    title="Удалить шаблон"
+                  >
+                    <UiIcon icon={Trash2} size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Composer */}
       <div style={{ padding: "8px 12px 10px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+          <button
+            onClick={() => setPromptsOpen((v) => !v)}
+            className="soft-btn"
+            style={{ fontSize: 10, padding: "3px 8px" }}
+            title="Шаблоны задач"
+          >
+            <IconText icon={Star} size={11} gap={4}>
+              Шаблоны {savedPrompts.length > 0 && `(${savedPrompts.length})`}
+            </IconText>
+          </button>
+          <button
+            onClick={saveCurrentAsPrompt}
+            disabled={!input.trim()}
+            className="soft-btn"
+            style={{ fontSize: 10, padding: "3px 8px", opacity: !input.trim() ? 0.4 : 1 }}
+            title="Сохранить текущий ввод как шаблон"
+          >
+            <IconText icon={BookmarkPlus} size={11} gap={4}>
+              Сохранить как шаблон
+            </IconText>
+          </button>
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
           <textarea
             value={input}
