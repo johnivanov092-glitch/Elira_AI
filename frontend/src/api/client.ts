@@ -15,6 +15,26 @@ export type FallbackValue<T> = T | ((error: unknown) => T | Promise<T>);
 export const API_BASE: string =
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
+/** Poll /health until the backend answers or we give up.
+ *  Returns true if backend is reachable, false on timeout. */
+export async function waitForBackend(
+  maxAttempts = 15,
+  intervalMs = 2000,
+  onAttempt?: (attempt: number) => void,
+): Promise<boolean> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const r = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+      if (r.ok) return true;
+    } catch {
+      // not ready yet
+    }
+    onAttempt?.(i + 1);
+    await new Promise((res) => setTimeout(res, intervalMs));
+  }
+  return false;
+}
+
 export function buildApiUrl(path = ""): string {
   if (!path) return API_BASE;
   return path.startsWith("http://") || path.startsWith("https://")

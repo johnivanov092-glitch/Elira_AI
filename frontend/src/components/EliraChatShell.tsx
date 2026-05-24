@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { LucideIcon } from "lucide-react";
 import { api, executeStream } from "../api/ide";
+import { waitForBackend } from "../api/client";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ArtifactPanel from "./ArtifactPanel";
@@ -241,8 +242,10 @@ export default function EliraChatShell(): JSX.Element {
   const [settingsSaved, setSettingsSaved] = useState(false);
   const [routeMap, setRouteMap] = useState<RouteMap>({ code: [], project: [], research: [], chat: [] });
   const [theme, setTheme] = useState(() => localStorage.getItem("elira_theme") || "dark");
+  const [backendStatus, setBackendStatus] = useState<"checking" | "online" | "offline">("checking");
+  const [backendAttempt, setBackendAttempt] = useState(0);
 
-  useEffect(() => { bootstrapApp(); return () => { if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; } }; }, []);
+  useEffect(() => { startupWithHealthCheck(); return () => { if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; } }; }, []);
   useEffect(() => { if (msgRef.current) msgRef.current.scrollTop = msgRef.current.scrollHeight; }, [messages, chatId]);
   useEffect(() => {
     if (!error) return;
@@ -306,6 +309,18 @@ export default function EliraChatShell(): JSX.Element {
       setShowPanel(true);
     }
   }, [messages]);
+
+  async function startupWithHealthCheck() {
+    if (initRef.current) return;
+    setBackendStatus("checking");
+    const ok = await waitForBackend(20, 2000, (attempt) => setBackendAttempt(attempt));
+    if (!ok) {
+      setBackendStatus("offline");
+      return;
+    }
+    setBackendStatus("online");
+    bootstrapApp();
+  }
 
   async function bootstrapApp() {
     if (initRef.current) return;
@@ -751,6 +766,33 @@ export default function EliraChatShell(): JSX.Element {
   const ctxF = useMemo(() => getChatContextFiles(libraryFiles, chatId), [libraryFiles, chatId]);
 
   const getName = useCallback((item: unknown) => typeof item === "string" ? item : ((item as Record<string, unknown>).name || (item as Record<string, unknown>).model || "") as string, []);
+
+  // ── Backend offline / connecting screens ───────────────────────────────────
+  if (backendStatus === "checking") return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)",gap:16,color:"var(--text)"}}>
+      <svg width="48" height="48" viewBox="0 0 64 64" fill="none"><defs><linearGradient id="jg2" x1="12" y1="10" x2="52" y2="54" gradientUnits="userSpaceOnUse"><stop stopColor="#7C3AED"/><stop offset="1" stopColor="#06B6D4"/></linearGradient></defs><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="14" stroke="url(#jg2)" strokeWidth="3"><animateTransform attributeName="transform" type="rotate" from="0 32 32" to="360 32 32" dur="2s" repeatCount="indefinite"/></circle><circle cx="32" cy="32" r="6" fill="url(#jg2)"/></svg>
+      <div style={{fontSize:16,fontWeight:600}}>Elira AI</div>
+      <div style={{fontSize:13,color:"var(--text-muted)"}}>Подключение к бэкенду… попытка {backendAttempt}</div>
+      <div style={{fontSize:11,color:"var(--text-muted)",opacity:0.6}}>http://127.0.0.1:8000</div>
+    </div>
+  );
+
+  if (backendStatus === "offline") return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100vh",background:"var(--bg)",gap:16,color:"var(--text)",textAlign:"center",padding:"0 24px"}}>
+      <svg width="48" height="48" viewBox="0 0 64 64" fill="none"><rect x="5" y="5" width="54" height="54" rx="14" fill="#0B1020"/><circle cx="32" cy="32" r="18" stroke="#f44336" strokeWidth="3"/><line x1="22" y1="22" x2="42" y2="42" stroke="#f44336" strokeWidth="3" strokeLinecap="round"/><line x1="42" y1="22" x2="22" y2="42" stroke="#f44336" strokeWidth="3" strokeLinecap="round"/></svg>
+      <div style={{fontSize:16,fontWeight:600}}>Бэкенд недоступен</div>
+      <div style={{fontSize:12,color:"var(--text-muted)",maxWidth:360,lineHeight:1.6}}>
+        Не удалось подключиться к <code style={{background:"rgba(255,255,255,0.08)",padding:"1px 6px",borderRadius:4}}>http://127.0.0.1:8000</code> после 20 попыток.<br/>
+        Убедитесь, что запущен <strong>Elira.bat</strong>, и нажмите кнопку ниже.
+      </div>
+      <button
+        onClick={() => { initRef.current = false; setBackendStatus("checking"); setBackendAttempt(0); startupWithHealthCheck(); }}
+        style={{padding:"8px 24px",borderRadius:8,background:"var(--accent)",color:"#fff",border:"none",cursor:"pointer",fontSize:13,fontWeight:600}}
+      >
+        Повторить подключение
+      </button>
+    </div>
+  );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (mainTab === "code") return <IdeWorkspaceShell messages={messages as any} libraryFiles={libraryFiles as any} setLibraryFiles={setLibraryFiles as any} onBackToChat={() => setMainTab("chat")} onSendToChat={(txt: string) => { setMainTab("chat"); setTimeout(() => setInput(txt), 100); }} />;
