@@ -1,16 +1,18 @@
 /**
  * CodeWorkspaceShell.tsx
  *
- * Unified "Код" workspace: code-agent chat on the left, IDE view
- * (artifacts / git / files / history) on the right. Single top bar
- * owns "back to chat", LLM model picker, project root and max-steps
- * — these are shared by the agent embedded on the left.
+ * Unified "Код" workspace: streaming code-agent chat on the left, IDE
+ * view (artifacts / git / files / history) on the right. Top toolbar
+ * owns Back / model / project-root / max-steps / project-prompt.
  *
- * The vertical divider between the two panes is drag-resizable and
- * the split ratio is persisted to localStorage.
+ * When the agent touches a file (read_file / write_file / edit_file),
+ * we forward the path to the IDE pane so it auto-opens the file in
+ * the "Файлы" sub-tab.
+ *
+ * Layout state (split %, IDE collapsed) is persisted to localStorage.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Cpu, FolderOpen, RefreshCw } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Cpu, FileText, FolderOpen, RefreshCw, Save, X } from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import CodeAgentChatShell from "./CodeAgentChatShell";
 import { api } from "../api/ide";
@@ -98,6 +100,17 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
 
+  // Auto-open: the agent telling the IDE "I just touched this file" — bump
+  // a request counter alongside so even re-touches of the same path retrigger.
+  const [autoOpen, setAutoOpen] = useState<{ path: string; nonce: number } | null>(null);
+
+  // Project prompt panel
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [promptText, setPromptText] = useState("");
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptStatus, setPromptStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [promptError, setPromptError] = useState<string | null>(null);
+
   const splitRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
 
@@ -125,7 +138,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           return null;
         })
         .filter((v): v is Model => Boolean(v));
-      // Sort: tool-friendly first, then alphabetical
       list.sort((a, b) => {
         const at = isToolFriendly(a.name) ? 0 : 1;
         const bt = isToolFriendly(b.name) ? 0 : 1;
@@ -143,7 +155,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
 
   useEffect(() => { loadModels(); }, [loadModels]);
 
-  // Drag handlers for the resizable splitter
+  // Splitter drag
   useEffect(() => {
     function onMove(e: MouseEvent) {
       if (!draggingRef.current || !splitRef.current) return;
@@ -171,6 +183,40 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, []);
+
+  const handleAgentTouchedFile = useCallback((path: string) => {
+    if (ideCollapsed) return; // don't fight a user who hid the IDE
+    setAutoOpen({ path, nonce: Date.now() });
+  }, [ideCollapsed]);
+
+  const openPromptEditor = useCallback(async () => {
+    setPromptOpen(true);
+    setPromptStatus("idle");
+    setPromptError(null);
+    setPromptLoading(true);
+    try {
+      const info = await api.getProjectPrompt(projectRoot);
+      setPromptText(info.content || "");
+    } catch (e) {
+      setPromptError(String((e as Error)?.message || e));
+      setPromptText("");
+    } finally {
+      setPromptLoading(false);
+    }
+  }, [projectRoot]);
+
+  const savePrompt = useCallback(async () => {
+    setPromptStatus("saving");
+    setPromptError(null);
+    try {
+      await api.setProjectPromptApi(projectRoot, promptText);
+      setPromptStatus("saved");
+      setTimeout(() => setPromptStatus("idle"), 2000);
+    } catch (e) {
+      setPromptStatus("error");
+      setPromptError(String((e as Error)?.message || e));
+    }
+  }, [projectRoot, promptText]);
 
   const knownModels = useMemo<Model[]>(() => {
     const ms = models || [];
@@ -207,7 +253,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </button>
         )}
 
-        {/* Project root */}
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <UiIcon icon={FolderOpen} size={13} />
           <input
@@ -230,7 +275,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           />
         </div>
 
-        {/* Model picker */}
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <UiIcon icon={Cpu} size={13} />
           <select
@@ -273,7 +317,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </button>
         </div>
 
-        {/* Max steps */}
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <span style={{ fontSize: 10, color: "var(--text-muted)" }}>steps</span>
           <input
@@ -297,7 +340,17 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           />
         </div>
 
-        {/* Collapse IDE toggle */}
+        <button
+          onClick={openPromptEditor}
+          className="soft-btn"
+          title="Редактировать .elira/agent.md — проектный системный промпт"
+          style={{ fontSize: 11, padding: "5px 10px" }}
+        >
+          <IconText icon={FileText} size={12} gap={5}>
+            Промпт проекта
+          </IconText>
+        </button>
+
         <button
           onClick={() => setIdeCollapsed((v) => !v)}
           className="soft-btn"
@@ -310,6 +363,77 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         </button>
       </div>
 
+      {/* Project-prompt editor (inline) */}
+      {promptOpen && (
+        <div
+          style={{
+            padding: "10px 14px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg-surface)",
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <UiIcon icon={FileText} size={13} />
+            <div style={{ fontSize: 12, fontWeight: 500 }}>Проектный системный промпт</div>
+            <code style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+              .elira/agent.md
+            </code>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              {promptStatus === "saved" && <span style={{ fontSize: 10, color: "#4ade80" }}>✓ Сохранено</span>}
+              {promptStatus === "error" && <span style={{ fontSize: 10, color: "#ff6b6b" }}>✕ Ошибка</span>}
+              <button
+                onClick={savePrompt}
+                disabled={promptStatus === "saving" || promptLoading}
+                className="soft-btn"
+                style={{ fontSize: 11, padding: "4px 10px", opacity: promptStatus === "saving" || promptLoading ? 0.5 : 1 }}
+              >
+                <IconText icon={Save} size={12} gap={4}>
+                  Сохранить
+                </IconText>
+              </button>
+              <button
+                onClick={() => setPromptOpen(false)}
+                className="soft-btn"
+                style={{ fontSize: 11, padding: "4px 8px" }}
+              >
+                <UiIcon icon={X} size={12} />
+              </button>
+            </div>
+          </div>
+          {promptError && (
+            <div style={{ fontSize: 10, color: "#ff6b6b", marginBottom: 6, fontFamily: "var(--font-mono)" }}>{promptError}</div>
+          )}
+          <textarea
+            value={promptText}
+            onChange={(e) => setPromptText(e.target.value)}
+            disabled={promptLoading}
+            placeholder="Например:\n- Стиль кода: PEP8, type hints обязательны\n- Не трогать backend/legacy/\n- Все коммиты на русском, conventional commits"
+            spellCheck={false}
+            style={{
+              width: "100%",
+              minHeight: 140,
+              maxHeight: 320,
+              padding: "8px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg-input)",
+              color: "var(--text-primary)",
+              fontSize: 11,
+              outline: "none",
+              fontFamily: "var(--font-mono)",
+              resize: "vertical",
+              boxSizing: "border-box",
+              lineHeight: 1.5,
+            }}
+          />
+          <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-muted)" }}>
+            Содержимое подгружается агентом в системный промпт на каждом запуске. Полезно для проектных правил, стиля,
+            запрещённых директорий, конвенций коммитов.
+          </div>
+        </div>
+      )}
+
       {/* SPLIT PANES */}
       <div ref={splitRef} style={{ flex: 1, display: "flex", minHeight: 0 }}>
         <div
@@ -319,7 +443,12 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             borderRight: ideCollapsed ? "none" : "1px solid var(--border)",
           }}
         >
-          <CodeAgentChatShell projectRoot={projectRoot} model={model} maxSteps={maxSteps} />
+          <CodeAgentChatShell
+            projectRoot={projectRoot}
+            model={model}
+            maxSteps={maxSteps}
+            onAgentTouchedFile={handleAgentTouchedFile}
+          />
         </div>
 
         {!ideCollapsed && (
@@ -354,6 +483,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 libraryFiles={libraryFiles as never}
                 setLibraryFiles={setLibraryFiles as never}
                 onSendToChat={onSendToChat}
+                autoOpenFile={autoOpen?.path}
+                autoOpenNonce={autoOpen?.nonce}
               />
             </div>
           </>

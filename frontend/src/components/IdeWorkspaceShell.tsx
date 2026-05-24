@@ -132,6 +132,12 @@ type IdeWorkspaceShellProps = {
   onBackToChat?: () => void;
   onSendToChat?: (text: string) => void;
   setLibraryFiles?: (files: LibraryFile[]) => void;
+  /** Path the code-agent just touched (read/write/edit). When this
+   *  changes, the shell auto-switches to the "Файлы" sub-tab and
+   *  opens the file. autoOpenNonce lets the parent retrigger even
+   *  when the same path is revisited. */
+  autoOpenFile?: string;
+  autoOpenNonce?: number;
 };
 
 type HighlightJs = {
@@ -244,7 +250,7 @@ function IconText({ icon, children, size = 14, gap = 6, style }: { children: Rea
   );
 }
 
-export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat}: IdeWorkspaceShellProps){
+export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat,autoOpenFile,autoOpenNonce}: IdeWorkspaceShellProps){
   const fileRef=useRef<HTMLInputElement | null>(null);
   const [drag,setDrag]=useState(false);
   const [selectedId,setSelectedId]=useState("");
@@ -350,6 +356,26 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     }catch(e){setFtContent("Ошибка: "+String(e));}
   }
 
+  // Auto-open: when the code-agent touches a file (via autoOpenFile prop),
+  // switch the IDE pane to the Файлы tab and load the file content. The
+  // nonce ensures we retrigger even if the agent reads the same path twice.
+  useEffect(() => {
+    if (!autoOpenFile) return;
+    setMainView("filetree");
+    setFtSelected(autoOpenFile);
+    setFtContent(null);
+    (async () => {
+      try {
+        const d = await api.readAdvancedProjectFile(autoOpenFile, 20000);
+        setFtContent(d.ok ? String(d.content || "") : "Ошибка: " + String(d.error || ""));
+      } catch (e) {
+        setFtContent("Ошибка: " + String(e));
+      }
+    })();
+  // autoOpenNonce participates so a re-touch of the same path retriggers.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenFile, autoOpenNonce]);
+
   const iconFor = (a: Artifact): IconComponent =>
     a.type === "code"
       ? Code2
@@ -365,8 +391,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
 
       {/* Toolbar */}
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",borderBottom:"1px solid var(--border)",flexWrap:"wrap"}}>
-        <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>
-        <span style={{fontSize:13,fontWeight:600}}>Код</span>
+        {onBackToChat && <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>}
         <div style={{display:"flex",gap:2,marginLeft:6}}>
           {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["history","История", History]].map(([k,l,Icon])=>(
             <button key={String(k)} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k as MainView)} style={{fontSize:11,padding:"3px 9px"}}><IconText icon={Icon as IconComponent} size={12} gap={5}>{String(l)}</IconText></button>

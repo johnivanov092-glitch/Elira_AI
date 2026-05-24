@@ -1,23 +1,46 @@
 /**
  * CodeAgentChatShell.tsx
  *
- * Chat-style transcript where the conversation IS the code-agent (Claude
- * Code / Codex style). User types a task -> POST /api/code-agent/run ->
- * assistant answer and tool calls land in the transcript inline.
+ * Streaming Claude Code / Codex-style transcript. The conversation IS
+ * the code-agent. User types a task -> SSE stream from
+ * /api/code-agent/stream -> events (run_started, step_started,
+ * tool_call, final_response, done) progressively assemble the current
+ * agent turn in real time.
  *
- * State is split:
- *   - projectRoot / model / maxSteps are CONTROLLED via props from the
- *     parent wrapper (CodeWorkspaceShell owns the toolbar).
- *   - Transcript history, current input and running flag stay local and
- *     are persisted to localStorage.
+ * Features
+ *  - Streaming via fetch + ReadableStream (SSE protocol).
+ *  - Cancel button while running (AbortController + POST /cancel).
+ *  - Multi-turn: prior user/assistant text is sent as conversation_history.
+ *  - Inline diff preview for write_file / edit_file tool calls.
+ *  - Calls onAgentTouchedFile(path) when the agent reads/writes a file,
+ *    so the parent workspace shell can auto-open it in the IDE pane.
+ *
+ * State that is owned by this component:
+ *  - transcript history (localStorage)
+ *  - current input text
+ *  - in-flight stream / cancel id
+ *
+ * State that is controlled (props):
+ *  - projectRoot / model / maxSteps (the parent toolbar)
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ChevronDown, ChevronRight, Loader2, Send, Sparkles, Trash2, Wrench } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
+import { ChevronDown, ChevronRight, Loader2, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
-import type { CodeAgentResponse, CodeAgentToolCall } from "../api/codeAgent";
+import type {
+  CodeAgentStreamEvent,
+  CodeAgentToolCall,
+  ConversationMessage,
+} from "../api/codeAgent";
 import { UiIcon, IconText } from "./StatusPanels";
 
-const HISTORY_KEY = "elira_code_agent_history_v1";
+const HISTORY_KEY = "elira_code_agent_history_v2";
 
 type UserTurn = {
   kind: "user";
@@ -33,12 +56,17 @@ type AgentTurn = {
   ts: number;
   ok: boolean;
   text: string;
-  stop_reason: CodeAgentResponse["stop_reason"];
+  stop_reason: CodeAgentStreamEvent extends infer T
+    ? T extends { type: "done"; stop_reason: infer R }
+      ? R
+      : string
+    : string;
   steps: number;
   error: string | null;
   tool_calls: CodeAgentToolCall[];
   model: string;
   project_root: string;
+  in_progress?: boolean;
 };
 
 type Turn = UserTurn | AgentTurn;
@@ -73,10 +101,100 @@ function formatArgsInline(args: Record<string, unknown>): string {
     .join("  ");
 }
 
+// ─── inline diff helpers ─────────────────────────────────────────────────
+
+type DiffLine = { tag: "ctx" | "del" | "add"; text: string };
+
+function lineDiff(oldText: string, newText: string): DiffLine[] {
+  // Simple LCS-based diff per line. Tolerant of small files (we cap at
+  // 4000 lines combined to keep the UI snappy).
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  if (a.length + b.length > 4000) {
+    return [
+      ...a.map<DiffLine>((t) => ({ tag: "del", text: t })),
+      ...b.map<DiffLine>((t) => ({ tag: "add", text: t })),
+    ];
+  }
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out: DiffLine[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) {
+      out.push({ tag: "ctx", text: a[i] });
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push({ tag: "del", text: a[i] });
+      i++;
+    } else {
+      out.push({ tag: "add", text: b[j] });
+      j++;
+    }
+  }
+  while (i < m) out.push({ tag: "del", text: a[i++] });
+  while (j < n) out.push({ tag: "add", text: b[j++] });
+  return out;
+}
+
+function DiffView({ oldContent, newContent }: { oldContent: string; newContent: string }) {
+  const lines = useMemo(() => lineDiff(oldContent, newContent), [oldContent, newContent]);
+  const adds = lines.filter((l) => l.tag === "add").length;
+  const dels = lines.filter((l) => l.tag === "del").length;
+  return (
+    <div style={{ marginTop: 6, border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+      <div
+        style={{
+          padding: "5px 10px",
+          background: "var(--bg-surface)",
+          borderBottom: "1px solid var(--border)",
+          fontSize: 10,
+          color: "var(--text-muted)",
+          fontFamily: "var(--font-mono)",
+        }}
+      >
+        <span style={{ color: "#4ade80" }}>+{adds}</span>{"  "}
+        <span style={{ color: "#ff6b6b" }}>-{dels}</span>
+      </div>
+      <div style={{ maxHeight: 360, overflow: "auto", background: "rgba(0,0,0,0.18)" }}>
+        <pre style={{ margin: 0, padding: "4px 0", fontFamily: "var(--font-mono)", fontSize: 11, lineHeight: 1.45 }}>
+          {lines.map((l, idx) => {
+            const bg =
+              l.tag === "add"
+                ? "rgba(74,222,128,0.12)"
+                : l.tag === "del"
+                ? "rgba(255,107,107,0.12)"
+                : "transparent";
+            const fg =
+              l.tag === "add" ? "#4ade80" : l.tag === "del" ? "#ff6b6b" : "var(--text-secondary)";
+            const prefix = l.tag === "add" ? "+" : l.tag === "del" ? "-" : " ";
+            return (
+              <div key={idx} style={{ background: bg, padding: "0 10px", color: fg, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {prefix} {l.text}
+              </div>
+            );
+          })}
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+// ─── tool block ──────────────────────────────────────────────────────────
+
 type ToolBlockProps = { call: CodeAgentToolCall };
 
 function ToolBlock({ call }: ToolBlockProps) {
-  const [open, setOpen] = useState(false);
+  const hasDiff = !!call.diff_action && typeof call.new_content === "string";
+  const [open, setOpen] = useState(hasDiff);
   return (
     <div style={{ marginBottom: 4, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-surface)" }}>
       <button
@@ -112,6 +230,11 @@ function ToolBlock({ call }: ToolBlockProps) {
         >
           {formatArgsInline(call.arguments)}
         </span>
+        {hasDiff && (
+          <span style={{ fontSize: 10, color: "var(--accent)", flexShrink: 0 }}>
+            {call.diff_action}
+          </span>
+        )}
       </button>
       {open && (
         <div style={{ borderTop: "1px solid var(--border)", padding: "7px 11px", background: "rgba(0,0,0,0.18)" }}>
@@ -129,37 +252,59 @@ function ToolBlock({ call }: ToolBlockProps) {
           >
             {JSON.stringify(call.arguments, null, 2)}
           </pre>
-          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>result</div>
-          <pre
-            style={{
-              margin: 0,
-              fontSize: 11,
-              fontFamily: "var(--font-mono)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              color: "var(--text-primary)",
-              maxHeight: 260,
-              overflow: "auto",
-            }}
-          >
-            {call.result}
-          </pre>
+          {hasDiff && (
+            <>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>diff</div>
+              <DiffView oldContent={call.old_content || ""} newContent={call.new_content || ""} />
+            </>
+          )}
+          {!hasDiff && (
+            <>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>result</div>
+              <pre
+                style={{
+                  margin: 0,
+                  fontSize: 11,
+                  fontFamily: "var(--font-mono)",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  color: "var(--text-primary)",
+                  maxHeight: 260,
+                  overflow: "auto",
+                }}
+              >
+                {call.result}
+              </pre>
+            </>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+// ─── main component ──────────────────────────────────────────────────────
+
 export type CodeAgentChatShellProps = {
   projectRoot: string;
   model: string;
   maxSteps: number;
+  /** Called whenever a tool call touches a file path (read/write/edit). */
+  onAgentTouchedFile?: (path: string) => void;
 };
 
-export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: CodeAgentChatShellProps) {
+export default function CodeAgentChatShell({
+  projectRoot,
+  model,
+  maxSteps,
+  onAgentTouchedFile,
+}: CodeAgentChatShellProps) {
   const [history, setHistory] = useState<Turn[]>(() => loadHistory());
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
+  const [liveStep, setLiveStep] = useState<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const runIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -167,55 +312,140 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [history]);
 
+  // Build conversation_history payload from prior text turns (skip tool data —
+  // backend doesn't need our local tool transcript, it re-runs fresh tools).
+  const buildHistoryPayload = useCallback((): ConversationMessage[] => {
+    const out: ConversationMessage[] = [];
+    for (const t of history) {
+      if (t.kind === "user") {
+        out.push({ role: "user", content: t.text });
+      } else if (t.kind === "agent" && t.text) {
+        out.push({ role: "assistant", content: t.text });
+      }
+    }
+    return out;
+  }, [history]);
+
   const runTurn = useCallback(async () => {
     const text = input.trim();
     if (!text || running) return;
+
     const userTurn: UserTurn = { kind: "user", id: makeId("u"), text, ts: Date.now() };
-    setHistory((h) => [...h, userTurn]);
+    const agentId = makeId("a");
+    const conversationHistory = buildHistoryPayload();
+
+    const liveTurn: AgentTurn = {
+      kind: "agent",
+      id: agentId,
+      parentId: userTurn.id,
+      ts: Date.now(),
+      ok: false,
+      text: "",
+      stop_reason: "in_progress" as never,
+      steps: 0,
+      error: null,
+      tool_calls: [],
+      model,
+      project_root: projectRoot,
+      in_progress: true,
+    };
+
+    setHistory((h) => [...h, userTurn, liveTurn]);
     setInput("");
     setRunning(true);
+    setLiveStep(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+    runIdRef.current = null;
+
+    function patchAgent(patch: (prev: AgentTurn) => AgentTurn) {
+      setHistory((h) =>
+        h.map((t) => (t.kind === "agent" && t.id === agentId ? patch(t) : t)),
+      );
+    }
+
     try {
-      const res = await api.runCodeAgent({
+      await api.streamCodeAgent({
         message: text,
         projectRoot,
         model,
         maxSteps,
+        conversationHistory,
+        signal: controller.signal,
+        onRunId: (rid) => {
+          runIdRef.current = rid;
+        },
+        onEvent: (event) => {
+          switch (event.type) {
+            case "run_started":
+              runIdRef.current = event.run_id;
+              break;
+            case "step_started":
+              setLiveStep(event.step);
+              break;
+            case "tool_call": {
+              const tc: CodeAgentToolCall = {
+                step: event.step,
+                tool: event.tool,
+                arguments: event.arguments,
+                result: event.result,
+                touched_path: event.touched_path,
+                old_content: event.old_content,
+                new_content: event.new_content,
+                diff_action: event.diff_action,
+              };
+              patchAgent((prev) => ({ ...prev, tool_calls: [...prev.tool_calls, tc] }));
+              if (event.touched_path && onAgentTouchedFile) {
+                onAgentTouchedFile(event.touched_path);
+              }
+              break;
+            }
+            case "final_response":
+              patchAgent((prev) => ({ ...prev, text: event.text }));
+              break;
+            case "done":
+              patchAgent((prev) => ({
+                ...prev,
+                ok: event.ok,
+                steps: event.steps,
+                stop_reason: event.stop_reason as never,
+                error: event.error,
+                in_progress: false,
+              }));
+              break;
+          }
+        },
+        onError: (err) => {
+          patchAgent((prev) => ({
+            ...prev,
+            ok: false,
+            stop_reason: "error" as never,
+            error: String(err?.message || err),
+            in_progress: false,
+          }));
+        },
       });
-      const agentTurn: AgentTurn = {
-        kind: "agent",
-        id: makeId("a"),
-        parentId: userTurn.id,
-        ts: Date.now(),
-        ok: res.ok,
-        text: res.response,
-        stop_reason: res.stop_reason,
-        steps: res.steps,
-        error: res.error,
-        tool_calls: res.tool_calls,
-        model,
-        project_root: projectRoot,
-      };
-      setHistory((h) => [...h, agentTurn]);
-    } catch (e) {
-      const agentTurn: AgentTurn = {
-        kind: "agent",
-        id: makeId("a"),
-        parentId: userTurn.id,
-        ts: Date.now(),
-        ok: false,
-        text: "",
-        stop_reason: "error",
-        steps: 0,
-        error: String((e as Error)?.message || e),
-        tool_calls: [],
-        model,
-        project_root: projectRoot,
-      };
-      setHistory((h) => [...h, agentTurn]);
     } finally {
       setRunning(false);
+      setLiveStep(null);
+      abortRef.current = null;
+      // If the stream finished without a 'done' (e.g. server crash), mark turn finished.
+      patchAgent((prev) => (prev.in_progress ? { ...prev, in_progress: false } : prev));
     }
-  }, [input, running, projectRoot, model, maxSteps]);
+  }, [input, running, projectRoot, model, maxSteps, buildHistoryPayload, onAgentTouchedFile]);
+
+  const stopRun = useCallback(async () => {
+    const rid = runIdRef.current;
+    abortRef.current?.abort();
+    if (rid) {
+      try {
+        await api.cancelCodeAgent(rid);
+      } catch {
+        // best-effort; abort already stopped the client side
+      }
+    }
+  }, []);
 
   const onInputKey = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -237,7 +467,7 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Mini header — just transcript controls */}
+      {/* Mini header */}
       <div
         style={{
           display: "flex",
@@ -249,12 +479,15 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
         }}
       >
         <UiIcon icon={Sparkles} size={13} />
-        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{history.length} turns</span>
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          {history.length} turns
+          {liveStep != null && running ? `  ·  шаг ${liveStep}` : ""}
+        </span>
         <button
           onClick={clearHistory}
-          disabled={!history.length}
+          disabled={!history.length || running}
           className="soft-btn"
-          style={{ marginLeft: "auto", fontSize: 10, padding: "3px 8px", opacity: history.length ? 1 : 0.4 }}
+          style={{ marginLeft: "auto", fontSize: 10, padding: "3px 8px", opacity: !history.length || running ? 0.4 : 1 }}
         >
           <IconText icon={Trash2} size={11} gap={4}>
             Очистить
@@ -281,8 +514,8 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
               </div>
               <div style={{ fontSize: 13, marginBottom: 6 }}>Code-Агент</div>
               <div style={{ fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>
-                Опиши задачу — агент прочитает файлы, внесёт правки и запустит проверки в указанном проекте.
-                Каждый шаг (tool call) виден в истории.
+                Опиши задачу — агент стримит шаги в реальном времени. Tool calls появляются
+                сверху вниз, diff показывается inline для каждой записи в файл.
               </div>
               <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 12, lineHeight: 1.7 }}>
                 Инструменты:&nbsp;
@@ -329,6 +562,12 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
                   ))}
                 </div>
               )}
+              {turn.in_progress && !turn.text && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-muted)", fontSize: 11, padding: "4px 4px" }}>
+                  <UiIcon icon={Loader2} size={12} />
+                  <span>агент думает...</span>
+                </div>
+              )}
               {turn.error && (
                 <div
                   style={{
@@ -363,40 +602,25 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
                   {turn.text}
                 </div>
               )}
-              <div
-                style={{
-                  marginTop: 4,
-                  fontSize: 10,
-                  color: "var(--text-muted)",
-                  display: "flex",
-                  gap: 10,
-                  flexWrap: "wrap",
-                }}
-              >
-                <span>{turn.ok ? "✓ готово" : "✕ не завершено"}</span>
-                <span>шаги: {turn.steps}</span>
-                <span>stop: {turn.stop_reason}</span>
-                <span style={{ fontFamily: "var(--font-mono)" }}>{turn.model}</span>
-              </div>
+              {!turn.in_progress && (
+                <div
+                  style={{
+                    marginTop: 4,
+                    fontSize: 10,
+                    color: "var(--text-muted)",
+                    display: "flex",
+                    gap: 10,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <span>{turn.ok ? "✓ готово" : `✕ ${String(turn.stop_reason)}`}</span>
+                  <span>шаги: {turn.steps}</span>
+                  <span style={{ fontFamily: "var(--font-mono)" }}>{turn.model}</span>
+                </div>
+              )}
             </div>
           );
         })}
-
-        {running && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              color: "var(--text-muted)",
-              fontSize: 12,
-              padding: "6px 4px",
-            }}
-          >
-            <UiIcon icon={Loader2} size={14} />
-            <span>Агент работает...</span>
-          </div>
-        )}
       </div>
 
       {/* Composer */}
@@ -426,29 +650,50 @@ export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: Cod
               maxHeight: 220,
             }}
           />
-          <button
-            onClick={runTurn}
-            disabled={!input.trim() || running}
-            style={{
-              padding: "9px 14px",
-              borderRadius: 8,
-              border: "none",
-              background: "var(--accent, #6366f1)",
-              color: "#fff",
-              fontSize: 12,
-              cursor: !input.trim() || running ? "not-allowed" : "pointer",
-              opacity: !input.trim() || running ? 0.45 : 1,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            {running ? <UiIcon icon={Loader2} size={13} /> : <UiIcon icon={Send} size={13} />}
-            <span>Отправить</span>
-          </button>
+          {running ? (
+            <button
+              onClick={stopRun}
+              style={{
+                padding: "9px 14px",
+                borderRadius: 8,
+                border: "1px solid #ff6b6b",
+                background: "rgba(255,107,107,0.15)",
+                color: "#ff6b6b",
+                fontSize: 12,
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <UiIcon icon={Square} size={13} />
+              <span>Стоп</span>
+            </button>
+          ) : (
+            <button
+              onClick={runTurn}
+              disabled={!input.trim()}
+              style={{
+                padding: "9px 14px",
+                borderRadius: 8,
+                border: "none",
+                background: "var(--accent, #6366f1)",
+                color: "#fff",
+                fontSize: 12,
+                cursor: !input.trim() ? "not-allowed" : "pointer",
+                opacity: !input.trim() ? 0.45 : 1,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <UiIcon icon={Send} size={13} />
+              <span>Отправить</span>
+            </button>
+          )}
         </div>
         <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-muted)" }}>
-          Ctrl+Enter — отправить. Каждое сообщение — отдельный single-shot запуск.
+          Ctrl+Enter — отправить. История сообщений идёт в conversation_history; агент помнит контекст в рамках вкладки.
         </div>
       </div>
     </div>

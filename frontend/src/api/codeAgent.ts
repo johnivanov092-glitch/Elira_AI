@@ -1,4 +1,4 @@
-import { request } from "./client";
+import { API_BASE, request } from "./client";
 
 export const DEFAULT_CODE_AGENT_MODEL = "qwen2.5-coder:7b";
 export const DEFAULT_CODE_AGENT_MAX_STEPS = 20;
@@ -8,6 +8,10 @@ export type CodeAgentToolCall = {
   tool: string;
   arguments: Record<string, unknown>;
   result: string;
+  touched_path?: string;
+  old_content?: string;
+  new_content?: string;
+  diff_action?: "create" | "overwrite" | "edit";
 };
 
 export type CodeAgentResponse = {
@@ -15,8 +19,13 @@ export type CodeAgentResponse = {
   response: string;
   steps: number;
   tool_calls: CodeAgentToolCall[];
-  stop_reason: "answer" | "max_steps" | "error";
+  stop_reason: "answer" | "max_steps" | "error" | "cancelled";
   error: string | null;
+};
+
+export type ConversationMessage = {
+  role: "user" | "assistant";
+  content: string;
 };
 
 export type CodeAgentRunArgs = {
@@ -24,13 +33,16 @@ export type CodeAgentRunArgs = {
   projectRoot: string;
   model?: string;
   maxSteps?: number;
+  conversationHistory?: ConversationMessage[];
 };
 
+/** Single-shot (legacy). Resolves with the aggregated final dict. */
 export async function runCodeAgent({
   message,
   projectRoot,
   model = DEFAULT_CODE_AGENT_MODEL,
   maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
+  conversationHistory,
 }: CodeAgentRunArgs): Promise<CodeAgentResponse> {
   return request<CodeAgentResponse>("/api/code-agent/run", {
     method: "POST",
@@ -39,6 +51,157 @@ export async function runCodeAgent({
       project_root: projectRoot,
       model,
       max_steps: maxSteps,
+      conversation_history: conversationHistory,
     },
+  });
+}
+
+// ── Streaming protocol ───────────────────────────────────────────────────
+
+export type CodeAgentStreamEvent =
+  | { type: "run_started"; run_id: string }
+  | { type: "step_started"; step: number }
+  | ({ type: "tool_call" } & CodeAgentToolCall)
+  | { type: "final_response"; step: number; text: string }
+  | {
+      type: "done";
+      ok: boolean;
+      steps: number;
+      stop_reason: CodeAgentResponse["stop_reason"];
+      error: string | null;
+    };
+
+export type StreamHandlers = {
+  onEvent?: (event: CodeAgentStreamEvent) => void;
+  onRunId?: (runId: string) => void;
+  onError?: (error: Error) => void;
+};
+
+export type StreamCodeAgentArgs = CodeAgentRunArgs & {
+  runId?: string;
+  signal?: AbortSignal;
+} & StreamHandlers;
+
+/** Stream the agent over SSE. Returns the final `done` event (or
+ *  resolves with an error event if the stream was aborted). */
+export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> {
+  const {
+    message,
+    projectRoot,
+    model = DEFAULT_CODE_AGENT_MODEL,
+    maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
+    conversationHistory,
+    runId,
+    signal,
+    onEvent,
+    onRunId,
+    onError,
+  } = args;
+
+  const url = `${API_BASE}/api/code-agent/stream`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({
+        message,
+        project_root: projectRoot,
+        model,
+        max_steps: maxSteps,
+        conversation_history: conversationHistory,
+        run_id: runId,
+      }),
+      signal,
+    });
+  } catch (err) {
+    if ((err as DOMException)?.name === "AbortError") return;
+    onError?.(err as Error);
+    return;
+  }
+
+  const headerRunId = response.headers.get("X-Run-Id");
+  if (headerRunId && onRunId) onRunId(headerRunId);
+
+  if (!response.ok || !response.body) {
+    onError?.(new Error(`Stream failed: HTTP ${response.status}`));
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  function dispatch(data: string) {
+    const trimmed = data.trim();
+    if (!trimmed) return;
+    try {
+      const evt = JSON.parse(trimmed) as CodeAgentStreamEvent;
+      onEvent?.(evt);
+    } catch {
+      // ignore malformed lines
+    }
+  }
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      // SSE event boundary is a blank line
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        const chunk = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        // Each chunk may have one or more "data: ..." lines
+        const dataLines = chunk
+          .split("\n")
+          .map((ln) => ln.trim())
+          .filter((ln) => ln.startsWith("data:"))
+          .map((ln) => ln.slice(5).trim());
+        if (dataLines.length) dispatch(dataLines.join("\n"));
+      }
+    }
+    // Flush any tail
+    if (buffer.trim()) {
+      const dataLines = buffer
+        .split("\n")
+        .map((ln) => ln.trim())
+        .filter((ln) => ln.startsWith("data:"))
+        .map((ln) => ln.slice(5).trim());
+      if (dataLines.length) dispatch(dataLines.join("\n"));
+    }
+  } catch (err) {
+    if ((err as DOMException)?.name === "AbortError") return;
+    onError?.(err as Error);
+  }
+}
+
+export async function cancelCodeAgent(runId: string): Promise<{ ok: boolean; found: boolean }> {
+  return request<{ ok: boolean; found: boolean; run_id: string }>("/api/code-agent/cancel", {
+    method: "POST",
+    body: { run_id: runId },
+  });
+}
+
+// ── Project system prompt CRUD ───────────────────────────────────────────
+
+export type ProjectPromptInfo = {
+  ok: boolean;
+  exists: boolean;
+  content: string;
+  path?: string;
+  error?: string;
+};
+
+export async function getProjectPrompt(projectRoot: string): Promise<ProjectPromptInfo> {
+  const qs = new URLSearchParams({ project_root: projectRoot }).toString();
+  return request<ProjectPromptInfo>(`/api/code-agent/project-prompt?${qs}`);
+}
+
+export async function setProjectPromptApi(projectRoot: string, content: string): Promise<ProjectPromptInfo> {
+  return request<ProjectPromptInfo>("/api/code-agent/project-prompt", {
+    method: "PUT",
+    body: { project_root: projectRoot, content },
   });
 }

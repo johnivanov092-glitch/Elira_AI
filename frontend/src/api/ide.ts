@@ -108,7 +108,11 @@ import {
 import {
   DEFAULT_CODE_AGENT_MAX_STEPS,
   DEFAULT_CODE_AGENT_MODEL,
+  cancelCodeAgent,
+  getProjectPrompt,
   runCodeAgent,
+  setProjectPromptApi,
+  streamCodeAgent,
 } from "./codeAgent";
 
 export {
@@ -221,12 +225,19 @@ export {
 export {
   DEFAULT_CODE_AGENT_MAX_STEPS,
   DEFAULT_CODE_AGENT_MODEL,
+  cancelCodeAgent,
+  getProjectPrompt,
   runCodeAgent,
+  setProjectPromptApi,
+  streamCodeAgent,
 } from "./codeAgent";
 export type {
   CodeAgentResponse,
   CodeAgentRunArgs,
+  CodeAgentStreamEvent,
   CodeAgentToolCall,
+  ConversationMessage,
+  ProjectPromptInfo,
 } from "./codeAgent";
 
 export const api = {
@@ -313,6 +324,10 @@ export const api = {
   executeTerminal,
   isLocalApiAssetUrl,
   runCodeAgent,
+  streamCodeAgent,
+  cancelCodeAgent,
+  getProjectPrompt,
+  setProjectPromptApi,
   DEFAULT_CODE_AGENT_MODEL,
   DEFAULT_CODE_AGENT_MAX_STEPS,
 };
