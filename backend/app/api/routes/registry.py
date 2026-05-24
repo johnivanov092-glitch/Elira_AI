@@ -6,6 +6,7 @@ from app.api.routes.agent_registry_routes import router as agent_registry_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.autopipeline_routes import router as autopipeline_router
 from app.api.routes.chat import router as chat_router
+from app.api.routes.code_agent_routes import router as code_agent_router
 from app.api.routes.dashboard_routes import router as dashboard_router
 from app.api.routes.elira_patch import router as elira_patch_router
 from app.api.routes.elira_state import router as elira_state_router
@@ -68,6 +69,7 @@ ALL_ROUTERS = (
     workflow_router,
     agent_monitor_router,
     tool_registry_router,
+    code_agent_router,
 )
 
 __all__ = ["ALL_ROUTERS"]
