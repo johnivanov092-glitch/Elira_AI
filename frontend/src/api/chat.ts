@@ -15,10 +15,10 @@ type StreamEvent = UnknownRecord & {
 };
 
 type StreamCallbacks = {
-  onDone?: (event: { full_text: unknown; meta: unknown; timeline: unknown[] }) => void;
+  onDone?: (event: { full_text: string; meta: unknown; timeline: unknown[] }) => void;
   onError?: (error: string) => void;
   onPhase?: (event: StreamEvent) => void;
-  onToken?: (token: unknown) => void;
+  onToken?: (token: string) => void;
 };
 
 export type Chat = UnknownRecord & {
@@ -265,11 +265,11 @@ export function executeStream(
 
               if (event.phase && onPhase) onPhase(event);
               if (event.phase === "reflection_replace" && event.full_text) continue;
-              if (event.token) onToken?.(event.token);
+              if (event.token) onToken?.(event.token as string);
 
               if (event.done) {
                 onDone?.({
-                  full_text: event.full_text || "",
+                  full_text: (event.full_text as string) || "",
                   meta: event.meta || {},
                   timeline: event.timeline || [],
                 });

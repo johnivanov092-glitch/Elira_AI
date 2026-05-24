@@ -130,7 +130,7 @@ export function executeStream(body: Record<string, unknown> = {}, { onToken, onD
 }
 
 export async function listOllamaModels() {
-  const payload = await safeRequest("/api/elira/models", {}, []) as Record<string, unknown>;
+  const payload = await safeRequest("/api/elira/models", {}, []) as unknown as Record<string, unknown>;
   if (Array.isArray(payload?.models)) return { models: payload.models };
   if (Array.isArray(payload?.items)) return { models: payload.items };
   if (Array.isArray(payload)) return { models: payload };
