@@ -82,6 +82,9 @@ if "%PREFLIGHT_EXIT%"=="11" (
 )
 
 echo [2/3] Launching Tauri dev...
+rem Tell the Rust shell that the backend was started externally by this script,
+rem so it does NOT attempt a second start inside the Tauri setup handler.
+set "ELIRA_EXTERNAL_BACKEND=1"
 call npm.cmd run tauri dev
 
 echo.
