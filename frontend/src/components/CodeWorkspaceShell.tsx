@@ -23,9 +23,12 @@ const MODEL_KEY = "elira_code_agent_model";
 const SPLIT_KEY = "elira_code_workspace_split";
 const COLLAPSE_KEY = "elira_code_workspace_collapse";
 const STEPS_KEY = "elira_code_agent_steps";
+const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
 const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
 const DEFAULT_MODEL = "qwen2.5-coder:7b";
 const DEFAULT_MAX_STEPS = 20;
+const DEFAULT_NUM_CTX = 16384;
+const CTX_OPTIONS = [4096, 8192, 16384, 32768, 65536];
 // Models with reliable tool-calling support in Ollama. Used to flag picker rows.
 const TOOL_FRIENDLY = ["qwen2.5-coder", "qwen2.5", "qwen3", "llama3.2", "llama3.1", "mistral-nemo", "command-r"];
 
@@ -93,6 +96,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [projectRoot, setProjectRoot] = useState<string>(() => readString(ROOT_KEY, DEFAULT_ROOT));
   const [model, setModel] = useState<string>(() => readString(MODEL_KEY, DEFAULT_MODEL));
   const [maxSteps, setMaxSteps] = useState<number>(() => readNumber(STEPS_KEY, DEFAULT_MAX_STEPS));
+  // num_ctx is per-model (different models have different effective context).
+  const [numCtx, setNumCtx] = useState<number>(() => readNumber(CTX_KEY_PREFIX + readString(MODEL_KEY, DEFAULT_MODEL), DEFAULT_NUM_CTX));
   const [splitPct, setSplitPct] = useState<number>(() => Math.max(20, Math.min(80, readNumber(SPLIT_KEY, 45))));
   const [ideCollapsed, setIdeCollapsed] = useState<boolean>(() => readBool(COLLAPSE_KEY, false));
 
@@ -119,6 +124,14 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   useEffect(() => writeNumber(STEPS_KEY, maxSteps), [maxSteps]);
   useEffect(() => writeNumber(SPLIT_KEY, splitPct), [splitPct]);
   useEffect(() => writeBool(COLLAPSE_KEY, ideCollapsed), [ideCollapsed]);
+  // Persist num_ctx per-model and switch when model changes.
+  useEffect(() => { writeNumber(CTX_KEY_PREFIX + model, numCtx); }, [model, numCtx]);
+  useEffect(() => {
+    const saved = readNumber(CTX_KEY_PREFIX + model, DEFAULT_NUM_CTX);
+    setNumCtx(saved);
+    // intentionally exclude numCtx from deps — switching model reads its own saved ctx
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model]);
 
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
@@ -340,6 +353,29 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           />
         </div>
 
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 10, color: "var(--text-muted)" }}>ctx</span>
+          <select
+            value={numCtx}
+            onChange={(e) => setNumCtx(Number(e.target.value) || DEFAULT_NUM_CTX)}
+            title="Размер окна контекста Ollama (num_ctx). Сохраняется per-model. Больше = агент помнит дольше, но жрёт VRAM."
+            style={{
+              padding: "5px 7px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg-input)",
+              color: "var(--text-primary)",
+              fontSize: 11,
+              outline: "none",
+              fontFamily: "var(--font-mono)",
+            }}
+          >
+            {(CTX_OPTIONS.includes(numCtx) ? CTX_OPTIONS : [numCtx, ...CTX_OPTIONS]).map((n) => (
+              <option key={n} value={n}>{n.toLocaleString()}</option>
+            ))}
+          </select>
+        </div>
+
         <button
           onClick={openPromptEditor}
           className="soft-btn"
@@ -447,6 +483,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             projectRoot={projectRoot}
             model={model}
             maxSteps={maxSteps}
+            numCtx={numCtx}
             onAgentTouchedFile={handleAgentTouchedFile}
           />
         </div>

@@ -21,11 +21,13 @@ from pydantic import BaseModel, Field
 from app.application.code_agent.agent_loop import (
     DEFAULT_MAX_STEPS,
     DEFAULT_MODEL,
+    DEFAULT_NUM_CTX,
     get_project_prompt,
     request_cancel,
     run_code_agent,
     set_project_prompt,
     stream_code_agent,
+    summarize_history,
 )
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
@@ -41,6 +43,7 @@ class CodeAgentRequest(BaseModel):
     project_root: str = Field(..., description="Absolute path to the project directory")
     model: str = Field(default=DEFAULT_MODEL)
     max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=50)
+    num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
     conversation_history: list[ConversationMessage] | None = None
 
 
@@ -66,6 +69,19 @@ class ProjectPromptWriteRequest(BaseModel):
     content: str
 
 
+class SummarizeHistoryRequest(BaseModel):
+    messages: list[ConversationMessage]
+    model: str = Field(default=DEFAULT_MODEL)
+    num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
+
+
+class SummarizeHistoryResponse(BaseModel):
+    ok: bool
+    summary: str
+    turn_count: int
+    error: Optional[str] = None
+
+
 @router.post("/run", response_model=CodeAgentResponse)
 def run(payload: CodeAgentRequest) -> CodeAgentResponse:
     history = [m.model_dump() for m in (payload.conversation_history or [])]
@@ -75,6 +91,7 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
         model=payload.model,
         max_steps=payload.max_steps,
         conversation_history=history,
+        num_ctx=payload.num_ctx,
     )
     return CodeAgentResponse(**result)
 
@@ -96,6 +113,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 model=payload.model,
                 max_steps=payload.max_steps,
                 conversation_history=history,
+                num_ctx=payload.num_ctx,
                 run_id=run_id,
             ):
                 yield _sse_format(event)
@@ -139,3 +157,10 @@ def write_project_prompt(payload: ProjectPromptWriteRequest) -> dict[str, Any]:
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "failed to write"))
     return result
+
+
+@router.post("/summarize-history", response_model=SummarizeHistoryResponse)
+def summarize(payload: SummarizeHistoryRequest) -> SummarizeHistoryResponse:
+    messages = [m.model_dump() for m in payload.messages]
+    result = summarize_history(messages=messages, model=payload.model, num_ctx=payload.num_ctx)
+    return SummarizeHistoryResponse(**result)

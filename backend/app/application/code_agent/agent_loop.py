@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 DEFAULT_MAX_STEPS = 20
+DEFAULT_NUM_CTX = 16384  # Ollama's default is 2048 — way too small for tool-using agents.
 PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 
 BASE_SYSTEM_PROMPT = (
@@ -169,6 +170,7 @@ def stream_code_agent(
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
+    num_ctx: int = DEFAULT_NUM_CTX,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
@@ -225,7 +227,12 @@ def stream_code_agent(
             yield {"type": "step_started", "step": step}
 
             try:
-                response = chat(model=model, messages=messages, tools=tool_schemas)
+                response = chat(
+                    model=model,
+                    messages=messages,
+                    tools=tool_schemas,
+                    options={"num_ctx": int(num_ctx)},
+                )
             except Exception as exc:
                 logger.exception("Ollama chat failed at step %d", step)
                 yield {
@@ -313,6 +320,7 @@ def run_code_agent(
     model: str = DEFAULT_MODEL,
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
+    num_ctx: int = DEFAULT_NUM_CTX,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
@@ -331,6 +339,7 @@ def run_code_agent(
         model=model,
         max_steps=max_steps,
         conversation_history=conversation_history,
+        num_ctx=num_ctx,
         chat_fn=chat_fn,
     ):
         et = event.get("type")
@@ -374,6 +383,73 @@ def get_project_prompt(project_root: Path | str) -> dict[str, Any]:
         except Exception as exc:
             return {"ok": False, "exists": True, "content": "", "error": str(exc), "path": str(target)}
     return {"ok": True, "exists": exists, "content": content, "path": str(target)}
+
+
+SUMMARIZE_SYSTEM_PROMPT = (
+    "Ты сжимаешь предыдущий диалог пользователя с code-агентом в краткое summary "
+    "которое заменит исходные сообщения в контексте, чтобы освободить токены.\n"
+    "Сохрани:\n"
+    "- пути к файлам и модули которые обсуждались\n"
+    "- архитектурные решения и договорённости\n"
+    "- состояние задач (что сделано, что не доделано)\n"
+    "- конвенции/стиль/правила которые пользователь упоминал\n"
+    "- найденные баги и их статус\n"
+    "Не пиши:\n"
+    "- полное содержимое файлов\n"
+    "- результаты tool calls\n"
+    "- общие фразы и вежливость\n"
+    "Формат: маркированный список 5-15 строк, плотный, без воды. На русском."
+)
+
+
+def summarize_history(
+    messages: list[dict[str, Any]],
+    model: str = DEFAULT_MODEL,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    chat_fn: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Ask the LLM to summarize the given user/assistant messages into a
+    compact bulleted summary. Returns {'ok': bool, 'summary': str,
+    'error': str | None, 'turn_count': int}.
+
+    The summary is one assistant-shaped text block intended to replace
+    the original messages in conversation_history on the next agent
+    invocation.
+    """
+    cleaned = _coerce_history(messages)
+    if not cleaned:
+        return {"ok": True, "summary": "", "error": None, "turn_count": 0}
+
+    chat = chat_fn or _ollama_chat
+
+    # Build a compact transcript to summarize. Truncate any single
+    # message to keep the prompt itself sane.
+    lines: list[str] = []
+    for m in cleaned:
+        role = m["role"]
+        content = m["content"]
+        if len(content) > 4000:
+            content = content[:4000] + " [...]"
+        prefix = "USER:" if role == "user" else "AGENT:"
+        lines.append(f"{prefix} {content}")
+    transcript = "\n\n".join(lines)
+
+    try:
+        response = chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
+                {"role": "user", "content": "Диалог для сжатия:\n\n" + transcript},
+            ],
+            options={"num_ctx": int(num_ctx)},
+        )
+    except Exception as exc:
+        logger.exception("Summarize history failed")
+        return {"ok": False, "summary": "", "error": str(exc), "turn_count": len(cleaned)}
+
+    msg = (response or {}).get("message") or {}
+    text = (msg.get("content") or "").strip()
+    return {"ok": True, "summary": text, "error": None, "turn_count": len(cleaned)}
 
 
 def set_project_prompt(project_root: Path | str, content: str) -> dict[str, Any]:

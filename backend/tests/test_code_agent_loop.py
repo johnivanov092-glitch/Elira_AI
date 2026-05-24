@@ -13,11 +13,13 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.code_agent.agent_loop import (  # noqa: E402
+    DEFAULT_NUM_CTX,
     get_project_prompt,
     request_cancel,
     run_code_agent,
     set_project_prompt,
     stream_code_agent,
+    summarize_history,
 )
 from app.application.code_agent.tools import (  # noqa: E402
     SandboxError,
@@ -327,6 +329,67 @@ class AgentLoopTest(unittest.TestCase):
         sys_content = captured["messages"][0]["content"]
         self.assertIn("Never touch backend/legacy", sys_content)
         self.assertIn("Project-specific instructions", sys_content)
+
+    def test_num_ctx_passed_to_ollama_options(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_chat(**kwargs):
+            captured.update(kwargs)
+            return {"message": {"content": "ok", "tool_calls": []}}
+
+        result = run_code_agent(
+            user_message="ping",
+            project_root=self.root,
+            num_ctx=8192,
+            chat_fn=fake_chat,
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("options", captured)
+        self.assertEqual(captured["options"]["num_ctx"], 8192)
+
+    def test_num_ctx_defaults_to_large_window(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_chat(**kwargs):
+            captured.update(kwargs)
+            return {"message": {"content": "ok", "tool_calls": []}}
+
+        run_code_agent(
+            user_message="ping",
+            project_root=self.root,
+            chat_fn=fake_chat,
+        )
+        # Whatever the default, it must NOT be Ollama's tiny 2048 default.
+        self.assertGreaterEqual(captured["options"]["num_ctx"], 8192)
+        self.assertEqual(captured["options"]["num_ctx"], DEFAULT_NUM_CTX)
+
+    def test_summarize_history_returns_assistant_text(self) -> None:
+        def fake_chat(**kwargs):
+            messages = kwargs.get("messages", [])
+            # The summarize prompt should be the second message (after system).
+            self.assertEqual(messages[0]["role"], "system")
+            self.assertIn("USER:", messages[1]["content"])
+            self.assertIn("AGENT:", messages[1]["content"])
+            return {"message": {"content": "- file a.py reviewed\n- bug found in line 42", "tool_calls": []}}
+
+        result = summarize_history(
+            messages=[
+                {"role": "user", "content": "review a.py"},
+                {"role": "assistant", "content": "found a bug on line 42"},
+                {"role": "user", "content": "fix it"},
+                {"role": "assistant", "content": "patched and tested"},
+            ],
+            chat_fn=fake_chat,
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["turn_count"], 4)
+        self.assertIn("a.py", result["summary"])
+
+    def test_summarize_history_empty_returns_blank(self) -> None:
+        result = summarize_history(messages=[], chat_fn=lambda **kw: {"message": {"content": "x", "tool_calls": []}})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["summary"], "")
+        self.assertEqual(result["turn_count"], 0)
 
     def test_project_prompt_get_and_set_roundtrip(self) -> None:
         # No prompt yet

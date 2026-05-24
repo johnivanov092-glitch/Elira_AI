@@ -31,13 +31,14 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { BookmarkPlus, ChevronDown, ChevronRight, Loader2, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
+import { BookmarkPlus, ChevronDown, ChevronRight, Loader2, Minimize2, Pin, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
 import type {
   CodeAgentStreamEvent,
   CodeAgentToolCall,
   ConversationMessage,
 } from "../api/codeAgent";
+import { estimateTokens } from "../api/codeAgent";
 import { UiIcon, IconText } from "./StatusPanels";
 
 const HISTORY_KEY = "elira_code_agent_history_v2";
@@ -113,7 +114,15 @@ type AgentTurn = {
   in_progress?: boolean;
 };
 
-type Turn = UserTurn | AgentTurn;
+type SummaryTurn = {
+  kind: "summary";
+  id: string;
+  text: string;
+  replaced: number;
+  ts: number;
+};
+
+type Turn = UserTurn | AgentTurn | SummaryTurn;
 
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -333,6 +342,7 @@ export type CodeAgentChatShellProps = {
   projectRoot: string;
   model: string;
   maxSteps: number;
+  numCtx: number;
   /** Called whenever a tool call touches a file path (read/write/edit). */
   onAgentTouchedFile?: (path: string) => void;
 };
@@ -341,6 +351,7 @@ export default function CodeAgentChatShell({
   projectRoot,
   model,
   maxSteps,
+  numCtx,
   onAgentTouchedFile,
 }: CodeAgentChatShellProps) {
   const [history, setHistory] = useState<Turn[]>(() => loadHistory());
@@ -349,6 +360,8 @@ export default function CodeAgentChatShell({
   const [liveStep, setLiveStep] = useState<number | null>(null);
   const [savedPrompts, setSavedPrompts] = useState<SavedPrompt[]>(() => loadSavedPrompts());
   const [promptsOpen, setPromptsOpen] = useState(false);
+  const [summarizing, setSummarizing] = useState(false);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -378,6 +391,8 @@ export default function CodeAgentChatShell({
 
   // Build conversation_history payload from prior text turns (skip tool data —
   // backend doesn't need our local tool transcript, it re-runs fresh tools).
+  // Summary turns are sent as assistant messages prefixed with "[CONTEXT
+  // SUMMARY]" so the LLM knows it's compressed history, not a real reply.
   const buildHistoryPayload = useCallback((): ConversationMessage[] => {
     const out: ConversationMessage[] = [];
     for (const t of history) {
@@ -385,10 +400,30 @@ export default function CodeAgentChatShell({
         out.push({ role: "user", content: t.text });
       } else if (t.kind === "agent" && t.text) {
         out.push({ role: "assistant", content: t.text });
+      } else if (t.kind === "summary" && t.text) {
+        out.push({ role: "assistant", content: "[CONTEXT SUMMARY]\n" + t.text });
       }
     }
     return out;
   }, [history]);
+
+  // Token estimate for the visible conversation. We can't see the system
+  // prompt (server-built) so we add a fixed ~400-token allowance for it.
+  const tokenEstimate = useMemo(() => {
+    const SYSTEM_OVERHEAD = 400;
+    let sum = SYSTEM_OVERHEAD;
+    for (const t of history) {
+      if (t.kind === "user") sum += estimateTokens(t.text);
+      else if (t.kind === "agent") {
+        sum += estimateTokens(t.text);
+        for (const tc of t.tool_calls) sum += estimateTokens(tc.result);
+      } else if (t.kind === "summary") sum += estimateTokens(t.text);
+    }
+    return sum;
+  }, [history]);
+
+  const ctxPct = Math.min(100, Math.round((tokenEstimate / numCtx) * 100));
+  const ctxColor = ctxPct >= 90 ? "#ff6b6b" : ctxPct >= 70 ? "#f0a020" : "#4ade80";
 
   const runTurn = useCallback(async () => {
     const text = input.trim();
@@ -435,6 +470,7 @@ export default function CodeAgentChatShell({
         projectRoot,
         model,
         maxSteps,
+        numCtx,
         conversationHistory,
         signal: controller.signal,
         onRunId: (rid) => {
@@ -497,7 +533,55 @@ export default function CodeAgentChatShell({
       // If the stream finished without a 'done' (e.g. server crash), mark turn finished.
       patchAgent((prev) => (prev.in_progress ? { ...prev, in_progress: false } : prev));
     }
-  }, [input, running, projectRoot, model, maxSteps, buildHistoryPayload, onAgentTouchedFile]);
+  }, [input, running, projectRoot, model, maxSteps, numCtx, buildHistoryPayload, onAgentTouchedFile]);
+
+  const compressHistory = useCallback(async () => {
+    if (summarizing || running) return;
+    // Keep last 2 text turns as-is, summarize everything older.
+    const lastTwoIds: string[] = [];
+    for (let i = history.length - 1; i >= 0 && lastTwoIds.length < 2; i--) {
+      const t = history[i];
+      if (t.kind === "user" || t.kind === "agent") lastTwoIds.push(t.id);
+    }
+    const olderText: ConversationMessage[] = [];
+    let replaced = 0;
+    for (const t of history) {
+      if (lastTwoIds.includes(t.id)) continue;
+      if (t.kind === "user") { olderText.push({ role: "user", content: t.text }); replaced++; }
+      else if (t.kind === "agent" && t.text) { olderText.push({ role: "assistant", content: t.text }); replaced++; }
+      else if (t.kind === "summary" && t.text) { olderText.push({ role: "assistant", content: "[PRIOR SUMMARY]\n" + t.text }); replaced++; }
+    }
+    if (olderText.length < 2) {
+      setSummaryError("Слишком мало сообщений для сжатия (нужно ≥ 2 в старой части).");
+      setTimeout(() => setSummaryError(null), 4000);
+      return;
+    }
+    setSummarizing(true);
+    setSummaryError(null);
+    try {
+      const res = await api.summarizeHistory({ messages: olderText, model, numCtx });
+      if (!res.ok) {
+        setSummaryError(res.error || "Сжатие не удалось");
+        return;
+      }
+      const newHistory: Turn[] = [];
+      newHistory.push({
+        kind: "summary",
+        id: makeId("s"),
+        text: res.summary,
+        replaced,
+        ts: Date.now(),
+      });
+      for (const t of history) {
+        if (lastTwoIds.includes(t.id)) newHistory.push(t);
+      }
+      setHistory(newHistory);
+    } catch (e) {
+      setSummaryError(String((e as Error)?.message || e));
+    } finally {
+      setSummarizing(false);
+    }
+  }, [summarizing, running, history, model, numCtx]);
 
   const stopRun = useCallback(async () => {
     const rid = runIdRef.current;
@@ -547,6 +631,43 @@ export default function CodeAgentChatShell({
           {history.length} turns
           {liveStep != null && running ? `  ·  шаг ${liveStep}` : ""}
         </span>
+
+        {/* Context meter */}
+        <div
+          title={`Оценка ${tokenEstimate.toLocaleString()} токенов из ${numCtx.toLocaleString()} (${ctxPct}%). Жми «Сжать» когда подходит к 70-80%.`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "2px 8px",
+            borderRadius: 10,
+            background: "var(--bg-surface)",
+            border: "1px solid var(--border)",
+            fontSize: 10,
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          <span style={{ width: 60, height: 6, background: "var(--border)", borderRadius: 3, overflow: "hidden", display: "inline-block" }}>
+            <span style={{ display: "block", width: `${ctxPct}%`, height: "100%", background: ctxColor, transition: "width 200ms" }} />
+          </span>
+          <span style={{ color: ctxColor }}>
+            {tokenEstimate.toLocaleString()} / {numCtx.toLocaleString()}
+          </span>
+        </div>
+
+        <button
+          onClick={compressHistory}
+          disabled={summarizing || running || history.length < 3}
+          className="soft-btn"
+          title="Сжать всю историю кроме последних 2 сообщений в краткое summary, чтобы освободить контекст"
+          style={{ fontSize: 10, padding: "3px 8px", opacity: summarizing || running || history.length < 3 ? 0.4 : 1 }}
+        >
+          {summarizing
+            ? <IconText icon={Loader2} size={11} gap={4}>Сжимаю...</IconText>
+            : <IconText icon={Minimize2} size={11} gap={4}>Сжать</IconText>
+          }
+        </button>
+
         <button
           onClick={clearHistory}
           disabled={!history.length || running}
@@ -558,6 +679,12 @@ export default function CodeAgentChatShell({
           </IconText>
         </button>
       </div>
+
+      {summaryError && (
+        <div style={{ padding: "6px 12px", borderBottom: "1px solid var(--border)", background: "rgba(255,107,107,0.08)", color: "#ff6b6b", fontSize: 11, flexShrink: 0 }}>
+          {summaryError}
+        </div>
+      )}
 
       {/* Transcript */}
       <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "12px 14px" }}>
@@ -595,6 +722,29 @@ export default function CodeAgentChatShell({
         )}
 
         {history.map((turn) => {
+          if (turn.kind === "summary") {
+            return (
+              <div
+                key={turn.id}
+                style={{
+                  marginBottom: 14,
+                  padding: "8px 12px",
+                  borderRadius: 8,
+                  border: "1px dashed var(--accent, #6366f1)",
+                  background: "rgba(99,102,241,0.07)",
+                  fontSize: 11,
+                  lineHeight: 1.6,
+                  color: "var(--text-secondary)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, color: "var(--accent, #6366f1)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4 }}>
+                  <UiIcon icon={Pin} size={11} />
+                  <span>Сжатое summary прошлых {turn.replaced} сообщений</span>
+                </div>
+                <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--font-mono)", fontSize: 11 }}>{turn.text}</div>
+              </div>
+            );
+          }
           if (turn.kind === "user") {
             return (
               <div key={turn.id} style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>

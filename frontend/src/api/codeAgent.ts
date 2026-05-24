@@ -2,6 +2,7 @@ import { API_BASE, request } from "./client";
 
 export const DEFAULT_CODE_AGENT_MODEL = "qwen2.5-coder:7b";
 export const DEFAULT_CODE_AGENT_MAX_STEPS = 20;
+export const DEFAULT_CODE_AGENT_NUM_CTX = 16384;
 
 export type CodeAgentToolCall = {
   step: number;
@@ -33,6 +34,7 @@ export type CodeAgentRunArgs = {
   projectRoot: string;
   model?: string;
   maxSteps?: number;
+  numCtx?: number;
   conversationHistory?: ConversationMessage[];
 };
 
@@ -42,6 +44,7 @@ export async function runCodeAgent({
   projectRoot,
   model = DEFAULT_CODE_AGENT_MODEL,
   maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
+  numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
   conversationHistory,
 }: CodeAgentRunArgs): Promise<CodeAgentResponse> {
   return request<CodeAgentResponse>("/api/code-agent/run", {
@@ -51,6 +54,7 @@ export async function runCodeAgent({
       project_root: projectRoot,
       model,
       max_steps: maxSteps,
+      num_ctx: numCtx,
       conversation_history: conversationHistory,
     },
   });
@@ -90,6 +94,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     projectRoot,
     model = DEFAULT_CODE_AGENT_MODEL,
     maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
+    numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
     conversationHistory,
     runId,
     signal,
@@ -109,6 +114,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         project_root: projectRoot,
         model,
         max_steps: maxSteps,
+        num_ctx: numCtx,
         conversation_history: conversationHistory,
         run_id: runId,
       }),
@@ -205,3 +211,45 @@ export async function setProjectPromptApi(projectRoot: string, content: string):
     body: { project_root: projectRoot, content },
   });
 }
+
+// ── History summarization ────────────────────────────────────────────────
+
+export type SummarizeHistoryArgs = {
+  messages: ConversationMessage[];
+  model?: string;
+  numCtx?: number;
+};
+
+export type SummarizeHistoryResult = {
+  ok: boolean;
+  summary: string;
+  turn_count: number;
+  error: string | null;
+};
+
+export async function summarizeHistory({
+  messages,
+  model = DEFAULT_CODE_AGENT_MODEL,
+  numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
+}: SummarizeHistoryArgs): Promise<SummarizeHistoryResult> {
+  return request<SummarizeHistoryResult>("/api/code-agent/summarize-history", {
+    method: "POST",
+    body: { messages, model, num_ctx: numCtx },
+  });
+}
+
+// ── Rough token estimator ────────────────────────────────────────────────
+
+/** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
+ *  is closer to 4. We compute per-character class to be reasonable. */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  let cyr = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 0x0400 && code <= 0x04ff) cyr++;
+  }
+  const ascii = text.length - cyr;
+  return Math.ceil(cyr / 2.8 + ascii / 4);
+}
+

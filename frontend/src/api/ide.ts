@@ -108,11 +108,14 @@ import {
 import {
   DEFAULT_CODE_AGENT_MAX_STEPS,
   DEFAULT_CODE_AGENT_MODEL,
+  DEFAULT_CODE_AGENT_NUM_CTX,
   cancelCodeAgent,
+  estimateTokens,
   getProjectPrompt,
   runCodeAgent,
   setProjectPromptApi,
   streamCodeAgent,
+  summarizeHistory,
 } from "./codeAgent";
 
 export {
@@ -225,11 +228,14 @@ export {
 export {
   DEFAULT_CODE_AGENT_MAX_STEPS,
   DEFAULT_CODE_AGENT_MODEL,
+  DEFAULT_CODE_AGENT_NUM_CTX,
   cancelCodeAgent,
+  estimateTokens,
   getProjectPrompt,
   runCodeAgent,
   setProjectPromptApi,
   streamCodeAgent,
+  summarizeHistory,
 } from "./codeAgent";
 export type {
   CodeAgentResponse,
@@ -328,8 +334,11 @@ export const api = {
   cancelCodeAgent,
   getProjectPrompt,
   setProjectPromptApi,
+  summarizeHistory,
+  estimateTokens,
   DEFAULT_CODE_AGENT_MODEL,
   DEFAULT_CODE_AGENT_MAX_STEPS,
+  DEFAULT_CODE_AGENT_NUM_CTX,
 };
 
 export default api;
