@@ -17,8 +17,8 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes.event_bus_routes import router as event_bus_router  # noqa: E402
-from app.services import agents_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
+from app.application.chat import runtime as agents_service  # noqa: E402
+from app.application.event_bus import runtime as bus  # noqa: E402
 
 
 class EventBusDbMixin(unittest.TestCase):

@@ -11,7 +11,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services import tool_registry as reg  # noqa: E402
+from app.application.tool_registry import runtime as reg  # noqa: E402
 
 
 def _dummy_handler(args: dict) -> dict:
@@ -167,7 +167,7 @@ class TestBackwardCompatibility(ToolRegistryTestCase):
     def test_tool_service_list(self) -> None:
         reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        from app.services.tool_service import list_tools
+        from app.application.tool_registry.service import list_tools
         result = list_tools()
         self.assertTrue(result["ok"])
         self.assertGreater(result["count"], 0)
@@ -175,7 +175,7 @@ class TestBackwardCompatibility(ToolRegistryTestCase):
     def test_tool_service_run(self) -> None:
         reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        from app.services.tool_service import run_tool
+        from app.application.tool_registry.service import run_tool
         result = run_tool("git_status")
         # git_status might fail if not in a git repo, but should not crash
         self.assertIsInstance(result, dict)

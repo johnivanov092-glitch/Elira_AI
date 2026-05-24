@@ -18,12 +18,12 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.api.routes.agent_monitor_routes import router as agent_monitor_router  # noqa: E402
-from app.services import agent_monitor  # noqa: E402
-from app.services import agent_registry  # noqa: E402
-from app.services import agent_sandbox  # noqa: E402
-from app.services import agents_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+from app.application.monitoring import runtime as agent_monitor  # noqa: E402
+from app.application.agent_registry import runtime as agent_registry  # noqa: E402
+from app.application.agent_registry import sandbox as agent_sandbox  # noqa: E402
+from app.application.chat import runtime as agents_service  # noqa: E402
+from app.application.event_bus import runtime as bus  # noqa: E402
+from app.application.workflow_engine import runtime as workflow_engine  # noqa: E402
 
 
 class AgentOsPhase5DbMixin(unittest.TestCase):
