@@ -2305,3 +2305,16 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   the tool registry builtin factory is now a small assembler, with category-specific helper builders and no public contract change.
+### 164. Phase 8 TODO fixes: tool.executed event + _project_path import
+- Status: completed
+- Scope: resolved two live TODOs on `claude/phase8-todos` (based on `claude/phase7-tauri-cleanup`).
+- Finish:
+  1. `backend/app/application/tool_registry/runtime.py` — `execute_tool()` now emits a `tool.executed` event via `app.application.event_bus.runtime.emit_event()` after every invocation (success and failure). The emission is best-effort (wrapped in try/except) so it never blocks callers. This completes the audit trail that Phase 3 declared pending Phase 2 merge.
+  2. `backend/app/application/event_bus/runtime.py` — removed stale `# TODO: wire tool.executed after Phase 2 merge.` comment.
+  3. `backend/app/application/chat/context_builder.py` — replaced wrong-direction import `from app.api.routes.advanced_routes import _project_path` with `from app.application.advanced.runtime import _project_path`, eliminating an application-layer -> API-layer coupling violation.
+  4. `backend/tests/test_agent_os_phase8.py` — 4 new tests covering both fixes.
+- Verification:
+  `python -m pytest backend/tests/test_agent_os_phase8.py -v` -> 4/4 passed;
+  `python -m pytest backend/tests/ -q` -> 2463 tests OK.
+- Result:
+  event bus now records every tool invocation; context_builder has no API-layer imports.
