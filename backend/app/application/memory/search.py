@@ -1,22 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 from typing import Any, Callable
-
-try:
-    from sentence_transformers import SentenceTransformer
-except Exception:
-    SentenceTransformer = None
-
-try:
-    import faiss
-except Exception:
-    faiss = None
-
-try:
-    import numpy as np
-except Exception:
-    np = None
 
 
 LoadMemoriesFunc = Callable[..., list[Any]]
@@ -25,22 +11,28 @@ _EMBEDDER = None
 _FAISS_CACHE: dict[str, Any] = {}
 
 
+def _has(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
 def _get_embedder():
+    """Lazy-load SentenceTransformer. Heavy import deferred until first call."""
     global _EMBEDDER
-    if SentenceTransformer is None:
+    if not _has("sentence_transformers"):
         return None
     if _EMBEDDER is None:
+        from sentence_transformers import SentenceTransformer  # heavy
         _EMBEDDER = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
     return _EMBEDDER
 
 
 def vector_memory_capability_status() -> dict[str, Any]:
     missing: list[str] = []
-    if SentenceTransformer is None:
+    if not _has("sentence_transformers"):
         missing.append("sentence-transformers")
-    if faiss is None:
+    if not _has("faiss"):
         missing.append("faiss-cpu")
-    if np is None:
+    if not _has("numpy"):
         missing.append("numpy")
 
     available = not missing
@@ -103,6 +95,9 @@ def semantic_search_memory(
     model = _get_embedder()
     if model is None:
         return []
+
+    import numpy as np  # lazy
+    import faiss  # lazy
 
     try:
         texts_key = hashlib.md5(("||".join(texts)).encode()).hexdigest()

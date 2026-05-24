@@ -19,14 +19,17 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.workflows import db_path as workflow_db_path  # noqa: E402
 from app.application.workflow_engine import runtime as workflow_engine_runtime  # noqa: E402
 from app.api.routes.workflow_routes import router as workflow_router  # noqa: E402
-from app.services import autopipeline_service  # noqa: E402
-from app.services import event_bus as bus  # noqa: E402
-from app.services import workflow_engine  # noqa: E402
+from app.application.autopipeline import runtime as autopipeline_service  # noqa: E402
+from app.application.event_bus import runtime as bus  # noqa: E402
+
+# Workflow engine is imported above as workflow_engine_runtime — the legacy
+# app.services.workflow_engine compat shim has been removed.
+workflow_engine = workflow_engine_runtime
 
 
 class WorkflowEngineFacadeTest(unittest.TestCase):
-    def test_service_path_aliases_application_runtime(self) -> None:
-        self.assertIs(workflow_engine, workflow_engine_runtime)
+    def test_runtime_exposes_workflow_ids(self) -> None:
+        self.assertTrue(workflow_engine_runtime.MULTI_AGENT_DEFAULT_WORKFLOW_ID)
 
     def test_legacy_constants_are_canonical(self) -> None:
         self.assertEqual(
@@ -118,7 +121,7 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
     def test_start_workflow_run_completes_and_emits_events(self) -> None:
         workflow_engine.create_workflow_template(self._simple_agent_template())
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.chat.runtime.run_agent", side_effect=self._agent_result):
             run = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.simple",
                 workflow_input={"query": "hello"},
@@ -141,7 +144,7 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
     def test_pause_resume_and_cancel_workflow_run(self) -> None:
         workflow_engine.create_workflow_template(self._simple_agent_template(workflow_id="test.workflow.pause", pause_after=True))
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.chat.runtime.run_agent", side_effect=self._agent_result):
             paused = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.pause",
                 workflow_input={"query": "pause"},
@@ -151,11 +154,11 @@ class WorkflowEngineServiceTest(WorkflowDbMixin):
         self.assertEqual(paused["status"], "paused")
         self.assertEqual(paused["current_step_id"], "step-two")
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.chat.runtime.run_agent", side_effect=self._agent_result):
             resumed = workflow_engine.resume_workflow_run(paused["run_id"])
         self.assertEqual(resumed["status"], "completed")
 
-        with patch("app.services.agents_service.run_agent", side_effect=self._agent_result):
+        with patch("app.application.chat.runtime.run_agent", side_effect=self._agent_result):
             paused_again = workflow_engine.start_workflow_run(
                 workflow_id="test.workflow.pause",
                 workflow_input={"query": "cancel"},
@@ -213,7 +216,7 @@ class WorkflowRoutesTest(WorkflowDbMixin):
         self.assertEqual(list_response.status_code, 200)
         self.assertEqual(list_response.json()["total"], 1)
 
-        with patch("app.services.agents_service.run_agent", return_value={"ok": True, "answer": "ok", "timeline": [], "tool_results": [], "meta": {}}):
+        with patch("app.application.chat.runtime.run_agent", return_value={"ok": True, "answer": "ok", "timeline": [], "tool_results": [], "meta": {}}):
             run_response = self.client.post(
                 "/api/agent-os/workflow-runs",
                 json={"workflow_id": "test.workflow.route", "input": {"query": "hi"}, "context": {"model_name": "test-model"}},
@@ -224,7 +227,7 @@ class WorkflowRoutesTest(WorkflowDbMixin):
 
 class WorkflowCompatibilityShimTest(WorkflowDbMixin):
     def test_multi_agent_chain_uses_workflow_engine(self) -> None:
-        from app.services import multi_agent_chain
+        from app.application.multi_agent_chain import runtime as multi_agent_chain
 
         fake_run = {
             "status": "completed",

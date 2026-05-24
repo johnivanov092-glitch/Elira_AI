@@ -14,7 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import app.application.telegram.runtime as tg_rt  # noqa: E402
 import app.application.telegram.store as tg_store  # noqa: E402
-from app.services.browser_agent import BrowserAgent  # noqa: E402
+from app.infrastructure.browser.agent import BrowserAgent  # noqa: E402
 
 
 class TelegramStoreCRUDTest(unittest.TestCase):
