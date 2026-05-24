@@ -16,21 +16,28 @@ export const API_BASE: string =
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
 /** Poll /health until the backend answers or we give up.
- *  Returns true if backend is reachable, false on timeout. */
+ *  Returns true if backend is reachable, false on timeout.
+ *  Uses manual AbortController instead of AbortSignal.timeout()
+ *  for compatibility with older WebView2 versions. */
 export async function waitForBackend(
   maxAttempts = 15,
   intervalMs = 2000,
   onAttempt?: (attempt: number) => void,
 ): Promise<boolean> {
   for (let i = 0; i < maxAttempts; i++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
     try {
-      const r = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(3000) });
+      const r = await fetch(`${API_BASE}/health`, { signal: controller.signal });
+      clearTimeout(timer);
       if (r.ok) return true;
     } catch {
-      // not ready yet
+      // network error or timeout — backend not ready yet
+    } finally {
+      clearTimeout(timer);
     }
     onAttempt?.(i + 1);
-    await new Promise((res) => setTimeout(res, intervalMs));
+    await new Promise<void>((res) => setTimeout(res, intervalMs));
   }
   return false;
 }
