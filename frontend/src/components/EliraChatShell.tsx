@@ -13,6 +13,7 @@ import { LucideIcon } from "lucide-react";
 import { api, executeStream } from "../api/ide";
 import { waitForBackend } from "../api/client";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
+import CodeAgentChatShell from "./CodeAgentChatShell";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ArtifactPanel from "./ArtifactPanel";
 import MemoryPanel from "./MemoryPanel";
@@ -796,6 +797,7 @@ export default function EliraChatShell(): JSX.Element {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (mainTab === "code") return <IdeWorkspaceShell messages={messages as any} libraryFiles={libraryFiles as any} setLibraryFiles={setLibraryFiles as any} onBackToChat={() => setMainTab("chat")} onSendToChat={(txt: string) => { setMainTab("chat"); setTimeout(() => setInput(txt), 100); }} />;
+  if (mainTab === "agent") return <CodeAgentChatShell />;
 
   const navItems: [string, string, LucideIcon][] = [
     ["chats", "Чаты", MessageSquare],
@@ -861,6 +863,7 @@ export default function EliraChatShell(): JSX.Element {
           <div className="topbar-tabs">
             <button className={`soft-btn ${mainTab==="chat"?"active":""}`} onClick={() => setMainTab("chat")}>Чат</button>
             <button className={`soft-btn ${mainTab==="code"?"active":""}`} onClick={() => setMainTab("code")}>Код</button>
+            <button className={`soft-btn ${mainTab==="agent"?"active":""}`} onClick={() => setMainTab("agent")}>Агент</button>
             <button className={`soft-btn ${showPanel?"active":""}`} onClick={() => setShowPanel(p => !p)} title="Панель кода"><UiIcon icon={Code2} size={13} /></button>
           </div>
         </div>

@@ -29,15 +29,12 @@ import {
   RefreshCw,
   Save,
   Search,
-  Play,
-  Sparkles,
   Terminal,
   TestTube2,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../api/ide";
-import type { CodeAgentResponse, CodeAgentToolCall } from "../api/codeAgent";
 import TerminalPanel from "./TerminalPanel";
 
 const LIBRARY_KEY = "elira_library_files_v7";
@@ -124,7 +121,7 @@ type GitData = {
   status?: GitStatusData;
 };
 
-type MainView = "agent" | "artifacts" | "filetree" | "git" | "history";
+type MainView = "artifacts" | "filetree" | "git" | "history";
 type FilterTab = "all" | "code" | "files";
 type GitTab = "diff" | "log" | "status";
 type SaveStatus = "error" | "ok" | "saving" | null;
@@ -269,48 +266,6 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   const [ftSelected,setFtSelected]=useState<string | null>(null);
   const [ftContent,setFtContent]=useState<string | null>(null);
 
-  // Code-agent state
-  const [agentTask,setAgentTask]=useState("");
-  const [agentProjectRoot,setAgentProjectRoot]=useState<string>(() => {
-    try { return localStorage.getItem("elira_code_agent_root") || "D:/AIWork/Elira_AI"; }
-    catch { return "D:/AIWork/Elira_AI"; }
-  });
-  const [agentModel,setAgentModel]=useState<string>(() => {
-    try { return localStorage.getItem("elira_code_agent_model") || "qwen2.5-coder:7b"; }
-    catch { return "qwen2.5-coder:7b"; }
-  });
-  const [agentMaxSteps,setAgentMaxSteps]=useState<number>(20);
-  const [agentRunning,setAgentRunning]=useState(false);
-  const [agentResult,setAgentResult]=useState<CodeAgentResponse | null>(null);
-  const [agentError,setAgentError]=useState<string | null>(null);
-  const [expandedTools,setExpandedTools]=useState<Record<number, boolean>>({});
-
-  function saveAgentSettings(root: string, model: string){
-    try { localStorage.setItem("elira_code_agent_root", root); localStorage.setItem("elira_code_agent_model", model); } catch {}
-  }
-  async function runCodeAgent(){
-    if(!agentTask.trim()||agentRunning)return;
-    setAgentRunning(true); setAgentError(null); setAgentResult(null); setExpandedTools({});
-    saveAgentSettings(agentProjectRoot, agentModel);
-    try {
-      const res = await api.runCodeAgent({
-        message: agentTask,
-        projectRoot: agentProjectRoot,
-        model: agentModel,
-        maxSteps: agentMaxSteps,
-      });
-      setAgentResult(res);
-      if(!res.ok && res.error) setAgentError(res.error);
-    } catch (e) {
-      setAgentError(String((e as Error)?.message || e));
-    } finally {
-      setAgentRunning(false);
-    }
-  }
-  function toggleToolDetail(idx: number){
-    setExpandedTools(prev => ({...prev, [idx]: !prev[idx]}));
-  }
-
   const libraryFiles=propLib||[];
   function setLibraryFiles(next: LibraryFile[]){if(propSetLib)propSetLib(next);saveJson(LIBRARY_KEY,next);}
 
@@ -413,7 +368,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
         <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>
         <span style={{fontSize:13,fontWeight:600}}>Код</span>
         <div style={{display:"flex",gap:2,marginLeft:6}}>
-          {[["agent","Агент", Sparkles],["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["history","История", History]].map(([k,l,Icon])=>(
+          {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["history","История", History]].map(([k,l,Icon])=>(
             <button key={String(k)} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k as MainView)} style={{fontSize:11,padding:"3px 9px"}}><IconText icon={Icon as IconComponent} size={12} gap={5}>{String(l)}</IconText></button>
           ))}
         </div>
@@ -506,161 +461,6 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                   <div style={{fontSize:11,marginTop:4,opacity:0.6}}>Код из ответов Elira появляется автоматически</div>
                 </div>
               </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* CODE AGENT */}
-      {mainView==="agent"&&(
-        <div style={{flex:1,display:"grid",gridTemplateColumns:"minmax(280px, 340px) 1fr",minHeight:0}}>
-          <div style={{borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",minHeight:0,overflow:"auto"}}>
-            <div style={{padding:"12px 14px",borderBottom:"1px solid var(--border)"}}>
-              <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:8,textTransform:"uppercase",letterSpacing:0.4}}>Задача для code-агента</div>
-              <textarea
-                value={agentTask}
-                onChange={e=>setAgentTask(e.target.value)}
-                placeholder="Например: создай файл tests/test_foo.py с pytest-тестом для функции bar() из module/foo.py, запусти его и покажи результат"
-                disabled={agentRunning}
-                style={{width:"100%",minHeight:120,padding:"8px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:12,outline:"none",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",lineHeight:1.5}}
-              />
-
-              <div style={{marginTop:12}}>
-                <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:4}}>Корень проекта</div>
-                <input
-                  value={agentProjectRoot}
-                  onChange={e=>setAgentProjectRoot(e.target.value)}
-                  disabled={agentRunning}
-                  placeholder="D:/AIWork/MyProject"
-                  style={{width:"100%",padding:"6px 9px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:11,outline:"none",boxSizing:"border-box",fontFamily:"var(--font-mono)"}}
-                />
-              </div>
-
-              <div style={{display:"grid",gridTemplateColumns:"1fr 88px",gap:8,marginTop:10}}>
-                <div>
-                  <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:4}}>Модель Ollama</div>
-                  <input
-                    value={agentModel}
-                    onChange={e=>setAgentModel(e.target.value)}
-                    disabled={agentRunning}
-                    placeholder="qwen2.5-coder:7b"
-                    style={{width:"100%",padding:"6px 9px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:11,outline:"none",boxSizing:"border-box",fontFamily:"var(--font-mono)"}}
-                  />
-                </div>
-                <div>
-                  <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:4}}>Max шагов</div>
-                  <input
-                    type="number"
-                    min={1}
-                    max={50}
-                    value={agentMaxSteps}
-                    onChange={e=>setAgentMaxSteps(Math.max(1, Math.min(50, Number(e.target.value)||1)))}
-                    disabled={agentRunning}
-                    style={{width:"100%",padding:"6px 9px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:11,outline:"none",boxSizing:"border-box",fontFamily:"var(--font-mono)"}}
-                  />
-                </div>
-              </div>
-
-              <button
-                onClick={runCodeAgent}
-                disabled={!agentTask.trim()||agentRunning}
-                style={{...SBG, marginTop:14, width:"100%", padding:"8px 12px", opacity: (!agentTask.trim()||agentRunning) ? 0.5 : 1, display:"inline-flex", alignItems:"center", justifyContent:"center", gap:8}}
-              >
-                {agentRunning
-                  ? <><UiIcon icon={Loader2} size={14}/><span>Работает...</span></>
-                  : <><UiIcon icon={Play} size={14}/><span>Запустить агента</span></>
-                }
-              </button>
-
-              <div style={{marginTop:10,fontSize:10,color:"var(--text-muted)",lineHeight:1.5}}>
-                Агент использует инструменты read_file, write_file, edit_file, glob, grep, run_bash в песочнице корня проекта. Все пути sandboxed.
-              </div>
-            </div>
-          </div>
-
-          <div style={{display:"flex",flexDirection:"column",minHeight:0,overflow:"auto"}}>
-            {!agentResult && !agentError && !agentRunning && (
-              <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-muted)",fontSize:12,padding:20}}>
-                <div style={{textAlign:"center",maxWidth:360}}>
-                  <div style={{display:"flex",justifyContent:"center",opacity:0.2,marginBottom:10}}><UiIcon icon={Sparkles} size={36} /></div>
-                  <div style={{fontSize:13,marginBottom:6}}>Code-агент с tool calling</div>
-                  <div style={{fontSize:11,lineHeight:1.6}}>Опиши задачу слева — агент сам прочитает файлы, внесёт правки и запустит проверки внутри указанного проекта. История каждого шага будет здесь.</div>
-                </div>
-              </div>
-            )}
-
-            {agentRunning && !agentResult && (
-              <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-muted)",fontSize:12,padding:20}}>
-                <div style={{textAlign:"center"}}>
-                  <div style={{display:"flex",justifyContent:"center",marginBottom:10}}><UiIcon icon={Loader2} size={28}/></div>
-                  <div>Агент работает — может занять минуту-две</div>
-                  <div style={{fontSize:10,marginTop:6,opacity:0.7}}>Модель: {agentModel}</div>
-                </div>
-              </div>
-            )}
-
-            {agentError && (
-              <div style={{padding:"16px 18px",borderBottom:"1px solid var(--border)",background:"rgba(255,107,107,0.08)"}}>
-                <div style={{fontSize:11,color:"#ff6b6b",textTransform:"uppercase",letterSpacing:0.4,marginBottom:6}}>Ошибка</div>
-                <div style={{fontSize:12,color:"var(--text-primary)",whiteSpace:"pre-wrap",fontFamily:"var(--font-mono)",lineHeight:1.5}}>{agentError}</div>
-              </div>
-            )}
-
-            {agentResult && (
-              <>
-                <div style={{padding:"12px 18px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                  <span style={{fontSize:11,padding:"2px 9px",borderRadius:20,background:agentResult.ok?"rgba(74,222,128,0.15)":"rgba(255,107,107,0.15)",color:agentResult.ok?"#4ade80":"#ff6b6b"}}>
-                    {agentResult.ok ? "Готово" : "Не завершено"}
-                  </span>
-                  <span style={{fontSize:11,color:"var(--text-muted)"}}>шаги: {agentResult.steps}</span>
-                  <span style={{fontSize:11,color:"var(--text-muted)"}}>tool calls: {agentResult.tool_calls.length}</span>
-                  <span style={{fontSize:11,color:"var(--text-muted)"}}>stop: {agentResult.stop_reason}</span>
-                </div>
-
-                {agentResult.response && (
-                  <div style={{padding:"14px 18px",borderBottom:"1px solid var(--border)"}}>
-                    <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:8,textTransform:"uppercase",letterSpacing:0.4}}>Ответ агента</div>
-                    <div style={{fontSize:12,lineHeight:1.65,whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-primary)"}}>{agentResult.response}</div>
-                    {onSendToChat && (
-                      <button onClick={()=>onSendToChat(agentResult.response)} style={{...SB(),marginTop:10}}>
-                        <IconText icon={MessageSquare} size={12} gap={5}>В чат</IconText>
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {agentResult.tool_calls.length > 0 && (
-                  <div style={{flex:1,overflow:"auto",padding:"10px 18px 18px"}}>
-                    <div style={{fontSize:11,color:"var(--text-muted)",marginBottom:8,textTransform:"uppercase",letterSpacing:0.4}}>Шаги</div>
-                    {agentResult.tool_calls.map((call: CodeAgentToolCall, idx: number)=>{
-                      const opened = !!expandedTools[idx];
-                      return (
-                        <div key={idx} style={{marginBottom:8,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-surface)"}}>
-                          <button
-                            onClick={()=>toggleToolDetail(idx)}
-                            style={{display:"flex",alignItems:"center",gap:8,width:"100%",padding:"7px 11px",border:"none",background:"transparent",cursor:"pointer",textAlign:"left",color:"var(--text-primary)",fontSize:12,fontFamily:"var(--font-mono)"}}
-                          >
-                            <span style={{fontSize:10,color:"var(--text-muted)",minWidth:30,flexShrink:0}}>#{call.step}</span>
-                            <span style={{color:"var(--accent)",flexShrink:0}}>{call.tool}</span>
-                            <span style={{color:"var(--text-muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1,fontSize:11}}>
-                              {Object.entries(call.arguments).map(([k,v])=>`${k}=${typeof v==="string"?(v.length>40?v.slice(0,40)+"…":v):JSON.stringify(v)}`).join("  ")}
-                            </span>
-                            <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>{opened?"▼":"▶"}</span>
-                          </button>
-                          {opened && (
-                            <div style={{borderTop:"1px solid var(--border)",padding:"8px 12px",background:"rgba(0,0,0,0.15)"}}>
-                              <div style={{fontSize:10,color:"var(--text-muted)",marginBottom:4}}>arguments</div>
-                              <pre style={{margin:0,marginBottom:8,fontSize:11,fontFamily:"var(--font-mono)",whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-secondary)"}}>{JSON.stringify(call.arguments, null, 2)}</pre>
-                              <div style={{fontSize:10,color:"var(--text-muted)",marginBottom:4}}>result</div>
-                              <pre style={{margin:0,fontSize:11,fontFamily:"var(--font-mono)",whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-primary)",maxHeight:280,overflow:"auto"}}>{call.result}</pre>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </>
             )}
           </div>
         </div>
