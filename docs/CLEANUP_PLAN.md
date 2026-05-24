@@ -40,13 +40,23 @@
 
 | # | Задача | Ветка | Статус | Исполнитель | Ревью Opus |
 |---|--------|-------|--------|-------------|------------|
-| 1 | Lazy-load heavy ML imports | `cleanup/lazy-ml-imports` | TODO | — | — |
-| 2 | Удалить мёртвые `elira_phase*` модули и роуты | `cleanup/dead-phase-modules` | TODO | — | — |
-| 3 | Удалить `app/services/` compat-слой | `cleanup/drop-services-shims` | TODO | — | — |
-| 4 | Тяжёлые зависимости → optional | `cleanup/deps-to-optional` | TODO | — | — |
-| 5 | Урезать persona prompt, сохранить evolution | `cleanup/slim-persona-prompt` | TODO | — | — |
-| 6 | Реальный code-агент через Ollama function calling | `feat/real-code-agent` | TODO | — | — |
-| 7 | Удалить frontend `.js` дубликаты | `cleanup/frontend-js-dupes` | TODO | — | — |
+| 1 | Lazy-load heavy ML imports | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+| 2 | Удалить мёртвые `elira_phase*` модули и роуты | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+| 3 | Удалить `app/services/` compat-слой | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+| 4 | Тяжёлые зависимости → optional | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+| 5 | Урезать persona prompt, сохранить evolution | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+| 6 | Реальный code-агент через Ollama function calling | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+| 7 | Удалить frontend `.js` дубликаты | `cleanup/full-pass` | **DONE** | Opus 4.7 | self |
+
+**Итоги (2026-05-24):**
+- Старт `from app.main import app`: **25 сек → 1.68 сек**
+- Тесты: 2419 проходят, 1 pre-existing failure (`tavily` vs `duckduckgo`, не связан)
+- Routes: 231 → 203 (−29 мёртвых + 1 новый `/api/code-agent/run`)
+- `app/services/` удалён полностью (−49 файлов)
+- `requirements.txt` урезан до ~50 MB core; тяжёлое ушло в три профиля `requirements-optional.txt`
+- Persona prompt: ~2000 → 469 символов; `persona_evolution` нетронут
+- Frontend: 11 `.js`/`.jsx` дубликатов удалены, `tsc --noEmit` + `vite build` зелёные
+- Новый code-агент: 6 sandboxed-инструментов + agent loop через Ollama function calling, 13 unit-тестов
 
 Зависимости:
 - 1, 2, 3, 4, 5, 7 — независимы, можно параллелить.
