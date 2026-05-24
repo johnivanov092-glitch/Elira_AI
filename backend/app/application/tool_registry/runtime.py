@@ -138,12 +138,27 @@ def delete_tool(name: str) -> dict:
 
 
 def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict:
-    return registry_store.execute_tool(
+    result = registry_store.execute_tool(
         handlers=_handlers,
         get_tool_func=get_tool,
         name=name,
         args=args,
     )
+    # Emit tool.executed event for audit trail (best-effort - never blocks callers).
+    try:
+        from app.application.event_bus import runtime as _eb
+        _eb.emit_event(
+            event_type="tool.executed",
+            payload={
+                "tool_name": name,
+                "args": args or {},
+                "success": result.get("ok", True),
+                "error": result.get("error"),
+            },
+        )
+    except Exception:
+        pass
+    return result
 
 
 def validate_tool_args(name: str, args: dict) -> list[str]:

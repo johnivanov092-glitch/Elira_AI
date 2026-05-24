@@ -28,7 +28,6 @@ SUPPORTED_EVENT_TYPES = (
     "workflow.step.failed",
 )
 
-# TODO: wire tool.executed after Phase 2 merge.
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS events (
