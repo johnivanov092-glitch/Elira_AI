@@ -407,3 +407,30 @@ Live repair log for concrete backend/runtime fixes.
 - Result:
   Agent OS now has a complete Phase 5 layer: backend monitoring/soft-sandboxing, audit events, policy-limit endpoints, workflow-aware metrics, and a read-only dashboard view for runtime operators;
   ordinary chat and multi-agent flows stay compatible under the seeded soft defaults, while policy blocks and limit updates are visible both in API responses and in the dashboard summary.
+
+## 2026-05-24
+
+### Phase 6: Frontend TypeScript migration
+- Status: completed
+- Scope: progressive TypeScript layer over the existing `.jsx` frontend — all source files converted with zero `tsc --noEmit` errors.
+- Branch: `claude/phase6-ts` (pushed to origin, PR pending review)
+- Files created (23):
+  - `frontend/tsconfig.json` — bundler mode, `allowJs: true`, `strict: true`
+  - `frontend/src/vite-env.d.ts` — `*.jsx` wildcard module declaration
+  - `frontend/src/main.tsx`, `frontend/src/App.tsx` — typed entry points
+  - `frontend/src/chatConstants.ts` — `Skill` interface + profile/skill constants
+  - `frontend/src/chatUtils.ts` — `loadJson<T>`, `HistoryMessage`, typed helpers
+  - `frontend/src/elira_ru_labels.ts` — Russian label map
+  - `frontend/src/components/StatusPanels.tsx` — 7 typed panel exports
+  - `frontend/src/components/EliraChatShell.tsx` — ~1700-line typed shell (8 interfaces + typed refs)
+  - `frontend/src/api/{client,apiUtils,agent,chats,dashboard,tasks,integrations,advanced,library,ide}.ts` — all API modules typed
+- Key patterns: `Record<string, unknown>` for loose API data; non-null assertion `response.body!` for SSE streaming; IIFE pattern to narrow nullable `chartData` inside JSX; `[key: string]: unknown` index signature on form interfaces.
+- Result: `./node_modules/.bin/tsc --noEmit` → 0 errors.
+
+### Phase 2 Tool Registry — verification and WORKPLAN sync
+- Status: completed
+- Scope: confirmed Phase 2 is fully implemented on `main` and marked DONE in the WORKPLAN.
+- Result:
+  `backend/tests/test_agent_os_phase2.py` → 17/17 passed;
+  `docs/AGENT_OS_WORKPLAN.md` Phase 2 status updated TODO → DONE;
+  changelog entries added to WORKPLAN and ACTUAL_WORK.
