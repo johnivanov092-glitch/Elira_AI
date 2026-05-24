@@ -1,34 +1,23 @@
 /**
  * CodeAgentChatShell.tsx
  *
- * Claude Code / Codex-style chat where the conversation IS the code-agent.
- * User types a task -> POST /api/code-agent/run -> assistant answer +
- * tool calls land in the transcript inline.
+ * Chat-style transcript where the conversation IS the code-agent (Claude
+ * Code / Codex style). User types a task -> POST /api/code-agent/run ->
+ * assistant answer and tool calls land in the transcript inline.
  *
- * Each user submit is a fresh single-shot agent run (the backend has no
- * multi-turn state); past turns are kept locally as transcript history.
+ * State is split:
+ *   - projectRoot / model / maxSteps are CONTROLLED via props from the
+ *     parent wrapper (CodeWorkspaceShell owns the toolbar).
+ *   - Transcript history, current input and running flag stay local and
+ *     are persisted to localStorage.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  Loader2,
-  Send,
-  Settings2,
-  Sparkles,
-  Trash2,
-  Wrench,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Send, Sparkles, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
 import type { CodeAgentResponse, CodeAgentToolCall } from "../api/codeAgent";
 import { UiIcon, IconText } from "./StatusPanels";
 
 const HISTORY_KEY = "elira_code_agent_history_v1";
-const ROOT_KEY = "elira_code_agent_root";
-const MODEL_KEY = "elira_code_agent_model";
-const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
-const DEFAULT_MODEL = "qwen2.5-coder:7b";
-const DEFAULT_MAX_STEPS = 20;
 
 type UserTurn = {
   kind: "user";
@@ -84,9 +73,7 @@ function formatArgsInline(args: Record<string, unknown>): string {
     .join("  ");
 }
 
-type ToolBlockProps = {
-  call: CodeAgentToolCall;
-};
+type ToolBlockProps = { call: CodeAgentToolCall };
 
 function ToolBlock({ call }: ToolBlockProps) {
   const [open, setOpen] = useState(false);
@@ -163,32 +150,22 @@ function ToolBlock({ call }: ToolBlockProps) {
   );
 }
 
-export default function CodeAgentChatShell() {
+export type CodeAgentChatShellProps = {
+  projectRoot: string;
+  model: string;
+  maxSteps: number;
+};
+
+export default function CodeAgentChatShell({ projectRoot, model, maxSteps }: CodeAgentChatShellProps) {
   const [history, setHistory] = useState<Turn[]>(() => loadHistory());
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [projectRoot, setProjectRoot] = useState<string>(() => {
-    try { return localStorage.getItem(ROOT_KEY) || DEFAULT_ROOT; } catch { return DEFAULT_ROOT; }
-  });
-  const [model, setModel] = useState<string>(() => {
-    try { return localStorage.getItem(MODEL_KEY) || DEFAULT_MODEL; } catch { return DEFAULT_MODEL; }
-  });
-  const [maxSteps, setMaxSteps] = useState<number>(DEFAULT_MAX_STEPS);
-  const [showSettings, setShowSettings] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     saveHistory(history);
-    // auto-scroll to bottom on any history change
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [history]);
-
-  useEffect(() => {
-    try { localStorage.setItem(ROOT_KEY, projectRoot); } catch {}
-  }, [projectRoot]);
-  useEffect(() => {
-    try { localStorage.setItem(MODEL_KEY, model); } catch {}
-  }, [model]);
 
   const runTurn = useCallback(async () => {
     const text = input.trim();
@@ -260,123 +237,33 @@ export default function CodeAgentChatShell() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Top bar */}
+      {/* Mini header — just transcript controls */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "8px 14px",
+          gap: 8,
+          padding: "6px 12px",
           borderBottom: "1px solid var(--border)",
           flexShrink: 0,
         }}
       >
-        <UiIcon icon={Sparkles} size={14} />
-        <div style={{ fontSize: 12, fontWeight: 500 }}>Code-Агент</div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-          {model} · {projectRoot}
-        </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <button
-            onClick={() => setShowSettings((v) => !v)}
-            className="soft-btn"
-            style={{ fontSize: 11, padding: "4px 10px" }}
-          >
-            <IconText icon={Settings2} size={12} gap={5}>
-              Настройки
-            </IconText>
-          </button>
-          <button
-            onClick={clearHistory}
-            disabled={!history.length}
-            className="soft-btn"
-            style={{ fontSize: 11, padding: "4px 10px", opacity: history.length ? 1 : 0.4 }}
-          >
-            <IconText icon={Trash2} size={12} gap={5}>
-              Очистить
-            </IconText>
-          </button>
-        </div>
+        <UiIcon icon={Sparkles} size={13} />
+        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{history.length} turns</span>
+        <button
+          onClick={clearHistory}
+          disabled={!history.length}
+          className="soft-btn"
+          style={{ marginLeft: "auto", fontSize: 10, padding: "3px 8px", opacity: history.length ? 1 : 0.4 }}
+        >
+          <IconText icon={Trash2} size={11} gap={4}>
+            Очистить
+          </IconText>
+        </button>
       </div>
 
-      {/* Settings panel */}
-      {showSettings && (
-        <div
-          style={{
-            padding: "10px 14px",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--bg-surface)",
-            display: "grid",
-            gridTemplateColumns: "2fr 1fr 100px",
-            gap: 10,
-            flexShrink: 0,
-          }}
-        >
-          <div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>Корень проекта</div>
-            <input
-              value={projectRoot}
-              onChange={(e) => setProjectRoot(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "6px 9px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                fontSize: 11,
-                outline: "none",
-                boxSizing: "border-box",
-                fontFamily: "var(--font-mono)",
-              }}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>Модель Ollama</div>
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              style={{
-                width: "100%",
-                padding: "6px 9px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                fontSize: 11,
-                outline: "none",
-                boxSizing: "border-box",
-                fontFamily: "var(--font-mono)",
-              }}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>Max шагов</div>
-            <input
-              type="number"
-              min={1}
-              max={50}
-              value={maxSteps}
-              onChange={(e) => setMaxSteps(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
-              style={{
-                width: "100%",
-                padding: "6px 9px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                fontSize: 11,
-                outline: "none",
-                boxSizing: "border-box",
-                fontFamily: "var(--font-mono)",
-              }}
-            />
-          </div>
-        </div>
-      )}
-
       {/* Transcript */}
-      <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "14px 18px" }}>
+      <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "12px 14px" }}>
         {empty && (
           <div
             style={{
@@ -388,17 +275,17 @@ export default function CodeAgentChatShell() {
               fontSize: 12,
             }}
           >
-            <div style={{ textAlign: "center", maxWidth: 420 }}>
+            <div style={{ textAlign: "center", maxWidth: 380 }}>
               <div style={{ display: "flex", justifyContent: "center", opacity: 0.2, marginBottom: 12 }}>
-                <UiIcon icon={Sparkles} size={42} />
+                <UiIcon icon={Sparkles} size={36} />
               </div>
-              <div style={{ fontSize: 13, marginBottom: 6 }}>Code-Агент с tool calling</div>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>Code-Агент</div>
               <div style={{ fontSize: 11, lineHeight: 1.6, marginBottom: 8 }}>
-                Напиши задачу — агент сам прочитает файлы, внесёт правки и запустит проверки в указанном
-                проекте. Каждый шаг (tool call) будет виден в истории.
+                Опиши задачу — агент прочитает файлы, внесёт правки и запустит проверки в указанном проекте.
+                Каждый шаг (tool call) виден в истории.
               </div>
-              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 14, lineHeight: 1.7 }}>
-                Доступные инструменты:&nbsp;
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 12, lineHeight: 1.7 }}>
+                Инструменты:&nbsp;
                 <code style={{ fontFamily: "var(--font-mono)" }}>read_file</code>,&nbsp;
                 <code style={{ fontFamily: "var(--font-mono)" }}>write_file</code>,&nbsp;
                 <code style={{ fontFamily: "var(--font-mono)" }}>edit_file</code>,&nbsp;
@@ -413,11 +300,11 @@ export default function CodeAgentChatShell() {
         {history.map((turn) => {
           if (turn.kind === "user") {
             return (
-              <div key={turn.id} style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+              <div key={turn.id} style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
                 <div
                   style={{
-                    maxWidth: "78%",
-                    padding: "8px 12px",
+                    maxWidth: "82%",
+                    padding: "7px 11px",
                     borderRadius: 10,
                     background: "var(--accent-soft, rgba(99,102,241,0.18))",
                     border: "1px solid var(--accent, #6366f1)",
@@ -433,16 +320,19 @@ export default function CodeAgentChatShell() {
               </div>
             );
           }
-          // agent turn
           return (
-            <div key={turn.id} style={{ marginBottom: 18 }}>
+            <div key={turn.id} style={{ marginBottom: 16 }}>
               {turn.tool_calls.length > 0 && (
-                <div style={{ marginBottom: 8 }}>{turn.tool_calls.map((c, idx) => <ToolBlock key={`${turn.id}-tc-${idx}`} call={c} />)}</div>
+                <div style={{ marginBottom: 6 }}>
+                  {turn.tool_calls.map((c, idx) => (
+                    <ToolBlock key={`${turn.id}-tc-${idx}`} call={c} />
+                  ))}
+                </div>
               )}
               {turn.error && (
                 <div
                   style={{
-                    padding: "8px 12px",
+                    padding: "7px 11px",
                     borderRadius: 8,
                     border: "1px solid rgba(255,107,107,0.4)",
                     background: "rgba(255,107,107,0.08)",
@@ -459,7 +349,7 @@ export default function CodeAgentChatShell() {
               {turn.text && (
                 <div
                   style={{
-                    padding: "10px 14px",
+                    padding: "9px 12px",
                     borderRadius: 10,
                     background: "var(--bg-surface)",
                     border: "1px solid var(--border)",
@@ -473,7 +363,16 @@ export default function CodeAgentChatShell() {
                   {turn.text}
                 </div>
               )}
-              <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-muted)", display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 10,
+                  color: "var(--text-muted)",
+                  display: "flex",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
                 <span>{turn.ok ? "✓ готово" : "✕ не завершено"}</span>
                 <span>шаги: {turn.steps}</span>
                 <span>stop: {turn.stop_reason}</span>
@@ -484,7 +383,16 @@ export default function CodeAgentChatShell() {
         })}
 
         {running && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-muted)", fontSize: 12, padding: "8px 4px" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "var(--text-muted)",
+              fontSize: 12,
+              padding: "6px 4px",
+            }}
+          >
             <UiIcon icon={Loader2} size={14} />
             <span>Агент работает...</span>
           </div>
@@ -492,13 +400,13 @@ export default function CodeAgentChatShell() {
       </div>
 
       {/* Composer */}
-      <div style={{ padding: "10px 14px 12px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+      <div style={{ padding: "8px 12px 10px", borderTop: "1px solid var(--border)", flexShrink: 0 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onInputKey}
-            placeholder="Опиши задачу для code-агента. Ctrl+Enter — отправить."
+            placeholder="Опиши задачу. Ctrl+Enter — отправить."
             disabled={running}
             rows={3}
             style={{
@@ -539,8 +447,8 @@ export default function CodeAgentChatShell() {
             <span>Отправить</span>
           </button>
         </div>
-        <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-muted)" }}>
-          Ctrl+Enter отправляет. Каждое сообщение — отдельный single-shot запуск агента (backend не держит state между запусками).
+        <div style={{ marginTop: 4, fontSize: 10, color: "var(--text-muted)" }}>
+          Ctrl+Enter — отправить. Каждое сообщение — отдельный single-shot запуск.
         </div>
       </div>
     </div>
