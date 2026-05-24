@@ -1,4 +1,4 @@
-"""file_extractor.py — extract text from PDF, DOCX, XLSX, ZIP, and plain text files."""
+"""file_extractor.py -- extract text from PDF, DOCX, XLSX, ZIP, and plain text files."""
 from __future__ import annotations
 
 import io
@@ -132,7 +132,7 @@ def extract_text(data: bytes, max_chars: int = 30000) -> str:
     for enc in ("utf-8", "utf-8-sig", "cp1251", "cp866", "latin-1"):
         try:
             text = data.decode(enc)
-            if "�" not in text[:500]:
+            if "\ufffd" not in text[:500]:
                 return text[:max_chars]
         except (UnicodeDecodeError, LookupError):
             continue

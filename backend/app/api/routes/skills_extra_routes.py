@@ -2,10 +2,11 @@
 skills_extra_routes.py — роуты дополнительных скиллов + плагины + webhook.
 """
 from __future__ import annotations
+from typing import Any
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from app.application.skills.skills_extra import (
+from app.application.skills_extra import (
     encrypt_text, decrypt_text,
     create_zip, extract_zip,
     convert_file,
@@ -14,7 +15,7 @@ from app.application.skills.skills_extra import (
     analyze_csv,
     store_webhook, list_webhooks, clear_webhooks,
 )
-from app.infrastructure.plugins.plugin_system import (
+from app.application.plugins import (
     list_plugins, run_plugin, reload_plugins,
     enable_plugin, disable_plugin, get_plugin_info, update_plugin_settings,
 )

@@ -1,459 +1,196 @@
-"""Chat stream response helpers + streaming agent execution.
-
-Extracted from agents_service.py.  Shared helpers are imported from
-service.py to avoid duplication.
-"""
 from __future__ import annotations
 
-import logging
-import time as _time
-from typing import Any, Generator
-
-logger = logging.getLogger(__name__)
-
-from app.application.chat.auto_skills import (
-    _FILE_TRIGGERS_EXCEL,
-    _FILE_TRIGGERS_WORD,
-    _build_prompt,
-    _get_and_clear_attachments,
-    _maybe_auto_exec_python,
-    _maybe_generate_files,
-    _pending_attachments,
-)
-from app.application.chat.prompt_builder import (
-    compose_human_style_rules as _compose_human_style_rules,
-)
-from app.application.chat.service import (
-    _HISTORY,
-    _REFLECTION_ROUTES,
-    _apply_identity_guard,
-    _apply_provenance_guard,
-    _emit_agent_os_event,
-    _gather_run_context,
-    _handle_chat_run_failure,
-    _record_agent_os_monitoring,
-    _resolve_plan_and_tools,
-    _setup_chat_agent_run,
-    _tl,
-)
-from app.application.monitoring.agent_sandbox import preflight_or_raise
-from app.application.chat.chat_service import run_chat_stream
-from app.application.persona.persona_service import observe_dialogue
-from app.application.agents.reflection_loop_service import run_reflection_loop
-from app.infrastructure.cache.response_cache import get_cached, set_cached, should_cache
-from app.application.memory.smart_memory import extract_and_save
+from dataclasses import dataclass
+from typing import Any, Iterator
 
 
+@dataclass(frozen=True)
+class CachedStreamHit:
+    full_text: str
+    done_event: dict[str, Any]
 
-def _build_stream_meta(
+
+def build_stream_phase_event(
     *,
-    raw_user_input: str,
-    full_text: str,
-    planner_input: str,
-    effective_model: str,
+    phase: str,
+    message: str | None = None,
+    full_text: str | None = None,
+) -> dict[str, Any]:
+    event: dict[str, Any] = {"token": "", "done": False, "phase": phase}
+    if message is not None:
+        event["message"] = message
+    if full_text is not None:
+        event["full_text"] = full_text
+    return event
+
+
+def build_selected_tools_phase_event(selected_tools: list[str]) -> dict[str, Any] | None:
+    if "web_search" in selected_tools:
+        return build_stream_phase_event(phase="searching", message="Ищу...")
+    if selected_tools:
+        return build_stream_phase_event(phase="tools", message="Собираю контекст...")
+    return None
+
+
+def build_chat_meta(
+    *,
+    model_name: str,
     profile_name: str,
     route: str,
-    selected: list,
-    run: dict,
-    session_id,
-    timeline: list,
-    temporal: dict,
-    web_plan: dict,
-) -> tuple[str, dict, bool]:
-    """Apply guards, maybe write cache, observe persona, assemble meta dict.
-
-    Returns ``(full_text_after_guards, meta, guard_changed)``.
-    """
-    identity_guard = _apply_identity_guard(raw_user_input, full_text, timeline)
-    guarded_text = identity_guard.get("text", full_text)
-    provenance_guard = _apply_provenance_guard(raw_user_input, guarded_text, timeline)
-    guarded_text = provenance_guard.get("text", guarded_text)
-    guard_changed = guarded_text != full_text
-    if guard_changed:
-        full_text = guarded_text
-    if should_cache(planner_input, route) and full_text.strip():
-        try:
-            set_cached(planner_input, effective_model, profile_name, full_text)
-        except Exception as _exc:
-            logger.debug("cache_write failed: %s", _exc)
-    persona_meta = observe_dialogue(
-        dialog_id=run["run_id"],
-        session_id=str(session_id or run["run_id"]),
-        profile_name=profile_name,
-        model_name=effective_model,
-        user_input=raw_user_input,
-        answer_text=full_text,
-        route=route,
-        outcome_ok=True,
-    )
-    meta = {
-        "model_name": effective_model,
+    tools: list[str],
+    run_id: str,
+    temporal: dict[str, Any],
+    web_plan: dict[str, Any],
+    persona: dict[str, Any] | None = None,
+    identity_guard: dict[str, Any] | None = None,
+    provenance_guard: dict[str, Any] | None = None,
+    cached: bool = False,
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "model_name": model_name,
         "profile_name": profile_name,
         "route": route,
-        "tools": selected,
-        "run_id": run["run_id"],
-        "persona": persona_meta,
+        "tools": tools,
+        "run_id": run_id,
         "temporal": temporal,
         "web_plan": web_plan,
-        "identity_guard": identity_guard if identity_guard.get("changed") else None,
-        "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+        "identity_guard": identity_guard if (identity_guard or {}).get("changed") else None,
+        "provenance_guard": provenance_guard if (provenance_guard or {}).get("changed") else None,
     }
-    return full_text, meta, guard_changed
+    if persona is not None:
+        meta["persona"] = persona
+    if cached:
+        meta["cached"] = True
+    return meta
 
 
-def _apply_guards_and_complete_stream(
+def iter_text_stream_events(text: str) -> Iterator[dict[str, Any]]:
+    words = text.split(" ")
+    for index, word in enumerate(words):
+        yield {"token": word if index == 0 else " " + word, "done": False}
+
+
+def build_stream_done_event(
     *,
-    raw_user_input: str,
     full_text: str,
-    planner_input: str,
-    effective_model: str,
-    profile_name: str,
-    route: str,
-    selected: list,
-    run: dict,
-    session_id,
-    timeline: list,
-    _effective_agent_id: str,
-    _agent_start: float,
-    num_ctx: int,
-    temporal: dict,
-    web_plan: dict,
-) -> tuple[str, dict, bool]:
-    """Apply guards, cache, persona, finish run; emit completion events.
-
-    Returns ``(full_text, meta, guard_changed)``. If *guard_changed* is True
-    the caller should yield a ``reflection_replace`` event before ``done``.
-    """
-    full_text, meta, guard_changed = _build_stream_meta(
-        raw_user_input=raw_user_input, full_text=full_text,
-        planner_input=planner_input, effective_model=effective_model,
-        profile_name=profile_name, route=route, selected=selected,
-        run=run, session_id=session_id, timeline=timeline,
-        temporal=temporal, web_plan=web_plan,
-    )
-    _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": full_text, "meta": meta})
-    _record_agent_os_monitoring(
-        agent_id=_effective_agent_id,
-        run_id=run["run_id"],
-        route=route,
-        model_name=effective_model,
-        ok=True,
-        duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-        streaming=True,
-        num_ctx=num_ctx,
-        selected_tools=selected,
-    )
-    _emit_agent_os_event(
-        event_type="agent.run.completed",
-        source_agent_id=_effective_agent_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "route": route,
-            "ok": True,
-            "model_used": effective_model,
-            "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-            "session_id": str(session_id or ""),
-            "streaming": True,
-        },
-    )
-    return full_text, meta, guard_changed
-
-
-def _build_cache_hit_stream(
-    *,
-    cached: str,
-    raw_user_input: str,
-    effective_model: str,
-    profile_name: str,
-    route: str,
-    run: dict,
-    session_id,
-    timeline: list,
-    temporal: dict,
-    web_plan: dict,
-    _effective_agent_id: str,
-    _agent_start: float,
-    num_ctx: int,
-    selected: list,
-) -> "Generator[dict, None, None]":
-    """Stream a cached response: apply guards, record monitoring, yield tokens."""
-    _tl(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
-    identity_guard = _apply_identity_guard(raw_user_input, cached, timeline)
-    cached = identity_guard.get("text", cached)
-    provenance_guard = _apply_provenance_guard(raw_user_input, cached, timeline)
-    cached = provenance_guard.get("text", cached)
-    meta = {
-        "model_name": effective_model,
-        "profile_name": profile_name,
-        "route": route,
-        "tools": [],
-        "run_id": run["run_id"],
-        "cached": True,
-        "temporal": temporal,
-        "web_plan": web_plan,
-        "identity_guard": identity_guard if identity_guard.get("changed") else None,
-        "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
+    meta: dict[str, Any],
+    timeline: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "token": "",
+        "done": True,
+        "full_text": full_text,
+        "meta": meta,
+        "timeline": timeline,
     }
-    persona_meta = observe_dialogue(
-        dialog_id=run["run_id"],
-        session_id=str(session_id or run["run_id"]),
-        profile_name=profile_name,
-        model_name=effective_model,
-        user_input=raw_user_input,
-        answer_text=cached,
-        route=route,
-        outcome_ok=True,
-    )
-    meta["persona"] = persona_meta
-    _HISTORY.finish_run(run["run_id"], {"ok": True, "answer": cached, "meta": meta})
-    _record_agent_os_monitoring(
-        agent_id=_effective_agent_id,
-        run_id=run["run_id"],
-        route=route,
-        model_name=effective_model,
-        ok=True,
-        duration_ms=int((_time.monotonic() - _agent_start) * 1000),
-        streaming=True,
-        num_ctx=num_ctx,
-        selected_tools=selected,
-    )
-    _emit_agent_os_event(
-        event_type="agent.run.completed",
-        source_agent_id=_effective_agent_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "route": route,
-            "ok": True,
-            "model_used": effective_model,
-            "duration_ms": int((_time.monotonic() - _agent_start) * 1000),
-            "session_id": str(session_id or ""),
-            "streaming": True,
-        },
-    )
-    words = cached.split(" ")
-    for i, word in enumerate(words):
-        yield {"token": word if i == 0 else " " + word, "done": False}
-    yield {"token": "", "done": True, "full_text": cached, "meta": meta, "timeline": timeline}
 
 
-def _complete_stream_with_guards(
-    full_text: str,
+def prepare_cached_stream_hit(
     *,
+    cached_text: str,
     raw_user_input: str,
-    planner_input: str,
-    effective_model: str,
+    timeline: list[dict[str, Any]],
+    append_timeline_func: Any,
+    apply_identity_guard_func: Any,
+    apply_provenance_guard_func: Any,
+    finalize_stream_success_func: Any,
+    history_service: Any,
+    run_id: str,
+    session_id: str,
     profile_name: str,
+    model_name: str,
     route: str,
-    selected: list,
-    run: dict,
-    session_id,
-    timeline: list,
-    _effective_agent_id: str,
-    _agent_start: float,
+    temporal: dict[str, Any],
+    web_plan: dict[str, Any],
     num_ctx: int,
-    temporal: dict,
-    web_plan: dict,
-    needs_file_gen: bool,
-    use_python_exec: bool,
-    use_file_gen: bool,
-) -> "Generator[dict, None, None]":
-    """Run python-exec, file generation, guards, then yield the final done event."""
-    try:
-        full_text = _maybe_auto_exec_python(raw_user_input, full_text, timeline, enabled=use_python_exec)
-    except Exception as _exc:
-        logger.debug("auto_exec_python failed: %s", _exc)
-    if needs_file_gen:
-        yield {"token": "", "done": False, "phase": "generating_file", "message": "Готовлю файл..."}
-    post_files = _maybe_generate_files(raw_user_input, full_text, enabled=use_file_gen)
-    if post_files:
-        full_text += post_files
-    full_text, meta, guard_changed = _apply_guards_and_complete_stream(
-        raw_user_input=raw_user_input,
-        full_text=full_text,
-        planner_input=planner_input,
-        effective_model=effective_model,
-        profile_name=profile_name,
-        route=route,
-        selected=selected,
-        run=run,
+    agent_id: str,
+    source_agent_id: str,
+    selected_tools: list[str],
+    started_at: float,
+    monotonic_now_func: Any,
+) -> CachedStreamHit:
+    append_timeline_func(timeline, "cache_hit", "Кэш", "ok", "Ответ из кэша")
+    identity_guard = apply_identity_guard_func(raw_user_input, cached_text, timeline)
+    full_text = identity_guard.get("text", cached_text)
+    provenance_guard = apply_provenance_guard_func(raw_user_input, full_text, timeline)
+    full_text = provenance_guard.get("text", full_text)
+    duration_ms = int((monotonic_now_func() - started_at) * 1000)
+    done_event = finalize_stream_success_func(
+        history_service=history_service,
+        run_id=run_id,
         session_id=session_id,
-        timeline=timeline,
-        _effective_agent_id=_effective_agent_id,
-        _agent_start=_agent_start,
-        num_ctx=num_ctx,
+        profile_name=profile_name,
+        model_name=model_name,
+        route=route,
+        user_input=raw_user_input,
+        full_text=full_text,
+        tools=[],
         temporal=temporal,
         web_plan=web_plan,
+        identity_guard=identity_guard,
+        provenance_guard=provenance_guard,
+        duration_ms=duration_ms,
+        num_ctx=num_ctx,
+        agent_id=agent_id,
+        source_agent_id=source_agent_id,
+        timeline=timeline,
+        selected_tools=selected_tools,
+        cached=True,
     )
-    if guard_changed:
-        yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": full_text}
-    yield {"token": "", "done": True, "full_text": full_text, "meta": meta, "timeline": timeline}
+    return CachedStreamHit(full_text=full_text, done_event=done_event)
 
 
-# ─── execute_chat_agent_stream (streaming) ───────────────────────────────────
-
-
-def execute_chat_agent_stream(
+def finalize_stream_response(
     *,
-    model_name,
-    profile_name,
-    user_input,
-    session_id=None,
-    use_memory=True,
-    use_library=True,
-    use_reflection=False,
-    history=None,
-    num_ctx=8192,
-    use_web_search=True,
-    use_python_exec=True,
-    use_image_gen=True,
-    use_file_gen=True,
-    use_http_api=True,
-    use_sql=True,
-    use_screenshot=True,
-    use_encrypt=True,
-    use_archiver=True,
-    use_converter=True,
-    use_regex=True,
-    use_translator=True,
-    use_csv=True,
-    use_webhook=True,
-    use_plugins=True,
-) -> Generator[dict[str, Any], None, None]:
-    (
-        _agent_start, _, _effective_agent_id, profile_name, model_name,
-        history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run,
-    ) = _setup_chat_agent_run(
-        user_input=user_input, profile_name=profile_name, model_name=model_name,
-        session_id=session_id, history=history, streaming=True,
-        use_web_search=use_web_search, use_python_exec=use_python_exec,
-        use_image_gen=use_image_gen, use_file_gen=use_file_gen,
-        use_http_api=use_http_api, use_sql=use_sql, use_screenshot=use_screenshot,
-        use_encrypt=use_encrypt, use_archiver=use_archiver, use_converter=use_converter,
-        use_regex=use_regex, use_translator=use_translator, use_csv=use_csv,
-        use_webhook=use_webhook, use_plugins=use_plugins,
-    )
-    route, temporal, web_plan, selected, effective_model = "", {}, {}, [], model_name
-    try:
-        yield {"token": "", "done": False, "phase": "planning", "message": "Думаю..."}
-
-        route, temporal, web_plan, selected, effective_model = _resolve_plan_and_tools(
-            planner_input, run["run_id"], model_name,
-            use_memory=use_memory, use_library=use_library, use_web_search=use_web_search,
-        )
-        preflight_or_raise(
-            agent_id=_effective_agent_id,
-            num_ctx=num_ctx,
-            selected_tools=selected,
-            run_id=run["run_id"],
-            route=route,
-            streaming=True,
-        )
-        if effective_model != model_name:
-            _tl(timeline, "auto_model", "Авто-модель", "ok",
-                f"{model_name} → {effective_model} (route={route})")
-
-        if should_cache(planner_input, route) and not history:
-            cached = get_cached(planner_input, effective_model, profile_name)
-            if cached:
-                yield from _build_cache_hit_stream(
-                    cached=cached, raw_user_input=raw_user_input,
-                    effective_model=effective_model, profile_name=profile_name,
-                    route=route, run=run, session_id=session_id, timeline=timeline,
-                    temporal=temporal, web_plan=web_plan,
-                    _effective_agent_id=_effective_agent_id, _agent_start=_agent_start,
-                    num_ctx=num_ctx, selected=selected,
-                )
-                return
-
+    planner_input: str,
+    route: str,
+    profile_name: str,
+    model_name: str,
+    raw_user_input: str,
+    full_text: str,
+    selected_tools: list[str],
+    temporal: dict[str, Any],
+    web_plan: dict[str, Any],
+    identity_guard: dict[str, Any] | None,
+    provenance_guard: dict[str, Any] | None,
+    history_service: Any,
+    run_id: str,
+    session_id: str,
+    num_ctx: int,
+    agent_id: str,
+    source_agent_id: str,
+    timeline: list[dict[str, Any]],
+    started_at: float,
+    monotonic_now_func: Any,
+    should_cache_func: Any,
+    set_cached_func: Any,
+    finalize_stream_success_func: Any,
+) -> dict[str, Any]:
+    if should_cache_func(planner_input, route) and full_text.strip():
         try:
-            extract_and_save(planner_input)
-        except Exception as _exc:
-            logger.debug("memory_save failed: %s", _exc)
+            set_cached_func(planner_input, model_name, profile_name, full_text)
+        except Exception:
+            pass
 
-        if "web_search" in selected:
-            yield {"token": "", "done": False, "phase": "searching", "message": "Ищу..."}
-        elif selected:
-            yield {"token": "", "done": False, "phase": "tools", "message": "Собираю контекст..."}
-
-        ctx = _gather_run_context(
-            profile_name=profile_name, planner_input=planner_input,
-            route=route, temporal=temporal, selected=selected,
-            tool_results=tool_results, timeline=timeline,
-            use_reflection=use_reflection, web_plan=web_plan,
-        )
-
-        yield {"token": "", "done": False, "phase": "thinking", "message": "Пишу ответ..."}
-
-        prompt = (
-            _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
-            + _compose_human_style_rules(temporal)
-        )
-        full_text = ""
-        task_context = (
-            f"Маршрут: {route}. Инструменты: "
-            + (", ".join(selected) if selected else "нет дополнительных инструментов")
-            + "."
-        )
-        for token in run_chat_stream(
-            model_name=effective_model,
-            profile_name=profile_name,
-            user_input=prompt,
-            history=history,
-            num_ctx=num_ctx,
-            task_context=task_context,
-        ):
-            full_text += token
-            yield {"token": token, "done": False}
-
-        attachments = _get_and_clear_attachments()
-        if attachments:
-            full_text += attachments
-
-        has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
-        should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
-        ql_check = raw_user_input.lower()
-        needs_file_gen = any(t in ql_check for t in _FILE_TRIGGERS_WORD + _FILE_TRIGGERS_EXCEL)
-
-        _guards_kwargs = dict(
-            raw_user_input=raw_user_input, planner_input=planner_input,
-            effective_model=effective_model, profile_name=profile_name,
-            route=route, selected=selected, run=run, session_id=session_id,
-            timeline=timeline, _effective_agent_id=_effective_agent_id,
-            _agent_start=_agent_start, num_ctx=num_ctx, temporal=temporal,
-            web_plan=web_plan, use_python_exec=use_python_exec, use_file_gen=use_file_gen,
-        )
-        if not should_reflect and not needs_file_gen:
-            yield from _complete_stream_with_guards(full_text, needs_file_gen=False, **_guards_kwargs)
-        else:
-            if should_reflect and full_text.strip() and not has_generated_files:
-                yield {"token": "", "done": False, "phase": "reflecting", "message": "Проверяю..."}
-                try:
-                    ref = run_reflection_loop(
-                        model_name=effective_model,
-                        profile_name=profile_name,
-                        user_input=raw_user_input,
-                        draft_text=full_text,
-                        review_text="Улучши.",
-                        context=ctx,
-                    )
-                    refined = ref.get("answer", "")
-                    if refined and refined != full_text:
-                        full_text = refined
-                        yield {"token": "", "done": False, "phase": "reflection_replace", "full_text": refined}
-                except Exception as _exc:
-                    logger.debug("reflection failed: %s", _exc)
-            yield from _complete_stream_with_guards(full_text, needs_file_gen=needs_file_gen, **_guards_kwargs)
-
-    except Exception as exc:
-        _handle_chat_run_failure(
-            exc=exc, run=run, timeline=timeline, tool_results=tool_results,
-            _effective_agent_id=_effective_agent_id, _agent_os_source_id=_effective_agent_id,
-            _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
-            session_id=session_id, num_ctx=num_ctx, streaming=True,
-            tl_step={"step": "error", "title": "Ошибка", "status": "error", "detail": str(exc)},
-            route=route, effective_model=effective_model, selected=selected,
-            raw_user_input=raw_user_input,
-        )
-        yield {"token": "", "done": True, "error": str(exc), "full_text": ""}
+    duration_ms = int((monotonic_now_func() - started_at) * 1000)
+    return finalize_stream_success_func(
+        history_service=history_service,
+        run_id=run_id,
+        session_id=session_id,
+        profile_name=profile_name,
+        model_name=model_name,
+        route=route,
+        user_input=raw_user_input,
+        full_text=full_text,
+        tools=selected_tools,
+        temporal=temporal,
+        web_plan=web_plan,
+        identity_guard=identity_guard,
+        provenance_guard=provenance_guard,
+        duration_ms=duration_ms,
+        num_ctx=num_ctx,
+        agent_id=agent_id,
+        source_agent_id=source_agent_id,
+        timeline=timeline,
+        selected_tools=selected_tools,
+    )

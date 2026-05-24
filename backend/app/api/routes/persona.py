@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from app.application.persona.persona_service import (
+from app.application.persona.service import (
     get_persona_status,
     get_persona_version,
     list_persona_candidates,

@@ -16,9 +16,9 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.planning.planner_v2_service import PlannerV2Service  # noqa: E402
-from app.application.policy.provenance_guard import guard_provenance_response  # noqa: E402
-from app.infrastructure.cache.response_cache import should_cache  # noqa: E402
+from app.services.planner_v2_service import PlannerV2Service  # noqa: E402
+from app.services.provenance_guard import guard_provenance_response  # noqa: E402
+from app.services.response_cache import should_cache  # noqa: E402
 
 
 class TemporalInternetModeTest(unittest.TestCase):
@@ -108,7 +108,7 @@ class TemporalInternetModeTest(unittest.TestCase):
                 import sys
                 sys.path.insert(0, r"{BACKEND_ROOT}")
 
-                from app.application.memory.smart_memory import add_memory, get_relevant_context
+                from app.services.smart_memory import add_memory, get_relevant_context
 
                 add_memory("Меня зовут Евгений", category="fact", profile_name="default")
                 payload = {{"context": get_relevant_context("Как меня зовут?", profile_name="default")}}

@@ -14,7 +14,7 @@ from app.schemas.event_bus import (
     SubscriptionCreate,
     SubscriptionListResponse,
 )
-import app.application.event_bus as bus
+from app.application.event_bus import runtime as bus
 
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])

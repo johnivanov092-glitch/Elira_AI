@@ -1,0 +1,302 @@
+import {
+  addMessage,
+  createChat,
+  deleteChat,
+  execute,
+  executeStream,
+  getMessages,
+  getSettings,
+  isLocalApiAssetUrl,
+  listChats,
+  listOllamaModels,
+  pinChat,
+  renameChat,
+  saveChatToMemory,
+  sendMessage,
+  updateSettings,
+} from "./chat";
+import {
+  diffFile,
+  extractUploadedFileText,
+  writeFile,
+} from "./fileOps";
+import {
+  createGitCommit,
+  getGitDiff,
+  getGitLog,
+  getGitStatus,
+} from "./git";
+import {
+  closeAdvancedProject,
+  getAdvancedProjectInfo,
+  getAdvancedProjectTree,
+  getProjectBrainStatus,
+  getProjectFile,
+  getProjectSnapshot,
+  openAdvancedProject,
+  readAdvancedProjectFile,
+  runAdvancedMultiAgent,
+  searchAdvancedProject,
+} from "./project";
+import {
+  deleteLibraryFile,
+  listLibraryFiles,
+  uploadLibraryFile,
+} from "./library";
+import {
+  createPipeline,
+  deletePipeline,
+  listPipelines,
+  runPipeline,
+  updatePipeline,
+} from "./pipelines";
+import {
+  applyPatch,
+  listPatchHistory,
+  previewPatch,
+  rollbackPatch,
+  verifyPatch,
+} from "./patch";
+import {
+  listPlugins,
+  reloadPlugins,
+  setPluginEnabled,
+} from "./plugins";
+import {
+  addSmartMemory,
+  deleteSmartMemory,
+  getSmartMemoryStats,
+  listSmartMemory,
+  searchSmartMemory,
+} from "./smartMemory";
+import {
+  getAgentOsDashboard,
+  getAgentOsHealth,
+  getDashboardOverview,
+  getPersonaStatus,
+  getPersonaVersion,
+  getRuntimeStatus,
+  listAgentOsLimits,
+  listPersonaCandidates,
+  rollbackPersona,
+} from "./system";
+import {
+  createTask,
+  deleteTask,
+  getTasksOverview,
+  getTaskStats,
+  listTasks,
+  updateTask,
+} from "./tasks";
+import {
+  getTelegramConfig,
+  getTelegramLog,
+  getTelegramOverview,
+  listTelegramUsers,
+  startTelegramBot,
+  stopTelegramBot,
+  testTelegramBot,
+  toggleTelegramUser,
+  updateTelegramConfig,
+} from "./telegram";
+import { executeTerminal, getTerminalCwd } from "./terminal";
+import {
+  analyzeCode,
+  listToolRuns,
+  runPythonCode,
+} from "./tools";
+
+export {
+  addMessage,
+  createChat,
+  deleteChat,
+  execute,
+  executeStream,
+  getMessages,
+  getSettings,
+  isLocalApiAssetUrl,
+  listChats,
+  listOllamaModels,
+  pinChat,
+  renameChat,
+  saveChatToMemory,
+  sendMessage,
+  updateSettings,
+} from "./chat";
+export {
+  diffFile,
+  extractUploadedFileText,
+  writeFile,
+} from "./fileOps";
+export {
+  createGitCommit,
+  getGitDiff,
+  getGitLog,
+  getGitStatus,
+} from "./git";
+export {
+  closeAdvancedProject,
+  getAdvancedProjectInfo,
+  getAdvancedProjectTree,
+  getProjectBrainStatus,
+  getProjectFile,
+  getProjectSnapshot,
+  openAdvancedProject,
+  readAdvancedProjectFile,
+  runAdvancedMultiAgent,
+  searchAdvancedProject,
+} from "./project";
+export {
+  deleteLibraryFile,
+  listLibraryFiles,
+  uploadLibraryFile,
+} from "./library";
+export {
+  createPipeline,
+  deletePipeline,
+  listPipelines,
+  runPipeline,
+  updatePipeline,
+} from "./pipelines";
+export {
+  applyPatch,
+  listPatchHistory,
+  previewPatch,
+  rollbackPatch,
+  verifyPatch,
+} from "./patch";
+export {
+  listPlugins,
+  reloadPlugins,
+  setPluginEnabled,
+} from "./plugins";
+export {
+  addSmartMemory,
+  deleteSmartMemory,
+  getSmartMemoryStats,
+  listSmartMemory,
+  searchSmartMemory,
+} from "./smartMemory";
+export {
+  getAgentOsDashboard,
+  getAgentOsHealth,
+  getDashboardOverview,
+  getPersonaStatus,
+  getPersonaVersion,
+  getRuntimeStatus,
+  listAgentOsLimits,
+  listPersonaCandidates,
+  rollbackPersona,
+} from "./system";
+export {
+  createTask,
+  deleteTask,
+  getTasksOverview,
+  getTaskStats,
+  listTasks,
+  updateTask,
+} from "./tasks";
+export {
+  getTelegramConfig,
+  getTelegramLog,
+  getTelegramOverview,
+  listTelegramUsers,
+  startTelegramBot,
+  stopTelegramBot,
+  testTelegramBot,
+  toggleTelegramUser,
+  updateTelegramConfig,
+} from "./telegram";
+export { executeTerminal, getTerminalCwd } from "./terminal";
+export {
+  analyzeCode,
+  listToolRuns,
+  runPythonCode,
+} from "./tools";
+
+export const api = {
+  listChats,
+  createChat,
+  renameChat,
+  pinChat,
+  saveChatToMemory,
+  deleteChat,
+  getMessages,
+  addMessage,
+  sendMessage,
+  execute,
+  executeStream,
+  listOllamaModels,
+  getSettings,
+  updateSettings,
+  getProjectSnapshot,
+  getProjectFile,
+  getProjectBrainStatus,
+  getPersonaStatus,
+  getRuntimeStatus,
+  getAgentOsHealth,
+  getAgentOsDashboard,
+  listAgentOsLimits,
+  getPersonaVersion,
+  listPersonaCandidates,
+  rollbackPersona,
+  getDashboardOverview,
+  listPatchHistory,
+  previewPatch,
+  applyPatch,
+  rollbackPatch,
+  verifyPatch,
+  extractUploadedFileText,
+  listLibraryFiles,
+  uploadLibraryFile,
+  deleteLibraryFile,
+  listTasks,
+  getTaskStats,
+  getTasksOverview,
+  createTask,
+  updateTask,
+  deleteTask,
+  listPipelines,
+  createPipeline,
+  runPipeline,
+  updatePipeline,
+  deletePipeline,
+  getTelegramConfig,
+  listTelegramUsers,
+  getTelegramLog,
+  getTelegramOverview,
+  startTelegramBot,
+  stopTelegramBot,
+  testTelegramBot,
+  updateTelegramConfig,
+  toggleTelegramUser,
+  listPlugins,
+  reloadPlugins,
+  setPluginEnabled,
+  getAdvancedProjectInfo,
+  openAdvancedProject,
+  getAdvancedProjectTree,
+  readAdvancedProjectFile,
+  searchAdvancedProject,
+  closeAdvancedProject,
+  runAdvancedMultiAgent,
+  getGitStatus,
+  getGitLog,
+  getGitDiff,
+  createGitCommit,
+  listToolRuns,
+  runPythonCode,
+  analyzeCode,
+  diffFile,
+  writeFile,
+  listSmartMemory,
+  getSmartMemoryStats,
+  addSmartMemory,
+  deleteSmartMemory,
+  searchSmartMemory,
+  getTerminalCwd,
+  executeTerminal,
+  isLocalApiAssetUrl,
+};
+
+export default api;

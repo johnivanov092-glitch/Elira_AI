@@ -1,0 +1,228 @@
+"""V8 agent orchestrator and self-improving agent.
+
+Extracted from core/agents.py — run_agent_v8 (graph-based strategy
+dispatch with memory, KB, tool hints, and reflection) and
+run_self_improving_agent (iterative critique-and-improve loop).
+
+Heavy runtime helpers are imported lazily from their canonical modules
+to avoid circular imports.
+"""
+from __future__ import annotations
+
+import time
+from typing import Any, Callable, Dict, List
+from uuid import uuid4
+
+from app.domain.agents.orchestrator_graph_runtime import build_v8_graph_runtime
+from app.domain.agents.orchestrator_runtime import (
+    build_run_agent_v8_result,
+    build_self_improving_result,
+    build_v8_state,
+    compute_reflection_quality_score,
+    normalize_v8_route,
+    observe_persona_dialogue,
+    select_v8_graph,
+)
+from app.domain.agents.self_improve_runtime import run_self_improve_iterations
+from app.domain.agents.router import choose_v8_strategy, route_task
+
+# ---------------------------------------------------------------------------
+# Type alias for progress callbacks
+# ---------------------------------------------------------------------------
+
+ProgressCallback = Callable[[int, int, str], None] | None
+
+
+# ---------------------------------------------------------------------------
+# run_agent_v8 — graph-based strategy dispatch
+# ---------------------------------------------------------------------------
+
+def run_agent_v8(
+    task: str,
+    model_name: str,
+    memory_profile: str,
+    num_ctx: int = 4096,
+    progress_callback: ProgressCallback = None,
+    force_strategy: str | None = None,
+) -> dict:
+    from app.domain.memory.strategy_tracking import record_v8_strategy_usage
+    from app.domain.memory.task_tracking import record_task_run
+    from app.domain.agents.reflection import run_graph_with_retry_v8
+    run_started = time.time()
+    run_id = uuid4().hex[:12]
+    route = route_task(
+        task, model_name=model_name,
+        memory_profile=memory_profile, num_ctx=num_ctx,
+    )
+    route = normalize_v8_route(route)
+
+    mode = route.get("mode", "chat") or "chat"
+    strategy = choose_v8_strategy(
+        task=task, route=route, model_name=model_name,
+        memory_profile=memory_profile, num_ctx=num_ctx,
+        force_strategy=force_strategy,
+    )
+    selected_strategy = strategy.get("strategy", "direct") or "direct"
+
+    graph = select_v8_graph(selected_strategy, mode)
+    total_steps = max(len(graph), 1)
+
+    state: Dict[str, Any] = build_v8_state(
+        run_id=run_id,
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        route=route,
+        mode=mode,
+        strategy=strategy,
+        selected_strategy=selected_strategy,
+        graph=graph,
+    )
+    runtime = build_v8_graph_runtime(
+        state=state,
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        num_ctx=num_ctx,
+        run_id=run_id,
+        total_steps=total_steps,
+        progress_callback=progress_callback,
+        run_self_improving_agent_func=run_self_improving_agent,
+    )
+    state = run_graph_with_retry_v8(graph, runtime.handlers, state, max_retries=2)
+
+    status = "ok" if not state.get("failed_node") else "failed"
+    try:
+        record_task_run(
+            task_text=task, route_mode=mode,
+            graph_used=" -> ".join(graph),
+            final_status=status, profile_name=memory_profile,
+        )
+    except Exception:
+        pass
+
+    latency = round(time.time() - run_started, 3)
+    reflection = state.get("reflection", {}) or {}
+    answer_ok = bool(state.get("answer", "").strip()) and not state.get("failed_node")
+    quality_score = compute_reflection_quality_score(reflection)
+    try:
+        record_v8_strategy_usage(
+            strategy=selected_strategy, route_mode=mode,
+            task_hint=task, ok=answer_ok,
+            score=round(quality_score, 3), latency=latency,
+            notes=str(strategy.get("reason", ""))[:1000],
+            profile_name=memory_profile,
+        )
+    except Exception:
+        pass
+
+    persona_meta = observe_persona_dialogue(
+        dialog_id=run_id,
+        session_id=run_id,
+        profile_name=memory_profile,
+        model_name=model_name,
+        user_input=task,
+        answer_text=state.get("answer", ""),
+        route=mode,
+        reflection=reflection,
+        outcome_ok=answer_ok,
+    )
+
+    return build_run_agent_v8_result(
+        run_id=run_id,
+        mode=mode,
+        route=route,
+        strategy=strategy,
+        selected_strategy=selected_strategy,
+        graph=graph,
+        state=state,
+        latency=latency,
+        persona_meta=persona_meta,
+    )
+
+
+# ---------------------------------------------------------------------------
+# run_self_improving_agent — iterative critique + improve loop
+# ---------------------------------------------------------------------------
+
+def run_self_improving_agent(
+    task: str,
+    model_name: str,
+    memory_profile: str,
+    num_ctx: int = 4096,
+    max_iters: int = 2,
+    progress_callback: ProgressCallback = None,
+    base_force_strategy: str | None = None,
+) -> Dict[str, Any]:
+    from app.domain.memory.knowledge_base import record_tool_usage
+
+    total_steps = max(2, int(max_iters) + 1)
+
+    def _progress(step: int, label: str):
+        if progress_callback:
+            progress_callback(step, total_steps, label)
+
+    _progress(1, "\U0001f680 \u0411\u0430\u0437\u043e\u0432\u044b\u0439 \u0437\u0430\u043f\u0443\u0441\u043a V8")
+    base = run_agent_v8(
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        num_ctx=num_ctx,
+        progress_callback=None,
+        force_strategy=base_force_strategy,
+    )
+
+    run_id = base.get("run_id", "")
+    loop_result = run_self_improve_iterations(
+        task=task,
+        model_name=model_name,
+        memory_profile=memory_profile,
+        num_ctx=num_ctx,
+        max_iters=max_iters,
+        run_id=run_id,
+        answer=(base.get("answer", "") or "").strip(),
+        reflection=base.get("reflection", {}) or {},
+        working_context=base.get("working_context", "") or "",
+        progress_callback=lambda idx, label: _progress(
+            min(idx + 1, total_steps),
+            label,
+        ),
+    )
+    answer = loop_result.get("answer", "")
+    reflection: dict | Any = loop_result.get("reflection", {}) or {}
+    iterations = loop_result.get("iterations", [])
+    working_context = loop_result.get("working_context", "") or ""
+
+    try:
+        record_tool_usage(
+            tool_name="self_improving_agent",
+            task_hint=task,
+            ok=bool(answer.strip()),
+            score=1.5 if answer.strip() else 0.0,
+            notes=f"iterations={len(iterations)}",
+            profile_name=memory_profile,
+        )
+    except Exception:
+        pass
+
+    persona_meta = observe_persona_dialogue(
+        dialog_id=run_id or f"self-improve-{memory_profile}",
+        session_id=run_id or f"self-improve-{memory_profile}",
+        profile_name=memory_profile,
+        model_name=model_name,
+        user_input=task,
+        answer_text=answer,
+        route="self_improve",
+        reflection=reflection if isinstance(reflection, dict) else {},
+        outcome_ok=bool(answer.strip()),
+    )
+
+    return build_self_improving_result(
+        run_id=run_id,
+        base=base,
+        answer=answer,
+        iterations=iterations,
+        reflection=reflection,
+        working_context=working_context,
+        persona_meta=persona_meta,
+    )

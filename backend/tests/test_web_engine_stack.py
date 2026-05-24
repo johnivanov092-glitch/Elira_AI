@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
+
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
 
@@ -13,6 +16,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, _rerank_results, get_web_engine_status, resolve_search_engines, search_web  # noqa: E402
+from app.main import app  # noqa: E402
 
 
 EXPECTED = ("tavily", "duckduckgo", "wikipedia")
@@ -71,6 +75,16 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["engine"], "duckduckgo")
         self.assertEqual(results[0]["href"], "https://example.com/result")
+
+    def test_web_engines_route_exposes_only_new_stack(self) -> None:
+        client = TestClient(app)
+        response = client.get("/api/web/engines")
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.json()
+        engine_ids = tuple(item["id"] for item in payload["engines"])
+        self.assertEqual(engine_ids, EXPECTED)
+        self.assertEqual(tuple(payload["default"]), EXPECTED)
 
     def test_geo_news_rerank_boosts_local_kz_sources(self) -> None:
         results = [

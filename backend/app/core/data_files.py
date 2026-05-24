@@ -18,6 +18,13 @@ def data_file(name: str) -> Path:
     return DATA_DIR / name
 
 
+def data_subdir(name: str) -> Path:
+    _ensure_data_dir()
+    path = DATA_DIR / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def sqlite_data_file(name: str, key_tables=None) -> Path:
     return data_file(name)
 

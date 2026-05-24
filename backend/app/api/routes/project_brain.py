@@ -1,44 +1,82 @@
-"""Project Brain routes — thin HTTP layer for /api/project-brain.
-
-All business logic lives in app.application.agents.ollama_agent_service.
-"""
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from app.application.agents.ollama_agent_service import (
-    LEGACY_AGENT_CATALOG,
-    MAX_ATTACHMENT_BYTES,
-    MAX_READ_BYTES,
-    PROJECT_ROOT,
-    UPLOAD_ROOT,
-    attach_project_file,
-    attachment_summary,
-    execute_chat_send,
-    execute_ollama_plan,
-    execute_ollama_run,
-    hash_bytes,
-    looks_text_file,
-    project_file_snapshot,
-    read_text_file,
-    resolve_project_file,
-    store_attachment,
-)
-from app.infrastructure.db.memory import vector_memory_capability_status
-from app.infrastructure.runtime.ollama_client import (
-    OLLAMA_BASE_URL,
-    fetch_ollama_tags,
-    pick_model,
-)
-from app.application.skills.skills_service import screenshot_capability_status
+from app.application.project_brain import chat as project_brain_chat
+from app.application.project_brain import files as project_brain_files
+from app.application.project_brain import ollama as project_brain_ollama
+from app.application.project_brain import state as project_brain_state
+from app.application.project_brain import uploads as project_brain_uploads
+
 
 router = APIRouter(prefix="/api/project-brain", tags=["project-brain"])
 
+LEGACY_AGENT_CATALOG = [
+    {
+        "id": "chat_agent",
+        "title": "Chat agent",
+        "kind": "conversation",
+        "description": "Базовый диалоговый агент для обычных запросов.",
+    },
+    {
+        "id": "planner_agent",
+        "title": "Planner agent",
+        "kind": "planning",
+        "description": "Пошаговый план и orchestration поверх reasoning/browser/terminal.",
+    },
+    {
+        "id": "browser_agent",
+        "title": "Browser agent",
+        "kind": "research",
+        "description": "Веб-поиск, чтение страниц и сбор контекста для ответа.",
+    },
+    {
+        "id": "coder_agent",
+        "title": "Coder agent",
+        "kind": "code",
+        "description": "Локальный кодовый агент для файла, diff-preview и безопасного patch-flow.",
+    },
+    {
+        "id": "task_graph",
+        "title": "Task graph",
+        "kind": "orchestration",
+        "description": "Граф выполнения шагов для research/code/file режимов.",
+    },
+    {
+        "id": "multi_agent",
+        "title": "Multi-agent",
+        "kind": "orchestration",
+        "description": "Planner + Researcher + Coder + Reviewer + Orchestrator.",
+    },
+    {
+        "id": "reflection_v2",
+        "title": "Reflection v2",
+        "kind": "quality",
+        "description": "Самопроверка ответа, groundedness, completeness, retry loop.",
+    },
+    {
+        "id": "self_improve",
+        "title": "Self-improving agent",
+        "kind": "quality",
+        "description": "Повторное улучшение ответа после критики.",
+    },
+    {
+        "id": "terminal",
+        "title": "Terminal",
+        "kind": "tool",
+        "description": "Безопасный локальный терминальный контекст только для read-only анализа.",
+    },
+    {
+        "id": "image_generation",
+        "title": "Image generation",
+        "kind": "media",
+        "description": "Наследуемый image-flow из старого Elira: routing и prompt prep для будущей генерации.",
+    },
+]
 
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=8000)
@@ -66,17 +104,17 @@ class LocalAgentPlanRequest(BaseModel):
     model: str | None = Field(default=None, max_length=200)
 
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
 @router.get("/status")
 def project_brain_status():
+    from app.application.memory.search import vector_memory_capability_status
+    from app.application.skills import screenshot_capability_status
+
     return {
         "status": "ok",
-        "project_root": str(PROJECT_ROOT),
-        "chat_upload_root": str(UPLOAD_ROOT),
-        "max_read_bytes": MAX_READ_BYTES,
+        "project_root": str(project_brain_state.PROJECT_ROOT),
+        "excluded_parts": sorted(project_brain_state.EXCLUDED_PARTS),
+        "max_read_bytes": project_brain_state.MAX_READ_BYTES,
+        "chat_upload_root": str(project_brain_state.UPLOAD_ROOT),
         "capabilities": {
             "vector_memory": vector_memory_capability_status(),
             "screenshot": screenshot_capability_status(),
@@ -86,35 +124,12 @@ def project_brain_status():
 
 @router.get("/snapshot")
 def project_snapshot():
-    files = project_file_snapshot()
-    return {"status": "ok", "project_root": str(PROJECT_ROOT), "files": files, "files_count": len(files)}
+    return project_brain_files.snapshot_project_files()
 
 
 @router.get("/file")
 def read_project_file(path: str = Query(..., min_length=1)):
-    try:
-        full_path, rel_path = resolve_project_file(path)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not looks_text_file(full_path):
-        raise HTTPException(status_code=415, detail="Only text-like source files are readable")
-    size = full_path.stat().st_size
-    if size > MAX_READ_BYTES:
-        raise HTTPException(status_code=413, detail=f"File is too large to open ({size} bytes)")
-    try:
-        content, encoding, raw = read_text_file(full_path)
-    except (OSError, UnicodeDecodeError) as exc:
-        raise HTTPException(status_code=422, detail=f"Cannot read file: {exc}") from exc
-    return {
-        "status": "ok",
-        "path": str(rel_path).replace("\\", "/"),
-        "name": full_path.name,
-        "suffix": full_path.suffix.lower(),
-        "size": size,
-        "encoding": encoding,
-        "sha256": hash_bytes(raw),
-        "content": content,
-    }
+    return project_brain_files.read_project_file_payload(path)
 
 
 @router.get("/agent/legacy/catalog")
@@ -124,40 +139,45 @@ def legacy_agents_catalog():
 
 @router.get("/agent/ollama/status")
 def ollama_status():
-    tags = fetch_ollama_tags()
-    model_names = [item.get("name") for item in tags.get("models") or [] if item.get("name")]
-    default_model = pick_model(None, tags) if model_names or True else ""
-    return {
-        "status": "ok",
-        "provider": "ollama",
-        "base_url": OLLAMA_BASE_URL,
-        "models": model_names,
-        "default_model": default_model,
-    }
+    return project_brain_ollama.ollama_status_payload()
 
 
 @router.post("/chat/attachment")
-async def upload_chat_attachment(file: UploadFile = File(...), source: str = Form("upload")):
+async def upload_chat_attachment(
+    file: UploadFile = File(...),
+    source: str = Form("upload"),
+):
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
-    if len(data) > MAX_ATTACHMENT_BYTES:
-        raise HTTPException(status_code=413, detail=f"Attachment too large ({len(data)} bytes)")
-    item = store_attachment(file.filename or "attachment.bin", data, source=source)
-    return {"status": "ok", "attachment": attachment_summary(item)}
+    if len(data) > project_brain_state.MAX_ATTACHMENT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Attachment too large ({len(data)} bytes)",
+        )
+    item = project_brain_uploads.store_attachment(
+        file.filename or "attachment.bin",
+        data,
+        source=source,
+    )
+    return {"status": "ok", "attachment": project_brain_uploads.attachment_summary(item)}
 
 
 @router.post("/chat/project-file")
-def route_attach_project_file(path: str = Form(...)):
-    item = attach_project_file(path)
-    return {"status": "ok", "attachment": attachment_summary(item) | {"project_path": item["project_path"]}}
+def attach_project_file(path: str = Form(...)):
+    item = project_brain_files.attach_project_file(path)
+    return {
+        "status": "ok",
+        "attachment": project_brain_uploads.attachment_summary(item)
+        | {"project_path": item["project_path"]},
+    }
 
 
 @router.post("/chat/send")
 def chat_send(payload: ChatRequest):
-    return execute_chat_send(
+    return project_brain_chat.send_chat_message(
         message=payload.message,
-        model_hint=payload.model,
+        model_name=payload.model,
         mode=payload.mode,
         web_enabled=payload.web_enabled,
         session_id=payload.session_id,
@@ -168,21 +188,21 @@ def chat_send(payload: ChatRequest):
 
 @router.post("/agent/ollama/plan")
 def ollama_agent_plan(payload: LocalAgentPlanRequest):
-    return execute_ollama_plan(
-        model_hint=payload.model,
+    return project_brain_chat.run_local_agent_plan(
         goal=payload.goal,
         selected_path=payload.selected_path,
         selected_content=payload.selected_content,
+        model_name=payload.model,
     )
 
 
 @router.post("/agent/ollama/run")
 def ollama_agent_run(payload: LocalAgentRunRequest):
-    return execute_ollama_run(
-        model_hint=payload.model,
+    return project_brain_chat.run_local_agent(
         goal=payload.goal,
         selected_path=payload.selected_path,
         selected_content=payload.selected_content,
+        model_name=payload.model,
         project_files=payload.project_files,
         mode=payload.mode,
     )

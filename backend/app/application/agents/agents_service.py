@@ -13,7 +13,6 @@ from __future__ import annotations
 from typing import Any, Generator
 
 # Re-exports used by tests
-from app.application.chat.auto_skills import _build_prompt  # noqa: F401
 from app.application.chat.prompt_builder import (  # noqa: F401
     wants_explicit_datetime_answer as _wants_explicit_datetime_answer,
 )

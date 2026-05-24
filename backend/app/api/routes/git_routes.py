@@ -2,7 +2,7 @@
 from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
-from app.infrastructure.vcs.git_service import git_status, git_diff, git_log, git_commit, git_branches
+from app.application.git import git_status, git_diff, git_log, git_commit, git_branches
 
 router = APIRouter(prefix="/api/git", tags=["git"])
 

@@ -11,7 +11,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import app.application.agents.agent_registry as reg  # noqa: E402
+from app.services import agent_registry as reg  # noqa: E402
 
 
 class AgentRegistryTestCase(unittest.TestCase):
@@ -165,6 +165,28 @@ class TestSeedBuiltinAgents(AgentRegistryTestCase):
         reg._BUILTIN_AGENTS_SEEDED = False
         count = reg.seed_builtin_agents()
         self.assertEqual(count, 0)
+
+    def test_seed_updates_canonical_builtins_and_removes_stale_builtin_ids(self) -> None:
+        stale_id = "builtin-stale-from-old-registry"
+        reg.register_agent({"id": stale_id, "name": "Stale", "role": "custom"})
+        reg.register_agent(
+            {
+                "id": "builtin-universal",
+                "name": "Broken",
+                "name_ru": "Broken",
+                "role": "custom",
+            }
+        )
+
+        reg._BUILTIN_AGENTS_SEEDED = False
+        reg.seed_builtin_agents()
+
+        self.assertIsNone(reg.get_agent(stale_id))
+        universal = reg.get_agent("builtin-universal")
+        self.assertIsNotNone(universal)
+        assert universal is not None
+        self.assertEqual(universal["name"], "Universal")
+        self.assertNotEqual(universal["name_ru"], "Broken")
 
 
 class TestResolveAgent(AgentRegistryTestCase):

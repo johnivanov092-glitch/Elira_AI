@@ -1,31 +1,21 @@
 """
-files.py — file text extraction route (thin HTTP layer).
+files.py - извлечение текста из файлов.
 
-All extraction logic lives in app.infrastructure.files.file_extractor.
+Поддержка: PDF, DOCX, XLSX, ZIP, BAS, VBA, CLS, FRM, RSC, и все текстовые.
 """
-from pathlib import Path
-
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, File, UploadFile
 from fastapi.responses import JSONResponse
 
-from app.infrastructure.files.file_extractor import extract_any
+from app.application.file_extract import runtime as file_extract_runtime
 
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 
 @router.post("/extract-text")
 async def extract_text(file: UploadFile = File(...)):
+    """Извлекает текст из любого поддерживаемого файла."""
     try:
         contents = await file.read()
-        filename = (file.filename or "").strip()
-        text = extract_any(contents, filename)
-        return {
-            "ok": True,
-            "filename": filename,
-            "size": len(contents),
-            "text": text,
-            "chars": len(text),
-            "type": Path(filename).suffix.lower(),
-        }
+        return file_extract_runtime.extract_file(file.filename or "", contents)
     except Exception as exc:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})

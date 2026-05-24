@@ -14,7 +14,7 @@ from app.schemas.agent_registry import (
     AgentStateData,
     AgentUpdate,
 )
-import app.application.agents.agent_registry as registry
+from app.application.agent_registry import runtime as registry
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])
 

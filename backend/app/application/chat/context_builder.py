@@ -51,7 +51,7 @@ def _build_project_context_from_tools(
 
 def _build_project_context_from_open_project() -> str:
     try:
-        from app.application.projects.project_explorer import _project_path
+        from app.application.advanced.runtime import _project_path
 
         if not _project_path:
             return ""

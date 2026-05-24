@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 from fastapi import APIRouter
 
-from app.application.dashboard.dashboard_service import get_dashboard_stats
+from app.application.dashboard import runtime as dashboard_runtime
+
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
 
 @router.get("/stats")
 def dashboard_stats() -> dict:
-    return get_dashboard_stats()
+    return dashboard_runtime.dashboard_stats()

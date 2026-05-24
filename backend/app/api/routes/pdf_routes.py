@@ -12,13 +12,7 @@ from __future__ import annotations
 from fastapi import APIRouter, UploadFile, File
 from fastapi.responses import JSONResponse
 
-from app.infrastructure.files.pdf_pro import (
-    extract_pdf_smart,
-    pdf_tables_to_excel,
-    pdf_to_word,
-    analyze_pdf,
-    render_pdf_pages,
-)
+from app.application.pdf import runtime as pdf_runtime
 
 router = APIRouter(prefix="/api/pdf", tags=["pdf-pro"])
 
@@ -28,7 +22,7 @@ async def api_extract(file: UploadFile = File(...)):
     """Умное извлечение: pypdf → pdfplumber → OCR."""
     try:
         data = await file.read()
-        result = extract_pdf_smart(data)
+        result = pdf_runtime.extract_pdf_smart(data)
         return {
             "ok": True,
             "filename": file.filename,
@@ -47,7 +41,7 @@ async def api_tables(file: UploadFile = File(...)):
     """Извлечь таблицы из PDF → Excel."""
     try:
         data = await file.read()
-        return pdf_tables_to_excel(data, filename=f"{file.filename}_tables")
+        return pdf_runtime.pdf_tables_to_excel(data, filename=f"{file.filename}_tables")
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -57,7 +51,7 @@ async def api_to_word(file: UploadFile = File(...)):
     """Конвертировать PDF → Word."""
     try:
         data = await file.read()
-        return pdf_to_word(data, filename=file.filename.replace(".pdf", ""))
+        return pdf_runtime.pdf_to_word(data, filename=file.filename.replace(".pdf", ""))
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -67,7 +61,7 @@ async def api_analyze(file: UploadFile = File(...)):
     """Подробный анализ PDF."""
     try:
         data = await file.read()
-        return analyze_pdf(data)
+        return pdf_runtime.analyze_pdf(data)
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -78,6 +72,6 @@ async def api_preview(file: UploadFile = File(...), pages: str = "1,2,3"):
     try:
         data = await file.read()
         page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
-        return render_pdf_pages(data, page_list or None)
+        return pdf_runtime.render_pdf_pages(data, page_list or None)
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})

@@ -1,4 +1,4 @@
-﻿# Actual Work
+# Actual Work
 
 Live repair log for concrete backend/runtime fixes.
 
@@ -91,7 +91,7 @@ Live repair log for concrete backend/runtime fixes.
   critical action buttons display real icons instead of `?`;
   Russian UI labels are consistent across the main user-facing panels.
 - Marker:
-  current desktop UI baseline is marked as `РёРґРµР°Р»СЊРЅС‹Р№ РІРёР·СѓР°Р»` for this stabilization wave.
+  current desktop UI baseline is marked as `идеальный визуал` for this stabilization wave.
 
 ### 9. UI verification
 - Status: completed
@@ -126,7 +126,7 @@ Live repair log for concrete backend/runtime fixes.
   wired prompt composition in [backend/app/services/chat_service.py](/D:/AIWork/Elira_AI/backend/app/services/chat_service.py) and [backend/app/core/llm.py](/D:/AIWork/Elira_AI/backend/app/core/llm.py) so system prompts are now built as `active persona snapshot -> profile overlay -> model calibration -> runtime constraints`;
   connected runtime learning hooks in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) and [backend/app/core/agents.py](/D:/AIWork/Elira_AI/backend/app/core/agents.py);
   added persona routes in [backend/app/api/routes/persona.py](/D:/AIWork/Elira_AI/backend/app/api/routes/persona.py) and registered them in [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py);
-  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) and [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so dashboard now shows `Р›РёС‡РЅРѕСЃС‚СЊ Elira`, model consistency, quarantined candidates, and rollback action;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) and [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so dashboard now shows `Личность Elira`, model consistency, quarantined candidates, and rollback action;
   preserved compatibility for existing `agent_profile` and `route_model_map` settings while normalizing default profile handling in [backend/app/services/elira_memory_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_memory_sqlite.py) and [backend/app/services/elira_settings_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_settings_sqlite.py).
 - Result:
   Elira now has one rooted personality per local installation;
@@ -223,7 +223,7 @@ Live repair log for concrete backend/runtime fixes.
   added [backend/tests/test_temporal_internet_mode.py](/D:/AIWork/Elira_AI/backend/tests/test_temporal_internet_mode.py) to lock future-year routing, stable historical behavior, cache freshness rules, provenance cleanup, and hidden memory formatting.
 - Result:
   temporal/current-world requests now trigger web-enabled planning without hardcoding a specific calendar year;
-  stable historical questions such as past-year event lookups are no longer forced into mandatory web-search just because they start with `С‡С‚Рѕ` or `what`;
+  stable historical questions such as past-year event lookups are no longer forced into mandatory web-search just because they start with `что` or `what`;
   normal chat output is post-processed to remove raw `[fact]`, `RAG`, and technical memory/source markers, while provenance questions are rewritten into natural language instead of internal prompt jargon;
   internet is now treated as a freshness-aware second knowledge base in the planning layer, while ordinary answers stay human-style by default instead of becoming a link dump.
 
@@ -270,16 +270,16 @@ Live repair log for concrete backend/runtime fixes.
 ### 20. Internal time awareness without unsolicited date/time replies
 - Status: completed
 - Scope: kept Elira aware of current local date/time internally, but stopped ordinary chat from blurting out the current date or time unless the user explicitly asks.
-- Start: the backend prompt builder in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) prepended a visible `РЎРµР№С‡Р°СЃ: ...` line to every chat prompt, which encouraged replies like `РЎРµРіРѕРґРЅСЏ РїРѕРЅРµРґРµР»СЊРЅРёРє... Рё СЃРµР№С‡Р°СЃ 4:19` even in normal greetings.
+- Start: the backend prompt builder in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) prepended a visible `Сейчас: ...` line to every chat prompt, which encouraged replies like `Сегодня понедельник... и сейчас 4:19` even in normal greetings.
 - Finish:
   replaced the always-visible prompt line with an internal runtime datetime context in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py);
-  added an explicit detector for direct date/time questions such as `РєР°РєР°СЏ СЃРµРіРѕРґРЅСЏ РґР°С‚Р°`, `РєР°РєРѕРµ СЃРµРіРѕРґРЅСЏ С‡РёСЃР»Рѕ`, `РєРѕС‚РѕСЂС‹Р№ С‡Р°СЃ`, and `СЃРєРѕР»СЊРєРѕ РІСЂРµРјРµРЅРё`;
+  added an explicit detector for direct date/time questions such as `какая сегодня дата`, `какое сегодня число`, `который час`, and `сколько времени`;
   changed the prompt rules so ordinary chat must not mention the current date, time, or weekday unless the user directly asked for them, while direct date/time questions still receive a precise natural answer;
   added regression coverage in [backend/tests/test_runtime_datetime_prompt.py](/D:/AIWork/Elira_AI/backend/tests/test_runtime_datetime_prompt.py).
 - Result:
   Elira now keeps local runtime date/time as internal awareness rather than a default visible greeting element;
-  normal prompts like `РџСЂРёРІРµС‚` no longer need to trigger date/time small talk;
-  direct questions such as `РљР°РєР°СЏ СЃРµРіРѕРґРЅСЏ РґР°С‚Р°?` or `РљРѕС‚РѕСЂС‹Р№ С‡Р°СЃ?` still get an exact answer using current local runtime time;
+  normal prompts like `Привет` no longer need to trigger date/time small talk;
+  direct questions such as `Какая сегодня дата?` or `Который час?` still get an exact answer using current local runtime time;
   backend verification for this change passed with `compileall`, targeted unit tests, full backend test discovery, and smoke-contract checks.
 
 ### 21. Draft-first chat creation in the sidebar
@@ -288,18 +288,18 @@ Live repair log for concrete backend/runtime fixes.
 - Start: the shell created a new sidebar chat immediately on startup, which made the left panel fill up with empty conversations even before the first user message.
 - Finish:
   updated [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) so app bootstrap opens into an empty draft state instead of forcing a new persisted chat on launch;
-  changed send flow to materialize the chat only when the first message is actually submitted, while keeping the `РќРѕРІС‹Р№ С‡Р°С‚` button as an explicit independent action;
+  changed send flow to materialize the chat only when the first message is actually submitted, while keeping the `Новый чат` button as an explicit independent action;
   updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) so message creation and chat creation stay aligned with the backend response shape when a draft becomes a real chat.
 - Result:
   startup now opens into a clean empty draft without polluting the sidebar;
   the first user message creates the real chat automatically and only then makes it appear in the chat list;
-  the `РќРѕРІС‹Р№ С‡Р°С‚` button still creates a separate new chat immediately when the user wants that behavior explicitly.
+  the `Новый чат` button still creates a separate new chat immediately when the user wants that behavior explicitly.
 ### 22. N-intent web planner for 1-4+ current-world subtopics
 - Status: completed
 - Scope: generalized current-world web planning from a narrow `finance + local news` case into a true `N-intent` planner with overflow handling for `4+` live subtopics.
 - Start: combined current-world prompts could already be split into two focused web searches, but anything beyond that still risked collapsing into a single search string or silently dropping extra live subtopics.
 - Finish:
-  rebuilt [backend/app/services/web_query_planner.py](/D:/AIWork/Elira_AI/backend/app/services/web_query_planner.py) into a general extractor that classifies subtopics as `finance`, `geo_news`, `general_news`, `status_current`, `price_rate`, `historical`, or `general_web`, merges same-intent finance fragments like `РєСѓСЂСЃ РґРѕР»Р»Р°СЂР° Рё РµРІСЂРѕ Рє С‚РµРЅРіРµ`, ranks subtopics by current-world priority, caps the total at `6`, and emits `passes`, `pass_count`, `overflow_applied`, and `uncovered_subqueries` in `web_plan`;
+  rebuilt [backend/app/services/web_query_planner.py](/D:/AIWork/Elira_AI/backend/app/services/web_query_planner.py) into a general extractor that classifies subtopics as `finance`, `geo_news`, `general_news`, `status_current`, `price_rate`, `historical`, or `general_web`, merges same-intent finance fragments like `курс доллара и евро к тенге`, ranks subtopics by current-world priority, caps the total at `6`, and emits `passes`, `pass_count`, `overflow_applied`, and `uncovered_subqueries` in `web_plan`;
   extended the active multi-intent orchestration in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) so `_do_web_search` now executes `pass_1` and `pass_2` when needed, preserves partial success, emits richer `tool_results.web_search` metadata such as `passes`, `total_subqueries`, `overflow_applied`, and weak `uncovered_subqueries`, and keeps the final answer human-style instead of exposing planner/debug details;
   added regression coverage in [backend/tests/test_web_query_planner.py](/D:/AIWork/Elira_AI/backend/tests/test_web_query_planner.py) and [backend/tests/test_web_multi_intent_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_web_multi_intent_runtime.py), while keeping [backend/tests/test_temporal_internet_mode.py](/D:/AIWork/Elira_AI/backend/tests/test_temporal_internet_mode.py) and [backend/tests/test_web_engine_stack.py](/D:/AIWork/Elira_AI/backend/tests/test_web_engine_stack.py) green.
 - Result:
@@ -307,28 +307,28 @@ Live repair log for concrete backend/runtime fixes.
   the runtime now exposes which subqueries went into `pass_1` and `pass_2`, whether overflow policy was applied, and which subtopics remained weak or uncovered;
   live verification of a `4`-subtopic prompt confirmed `2` passes with separate coverage for local incidents, finance, fuel price, and flight-status queries in one combined backend run.
 
-### 23. Agent OS Phase 1 вЂ” Agent Registry with persistent state
+### 23. Agent OS Phase 1 — Agent Registry with persistent state
 - Status: completed
-- Scope: built the foundation layer of the Agent OS вЂ” a persistent agent registry with identity, state, and run history tracking.
+- Scope: built the foundation layer of the Agent OS — a persistent agent registry with identity, state, and run history tracking.
 - Start: agents were stateless single-shot functions with hardcoded roles (Researcher, Programmer, Analyst), no persistent identity, no state between calls, and no inter-agent discoverability.
 - Finish:
   added [backend/app/schemas/agent_registry.py](/D:/AIWork/Elira_AI/backend/app/schemas/agent_registry.py) with Pydantic models for agent definitions, state, run records, and API responses;
   added [backend/app/services/agent_registry.py](/D:/AIWork/Elira_AI/backend/app/services/agent_registry.py) with SQLite-backed CRUD (`data/agent_registry.db`), persistent agent state (JSON blob per agent), run history with duration/model/route tracking, builtin agent seeding from `AGENT_PROFILES`, and `resolve_agent()` for integration;
   added [backend/app/api/routes/agent_registry_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agent_registry_routes.py) with REST endpoints under `/api/agent-os/agents/*` (register, list, get, update, delete, state CRUD, run history);
-  integrated optional `agent_id` parameter into `run_agent()` in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) вЂ” when provided, loads agent definition from registry, applies its system prompt and model preference, and records the run result (success or failure) with duration;
+  integrated optional `agent_id` parameter into `run_agent()` in [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) — when provided, loads agent definition from registry, applies its system prompt and model preference, and records the run result (success or failure) with duration;
   registered the new router and builtin agent seeding in [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py);
-  added [backend/tests/test_agent_os_phase1.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase1.py) with 15 tests covering CRUD, state persistence, run history, seed idempotency, and agent resolution вЂ” all passing.
+  added [backend/tests/test_agent_os_phase1.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase1.py) with 15 tests covering CRUD, state persistence, run history, seed idempotency, and agent resolution — all passing.
 - Result:
   agents now have persistent identity, discoverable via API, with state that survives between calls;
   every agent run can be tracked with input/output summary, route, model, and duration;
   builtin agents (Universal, Researcher, Programmer, Analyst, Socrat) are auto-seeded on startup;
-  existing chat flow is fully backward-compatible вЂ” `agent_id` is optional;
+  existing chat flow is fully backward-compatible — `agent_id` is optional;
   branch `feat/agent-os-phase1-registry` pushed to origin.
 - Next phases planned:
-  Phase 2 вЂ” Tool Registry with JSON Schema (replace hardcoded tool dispatch);
-  Phase 3 вЂ” Event Bus + inter-agent messaging;
-  Phase 4 вЂ” Workflow Engine (DAG-based multi-step orchestration);
-  Phase 5 вЂ” Monitoring + Sandboxing.
+  Phase 2 — Tool Registry with JSON Schema (replace hardcoded tool dispatch);
+  Phase 3 — Event Bus + inter-agent messaging;
+  Phase 4 — Workflow Engine (DAG-based multi-step orchestration);
+  Phase 5 — Monitoring + Sandboxing.
 
 ### 24. Agent OS Phase 3 - Event Bus + inter-agent messaging
 - Status: completed
@@ -407,3 +407,1901 @@ Live repair log for concrete backend/runtime fixes.
 - Result:
   Agent OS now has a complete Phase 5 layer: backend monitoring/soft-sandboxing, audit events, policy-limit endpoints, workflow-aware metrics, and a read-only dashboard view for runtime operators;
   ordinary chat and multi-agent flows stay compatible under the seeded soft defaults, while policy blocks and limit updates are visible both in API responses and in the dashboard summary.
+
+### 27. Library runtime extraction and workflow seed facade repair
+- Status: completed
+- Scope: continued backend architecture decomposition by moving SQLite/file-library runtime logic out of the route layer and preserving legacy compatibility facades.
+- Finish:
+  added [backend/app/application/library/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/library/runtime.py) for library DB initialization, upload persistence, preview extraction, search, context building, activation, and deletion;
+  reduced [backend/app/api/routes/library_sqlite.py](/D:/AIWork/Elira_AI/backend/app/api/routes/library_sqlite.py) to a thin FastAPI router that passes request data into the application runtime;
+  reduced [backend/app/services/library_service.py](/D:/AIWork/Elira_AI/backend/app/services/library_service.py) to a compatibility facade for existing `/api/library/*` callers;
+  repaired workflow builtin seeding through [backend/app/services/workflow_engine.py](/D:/AIWork/Elira_AI/backend/app/services/workflow_engine.py), [backend/app/application/workflows/multi_agent.py](/D:/AIWork/Elira_AI/backend/app/application/workflows/multi_agent.py), and [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) so isolated test data roots initialize workflow tables before seed.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  library upload/list/search/context behavior keeps the same API shape, while SQL and file processing now live under `application/library`;
+  workflow startup and tests are protected against missing-table failures after the workflow extraction.
+
+### 28. Local FLUX image generation runtime extraction
+- Status: completed
+- Scope: moved the legacy local FLUX image generation runtime out of the service layer while preserving `/api/image/*` behavior.
+- Finish:
+  moved the implementation from [backend/app/services/image_gen.py](/D:/AIWork/Elira_AI/backend/app/services/image_gen.py) into [backend/app/application/media/flux_schnell_runtime.py](/D:/AIWork/Elira_AI/backend/app/application/media/flux_schnell_runtime.py);
+  reduced [backend/app/services/image_gen.py](/D:/AIWork/Elira_AI/backend/app/services/image_gen.py) to a compatibility facade exporting `generate_image`, `get_status`, and `unload_model`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  local image generation internals now live under `application/media`, and route/service imports remain backward-compatible.
+
+### 29. Git subprocess runtime extraction
+- Status: completed
+- Scope: moved Git subprocess integration out of the service layer while preserving existing helper imports.
+- Finish:
+  added [backend/app/infrastructure/git/runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/git/runtime.py) and [backend/app/infrastructure/git/__init__.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/git/__init__.py);
+  reduced [backend/app/services/git_service.py](/D:/AIWork/Elira_AI/backend/app/services/git_service.py) to a compatibility facade exporting `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branches`, and `format_git_context`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Git integration now sits under `infrastructure/git`, and current API/tool callers can continue using `app.services.git_service`.
+
+### 30. Project filesystem runtime extraction
+- Status: completed
+- Scope: moved project tree/read/write/search filesystem helpers out of the service layer while preserving existing imports used by project brain and patch tooling.
+- Finish:
+  added [backend/app/infrastructure/storage/project_files.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/storage/project_files.py) for safe repo-root path resolution, tree listing, file read/write, and text search;
+  reduced [backend/app/services/project_service.py](/D:/AIWork/Elira_AI/backend/app/services/project_service.py) to a compatibility facade exporting `BASE_DIR`, `list_project_tree`, `read_project_file`, `write_project_file`, and `search_project`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  project filesystem access now sits under `infrastructure/storage`, and legacy service imports remain backward-compatible.
+
+### 31. Web multi-search runtime extraction
+- Status: completed
+- Scope: moved multi-engine web search wrappers out of the service layer while preserving existing imports.
+- Finish:
+  added [backend/app/infrastructure/search/multisearch.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/multisearch.py) for `multi_search`, `deep_search`, `news_search`, `fetch_page`, and `WebMultiSearchService`;
+  reduced [backend/app/services/web_multisearch_service.py](/D:/AIWork/Elira_AI/backend/app/services/web_multisearch_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  multi-engine web search helpers now sit under `infrastructure/search`, and service-level imports remain backward-compatible.
+
+### 32. Chat temporal intent extraction
+- Status: completed
+- Scope: moved temporal/current-world query classification out of the service layer while preserving existing imports used by planner and cache policy.
+- Finish:
+  added [backend/app/application/chat/temporal_intent.py](/D:/AIWork/Elira_AI/backend/app/application/chat/temporal_intent.py) for `detect_temporal_intent` and its classifier constants;
+  reduced [backend/app/services/temporal_intent.py](/D:/AIWork/Elira_AI/backend/app/services/temporal_intent.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  temporal intent logic now sits under `application/chat`, and legacy imports from `app.services.temporal_intent` remain compatible.
+
+### 33. Chat planner v2 extraction
+- Status: completed
+- Scope: moved chat/tool route planning out of the service layer while preserving existing imports used by agents_service.
+- Finish:
+  added [backend/app/application/chat/planner_v2.py](/D:/AIWork/Elira_AI/backend/app/application/chat/planner_v2.py) for `PlannerV2Service`;
+  reduced [backend/app/services/planner_v2_service.py](/D:/AIWork/Elira_AI/backend/app/services/planner_v2_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  chat request planning now sits under `application/chat`, and `app.services.planner_v2_service` remains backward-compatible.
+
+### 34. Web service search facade extraction
+- Status: completed
+- Scope: moved public web search helper wrappers out of the service layer while preserving existing tool-registry imports.
+- Finish:
+  added `search_web` and `research_web` compatibility entrypoints to [backend/app/infrastructure/search/web_search.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_search.py);
+  reduced [backend/app/services/web_service.py](/D:/AIWork/Elira_AI/backend/app/services/web_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  legacy callers can continue using `app.services.web_service`, while public web search wrappers now sit under `infrastructure/search`.
+
+### 35. LLM model listing and Python runner facade extraction
+- Status: completed
+- Scope: batched low-risk service extractions for runtime utility code while preserving existing route/tool imports.
+- Finish:
+  added [backend/app/infrastructure/llm/ollama_models.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/llm/ollama_models.py) for `get_models` and `list_ollama_models`;
+  added [backend/app/domain/runtime/python_runner.py](/D:/AIWork/Elira_AI/backend/app/domain/runtime/python_runner.py) for restricted Python execution;
+  reduced [backend/app/services/models_service.py](/D:/AIWork/Elira_AI/backend/app/services/models_service.py), [backend/app/services/ollama_runtime_service.py](/D:/AIWork/Elira_AI/backend/app/services/ollama_runtime_service.py), and [backend/app/services/python_runner.py](/D:/AIWork/Elira_AI/backend/app/services/python_runner.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Ollama model listing now sits under `infrastructure/llm`, restricted Python execution sits under `domain/runtime`, and old service imports remain backward-compatible.
+
+### 36. Runtime status and response cache extraction
+- Status: completed
+- Scope: moved runtime status and response-cache orchestration out of the service layer while preserving existing backend imports.
+- Finish:
+  added [backend/app/application/runtime/status.py](/D:/AIWork/Elira_AI/backend/app/application/runtime/status.py) for runtime health/status assembly;
+  added [backend/app/application/response_cache/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/response_cache/runtime.py) for response cache DB wiring and policy/store orchestration;
+  reduced [backend/app/services/runtime_service.py](/D:/AIWork/Elira_AI/backend/app/services/runtime_service.py) and [backend/app/services/response_cache.py](/D:/AIWork/Elira_AI/backend/app/services/response_cache.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  runtime status now sits under `application/runtime`, response cache runtime now sits under `application/response_cache`, and old service imports remain backward-compatible.
+
+### 37. Memory and profile facade extraction
+- Status: completed
+- Scope: moved memory route helpers and profile listing helpers out of the service layer while preserving existing route imports.
+- Finish:
+  added [backend/app/application/memory/service.py](/D:/AIWork/Elira_AI/backend/app/application/memory/service.py) for memory API helper orchestration;
+  added [backend/app/application/memory/profiles.py](/D:/AIWork/Elira_AI/backend/app/application/memory/profiles.py) for legacy memory profile helpers;
+  added [backend/app/application/persona/profiles.py](/D:/AIWork/Elira_AI/backend/app/application/persona/profiles.py) for persona profile listing;
+  reduced [backend/app/services/memory_service.py](/D:/AIWork/Elira_AI/backend/app/services/memory_service.py), [backend/app/services/profile_service.py](/D:/AIWork/Elira_AI/backend/app/services/profile_service.py), and [backend/app/services/profiles_service.py](/D:/AIWork/Elira_AI/backend/app/services/profiles_service.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  memory/profile route helpers now sit under `application/memory` and `application/persona`, and old service imports remain backward-compatible.
+
+### 38. Chat Ollama runtime and reflection loop extraction
+- Status: completed
+- Scope: moved direct Ollama chat runtime and reflection-loop orchestration out of the service layer while preserving existing chat imports.
+- Finish:
+  added [backend/app/application/chat/ollama_chat.py](/D:/AIWork/Elira_AI/backend/app/application/chat/ollama_chat.py) for `normalize_profile`, `run_chat`, and `run_chat_stream`;
+  added [backend/app/application/chat/reflection_loop.py](/D:/AIWork/Elira_AI/backend/app/application/chat/reflection_loop.py) for `run_reflection_loop`;
+  reduced [backend/app/services/chat_service.py](/D:/AIWork/Elira_AI/backend/app/services/chat_service.py) and [backend/app/services/reflection_loop_service.py](/D:/AIWork/Elira_AI/backend/app/services/reflection_loop_service.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  local chat model execution now sits under `application/chat`, reflection-loop logic is colocated with chat orchestration, and old service imports remain backward-compatible.
+
+### 39. Tool, browser stub, and deprecated Ollama model facade extraction
+- Status: completed
+- Scope: batched small service-layer extractions that do not touch mutable DB-backed service state.
+- Finish:
+  added [backend/app/application/tool_registry/service.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/service.py) for tool-service compatibility helpers;
+  added [backend/app/infrastructure/browser/agent.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/browser/agent.py) and [backend/app/infrastructure/browser/__init__.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/browser/__init__.py) for the browser agent stub;
+  added [backend/app/application/project_brain/map_service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/map_service.py) and [backend/app/application/project_brain/loop_service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/loop_service.py) for project-brain compatibility stubs;
+  extended [backend/app/infrastructure/llm/ollama_models.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/llm/ollama_models.py) with deprecated `list_models` compatibility;
+  reduced `tool_service`, `browser_agent`, `project_map_service`, `project_brain_loop_service`, and `ollama_models_service` under [backend/app/services](/D:/AIWork/Elira_AI/backend/app/services) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  small compatibility helpers now sit under application/infrastructure modules, while existing service imports and Agent OS tool seeding remain backward-compatible.
+
+### 40. Project patch service wrapper extraction
+- Status: completed
+- Scope: moved the ProjectPatchService wrapper out of the service layer while preserving project brain/tool registry imports.
+- Finish:
+  added [backend/app/application/project_patch/service.py](/D:/AIWork/Elira_AI/backend/app/application/project_patch/service.py) for the backward-compatible `ProjectPatchService` wrapper over `ProjectPatchRuntime`;
+  reduced [backend/app/services/project_patch_service.py](/D:/AIWork/Elira_AI/backend/app/services/project_patch_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  project patch wrapper construction now sits under `application/project_patch`, and old service imports remain backward-compatible.
+
+### 41. Run history service wiring extraction
+- Status: completed
+- Scope: moved run-history DB wiring and concrete service construction out of the legacy service layer while preserving existing dashboard/agent imports.
+- Finish:
+  added [backend/app/application/run_history/service.py](/D:/AIWork/Elira_AI/backend/app/application/run_history/service.py) for `DB_PATH`, legacy JSON migration wiring, DB init, and the concrete `RunHistoryService`;
+  reduced [backend/app/services/run_history_service.py](/D:/AIWork/Elira_AI/backend/app/services/run_history_service.py) to a compatibility facade with the previous exports.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  run-history persistence wiring now sits under `application/run_history`, and old service imports remain backward-compatible.
+
+### 42. Chat guard policy extraction
+- Status: completed
+- Scope: moved response guard policy modules out of the legacy service layer without changing guard behavior or legacy imports.
+- Finish:
+  added [backend/app/application/chat/identity_guard.py](/D:/AIWork/Elira_AI/backend/app/application/chat/identity_guard.py) and [backend/app/application/chat/provenance_guard.py](/D:/AIWork/Elira_AI/backend/app/application/chat/provenance_guard.py);
+  updated [backend/app/application/chat/post_processing.py](/D:/AIWork/Elira_AI/backend/app/application/chat/post_processing.py) to import guards from `application/chat`;
+  reduced [backend/app/services/identity_guard.py](/D:/AIWork/Elira_AI/backend/app/services/identity_guard.py) and [backend/app/services/provenance_guard.py](/D:/AIWork/Elira_AI/backend/app/services/provenance_guard.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  chat response guard policies now sit under `application/chat`, while old service imports remain backward-compatible.
+
+### 43. Task planner and RAG memory service wiring extraction
+- Status: completed
+- Scope: batched two existing runtime-backed service wrappers into application-layer wiring modules while preserving legacy imports.
+- Finish:
+  added [backend/app/application/task_planner/service.py](/D:/AIWork/Elira_AI/backend/app/application/task_planner/service.py) for task-planner DB wiring, init, and public helper functions;
+  added [backend/app/application/rag_memory/service.py](/D:/AIWork/Elira_AI/backend/app/application/rag_memory/service.py) for RAG DB wiring, seed cleanup, embedding glue, and public helper functions;
+  reduced [backend/app/services/task_planner_service.py](/D:/AIWork/Elira_AI/backend/app/services/task_planner_service.py) and [backend/app/services/rag_memory_service.py](/D:/AIWork/Elira_AI/backend/app/services/rag_memory_service.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  task-planner and RAG-memory concrete persistence wiring now sits under `application/*/service.py`, and old service imports remain backward-compatible.
+
+### 44. Agent sandbox policy extraction
+- Status: completed
+- Scope: moved agent sandbox preflight policy out of the legacy service layer while preserving legacy service imports and Agent OS behavior.
+- Finish:
+  added [backend/app/application/agent_registry/sandbox.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/sandbox.py) for agent id resolution, sandbox policy errors, tool/context/rate preflight checks, and sandbox block recording;
+  updated [backend/app/application/workflows/step_results.py](/D:/AIWork/Elira_AI/backend/app/application/workflows/step_results.py), [backend/app/domain/workflows/step_executor.py](/D:/AIWork/Elira_AI/backend/app/domain/workflows/step_executor.py), and [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) to use the application sandbox module;
+  reduced [backend/app/services/agent_sandbox.py](/D:/AIWork/Elira_AI/backend/app/services/agent_sandbox.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  sandbox policy now sits under `application/agent_registry`, and old service imports remain backward-compatible.
+
+### 45. Elira state and settings wiring extraction
+- Status: completed
+- Scope: moved Elira chat/settings SQLite wiring out of the legacy service layer while preserving existing state routes and service imports.
+- Finish:
+  added [backend/app/application/elira_memory/service.py](/D:/AIWork/Elira_AI/backend/app/application/elira_memory/service.py) for Elira chat/message/settings table wiring over `application/elira_memory/runtime`;
+  added [backend/app/application/elira_memory/settings.py](/D:/AIWork/Elira_AI/backend/app/application/elira_memory/settings.py) for settings and route-model-map persistence;
+  updated state/runtime/persona/config imports to use the application modules;
+  reduced [backend/app/services/elira_memory_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_memory_sqlite.py) and [backend/app/services/elira_settings_sqlite.py](/D:/AIWork/Elira_AI/backend/app/services/elira_settings_sqlite.py) to compatibility facades.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Elira chat state and settings persistence wiring now sits under `application/elira_memory`, and old service imports remain backward-compatible.
+
+### 46. Persona service facade extraction
+- Status: completed
+- Scope: moved persona prompt/service orchestration out of the legacy service layer while preserving persona routes, chat imports, and legacy service imports.
+- Finish:
+  added [backend/app/application/persona/service.py](/D:/AIWork/Elira_AI/backend/app/application/persona/service.py) for `build_persona_prompt` and persona store/evolution public exports;
+  updated persona route, chat finalization, Ollama chat runtime, profile previews, core LLM, domain orchestrator runtime, and agent service imports to use `application/persona/service`;
+  reduced [backend/app/services/persona_service.py](/D:/AIWork/Elira_AI/backend/app/services/persona_service.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  persona service orchestration now sits under `application/persona`, and old service imports remain backward-compatible.
+
+### 47. Skills extra runtime extraction
+- Status: completed
+- Scope: integrated the Claude `skills_extra` extraction into the current refactor branch while preserving legacy service imports.
+- Finish:
+  added [backend/app/application/skills_extra/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/skills_extra/runtime.py) for archive, conversion, regex, translation, CSV analysis, and webhook helper runtime;
+  added [backend/app/application/skills_extra/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/skills_extra/__init__.py) with the public runtime exports;
+  reduced [backend/app/services/skills_extra.py](/D:/AIWork/Elira_AI/backend/app/services/skills_extra.py) to a compatibility facade.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  `skills_extra` implementation now sits under `application/skills_extra`, and old service imports remain backward-compatible.
+
+### 48. Elira supervisor route runtime extraction
+- Status: completed
+- Scope: integrated the Claude `elira_supervisor` route split into the current refactor branch while preserving the public supervisor API routes.
+- Finish:
+  added [backend/app/application/elira_supervisor/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_supervisor/runtime.py) for supervisor DB bootstrap, path validation, planning, step building, persistence, history reads, and execute/run payload assembly;
+  added [backend/app/application/elira_supervisor/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_supervisor/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_supervisor.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_supervisor.py) to a FastAPI shell with request models, HTTP error translation, and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  supervisor business and persistence logic now sits under `application/elira_supervisor`, while `/api/elira/supervisor/*` remains route-compatible.
+
+### 49. Elira phase19 route runtime extraction
+- Status: completed
+- Scope: integrated the Claude `elira_phase19` route split into the current refactor branch while preserving the public phase19 API routes.
+- Finish:
+  added [backend/app/application/elira_phase19/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase19/runtime.py) for phase19 DB bootstrap, project scanning, plan/reasoning/file-operation builders, verification summary, persistence, history reads, and run payload assembly;
+  added [backend/app/application/elira_phase19/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase19/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_phase19.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase19.py) to a FastAPI shell with the request model and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase19 business and persistence logic now sits under `application/elira_phase19`, while `/api/elira/phase19/*` remains route-compatible.
+
+### 50. Elira phase20 route runtime extraction
+- Status: completed
+- Scope: continued the phase route split by moving phase20 planning/execution helpers out of the FastAPI route while preserving the public phase20 endpoints.
+- Finish:
+  added [backend/app/application/elira_phase20/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase20/runtime.py) for phase20 DB bootstrap, project scanning, reasoning/planner/coder/reviewer/tester/execution builders, persistence, history reads, and run payload assembly;
+  added [backend/app/application/elira_phase20/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase20/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_phase20.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase20.py) to a FastAPI shell with the request model and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase20 business and persistence logic now sits under `application/elira_phase20`, while `/api/elira/phase20/*` remains route-compatible.
+
+### 51. Elira phase21 route runtime extraction
+- Status: completed
+- Scope: completed the phase19/20/21 route split by moving phase21 controller/runtime logic out of the FastAPI route while preserving the public phase21 endpoints.
+- Finish:
+  added [backend/app/application/elira_phase21/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase21/runtime.py) for phase21 DB bootstrap, controller building, persistence, history reads, and run payload assembly;
+  added [backend/app/application/elira_phase21/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase21/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_phase21.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase21.py) to a FastAPI shell with the request model and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase21 business and persistence logic now sits under `application/elira_phase21`, while `/api/elira/phase21/*` remains route-compatible.
+
+### 52. Elira phase20 queue and execution-state runtime extraction
+- Status: completed
+- Scope: continued integrating the non-overlapping Claude route-split work by moving phase20 preview queue and execution-state logic out of FastAPI route modules.
+- Finish:
+  added [backend/app/application/elira_phase20_queue/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase20_queue/runtime.py) for preview queue payload assembly;
+  added [backend/app/application/elira_phase20_state/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_phase20_state/runtime.py) for execution-state DB bootstrap, checkpoint/rollback building, persistence, and list reads;
+  added package exports for both runtimes and reduced [backend/app/api/routes/elira_phase20_queue.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase20_queue.py) plus [backend/app/api/routes/elira_phase20_state.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_phase20_state.py) to FastAPI shells.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  phase20 queue/state business and persistence logic now sits under `application/elira_phase20_*`, while `/api/elira/phase20/preview-queue` and `/execution-state*` remain route-compatible.
+
+### 53. Elira execute and memory runtime extraction
+- Status: completed
+- Scope: moved the `/api/elira/execute` mode-reply builder and `/api/elira/memory/*` SQLite CRUD out of the FastAPI route while preserving existing response strings and DB table usage.
+- Finish:
+  added [backend/app/application/elira_execute/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_execute/runtime.py) for `memory_store` bootstrap, mode reply construction, memory listing, save, and delete operations;
+  added [backend/app/application/elira_execute/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_execute/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/elira_execute.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execute.py) to request models and delegating handlers.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Elira execute/memory route business and persistence logic now sits under `application/elira_execute`, while `/api/elira/execute` and `/api/elira/memory/*` remain route-compatible.
+
+### 54. Elira task runner and devtools runtime extraction
+- Status: completed
+- Scope: continued the Claude route-split queue by moving task-runner planning/history logic and Elira devtools filesystem/project-map/patch-plan logic out of FastAPI route modules without changing public endpoints.
+- Finish:
+  added [backend/app/application/elira_task_runner/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_task_runner/runtime.py) for task plan building, supervisor pipeline assembly, `task_runs` persistence, and history reads;
+  added [backend/app/application/elira_devtools/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_devtools/runtime.py) for project scanning, import parsing, guarded filesystem operations, and patch-plan payload assembly;
+  added package exports for both runtimes and reduced [backend/app/api/routes/elira_task_runner.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_task_runner.py) plus [backend/app/api/routes/elira_devtools.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_devtools.py) to FastAPI shells with request models and HTTP error translation.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  task runner and devtools business logic now sits under `application/elira_task_runner` and `application/elira_devtools`, while `/api/elira/task/*`, `/api/elira/project/map`, `/api/elira/fs/*`, and `/api/elira/patch/plan` remain route-compatible.
+
+### 55. Workspace file-ops runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving workspace file operation logic out of `file_ops.py`; the paired Claude `library_sqlite` split was skipped because this branch already delegates `/api/lib/*` to `application/library/runtime.py`.
+- Finish:
+  added [backend/app/application/file_ops/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/file_ops/runtime.py) for safe workspace path resolution, write/read/tree/diff/mkdir/delete operations, and runtime error payloads;
+  added [backend/app/application/file_ops/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/file_ops/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/file_ops.py](/D:/AIWork/Elira_AI/backend/app/api/routes/file_ops.py) to request models, route handlers, and HTTP error translation.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  `/api/file-ops/*` remains route-compatible while workspace filesystem behavior now sits under `application/file_ops`.
+
+### 56. File text extraction runtime extraction
+- Status: completed
+- Scope: continued the file extraction split by moving PDF/DOCX/XLSX/ZIP/text extraction helpers out of the `/api/files` route while preserving the existing response shape and extractor messages.
+- Finish:
+  added [backend/app/application/file_extract/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/file_extract/runtime.py) for `TEXT_EXTS`, PDF/DOCX/XLSX/ZIP/plain-text extraction helpers, and `extract_file` dispatch;
+  added [backend/app/application/file_extract/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/file_extract/__init__.py) with the runtime public exports;
+  reduced [backend/app/api/routes/files.py](/D:/AIWork/Elira_AI/backend/app/api/routes/files.py) to an async upload reader and FastAPI error wrapper.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  `/api/files/extract-text` remains route-compatible while file text extraction logic now sits under `application/file_extract`.
+
+### 57. Agent OS service runtime alias extraction
+- Status: completed
+- Scope: finished the incomplete Claude service-runtime extraction by moving Event Bus, Monitoring, Tool Registry, and Workflow Engine service state/wiring into application runtimes.
+- Finish:
+  added [backend/app/application/event_bus/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/event_bus/runtime.py) for event bus DB bootstrap, conversion helpers, event/message/subscription wrappers, and module-level state;
+  added [backend/app/application/monitoring/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/runtime.py) for agent limit seeding, metrics, resource usage, sandbox block recording, and Agent OS health/dashboard wrappers;
+  added [backend/app/application/tool_registry/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/runtime.py) for tool registry DB bootstrap, handlers, builtin seeding, CRUD, execution, and validation;
+  added [backend/app/application/workflow_engine/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/workflow_engine/runtime.py) plus package init for workflow-engine DB path/state and workflow template/run wrappers;
+  reduced [backend/app/services/event_bus.py](/D:/AIWork/Elira_AI/backend/app/services/event_bus.py), [backend/app/services/agent_monitor.py](/D:/AIWork/Elira_AI/backend/app/services/agent_monitor.py), [backend/app/services/tool_registry.py](/D:/AIWork/Elira_AI/backend/app/services/tool_registry.py), and [backend/app/services/workflow_engine.py](/D:/AIWork/Elira_AI/backend/app/services/workflow_engine.py) to compatibility aliases that preserve mutable module state such as `DB_PATH`.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  Agent OS service facade code now lives under `application/*/runtime.py`, while legacy `app.services.*` imports remain compatible.
+
+### 58. Elira phase naming compatibility refactor planned
+- Status: completed
+- Scope: recorded the requested follow-up to replace milestone-style `elira_phase*` module names with domain names as a separate compatibility refactor.
+- Finish:
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) with a planned task for renaming `elira_phase19`, `elira_phase20`, `elira_phase20_queue`, `elira_phase20_state`, and `elira_phase21` while preserving legacy route paths and import aliases;
+  documented the current domain meaning: multi-file dev loop, planner/coder/reviewer/tester execution loop, preview queue, checkpoint/rollback execution state, and controller/orchestration.
+- Verification:
+  `git diff --cached --check` after staging.
+- Result:
+  the non-engineering `elira_phase*` naming issue is now tracked as an explicit future compatibility refactor instead of being mixed into unrelated runtime extraction work.
+
+### 59. Elira phase module compatibility rename
+- Status: completed
+- Scope: implemented the planned compatibility rename for milestone-style `elira_phase*` modules without changing public `/api/elira/phase*` route paths or SQLite table names.
+- Finish:
+  added domain-named route modules [backend/app/api/routes/elira_multi_file_loop.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_multi_file_loop.py), [backend/app/api/routes/elira_execution_loop.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execution_loop.py), [backend/app/api/routes/elira_preview_queue.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_preview_queue.py), [backend/app/api/routes/elira_execution_state.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execution_state.py), and [backend/app/api/routes/elira_execution_controller.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_execution_controller.py);
+  added matching application packages under `application/elira_multi_file_loop`, `application/elira_execution_loop`, `application/elira_preview_queue`, `application/elira_execution_state`, and `application/elira_execution_controller`;
+  rewired [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) to register the domain-named route modules;
+  reduced the old `elira_phase*` route and application modules to compatibility aliases so legacy imports keep working.
+- Verification:
+  `python -m compileall backend/app`;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed.
+- Result:
+  active code now uses engineer-facing names for multi-file loop, execution loop, preview queue, execution state, and execution controller while preserving legacy route/import compatibility.
+
+### 60. Elira patch runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/elira/patch` filesystem patching, backup, diff, verification, and history persistence logic out of the FastAPI route.
+- Finish:
+  added [backend/app/application/elira_patch/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/elira_patch/runtime.py) for project path guards, patch backup/apply/rollback, batch apply/verify, diff stats, and `patch_history` persistence;
+  added [backend/app/application/elira_patch/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/elira_patch/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/elira_patch.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_patch.py) to request models, endpoint wiring, and HTTP error translation.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/elira/patch` route smoke for diff, verify, and missing-file HTTP translation -> passed.
+- Result:
+  `/api/elira/patch/*` remains route-compatible while patch runtime behavior now sits under `application/elira_patch`.
+
+### 61. Terminal route runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/terminal` command execution, cwd state, Windows output decoding, blocked command checks, and timeout handling out of the FastAPI route.
+- Finish:
+  added [backend/app/application/terminal/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/terminal/runtime.py) for terminal workspace state, `exec_command`, `change_dir`, `get_cwd`, and Windows decode helpers;
+  added [backend/app/application/terminal/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/terminal/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/terminal.py](/D:/AIWork/Elira_AI/backend/app/api/routes/terminal.py) to request models and endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/terminal` route smoke for cwd, empty command, blocked command, and `cd` -> passed.
+- Result:
+  `/api/terminal/*` remains route-compatible while terminal runtime behavior now sits under `application/terminal`.
+
+### 62. Dashboard route runtime extraction
+- Status: completed
+- Scope: continued after Claude's separate worktree by applying the next small route split locally instead of merging the wide divergent Claude branch.
+- Finish:
+  added [backend/app/application/dashboard/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/dashboard/runtime.py) for run-history aggregation, daily activity, memory/chat/plugin counters, and dashboard response assembly;
+  added [backend/app/application/dashboard/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/dashboard/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/dashboard_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/dashboard_routes.py) to endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/dashboard/stats` route smoke for response keys and 14-day activity shape -> passed.
+- Result:
+  `/api/dashboard/stats` remains route-compatible while dashboard aggregation now sits under `application/dashboard`.
+
+### 63. Tools exec route runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/tools` Python execution delegation, code analysis, and run-history lookup out of the FastAPI route.
+- Finish:
+  added [backend/app/application/tools_exec/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/tools_exec/runtime.py) for `run_python`, `analyze_code`, and `get_run_history`;
+  added [backend/app/application/tools_exec/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/tools_exec/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/tools_exec.py](/D:/AIWork/Elira_AI/backend/app/api/routes/tools_exec.py) to request models and endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/tools` route smoke for Python/TypeScript analysis and run-history response shape -> passed.
+- Result:
+  `/api/tools/*` remains route-compatible while tools-exec runtime behavior now sits under `application/tools_exec`.
+
+### 64. Route service-facade import cleanup
+- Status: completed
+- Scope: removed remaining route-to-service-facade imports where an application/runtime implementation already exists, without changing public routes.
+- Finish:
+  updated [backend/app/api/routes/pdf_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/pdf_routes.py) to call `application/pdf/runtime.py` directly;
+  updated [backend/app/application/file_extract/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/file_extract/runtime.py) to use the PDF application runtime directly;
+  updated [backend/app/api/routes/task_planner_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/task_planner_routes.py) to use `application/task_planner/service.py`;
+  updated [backend/app/api/routes/autopipeline_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/autopipeline_routes.py) to use `application/autopipeline/runtime.py` while preserving lazy imports.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted task planner/autopipeline route smoke -> passed.
+- Result:
+  PDF, file extraction, task planner, and autopipeline paths now bypass service compatibility facades where application-layer modules are already available.
+
+### 65. Web search route runtime extraction
+- Status: completed
+- Scope: continued the route-split queue by moving `/api/web` search orchestration wrappers and engine metadata out of the FastAPI route.
+- Finish:
+  added [backend/app/application/web_search/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/web_search/runtime.py) for default engine normalization, search/deep-search/news/fetch delegation, and engine metadata;
+  added [backend/app/application/web_search/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/web_search/__init__.py) with runtime exports;
+  reduced [backend/app/api/routes/web_search_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/web_search_routes.py) to request models and endpoint wiring.
+- Verification:
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  targeted `/api/web/engines` route smoke and engine normalization check -> passed.
+- Result:
+  `/api/web/*` remains route-compatible while web-search route orchestration now sits under `application/web_search`.
+
+### 66. Multi-agent workflow facade cleanup
+- Status: completed
+- Scope: continued the compatibility-import cleanup after confirming `services/image_gen.py` is already a thin facade over `application/media/flux_schnell_runtime.py`.
+- Finish:
+  reduced [backend/app/services/multi_agent_chain.py](/D:/AIWork/Elira_AI/backend/app/services/multi_agent_chain.py) to the public `run_multi_agent(...)` compatibility wrapper over `application.workflows.multi_agent.run_multi_agent_workflow`;
+  updated [backend/app/api/routes/advanced_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/advanced_routes.py) so `/api/advanced/multi-agent` calls the application workflow runtime directly;
+  removed the dead inline legacy multi-agent implementation from the service facade.
+- Verification:
+  `python -m py_compile backend/app/services/multi_agent_chain.py backend/app/api/routes/advanced_routes.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase4.WorkflowCompatibilityShimTest` -> 2 tests OK;
+  targeted `/api/advanced/multi-agent` route smoke with mocked workflow runtime -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Multi-agent public behavior stays workflow-backed while the obsolete service monolith body is gone.
+
+### 67. Route imports for image and RAG runtimes
+- Status: completed
+- Scope: continued small compatibility-import cleanup for routes that were still calling already-extracted application runtimes through service facades.
+- Finish:
+  updated [backend/app/api/routes/image_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/image_routes.py) to call `application.media.flux_schnell_runtime` directly for generate/status/unload;
+  updated [backend/app/api/routes/advanced_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/advanced_routes.py) to call `application.rag_memory.service` directly for RAG add/search/list/delete/stats.
+- Verification:
+  `python -m py_compile backend/app/api/routes/advanced_routes.py backend/app/api/routes/image_routes.py` -> passed;
+  targeted advanced RAG and image route smoke with mocked application runtimes -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Image and advanced RAG endpoints keep the same public route behavior while bypassing redundant service compatibility facades.
+
+### 68. Route imports for runtime, profiles, memory, and library
+- Status: completed
+- Scope: continued compatibility-import cleanup in the shared Codex branch after checking Claude's `claude/extract-skills-extra` branch and confirming it is too broad to merge wholesale.
+- Finish:
+  updated [backend/app/api/routes/runtime.py](/D:/AIWork/Elira_AI/backend/app/api/routes/runtime.py) to call `application.runtime.status` directly;
+  updated [backend/app/api/routes/profiles.py](/D:/AIWork/Elira_AI/backend/app/api/routes/profiles.py) to call `application.persona.profiles` directly;
+  updated [backend/app/api/routes/memory.py](/D:/AIWork/Elira_AI/backend/app/api/routes/memory.py) to call `application.memory.service` directly;
+  updated [backend/app/api/routes/library.py](/D:/AIWork/Elira_AI/backend/app/api/routes/library.py) to call `application.library.runtime` directly.
+- Verification:
+  `python -m py_compile backend/app/api/routes/runtime.py backend/app/api/routes/profiles.py backend/app/api/routes/memory.py backend/app/api/routes/library.py` -> passed;
+  targeted mocked route smoke for runtime/profiles/memory/library -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Four more routes now bypass redundant service facades while preserving public route behavior.
+
+### 69. Route imports for Telegram, smart memory, and extra skills
+- Status: completed
+- Scope: continued route compatibility-import cleanup for service facades that already re-export application packages.
+- Finish:
+  updated [backend/app/api/routes/telegram_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/telegram_routes.py) lazy imports to call `application.telegram`;
+  updated [backend/app/api/routes/smart_memory_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/smart_memory_routes.py) to call `application.smart_memory`;
+  updated [backend/app/api/routes/skills_extra_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/skills_extra_routes.py) to call `application.skills_extra` and `application.plugins`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/telegram_routes.py backend/app/api/routes/smart_memory_routes.py backend/app/api/routes/skills_extra_routes.py` -> passed;
+  targeted mocked route smoke for Telegram, smart-memory, extra-skill, and plugin endpoints -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Telegram, smart-memory, extra-skill, and plugin routes now bypass redundant service facades while keeping route contracts stable.
+
+### 70. Debug library route import cleanup
+- Status: completed
+- Scope: removed the remaining debug route dependency on the library service facade where the application runtime is already available.
+- Finish:
+  updated [backend/app/api/routes/debug.py](/D:/AIWork/Elira_AI/backend/app/api/routes/debug.py) so `/api/debug/library` imports `list_library_files` and `build_library_context` from `application.library.runtime`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/debug.py` -> passed;
+  targeted mocked `/api/debug/library` route smoke -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  The debug library route now bypasses the redundant library service facade without changing response shape.
+
+### 71. Git and Ollama application facades
+- Status: completed
+- Scope: continued route compatibility cleanup for routes that still depended on service facades backed directly by infrastructure modules.
+- Finish:
+  added [backend/app/application/git/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/git/runtime.py) and [backend/app/application/git/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/git/__init__.py) as the application facade for Git helpers;
+  added [backend/app/application/ollama_models/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/ollama_models/runtime.py) and [backend/app/application/ollama_models/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/ollama_models/__init__.py) as the application facade for Ollama model listing;
+  updated [backend/app/api/routes/git_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/git_routes.py), [backend/app/api/routes/models.py](/D:/AIWork/Elira_AI/backend/app/api/routes/models.py), and [backend/app/api/routes/elira_state.py](/D:/AIWork/Elira_AI/backend/app/api/routes/elira_state.py) to call those application facades;
+  updated `services/git_service.py`, `services/models_service.py`, and `services/ollama_runtime_service.py` to remain compatibility facades over the new application modules.
+- Verification:
+  `python -m py_compile` on the new facades, touched routes, and touched service facades -> passed;
+  targeted mocked route smoke for Git, `/api/models`, and `/api/elira/models` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Git and Ollama model routes now depend on application facades instead of service facades while legacy service imports remain compatible.
+
+### 72. Skills route import cleanup
+- Status: completed
+- Scope: continued route compatibility cleanup for the skills service facade.
+- Finish:
+  updated [backend/app/api/routes/skills_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/skills_routes.py) to call `application.skills` directly;
+  updated [backend/app/api/routes/project_brain.py](/D:/AIWork/Elira_AI/backend/app/api/routes/project_brain.py) so project-brain capability status imports `screenshot_capability_status` from `application.skills`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/skills_routes.py backend/app/api/routes/project_brain.py` -> passed;
+  targeted mocked route smoke for skills endpoints and project-brain status -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Skills routes and project-brain capability checks now bypass the redundant skills service facade.
+
+### 73. Agent OS route import cleanup
+- Status: completed
+- Scope: continued route compatibility cleanup for Agent OS routes whose service modules are already aliases over application runtimes.
+- Finish:
+  updated [backend/app/api/routes/agent_monitor_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agent_monitor_routes.py) to import `application.monitoring.runtime`;
+  updated [backend/app/api/routes/event_bus_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/event_bus_routes.py) to import `application.event_bus.runtime`;
+  updated [backend/app/api/routes/tool_registry_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/tool_registry_routes.py) to import `application.tool_registry.runtime`.
+- Verification:
+  `python -m py_compile backend/app/api/routes/agent_monitor_routes.py backend/app/api/routes/event_bus_routes.py backend/app/api/routes/tool_registry_routes.py` -> passed;
+  targeted mocked Agent OS route smoke for monitor, event bus, and tool registry -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Agent OS monitor, event bus, and tool registry routes now bypass redundant service aliases while preserving route contracts.
+
+### 74. Chat agent runtime facade
+- Status: completed
+- Scope: moved chat/agent route orchestration entry points out of the service namespace while keeping legacy imports patch-compatible.
+- Finish:
+  added [backend/app/application/chat/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/chat/runtime.py) as the chat agent runtime composition module;
+  updated [backend/app/services/agents_service.py](/D:/AIWork/Elira_AI/backend/app/services/agents_service.py) to remain a `sys.modules` compatibility alias over `application.chat.runtime`;
+  updated [backend/app/api/routes/agents.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agents.py) and [backend/app/api/routes/chat.py](/D:/AIWork/Elira_AI/backend/app/api/routes/chat.py) to import `run_agent` / `run_agent_stream` from `application.chat.runtime`.
+- Verification:
+  targeted chat runtime compatibility smoke confirmed `app.services.agents_service` and `app.application.chat.runtime` share one module object;
+  `python -m py_compile backend/app/application/chat/runtime.py backend/app/services/agents_service.py backend/app/api/routes/agents.py backend/app/api/routes/chat.py` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  `/api/agents` and `/api/chat` no longer import chat agent entry points through `services.agents_service`, while existing legacy service patch points remain compatible.
+
+### 75. Agent Registry runtime facade
+- Status: completed
+- Scope: moved the Agent Registry route off the service namespace while preserving legacy mutable test/runtime state.
+- Finish:
+  added [backend/app/application/agent_registry/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/runtime.py) as the Agent Registry runtime module with DB path wiring, built-in seeding, and CRUD/run/state functions;
+  updated [backend/app/services/agent_registry.py](/D:/AIWork/Elira_AI/backend/app/services/agent_registry.py) to remain a `sys.modules` compatibility alias over `application.agent_registry.runtime`;
+  updated [backend/app/api/routes/agent_registry_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/agent_registry_routes.py) to import the runtime directly.
+- Verification:
+  targeted Agent Registry compatibility smoke confirmed legacy service imports and application runtime share one module object, including `DB_PATH` and `_init_db`;
+  `python -m py_compile backend/app/application/agent_registry/runtime.py backend/app/services/agent_registry.py backend/app/api/routes/agent_registry_routes.py` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  `agent_registry_routes.py` no longer imports through `services.agent_registry`, while legacy callers can still patch and mutate the same runtime module.
+
+### 76. Agent OS internal runtime imports
+- Status: completed
+- Scope: continued cleanup after route-layer service imports were removed; moved startup and Agent OS internal helpers to existing application runtimes.
+- Finish:
+  updated [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) startup seeding and runtime initialization imports to use application runtimes;
+  updated Agent OS sandbox, chat monitoring/event recording, workflow events/execution, monitoring runtime/reporting, and workflow step executor imports to use application runtimes where compatibility-safe;
+  intentionally left workflow tool execution on `services.tool_service` because existing workflow tests patch that facade.
+- Verification:
+  `python -m py_compile` on all touched runtime/startup files -> passed;
+  targeted startup/workflow compatibility smoke confirmed `app.main` imports, service alias patching still affects workflow agent step execution, and the application chat runtime remains the active module object;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Agent OS startup and internal application helpers now depend on application runtimes instead of service aliases, without breaking legacy workflow patch points.
+
+### 77. Chat runtime direct application dependencies
+- Status: completed
+- Scope: reduced service-alias imports inside the newly extracted chat runtime without changing public chat entry points.
+- Finish:
+  updated [backend/app/application/chat/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/chat/runtime.py) to import chat execution, planner, reflection, response cache, run history, smart memory, RAG context, and Agent Registry resolution from application modules directly;
+  intentionally left `services.tool_service` for tool execution compatibility.
+- Verification:
+  targeted chat runtime direct-import smoke confirmed legacy `agents_service` still shares the runtime module and patching runtime globals remains effective;
+  `python -m py_compile backend/app/application/chat/runtime.py backend/app/services/agents_service.py` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Chat runtime composition now depends on application modules for extracted subsystems while preserving the legacy service alias behavior.
+
+### 78. Auto-skills direct application imports
+- Status: completed
+- Scope: removed remaining service-facade imports from the chat auto-skills dispatcher where application runtimes already exist.
+- Finish:
+  updated [backend/app/application/chat/auto_skills.py](/D:/AIWork/Elira_AI/backend/app/application/chat/auto_skills.py) to import skills, extra skills, plugins, Git helpers, and image generation/status from application modules directly.
+- Verification:
+  `python -m py_compile backend/app/application/chat/auto_skills.py` -> passed;
+  targeted auto-skills direct-import smoke with mocked HTTP, docx generation, and Git status paths -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  The auto-skills dispatcher now bypasses redundant skills/plugin/git/image service facades while keeping lazy import behavior.
+
+### 79. Autopipeline, Telegram, and web-query runtime imports
+- Status: completed
+- Scope: removed additional non-route service-facade imports where direct runtime modules already exist.
+- Finish:
+  updated [backend/app/application/autopipeline/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/autopipeline/runtime.py) to import chat runtime, multi-search, and plugins directly;
+  updated [backend/app/application/telegram/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/telegram/runtime.py) to import chat runtime directly;
+  updated [backend/app/infrastructure/search/web_query.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_query.py) to import temporal intent detection from `application.chat.temporal_intent`.
+- Verification:
+  `python -m py_compile backend/app/application/autopipeline/runtime.py backend/app/application/telegram/runtime.py backend/app/infrastructure/search/web_query.py` -> passed;
+  targeted direct-import smoke confirmed autopipeline prompt execution still sees legacy `agents_service.run_agent` patching, web-query cleaning works, and telegram runtime imports -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 87 tests OK.
+- Result:
+  Autopipeline, Telegram, and web-query helpers now bypass redundant service facades while preserving legacy chat patch compatibility.
+
+### 80. Selective Claude test import — memory context/search
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `90f5573` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_memory_context_search_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_memory_context_search_pure.py) covering `application.memory.context` pure helpers and `application.memory.search` callback-driven helper paths.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_memory_context_search_pure` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 134 tests OK.
+- Result:
+  One Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 81. Selective Claude test import — memory web knowledge/bootstrap
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `b8dc5c5` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_memory_web_knowledge_bootstrap.py](/D:/AIWork/Elira_AI/backend/tests/test_memory_web_knowledge_bootstrap.py) covering `application.memory.web_knowledge` pure string helpers and `application.memory.bootstrap` settings file I/O.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_memory_web_knowledge_bootstrap` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 181 tests OK.
+- Result:
+  A second Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 82. Selective Claude test import — chat auto-skills/Agent OS helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `b5efaab` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_auto_skills_agent_os.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_auto_skills_agent_os.py) covering `application.chat.auto_skills` trigger paths and `application.chat.agent_os` helper/fire-and-forget paths.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_auto_skills_agent_os` -> 32 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 213 tests OK.
+- Result:
+  A third Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 83. Selective Claude test import — workflow lifecycle/multi-agent helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `e1e3084` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_workflows_lifecycle_multi_agent.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_lifecycle_multi_agent.py) covering `application.workflows.lifecycle` orchestration helpers and `application.workflows.multi_agent` built-in template helpers.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_workflows_lifecycle_multi_agent` -> 44 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 257 tests OK.
+- Result:
+  A fourth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 84. Selective Claude test import — tool registry/persona/python lab
+- Status: completed
+- Scope: selectively imported Claude commit `da13e83` after validating it against the current Codex branch; fixed one real runtime issue exposed by the new tests.
+- Finish:
+  added [backend/tests/test_tool_registry_persona_evolution_python_lab.py](/D:/AIWork/Elira_AI/backend/tests/test_tool_registry_persona_evolution_python_lab.py) covering `application.tool_registry.store`, `application.persona.evolution`, and `application.code_agent.python_lab`;
+  updated [backend/app/application/code_agent/python_lab.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/python_lab.py) so the generated figure-capture prelude treats matplotlib as optional, allowing non-plot Python snippets to run when matplotlib is not installed.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_tool_registry_persona_evolution_python_lab` -> 50 tests OK;
+  direct `execute_python_with_capture` smoke for `print("hello")` and `x = 1` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 307 tests OK.
+- Result:
+  A fifth Claude test commit was integrated, and Python Lab no longer hard-fails ordinary snippets in environments without matplotlib.
+
+### 85. Selective Claude test import — smart search/registry/run-history helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `38ff868` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_smart_search_agent_registry_run_history.py](/D:/AIWork/Elira_AI/backend/tests/test_smart_search_agent_registry_run_history.py) covering `application.smart_memory.search`, `application.agent_registry.store`, and `application.run_history.store` helper behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_smart_search_agent_registry_run_history` -> 54 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 361 tests OK.
+- Result:
+  A sixth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 86. Selective Claude test import — workflow/event/monitoring pure helpers
+- Status: completed
+- Scope: selectively imported Claude commit `52a526c` while keeping the current Codex sandbox module layout.
+- Finish:
+  added [backend/tests/test_workflows_event_monitoring_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_event_monitoring_pure.py) covering `application.workflows.db_path`, `application.workflows.step_results`, `application.event_bus.store`, and `application.monitoring.store`;
+  adapted the test's `SandboxPolicyError` import to the current `application.agent_registry.sandbox` path instead of introducing Claude's `application.agent_sandbox.runtime` package.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_workflows_event_monitoring_pure` -> 76 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 437 tests OK.
+- Result:
+  A seventh Claude test commit was integrated without widening the application package layout.
+
+### 87. Selective Claude test import — chat service/stream helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `39264a5` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_service_stream.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_service_stream.py) covering `application.chat.service` pure helpers/frozen preparation dataclasses and `application.chat.stream_service` event builders.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_service_stream` -> 35 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 472 tests OK.
+- Result:
+  An eighth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 88. Selective Claude test import — chat post-processing guards
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `39cce57` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_post_processing.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_post_processing.py) covering `application.chat.post_processing` identity/provenance guard plumbing, auto-exec trigger handling, and `GuardedResponse`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_post_processing` -> 28 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 500 tests OK.
+- Result:
+  A ninth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 89. Selective Claude test import — chat prompting/timeline helpers
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `8aa1e56` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_prompting_timeline.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_prompting_timeline.py) covering `application.chat.prompting` datetime/prompt-rule helpers and `application.chat.timeline.append_timeline`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_prompting_timeline` -> 38 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 538 tests OK.
+- Result:
+  A tenth Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 90. Selective Claude test import — chat memory policy/context builder
+- Status: completed
+- Scope: selectively imported the safe tests-only part of Claude commit `a9f0765` without merging the broad `claude/extract-skills-extra` branch.
+- Finish:
+  added [backend/tests/test_chat_submodules.py](/D:/AIWork/Elira_AI/backend/tests/test_chat_submodules.py) covering `application.chat.memory_policy` direct-memory/recall trimming helpers and `application.chat.context_builder.strip_frontend_project_context`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_submodules` -> 38 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 576 tests OK.
+- Result:
+  An eleventh Claude tests-only commit was integrated on the Codex branch with local documentation numbering preserved.
+
+### 91. Selective Claude test import — sandbox and memory service facade
+- Status: completed
+- Scope: selectively imported Claude commit `76c5684` while keeping the current Codex application package layout.
+- Finish:
+  added [backend/tests/test_agent_sandbox_and_memory_service.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_sandbox_and_memory_service.py) covering Agent Registry sandbox helper/preflight behavior and the memory service facade over smart memory;
+  adapted Claude-only imports from `application.agent_sandbox.runtime` and `application.memory_service.runtime` to current modules `application.agent_registry.sandbox` and `application.memory.service`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_sandbox_and_memory_service` -> 44 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 620 tests OK.
+- Result:
+  A twelfth Claude test commit was integrated without adding redundant compatibility packages.
+
+### 92. Selective Claude test import — autopipeline/run-history wrapper
+- Status: completed
+- Scope: selectively imported Claude commit `4a167d7` while keeping the current run-history package layout.
+- Finish:
+  added [backend/tests/test_autopipeline_and_run_history_service.py](/D:/AIWork/Elira_AI/backend/tests/test_autopipeline_and_run_history_service.py) covering `application.autopipeline.runtime` CRUD/scheduler state and `application.run_history.service.RunHistoryService`;
+  adapted Claude-only import from `application.run_history_service.runtime` to current `application.run_history.service`, removed non-ASCII decorative comments from the imported test file, and isolated run-history assertions behind a temp SQLite DB.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_autopipeline_and_run_history_service` -> 41 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 661 tests OK.
+- Result:
+  A thirteenth Claude test commit was integrated without adding a redundant `run_history_service` package.
+
+### 93. Selective Claude test import — Telegram/browser stub
+- Status: completed
+- Scope: selectively imported Claude commit `64ac687` while keeping the current browser-agent facade layout.
+- Finish:
+  added [backend/tests/test_telegram_and_browser_agent.py](/D:/AIWork/Elira_AI/backend/tests/test_telegram_and_browser_agent.py) covering `application.telegram.store`, `application.telegram.runtime`, and the browser-agent compatibility facade;
+  adapted Claude-only import from `application.browser_agent.runtime` to current `services.browser_agent`, removed non-ASCII decorative comments, and added the missing `BrowserAgent.search` stub method used by the tool registry.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_telegram_and_browser_agent` -> 29 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 690 tests OK.
+- Result:
+  A fourteenth Claude test commit was integrated, and the browser-agent facade now matches the tool registry call surface.
+
+### 94. Selective Claude test import — smart memory/terminal runtime
+- Status: completed
+- Scope: selectively imported Claude commit `fb12dc4` while preserving the current terminal runtime API.
+- Finish:
+  added [backend/tests/test_smart_memory_and_terminal.py](/D:/AIWork/Elira_AI/backend/tests/test_smart_memory_and_terminal.py) covering `application.smart_memory.extraction`, `application.smart_memory.store`, and `application.terminal.runtime`;
+  kept smart-memory tests isolated on a temp SQLite DB and adapted Claude's terminal assertions to the current dict-based `get_cwd()` contract and localized error strings.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_smart_memory_and_terminal` -> 70 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
+- Result:
+  A fifteenth Claude test commit was integrated without changing terminal runtime behavior.
+
+### 95. Project patch service import cleanup
+- Status: completed
+- Scope: removed one remaining application-layer dependency on the project filesystem service facade.
+- Finish:
+  updated [backend/app/application/project_patch/service.py](/D:/AIWork/Elira_AI/backend/app/application/project_patch/service.py) so `ProjectPatchService` imports `BASE_DIR`, `read_project_file`, and `write_project_file` directly from `infrastructure.storage.project_files` instead of going through `services.project_service`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -c "..."` import/identity smoke for `ProjectPatchService` -> passed;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
+- Result:
+  `application.project_patch` no longer depends on the legacy project-service facade; the public `services.project_patch_service` compatibility import remains intact.
+
+### 96. Monitoring tool-list import cleanup
+- Status: completed
+- Scope: removed one monitoring-layer dependency on the Agent OS tool-service facade.
+- Finish:
+  updated [backend/app/application/monitoring/store.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/store.py) so `all_known_tools()` imports `list_tools` directly from `application.tool_registry.service` instead of `services.tool_service`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase5 backend.tests.test_workflows_event_monitoring_pure` -> 83 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 760 tests OK.
+- Result:
+  Monitoring no longer reaches the tool registry through the legacy `services.tool_service` facade; seeded Agent OS limits still use the same tool payload.
+
+### 97. Selective Claude test import — stream service / multi-agent chain helpers
+- Status: completed
+- Scope: selectively imported Claude commit `31ee4c3` without bringing over its legacy LLM implementation.
+- Finish:
+  added [backend/tests/test_stream_service_extra_multi_agent_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_stream_service_extra_multi_agent_pure.py) covering extra `application.chat.stream_service` helpers and pure multi-agent chain helpers;
+  added [backend/app/application/multi_agent_chain/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/multi_agent_chain/runtime.py) with `_clip`, `_is_llm_error`, and `run_multi_agent` delegation to the workflow engine;
+  updated [backend/app/services/multi_agent_chain.py](/D:/AIWork/Elira_AI/backend/app/services/multi_agent_chain.py) to re-export from the new application runtime.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_stream_service_extra_multi_agent_pure` -> 73 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 833 tests OK.
+- Result:
+  Batch #102 was integrated with a small canonical runtime and without adding a new eager `ollama` import path.
+
+### 98. Selective Claude test import — response cache store / advanced runtime
+- Status: completed
+- Scope: selectively imported Claude commit `4d4df92` and added the missing application runtime expected by the tests.
+- Finish:
+  added [backend/tests/test_response_cache_store_advanced_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_response_cache_store_advanced_runtime.py) covering response-cache store callbacks and advanced project-mode runtime behavior;
+  added [backend/app/application/advanced/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/advanced/runtime.py) and [backend/app/application/advanced/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/advanced/__init__.py) for project open/info/tree/read/search/close helpers;
+  updated [backend/app/api/routes/advanced_routes.py](/D:/AIWork/Elira_AI/backend/app/api/routes/advanced_routes.py) so project-mode endpoints delegate to the application runtime.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_response_cache_store_advanced_runtime` -> 50 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 883 tests OK.
+- Result:
+  Batch #103 is integrated without wholesale-merging Claude branch; advanced project-mode filesystem state is no longer owned by the route module.
+
+### 99. Selective Claude test import — elira memory runtime
+- Status: completed
+- Scope: selectively imported Claude commit `58fd5a6` as an isolated test batch for the existing `application.elira_memory.runtime`.
+- Finish:
+  added [backend/tests/test_elira_memory_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_elira_memory_runtime.py) covering table/column guards, DB init, chat CRUD, message CRUD, and cascade deletion through in-memory SQLite callback injection;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_elira_memory_runtime` -> 39 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 922 tests OK.
+- Result:
+  Batch #104 is integrated as coverage only; no production runtime changes were needed for `elira_memory`.
+
+### 100. Selective Claude test import — web query planner pure helpers
+- Status: completed
+- Scope: selectively imported Claude commit `5fd2b15` as pure coverage for `application.web_query_planner.runtime`.
+- Finish:
+  added [backend/tests/test_web_query_planner_pure_helpers.py](/D:/AIWork/Elira_AI/backend/tests/test_web_query_planner_pure_helpers.py) covering planner constants and pure helpers for intent, freshness, geo/time extraction, query shaping, priorities, merging, and empty-plan structure;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_web_query_planner_pure_helpers` -> 98 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1020 tests OK.
+- Result:
+  Batch #105 is integrated as coverage only; no production changes were needed for `web_query_planner`.
+
+### 101. Selective Claude test import — RAG memory runtime
+- Status: completed
+- Scope: selectively imported Claude commit `24b3c42` as isolated coverage for `application.rag_memory.runtime`.
+- Finish:
+  added [backend/tests/test_rag_memory_runtime.py](/D:/AIWork/Elira_AI/backend/tests/test_rag_memory_runtime.py) covering `cosine_sim`, DB init, seed cleanup, RAG add/search/context/list/delete/stats paths through in-memory SQLite callback injection;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_rag_memory_runtime` -> 55 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1075 tests OK.
+- Result:
+  Batch #106 is integrated as coverage only; no production changes were needed for `rag_memory`.
+
+### 102. Selective Claude test import — Elira phase20 builder helpers
+- Status: completed
+- Scope: selectively imported Claude commit `2a7bc6f` as pure builder coverage for the current `app.application.elira_phase20.runtime` compatibility alias.
+- Finish:
+  added [backend/tests/test_elira_phase20_builders.py](/D:/AIWork/Elira_AI/backend/tests/test_elira_phase20_builders.py) covering constants, JSON helpers, and `build_reasoning`, `build_planner`, `build_coder`, `build_reviewer`, `build_tester`, `build_execution`;
+  removed decorative Unicode separators from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_elira_phase20_builders` -> 61 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1136 tests OK.
+- Result:
+  Batch #107 is integrated as coverage only; `elira_phase20.runtime` remains a compatibility alias to the canonical execution-loop runtime.
+
+### 103. Tool registry application import cleanup
+- Status: completed
+- Scope: continued small compatibility-import cleanup after confirming Claude's remote branch has no newer batch beyond #107.
+- Finish:
+  updated [backend/app/application/tool_registry/builtins.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/builtins.py) and [backend/app/application/tool_registry/service.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/service.py) to import application/domain/infrastructure modules directly instead of `app.services.*` facades;
+  added [backend/app/application/project_brain/map_service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/map_service.py) compatibility methods `build_map()` and `search()` so existing builtin tool handlers return structured stub results instead of raising `AttributeError`;
+  added [backend/tests/test_tool_registry_application_imports.py](/D:/AIWork/Elira_AI/backend/tests/test_tool_registry_application_imports.py) covering the no-service-facade import rule and handler stability.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_tool_registry_application_imports` -> 3 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1139 tests OK.
+- Result:
+  `application.tool_registry` no longer depends on service compatibility facades for builtin tool assembly or wrapper helpers; chat/workflow `services.tool_service` patch points remain intentionally untouched.
+
+### 104. Chat post-processing Python runner direct import
+- Status: completed
+- Scope: continued compatibility-import cleanup for the remaining application-layer service facade reference that was not an intentional `services.tool_service` patch point.
+- Finish:
+  updated [backend/app/application/chat/post_processing.py](/D:/AIWork/Elira_AI/backend/app/application/chat/post_processing.py) so `maybe_auto_exec_python()` imports `execute_python` from `app.domain.runtime.python_runner` directly instead of `app.services.python_runner`;
+  confirmed the only remaining real application/domain `app.services.*` imports are the intentional `services.tool_service` patch points in chat runtime and workflow step execution.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_chat_post_processing` -> 28 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1139 tests OK.
+- Result:
+  chat post-processing no longer depends on the Python runner service facade; public auto-exec behavior is unchanged.
+
+### 105. Selective Claude test import — core files and web engines helpers
+- Status: completed
+- Scope: selectively imported Claude batch #108 (`e33dd4c`) as pure helper coverage for `app.core.files` and `app.core.web_engines`.
+- Finish:
+  added [backend/tests/test_core_files_and_web_engines_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_core_files_and_web_engines_pure.py) covering file/text helpers, chat markdown export labels, path labels, web-engine constants, URL/domain helpers, HTML stripping, engine availability, and search-engine resolution;
+  removed decorative Unicode separators from the imported test file;
+  adapted five assertions to the current repository contract instead of changing production encoding/runtime behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_core_files_and_web_engines_pure` -> 112 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1251 tests OK.
+- Result:
+  Batch #108 is integrated as coverage only; no production code changes were needed.
+
+### 106. Selective Claude test import — core LLM and web runtime helpers
+- Status: completed
+- Scope: selectively imported Claude batch #109 (`d4bc859`) as pure helper coverage for `app.core.llm` and `app.core.web_runtime`.
+- Finish:
+  added [backend/tests/test_core_llm_and_web_runtime_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_core_llm_and_web_runtime_pure.py) covering context-error detection, token/ctx budgeting, history trimming, context warnings, code-fence cleanup, JSON extraction, model split helpers, result scoring/reranking, preferred-domain counting, dedupe, and formatted web-search output;
+  removed decorative Unicode separators from the imported test file;
+  adapted two assertions to the current repository contract instead of changing production encoding/runtime behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_core_llm_and_web_runtime_pure` -> 94 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1345 tests OK.
+- Result:
+  Batch #109 is integrated as coverage only; no production code changes were needed.
+
+### 107. Selective Claude test import - memory context and web temporal helpers
+- Status: completed
+- Scope: selectively imported Claude batch #110 (`9189fbc`) as pure helper coverage for `app.infrastructure.search.web_temporal`, `app.infrastructure.search.web_query`, `app.application.memory.context`, and `app.core.memory`.
+- Finish:
+  added [backend/tests/test_memory_context_and_web_temporal_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_memory_context_and_web_temporal_pure.py) covering freshness-state selection, strict web-only query detection, memory content hashing, memory weighting, text cleanup, query word extraction, and core memory hash compatibility;
+  removed decorative Unicode separators from the imported test file;
+  converted ellipsis assertions to escaped `\u2026` literals to keep the test source ASCII-stable.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_memory_context_and_web_temporal_pure` -> 68 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1413 tests OK.
+- Result:
+  Batch #110 is integrated as coverage only; no production code changes were needed.
+
+### 108. Selective Claude test import - web knowledge helpers
+- Status: completed
+- Scope: selectively imported Claude batch #111 (`082d55a`) as pure helper coverage for `app.application.memory.web_knowledge`.
+- Finish:
+  added [backend/tests/test_web_knowledge_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_web_knowledge_pure.py) covering browser text cleanup, chunking, browser RAG record building, and web-knowledge record building;
+  removed decorative Unicode separators from the imported test file;
+  converted the Unicode text fixture to escaped `\u` literals to keep the test source ASCII-stable.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_web_knowledge_pure` -> 69 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1482 tests OK.
+- Result:
+  Batch #111 is integrated as coverage only; no production code changes were needed.
+
+### 109. Selective Claude test import - planner prompts and graphs helpers
+- Status: completed
+- Scope: selectively imported Claude batch #112 (`9e7fe59`) as pure helper coverage for `app.domain.agents.planner_prompts` and `app.domain.agents.planner_graphs`.
+- Finish:
+  added [backend/tests/test_planner_prompts_and_graphs_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_planner_prompts_and_graphs_pure.py) covering planner prompt builders, planner step normalization, and task graph normalization;
+  removed decorative Unicode separators and em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_planner_prompts_and_graphs_pure` -> 69 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1551 tests OK.
+- Result:
+  Batch #112 is integrated as coverage only; no production code changes were needed.
+
+### 110. Selective Claude test import - planner runtime and orchestrator postprocess helpers
+- Status: completed
+- Scope: selectively imported Claude batch #113 (`c732b13`) as pure helper coverage for `app.domain.agents.planner_runtime`, `app.domain.agents.orchestrator_postprocess_runtime`, and `app.domain.tools.terminal_tool`.
+- Finish:
+  added [backend/tests/test_planner_and_orchestrator_postprocess_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_planner_and_orchestrator_postprocess_pure.py) covering URL extraction, safe terminal command filtering, task graph dependency context/state formatting, reflection context builders, finalize prompt assembly, and dangerous command detection;
+  removed decorative Unicode separators and em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_planner_and_orchestrator_postprocess_pure` -> 84 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1635 tests OK.
+- Result:
+  Batch #113 is integrated as coverage only; no production code changes were needed.
+
+### 111. Selective Claude test import - self-improve and step executor helpers
+- Status: completed
+- Scope: selectively imported Claude batch #114 (`1cbf33c`) as pure helper coverage for `app.domain.agents.orchestrator_context_runtime`, `app.domain.agents.self_improve_runtime`, and `app.domain.workflows.step_executor`.
+- Finish:
+  added [backend/tests/test_self_improve_step_executor_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_self_improve_step_executor_pure.py) covering tool hint text, self-improve context/prompt/decision helpers, completion checks, workflow path/input mapping, template rendering, profile/step labels, and next-step resolution;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_self_improve_step_executor_pure` -> 97 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1732 tests OK.
+- Result:
+  Batch #114 is integrated as coverage only; no production code changes were needed.
+
+### 112. Selective Claude test import - orchestrator runtime helpers
+- Status: completed
+- Scope: selectively imported Claude batch #115 (`9f8859a`) as pure helper coverage for `app.domain.agents.orchestrator_runtime`.
+- Finish:
+  added [backend/tests/test_orchestrator_runtime_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_orchestrator_runtime_pure.py) covering V8 route normalization, graph selection, initial state construction, reflection quality scoring, run-agent result assembly, and self-improving result assembly;
+  removed decorative Unicode separators, arrows, and long dash characters from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_orchestrator_runtime_pure` -> 58 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1790 tests OK.
+- Result:
+  Batch #115 is integrated as coverage only; no production code changes were needed.
+
+### 113. Selective Claude test import - browser and execution helpers
+- Status: completed
+- Scope: selectively imported Claude batch #116 (`147f7fb`) as pure helper coverage for `app.domain.agents.orchestrator_execution_runtime`, `app.domain.tools.browser_action_tool`, and `app.domain.tools.browser_agent_tool`.
+- Finish:
+  added [backend/tests/test_browser_and_execution_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_browser_and_execution_pure.py) covering task-graph answer extraction, browser runtime hints, Playwright availability checks, browser action sanitization, goal keyword extraction, link scoring, and link ranking;
+  removed decorative Unicode separators and long dash characters from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_browser_and_execution_pure` -> 62 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1852 tests OK.
+- Result:
+  Batch #116 is integrated as coverage only; no production code changes were needed.
+
+### 114. Selective Claude test import - router/reflection/builtins helpers
+- Status: completed
+- Scope: selectively imported Claude batch #117 (`9f120fe`) as pure helper coverage for `app.domain.agents.router`, `app.domain.agents.reflection`, and `app.application.agent_registry.builtins`.
+- Finish:
+  added [backend/tests/test_router_reflection_builtins_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_router_reflection_builtins_pure.py) covering task routing, safe JSON object extraction, false-flag counting, fallback-node selection, and builtin role matching;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_router_reflection_builtins_pure` -> 62 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 1914 tests OK.
+- Result:
+  Batch #117 is integrated as coverage only; no production code changes were needed.
+
+### 115. Selective Claude test import - project brain/workflows/identity helpers
+- Status: completed
+- Scope: selectively imported Claude batch #118 (`9f62312`) as pure helper coverage for `app.application.project_brain.chat`, `app.application.project_brain.files`, `app.application.project_brain.uploads`, `app.application.workflows.execution`, and `app.application.chat.identity_guard`.
+- Finish:
+  added [backend/tests/test_project_brain_workflows_identity_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_project_brain_workflows_identity_pure.py) covering HTML cleanup, code prompt construction, project path normalization, text-file detection, byte hashing, upload filename/summary helpers, workflow datetime/index helpers, and identity drift helpers;
+  adapted Claude's stale identity-guard import to the current application module and removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_project_brain_workflows_identity_pure` -> 107 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2021 tests OK.
+- Result:
+  Batch #118 is integrated as coverage only; no production code changes were needed.
+
+### 116. Selective Claude test import - monitoring/workflows/persona helpers
+- Status: completed
+- Scope: selectively imported Claude batch #119 (`7e5782b`) as pure helper coverage for `app.application.monitoring.store`, `app.application.workflows.multi_agent`, and `app.application.persona.store`.
+- Finish:
+  added [backend/tests/test_monitoring_multi_agent_persona_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_monitoring_multi_agent_persona_pure.py) covering monitoring JSON helpers, planner tool aliases, multi-agent workflow selection, step answer/timeline helpers, and persona JSON helpers;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file, and rewrote Unicode fixture literals as escaped source strings.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_monitoring_multi_agent_persona_pure` -> 70 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2091 tests OK.
+- Result:
+  Batch #119 is integrated as coverage only; no production code changes were needed.
+
+### 117. Selective Claude test import - web query planner/python lab helpers
+- Status: completed
+- Scope: selectively imported Claude batch #120 (`d7703c0`) as pure helper coverage for `app.application.web_query_planner.runtime` and `app.application.code_agent.python_lab`.
+- Finish:
+  added [backend/tests/test_web_query_planner_python_lab_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_web_query_planner_python_lab_pure.py) covering query-merge decisions, current-query augmentation, subquery/default query builders, and Python lab output checks;
+  removed decorative Unicode separators and arrow/em-dash comments from the imported test file.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_web_query_planner_python_lab_pure` -> 50 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2141 tests OK.
+- Result:
+  Batch #120 is integrated as coverage only; no production code changes were needed.
+
+### 118. Selective Claude test import - workflows/sandbox/registry helpers
+- Status: completed
+- Scope: selectively imported Claude batch #121 (`b3c3a76`) as pure helper coverage for `app.application.workflows.store`, `app.application.agent_registry.sandbox`, `app.application.tool_registry.runtime`, and `app.application.agent_registry.builtins`.
+- Finish:
+  added [backend/tests/test_workflows_store_sandbox_registry_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_store_sandbox_registry_pure.py) covering workflow store bool/JSON/graph helpers, sandbox policy error construction, noop tool handler output, and builtin agent definition iteration;
+  adapted Claude's stale `application.agent_sandbox.runtime` import to the current `application.agent_registry.sandbox` module, removed decorative Unicode separators and arrow/em-dash comments, and rewrote Unicode fixture literals as escaped source strings.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_workflows_store_sandbox_registry_pure` -> 68 tests OK;
+  `python -m compileall backend/app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2209 tests OK.
+- Result:
+  Batch #121 is integrated as coverage only; no production code changes were needed.
+
+### 119. Persona UTF-8 mojibake guard
+- Status: completed
+- Scope: fixed the unreadable Russian text in persona evolution/prompt paths and added a guard so imported Russian context is normalized before it reaches persona state.
+- Finish:
+  added [backend/app/utils/text_encoding.py](/D:/AIWork/Elira_AI/backend/app/utils/text_encoding.py) with bounded mojibake detection and repair helpers;
+  wired [backend/app/application/persona/store.py](/D:/AIWork/Elira_AI/backend/app/application/persona/store.py) so persona JSON reads/writes, DB repair, and version summaries normalize broken UTF-8/CP1251 text;
+  repaired the hard-coded Russian strings in [backend/app/application/persona/evolution.py](/D:/AIWork/Elira_AI/backend/app/application/persona/evolution.py) and [backend/app/application/persona/service.py](/D:/AIWork/Elira_AI/backend/app/application/persona/service.py);
+  added [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) to enforce readable persona source strings and SQLite JSON repair;
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) with the UTF-8 hard rule for Russian/persona/context text.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 6 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
+- Result:
+  persona evolution status now returns readable Russian summaries such as `Структурированный и ясный ответ.` instead of mojibake.
+
+### 120. Backend source UTF-8 mojibake sweep
+- Status: completed
+- Scope: extended the encoding guard from persona-only to the backend Python source tree.
+- Finish:
+  repaired mojibake Russian literals/comments in 23 backend source files under `backend/app`;
+  expanded [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) so it scans every `backend/app/**/*.py` file and fails on mojibake markers;
+  verified with `app.utils.text_encoding.mojibake_score` that the backend Python source tree has zero remaining marker hits.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 6 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
+- Result:
+  new or imported backend Python code with Russian mojibake now fails the guard test before it can be merged.
+
+### 121. Project Brain service application runtime
+- Status: completed
+- Scope: moved the active Project Brain service implementation out of the legacy service facade into the application layer.
+- Finish:
+  added [backend/app/application/project_brain/service.py](/D:/AIWork/Elira_AI/backend/app/application/project_brain/service.py) as the canonical runtime using application/infrastructure imports;
+  reduced [backend/app/services/project_brain_service.py](/D:/AIWork/Elira_AI/backend/app/services/project_brain_service.py) to a compatibility re-export;
+  added [backend/tests/test_project_brain_service_facade.py](/D:/AIWork/Elira_AI/backend/tests/test_project_brain_service_facade.py) for facade identity, project scan/search delegation, patch apply, and no-commit-on-failure behavior.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_project_brain_service_facade` -> 5 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\project_brain\service.py backend\app\services\project_brain_service.py` -> passed;
+  broader post-sweep verification already included this file set: full backend unittest discovery -> 2220 tests OK.
+- Result:
+  Project Brain no longer depends on the removed `GitService` class path and keeps the legacy import stable.
+
+### 122. Tool execution imports moved off service facade
+- Status: completed
+- Scope: continued compatibility-import cleanup around workflow/runtime tool execution.
+- Finish:
+  moved [backend/app/application/chat/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/chat/runtime.py) and [backend/app/domain/workflows/step_executor.py](/D:/AIWork/Elira_AI/backend/app/domain/workflows/step_executor.py) from `app.services.tool_service.run_tool` to the canonical `app.application.tool_registry.service.run_tool`;
+  updated [backend/tests/test_agent_os_phase4.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase4.py) to patch the new application-layer path;
+  verified that `backend/app/application`, `backend/app/domain`, and `backend/app/infrastructure` no longer contain real `app.services.*` imports.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase4 backend.tests.test_text_encoding_persona_mojibake` -> 14 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\chat\runtime.py backend\app\domain\workflows\step_executor.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2220 tests OK.
+- Result:
+  application/domain code now depends directly on the Tool Registry application service while the legacy `services.tool_service` facade remains available for compatibility.
+
+### 123. Live docs UTF-8 mojibake guard
+- Status: completed
+- Scope: extended the UTF-8/mojibake rule to the live coordination documents.
+- Finish:
+  normalized historical mojibake text in [docs/ACTUAL_WORK.md](/D:/AIWork/Elira_AI/docs/ACTUAL_WORK.md) and [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md);
+  removed literal mojibake marker examples from the workplan rule text so the rule itself remains readable UTF-8;
+  expanded [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) to fail if the live coordination docs contain mojibake markers.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 7 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest discover -s backend\tests -p "test_*.py"` -> 2221 tests OK.
+- Result:
+  both live coordination docs now have zero `mojibake_score` marker hits under the repository encoding guard.
+
+### 124. Release closure mode
+- Status: completed
+- Scope: stopped the open-ended refactor track and switched the project plan to release closeout.
+- Finish:
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) with `RELEASE CLOSURE` rules;
+  froze new architecture cleanup unless it blocks release checks;
+  deferred frontend TypeScript migration, compatibility renaming, remaining facade cleanup, and non-blocking module extraction to post-release work;
+  replaced the next queue with a closure checklist: dirty-tree reconciliation, final backend verification, frontend/app verification, and merge/PR handoff.
+- Verification:
+  documentation-only change; verified with `git diff --check`.
+- Result:
+  future work is now bounded to finishing the release rather than continuing the two-month refactor expansion.
+
+### 125. Completion sprint mode
+- Status: completed
+- Scope: restored the full refactor plan after the user explicitly rejected stopping at release closure.
+- Finish:
+  updated [docs/WORKPLAN_CODEX_CLAUDE.md](/D:/AIWork/Elira_AI/docs/WORKPLAN_CODEX_CLAUDE.md) so all planned phases remain in scope;
+  replaced release-closure deferrals with a Completion Sprint protocol: work in larger gap-sized batches, keep compatibility paths stable, and do not mark a phase complete without implementation, documentation, commit/push, and focused verification;
+  restored the next queue around Phase 3-8 completion: code-agent runtime, workflow verification, route/API consolidation, frontend TypeScript/API migration, Tauri cleanup, and final contract stabilization.
+- Verification:
+  documentation-only change; verified with `git diff --check` and the live docs UTF-8 guard.
+- Result:
+  the project is back on the full plan, but execution is now optimized for closing real remaining gaps quickly instead of continuing open-ended micro-refactors.
+
+### 126. Frontend source UTF-8 guard
+- Status: completed
+- Scope: closed the first Completion Sprint gap in the Russian-context encoding rule.
+- Finish:
+  repaired mojibake in [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx), including readable defaults for `Универсальный`, `Новый чат`, `код`, and `Список`;
+  repaired mojibake comments and cursor content in [frontend/src/styles.css](/D:/AIWork/Elira_AI/frontend/src/styles.css) and [frontend/src/styles/markdown.css](/D:/AIWork/Elira_AI/frontend/src/styles/markdown.css);
+  expanded [backend/tests/test_text_encoding_persona_mojibake.py](/D:/AIWork/Elira_AI/backend/tests/test_text_encoding_persona_mojibake.py) so the mojibake guard now covers `backend/app`, `frontend/src`, and Tauri source files, while excluding generated build artifacts.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_text_encoding_persona_mojibake` -> 7 tests OK;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  frontend/Tauri source is now included in the same readable UTF-8 rule as backend/persona/docs, preventing future unreadable Russian context from being staged unnoticed.
+
+### 127. Code-agent runtime split
+- Status: completed
+- Scope: closed Phase 3 by splitting the remaining code-agent Python lab runtime without breaking legacy imports.
+- Finish:
+  added [backend/app/application/code_agent/execution.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/execution.py) for Python execution, figure capture, command execution, and `ok_check`;
+  added [backend/app/application/code_agent/generation.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/generation.py) for self-healing generated Python, file-code generation, and build-loop orchestration;
+  reduced [backend/app/application/code_agent/python_lab.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/python_lab.py) to a compatibility re-export and exposed the canonical symbols from [backend/app/application/code_agent/__init__.py](/D:/AIWork/Elira_AI/backend/app/application/code_agent/__init__.py);
+  added facade identity coverage in [backend/tests/test_tool_registry_persona_evolution_python_lab.py](/D:/AIWork/Elira_AI/backend/tests/test_tool_registry_persona_evolution_python_lab.py).
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_tool_registry_persona_evolution_python_lab backend.tests.test_web_query_planner_python_lab_pure backend.tests.test_text_encoding_persona_mojibake` -> 109 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\code_agent backend\app\core\agents.py` -> passed;
+  code-agent/core-agent import smoke -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Phase 3 now has canonical execution/generation modules while existing `app.application.code_agent.python_lab` and `app.core.agents` imports remain stable.
+
+### 128. Workflow engine split verification
+- Status: completed
+- Scope: closed Phase 4 verification after the workflow engine had already been extracted to application modules.
+- Finish:
+  added facade identity coverage in [backend/tests/test_agent_os_phase4.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase4.py), proving `app.services.workflow_engine` is the same module object as `app.application.workflow_engine.runtime`;
+  verified legacy multi-agent workflow constants are still canonical through the compatibility path;
+  left the existing workflow service facade intact as a deliberate shipping adapter.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase4 backend.tests.test_workflows_lifecycle_multi_agent backend.tests.test_workflows_event_monitoring_pure backend.tests.test_workflows_store_sandbox_registry_pure backend.tests.test_project_brain_workflows_identity_pure` -> 305 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\workflow_engine backend\app\application\workflows backend\app\services\workflow_engine.py backend\tests\test_agent_os_phase4.py` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Phase 4 is no longer a code-movement gap; it is covered as a verified compatibility facade over canonical workflow application/runtime modules.
+
+### 129. Route registry consolidation
+- Status: completed
+- Scope: closed Phase 5 route wiring consolidation without changing public URLs.
+- Finish:
+  added [backend/app/api/routes/registry.py](/D:/AIWork/Elira_AI/backend/app/api/routes/registry.py) as the single ordered registry for all routers previously imported directly by `main.py`;
+  reduced [backend/app/main.py](/D:/AIWork/Elira_AI/backend/app/main.py) from individual router imports/includes to a loop over `ALL_ROUTERS`, preserving the existing registration order;
+  added [backend/tests/test_route_registry.py](/D:/AIWork/Elira_AI/backend/tests/test_route_registry.py) to verify router uniqueness and that the FastAPI app registers every registry route.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_route_registry backend.tests.test_text_encoding_persona_mojibake` -> 9 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed, 207 OpenAPI paths;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\main.py backend\app\api\routes\registry.py backend\tests\test_route_registry.py` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  route inclusion now has one canonical registry, lowering future route drift risk while keeping all existing API contracts intact.
+
+### 130. Frontend typed API transport baseline
+- Status: completed
+- Scope: started Phase 6 frontend TypeScript migration with the shared API transport.
+- Finish:
+  renamed `frontend/src/api/client.js` to [frontend/src/api/client.ts](/D:/AIWork/Elira_AI/frontend/src/api/client.ts) and added typed request options, response parsing, error normalization, and safe fallback handling;
+  added [frontend/tsconfig.json](/D:/AIWork/Elira_AI/frontend/tsconfig.json) and [frontend/src/vite-env.d.ts](/D:/AIWork/Elira_AI/frontend/src/vite-env.d.ts);
+  added `typescript`, React 18 type packages, and a `typecheck` script to [frontend/package.json](/D:/AIWork/Elira_AI/frontend/package.json), with lockfile updates in [frontend/package-lock.json](/D:/AIWork/Elira_AI/frontend/package-lock.json).
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  frontend now has a real TypeScript baseline and buildable typed API transport while the existing `api/ide.js` facade remains compatible for current JSX components.
+
+### 131. Frontend terminal API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving the first endpoint group out of the legacy `api/ide.js` facade.
+- Finish:
+  added [frontend/src/api/terminal.ts](/D:/AIWork/Elira_AI/frontend/src/api/terminal.ts) with typed terminal cwd and command execution request/response contracts;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to import and re-export the terminal API functions while preserving the existing `api.getTerminalCwd` and `api.executeTerminal` object shape.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  the frontend API migration now has one real typed endpoint group behind the legacy facade, reducing `ide.js` without breaking existing components.
+
+### 132. Frontend TerminalPanel TSX migration
+- Status: completed
+- Scope: continued Phase 6 shell decomposition by migrating the first small UI component to TypeScript.
+- Finish:
+  renamed `frontend/src/components/TerminalPanel.jsx` to [frontend/src/components/TerminalPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/TerminalPanel.tsx);
+  switched the component from the legacy `api` facade to direct typed imports from [frontend/src/api/terminal.ts](/D:/AIWork/Elira_AI/frontend/src/api/terminal.ts);
+  added local history/ref/input types and tightened terminal response handling for `cwd`, `stdout`, `stderr`, and `error`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Phase 6 now includes both a typed endpoint group and a real TSX component consuming it, while existing `./TerminalPanel` imports remain extensionless and compatible.
+
+### 133. Tauri startup cleanup
+- Status: completed
+- Scope: closed Phase 7 by removing tracked Tauri files that were not part of the active Cargo/Tauri startup path.
+- Finish:
+  deleted duplicate unused `src-tauri/main.rs`; Cargo uses [src-tauri/src/main.rs](/D:/AIWork/Elira_AI/src-tauri/src/main.rs);
+  deleted stale `src-tauri/Cargo.toml.snippet.txt`, which described a Tauri 2 dependency while the actual [src-tauri/Cargo.toml](/D:/AIWork/Elira_AI/src-tauri/Cargo.toml) uses Tauri 1;
+  deleted `src-tauri/src/Запуск Агента.py`, which contained batch launch commands rather than Python code and was not referenced by Cargo or the app.
+- Verification:
+  `cargo check` from `D:\AIWork\Elira_AI\src-tauri` -> passed;
+  `npm --prefix frontend run typecheck` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  Tauri startup now has a single Rust entrypoint under `src-tauri/src/main.rs` and no tracked misleading launch/snippet files in the Tauri source tree.
+
+### 134. Agent OS stale builtin cleanup
+- Status: completed
+- Scope: closed a Phase 8 data hygiene gap found during smoke verification: stale `builtin-*` Agent OS rows from old mojibake-era seeds were still visible in local SQLite runtime output.
+- Finish:
+  updated [backend/app/application/agent_registry/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/runtime.py) so builtin seeding updates existing canonical builtins instead of leaving stale names/prompts untouched;
+  added `delete_unknown_builtin_agents` in [backend/app/application/agent_registry/store.py](/D:/AIWork/Elira_AI/backend/app/application/agent_registry/store.py) to remove unknown stale `builtin-*` registry rows while preserving non-builtin custom agents;
+  added `delete_unknown_builtin_limits` in [backend/app/application/monitoring/store.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/store.py) and wired [backend/app/application/monitoring/runtime.py](/D:/AIWork/Elira_AI/backend/app/application/monitoring/runtime.py) so stale limits are removed only after Agent Registry loads successfully;
+  added regression coverage in [backend/tests/test_agent_os_phase1.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase1.py) and [backend/tests/test_agent_os_phase5.py](/D:/AIWork/Elira_AI/backend/tests/test_agent_os_phase5.py).
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_agent_os_phase1 backend.tests.test_agent_os_phase5 backend.tests.test_text_encoding_persona_mojibake` -> 31 tests OK;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py` -> passed, Agent Registry reported 7 active builtins and Agent Monitor 8 limits with stale mojibake-era `builtin-*` rows removed;
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m compileall backend\app\application\agent_registry backend\app\application\monitoring backend\tests\test_agent_os_phase1.py backend\tests\test_agent_os_phase5.py` -> passed;
+  `git diff --check` -> passed.
+- Result:
+  runtime seed paths now self-heal stale builtin Agent OS registry/limit rows instead of leaking unreadable historical IDs into health/smoke output.
+
+### 135. Frontend Smart Memory typed API group
+- Status: completed
+- Scope: continued Phase 6 by moving another endpoint family out of the legacy frontend API facade.
+- Finish:
+  added [frontend/src/api/smartMemory.ts](/D:/AIWork/Elira_AI/frontend/src/api/smartMemory.ts) with typed Smart Memory list/search/stats/add/delete contracts;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to import and re-export the Smart Memory API functions while preserving the existing `api.*` object shape for current JSX consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  `ide.js` is smaller and the Smart Memory endpoint group now has a build-checked TypeScript transport without changing the Memory panel contract.
+
+### 136. Claude coverage tail reconciliation
+- Status: completed
+- Scope: checked the remaining unmerged Claude branches and selectively imported only the safe coverage-only tail from `origin/claude/extract-skills-extra`.
+- Finish:
+  added [backend/tests/test_router_v8_planner_graphs_extra_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_router_v8_planner_graphs_extra_pure.py) from Claude batch `#122`, adapted `_cosine_sim` to the current `app.application.rag_memory.service` path;
+  added [backend/tests/test_llm_build_prompt_workflows_store_run_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_llm_build_prompt_workflows_store_run_pure.py) from Claude batch `#123`;
+  added [backend/tests/test_workflows_cache_search_monitoring_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_workflows_cache_search_monitoring_pure.py) from Claude batch `#124`;
+  added [backend/tests/test_core_files_workflow_exec_pure.py](/D:/AIWork/Elira_AI/backend/tests/test_core_files_workflow_exec_pure.py) from Claude batch `#125`.
+- Verification:
+  `D:\AIWork\Elira_AI\backend\.venv\Scripts\python.exe -m unittest backend.tests.test_router_v8_planner_graphs_extra_pure backend.tests.test_llm_build_prompt_workflows_store_run_pure backend.tests.test_workflows_cache_search_monitoring_pure backend.tests.test_core_files_workflow_exec_pure` -> 230 tests OK.
+- Result:
+  the useful unmerged Claude coverage tail is now on the current branch without wholesale-merging stale Claude branches that would revert newer architecture, frontend TypeScript, route registry, and encoding guard work.
+
+### 137. Frontend git/tools/file API typed groups
+- Status: completed
+- Scope: continued Phase 6 by moving IDE-oriented API groups out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/git.ts](/D:/AIWork/Elira_AI/frontend/src/api/git.ts) for typed Git status/log/diff/commit calls;
+  added [frontend/src/api/tools.ts](/D:/AIWork/Elira_AI/frontend/src/api/tools.ts) for typed tool run history, Python execution, and code analysis calls;
+  added [frontend/src/api/fileOps.ts](/D:/AIWork/Elira_AI/frontend/src/api/fileOps.ts) for file text extraction, diff, and write calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export these functions while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  IDE workspace and artifact panel endpoints now have build-checked TypeScript transports without changing JSX components in this slice.
+
+### 138. Frontend project API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving Project Brain and advanced project endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/project.ts](/D:/AIWork/Elira_AI/frontend/src/api/project.ts) for typed Project Brain snapshot/file/status calls, advanced project open/tree/read/search/close calls, and multi-agent project execution;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the project API functions while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  `ProjectPanel`, `IdeWorkspaceShell`, chat project context, and dashboard project status keep the same API surface while their transport now has a TypeScript module behind the facade.
+
+### 139. Frontend library API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving library list/upload/delete endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/library.ts](/D:/AIWork/Elira_AI/frontend/src/api/library.ts) for typed library file list, upload, and delete calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the library API functions while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  library upload/delete consumers keep the same facade while the transport is now covered by TypeScript.
+
+### 140. Frontend tasks and pipelines API typed groups
+- Status: completed
+- Scope: continued Phase 6 by moving task planning and pipeline endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/tasks.ts](/D:/AIWork/Elira_AI/frontend/src/api/tasks.ts) for typed task list/stats/overview/create/update/delete calls;
+  added [frontend/src/api/pipelines.ts](/D:/AIWork/Elira_AI/frontend/src/api/pipelines.ts) for typed pipeline list/create/run/update/delete calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export both endpoint groups while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  task and pipeline dashboard controls keep the same facade while their transport is now covered by TypeScript modules.
+
+### 141. Frontend Telegram API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving Telegram bot configuration, user, log, lifecycle, and test endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/telegram.ts](/D:/AIWork/Elira_AI/frontend/src/api/telegram.ts) for typed Telegram config/users/log/overview/start/stop/test/update/toggle calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the Telegram endpoint group while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  Telegram dashboard controls keep the same facade while their transport is now covered by TypeScript.
+
+### 142. Frontend patch and plugins API typed groups
+- Status: completed
+- Scope: continued Phase 6 by moving patch workflow and plugin management endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/patch.ts](/D:/AIWork/Elira_AI/frontend/src/api/patch.ts) for typed patch history, preview, apply, rollback, and verify calls;
+  added [frontend/src/api/plugins.ts](/D:/AIWork/Elira_AI/frontend/src/api/plugins.ts) for typed plugin list/reload/enable/disable calls;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export both endpoint groups while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  patch and plugin controls keep the same facade while their transports are now covered by TypeScript.
+
+### 143. Frontend system API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving persona, runtime, Agent OS, and dashboard overview endpoints out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/system.ts](/D:/AIWork/Elira_AI/frontend/src/api/system.ts) for typed persona status/version/candidate/rollback calls, runtime status, Agent OS health/dashboard/limits calls, and dashboard overview aggregation;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the system endpoint group while preserving existing `api.*` consumers.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  system dashboard and Agent OS consumers keep the same facade while their transport and aggregation helpers are now covered by TypeScript.
+
+### 144. Frontend chat API typed group
+- Status: completed
+- Scope: continued Phase 6 by moving chat session, chat message, agent execution, model list, settings, and local API asset helpers out of the legacy frontend facade.
+- Finish:
+  added [frontend/src/api/chat.ts](/D:/AIWork/Elira_AI/frontend/src/api/chat.ts) for typed Elira chat CRUD/message calls, `/api/chat/send`, `/api/chat/stream`, Ollama model list, settings calls, and local API asset URL detection;
+  updated [frontend/src/api/ide.js](/D:/AIWork/Elira_AI/frontend/src/api/ide.js) to re-export the chat endpoint group while preserving existing `api.*` consumers and direct `executeStream` imports.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  chat shell consumers keep the same facade while the remaining non-facade transport logic has moved into TypeScript.
+
+### 145. Frontend API facade converted to TypeScript
+- Status: completed
+- Scope: finished the Phase 6 API transport split by converting the compatibility facade itself from JavaScript to TypeScript.
+- Finish:
+  renamed `frontend/src/api/ide.js` to [frontend/src/api/ide.ts](/D:/AIWork/Elira_AI/frontend/src/api/ide.ts) after all endpoint implementations had moved into typed modules;
+  preserved extensionless imports such as `../api/ide`, named exports, default export, and the legacy `api.*` object shape.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  frontend API transport now has typed endpoint modules plus a TypeScript compatibility facade without changing JSX consumers.
+
+### 146. Frontend MemoryPanel converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting a small JSX consumer of the typed Smart Memory API.
+- Finish:
+  renamed `frontend/src/components/MemoryPanel.jsx` to [frontend/src/components/MemoryPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/MemoryPanel.tsx);
+  added local Smart Memory item/stat typing, category typing, typed CSS style objects, and unknown-safe error formatting while preserving the existing component UI and extensionless import from `EliraChatShell`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  the memory side panel is now a TypeScript consumer of the typed frontend API without touching the large chat shell.
+
+### 147. Frontend MarkdownRenderer converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting another isolated JSX consumer to TypeScript.
+- Finish:
+  renamed `frontend/src/components/MarkdownRenderer.jsx` to [frontend/src/components/MarkdownRenderer.tsx](/D:/AIWork/Elira_AI/frontend/src/components/MarkdownRenderer.tsx);
+  added explicit prop, inline parser, code block, copy button, download blob, and dynamic heading tag typing while preserving extensionless imports from existing JSX components.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  markdown rendering and local API asset download handling are now typechecked without changing the chat shell call sites.
+
+### 148. Frontend ProjectPanel converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting the advanced project side panel to TypeScript.
+- Finish:
+  renamed `frontend/src/components/ProjectPanel.jsx` to [frontend/src/components/ProjectPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/ProjectPanel.tsx);
+  added local project info, tree item, search result, style, and unknown-safe error typing while normalizing backend `items`, `content`, and `error` fields at the component boundary.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  project open/tree/read/search UI is now a typed consumer without changing the large chat shell import path.
+
+### 149. Frontend ArtifactPanel converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting the code artifact side panel to TypeScript.
+- Finish:
+  renamed `frontend/src/components/ArtifactPanel.jsx` to [frontend/src/components/ArtifactPanel.tsx](/D:/AIWork/Elira_AI/frontend/src/components/ArtifactPanel.tsx);
+  added local message, code block, run output, analysis, save result, tab, and style typing plus display normalization for unknown API values.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  artifact extraction, Python run output, code analysis, and save-to-file UI are now typechecked while preserving the chat shell integration.
+
+### 150. Frontend IdeWorkspaceShell converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting the IDE workspace shell to TypeScript.
+- Finish:
+  renamed `frontend/src/components/IdeWorkspaceShell.jsx` to [frontend/src/components/IdeWorkspaceShell.tsx](/D:/AIWork/Elira_AI/frontend/src/components/IdeWorkspaceShell.tsx);
+  added local message, library artifact, file tree, run history, Git panel, highlight.js loader, icon, style, and prop typing while preserving extensionless import from `EliraChatShell`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  IDE artifact browser, Git panel, project file tree, tool history, and terminal host are now typechecked; the remaining large Phase 6 JSX target is `EliraChatShell.jsx`.
+
+### 151. Frontend app entrypoints converted to TSX
+- Status: completed
+- Scope: continued Phase 6 by converting small React entrypoint files after the workspace shell conversion.
+- Finish:
+  renamed `frontend/src/App.jsx` to [frontend/src/App.tsx](/D:/AIWork/Elira_AI/frontend/src/App.tsx);
+  renamed `frontend/src/main.jsx` to [frontend/src/main.tsx](/D:/AIWork/Elira_AI/frontend/src/main.tsx);
+  updated [frontend/index.html](/D:/AIWork/Elira_AI/frontend/index.html) to load `/src/main.tsx` and added a root-element guard before `ReactDOM.createRoot`.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  the frontend entrypoint is now TypeScript; `EliraChatShell.jsx` remains the only large JSX source in the active React path.
+
+### 152. Frontend label module converted to TypeScript
+- Status: completed
+- Scope: continued Phase 6 by converting the remaining small frontend JavaScript module.
+- Finish:
+  renamed `frontend/src/elira_ru_labels.js` to [frontend/src/elira_ru_labels.ts](/D:/AIWork/Elira_AI/frontend/src/elira_ru_labels.ts);
+  added a simple `Record<string, string>` export type without changing label values.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed.
+- Result:
+  only [frontend/src/components/EliraChatShell.jsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.jsx) remains as a JavaScript/JSX source in `frontend/src`.
+
+### 153. Frontend EliraChatShell converted to TSX
+- Status: completed
+- Scope: finished the active Phase 6 frontend source conversion by typing the large chat shell.
+- Finish:
+  renamed `frontend/src/components/EliraChatShell.jsx` to [frontend/src/components/EliraChatShell.tsx](/D:/AIWork/Elira_AI/frontend/src/components/EliraChatShell.tsx);
+  added local boundary typing for chats, messages, library files, model routing, charts, DOM events, lucide icon tuple maps, and unknown API payloads while preserving the existing UI behavior.
+- Verification:
+  `npm --prefix frontend run typecheck` -> passed;
+  `npm --prefix frontend run build` -> passed;
+  `rg --files frontend/src | rg '\.(jsx|js)$'` -> no active JS/JSX sources found.
+- Result:
+  all active React frontend sources under `frontend/src` are now TypeScript/TSX.
+
+### 154. Web search plan normalization extracted
+- Status: completed
+- Scope: continued the Claude backend cleanup on the current Codex branch without merging Claude's incompatible frontend state.
+- Finish:
+  extracted `_normalize_search_plan()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py) so `do_web_search()` focuses on executing passes and building result payloads.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  the planner fallback/subquery/pass normalization is isolated behind a small helper while preserving the existing web-search contract.
+
+### 155. Web search result payload extracted
+- Status: completed
+- Scope: continued the backend web-search cleanup in the current branch with a low-risk helper extraction.
+- Finish:
+  extracted `_build_web_search_result_payload()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving result metadata assembly out of `do_web_search()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search()` is narrower: pass execution and timeline emission stay in the main function, while payload assembly is isolated behind a pure helper.
+
+### 156. Web search pass execution extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with another bounded helper extraction.
+- Finish:
+  extracted `_execute_web_search_pass()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving per-pass subquery execution, counters, weak-coverage collection, and timeline emission out of `do_web_search()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search()` now owns orchestration and final payload assembly while pass execution is isolated behind a focused helper.
+
+### 157. Web subquery row normalization extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with pure row-normalization helpers.
+- Finish:
+  extracted `_normalize_core_search_results()` and `_normalize_core_news_results()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving raw `app.core.web` search/news row shaping out of `build_single_web_subquery_context()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `build_single_web_subquery_context()` keeps the same search/news behavior while delegating raw result shaping to small pure helpers.
+
+### 158. Web deep-fetch helpers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with a bounded fetch/read helper extraction.
+- Finish:
+  extracted `_select_fetch_candidates()` and `_fetch_deep_content()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving URL dedupe/skip-domain filtering and first-page content reads out of `build_single_web_subquery_context()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `build_single_web_subquery_context()` keeps the same fetch limits and skip-domain behavior while delegating deep page fetch setup to focused helpers.
+
+### 159. Web subquery coverage helpers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with pure coverage/deep-engine helper extraction.
+- Finish:
+  extracted `_has_weak_subquery_coverage()` and `_select_deep_search_engines()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving weak-coverage branching and historical/default deep-engine selection out of `build_single_web_subquery_context()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `build_single_web_subquery_context()` keeps the same deep-search eligibility and engine order while delegating the decisions to focused helpers.
+
+### 160. Web subquery debug helpers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with pure debug classification helpers.
+- Finish:
+  extracted `_collect_subquery_engines()` and `_classify_subquery_coverage()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving engine aggregation and final strong/weak coverage labeling out of `build_single_web_subquery_context()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `build_single_web_subquery_context()` keeps the same debug payload while delegating engine and coverage label assembly to focused helpers.
+
+### 161. Legacy web row normalizers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup by reducing legacy single-pass result-shaping code.
+- Finish:
+  extracted `_normalize_duckduckgo_text_results()` and `_normalize_legacy_news_results()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), and reused `_normalize_core_search_results()` inside `do_web_search_legacy()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search_legacy()` keeps the same legacy search/news payload behavior while raw row shaping is isolated behind focused helpers.
+
+### 162. Legacy web deep-fetch helpers extracted
+- Status: completed
+- Scope: continued the backend web-search runtime cleanup with a larger bounded legacy fetch extraction.
+- Finish:
+  extracted `_select_legacy_fetch_targets()` and `_fetch_legacy_deep_content()` in [backend/app/infrastructure/search/web_runtime.py](/D:/AIWork/Elira_AI/backend/app/infrastructure/search/web_runtime.py), moving legacy URL de-dupe, skip-domain filtering, parallel page fetch, ordered result assembly, and fetched-url tracking out of `do_web_search_legacy()`.
+- Verification:
+  `python -m compileall backend/app/infrastructure/search/web_runtime.py backend/app/infrastructure/search/web_search.py` -> passed;
+  `python -m unittest backend.tests.test_web_multi_intent_runtime backend.tests.test_web_query_planner backend.tests.test_web_engine_stack -v` -> passed;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  `do_web_search_legacy()` keeps the same fetch limits, parallelism, and output ordering while delegating legacy deep-page reads to focused helpers.
+
+### 163. Tool registry builtins grouped after Claude sweep
+- Status: completed
+- Scope: continued after Claude's 2026-05-23 backend sweep by adapting a compatible tool-registry split to the current Codex branch instead of merging the incompatible 109-commit Claude branch directly.
+- Finish:
+  split [backend/app/application/tool_registry/builtins.py](/D:/AIWork/Elira_AI/backend/app/application/tool_registry/builtins.py) so `build_builtin_tools()` now assembles eight grouped helper lists while preserving the original 25 builtin tool definitions and order.
+- Verification:
+  `python -m compileall backend/app/application/tool_registry/builtins.py backend/app/application/tool_registry/runtime.py backend/app/application/tool_registry/service.py` -> passed;
+  `python -m unittest backend.tests.test_tool_registry_application_imports backend.tests.test_agent_os_phase2 -v` -> 20 tests OK;
+  `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
+- Result:
+  the tool registry builtin factory is now a small assembler, with category-specific helper builders and no public contract change.

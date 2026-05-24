@@ -1,23 +1,28 @@
 """
-file_ops.py — workspace file operation routes (thin HTTP layer).
+file_ops.py - файловые операции для патчинга из чата.
 
-All logic lives in app.infrastructure.files.workspace_service.
+Эндпоинты:
+  POST /api/file-ops/write     - создать/перезаписать файл
+  POST /api/file-ops/read      - прочитать файл
+  GET  /api/file-ops/tree      - дерево файлов в workspace
+  POST /api/file-ops/diff      - показать diff между old и new
+  POST /api/file-ops/mkdir     - создать директорию
+  DELETE /api/file-ops/delete   - удалить файл
+
+Workspace = data/workspace/ (безопасная песочница)
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.infrastructure.files.workspace_service import (
-    write_file,
-    read_file,
-    file_tree,
-    diff_file,
-    make_dir,
-    delete_path,
-)
+from app.application.file_ops import runtime as file_ops_runtime
 
 router = APIRouter(prefix="/api/file-ops", tags=["file-ops"])
+
+ERROR_STATUS = {
+    "not_found": 404,
+}
 
 
 class WriteRequest(BaseModel):
@@ -44,31 +49,49 @@ class DeleteRequest(BaseModel):
     path: str = Field(min_length=1)
 
 
+def raise_runtime_error(error: dict[str, str] | None) -> None:
+    if not error:
+        return
+    kind = error.get("kind", "")
+    detail = error.get("detail") or kind
+    raise HTTPException(ERROR_STATUS.get(kind, 400), detail)
+
+
 @router.post("/write")
-def api_write_file(payload: WriteRequest):
-    return write_file(payload.path, payload.content, payload.create_dirs)
+def write_file(payload: WriteRequest):
+    result, error = file_ops_runtime.write_file(payload.path, payload.content, payload.create_dirs)
+    raise_runtime_error(error)
+    return result
 
 
 @router.post("/read")
-def api_read_file(payload: ReadRequest):
-    return read_file(payload.path, payload.max_chars)
+def read_file(payload: ReadRequest):
+    result, error = file_ops_runtime.read_file(payload.path, payload.max_chars)
+    raise_runtime_error(error)
+    return result
 
 
 @router.get("/tree")
-def api_file_tree(max_depth: int = 3, max_items: int = 200):
-    return file_tree(max_depth, max_items)
+def file_tree(max_depth: int = 3, max_items: int = 200):
+    return file_ops_runtime.file_tree(max_depth, max_items)
 
 
 @router.post("/diff")
-def api_diff_file(payload: DiffRequest):
-    return diff_file(payload.path, payload.new_content)
+def diff_file(payload: DiffRequest):
+    result, error = file_ops_runtime.diff_file(payload.path, payload.new_content)
+    raise_runtime_error(error)
+    return result
 
 
 @router.post("/mkdir")
-def api_mkdir(payload: MkdirRequest):
-    return make_dir(payload.path)
+def mkdir(payload: MkdirRequest):
+    result, error = file_ops_runtime.mkdir(payload.path)
+    raise_runtime_error(error)
+    return result
 
 
 @router.delete("/delete")
-def api_delete_file(payload: DeleteRequest):
-    return delete_path(payload.path)
+def delete_file(payload: DeleteRequest):
+    result, error = file_ops_runtime.delete_path(payload.path)
+    raise_runtime_error(error)
+    return result

@@ -142,8 +142,8 @@ class MemoryStorageRegressionTest(unittest.TestCase):
                 import sys
                 sys.path.insert(0, r"{BACKEND_ROOT}")
 
-                from app.infrastructure.db.elira_memory_sqlite import list_chats
-                from app.infrastructure.runtime.runtime_service import get_runtime_status
+                from app.services.elira_memory_sqlite import list_chats
+                from app.services.runtime_service import get_runtime_status
 
                 payload = {{
                     "chat_titles": [chat["title"] for chat in list_chats()],
@@ -191,7 +191,7 @@ class MemoryStorageRegressionTest(unittest.TestCase):
 
                 from fastapi.testclient import TestClient
                 from app.main import app
-                from app.application.memory.rag_memory_service import get_rag_context, rag_stats
+                from app.services.rag_memory_service import get_rag_context, rag_stats
 
                 client = TestClient(app)
                 client.post("/api/memory/add", json={{"profile": "default", "text": "alpha fact", "source": "manual"}})

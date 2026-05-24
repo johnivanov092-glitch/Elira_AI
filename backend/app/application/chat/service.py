@@ -1,760 +1,376 @@
-"""Chat orchestration: shared helpers + non-streaming agent execution.
-
-Extracted from agents_service.py.  All module-level helpers (_tl, guards,
-monitoring, memory recall, history) live here so that both service.py and
-stream_service.py can import them without circular dependencies.
-"""
 from __future__ import annotations
 
-import logging
-import re
-import time as _time
-from typing import Any
-
-from app.application.chat.auto_skills import (
-    _build_prompt,
-    _get_and_clear_attachments,
-    _maybe_generate_files,
-    _pending_attachments,
-)
-from app.application.chat.context_builder import (
-    collect_context as build_chat_context,
-    strip_frontend_project_context as build_strip_frontend_project_context,
-)
-from app.application.chat.prompt_builder import (
-    compose_human_style_rules as _compose_human_style_rules,
-)
-from app.core.config import pick_model_for_route
-from app.infrastructure.search.web_search import (
-    do_temporal_web_search as _infra_do_temporal_web_search,
-)
-from app.application.monitoring.agent_monitor import record_agent_run_metric
-from app.application.monitoring.agent_sandbox import (
-    SandboxPolicyError,
-    preflight_or_raise,
-    resolve_effective_agent_id,
-)
-from app.application.chat.chat_service import run_chat
-from app.application.policy.identity_guard import guard_identity_response
-from app.application.persona.persona_service import observe_dialogue
-from app.application.planning.planner_v2_service import PlannerV2Service
-from app.application.policy.provenance_guard import guard_provenance_response
-from app.application.agents.reflection_loop_service import run_reflection_loop
-from app.infrastructure.db.run_history_service import RunHistoryService
-from app.application.memory.smart_memory import extract_and_save, get_relevant_context, is_memory_command
-from app.application.tools.tool_service import run_tool
-from app.application.event_bus import emit_event
-from app.application.agents.agent_registry import record_agent_run, resolve_agent
-
-try:
-    from app.application.memory.rag_memory_service import get_rag_context
-    _HAS_RAG = True
-except ImportError:
-    _HAS_RAG = False
-
-    def get_rag_context(*a, **kw):  # type: ignore[misc]
-        return ""
+from dataclasses import dataclass
+from typing import Any, Callable
 
 
-logger = logging.getLogger(__name__)
-
-_HISTORY = RunHistoryService()
-_REFLECTION_ROUTES = {"code", "project"}
-_MAX_HISTORY_PAIRS = 10
-_DIRECT_PERSONAL_MEMORY_RE = re.compile(
-    r"(?iu)^\s*(?:как\s+меня\s+зовут|ты\s+знаешь\s+как\s+меня\s+зовут"
-    r"|what\s+is\s+my\s+name|do\s+you\s+know\s+my\s+name)\s*\??\s*$"
-)
-
-
-# ─── timeline helper ─────────────────────────────────────────────────────────
-
-
-def _tl(timeline: list, step: str, title: str, status: str, detail: str) -> None:
-    timeline.append({"step": step, "title": title, "status": status, "detail": detail})
+PlanRunner = Callable[[str], dict[str, Any]]
+MemoryCommandChecker = Callable[[str], bool]
+ModelPicker = Callable[[str, str], str]
+HistoryTrimmer = Callable[[list[Any], int], list[Any]]
+InputStripper = Callable[[str], str]
+PlannerFactory = Callable[[], Any]
+RunStarter = Callable[[str], dict[str, Any]]
+EventEmitter = Callable[..., None]
+TimelineAppender = Callable[[list[dict[str, Any]], str, str, str, str], None]
+ContextCollector = Callable[..., str]
+MemoryContextEnricher = Callable[..., tuple[str, int]]
+PromptBuilder = Callable[..., str]
+TaskContextBuilder = Callable[[str, list[str]], str]
 
 
-# ─── post-processing guards ──────────────────────────────────────────────────
+@dataclass(frozen=True)
+class ChatPlanPreparation:
+    plan: dict[str, Any]
+    route: str
+    temporal: dict[str, Any]
+    web_plan: dict[str, Any]
+    selected_tools: list[str]
+    effective_model: str
 
 
-def _apply_identity_guard(
-    user_input: str, answer_text: str, timeline: list
-) -> dict[str, Any]:
-    guard = guard_identity_response(user_input, answer_text, persona_name="Elira")
-    if guard.get("changed"):
-        _tl(timeline, "identity_guard", "Идентичность Elira", "done",
-            guard.get("reason", "identity_rewrite"))
-    return guard
+@dataclass(frozen=True)
+class ChatRunBootstrap:
+    history: list[Any]
+    disabled_skills: set[str]
+    timeline: list[dict[str, Any]]
+    tool_results: list[dict[str, Any]]
+    planner: Any
+    raw_user_input: str
+    planner_input: str
+    run: dict[str, Any]
 
 
-def _apply_provenance_guard(
-    user_input: str, answer_text: str, timeline: list
-) -> dict[str, Any]:
-    guard = guard_provenance_response(user_input, answer_text)
-    if guard.get("changed"):
-        _tl(timeline, "provenance_guard", "Ответ без служебных источников", "done",
-            guard.get("reason", "source_hidden"))
-    return guard
+@dataclass(frozen=True)
+class ChatExecutionPreparation:
+    plan: dict[str, Any]
+    route: str
+    temporal: dict[str, Any]
+    web_plan: dict[str, Any]
+    selected_tools: list[str]
+    effective_model: str
+    saved_memory_items: int
 
 
-# ─── Agent OS hooks ──────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class ChatPromptPreparation:
+    context_bundle: str
+    prompt: str
+    task_context: str
 
 
-def _emit_agent_os_event(
-    *, event_type: str, source_agent_id: str = "", payload: dict[str, Any] | None = None
-) -> None:
-    try:
-        emit_event(event_type=event_type, source_agent_id=source_agent_id, payload=payload or {})
-    except Exception:
-        logger.debug("event_bus_emit_failed", exc_info=True)
-
-
-def _record_agent_os_monitoring(
+def build_disabled_skills(
     *,
-    agent_id: str,
-    run_id: str,
-    route: str,
+    use_web_search: bool,
+    use_python_exec: bool,
+    use_image_gen: bool,
+    use_file_gen: bool,
+    use_http_api: bool,
+    use_sql: bool,
+    use_screenshot: bool,
+    use_encrypt: bool,
+    use_archiver: bool,
+    use_converter: bool,
+    use_regex: bool,
+    use_translator: bool,
+    use_csv: bool,
+    use_webhook: bool,
+    use_plugins: bool,
+) -> set[str]:
+    skill_flags = {
+        "web_search": use_web_search,
+        "python_exec": use_python_exec,
+        "image_gen": use_image_gen,
+        "file_gen": use_file_gen,
+        "http_api": use_http_api,
+        "sql": use_sql,
+        "screenshot": use_screenshot,
+        "encrypt": use_encrypt,
+        "archiver": use_archiver,
+        "converter": use_converter,
+        "regex": use_regex,
+        "translator": use_translator,
+        "csv_analysis": use_csv,
+        "webhook": use_webhook,
+        "plugins": use_plugins,
+    }
+    return {skill_name for skill_name, is_enabled in skill_flags.items() if not is_enabled}
+
+
+def bootstrap_chat_run(
+    *,
+    user_input: str,
+    history: list[Any] | None,
+    max_history_pairs: int,
+    trim_history_func: HistoryTrimmer,
+    strip_frontend_project_context_func: InputStripper,
+    history_service: Any,
+    planner_factory: PlannerFactory,
+    emit_run_started_func: EventEmitter,
+    source_agent_id: str,
+    profile_name: str,
     model_name: str,
-    ok: bool,
-    duration_ms: int,
+    session_id: str,
     streaming: bool,
+    use_web_search: bool,
+    use_python_exec: bool,
+    use_image_gen: bool,
+    use_file_gen: bool,
+    use_http_api: bool,
+    use_sql: bool,
+    use_screenshot: bool,
+    use_encrypt: bool,
+    use_archiver: bool,
+    use_converter: bool,
+    use_regex: bool,
+    use_translator: bool,
+    use_csv: bool,
+    use_webhook: bool,
+    use_plugins: bool,
+) -> ChatRunBootstrap:
+    trimmed_history = trim_history_func(history or [], max_history_pairs)
+    disabled_skills = build_disabled_skills(
+        use_web_search=use_web_search,
+        use_python_exec=use_python_exec,
+        use_image_gen=use_image_gen,
+        use_file_gen=use_file_gen,
+        use_http_api=use_http_api,
+        use_sql=use_sql,
+        use_screenshot=use_screenshot,
+        use_encrypt=use_encrypt,
+        use_archiver=use_archiver,
+        use_converter=use_converter,
+        use_regex=use_regex,
+        use_translator=use_translator,
+        use_csv=use_csv,
+        use_webhook=use_webhook,
+        use_plugins=use_plugins,
+    )
+    timeline: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+    planner = planner_factory()
+    raw_user_input = user_input
+    planner_input = strip_frontend_project_context_func(user_input)
+    run = history_service.start_run(raw_user_input)
+    emit_run_started_func(
+        event_type="agent.run.started",
+        source_agent_id=source_agent_id,
+        payload={
+            "run_id": run["run_id"],
+            "profile_name": profile_name,
+            "requested_model": model_name,
+            "session_id": session_id,
+            "streaming": streaming,
+        },
+    )
+    return ChatRunBootstrap(
+        history=trimmed_history,
+        disabled_skills=disabled_skills,
+        timeline=timeline,
+        tool_results=tool_results,
+        planner=planner,
+        raw_user_input=raw_user_input,
+        planner_input=planner_input,
+        run=run,
+    )
+
+
+def prepare_chat_plan(
+    *,
+    planner_input: str,
+    model_name: str,
+    plan_runner: PlanRunner,
+    use_memory: bool,
+    use_library: bool,
+    use_web_search: bool,
+    is_memory_command_func: MemoryCommandChecker,
+    pick_model_for_route_func: ModelPicker,
+) -> ChatPlanPreparation:
+    plan = plan_runner(planner_input) or {}
+    route = str(plan.get("route", "chat") or "chat")
+
+    raw_temporal = plan.get("temporal")
+    temporal = dict(raw_temporal) if isinstance(raw_temporal, dict) else {}
+
+    raw_web_plan = plan.get("web_plan")
+    if isinstance(raw_web_plan, dict) and raw_web_plan:
+        web_plan = dict(raw_web_plan)
+    else:
+        web_plan = {"is_multi_intent": False, "subqueries": []}
+
+    selected_tools = [
+        tool_name
+        for tool_name in list(plan.get("tools", []) or [])
+        if not (tool_name == "memory_search" and not use_memory)
+        and not (tool_name == "library_context" and not use_library)
+        and not (tool_name == "web_search" and not use_web_search)
+    ]
+    if temporal.get("requires_web") and use_web_search and "web_search" not in selected_tools:
+        selected_tools.append("web_search")
+
+    strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
+    if strict_web_only:
+        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
+
+    if is_memory_command_func(planner_input):
+        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
+
+    effective_model = pick_model_for_route_func(route, model_name)
+    return ChatPlanPreparation(
+        plan=plan,
+        route=route,
+        temporal=temporal,
+        web_plan=web_plan,
+        selected_tools=selected_tools,
+        effective_model=effective_model,
+    )
+
+
+def prepare_chat_execution(
+    *,
+    planner_input: str,
+    model_name: str,
+    plan_runner: PlanRunner,
+    use_memory: bool,
+    use_library: bool,
+    use_web_search: bool,
+    is_memory_command_func: MemoryCommandChecker,
+    pick_model_for_route_func: ModelPicker,
+    history_service: Any,
+    run_id: str,
+    extract_and_save_func: Callable[[str], Any],
+    preflight_or_raise_func: Callable[..., None],
+    agent_id: str,
     num_ctx: int,
-    selected_tools: list[str] | None,
-) -> None:
+    streaming: bool,
+    timeline: list[dict[str, Any]] | None = None,
+    append_timeline_func: TimelineAppender | None = None,
+    log_memory_save: bool = False,
+    log_auto_model_switch: bool = False,
+) -> ChatExecutionPreparation:
+    chat_plan = prepare_chat_plan(
+        planner_input=planner_input,
+        model_name=model_name,
+        plan_runner=plan_runner,
+        use_memory=use_memory,
+        use_library=use_library,
+        use_web_search=use_web_search,
+        is_memory_command_func=is_memory_command_func,
+        pick_model_for_route_func=pick_model_for_route_func,
+    )
+    history_service.add_event(run_id, "planner", chat_plan.plan)
+
+    saved_memory_items = 0
     try:
-        record_agent_run_metric(
-            agent_id=agent_id,
-            run_id=run_id,
-            route=route,
-            model_name=model_name,
-            ok=ok,
-            duration_ms=duration_ms,
-            streaming=streaming,
-            num_ctx=int(num_ctx or 0),
-            tools=list(selected_tools or []),
-        )
+        saved = extract_and_save_func(planner_input)
+        if saved:
+            try:
+                saved_memory_items = len(saved)
+            except TypeError:
+                saved_memory_items = 0
+            if log_memory_save and append_timeline_func and timeline is not None:
+                append_timeline_func(
+                    timeline,
+                    "memory_save",
+                    "Память",
+                    "done",
+                    "Сохранено: " + str(saved_memory_items),
+                )
     except Exception:
-        logger.debug("agent_monitor_record_failed", exc_info=True)
+        pass
 
+    preflight_or_raise_func(
+        agent_id=agent_id,
+        num_ctx=num_ctx,
+        selected_tools=chat_plan.selected_tools,
+        run_id=run_id,
+        route=chat_plan.route,
+        streaming=streaming,
+    )
 
-# ─── memory helpers ──────────────────────────────────────────────────────────
+    if (
+        log_auto_model_switch
+        and append_timeline_func
+        and timeline is not None
+        and chat_plan.effective_model != model_name
+    ):
+        append_timeline_func(
+            timeline,
+            "auto_model",
+            "Авто-модель",
+            "ok",
+            f"{model_name} → {chat_plan.effective_model} (route={chat_plan.route})",
+        )
 
-
-def _is_direct_personal_memory_query(user_input: str) -> bool:
-    return bool(_DIRECT_PERSONAL_MEMORY_RE.search(user_input or ""))
-
-
-def _should_recall_memory_context(
-    user_input: str, route: str, temporal: dict[str, Any] | None
-) -> bool:
-    temporal = temporal or {}
-    if is_memory_command(user_input):
-        return False
-    if route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive"):
-        return False
-    return True
-
-
-def _get_memory_recall_limits(user_input: str) -> tuple[int, int]:
-    if _is_direct_personal_memory_query(user_input):
-        return (1, 0)
-    return (5, 3)
-
-
-# ─── history ─────────────────────────────────────────────────────────────────
-
-
-def _trim_history(h: list, max_pairs: int = _MAX_HISTORY_PAIRS) -> list:
-    if not h:
-        return []
-    limit = max_pairs * 2
-    if len(h) <= limit:
-        return list(h)
-    return list(h[:2]) + list(h[-(limit - 2):])
-
-
-# ─── context assembly ────────────────────────────────────────────────────────
-
-
-def _strip_frontend_project_context(user_input: str) -> str:
-    return build_strip_frontend_project_context(user_input)
-
-
-def _do_temporal_web_search(query, timeline, tool_results, temporal=None, web_plan=None):
-    return _infra_do_temporal_web_search(
-        query, timeline, tool_results, temporal=temporal, web_plan=web_plan, tl=_tl
+    return ChatExecutionPreparation(
+        plan=chat_plan.plan,
+        route=chat_plan.route,
+        temporal=chat_plan.temporal,
+        web_plan=chat_plan.web_plan,
+        selected_tools=chat_plan.selected_tools,
+        effective_model=chat_plan.effective_model,
+        saved_memory_items=saved_memory_items,
     )
 
 
-def _collect_context(**kwargs):
-    return build_chat_context(
-        run_tool_func=run_tool,
-        append_timeline=_tl,
-        temporal_web_search_func=_do_temporal_web_search,
-        **kwargs,
-    )
-
-
-def _gather_run_context(
+def prepare_chat_prompt(
     *,
     profile_name: str,
+    raw_user_input: str,
     planner_input: str,
     route: str,
-    temporal: dict,
-    selected: list,
-    tool_results: list,
-    timeline: list,
+    selected_tools: list[str],
+    tool_results: list[dict[str, Any]],
+    timeline: list[dict[str, Any]],
     use_reflection: bool,
-    web_plan: dict,
-) -> str:
-    """Collect tool / RAG context then augment with memory recall if applicable."""
-    ctx = _collect_context(
+    temporal: dict[str, Any] | None,
+    web_plan: dict[str, Any] | None,
+    disabled_skills: set[str],
+    has_rag: bool,
+    is_memory_command_func: MemoryCommandChecker,
+    get_relevant_context_func: Callable[..., str],
+    get_rag_context_func: Callable[..., str],
+    collect_context_func: ContextCollector,
+    enrich_context_with_memory_func: MemoryContextEnricher,
+    build_prompt_func: PromptBuilder,
+    build_task_context_func: TaskContextBuilder,
+    append_timeline_func: TimelineAppender | None = None,
+) -> ChatPromptPreparation:
+    context_bundle = collect_context_func(
         profile_name=profile_name,
         user_input=planner_input,
-        tools=selected,
+        tools=selected_tools,
         tool_results=tool_results,
         timeline=timeline,
         use_reflection=use_reflection,
         temporal=temporal,
         web_plan=web_plan,
     )
-    if _should_recall_memory_context(planner_input, route, temporal):
-        try:
-            mem_limit, rag_limit = _get_memory_recall_limits(planner_input)
-            mem_ctx = get_relevant_context(planner_input, max_items=mem_limit)
-            if _HAS_RAG and rag_limit > 0:
-                rag_ctx = get_rag_context(planner_input, max_items=rag_limit)
-                if rag_ctx:
-                    mem_ctx = (mem_ctx + "\n\n" + rag_ctx) if mem_ctx else rag_ctx
-            if mem_ctx:
-                ctx = mem_ctx + "\n\n" + ctx if ctx else mem_ctx
-                _tl(timeline, "memory_recall", "Память", "done", "Найдены релевантные заметки")
-        except Exception as _exc:
-            logger.debug("memory_recall failed: %s", _exc)
-    return ctx
 
+    enrich_kwargs: dict[str, Any] = {
+        "planner_input": planner_input,
+        "route": route,
+        "temporal": temporal,
+        "context": context_bundle,
+        "has_rag": has_rag,
+        "is_memory_command_func": is_memory_command_func,
+        "get_relevant_context_func": get_relevant_context_func,
+        "get_rag_context_func": get_rag_context_func,
+    }
+    if append_timeline_func is not None:
+        enrich_kwargs["append_timeline_func"] = append_timeline_func
+        enrich_kwargs["timeline"] = timeline
 
-def _run_llm_and_finish_answer(
-    *,
-    raw_user_input: str,
-    prompt: str,
-    history: list,
-    effective_model: str,
-    profile_name: str,
-    num_ctx: int,
-    task_context: str,
-    route: str,
-    use_reflection: bool,
-    ctx: str,
-    use_file_gen: bool,
-) -> str:
-    """Call LLM, optionally run reflection, apply attachments and file generation.
-
-    Returns the final answer string.  Raises RuntimeError on LLM failure so the
-    caller's except handlers can handle it uniformly.
-    """
-    draft = run_chat(
-        model_name=effective_model,
-        profile_name=profile_name,
-        user_input=prompt,
-        history=history,
-        num_ctx=num_ctx,
+    context_bundle, _ = enrich_context_with_memory_func(**enrich_kwargs)
+    prompt = build_prompt_func(raw_user_input, context_bundle, disabled_skills=disabled_skills)
+    task_context = build_task_context_func(route, selected_tools)
+    return ChatPromptPreparation(
+        context_bundle=context_bundle,
+        prompt=prompt,
         task_context=task_context,
     )
-    if not draft.get("ok"):
-        raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")
-    answer = draft.get("answer", "")
-
-    has_generated_files = any(a["type"] in ("image", "file") for a in _pending_attachments)
-    should_reflect = (route in _REFLECTION_ROUTES) or use_reflection
-    if should_reflect and answer.strip() and not has_generated_files:
-        ref = run_reflection_loop(
-            model_name=effective_model,
-            profile_name=profile_name,
-            user_input=raw_user_input,
-            draft_text=answer,
-            review_text="Улучши.",
-            context=ctx,
-        )
-        answer = ref.get("answer") or answer
-
-    attachments = _get_and_clear_attachments()
-    if attachments:
-        answer += attachments
-
-    post_files = _maybe_generate_files(raw_user_input, answer, enabled=use_file_gen)
-    if post_files:
-        answer += post_files
-
-    return answer
 
 
-def _setup_chat_agent_run(
-    *,
-    user_input: str,
-    profile_name: str,
-    model_name: str,
-    session_id,
-    history,
-    streaming: bool,
-    agent_id=None,
-    use_web_search=True,
-    use_python_exec=True,
-    use_image_gen=True,
-    use_file_gen=True,
-    use_http_api=True,
-    use_sql=True,
-    use_screenshot=True,
-    use_encrypt=True,
-    use_archiver=True,
-    use_converter=True,
-    use_regex=True,
-    use_translator=True,
-    use_csv=True,
-    use_webhook=True,
-    use_plugins=True,
-) -> tuple:
-    """Resolve registry agent, build skill flags, start run history, emit started event.
-
-    Returns (_agent_start, _registry_agent, _effective_agent_id, profile_name, model_name,
-             history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run).
-    profile_name and model_name may be overridden by the registry agent's preferences.
-    """
-    _agent_start = _time.monotonic()
-
-    _registry_agent = None
-    if agent_id:
-        try:
-            _registry_agent = resolve_agent(agent_id=agent_id)
-            if _registry_agent:
-                if _registry_agent.get("system_prompt"):
-                    profile_name = _registry_agent.get("name_ru") or profile_name
-                if _registry_agent.get("model_preference"):
-                    model_name = _registry_agent["model_preference"]
-        except Exception as _exc:
-            logger.debug("registry_agent resolve failed: %s", _exc)
-
-    _effective_agent_id = resolve_effective_agent_id(
-        agent_id=agent_id, profile_name=profile_name, registry_agent=_registry_agent,
-    )
-    history = _trim_history(history or [])
-    _skill_flags = {
-        "web_search": use_web_search, "python_exec": use_python_exec,
-        "image_gen": use_image_gen, "file_gen": use_file_gen,
-        "http_api": use_http_api, "sql": use_sql, "screenshot": use_screenshot,
-        "encrypt": use_encrypt, "archiver": use_archiver, "converter": use_converter,
-        "regex": use_regex, "translator": use_translator, "csv_analysis": use_csv,
-        "webhook": use_webhook, "plugins": use_plugins,
-    }
-    _disabled_skills = {k for k, v in _skill_flags.items() if not v}
-    timeline, tool_results = [], []
-    raw_user_input = user_input
-    planner_input = _strip_frontend_project_context(user_input)
-    run = _HISTORY.start_run(raw_user_input)
-    _emit_agent_os_event(
-        event_type="agent.run.started",
-        source_agent_id=_effective_agent_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "requested_model": model_name,
-            "session_id": str(session_id or ""),
-            "streaming": streaming,
-        },
-    )
-    return (
-        _agent_start, _registry_agent, _effective_agent_id, profile_name, model_name,
-        history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run,
-    )
-
-
-def _build_run_result(
-    *,
-    raw_user_input: str,
-    answer: str,
-    timeline: list,
-    tool_results: list,
-    run: dict,
-    session_id,
-    profile_name: str,
-    effective_model: str,
-    route: str,
-    selected: list,
-    temporal: dict,
-    web_plan: dict,
-) -> tuple[str, dict]:
-    """Apply identity/provenance guards, observe persona, assemble result dict.
-
-    Returns ``(guarded_answer, result_dict)``.
-    """
-    identity_guard = _apply_identity_guard(raw_user_input, answer, timeline)
-    answer = identity_guard.get("text", answer)
-    provenance_guard = _apply_provenance_guard(raw_user_input, answer, timeline)
-    answer = provenance_guard.get("text", answer)
-    persona_meta = observe_dialogue(
-        dialog_id=run["run_id"],
-        session_id=str(session_id or run["run_id"]),
-        profile_name=profile_name,
-        model_name=effective_model,
-        user_input=raw_user_input,
-        answer_text=answer,
-        route=route,
-        outcome_ok=True,
-    )
-    result = {
-        "ok": True,
-        "answer": answer,
-        "timeline": timeline,
-        "tool_results": tool_results,
-        "meta": {
-            "model_name": effective_model,
-            "profile_name": profile_name,
-            "route": route,
-            "tools": selected,
-            "run_id": run["run_id"],
-            "persona": persona_meta,
-            "temporal": temporal,
-            "web_plan": web_plan,
-            "identity_guard": identity_guard if identity_guard.get("changed") else None,
-            "provenance_guard": provenance_guard if provenance_guard.get("changed") else None,
-        },
-    }
-    return answer, result
-
-
-def _maybe_record_agent_run(
-    *,
-    agent_id,
-    _registry_agent,
-    run_id: str,
-    raw_user_input: str,
-    output_summary: str,
-    route: str,
-    effective_model: str,
-    duration_ms: int,
-    ok: bool = True,
-) -> None:
-    """Record a registry-agent run if an agent_id or registry_agent is present."""
-    if not (agent_id or _registry_agent):
-        return
-    try:
-        record_agent_run({
-            "agent_id": agent_id or (_registry_agent or {}).get("id", ""),
-            "run_id": run_id,
-            "input_summary": raw_user_input[:500],
-            "output_summary": output_summary[:500],
-            "ok": ok,
-            "route": route,
-            "model_used": effective_model,
-            "duration_ms": duration_ms,
-        })
-    except Exception as _exc:
-        logger.debug("record_agent_run failed: %s", _exc)
-
-
-def _complete_chat_run(
-    *,
-    raw_user_input: str,
-    answer: str,
-    timeline: list,
-    tool_results: list,
-    run: dict,
-    session_id,
-    profile_name: str,
-    effective_model: str,
-    route: str,
-    selected: list,
-    temporal: dict,
-    web_plan: dict,
-    _effective_agent_id: str,
-    _agent_start: float,
-    num_ctx: int,
-    agent_id,
-    _registry_agent,
-) -> dict:
-    """Apply guards, build result, finish run, emit completion events."""
-    answer, result = _build_run_result(
-        raw_user_input=raw_user_input, answer=answer, timeline=timeline,
-        tool_results=tool_results, run=run, session_id=session_id,
-        profile_name=profile_name, effective_model=effective_model,
-        route=route, selected=selected, temporal=temporal, web_plan=web_plan,
-    )
-    _HISTORY.finish_run(run["run_id"], result)
-    _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-    _record_agent_os_monitoring(
-        agent_id=_effective_agent_id,
-        run_id=run["run_id"],
-        route=route,
-        model_name=effective_model,
-        ok=True,
-        duration_ms=_duration_ms,
-        streaming=False,
-        num_ctx=num_ctx,
-        selected_tools=selected,
-    )
-    _maybe_record_agent_run(
-        agent_id=agent_id, _registry_agent=_registry_agent,
-        run_id=run["run_id"], raw_user_input=raw_user_input,
-        output_summary=answer, route=route,
-        effective_model=effective_model, duration_ms=_duration_ms,
-    )
-    _emit_agent_os_event(
-        event_type="agent.run.completed",
-        source_agent_id=_effective_agent_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "route": route,
-            "ok": True,
-            "model_used": effective_model,
-            "duration_ms": _duration_ms,
-            "session_id": str(session_id or ""),
-            "streaming": False,
-        },
-    )
-    return result
-
-
-def _resolve_plan_and_tools(
-    planner_input: str,
-    run_id: str,
-    model_name: str,
-    *,
-    use_memory: bool,
-    use_library: bool,
-    use_web_search: bool,
-) -> tuple[str, dict, dict, list[str], str]:
-    """Run planner, filter tools by capability flags, pick effective model.
-
-    Returns (route, temporal, web_plan, selected_tools, effective_model).
-    """
-    plan = PlannerV2Service().plan(planner_input)
-    _HISTORY.add_event(run_id, "planner", plan)
-    route = plan.get("route", "chat")
-    temporal = plan.get("temporal", {})
-    web_plan = plan.get("web_plan", {"is_multi_intent": False, "subqueries": []})
-    selected = [
-        t for t in plan.get("tools", [])
-        if not (t == "memory_search" and not use_memory)
-        and not (t == "library_context" and not use_library)
-        and not (t == "web_search" and not use_web_search)
-    ]
-    if temporal.get("requires_web") and use_web_search and "web_search" not in selected:
-        selected.append("web_search")
-    strict_web_only = (
-        route == "research"
-        and temporal.get("mode") == "hard"
-        and temporal.get("freshness_sensitive")
-    )
-    if strict_web_only:
-        selected = [t for t in selected if t != "memory_search"]
-    if is_memory_command(planner_input):
-        selected = [t for t in selected if t != "memory_search"]
-    effective_model = pick_model_for_route(route, model_name)
-    return route, temporal, web_plan, selected, effective_model
-
-
-def _handle_chat_run_failure(
-    *,
-    exc: Exception,
-    run: dict,
-    timeline: list,
-    tool_results: list,
-    _effective_agent_id: str,
-    _agent_os_source_id: str,
-    _agent_start: float,
-    model_name: str,
-    profile_name: str,
-    session_id,
-    num_ctx: int,
-    streaming: bool,
-    tl_step: dict,
-    extra_meta: dict | None = None,
-    agent_id: str | None = None,
-    _registry_agent: dict | None = None,
-    route: str = "",
-    effective_model: str | None = None,
-    selected: list | None = None,
-    raw_user_input: str = "",
-) -> dict:
-    """Build error result dict, finish run, record monitoring and emit completion event.
-
-    tl_step    – timeline entry to append (e.g. {"step": "sandbox", ...})
-    extra_meta – additional keys merged into meta (sandbox_reason / sandbox_details)
-    """
-    meta: dict = {"error": str(exc), "run_id": run["run_id"]}
-    if extra_meta:
-        meta.update(extra_meta)
-    err = {
-        "ok": False,
-        "answer": "",
-        "timeline": list(timeline) + [tl_step],
-        "tool_results": tool_results,
-        "meta": meta,
-    }
-    _HISTORY.finish_run(run["run_id"], err)
-    _duration_ms = int((_time.monotonic() - _agent_start) * 1000)
-    _record_agent_os_monitoring(
-        agent_id=_effective_agent_id,
-        run_id=run["run_id"],
-        route=route,
-        model_name=effective_model or model_name,
-        ok=False,
-        duration_ms=_duration_ms,
-        streaming=streaming,
-        num_ctx=num_ctx,
-        selected_tools=selected or [],
-    )
-    _maybe_record_agent_run(
-        agent_id=agent_id, _registry_agent=_registry_agent,
-        run_id=run["run_id"], raw_user_input=raw_user_input,
-        output_summary=str(exc), route=route,
-        effective_model=effective_model or model_name, duration_ms=_duration_ms,
-        ok=False,
-    )
-    _emit_agent_os_event(
-        event_type="agent.run.completed",
-        source_agent_id=_agent_os_source_id,
-        payload={
-            "run_id": run["run_id"],
-            "profile_name": profile_name,
-            "route": route,
-            "ok": False,
-            "model_used": effective_model or model_name,
-            "duration_ms": _duration_ms,
-            "error": str(exc)[:500],
-            "session_id": str(session_id or ""),
-            "streaming": streaming,
-        },
-    )
-    return err
-
-
-# ─── execute_chat_agent (non-streaming) ──────────────────────────────────────
-
-
-def execute_chat_agent(
-    *,
-    model_name,
-    profile_name,
-    user_input,
-    session_id=None,
-    agent_id=None,
-    use_memory=True,
-    use_library=True,
-    use_reflection=False,
-    history=None,
-    num_ctx=8192,
-    use_web_search=True,
-    use_python_exec=True,
-    use_image_gen=True,
-    use_file_gen=True,
-    use_http_api=True,
-    use_sql=True,
-    use_screenshot=True,
-    use_encrypt=True,
-    use_archiver=True,
-    use_converter=True,
-    use_regex=True,
-    use_translator=True,
-    use_csv=True,
-    use_webhook=True,
-    use_plugins=True,
-):
-    (
-        _agent_start, _registry_agent, _effective_agent_id, profile_name, model_name,
-        history, _disabled_skills, timeline, tool_results, raw_user_input, planner_input, run,
-    ) = _setup_chat_agent_run(
-        user_input=user_input, profile_name=profile_name, model_name=model_name,
-        session_id=session_id, history=history, streaming=False, agent_id=agent_id,
-        use_web_search=use_web_search, use_python_exec=use_python_exec,
-        use_image_gen=use_image_gen, use_file_gen=use_file_gen,
-        use_http_api=use_http_api, use_sql=use_sql, use_screenshot=use_screenshot,
-        use_encrypt=use_encrypt, use_archiver=use_archiver, use_converter=use_converter,
-        use_regex=use_regex, use_translator=use_translator, use_csv=use_csv,
-        use_webhook=use_webhook, use_plugins=use_plugins,
-    )
-    _agent_os_source_id = _effective_agent_id
-    route, temporal, web_plan, selected, effective_model = "", {}, {}, [], model_name
-    try:
-        route, temporal, web_plan, selected, effective_model = _resolve_plan_and_tools(
-            planner_input, run["run_id"], model_name,
-            use_memory=use_memory, use_library=use_library, use_web_search=use_web_search,
-        )
-
-        try:
-            saved = extract_and_save(planner_input)
-            if saved:
-                _tl(timeline, "memory_save", "Память", "done", "Сохранено: " + str(len(saved)))
-        except Exception as _exc:
-            logger.debug("memory_save failed: %s", _exc)
-
-        preflight_or_raise(
-            agent_id=_effective_agent_id,
-            num_ctx=num_ctx,
-            selected_tools=selected,
-            run_id=run["run_id"],
-            route=route,
-            streaming=False,
-        )
-
-        ctx = _gather_run_context(
-            profile_name=profile_name, planner_input=planner_input,
-            route=route, temporal=temporal, selected=selected,
-            tool_results=tool_results, timeline=timeline,
-            use_reflection=use_reflection, web_plan=web_plan,
-        )
-
-        prompt = (
-            _build_prompt(raw_user_input, ctx, disabled_skills=_disabled_skills)
-            + _compose_human_style_rules(temporal)
-        )
-        task_context = (
-            f"Маршрут: {route}. Инструменты: "
-            + (", ".join(selected) if selected else "нет дополнительных инструментов")
-            + "."
-        )
-        answer = _run_llm_and_finish_answer(
-            raw_user_input=raw_user_input, prompt=prompt,
-            history=history, effective_model=effective_model,
-            profile_name=profile_name, num_ctx=num_ctx,
-            task_context=task_context, route=route,
-            use_reflection=use_reflection, ctx=ctx, use_file_gen=use_file_gen,
-        )
-
-        return _complete_chat_run(
-            raw_user_input=raw_user_input,
-            answer=answer,
-            timeline=timeline,
-            tool_results=tool_results,
-            run=run,
-            session_id=session_id,
-            profile_name=profile_name,
-            effective_model=effective_model,
-            route=route,
-            selected=selected,
-            temporal=temporal,
-            web_plan=web_plan,
-            _effective_agent_id=_effective_agent_id,
-            _agent_start=_agent_start,
-            num_ctx=num_ctx,
-            agent_id=agent_id,
-            _registry_agent=_registry_agent,
-        )
-
-    except Exception as exc:
-        _is_sandbox = isinstance(exc, SandboxPolicyError)
-        return _handle_chat_run_failure(
-            exc=exc, run=run, timeline=timeline, tool_results=tool_results,
-            _effective_agent_id=_effective_agent_id, _agent_os_source_id=_agent_os_source_id,
-            _agent_start=_agent_start, model_name=model_name, profile_name=profile_name,
-            session_id=session_id, num_ctx=num_ctx, streaming=False,
-            tl_step={"step": "sandbox" if _is_sandbox else "error",
-                     "title": "Sandbox" if _is_sandbox else "Ошибка",
-                     "status": "error", "detail": str(exc)},
-            extra_meta={"sandbox_reason": exc.reason, "sandbox_details": exc.details} if _is_sandbox else None,
-            agent_id=None if _is_sandbox else agent_id,
-            _registry_agent=None if _is_sandbox else _registry_agent,
-            route=route, effective_model=effective_model, selected=selected,
-            raw_user_input=raw_user_input,
-        )
+def build_task_context(route: str, selected_tools: list[str]) -> str:
+    tools_text = ", ".join(selected_tools) if selected_tools else "нет дополнительных инструментов"
+    return f"Маршрут: {route}. Инструменты: {tools_text}."

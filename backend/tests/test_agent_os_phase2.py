@@ -11,8 +11,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-import app.application.tools.tool_registry as _tr  # noqa: E402
-import app.application.tools.tool_registry as reg  # noqa: E402
+from app.services import tool_registry as reg  # noqa: E402
 
 
 def _dummy_handler(args: dict) -> dict:
@@ -143,7 +142,7 @@ class TestRegisterFromDict(ToolRegistryTestCase):
 
 class TestSeedBuiltinTools(ToolRegistryTestCase):
     def test_seed_creates_tools(self) -> None:
-        _tr._BUILTIN_SEEDED = False
+        reg._BUILTIN_SEEDED = False
         count = reg.seed_builtin_tools()
         self.assertGreater(count, 0)
 
@@ -154,9 +153,9 @@ class TestSeedBuiltinTools(ToolRegistryTestCase):
         self.assertIn("git_status", names)
 
     def test_seed_idempotent(self) -> None:
-        _tr._BUILTIN_SEEDED = False
+        reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        _tr._BUILTIN_SEEDED = False
+        reg._BUILTIN_SEEDED = False
         count2 = reg.seed_builtin_tools()
         # Re-registration updates, doesn't fail
         self.assertGreaterEqual(count2, 0)
@@ -168,7 +167,7 @@ class TestBackwardCompatibility(ToolRegistryTestCase):
     def test_tool_service_list(self) -> None:
         reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        from app.application.tools.tool_service import list_tools
+        from app.services.tool_service import list_tools
         result = list_tools()
         self.assertTrue(result["ok"])
         self.assertGreater(result["count"], 0)
@@ -176,7 +175,7 @@ class TestBackwardCompatibility(ToolRegistryTestCase):
     def test_tool_service_run(self) -> None:
         reg._BUILTIN_SEEDED = False
         reg.seed_builtin_tools()
-        from app.application.tools.tool_service import run_tool
+        from app.services.tool_service import run_tool
         result = run_tool("git_status")
         # git_status might fail if not in a git repo, but should not crash
         self.assertIsInstance(result, dict)
