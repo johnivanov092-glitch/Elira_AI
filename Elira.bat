@@ -71,14 +71,21 @@ if "%PREFLIGHT_EXIT%"=="21" (
 )
 
 set "BACKEND_FRESH=0"
+set "BACKEND_LOG=%REPO_ROOT%\backend\backend.log"
+
 if "%PREFLIGHT_EXIT%"=="11" (
-    echo [1/3] Restarting Elira backend on 127.0.0.1:8000...
-    start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
+    echo [1/3] Waiting for port 8000 to release after AutoStop...
+    rem Windows can hold the socket in TIME_WAIT after kill — poll until truly free.
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "for ($i = 0; $i -lt 20; $i++) { $b = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if (-not $b) { Write-Host ('[OK] Port free after ' + ($i * 250) + ' ms.'); break }; Start-Sleep -Milliseconds 250 }"
+    echo [1/3] Restarting Elira backend on 127.0.0.1:8000 (stdout -^> backend\backend.log)...
+    if exist "%BACKEND_LOG%" del "%BACKEND_LOG%" >nul 2>&1
+    start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload > \"%BACKEND_LOG%\" 2>&1"
     set "BACKEND_FRESH=1"
 ) else (
     if "%PREFLIGHT_EXIT%"=="0" (
-        echo [1/3] Starting backend on 127.0.0.1:8000...
-        start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload"
+        echo [1/3] Starting backend on 127.0.0.1:8000 (stdout -^> backend\backend.log)...
+        if exist "%BACKEND_LOG%" del "%BACKEND_LOG%" >nul 2>&1
+        start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload > \"%BACKEND_LOG%\" 2>&1"
         set "BACKEND_FRESH=1"
     ) else (
         echo [1/3] Reusing existing backend on 127.0.0.1:8000...
@@ -93,7 +100,14 @@ if errorlevel 30 (
     echo.
     echo [ERROR] Backend is not responding on http://127.0.0.1:8000/health after 30 seconds.
     if "%BACKEND_FRESH%"=="1" (
-        echo [HINT] Check the minimized "Elira Backend" cmd window for the Python crash trace.
+        echo [HINT] Last 40 lines of backend\backend.log:
+        echo ----------------------------------------------------------------------
+        if exist "%BACKEND_LOG%" (
+            powershell -NoProfile -Command "Get-Content '%BACKEND_LOG%' -Tail 40"
+        ) else (
+            echo [no log file found — start /min cmd likely failed to launch python]
+        )
+        echo ----------------------------------------------------------------------
         echo [HINT] Common causes:
         echo          - missing core dependency  : cd backend ^&^& .venv\Scripts\pip install -r requirements.txt
         echo          - corrupted .venv          : delete backend\.venv and recreate
