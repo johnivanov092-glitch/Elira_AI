@@ -157,6 +157,13 @@ type IdeWorkspaceShellProps = {
    *  when the same path is revisited. */
   autoOpenFile?: string;
   autoOpenNonce?: number;
+  /** When set, render ONLY this sub-view and hide the toolbar tabs.
+   *  Lets the parent (CodeWorkspaceShell) embed each view in its own
+   *  drawer. Internal mainView state is ignored. */
+  forceView?: "artifacts" | "filetree" | "git" | "history" | "rag";
+  /** Hide the entire toolbar (back button + tabs + terminal toggle).
+   *  Useful when the parent already provides a header. */
+  hideToolbar?: boolean;
 };
 
 type HighlightJs = {
@@ -269,7 +276,7 @@ function IconText({ icon, children, size = 14, gap = 6, style }: { children: Rea
   );
 }
 
-export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat,autoOpenFile,autoOpenNonce}: IdeWorkspaceShellProps){
+export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat,autoOpenFile,autoOpenNonce,forceView,hideToolbar}: IdeWorkspaceShellProps){
   const fileRef=useRef<HTMLInputElement | null>(null);
   const [drag,setDrag]=useState(false);
   const [selectedId,setSelectedId]=useState("");
@@ -277,7 +284,10 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   const [filterTab,setFilterTab]=useState<FilterTab>("all");
   const [search,setSearch]=useState("");
   const [showTerminal,setShowTerminal]=useState(false);
-  const [mainView,setMainView]=useState<MainView>("artifacts");
+  const [internalMainView,setMainView]=useState<MainView>("artifacts");
+  // Parent can force a specific sub-view (drawer mode). When set, the
+  // toolbar tabs are hidden and only that view renders.
+  const mainView: MainView = forceView ?? internalMainView;
   const [editing,setEditing]=useState(false);
   const [editVal,setEditVal]=useState("");
   const [saveStatus,setSaveStatus]=useState<SaveStatus>(null);
@@ -490,7 +500,8 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   return(
     <div className="ide-shell" style={{display:"flex",flexDirection:"column",height:"100%",padding:0}}>
 
-      {/* Toolbar */}
+      {/* Toolbar — hidden in drawer mode (parent provides its own header) */}
+      {!hideToolbar && !forceView && (
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",borderBottom:"1px solid var(--border)",flexWrap:"wrap"}}>
         {onBackToChat && <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>}
         <div style={{display:"flex",gap:2,marginLeft:6}}>
@@ -512,6 +523,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
           </button>
         </div>
       </div>
+      )}
 
       {/* ARTIFACTS */}
       {mainView==="artifacts"&&(

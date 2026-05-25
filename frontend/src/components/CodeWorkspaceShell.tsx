@@ -1,18 +1,37 @@
 /**
  * CodeWorkspaceShell.tsx
  *
- * Unified "Код" workspace: streaming code-agent chat on the left, IDE
- * view (artifacts / git / files / history) on the right. Top toolbar
- * owns Back / model / project-root / max-steps / project-prompt.
+ * Code-agent workspace (Claude-style chat-first layout).
  *
- * When the agent touches a file (read_file / write_file / edit_file),
- * we forward the path to the IDE pane so it auto-opens the file in
- * the "Файлы" sub-tab.
+ * Default: streaming code-agent chat takes the FULL width.
  *
- * Layout state (split %, IDE collapsed) is persisted to localStorage.
+ * Top toolbar carries the agent controls (back / project root / model
+ * picker / num_ctx / project prompt / index / auto-remember) on the
+ * left and a row of 5 drawer-trigger icons on the right:
+ *   📦 Артефакты · 🌿 Git · 📁 Файлы · 🧠 RAG · 📜 История
+ *
+ * Click an icon → that view slides in as a right-side drawer (~420px,
+ * resizable, persisted in localStorage). Click the same icon (or X,
+ * or Esc) to close.  Ctrl+1..5 toggle the corresponding drawer.
+ *
+ * Each drawer renders IdeWorkspaceShell with forceView=<key> so the
+ * tabbed shell becomes a single focused panel inside the drawer.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Cpu, Database, FileText, FolderOpen, RefreshCw, Save, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  Cpu,
+  Database,
+  FileText,
+  Files,
+  FolderOpen,
+  GitBranch,
+  History,
+  RefreshCw,
+  Save,
+  X,
+} from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import CodeAgentChatShell from "./CodeAgentChatShell";
 import { api } from "../api/ide";
@@ -20,20 +39,33 @@ import { UiIcon, IconText } from "./StatusPanels";
 
 const ROOT_KEY = "elira_code_agent_root";
 const MODEL_KEY = "elira_code_agent_model";
-const SPLIT_KEY = "elira_code_workspace_split";
-const COLLAPSE_KEY = "elira_code_workspace_collapse";
 const STEPS_KEY = "elira_code_agent_steps";
 const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
 const AUTO_REMEMBER_KEY = "elira_code_agent_auto_remember";
+const DRAWER_KEY = "elira_code_workspace_drawer";
+const DRAWER_WIDTH_KEY = "elira_code_workspace_drawer_width";
 const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
 const DEFAULT_MODEL = "qwen2.5-coder:7b";
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_NUM_CTX = 16384;
+const DEFAULT_DRAWER_WIDTH = 420;
+const MIN_DRAWER_WIDTH = 280;
+const MAX_DRAWER_WIDTH = 800;
 const CTX_OPTIONS = [4096, 8192, 16384, 32768, 65536];
-// Models with reliable tool-calling support in Ollama. Used to flag picker rows.
 const TOOL_FRIENDLY = ["qwen2.5-coder", "qwen2.5", "qwen3", "llama3.2", "llama3.1", "mistral-nemo", "command-r"];
 
 type Model = { name: string; size?: number };
+
+type DrawerKey = "artifacts" | "git" | "filetree" | "rag" | "history";
+
+const DRAWER_DEFS: { key: DrawerKey; label: string; icon: typeof Files; hotkey: string }[] = [
+  { key: "artifacts", label: "Артефакты", icon: Files, hotkey: "1" },
+  { key: "git", label: "Git", icon: GitBranch, hotkey: "2" },
+  { key: "filetree", label: "Файлы", icon: FolderOpen, hotkey: "3" },
+  { key: "rag", label: "RAG", icon: Database, hotkey: "4" },
+  { key: "history", label: "История", icon: History, hotkey: "5" },
+];
+
 
 function readNumber(key: string, fallback: number): number {
   try {
@@ -71,7 +103,6 @@ function isToolFriendly(name: string): boolean {
   const low = name.toLowerCase();
   return TOOL_FRIENDLY.some((prefix) => low.startsWith(prefix));
 }
-
 function formatSize(bytes?: number): string {
   if (!bytes) return "";
   const gb = bytes / (1024 ** 3);
@@ -79,6 +110,7 @@ function formatSize(bytes?: number): string {
   const mb = bytes / (1024 ** 2);
   return `${mb.toFixed(0)} MB`;
 }
+
 
 type CodeWorkspaceShellProps = {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -91,29 +123,32 @@ type CodeWorkspaceShellProps = {
   onSendToChat?: (text: string) => void;
 };
 
+
 export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const { messages, libraryFiles, setLibraryFiles, onBackToChat, onSendToChat } = props;
 
   const [projectRoot, setProjectRoot] = useState<string>(() => readString(ROOT_KEY, DEFAULT_ROOT));
   const [model, setModel] = useState<string>(() => readString(MODEL_KEY, DEFAULT_MODEL));
   const [maxSteps, setMaxSteps] = useState<number>(() => readNumber(STEPS_KEY, DEFAULT_MAX_STEPS));
-  // num_ctx is per-model (different models have different effective context).
   const [numCtx, setNumCtx] = useState<number>(() => readNumber(CTX_KEY_PREFIX + readString(MODEL_KEY, DEFAULT_MODEL), DEFAULT_NUM_CTX));
   const [autoRemember, setAutoRemember] = useState<boolean>(() => readBool(AUTO_REMEMBER_KEY, true));
 
-  // Index project state
-  const [indexing, setIndexing] = useState(false);
-  const [indexStatus, setIndexStatus] = useState<string | null>(null);
-  const [indexError, setIndexError] = useState<string | null>(null);
-  const [splitPct, setSplitPct] = useState<number>(() => Math.max(20, Math.min(80, readNumber(SPLIT_KEY, 45))));
-  const [ideCollapsed, setIdeCollapsed] = useState<boolean>(() => readBool(COLLAPSE_KEY, false));
+  // Drawer state (replaces the old split-view ideCollapsed)
+  const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(() => {
+    const raw = readString(DRAWER_KEY, "");
+    return (DRAWER_DEFS.find((d) => d.key === raw)?.key) ?? null;
+  });
+  const [drawerWidth, setDrawerWidth] = useState<number>(() => {
+    const n = readNumber(DRAWER_WIDTH_KEY, DEFAULT_DRAWER_WIDTH);
+    return Math.max(MIN_DRAWER_WIDTH, Math.min(MAX_DRAWER_WIDTH, n));
+  });
 
+  // Model picker plumbing
   const [models, setModels] = useState<Model[] | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
 
-  // Auto-open: the agent telling the IDE "I just touched this file" — bump
-  // a request counter alongside so even re-touches of the same path retrigger.
+  // Auto-open file (agent touched something)
   const [autoOpen, setAutoOpen] = useState<{ path: string; nonce: number } | null>(null);
 
   // Project prompt panel
@@ -123,24 +158,29 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [promptStatus, setPromptStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [promptError, setPromptError] = useState<string | null>(null);
 
-  const splitRef = useRef<HTMLDivElement | null>(null);
-  const draggingRef = useRef(false);
+  // Index project state
+  const [indexing, setIndexing] = useState(false);
+  const [indexStatus, setIndexStatus] = useState<string | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
 
+  const drawerDragRef = useRef(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // ─── persistence ──────────────────────────────────────────────────────
   useEffect(() => writeString(ROOT_KEY, projectRoot), [projectRoot]);
   useEffect(() => writeString(MODEL_KEY, model), [model]);
   useEffect(() => writeNumber(STEPS_KEY, maxSteps), [maxSteps]);
-  useEffect(() => writeNumber(SPLIT_KEY, splitPct), [splitPct]);
-  useEffect(() => writeBool(COLLAPSE_KEY, ideCollapsed), [ideCollapsed]);
   useEffect(() => writeBool(AUTO_REMEMBER_KEY, autoRemember), [autoRemember]);
-  // Persist num_ctx per-model and switch when model changes.
   useEffect(() => { writeNumber(CTX_KEY_PREFIX + model, numCtx); }, [model, numCtx]);
   useEffect(() => {
     const saved = readNumber(CTX_KEY_PREFIX + model, DEFAULT_NUM_CTX);
     setNumCtx(saved);
-    // intentionally exclude numCtx from deps — switching model reads its own saved ctx
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model]);
+  useEffect(() => writeString(DRAWER_KEY, activeDrawer ?? ""), [activeDrawer]);
+  useEffect(() => writeNumber(DRAWER_WIDTH_KEY, drawerWidth), [drawerWidth]);
 
+  // ─── models ──────────────────────────────────────────────────────────
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
     setModelsError(null);
@@ -176,17 +216,18 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
 
   useEffect(() => { loadModels(); }, [loadModels]);
 
-  // Splitter drag
+  // ─── drawer drag-resize ─────────────────────────────────────────────
   useEffect(() => {
     function onMove(e: MouseEvent) {
-      if (!draggingRef.current || !splitRef.current) return;
-      const rect = splitRef.current.getBoundingClientRect();
-      const pct = ((e.clientX - rect.left) / rect.width) * 100;
-      setSplitPct(Math.max(20, Math.min(80, pct)));
+      if (!drawerDragRef.current || !rootRef.current) return;
+      const rect = rootRef.current.getBoundingClientRect();
+      // distance from right edge of root → drawer width
+      const w = rect.right - e.clientX;
+      setDrawerWidth(Math.max(MIN_DRAWER_WIDTH, Math.min(MAX_DRAWER_WIDTH, w)));
     }
     function onUp() {
-      if (draggingRef.current) {
-        draggingRef.current = false;
+      if (drawerDragRef.current) {
+        drawerDragRef.current = false;
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       }
@@ -199,17 +240,46 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     };
   }, []);
 
-  const startDrag = useCallback(() => {
-    draggingRef.current = true;
+  const startResize = useCallback(() => {
+    drawerDragRef.current = true;
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, []);
 
-  const handleAgentTouchedFile = useCallback((path: string) => {
-    if (ideCollapsed) return; // don't fight a user who hid the IDE
-    setAutoOpen({ path, nonce: Date.now() });
-  }, [ideCollapsed]);
+  // ─── drawer behavior ────────────────────────────────────────────────
+  const toggleDrawer = useCallback((key: DrawerKey) => {
+    setActiveDrawer((cur) => (cur === key ? null : key));
+  }, []);
 
+  const closeDrawer = useCallback(() => setActiveDrawer(null), []);
+
+  // Esc closes drawer
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape" && activeDrawer) {
+        closeDrawer();
+        return;
+      }
+      // Ctrl+1..5 toggle drawers
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const idx = "12345".indexOf(e.key);
+        if (idx >= 0 && idx < DRAWER_DEFS.length) {
+          e.preventDefault();
+          toggleDrawer(DRAWER_DEFS[idx].key);
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeDrawer, toggleDrawer, closeDrawer]);
+
+  // Auto-open file: open Файлы drawer when agent touches a file
+  const handleAgentTouchedFile = useCallback((path: string) => {
+    setActiveDrawer((cur) => cur || "filetree");
+    setAutoOpen({ path, nonce: Date.now() });
+  }, []);
+
+  // ─── project prompt ─────────────────────────────────────────────────
   const openPromptEditor = useCallback(async () => {
     setPromptOpen(true);
     setPromptStatus("idle");
@@ -226,6 +296,20 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     }
   }, [projectRoot]);
 
+  const savePrompt = useCallback(async () => {
+    setPromptStatus("saving");
+    setPromptError(null);
+    try {
+      await api.setProjectPromptApi(projectRoot, promptText);
+      setPromptStatus("saved");
+      setTimeout(() => setPromptStatus("idle"), 2000);
+    } catch (e) {
+      setPromptStatus("error");
+      setPromptError(String((e as Error)?.message || e));
+    }
+  }, [projectRoot, promptText]);
+
+  // ─── indexing ───────────────────────────────────────────────────────
   const runIndex = useCallback(async () => {
     if (indexing) return;
     setIndexing(true);
@@ -253,19 +337,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     }
   }, [indexing, projectRoot]);
 
-  const savePrompt = useCallback(async () => {
-    setPromptStatus("saving");
-    setPromptError(null);
-    try {
-      await api.setProjectPromptApi(projectRoot, promptText);
-      setPromptStatus("saved");
-      setTimeout(() => setPromptStatus("idle"), 2000);
-    } catch (e) {
-      setPromptStatus("error");
-      setPromptError(String((e as Error)?.message || e));
-    }
-  }, [projectRoot, promptText]);
-
+  // ─── model dropdown items ───────────────────────────────────────────
   const knownModels = useMemo<Model[]>(() => {
     const ms = models || [];
     if (model && !ms.some((m) => m.name === model)) {
@@ -274,8 +346,10 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     return ms;
   }, [models, model]);
 
+  const activeDrawerDef = DRAWER_DEFS.find((d) => d.key === activeDrawer) ?? null;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div ref={rootRef} style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {/* TOP BAR */}
       <div
         style={{
@@ -289,15 +363,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         }}
       >
         {onBackToChat && (
-          <button
-            onClick={onBackToChat}
-            className="soft-btn"
-            style={{ fontSize: 12, padding: "5px 10px" }}
-            title="Назад к обычному чату с Elira"
-          >
-            <IconText icon={ArrowLeft} size={13} gap={6}>
-              Назад
-            </IconText>
+          <button onClick={onBackToChat} className="soft-btn" style={{ fontSize: 12, padding: "5px 10px" }} title="Назад к обычному чату с Elira">
+            <IconText icon={ArrowLeft} size={13} gap={6}>Назад</IconText>
           </button>
         )}
 
@@ -310,7 +377,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             spellCheck={false}
             title="Корень проекта для code-агента"
             style={{
-              width: 240,
+              width: 220,
               padding: "5px 8px",
               borderRadius: 6,
               border: "1px solid var(--border)",
@@ -338,8 +405,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
               color: "var(--text-primary)",
               fontSize: 11,
               outline: "none",
-              minWidth: 180,
-              maxWidth: 280,
+              minWidth: 170,
+              maxWidth: 260,
               fontFamily: "var(--font-mono)",
             }}
           >
@@ -354,13 +421,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
               </option>
             ))}
           </select>
-          <button
-            onClick={loadModels}
-            disabled={modelsLoading}
-            className="soft-btn"
-            title="Обновить список моделей"
-            style={{ padding: "5px 7px", fontSize: 11, opacity: modelsLoading ? 0.6 : 1 }}
-          >
+          <button onClick={loadModels} disabled={modelsLoading} className="soft-btn" title="Обновить список моделей" style={{ padding: "5px 7px", fontSize: 11, opacity: modelsLoading ? 0.6 : 1 }}>
             <UiIcon icon={RefreshCw} size={11} />
           </button>
         </div>
@@ -374,17 +435,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             value={maxSteps}
             onChange={(e) => setMaxSteps(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
             title="Максимум tool-call шагов в одном запуске"
-            style={{
-              width: 50,
-              padding: "5px 6px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg-input)",
-              color: "var(--text-primary)",
-              fontSize: 11,
-              outline: "none",
-              fontFamily: "var(--font-mono)",
-            }}
+            style={{ width: 50, padding: "5px 6px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 11, outline: "none", fontFamily: "var(--font-mono)" }}
           />
         </div>
 
@@ -393,17 +444,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           <select
             value={numCtx}
             onChange={(e) => setNumCtx(Number(e.target.value) || DEFAULT_NUM_CTX)}
-            title="Размер окна контекста Ollama (num_ctx). Сохраняется per-model. Больше = агент помнит дольше, но жрёт VRAM."
-            style={{
-              padding: "5px 7px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg-input)",
-              color: "var(--text-primary)",
-              fontSize: 11,
-              outline: "none",
-              fontFamily: "var(--font-mono)",
-            }}
+            title="Размер окна контекста Ollama (num_ctx). Per-model."
+            style={{ padding: "5px 7px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 11, outline: "none", fontFamily: "var(--font-mono)" }}
           >
             {(CTX_OPTIONS.includes(numCtx) ? CTX_OPTIONS : [numCtx, ...CTX_OPTIONS]).map((n) => (
               <option key={n} value={n}>{n.toLocaleString()}</option>
@@ -411,31 +453,16 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </select>
         </div>
 
-        <button
-          onClick={openPromptEditor}
-          className="soft-btn"
-          title="Редактировать .elira/agent.md — проектный системный промпт"
-          style={{ fontSize: 11, padding: "5px 10px" }}
-        >
-          <IconText icon={FileText} size={12} gap={5}>
-            Промпт проекта
-          </IconText>
+        <button onClick={openPromptEditor} className="soft-btn" title="Редактировать .elira/agent.md" style={{ fontSize: 11, padding: "5px 10px" }}>
+          <IconText icon={FileText} size={12} gap={5}>Промпт</IconText>
         </button>
 
-        <button
-          onClick={runIndex}
-          disabled={indexing}
-          className="soft-btn"
-          title="Проиндексировать файлы проекта в RAG: агент сможет искать код семантически через инструмент recall"
-          style={{ fontSize: 11, padding: "5px 10px", opacity: indexing ? 0.6 : 1 }}
-        >
-          <IconText icon={Database} size={12} gap={5}>
-            {indexing ? "Индексирую..." : "Индексировать"}
-          </IconText>
+        <button onClick={runIndex} disabled={indexing} className="soft-btn" title="Проиндексировать проект в RAG" style={{ fontSize: 11, padding: "5px 10px", opacity: indexing ? 0.6 : 1 }}>
+          <IconText icon={Database} size={12} gap={5}>{indexing ? "Индексирую..." : "Индексировать"}</IconText>
         </button>
 
         <label
-          title="Сохранять короткое summary каждого успешного запуска агента в RAG (категория agent_turn). Агент сможет «вспомнить» прошлые задачи через recall."
+          title="Сохранять short summary каждого успешного запуска агента в RAG"
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -449,25 +476,38 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             background: autoRemember ? "var(--accent-soft, rgba(99,102,241,0.15))" : "transparent",
           }}
         >
-          <input
-            type="checkbox"
-            checked={autoRemember}
-            onChange={(e) => setAutoRemember(e.target.checked)}
-            style={{ margin: 0 }}
-          />
+          <input type="checkbox" checked={autoRemember} onChange={(e) => setAutoRemember(e.target.checked)} style={{ margin: 0 }} />
           <span>Запоминать</span>
         </label>
 
-        <button
-          onClick={() => setIdeCollapsed((v) => !v)}
-          className="soft-btn"
-          title={ideCollapsed ? "Показать IDE-панель справа" : "Скрыть IDE-панель справа"}
-          style={{ marginLeft: "auto", fontSize: 11, padding: "5px 9px" }}
-        >
-          <IconText icon={ideCollapsed ? ChevronLeft : ChevronRight} size={12} gap={4}>
-            {ideCollapsed ? "Показать IDE" : "Скрыть IDE"}
-          </IconText>
-        </button>
+        {/* DRAWER ICONS — right-aligned */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", paddingLeft: 8, borderLeft: "1px solid var(--border-light)" }}>
+          {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
+            const isActive = activeDrawer === key;
+            return (
+              <button
+                key={key}
+                onClick={() => toggleDrawer(key)}
+                title={`${label}  (Ctrl+${hotkey})`}
+                className="soft-btn"
+                style={{
+                  padding: "5px 8px",
+                  fontSize: 11,
+                  border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
+                  background: isActive ? "var(--accent-dim)" : "transparent",
+                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  transition: "all 0.12s",
+                }}
+              >
+                <UiIcon icon={icon} size={13} />
+                <span style={{ fontSize: 10 }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Index status banner */}
@@ -487,11 +527,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         >
           <UiIcon icon={Database} size={12} />
           <span style={{ flex: 1 }}>{indexError || indexStatus}</span>
-          <button
-            onClick={() => { setIndexError(null); setIndexStatus(null); }}
-            className="soft-btn"
-            style={{ fontSize: 10, padding: "2px 6px" }}
-          >
+          <button onClick={() => { setIndexError(null); setIndexStatus(null); }} className="soft-btn" style={{ fontSize: 10, padding: "2px 6px" }}>
             <UiIcon icon={X} size={10} />
           </button>
         </div>
@@ -499,84 +535,37 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
 
       {/* Project-prompt editor (inline) */}
       {promptOpen && (
-        <div
-          style={{
-            padding: "10px 14px",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--bg-surface)",
-            flexShrink: 0,
-          }}
-        >
+        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", background: "var(--bg-surface)", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
             <UiIcon icon={FileText} size={13} />
             <div style={{ fontSize: 12, fontWeight: 500 }}>Проектный системный промпт</div>
-            <code style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-              .elira/agent.md
-            </code>
+            <code style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>.elira/agent.md</code>
             <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
               {promptStatus === "saved" && <span style={{ fontSize: 10, color: "#4ade80" }}>✓ Сохранено</span>}
               {promptStatus === "error" && <span style={{ fontSize: 10, color: "#ff6b6b" }}>✕ Ошибка</span>}
-              <button
-                onClick={savePrompt}
-                disabled={promptStatus === "saving" || promptLoading}
-                className="soft-btn"
-                style={{ fontSize: 11, padding: "4px 10px", opacity: promptStatus === "saving" || promptLoading ? 0.5 : 1 }}
-              >
-                <IconText icon={Save} size={12} gap={4}>
-                  Сохранить
-                </IconText>
+              <button onClick={savePrompt} disabled={promptStatus === "saving" || promptLoading} className="soft-btn" style={{ fontSize: 11, padding: "4px 10px", opacity: promptStatus === "saving" || promptLoading ? 0.5 : 1 }}>
+                <IconText icon={Save} size={12} gap={4}>Сохранить</IconText>
               </button>
-              <button
-                onClick={() => setPromptOpen(false)}
-                className="soft-btn"
-                style={{ fontSize: 11, padding: "4px 8px" }}
-              >
+              <button onClick={() => setPromptOpen(false)} className="soft-btn" style={{ fontSize: 11, padding: "4px 8px" }}>
                 <UiIcon icon={X} size={12} />
               </button>
             </div>
           </div>
-          {promptError && (
-            <div style={{ fontSize: 10, color: "#ff6b6b", marginBottom: 6, fontFamily: "var(--font-mono)" }}>{promptError}</div>
-          )}
+          {promptError && <div style={{ fontSize: 10, color: "#ff6b6b", marginBottom: 6, fontFamily: "var(--font-mono)" }}>{promptError}</div>}
           <textarea
             value={promptText}
             onChange={(e) => setPromptText(e.target.value)}
             disabled={promptLoading}
-            placeholder="Например:\n- Стиль кода: PEP8, type hints обязательны\n- Не трогать backend/legacy/\n- Все коммиты на русском, conventional commits"
+            placeholder="Правила проекта: стиль кода, запрещённые папки, конвенции коммитов..."
             spellCheck={false}
-            style={{
-              width: "100%",
-              minHeight: 140,
-              maxHeight: 320,
-              padding: "8px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg-input)",
-              color: "var(--text-primary)",
-              fontSize: 11,
-              outline: "none",
-              fontFamily: "var(--font-mono)",
-              resize: "vertical",
-              boxSizing: "border-box",
-              lineHeight: 1.5,
-            }}
+            style={{ width: "100%", minHeight: 120, maxHeight: 300, padding: "8px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 11, outline: "none", fontFamily: "var(--font-mono)", resize: "vertical", boxSizing: "border-box", lineHeight: 1.5 }}
           />
-          <div style={{ marginTop: 6, fontSize: 10, color: "var(--text-muted)" }}>
-            Содержимое подгружается агентом в системный промпт на каждом запуске. Полезно для проектных правил, стиля,
-            запрещённых директорий, конвенций коммитов.
-          </div>
         </div>
       )}
 
-      {/* SPLIT PANES */}
-      <div ref={splitRef} style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        <div
-          style={{
-            flex: ideCollapsed ? "1 1 100%" : `0 0 ${splitPct}%`,
-            minWidth: 0,
-            borderRight: ideCollapsed ? "none" : "1px solid var(--border)",
-          }}
-        >
+      {/* MAIN ROW: chat full-width OR chat + drawer */}
+      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <CodeAgentChatShell
             projectRoot={projectRoot}
             model={model}
@@ -587,18 +576,13 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           />
         </div>
 
-        {!ideCollapsed && (
+        {activeDrawer && (
           <>
+            {/* Resize handle */}
             <div
-              onMouseDown={startDrag}
-              style={{
-                width: 5,
-                cursor: "col-resize",
-                background: "var(--border)",
-                flexShrink: 0,
-                position: "relative",
-              }}
-              title="Тяни чтобы изменить размер"
+              onMouseDown={startResize}
+              style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
+              title="Тяни чтобы изменить ширину"
             >
               <div
                 style={{
@@ -613,15 +597,56 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 }}
               />
             </div>
-            <div style={{ flex: `0 0 calc(${100 - splitPct}% - 5px)`, minWidth: 0 }}>
-              <IdeWorkspaceShell
-                messages={messages as never}
-                libraryFiles={libraryFiles as never}
-                setLibraryFiles={setLibraryFiles as never}
-                onSendToChat={onSendToChat}
-                autoOpenFile={autoOpen?.path}
-                autoOpenNonce={autoOpen?.nonce}
-              />
+
+            {/* Drawer */}
+            <div
+              style={{
+                flex: `0 0 ${drawerWidth}px`,
+                minWidth: MIN_DRAWER_WIDTH,
+                maxWidth: MAX_DRAWER_WIDTH,
+                display: "flex",
+                flexDirection: "column",
+                background: "var(--bg-root)",
+                borderLeft: "1px solid var(--border)",
+                boxShadow: "var(--shadow-float)",
+                animation: "drawerSlideIn 200ms ease",
+              }}
+            >
+              {/* Drawer header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  padding: "8px 12px",
+                  borderBottom: "1px solid var(--border)",
+                  flexShrink: 0,
+                  gap: 8,
+                }}
+              >
+                {activeDrawerDef && <UiIcon icon={activeDrawerDef.icon} size={14} />}
+                <div style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>{activeDrawerDef?.label}</div>
+                <button
+                  onClick={closeDrawer}
+                  className="soft-btn"
+                  title="Закрыть (Esc)"
+                  style={{ fontSize: 11, padding: "4px 8px" }}
+                >
+                  <IconText icon={ChevronLeft} size={11} gap={3}>Esc</IconText>
+                </button>
+              </div>
+
+              {/* Drawer body — single IDE view via forceView */}
+              <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+                <IdeWorkspaceShell
+                  messages={messages as never}
+                  libraryFiles={libraryFiles as never}
+                  setLibraryFiles={setLibraryFiles as never}
+                  onSendToChat={onSendToChat}
+                  autoOpenFile={autoOpen?.path}
+                  autoOpenNonce={autoOpen?.nonce}
+                  forceView={activeDrawer}
+                />
+              </div>
             </div>
           </>
         )}

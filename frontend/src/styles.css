@@ -315,6 +315,12 @@ select, option {
 .chat-list-title { font-weight: 400; flex: 1; min-width: 0; }
 .chat-list-title.truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Slide-in animation for code-workspace drawers */
+@keyframes drawerSlideIn {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
 /* Pulsing dot next to chats that are currently streaming a response */
 .chat-streaming-dot {
   flex-shrink: 0;
