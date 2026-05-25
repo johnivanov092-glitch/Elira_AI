@@ -20,7 +20,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  ChevronLeft,
   Cpu,
   Database,
   FileText,
@@ -247,8 +246,14 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   }, []);
 
   // ─── drawer behavior ────────────────────────────────────────────────
+  // Toolbar icon: toggle. Clicking active icon closes the drawer.
   const toggleDrawer = useCallback((key: DrawerKey) => {
     setActiveDrawer((cur) => (cur === key ? null : key));
+  }, []);
+
+  // Drawer tab: switch only. Never closes the drawer (close is a separate X).
+  const switchDrawerView = useCallback((key: DrawerKey) => {
+    setActiveDrawer(key);
   }, []);
 
   const closeDrawer = useCallback(() => setActiveDrawer(null), []);
@@ -612,26 +617,65 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 animation: "drawerSlideIn 200ms ease",
               }}
             >
-              {/* Drawer header */}
+              {/* Drawer header: in-drawer tabs + close button */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  padding: "8px 12px",
+                  padding: "6px 8px",
                   borderBottom: "1px solid var(--border)",
                   flexShrink: 0,
-                  gap: 8,
+                  gap: 2,
+                  overflow: "hidden",
                 }}
               >
-                {activeDrawerDef && <UiIcon icon={activeDrawerDef.icon} size={14} />}
-                <div style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>{activeDrawerDef?.label}</div>
+                {/* Compact tab row — 5 buttons that share the drawer width.
+                    Shows only the icon at narrow widths, icon + label when
+                    there is room. */}
+                <div style={{ display: "flex", gap: 2, flex: 1, minWidth: 0, overflow: "hidden" }}>
+                  {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
+                    const isActive = activeDrawer === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => switchDrawerView(key)}
+                        title={`${label}  (Ctrl+${hotkey})`}
+                        className="soft-btn"
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          padding: "5px 6px",
+                          fontSize: 11,
+                          border: `1px solid ${isActive ? "var(--accent)" : "transparent"}`,
+                          background: isActive ? "var(--accent-dim)" : "transparent",
+                          color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: 5,
+                          overflow: "hidden",
+                          transition: "all 0.12s",
+                          fontWeight: isActive ? 600 : 400,
+                        }}
+                      >
+                        <UiIcon icon={icon} size={13} />
+                        {/* Show label only when drawer is wide enough */}
+                        {drawerWidth > 360 && (
+                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>
+                            {label}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
                 <button
                   onClick={closeDrawer}
                   className="soft-btn"
                   title="Закрыть (Esc)"
-                  style={{ fontSize: 11, padding: "4px 8px" }}
+                  style={{ fontSize: 11, padding: "5px 8px", marginLeft: 4, flexShrink: 0 }}
                 >
-                  <IconText icon={ChevronLeft} size={11} gap={3}>Esc</IconText>
+                  <UiIcon icon={X} size={12} />
                 </button>
               </div>
 
