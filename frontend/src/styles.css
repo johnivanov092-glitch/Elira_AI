@@ -62,6 +62,121 @@
   --scrollbar-thumb-hover: rgba(0,0,0,0.3);
 }
 
+/* ─── Cursor / Linear — современный SaaS ─── */
+[data-theme="cursor"] {
+  --bg-root: #0a0a0f;
+  --bg-sidebar: #08080d;
+  --bg-surface: rgba(255,255,255,0.025);
+  --bg-surface-hover: rgba(255,255,255,0.055);
+  --bg-surface-active: rgba(255,255,255,0.08);
+  --bg-input: rgba(255,255,255,0.03);
+  --border: rgba(255,255,255,0.06);
+  --border-light: rgba(255,255,255,0.04);
+  --border-focus: rgba(255,94,31,0.5);
+  --text-primary: #ededf3;
+  --text-secondary: #9090a3;
+  --text-muted: #5a5a6e;
+  --accent: #ff5e1f;
+  --accent-dim: rgba(255,94,31,0.12);
+  --shadow-float: 0 8px 32px rgba(0,0,0,0.5);
+  --code-bg: rgba(0,0,0,0.4);
+  --msg-user-bg: rgba(255,94,31,0.07);
+  --msg-assistant-bg: rgba(255,255,255,0.02);
+  --scrollbar-thumb: rgba(255,255,255,0.08);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.16);
+}
+
+/* ─── Cyber / Terminal — неон ─── */
+[data-theme="cyber"] {
+  --bg-root: #06080a;
+  --bg-sidebar: #02040a;
+  --bg-surface: rgba(0,255,159,0.03);
+  --bg-surface-hover: rgba(0,255,159,0.06);
+  --bg-surface-active: rgba(0,255,159,0.1);
+  --bg-input: rgba(0,30,20,0.5);
+  --border: rgba(0,255,159,0.15);
+  --border-light: rgba(0,255,159,0.08);
+  --border-focus: rgba(0,255,159,0.5);
+  --text-primary: #d4ffe0;
+  --text-secondary: #82c098;
+  --text-muted: #4a8060;
+  --accent: #00ff9f;
+  --accent-dim: rgba(0,255,159,0.12);
+  --shadow-float: 0 0 24px rgba(0,255,159,0.18);
+  --code-bg: rgba(0,40,25,0.6);
+  --msg-user-bg: rgba(0,255,159,0.08);
+  --msg-assistant-bg: rgba(0,30,20,0.3);
+  --scrollbar-thumb: rgba(0,255,159,0.18);
+  --scrollbar-thumb-hover: rgba(0,255,159,0.35);
+  --font-body: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* ─── Glass — стеклянный frost ─── */
+[data-theme="glass"] {
+  --bg-root: #14081e;
+  --bg-sidebar: rgba(20,8,30,0.55);
+  --bg-surface: rgba(255,255,255,0.07);
+  --bg-surface-hover: rgba(255,255,255,0.11);
+  --bg-surface-active: rgba(255,255,255,0.15);
+  --bg-input: rgba(255,255,255,0.06);
+  --border: rgba(255,255,255,0.13);
+  --border-light: rgba(255,255,255,0.07);
+  --border-focus: rgba(192,132,252,0.6);
+  --text-primary: #f5f3ff;
+  --text-secondary: #c4b5fd;
+  --text-muted: #8b7ba8;
+  --accent: #c084fc;
+  --accent-dim: rgba(192,132,252,0.16);
+  --shadow-float: 0 16px 48px rgba(0,0,0,0.55);
+  --code-bg: rgba(255,255,255,0.06);
+  --msg-user-bg: rgba(192,132,252,0.12);
+  --msg-assistant-bg: rgba(255,255,255,0.04);
+  --scrollbar-thumb: rgba(255,255,255,0.16);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.27);
+}
+/* Glass needs an actual gradient under it + backdrop blur on surfaces */
+[data-theme="glass"] body {
+  background-image:
+    radial-gradient(circle at 15% -10%, rgba(192,132,252,0.30), transparent 55%),
+    radial-gradient(circle at 85% 110%, rgba(6,182,212,0.22), transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(244,114,182,0.12), transparent 60%);
+  background-attachment: fixed;
+}
+[data-theme="glass"] .elira-sidebar,
+[data-theme="glass"] .elira-topbar,
+[data-theme="glass"] .settings-tile,
+[data-theme="glass"] .composer-selectors select,
+[data-theme="glass"] .topbar-select,
+[data-theme="glass"] .skill-chip,
+[data-theme="glass"] .soft-btn {
+  backdrop-filter: blur(22px) saturate(120%);
+  -webkit-backdrop-filter: blur(22px) saturate(120%);
+}
+
+/* ─── Minimal — Notion ghost ─── */
+[data-theme="minimal"] {
+  --bg-root: #fafafa;
+  --bg-sidebar: #f4f4f5;
+  --bg-surface: rgba(0,0,0,0.018);
+  --bg-surface-hover: rgba(0,0,0,0.035);
+  --bg-surface-active: rgba(0,0,0,0.06);
+  --bg-input: rgba(0,0,0,0.025);
+  --border: rgba(0,0,0,0.08);
+  --border-light: rgba(0,0,0,0.04);
+  --border-focus: rgba(0,0,0,0.25);
+  --text-primary: #18181b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+  --accent: #18181b;
+  --accent-dim: rgba(0,0,0,0.05);
+  --shadow-float: 0 1px 3px rgba(0,0,0,0.06);
+  --code-bg: rgba(0,0,0,0.035);
+  --msg-user-bg: rgba(0,0,0,0.025);
+  --msg-assistant-bg: transparent;
+  --scrollbar-thumb: rgba(0,0,0,0.12);
+  --scrollbar-thumb-hover: rgba(0,0,0,0.22);
+}
+
 html, body, #root {
   height: 100%;
   background: var(--bg-root);

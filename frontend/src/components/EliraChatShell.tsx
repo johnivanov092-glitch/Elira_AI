@@ -281,7 +281,7 @@ export default function EliraChatShell(): JSX.Element {
         if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
         setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
       }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "T") { e.preventDefault(); setTheme(t => t === "dark" ? "light" : "dark"); }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "T") { e.preventDefault(); setTheme(t => { const order = ["dark","light","cursor","cyber","glass","minimal"]; const i = order.indexOf(t); return order[(i + 1) % order.length]; }); }
     }
     window.addEventListener("keydown", onGlobalKey);
     return () => window.removeEventListener("keydown", onGlobalKey);
@@ -847,9 +847,9 @@ export default function EliraChatShell(): JSX.Element {
         {sideTab === "library" && <div className="sidebar-empty">→ Центральное окно</div>}
         {sideTab === "project" && <div className="sidebar-empty">→ Центральное окно</div>}
         <div style={{padding:"8px 12px",borderTop:"1px solid var(--border)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-          <button onClick={()=>setTheme(t=>t==="dark"?"light":"dark")} style={{background:"none",border:"1px solid var(--border)",borderRadius:6,padding:"3px 8px",cursor:"pointer",color:"var(--text-muted)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6}} title="Ctrl+Shift+T">
-            <UiIcon icon={theme==="dark" ? Sun : Moon} size={13} />
-            <span>{theme==="dark"?"Светлая":"Тёмная"}</span>
+          <button onClick={()=>setTheme(t=>{ const order = ["dark","light","cursor","cyber","glass","minimal"]; const i = order.indexOf(t); return order[(i + 1) % order.length]; })} style={{background:"none",border:"1px solid var(--border)",borderRadius:6,padding:"3px 8px",cursor:"pointer",color:"var(--text-muted)",fontSize:11,display:"inline-flex",alignItems:"center",gap:6}} title={`Тема: ${theme}. Ctrl+Shift+T — следующая.`}>
+            <UiIcon icon={theme==="light"||theme==="minimal" ? Sun : Moon} size={13} />
+            <span style={{textTransform:"capitalize"}}>{theme}</span>
           </button>
           <span style={{fontSize:9,color:"var(--text-muted)",opacity:0.5}}>Ctrl+N чат</span>
         </div>
@@ -1266,11 +1266,55 @@ export default function EliraChatShell(): JSX.Element {
                   </select>
                   <div className="settings-desc">{PROFILE_DESCRIPTIONS[settingsProfile]}</div>
                 </div>
-                <div className="settings-tile">
+                <div className="settings-tile" style={{gridColumn:"1 / -1"}}>
                   <div className="settings-title">Тема оформления</div>
-                  <div style={{display:"flex",gap:8}}>
-                    <button onClick={()=>setTheme("dark")} style={{flex:1,padding:"6px 12px",borderRadius:6,border:"1px solid "+(theme==="dark"?"var(--accent)":"var(--border)"),background:theme==="dark"?"var(--accent-dim)":"transparent",color:"var(--text-primary)",cursor:"pointer",fontSize:12,display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6}}><UiIcon icon={Moon} size={14} />Тёмная</button>
-                    <button onClick={()=>setTheme("light")} style={{flex:1,padding:"6px 12px",borderRadius:6,border:"1px solid "+(theme==="light"?"var(--accent)":"var(--border)"),background:theme==="light"?"var(--accent-dim)":"transparent",color:"var(--text-primary)",cursor:"pointer",fontSize:12,display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6}}><UiIcon icon={Sun} size={14} />Светлая</button>
+                  <div className="settings-desc" style={{marginBottom:8,fontSize:11}}>Клик — мгновенный preview. Ctrl+Shift+T — следующая тема.</div>
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(140px, 1fr))",gap:8}}>
+                    {[
+                      {id:"dark",label:"Тёмная",sub:"Claude-style",bg:"#1a1a1e",accent:"#7c9fff",text:"#e8e8ec"},
+                      {id:"light",label:"Светлая",sub:"чистая",bg:"#f5f5f7",accent:"#4a7aff",text:"#1d1d1f"},
+                      {id:"cursor",label:"Cursor",sub:"SaaS, оранж",bg:"#0a0a0f",accent:"#ff5e1f",text:"#ededf3"},
+                      {id:"cyber",label:"Cyber",sub:"терминал, неон",bg:"#06080a",accent:"#00ff9f",text:"#d4ffe0"},
+                      {id:"glass",label:"Glass",sub:"frost, blur",bg:"#14081e",accent:"#c084fc",text:"#f5f3ff"},
+                      {id:"minimal",label:"Minimal",sub:"Notion-ghost",bg:"#fafafa",accent:"#18181b",text:"#18181b"},
+                    ].map(t => (
+                      <button key={t.id} onClick={()=>setTheme(t.id)} style={{
+                        padding:"8px 10px",
+                        borderRadius:10,
+                        border:"1.5px solid "+(theme===t.id?"var(--accent)":"var(--border)"),
+                        background:theme===t.id?"var(--accent-dim)":"transparent",
+                        color:"var(--text-primary)",
+                        cursor:"pointer",
+                        display:"flex",
+                        flexDirection:"column",
+                        alignItems:"flex-start",
+                        gap:6,
+                        textAlign:"left",
+                        transition:"all 0.15s",
+                      }}>
+                        {/* mini preview swatch */}
+                        <div style={{
+                          width:"100%",
+                          height:42,
+                          borderRadius:6,
+                          background:t.bg,
+                          border:"1px solid rgba(127,127,127,0.2)",
+                          display:"flex",
+                          alignItems:"center",
+                          padding:"0 8px",
+                          gap:6,
+                          overflow:"hidden",
+                        }}>
+                          <span style={{width:8,height:8,borderRadius:"50%",background:t.accent,flexShrink:0}}/>
+                          <span style={{color:t.text,fontSize:11,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.label}</span>
+                          <span style={{flex:1,height:1,background:t.text,opacity:0.15}}/>
+                        </div>
+                        <div style={{display:"flex",flexDirection:"column",gap:1}}>
+                          <span style={{fontSize:12,fontWeight:600}}>{t.label}</span>
+                          <span style={{fontSize:10,color:"var(--text-muted)"}}>{t.sub}</span>
+                        </div>
+                      </button>
+                    ))}
                   </div>
                 </div>
                 <div className="settings-tile" style={{gridColumn:"1 / -1"}}>
