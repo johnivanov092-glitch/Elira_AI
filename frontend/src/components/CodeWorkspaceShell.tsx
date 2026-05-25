@@ -249,9 +249,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     function onMove(e: MouseEvent) {
       if (!drawerDragRef.current || !rootRef.current) return;
       const rect = rootRef.current.getBoundingClientRect();
-      // Drawer lives on the LEFT — width is distance from root's left edge
-      // to the mouse cursor (= the drag handle position).
-      const w = e.clientX - rect.left;
+      // Drawer lives on the RIGHT — width is distance from cursor to root's
+      // right edge (= position of the drag handle).
+      const w = rect.right - e.clientX;
       setDrawerWidth(Math.max(MIN_DRAWER_WIDTH, Math.min(MAX_DRAWER_WIDTH, w)));
     }
     function onUp() {
@@ -403,6 +403,35 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </button>
         )}
 
+        {/* DRAWER ICONS — left-aligned, right after Back */}
+        <div style={{ display: "flex", gap: 4, alignItems: "center", paddingRight: 8, borderRight: "1px solid var(--border-light)" }}>
+          {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
+            const isActive = activeDrawer === key;
+            return (
+              <button
+                key={key}
+                onClick={() => toggleDrawer(key)}
+                title={`${label}  (Ctrl+${hotkey})`}
+                className="soft-btn"
+                style={{
+                  padding: "5px 8px",
+                  fontSize: 11,
+                  border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
+                  background: isActive ? "var(--accent-dim)" : "transparent",
+                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  transition: "all 0.12s",
+                }}
+              >
+                <UiIcon icon={icon} size={13} />
+                <span style={{ fontSize: 10 }}>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <UiIcon icon={FolderOpen} size={13} />
           <input
@@ -525,35 +554,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           <input type="checkbox" checked={autoRemember} onChange={(e) => setAutoRemember(e.target.checked)} style={{ margin: 0 }} />
           <span>Запоминать</span>
         </label>
-
-        {/* DRAWER ICONS — right-aligned */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center", paddingLeft: 8, borderLeft: "1px solid var(--border-light)" }}>
-          {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
-            const isActive = activeDrawer === key;
-            return (
-              <button
-                key={key}
-                onClick={() => toggleDrawer(key)}
-                title={`${label}  (Ctrl+${hotkey})`}
-                className="soft-btn"
-                style={{
-                  padding: "5px 8px",
-                  fontSize: 11,
-                  border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
-                  background: isActive ? "var(--accent-dim)" : "transparent",
-                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 5,
-                  transition: "all 0.12s",
-                }}
-              >
-                <UiIcon icon={icon} size={13} />
-                <span style={{ fontSize: 10 }}>{label}</span>
-              </button>
-            );
-          })}
-        </div>
       </div>
 
       {/* Index status banner */}
@@ -609,11 +609,43 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         </div>
       )}
 
-      {/* MAIN ROW: optional left drawer + chat full-width */}
+      {/* MAIN ROW: chat full-width + optional right drawer */}
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        {/* Chat — always present, fills remaining space */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <CodeAgentChatShell
+            projectRoot={projectRoot}
+            model={model}
+            maxSteps={maxSteps}
+            numCtx={numCtx}
+            autoRemember={autoRemember}
+            onAgentTouchedFile={handleAgentTouchedFile}
+          />
+        </div>
+
         {activeDrawer && (
           <>
-            {/* Drawer (LEFT side) */}
+            {/* Resize handle between chat (left) and drawer (right) */}
+            <div
+              onMouseDown={startResize}
+              style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
+              title="Тяни чтобы изменить ширину"
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  transform: "translate(-50%, -50%)",
+                  width: 1,
+                  height: 24,
+                  background: "var(--text-muted)",
+                  opacity: 0.4,
+                }}
+              />
+            </div>
+
+            {/* Drawer (RIGHT side) */}
             <div
               style={{
                 flex: `0 0 ${drawerWidth}px`,
@@ -622,9 +654,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 display: "flex",
                 flexDirection: "column",
                 background: "var(--bg-root)",
-                borderRight: "1px solid var(--border)",
+                borderLeft: "1px solid var(--border)",
                 boxShadow: "var(--shadow-float)",
-                animation: "drawerSlideInLeft 200ms ease",
+                animation: "drawerSlideIn 200ms ease",
               }}
             >
               {/* Drawer header: in-drawer tabs + close button */}
@@ -702,40 +734,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 />
               </div>
             </div>
-
-            {/* Resize handle between drawer (left) and chat (right) */}
-            <div
-              onMouseDown={startResize}
-              style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
-              title="Тяни чтобы изменить ширину"
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  transform: "translate(-50%, -50%)",
-                  width: 1,
-                  height: 24,
-                  background: "var(--text-muted)",
-                  opacity: 0.4,
-                }}
-              />
-            </div>
           </>
         )}
-
-        {/* Chat — always present, fills remaining space */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <CodeAgentChatShell
-            projectRoot={projectRoot}
-            model={model}
-            maxSteps={maxSteps}
-            numCtx={numCtx}
-            autoRemember={autoRemember}
-            onAgentTouchedFile={handleAgentTouchedFile}
-          />
-        </div>
       </div>
     </div>
   );
