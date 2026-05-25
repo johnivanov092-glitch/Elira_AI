@@ -9,8 +9,16 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.application.chat.planner_v2 import PlannerV2Service
+from app.application.chat.planner_v2 import (
+    PlannerV2Service,
+    get_defaults_as_strings as planner_get_defaults,
+    refresh_planner,
+)
 from app.application.chat.runtime import run_agent, run_agent_stream
+from app.application.elira_memory.settings import (
+    get_planner_keywords,
+    save_planner_keywords,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -27,6 +35,41 @@ def classify(payload: ClassifyRequest) -> dict[str, Any]:
     """
     plan = PlannerV2Service().plan(payload.query)
     return plan
+
+
+class KeywordsWriteRequest(BaseModel):
+    keywords: dict[str, list[str]] = Field(default_factory=dict)
+
+
+@router.get("/keywords")
+def get_keywords() -> dict[str, Any]:
+    """Return the effective keyword bags used by the planner.
+
+    Shape: {
+      "effective": {route: [str, str, ...]},  # what planner actually uses
+      "user":      {route: [str, ...]},        # what's saved in DB (subset)
+      "defaults":  {route: [str, ...]},        # shipped defaults (full)
+    }
+    """
+    user = get_planner_keywords()
+    defaults = planner_get_defaults()
+    effective: dict[str, list[str]] = {}
+    for route, default_list in defaults.items():
+        if user.get(route):
+            effective[route] = user[route]
+        else:
+            effective[route] = default_list
+    return {"effective": effective, "user": user, "defaults": defaults}
+
+
+@router.put("/keywords")
+def put_keywords(payload: KeywordsWriteRequest) -> dict[str, Any]:
+    """Persist user keyword overrides and immediately recompile the
+    planner. Pass {} to revert to shipped defaults.
+    """
+    saved = save_planner_keywords(payload.keywords)
+    summary = refresh_planner(saved)
+    return {"ok": True, "saved": saved, "active_counts": summary}
 
 
 class ChatRequest(BaseModel):

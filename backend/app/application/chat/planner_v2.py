@@ -253,19 +253,101 @@ def _compile_bag(bag: list[tuple[str, int]]) -> list[tuple[re.Pattern[str], int]
     return [(_compile_pattern(text), weight) for text, weight in bag]
 
 
-# Pre-compile patterns once at import time.
-_BAGS: dict[str, list[tuple[re.Pattern[str], int]]] = {
-    "research": _compile_bag(_RESEARCH_WORDS),
-    "project": _compile_bag(_PROJECT_WORDS),
-    "code": _compile_bag(_CODE_WORDS),
-    "multi_agent": _compile_bag(_MULTI_AGENT_WORDS),
-    "python": _compile_bag(_PYTHON_WORDS),
-    "memory": _compile_bag(_MEMORY_WORDS),
-    "library": _compile_bag(_LIBRARY_WORDS),
-    "image": _compile_bag(_IMAGE_WORDS),
-    "chat_only": _compile_bag(_CHAT_ONLY_PATTERNS),
-    "needs_web": _compile_bag(_NEEDS_WEB_PATTERNS),
+# Default (code-shipped) bag definitions — fallback when no DB override.
+_DEFAULT_BAGS_SRC: dict[str, list[tuple[str, int]]] = {
+    "research": _RESEARCH_WORDS,
+    "project": _PROJECT_WORDS,
+    "code": _CODE_WORDS,
+    "multi_agent": _MULTI_AGENT_WORDS,
+    "python": _PYTHON_WORDS,
+    "memory": _MEMORY_WORDS,
+    "library": _LIBRARY_WORDS,
+    "image": _IMAGE_WORDS,
+    "chat_only": _CHAT_ONLY_PATTERNS,
+    "needs_web": _NEEDS_WEB_PATTERNS,
 }
+
+# Pre-compile from defaults at import time. Mutated by refresh_planner().
+_BAGS: dict[str, list[tuple[re.Pattern[str], int]]] = {
+    key: _compile_bag(src) for key, src in _DEFAULT_BAGS_SRC.items()
+}
+
+
+def _parse_user_keyword(item: str) -> tuple[str, int]:
+    """User keywords are strings, optionally with ':<weight>' suffix.
+
+    Examples:
+      'найди'      → ('найди', 1)
+      'найди:3'    → ('найди', 3)
+      'код*'       → ('код*', 1)
+      'напиши код:3' → ('напиши код', 3)
+    """
+    text = str(item).strip()
+    if ":" in text:
+        # split on the LAST colon so multi-word triggers don't break
+        head, _, tail = text.rpartition(":")
+        try:
+            weight = int(tail.strip())
+            return (head.strip(), max(1, weight))
+        except ValueError:
+            pass
+    # auto-weight by word count
+    words = max(1, len(text.rstrip("*").split()))
+    return (text, words)
+
+
+def refresh_planner(user_bags: dict[str, list[str]] | None = None) -> dict[str, int]:
+    """Recompile pattern bags. If `user_bags` is given, those keys override
+    the shipped defaults. Bags not present in user_bags fall back to defaults.
+
+    Returns a summary {bag_key: keyword_count} for diagnostics.
+    """
+    user_bags = user_bags or {}
+    summary: dict[str, int] = {}
+    for key, default_src in _DEFAULT_BAGS_SRC.items():
+        user_items = user_bags.get(key)
+        if isinstance(user_items, list) and user_items:
+            parsed = [_parse_user_keyword(it) for it in user_items]
+            _BAGS[key] = _compile_bag(parsed)
+            summary[key] = len(parsed)
+        else:
+            _BAGS[key] = _compile_bag(default_src)
+            summary[key] = len(default_src)
+    return summary
+
+
+def _autoload_user_bags() -> None:
+    """One-shot at module import: try to load user overrides from DB. If the
+    DB layer isn't ready or empty, defaults stay in place.
+    """
+    try:
+        from app.application.elira_memory.settings import get_planner_keywords
+        user = get_planner_keywords()
+        if user:
+            refresh_planner(user)
+    except Exception:
+        # DB / settings layer not available yet — keep defaults
+        pass
+
+
+_autoload_user_bags()
+
+
+def get_defaults_as_strings() -> dict[str, list[str]]:
+    """Expose the shipped defaults as plain ['text:weight', ...] lists for
+    the UI's 'reset to defaults' / seed flow.
+    """
+    out: dict[str, list[str]] = {}
+    for key, items in _DEFAULT_BAGS_SRC.items():
+        lines: list[str] = []
+        for text, weight in items:
+            auto_weight = max(1, len(text.rstrip("*").split()))
+            if weight == auto_weight:
+                lines.append(text)
+            else:
+                lines.append(f"{text}:{weight}")
+        out[key] = lines
+    return out
 
 
 def _score(query: str, bag_key: str) -> int:

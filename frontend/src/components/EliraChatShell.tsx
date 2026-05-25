@@ -13,6 +13,7 @@ import { LucideIcon } from "lucide-react";
 import { api, executeStream } from "../api/ide";
 import { waitForBackend } from "../api/client";
 import CodeWorkspaceShell from "./CodeWorkspaceShell";
+import PlannerKeywordsPanel from "./PlannerKeywordsPanel";
 import MarkdownRenderer from "./MarkdownRenderer";
 import ArtifactPanel from "./ArtifactPanel";
 import MemoryPanel from "./MemoryPanel";
@@ -1299,6 +1300,12 @@ export default function EliraChatShell(): JSX.Element {
                 </div>
               </div>
               <div className="settings-desc" style={{marginTop:12,fontSize:10,color:"var(--text-muted)"}}>Горячие клавиши: Ctrl+N новый чат · Escape стоп · Ctrl+Shift+T тема</div>
+
+              {/* Planner keywords editor — controls which route each query goes to */}
+              <div style={{marginTop:18,paddingTop:14,borderTop:"1px solid var(--border)"}}>
+                <PlannerKeywordsPanel />
+              </div>
+
               <button
                 style={{marginTop:14,padding:"8px 24px",borderRadius:8,border:"1px solid var(--accent)",background:settingsSaved?"rgba(16,185,129,0.15)":"var(--accent)",color:settingsSaved?"#10b981":"#fff",cursor:"pointer",fontSize:13,fontWeight:600,transition:"all 0.2s"}}
                 onClick={async()=>{
