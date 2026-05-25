@@ -28,18 +28,23 @@ import {
   FolderOpen,
   GitBranch,
   History,
+  Loader2,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   RefreshCw,
   Save,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHistory } from "./CodeAgentChatShell";
+import type { CodeSessionMeta } from "../api/codeAgent";
 import { api } from "../api/ide";
 import { UiIcon, IconText } from "./StatusPanels";
 
@@ -50,8 +55,13 @@ const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
 const AUTO_REMEMBER_KEY = "elira_code_agent_auto_remember";
 const DRAWER_KEY = "elira_code_workspace_drawer";
 const DRAWER_WIDTH_KEY = "elira_code_workspace_drawer_width";
-const SESSIONS_INDEX_KEY = "elira_code_agent_sessions_index_v1";
 const SESSIONS_SIDEBAR_KEY = "elira_code_workspace_sidebar_collapsed";
+const SESSIONS_SIDEBAR_WIDTH_KEY = "elira_code_workspace_sidebar_width";
+const ACTIVE_SESSION_KEY = "elira_code_agent_active_session_id";
+const LEGACY_SESSIONS_INDEX_KEY = "elira_code_agent_sessions_index_v1";
+const DEFAULT_SIDEBAR_WIDTH = 220;
+const MIN_SIDEBAR_WIDTH = 160;
+const MAX_SIDEBAR_WIDTH = 380;
 const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
 const DEFAULT_MODEL = "qwen2.5-coder:7b";
 const DEFAULT_MAX_STEPS = 20;
@@ -64,59 +74,7 @@ const TOOL_FRIENDLY = ["qwen2.5-coder", "qwen2.5", "qwen3", "llama3.2", "llama3.
 
 type Model = { name: string; size?: number };
 
-// ── Sessions index ────────────────────────────────────────────────────
-
-type SessionMeta = {
-  id: string;
-  title: string;
-  created_at: number;
-  updated_at: number;
-};
-
-type SessionsIndex = {
-  sessions: SessionMeta[];
-  activeId: string;
-};
-
-function makeSessionId(): string {
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function loadSessionsIndex(): SessionsIndex {
-  try {
-    const raw = localStorage.getItem(SESSIONS_INDEX_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.sessions) && typeof parsed.activeId === "string") {
-        return parsed as SessionsIndex;
-      }
-    }
-  } catch {
-    /* fall through */
-  }
-  // Bootstrap: migrate legacy single-history if present, otherwise create
-  // an empty default session.
-  const legacy = readLegacyHistory();
-  const firstId = makeSessionId();
-  const firstTitle = legacy.length > 0 ? "Импорт прошлой истории" : "Новый чат";
-  if (legacy.length > 0) {
-    // Move legacy turns to per-session key
-    try {
-      localStorage.setItem(`elira_code_agent_history_v2_${firstId}`, JSON.stringify(legacy.slice(-200)));
-    } catch {}
-    clearLegacyHistory();
-  }
-  const idx: SessionsIndex = {
-    sessions: [{ id: firstId, title: firstTitle, created_at: Date.now(), updated_at: Date.now() }],
-    activeId: firstId,
-  };
-  saveSessionsIndex(idx);
-  return idx;
-}
-
-function saveSessionsIndex(idx: SessionsIndex): void {
-  try { localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(idx)); } catch {}
-}
+// ── Sessions helpers ───────────────────────────────────────────────────
 
 function deriveTitle(text: string, fallback = "Новый чат"): string {
   const trimmed = (text || "").trim();
@@ -241,75 +199,274 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [numCtx, setNumCtx] = useState<number>(() => readNumber(CTX_KEY_PREFIX + readString(MODEL_KEY, DEFAULT_MODEL), DEFAULT_NUM_CTX));
   const [autoRemember, setAutoRemember] = useState<boolean>(() => readBool(AUTO_REMEMBER_KEY, true));
 
-  // Sessions sidebar state
-  const [sessionsIndex, setSessionsIndex] = useState<SessionsIndex>(() => loadSessionsIndex());
+  // ─── Sessions sidebar state (backed by SQLite via /api/code-agent/sessions) ───
+  const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => readString(ACTIVE_SESSION_KEY, ""));
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readBool(SESSIONS_SIDEBAR_KEY, false));
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const n = readNumber(SESSIONS_SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH);
+    return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, n));
+  });
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState<string>("");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const sidebarDragRef = useRef(false);
 
-  // Persist sessions index whenever it changes
-  useEffect(() => { saveSessionsIndex(sessionsIndex); }, [sessionsIndex]);
   useEffect(() => writeBool(SESSIONS_SIDEBAR_KEY, sidebarCollapsed), [sidebarCollapsed]);
+  useEffect(() => writeNumber(SESSIONS_SIDEBAR_WIDTH_KEY, sidebarWidth), [sidebarWidth]);
+  useEffect(() => writeString(ACTIVE_SESSION_KEY, activeSessionId), [activeSessionId]);
 
   const activeSession = useMemo(
-    () => sessionsIndex.sessions.find((s) => s.id === sessionsIndex.activeId) || sessionsIndex.sessions[0],
-    [sessionsIndex],
+    () => sessions.find((s) => s.id === activeSessionId) || sessions[0] || null,
+    [sessions, activeSessionId],
   );
 
-  const switchSession = useCallback((id: string) => {
-    setSessionsIndex((idx) => ({ ...idx, activeId: id }));
-  }, []);
+  // Bootstrap: fetch sessions from backend on mount. If backend is empty
+  // and we have a legacy localStorage history, migrate it into a session.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setSessionsLoading(true);
+      setSessionsError(null);
+      try {
+        let list = await api.listCodeSessions();
+        if (list.length === 0) {
+          // Possible migration: localStorage legacy single-history
+          const legacy = readLegacyHistory();
+          let imported = false;
+          if (legacy.length > 0) {
+            const created = await api.createCodeSession({ title: "Импорт прошлой истории" });
+            // Push legacy turns into the new session on backend
+            await api.patchCodeSession(created.id, { turns: legacy });
+            // Cache turns locally too so the chat shell sees them immediately
+            try {
+              localStorage.setItem(`elira_code_agent_history_v2_${created.id}`, JSON.stringify(legacy.slice(-200)));
+            } catch {}
+            clearLegacyHistory();
+            imported = true;
+          }
+          // Also try migrating the older localStorage sessions index if present
+          try {
+            const rawIdx = localStorage.getItem(LEGACY_SESSIONS_INDEX_KEY);
+            if (rawIdx) {
+              const parsed = JSON.parse(rawIdx);
+              if (parsed && Array.isArray(parsed.sessions)) {
+                for (const s of parsed.sessions) {
+                  if (typeof s?.id !== "string") continue;
+                  const local = localStorage.getItem(`elira_code_agent_history_v2_${s.id}`);
+                  const turns = local ? (JSON.parse(local) || []) : [];
+                  const created = await api.createCodeSession({ title: s.title || "Новый чат" });
+                  if (turns.length > 0) {
+                    await api.patchCodeSession(created.id, { turns });
+                    try { localStorage.setItem(`elira_code_agent_history_v2_${created.id}`, JSON.stringify(turns.slice(-200))); } catch {}
+                  }
+                  imported = true;
+                }
+                localStorage.removeItem(LEGACY_SESSIONS_INDEX_KEY);
+              }
+            }
+          } catch { /* ignore */ }
 
-  const createSession = useCallback(() => {
-    const id = makeSessionId();
-    const now = Date.now();
-    setSessionsIndex((idx) => ({
-      sessions: [{ id, title: "Новый чат", created_at: now, updated_at: now }, ...idx.sessions],
-      activeId: id,
-    }));
-  }, []);
-
-  const deleteSession = useCallback((id: string) => {
-    setSessionsIndex((idx) => {
-      if (idx.sessions.length <= 1) {
-        // Don't allow deleting the last session — just reset it.
-        deleteHistoryFor(id);
-        const fresh = makeSessionId();
-        return {
-          sessions: [{ id: fresh, title: "Новый чат", created_at: Date.now(), updated_at: Date.now() }],
-          activeId: fresh,
-        };
+          if (!imported) {
+            // No legacy data, create an empty default session
+            await api.createCodeSession({ title: "Новый чат" });
+          }
+          list = await api.listCodeSessions();
+        }
+        if (cancelled) return;
+        setSessions(list);
+        // Restore activeSessionId from localStorage if still present, else pick first
+        const saved = readString(ACTIVE_SESSION_KEY, "");
+        if (saved && list.some((s) => s.id === saved)) {
+          setActiveSessionId(saved);
+        } else {
+          setActiveSessionId(list[0]?.id || "");
+        }
+      } catch (e) {
+        if (!cancelled) setSessionsError(String((e as Error)?.message || e));
+      } finally {
+        if (!cancelled) setSessionsLoading(false);
       }
-      deleteHistoryFor(id);
-      const remaining = idx.sessions.filter((s) => s.id !== id);
-      const newActive = idx.activeId === id ? remaining[0].id : idx.activeId;
-      return { sessions: remaining, activeId: newActive };
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Filtered sessions for the sidebar — search by title.
+  const visibleSessions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter((s) => (s.title || "").toLowerCase().includes(q));
+  }, [sessions, searchQuery]);
+
+  // Sort: pinned first, then by updated_at desc (server already orders, but
+  // local optimistic updates may re-order until next refresh).
+  const sortedSessions = useMemo(() => {
+    return [...visibleSessions].sort((a, b) => {
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      return (b.updated_at || 0) - (a.updated_at || 0);
     });
+  }, [visibleSessions]);
+
+  const switchSession = useCallback((id: string) => setActiveSessionId(id), []);
+
+  const refetchSessions = useCallback(async () => {
+    try {
+      const list = await api.listCodeSessions();
+      setSessions(list);
+    } catch (e) {
+      setSessionsError(String((e as Error)?.message || e));
+    }
   }, []);
 
-  const renameSession = useCallback((id: string, title: string) => {
-    setSessionsIndex((idx) => ({
-      ...idx,
-      sessions: idx.sessions.map((s) => (s.id === id ? { ...s, title: title.trim() || s.title, updated_at: Date.now() } : s)),
-    }));
+  const createSession = useCallback(async () => {
+    try {
+      const created = await api.createCodeSession({
+        title: "Новый чат",
+        projectRoot,
+        model,
+        numCtx,
+      });
+      setSessions((prev) => [created, ...prev]);
+      setActiveSessionId(created.id);
+    } catch (e) {
+      setSessionsError(String((e as Error)?.message || e));
+    }
+  }, [projectRoot, model, numCtx]);
+
+  const deleteSession = useCallback(async (id: string) => {
+    try {
+      await api.deleteCodeSession(id);
+      try { deleteHistoryFor(id); } catch {}
+      let nextActive = activeSessionId;
+      setSessions((prev) => {
+        const remaining = prev.filter((s) => s.id !== id);
+        if (id === activeSessionId) nextActive = remaining[0]?.id || "";
+        return remaining;
+      });
+      if (id === activeSessionId) {
+        if (!nextActive) {
+          // Auto-create a fresh one if user just deleted the only session
+          const fresh = await api.createCodeSession({ title: "Новый чат" });
+          setSessions((prev) => [fresh, ...prev]);
+          setActiveSessionId(fresh.id);
+        } else {
+          setActiveSessionId(nextActive);
+        }
+      }
+    } catch (e) {
+      setSessionsError(String((e as Error)?.message || e));
+    }
+  }, [activeSessionId]);
+
+  const renameSession = useCallback(async (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    // Optimistic update
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, title: trimmed, updated_at: Date.now() } : s)));
+    try { await api.patchCodeSession(id, { title: trimmed }); } catch (e) { setSessionsError(String((e as Error)?.message || e)); }
   }, []);
 
-  // Called by the chat shell when the user submits a turn — bump
-  // updated_at and auto-derive title for fresh sessions.
-  const handleUserTurn = useCallback((text: string) => {
-    setSessionsIndex((idx) => ({
-      ...idx,
-      sessions: idx.sessions.map((s) => {
-        if (s.id !== idx.activeId) return s;
-        const shouldRetitle = s.title === "Новый чат" || !s.title.trim();
-        return {
-          ...s,
-          title: shouldRetitle ? deriveTitle(text) : s.title,
-          updated_at: Date.now(),
-        };
-      }),
-    }));
+  const togglePin = useCallback(async (id: string) => {
+    const cur = sessions.find((s) => s.id === id);
+    if (!cur) return;
+    const next = !cur.pinned;
+    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, pinned: next } : s)));
+    try { await api.patchCodeSession(id, { pinned: next }); } catch (e) { setSessionsError(String((e as Error)?.message || e)); }
+  }, [sessions]);
+
+  // Called by the chat shell when the user submits a turn — bump updated_at,
+  // auto-derive title for fresh sessions, persist to backend.
+  const handleUserTurn = useCallback(async (text: string) => {
+    if (!activeSession) return;
+    const shouldRetitle = activeSession.title === "Новый чат" || !activeSession.title.trim();
+    const newTitle = shouldRetitle ? deriveTitle(text) : activeSession.title;
+    // Optimistic local update
+    setSessions((prev) => prev.map((s) => (
+      s.id === activeSession.id ? { ...s, title: newTitle, updated_at: Date.now() } : s
+    )));
+    try {
+      const patch: { title?: string } = {};
+      if (shouldRetitle) patch.title = newTitle;
+      await api.patchCodeSession(activeSession.id, patch);
+    } catch (e) {
+      console.warn("session title update failed:", e);
+    }
+  }, [activeSession]);
+
+  // Sidebar drag-resize
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      if (!sidebarDragRef.current || !rootRef.current) return;
+      const rect = rootRef.current.getBoundingClientRect();
+      const w = e.clientX - rect.left;
+      setSidebarWidth(Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, w)));
+    }
+    function onUp() {
+      if (sidebarDragRef.current) {
+        sidebarDragRef.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      }
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
   }, []);
+  const startSidebarResize = useCallback(() => {
+    sidebarDragRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, []);
+
+  // ─── Per-session settings sync ───────────────────────────────────────
+  // When the active session changes, load its model/projectRoot/numCtx
+  // into the toolbar state (overrides defaults). Track if user touched
+  // those locally so we don't fight with their edits.
+  const lastLoadedSessionRef = useRef<string>("");
+  useEffect(() => {
+    if (!activeSession) return;
+    if (lastLoadedSessionRef.current === activeSession.id) return;
+    lastLoadedSessionRef.current = activeSession.id;
+    if (activeSession.project_root) setProjectRoot(activeSession.project_root);
+    if (activeSession.model) setModel(activeSession.model);
+    if (typeof activeSession.num_ctx === "number" && activeSession.num_ctx > 0) setNumCtx(activeSession.num_ctx);
+  }, [activeSession]);
+
+  // Push toolbar changes back to the active session (debounced).
+  const settingsSaveTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!activeSession || lastLoadedSessionRef.current !== activeSession.id) return;
+    // Only save if the values differ from what's in the session record
+    const wantPatch: { projectRoot?: string; model?: string; numCtx?: number } = {};
+    if (projectRoot && projectRoot !== activeSession.project_root) wantPatch.projectRoot = projectRoot;
+    if (model && model !== activeSession.model) wantPatch.model = model;
+    if (numCtx && numCtx !== activeSession.num_ctx) wantPatch.numCtx = numCtx;
+    if (Object.keys(wantPatch).length === 0) return;
+
+    if (settingsSaveTimerRef.current) {
+      window.clearTimeout(settingsSaveTimerRef.current);
+    }
+    settingsSaveTimerRef.current = window.setTimeout(async () => {
+      const sid = activeSession.id;
+      try {
+        await api.patchCodeSession(sid, wantPatch);
+        setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, ...wantPatch as Partial<CodeSessionMeta>, project_root: wantPatch.projectRoot ?? s.project_root, model: wantPatch.model ?? s.model, num_ctx: wantPatch.numCtx ?? s.num_ctx } : s)));
+      } catch (e) {
+        console.warn("session settings save failed:", e);
+      }
+    }, 500);
+    return () => {
+      if (settingsSaveTimerRef.current) {
+        window.clearTimeout(settingsSaveTimerRef.current);
+        settingsSaveTimerRef.current = null;
+      }
+    };
+  }, [projectRoot, model, numCtx, activeSession]);
 
   // Drawer state (replaces the old split-view ideCollapsed)
   const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(() => {
@@ -763,11 +920,12 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
         {/* Sessions sidebar — left of chat */}
         {!sidebarCollapsed && (
+          <>
           <div
             style={{
-              flex: "0 0 200px",
-              minWidth: 180,
-              maxWidth: 280,
+              flex: `0 0 ${sidebarWidth}px`,
+              minWidth: MIN_SIDEBAR_WIDTH,
+              maxWidth: MAX_SIDEBAR_WIDTH,
               borderRight: "1px solid var(--border)",
               display: "flex",
               flexDirection: "column",
@@ -780,6 +938,14 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
               <UiIcon icon={MessageSquare} size={13} />
               <div style={{ fontSize: 11, fontWeight: 600, flex: 1 }}>Сессии</div>
               <button
+                onClick={refetchSessions}
+                className="soft-btn"
+                title="Обновить список"
+                style={{ padding: "3px 5px", fontSize: 10 }}
+              >
+                <UiIcon icon={RefreshCw} size={11} />
+              </button>
+              <button
                 onClick={() => setSidebarCollapsed(true)}
                 className="soft-btn"
                 title="Скрыть боковую панель"
@@ -788,7 +954,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 <UiIcon icon={PanelLeftClose} size={11} />
               </button>
             </div>
-            <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+            {/* New chat + search */}
+            <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0, display: "flex", flexDirection: "column", gap: 6 }}>
               <button
                 onClick={createSession}
                 style={{
@@ -810,14 +977,49 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 <UiIcon icon={Plus} size={12} />
                 <span>Новый чат</span>
               </button>
+              <div style={{ position: "relative" }}>
+                <span style={{ position: "absolute", left: 7, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", pointerEvents: "none" }}>
+                  <UiIcon icon={Search} size={11} />
+                </span>
+                <input
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Поиск по сессиям..."
+                  spellCheck={false}
+                  style={{
+                    width: "100%",
+                    padding: "5px 8px 5px 24px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "var(--bg-input)",
+                    color: "var(--text-primary)",
+                    fontSize: 10,
+                    outline: "none",
+                    boxSizing: "border-box",
+                  }}
+                />
+              </div>
             </div>
+            {sessionsError && (
+              <div style={{ padding: "6px 10px", fontSize: 10, color: "#ff6b6b", background: "rgba(255,107,107,0.08)", borderBottom: "1px solid var(--border)" }}>
+                {sessionsError}
+              </div>
+            )}
             {/* Sessions list */}
             <div style={{ flex: 1, overflow: "auto", padding: "4px 6px" }}>
-              {sessionsIndex.sessions.length === 0 && (
-                <div style={{ padding: 12, fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>Нет сессий</div>
+              {sessionsLoading && sortedSessions.length === 0 && (
+                <div style={{ padding: 12, fontSize: 11, color: "var(--text-muted)", textAlign: "center", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, width: "100%" }}>
+                  <UiIcon icon={Loader2} size={12} />
+                  <span>Загрузка...</span>
+                </div>
               )}
-              {sessionsIndex.sessions.map((s) => {
-                const isActive = s.id === sessionsIndex.activeId;
+              {!sessionsLoading && sortedSessions.length === 0 && (
+                <div style={{ padding: 12, fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>
+                  {searchQuery ? "Ничего не найдено" : "Нет сессий"}
+                </div>
+              )}
+              {sortedSessions.map((s) => {
+                const isActive = s.id === activeSessionId;
                 const isEditing = editingSessionId === s.id;
                 return (
                   <div
@@ -851,6 +1053,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                     ) : (
                       <>
                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          {s.pinned && (
+                            <UiIcon icon={Pin} size={9} />
+                          )}
                           <div
                             style={{
                               flex: 1,
@@ -866,6 +1071,13 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                             {s.title || "Без названия"}
                           </div>
                           <div style={{ display: "flex", gap: 1, opacity: 0.7 }}>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); togglePin(s.id); }}
+                              title={s.pinned ? "Открепить" : "Закрепить наверху"}
+                              style={{ border: "none", background: "transparent", cursor: "pointer", color: s.pinned ? "var(--accent)" : "var(--text-muted)", padding: 2, display: "flex", alignItems: "center" }}
+                            >
+                              <UiIcon icon={s.pinned ? PinOff : Pin} size={10} />
+                            </button>
                             <button
                               onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditingTitle(s.title); }}
                               title="Переименовать"
@@ -885,7 +1097,10 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                             </button>
                           </div>
                         </div>
-                        <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 2 }}>{formatRelTime(s.updated_at)}</div>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 2, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <span>{formatRelTime(s.updated_at)}</span>
+                          {s.model && <span style={{ fontFamily: "var(--font-mono)" }}>· {s.model.length > 14 ? s.model.slice(0, 14) + "…" : s.model}</span>}
+                        </div>
                       </>
                     )}
                   </div>
@@ -893,6 +1108,15 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
               })}
             </div>
           </div>
+          {/* Resize handle */}
+          <div
+            onMouseDown={startSidebarResize}
+            style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
+            title="Тяни чтобы изменить ширину боковой панели"
+          >
+            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", width: 1, height: 24, background: "var(--text-muted)", opacity: 0.4 }} />
+          </div>
+          </>
         )}
 
         {/* Show "open sidebar" button when collapsed */}

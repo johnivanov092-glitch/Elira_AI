@@ -243,6 +243,93 @@ export async function summarizeHistory({
   });
 }
 
+// ── Sessions (server-side storage) ────────────────────────────────────────
+
+export type CodeSessionMeta = {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  project_root: string | null;
+  model: string | null;
+  num_ctx: number | null;
+  pinned: boolean;
+};
+
+export type CodeSessionFull = CodeSessionMeta & {
+  // Turns shape mirrors the frontend's local Turn[] — typed as unknown
+  // because parser lives in CodeAgentChatShell.
+  turns: unknown[];
+};
+
+export async function listCodeSessions(query?: string): Promise<CodeSessionMeta[]> {
+  const qs = query ? `?${new URLSearchParams({ query }).toString()}` : "";
+  const res = await request<{ ok: boolean; sessions: CodeSessionMeta[] }>(`/api/code-agent/sessions${qs}`);
+  return res.sessions || [];
+}
+
+export async function getCodeSession(sessionId: string): Promise<CodeSessionFull | null> {
+  try {
+    const res = await request<{ ok: boolean; session: CodeSessionFull }>(`/api/code-agent/sessions/${encodeURIComponent(sessionId)}`);
+    return res.session || null;
+  } catch {
+    return null;
+  }
+}
+
+export type CodeSessionCreateArgs = {
+  title?: string;
+  projectRoot?: string;
+  model?: string;
+  numCtx?: number;
+};
+
+export async function createCodeSession(args: CodeSessionCreateArgs = {}): Promise<CodeSessionFull> {
+  const res = await request<{ ok: boolean; session: CodeSessionFull }>("/api/code-agent/sessions", {
+    method: "POST",
+    body: {
+      title: args.title,
+      project_root: args.projectRoot,
+      model: args.model,
+      num_ctx: args.numCtx,
+    },
+  });
+  return res.session;
+}
+
+export type CodeSessionPatch = {
+  title?: string;
+  projectRoot?: string;
+  model?: string;
+  numCtx?: number;
+  pinned?: boolean;
+  turns?: unknown[];
+};
+
+export async function patchCodeSession(sessionId: string, patch: CodeSessionPatch): Promise<CodeSessionFull> {
+  const res = await request<{ ok: boolean; session: CodeSessionFull }>(`/api/code-agent/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: {
+      title: patch.title,
+      project_root: patch.projectRoot,
+      model: patch.model,
+      num_ctx: patch.numCtx,
+      pinned: patch.pinned,
+      turns: patch.turns,
+    },
+  });
+  return res.session;
+}
+
+export async function deleteCodeSession(sessionId: string): Promise<boolean> {
+  try {
+    const res = await request<{ ok: boolean; removed: boolean }>(`/api/code-agent/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    return !!res.removed;
+  } catch {
+    return false;
+  }
+}
+
 // ── Rough token estimator ────────────────────────────────────────────────
 
 // ── RAG: project indexing + manual recall ───────────────────────────────

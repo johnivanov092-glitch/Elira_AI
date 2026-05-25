@@ -31,6 +31,7 @@ from app.application.code_agent.agent_loop import (
     stream_code_agent,
     summarize_history,
 )
+from app.application.code_agent import sessions as session_store
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
 
@@ -198,3 +199,63 @@ def index_project_endpoint(payload: IndexProjectRequest) -> dict[str, Any]:
 @router.post("/recall")
 def recall(payload: RecallRequest) -> dict[str, Any]:
     return recall_from_rag(query=payload.query, top_k=payload.top_k, min_score=payload.min_score)
+
+
+# ── Sessions ────────────────────────────────────────────────────────────
+
+
+class SessionCreateRequest(BaseModel):
+    title: Optional[str] = None
+    project_root: Optional[str] = None
+    model: Optional[str] = None
+    num_ctx: Optional[int] = None
+
+
+class SessionPatchRequest(BaseModel):
+    title: Optional[str] = None
+    project_root: Optional[str] = None
+    model: Optional[str] = None
+    num_ctx: Optional[int] = None
+    pinned: Optional[bool] = None
+    turns: Optional[list[Any]] = None
+
+
+@router.get("/sessions")
+def list_code_sessions(query: Optional[str] = None) -> dict[str, Any]:
+    return {"ok": True, "sessions": session_store.list_sessions(query)}
+
+
+@router.get("/sessions/{session_id}")
+def read_code_session(session_id: str) -> dict[str, Any]:
+    sess = session_store.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    return {"ok": True, "session": sess}
+
+
+@router.post("/sessions")
+def create_code_session(payload: SessionCreateRequest) -> dict[str, Any]:
+    sess = session_store.create_session(
+        title=payload.title or "Новый чат",
+        project_root=payload.project_root,
+        model=payload.model,
+        num_ctx=payload.num_ctx,
+    )
+    return {"ok": True, "session": sess}
+
+
+@router.patch("/sessions/{session_id}")
+def patch_code_session(session_id: str, payload: SessionPatchRequest) -> dict[str, Any]:
+    patch_data = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "pinned" in payload.model_dump(exclude_unset=False):
+        patch_data["pinned"] = payload.pinned
+    sess = session_store.update_session(session_id, patch_data)
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    return {"ok": True, "session": sess}
+
+
+@router.delete("/sessions/{session_id}")
+def delete_code_session(session_id: str) -> dict[str, Any]:
+    removed = session_store.delete_session(session_id)
+    return {"ok": True, "removed": removed}
