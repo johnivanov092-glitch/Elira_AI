@@ -181,6 +181,12 @@ export default function EliraChatShell(): JSX.Element {
   const streamRef = useRef<AbortController | null>(null);
   const stoppedRef = useRef(false);
   const initRef = useRef(false);
+  // Per-chat stream state. When user switches chats mid-stream, the previous
+  // stream keeps running here and gets finalized via the closure's targetChatId
+  // even if `chatId` (the visible one) has changed.
+  const bgStreamsRef = useRef<Map<string, { text: string; ctrl: AbortController | null; phase: string }>>(new Map());
+  // ref to the active chat so onDone closures can compare against current view
+  const activeChatIdRef = useRef("");
 
   const [mainTab, setMainTab] = useState("chat");
   const [sideTab, setSideTab] = useState("chats");
@@ -200,6 +206,8 @@ export default function EliraChatShell(): JSX.Element {
   const [streaming, setStreaming] = useState(false);
   const [streamText, setStreamText] = useState("");
   const [phase, setPhase] = useState("");
+  // Bumped whenever bgStreamsRef changes so sidebar spinner re-renders
+  const [, setBgStreamsTick] = useState(0);
   const [libraryFiles, setLibraryFiles] = useState<LibraryFile[]>(loadLibraryFiles() as LibraryFile[]);
   const [selLibId, setSelLibId] = useState("");
   const [renaming, setRenaming] = useState(false);
@@ -247,6 +255,7 @@ export default function EliraChatShell(): JSX.Element {
   const [backendAttempt, setBackendAttempt] = useState(0);
 
   useEffect(() => { startupWithHealthCheck(); return () => { if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; } }; }, []);
+  useEffect(() => { activeChatIdRef.current = chatId; }, [chatId]);
   useEffect(() => { if (msgRef.current) msgRef.current.scrollTop = msgRef.current.scrollHeight; }, [messages, chatId]);
   useEffect(() => {
     if (!error) return;
@@ -475,9 +484,28 @@ export default function EliraChatShell(): JSX.Element {
 
   async function openChat(id: string) {
     try {
-      streamRef.current?.abort(); setStreamText(""); setStreaming(false); setPhase("");
+      // Do NOT abort the in-flight stream for the previous chat — it must
+      // finish in the background and append its result via onDone's
+      // targetChatId closure. We just visually swap to the new chat here.
       setChatId(id);
-      setMessages((await api.getMessages({ chatId: id }) as ChatMessage[]) || []);
+      const loaded = (await api.getMessages({ chatId: id }) as ChatMessage[]) || [];
+      setMessages(loaded);
+      // Restore the per-chat stream buffer if this chat is mid-stream;
+      // otherwise clear the UI.
+      const slot = bgStreamsRef.current.get(id);
+      if (slot) {
+        setStreamText(slot.text);
+        setStreaming(true);
+        setWorking(true);
+        setPhase(slot.phase);
+        streamRef.current = slot.ctrl;
+      } else {
+        setStreamText("");
+        setStreaming(false);
+        setWorking(false);
+        setPhase("");
+        streamRef.current = null;
+      }
       setSideTab("chats"); setMainTab("chat"); setRenaming(false); setMobileSidebar(false);
     } catch (e) { setError(normalizeErrorMessage(e)); }
   }
@@ -614,25 +642,72 @@ export default function EliraChatShell(): JSX.Element {
       }
 
       let fullText = "";
+      // Capture the chat id at submission time. If the user navigates away
+      // mid-stream, this still points to the chat that *asked* the question
+      // so the finalized message lands in the right place.
+      const targetChatId = activeChatId;
       const ctrl = executeStream(
         { model_name: model, profile_name: profile, user_input: `${text}${cp}`, session_id: activeChatId || null, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
-          onToken(t: string) { fullText += t; setStreamText(fullText); setPhase(""); },
+          onToken(t: string) {
+            fullText += t;
+            // Mirror into per-chat buffer so the stream survives chat switches.
+            const slot = bgStreamsRef.current.get(targetChatId);
+            if (slot) slot.text = fullText;
+            // Update the visible state only if user is still on this chat.
+            if (activeChatIdRef.current === targetChatId) {
+              setStreamText(fullText);
+              setPhase("");
+            }
+          },
           onPhase(ev: Record<string, unknown>) {
-            if (ev.phase === "reflection_replace" && ev.full_text) { fullText = ev.full_text as string; setStreamText(fullText); }
-            else if (ev.message) { setPhase(ev.message as string); }
+            if (ev.phase === "reflection_replace" && ev.full_text) {
+              fullText = ev.full_text as string;
+              const slot = bgStreamsRef.current.get(targetChatId);
+              if (slot) slot.text = fullText;
+              if (activeChatIdRef.current === targetChatId) setStreamText(fullText);
+            } else if (ev.message) {
+              const slot = bgStreamsRef.current.get(targetChatId);
+              if (slot) slot.phase = ev.message as string;
+              if (activeChatIdRef.current === targetChatId) setPhase(ev.message as string);
+            }
           },
           onDone({ full_text }: { full_text?: string }) {
             if (stoppedRef.current) return;
-            const final = full_text || fullText;
-            setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]);
-            const _cd = detectTableInText(final); _cd ? setChartData(_cd) : setChartData(null);
-            setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null;
-            api.addMessage({ chatId: activeChatId, role: "assistant", content: final }).catch(() => {});
+            // CRITICAL: prefer the accumulated streamed text. Backend's
+            // `full_text` is the post-processed version (identity_guard,
+            // persona, provenance, ...) and historically it sometimes
+            // mangles markdown structure that the streamed text had
+            // correctly. Fall back to backend text only if stream is empty.
+            const final = fullText.trim() ? fullText : (full_text || "");
+            const isStillHere = activeChatIdRef.current === targetChatId;
+            // Persist to backend regardless of which chat is visible.
+            api.addMessage({ chatId: targetChatId, role: "assistant", content: final }).catch(() => {});
+            // Clear per-chat buffer
+            bgStreamsRef.current.delete(targetChatId);
+            if (isStillHere) {
+              setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: final }]);
+              const _cd = detectTableInText(final); _cd ? setChartData(_cd) : setChartData(null);
+              setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
+              streamRef.current = null;
+            }
+            // Force re-render so sidebar spinner disappears for that chat
+            setBgStreamsTick(t => t + 1);
           },
-          onError(msg: string) { setError(normalizeErrorMessage(msg)); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); streamRef.current = null; },
+          onError(msg: string) {
+            bgStreamsRef.current.delete(targetChatId);
+            if (activeChatIdRef.current === targetChatId) {
+              setError(normalizeErrorMessage(msg));
+              setStreamText(""); setStreaming(false); setWorking(false); setPhase("");
+              streamRef.current = null;
+            }
+            setBgStreamsTick(t => t + 1);
+          },
         }
       );
+      // Track the stream in the per-chat map so chat switches preserve it
+      bgStreamsRef.current.set(targetChatId, { text: "", ctrl, phase: "" });
+      setBgStreamsTick(t => t + 1);
       streamRef.current = ctrl;
     } catch (e) { setError(normalizeErrorMessage(e)); setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); }
   }
@@ -836,9 +911,25 @@ export default function EliraChatShell(): JSX.Element {
         {sideTab === "chats" && (
           <div className="chat-list" style={{flex:1,minHeight:0}}>
             {pinned.length > 0 && <div className="sidebar-section-title">Закреплённые</div>}
-            {pinned.map(c => <button key={c.id} className={`chat-list-item simple ${chatId===c.id?"active":""}`} onClick={() => openChat(c.id)}><span className="chat-list-title truncate">{c.title||"Новый чат"}</span></button>)}
+            {pinned.map(c => {
+              const streamingHere = bgStreamsRef.current.has(c.id);
+              return (
+                <button key={c.id} className={`chat-list-item simple ${chatId===c.id?"active":""}`} onClick={() => openChat(c.id)} title={streamingHere ? "Идёт стрим в этом чате" : undefined}>
+                  <span className="chat-list-title truncate">{c.title||"Новый чат"}</span>
+                  {streamingHere && <span className="chat-streaming-dot" aria-label="streaming"/>}
+                </button>
+              );
+            })}
             {regular.length > 0 && <div className="sidebar-section-title">Чаты</div>}
-            {regular.map(c => <button key={c.id} className={`chat-list-item simple ${chatId===c.id?"active":""}`} onClick={() => openChat(c.id)}><span className="chat-list-title truncate">{c.title||"Новый чат"}</span></button>)}
+            {regular.map(c => {
+              const streamingHere = bgStreamsRef.current.has(c.id);
+              return (
+                <button key={c.id} className={`chat-list-item simple ${chatId===c.id?"active":""}`} onClick={() => openChat(c.id)} title={streamingHere ? "Идёт стрим в этом чате" : undefined}>
+                  <span className="chat-list-title truncate">{c.title||"Новый чат"}</span>
+                  {streamingHere && <span className="chat-streaming-dot" aria-label="streaming"/>}
+                </button>
+              );
+            })}
             {!fChats.length && <div className="sidebar-empty">Пусто</div>}
           </div>
         )}

@@ -295,7 +295,9 @@ select, option {
 
 .chat-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; flex: 1; min-height: 0; }
 .chat-list-item.simple {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   cursor: pointer;
   padding: 7px 8px;
@@ -310,8 +312,29 @@ select, option {
 }
 .chat-list-item.simple:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
 .chat-list-item.active { background: var(--bg-surface-active); color: var(--text-primary); }
-.chat-list-title { font-weight: 400; }
-.chat-list-title.truncate { display: block; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-list-title { font-weight: 400; flex: 1; min-width: 0; }
+.chat-list-title.truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Pulsing dot next to chats that are currently streaming a response */
+.chat-streaming-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent);
+  animation: streamingPulse 1.4s ease-in-out infinite;
+}
+@keyframes streamingPulse {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(124, 159, 255, 0.55);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 6px rgba(124, 159, 255, 0);
+  }
+}
 
 /* в"Ђв"Ђ MAIN AREA в"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђв"Ђ */
 .elira-main {
