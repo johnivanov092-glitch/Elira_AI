@@ -9,9 +9,24 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.application.chat.planner_v2 import PlannerV2Service
 from app.application.chat.runtime import run_agent, run_agent_stream
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+class ClassifyRequest(BaseModel):
+    query: str
+
+
+@router.post("/classify")
+def classify(payload: ClassifyRequest) -> dict[str, Any]:
+    """Debug helper: returns PlannerV2's routing plan for a query
+    WITHOUT calling any LLM. Useful when tuning keyword bags — write
+    a query, see what route + tools + scores come out.
+    """
+    plan = PlannerV2Service().plan(payload.query)
+    return plan
 
 
 class ChatRequest(BaseModel):
