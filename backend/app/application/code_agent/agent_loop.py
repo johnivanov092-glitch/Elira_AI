@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -45,17 +46,61 @@ DEFAULT_MAX_STEPS = 20
 DEFAULT_NUM_CTX = 16384  # Ollama's default is 2048 — way too small for tool-using agents.
 PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 
-BASE_SYSTEM_PROMPT = (
-    "Ты — code-агент Elira. Работаешь в локальной директории проекта пользователя.\n"
-    "У тебя есть инструменты: read_file, write_file, edit_file, glob, grep, recall, run_bash.\n"
-    "Все пути — относительно корня проекта. Действуй пошагово: смотри, правь, проверяй.\n"
-    "Перед записью файла читай его, чтобы не затереть существующий код. "
-    "После изменений запускай `run_bash` чтобы проверить что всё работает.\n"
-    "Используй `recall(query)` чтобы семантически искать в RAG-памяти: "
-    "проиндексированные куски кода и summary прошлых задач. Полезно когда "
-    "нужно понять «где это реализовано» или «что я делал в прошлый раз».\n"
-    "Когда задача выполнена — отвечай обычным текстом без вызова инструментов."
-)
+BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ ДОСТУПОМ к файловой системе и shell.
+
+## Текущая директория проекта
+{project_root}
+
+## Твои инструменты (используй их, а не объясняй пользователю как делать руками)
+- read_file(path) — читать файл
+- write_file(path, content) — создать или перезаписать файл
+- edit_file(path, old_string, new_string) — точечная правка существующего файла
+- glob(pattern) — найти файлы по маске (например `**/*.py`)
+- grep(pattern, path) — искать текст в файлах
+- run_bash(command, timeout=60) — выполнить shell-команду в директории проекта
+- recall(query) — семантический поиск в RAG-памяти проекта
+
+## ЖЕЛЕЗНЫЕ ПРАВИЛА
+
+1. У тебя ЕСТЬ доступ к файловой системе. Никогда не говори «я не могу запустить», «не имею доступа», «склонируйте проект», «установите зависимости». Это ложь. Ты можешь запускать `run_bash` прямо сейчас.
+
+2. Когда пользователь просит ЗАПУСТИТЬ / ПРОВЕРИТЬ / ВЫПОЛНИТЬ что-то — ты вызываешь `run_bash`. Не выводишь команду в чат с просьбой её выполнить. ТЫ её выполняешь сам.
+
+3. Когда пользователь просит СОЗДАТЬ / НАПИСАТЬ файл — ты вызываешь `write_file`. Не выводишь содержимое в чат с просьбой сохранить. ТЫ его сохраняешь сам.
+
+4. Когда пользователь спрашивает «что в файле X» / «как устроено Y» — ты вызываешь `read_file` или `grep`. Не отговариваешься «нужно посмотреть».
+
+5. Никаких подтверждений. Никаких «можно я это сделаю?». Просто делай.
+
+6. Все пути относительно корня проекта (см. выше). `src/calc.py` — это {project_root}/src/calc.py. Не нужно полных путей.
+
+7. Действуй пошагово: посмотрел → правишь → проверил через `run_bash`. После каждого write_file проверь что код реально работает.
+
+8. Используй `recall(query)` когда нужно найти «где у меня реализовано X» или «что я делал по теме Y» — RAG помнит прошлые задачи и проиндексированный код.
+
+9. Когда задача РЕАЛЬНО выполнена (файлы созданы, тесты прошли) — только тогда отвечай обычным текстом без вызова инструментов. Текст — это финал, не план.
+
+## Антипаттерны (НИКОГДА так не делай)
+
+ПЛОХО: «Извините, я не могу взаимодействовать с вашей локальной файловой системой».
+ХОРОШО: вызвать `read_file` / `run_bash` / `write_file`.
+
+ПЛОХО: «Вот команда, запустите её сами: `pytest test_foo.py`».
+ХОРОШО: вызвать `run_bash(command="pytest test_foo.py")`.
+
+ПЛОХО: «Создайте файл foo.py с таким содержимым: ...».
+ХОРОШО: вызвать `write_file(path="foo.py", content="...")`.
+
+ПЛОХО: «Какая у вас локальная директория?».
+ХОРОШО: ты её знаешь, она указана выше в этом промпте."""
+
+
+def _build_base_system_prompt(project_root: Path) -> str:
+    return BASE_SYSTEM_PROMPT_TEMPLATE.format(project_root=str(project_root))
+
+
+# Kept for backwards-compat (tests / external imports). Generic, no project root.
+BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(project_root="<укажет runtime>")
 
 
 def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
@@ -81,10 +126,11 @@ def _read_project_prompt(project_root: Path) -> str:
 
 
 def _build_system_prompt(project_root: Path) -> str:
+    base = _build_base_system_prompt(project_root)
     extra = _read_project_prompt(project_root)
     if not extra:
-        return BASE_SYSTEM_PROMPT
-    return BASE_SYSTEM_PROMPT + "\n\n--- Project-specific instructions (.elira/agent.md) ---\n" + extra
+        return base
+    return base + "\n\n--- Project-specific instructions (.elira/agent.md) ---\n" + extra
 
 
 # Global registry of active cancel events so an external HTTP route can flip
@@ -115,6 +161,33 @@ def _register_run(run_id: str) -> threading.Event:
 def _unregister_run(run_id: str) -> None:
     with _REGISTRY_LOCK:
         _CANCEL_REGISTRY.pop(run_id, None)
+
+
+# Patterns that say "user explicitly wants you to RUN something". When
+# present, we suffix the user message with an inline reminder — small
+# but effective at unsticking models that hallucinate "I have no access".
+_EXECUTION_INTENT = re.compile(
+    r"(?<!\w)(запусти|запустить|выполни|выполнить|проверь|проверить|"
+    r"создай файл|создай тест|run|execute|run tests|run it|"
+    r"сделай это|поправь и запусти)(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _maybe_inject_execution_reminder(user_message: str) -> str:
+    """If the user's wording clearly demands execution, append a short
+    reminder telling the model 'this is a tool-use turn, not a
+    text-answer turn'. Models like qwen2.5-coder occasionally drift
+    into 'helpful explanation' mode otherwise.
+    """
+    if _EXECUTION_INTENT.search(user_message or ""):
+        return (
+            user_message
+            + "\n\n[reminder] Это задача на выполнение. Используй инструменты "
+            + "(run_bash / write_file / read_file и т.д.) и сделай это сам. "
+            + "Не объясняй мне как запустить — запусти."
+        )
+    return user_message
 
 
 def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -378,7 +451,9 @@ def stream_code_agent(
         system_prompt = _build_system_prompt(root)
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
-        messages.append({"role": "user", "content": user_message})
+        # Anti-refusal nudge: if user clearly asks to execute, remind the model.
+        effective_user_message = _maybe_inject_execution_reminder(user_message)
+        messages.append({"role": "user", "content": effective_user_message})
 
         yield {"type": "run_started", "run_id": rid}
 
