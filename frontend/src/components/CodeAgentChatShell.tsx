@@ -41,7 +41,8 @@ import type {
 import { estimateTokens } from "../api/codeAgent";
 import { UiIcon, IconText } from "./StatusPanels";
 
-const HISTORY_KEY = "elira_code_agent_history_v2";
+const HISTORY_KEY_PREFIX = "elira_code_agent_history_v2_"; // suffix = sessionId
+const LEGACY_HISTORY_KEY = "elira_code_agent_history_v2";   // pre-session key (one global history)
 const SAVED_PROMPTS_KEY = "elira_code_agent_saved_prompts_v1";
 
 type SavedPrompt = {
@@ -128,9 +129,9 @@ function makeId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function loadHistory(): Turn[] {
+function loadHistoryFor(sessionId: string): Turn[] {
   try {
-    const raw = localStorage.getItem(HISTORY_KEY);
+    const raw = localStorage.getItem(HISTORY_KEY_PREFIX + sessionId);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as Turn[]) : [];
@@ -139,11 +140,35 @@ function loadHistory(): Turn[] {
   }
 }
 
-function saveHistory(turns: Turn[]): void {
+function saveHistoryFor(sessionId: string, turns: Turn[]): void {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(turns.slice(-200)));
+    localStorage.setItem(HISTORY_KEY_PREFIX + sessionId, JSON.stringify(turns.slice(-200)));
   } catch {}
 }
+
+export function deleteHistoryFor(sessionId: string): void {
+  try { localStorage.removeItem(HISTORY_KEY_PREFIX + sessionId); } catch {}
+}
+
+/** Read the legacy single-history key once and return its turns (or []).
+ *  Caller is responsible for moving them into a session and deleting the
+ *  legacy key. */
+export function readLegacyHistory(): Turn[] {
+  try {
+    const raw = localStorage.getItem(LEGACY_HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Turn[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clearLegacyHistory(): void {
+  try { localStorage.removeItem(LEGACY_HISTORY_KEY); } catch {}
+}
+
+export type CodeAgentTurnSummary = { user_count: number; last_user?: string; last_ts?: number };
 
 function formatArgsInline(args: Record<string, unknown>): string {
   return Object.entries(args)
@@ -339,6 +364,9 @@ function ToolBlock({ call }: ToolBlockProps) {
 // ─── main component ──────────────────────────────────────────────────────
 
 export type CodeAgentChatShellProps = {
+  /** Unique id for the current session. localStorage keys are derived
+   *  from it so every session has its own independent history. */
+  sessionId: string;
   projectRoot: string;
   model: string;
   maxSteps: number;
@@ -346,17 +374,26 @@ export type CodeAgentChatShellProps = {
   autoRemember: boolean;
   /** Called whenever a tool call touches a file path (read/write/edit). */
   onAgentTouchedFile?: (path: string) => void;
+  /** Called when the user submits a new task — gives the parent a chance
+   *  to bump session's updated_at and auto-derive its title. */
+  onUserTurn?: (text: string) => void;
+  /** Called when the user clicks the in-shell '+ Новый чат' button.
+   *  Parent should create a new session and switch to it. */
+  onRequestNewSession?: () => void;
 };
 
 export default function CodeAgentChatShell({
+  sessionId,
   projectRoot,
   model,
   maxSteps,
   numCtx,
   autoRemember,
   onAgentTouchedFile,
+  onUserTurn,
+  onRequestNewSession,
 }: CodeAgentChatShellProps) {
-  const [history, setHistory] = useState<Turn[]>(() => loadHistory());
+  const [history, setHistory] = useState<Turn[]>(() => loadHistoryFor(sessionId));
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [liveStep, setLiveStep] = useState<number | null>(null);
@@ -387,9 +424,22 @@ export default function CodeAgentChatShell({
   }
 
   useEffect(() => {
-    saveHistory(history);
+    saveHistoryFor(sessionId, history);
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [history]);
+  }, [history, sessionId]);
+
+  // When the active session id changes (sidebar click), abort the running
+  // stream of the previous session and reload the new session's history.
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setRunning(false);
+    setLiveStep(null);
+    setHistory(loadHistoryFor(sessionId));
+    setInput("");
+    setSummaryError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   // Build conversation_history payload from prior text turns (skip tool data —
   // backend doesn't need our local tool transcript, it re-runs fresh tools).
@@ -452,6 +502,7 @@ export default function CodeAgentChatShell({
     };
 
     setHistory((h) => [...h, userTurn, liveTurn]);
+    onUserTurn?.(text);
     setInput("");
     setRunning(true);
     setLiveStep(null);
@@ -615,17 +666,28 @@ export default function CodeAgentChatShell({
   }
 
   function startNewSession() {
-    // If a stream is running, ask first — otherwise we'd cut it off.
+    // If parent owns sessions (sidebar), delegate — preserves current
+    // session, creates a new one alongside, switches active.
+    if (onRequestNewSession) {
+      if (running) {
+        if (!confirm("Сейчас идёт стрим. Прервать его и создать новый чат?")) return;
+        abortRef.current?.abort();
+        setRunning(false);
+        setLiveStep(null);
+      }
+      onRequestNewSession();
+      return;
+    }
+    // Standalone fallback: wipe current session's history (legacy behaviour
+    // for any consumer that doesn't provide onRequestNewSession).
     if (running) {
       if (!confirm("Сейчас идёт стрим. Прервать его и начать новую сессию?")) return;
       abortRef.current?.abort();
       setRunning(false);
       setLiveStep(null);
     }
-    // Save current history if non-trivial? For now: just wipe. Future:
-    // multi-session support with stored threads (separate batch).
     if (history.length > 0) {
-      if (!confirm(`Начать новую сессию? Текущая история (${history.length} сообщений) будет удалена. Сначала «Сжать» если хочешь её сохранить как summary.`)) return;
+      if (!confirm(`Начать новую сессию? Текущая история (${history.length} сообщений) будет удалена.`)) return;
     }
     setHistory([]);
     setInput("");

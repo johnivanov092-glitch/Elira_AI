@@ -28,12 +28,18 @@ import {
   FolderOpen,
   GitBranch,
   History,
+  MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  Plus,
   RefreshCw,
   Save,
+  Trash2,
   X,
 } from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
-import CodeAgentChatShell from "./CodeAgentChatShell";
+import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHistory } from "./CodeAgentChatShell";
 import { api } from "../api/ide";
 import { UiIcon, IconText } from "./StatusPanels";
 
@@ -44,6 +50,8 @@ const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
 const AUTO_REMEMBER_KEY = "elira_code_agent_auto_remember";
 const DRAWER_KEY = "elira_code_workspace_drawer";
 const DRAWER_WIDTH_KEY = "elira_code_workspace_drawer_width";
+const SESSIONS_INDEX_KEY = "elira_code_agent_sessions_index_v1";
+const SESSIONS_SIDEBAR_KEY = "elira_code_workspace_sidebar_collapsed";
 const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
 const DEFAULT_MODEL = "qwen2.5-coder:7b";
 const DEFAULT_MAX_STEPS = 20;
@@ -55,6 +63,78 @@ const CTX_OPTIONS = [4096, 8192, 16384, 32768, 65536];
 const TOOL_FRIENDLY = ["qwen2.5-coder", "qwen2.5", "qwen3", "llama3.2", "llama3.1", "mistral-nemo", "command-r"];
 
 type Model = { name: string; size?: number };
+
+// ── Sessions index ────────────────────────────────────────────────────
+
+type SessionMeta = {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+};
+
+type SessionsIndex = {
+  sessions: SessionMeta[];
+  activeId: string;
+};
+
+function makeSessionId(): string {
+  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function loadSessionsIndex(): SessionsIndex {
+  try {
+    const raw = localStorage.getItem(SESSIONS_INDEX_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.sessions) && typeof parsed.activeId === "string") {
+        return parsed as SessionsIndex;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  // Bootstrap: migrate legacy single-history if present, otherwise create
+  // an empty default session.
+  const legacy = readLegacyHistory();
+  const firstId = makeSessionId();
+  const firstTitle = legacy.length > 0 ? "Импорт прошлой истории" : "Новый чат";
+  if (legacy.length > 0) {
+    // Move legacy turns to per-session key
+    try {
+      localStorage.setItem(`elira_code_agent_history_v2_${firstId}`, JSON.stringify(legacy.slice(-200)));
+    } catch {}
+    clearLegacyHistory();
+  }
+  const idx: SessionsIndex = {
+    sessions: [{ id: firstId, title: firstTitle, created_at: Date.now(), updated_at: Date.now() }],
+    activeId: firstId,
+  };
+  saveSessionsIndex(idx);
+  return idx;
+}
+
+function saveSessionsIndex(idx: SessionsIndex): void {
+  try { localStorage.setItem(SESSIONS_INDEX_KEY, JSON.stringify(idx)); } catch {}
+}
+
+function deriveTitle(text: string, fallback = "Новый чат"): string {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return fallback;
+  const firstLine = trimmed.split(/\r?\n/)[0];
+  return firstLine.length > 50 ? firstLine.slice(0, 50) + "…" : firstLine;
+}
+
+function formatRelTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return "сейчас";
+  if (m < 60) return `${m}м`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}ч`;
+  const d = Math.floor(h / 24);
+  return `${d}д`;
+}
 
 /** Open a native folder picker via Tauri's dialog API. Returns the
  *  selected absolute path with forward slashes (normalized), or null
@@ -160,6 +240,76 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [maxSteps, setMaxSteps] = useState<number>(() => readNumber(STEPS_KEY, DEFAULT_MAX_STEPS));
   const [numCtx, setNumCtx] = useState<number>(() => readNumber(CTX_KEY_PREFIX + readString(MODEL_KEY, DEFAULT_MODEL), DEFAULT_NUM_CTX));
   const [autoRemember, setAutoRemember] = useState<boolean>(() => readBool(AUTO_REMEMBER_KEY, true));
+
+  // Sessions sidebar state
+  const [sessionsIndex, setSessionsIndex] = useState<SessionsIndex>(() => loadSessionsIndex());
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readBool(SESSIONS_SIDEBAR_KEY, false));
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState<string>("");
+
+  // Persist sessions index whenever it changes
+  useEffect(() => { saveSessionsIndex(sessionsIndex); }, [sessionsIndex]);
+  useEffect(() => writeBool(SESSIONS_SIDEBAR_KEY, sidebarCollapsed), [sidebarCollapsed]);
+
+  const activeSession = useMemo(
+    () => sessionsIndex.sessions.find((s) => s.id === sessionsIndex.activeId) || sessionsIndex.sessions[0],
+    [sessionsIndex],
+  );
+
+  const switchSession = useCallback((id: string) => {
+    setSessionsIndex((idx) => ({ ...idx, activeId: id }));
+  }, []);
+
+  const createSession = useCallback(() => {
+    const id = makeSessionId();
+    const now = Date.now();
+    setSessionsIndex((idx) => ({
+      sessions: [{ id, title: "Новый чат", created_at: now, updated_at: now }, ...idx.sessions],
+      activeId: id,
+    }));
+  }, []);
+
+  const deleteSession = useCallback((id: string) => {
+    setSessionsIndex((idx) => {
+      if (idx.sessions.length <= 1) {
+        // Don't allow deleting the last session — just reset it.
+        deleteHistoryFor(id);
+        const fresh = makeSessionId();
+        return {
+          sessions: [{ id: fresh, title: "Новый чат", created_at: Date.now(), updated_at: Date.now() }],
+          activeId: fresh,
+        };
+      }
+      deleteHistoryFor(id);
+      const remaining = idx.sessions.filter((s) => s.id !== id);
+      const newActive = idx.activeId === id ? remaining[0].id : idx.activeId;
+      return { sessions: remaining, activeId: newActive };
+    });
+  }, []);
+
+  const renameSession = useCallback((id: string, title: string) => {
+    setSessionsIndex((idx) => ({
+      ...idx,
+      sessions: idx.sessions.map((s) => (s.id === id ? { ...s, title: title.trim() || s.title, updated_at: Date.now() } : s)),
+    }));
+  }, []);
+
+  // Called by the chat shell when the user submits a turn — bump
+  // updated_at and auto-derive title for fresh sessions.
+  const handleUserTurn = useCallback((text: string) => {
+    setSessionsIndex((idx) => ({
+      ...idx,
+      sessions: idx.sessions.map((s) => {
+        if (s.id !== idx.activeId) return s;
+        const shouldRetitle = s.title === "Новый чат" || !s.title.trim();
+        return {
+          ...s,
+          title: shouldRetitle ? deriveTitle(text) : s.title,
+          updated_at: Date.now(),
+        };
+      }),
+    }));
+  }, []);
 
   // Drawer state (replaces the old split-view ideCollapsed)
   const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(() => {
@@ -611,15 +761,175 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
 
       {/* MAIN ROW: chat full-width + optional right drawer */}
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        {/* Sessions sidebar — left of chat */}
+        {!sidebarCollapsed && (
+          <div
+            style={{
+              flex: "0 0 200px",
+              minWidth: 180,
+              maxWidth: 280,
+              borderRight: "1px solid var(--border)",
+              display: "flex",
+              flexDirection: "column",
+              background: "var(--bg-sidebar)",
+              minHeight: 0,
+            }}
+          >
+            {/* Sidebar header */}
+            <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+              <UiIcon icon={MessageSquare} size={13} />
+              <div style={{ fontSize: 11, fontWeight: 600, flex: 1 }}>Сессии</div>
+              <button
+                onClick={() => setSidebarCollapsed(true)}
+                className="soft-btn"
+                title="Скрыть боковую панель"
+                style={{ padding: "3px 5px", fontSize: 10 }}
+              >
+                <UiIcon icon={PanelLeftClose} size={11} />
+              </button>
+            </div>
+            <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+              <button
+                onClick={createSession}
+                style={{
+                  width: "100%",
+                  padding: "6px 10px",
+                  borderRadius: 6,
+                  border: "1px solid var(--accent)",
+                  background: "var(--accent)",
+                  color: "#fff",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 5,
+                  fontWeight: 600,
+                }}
+              >
+                <UiIcon icon={Plus} size={12} />
+                <span>Новый чат</span>
+              </button>
+            </div>
+            {/* Sessions list */}
+            <div style={{ flex: 1, overflow: "auto", padding: "4px 6px" }}>
+              {sessionsIndex.sessions.length === 0 && (
+                <div style={{ padding: 12, fontSize: 11, color: "var(--text-muted)", textAlign: "center" }}>Нет сессий</div>
+              )}
+              {sessionsIndex.sessions.map((s) => {
+                const isActive = s.id === sessionsIndex.activeId;
+                const isEditing = editingSessionId === s.id;
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => !isEditing && switchSession(s.id)}
+                    style={{
+                      padding: "6px 8px",
+                      marginBottom: 2,
+                      borderRadius: 6,
+                      cursor: isEditing ? "default" : "pointer",
+                      background: isActive ? "var(--bg-surface-active)" : "transparent",
+                      border: `1px solid ${isActive ? "var(--accent)" : "transparent"}`,
+                      transition: "all 0.1s",
+                      position: "relative",
+                    }}
+                    onMouseEnter={(e) => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-surface-hover)"; }}
+                    onMouseLeave={(e) => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                  >
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        value={editingTitle}
+                        onChange={(e) => setEditingTitle(e.target.value)}
+                        onBlur={() => { renameSession(s.id, editingTitle); setEditingSessionId(null); }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { renameSession(s.id, editingTitle); setEditingSessionId(null); }
+                          if (e.key === "Escape") { setEditingSessionId(null); }
+                        }}
+                        style={{ width: "100%", padding: "3px 6px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 11, outline: "none", fontFamily: "inherit" }}
+                      />
+                    ) : (
+                      <>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <div
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              fontSize: 11,
+                              fontWeight: isActive ? 600 : 400,
+                              color: isActive ? "var(--text-primary)" : "var(--text-secondary)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {s.title || "Без названия"}
+                          </div>
+                          <div style={{ display: "flex", gap: 1, opacity: 0.7 }}>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); setEditingSessionId(s.id); setEditingTitle(s.title); }}
+                              title="Переименовать"
+                              style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--text-muted)", padding: 2, display: "flex", alignItems: "center" }}
+                            >
+                              <UiIcon icon={Pencil} size={10} />
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (confirm(`Удалить сессию «${s.title}»? Вся история этой сессии будет потеряна.`)) deleteSession(s.id);
+                              }}
+                              title="Удалить"
+                              style={{ border: "none", background: "transparent", cursor: "pointer", color: "var(--text-muted)", padding: 2, display: "flex", alignItems: "center" }}
+                            >
+                              <UiIcon icon={Trash2} size={10} />
+                            </button>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 9, color: "var(--text-muted)", marginTop: 2 }}>{formatRelTime(s.updated_at)}</div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Show "open sidebar" button when collapsed */}
+        {sidebarCollapsed && (
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            title="Показать список сессий"
+            style={{
+              flex: "0 0 24px",
+              minWidth: 24,
+              border: "none",
+              borderRight: "1px solid var(--border)",
+              background: "var(--bg-sidebar)",
+              color: "var(--text-muted)",
+              cursor: "pointer",
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <UiIcon icon={PanelLeftOpen} size={13} />
+          </button>
+        )}
+
         {/* Chat — always present, fills remaining space */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <CodeAgentChatShell
+            sessionId={activeSession?.id || ""}
             projectRoot={projectRoot}
             model={model}
             maxSteps={maxSteps}
             numCtx={numCtx}
             autoRemember={autoRemember}
             onAgentTouchedFile={handleAgentTouchedFile}
+            onUserTurn={handleUserTurn}
+            onRequestNewSession={createSession}
           />
         </div>
 
