@@ -249,8 +249,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     function onMove(e: MouseEvent) {
       if (!drawerDragRef.current || !rootRef.current) return;
       const rect = rootRef.current.getBoundingClientRect();
-      // distance from right edge of root → drawer width
-      const w = rect.right - e.clientX;
+      // Drawer lives on the LEFT — width is distance from root's left edge
+      // to the mouse cursor (= the drag handle position).
+      const w = e.clientX - rect.left;
       setDrawerWidth(Math.max(MIN_DRAWER_WIDTH, Math.min(MAX_DRAWER_WIDTH, w)));
     }
     function onUp() {
@@ -608,42 +609,11 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         </div>
       )}
 
-      {/* MAIN ROW: chat full-width OR chat + drawer */}
+      {/* MAIN ROW: optional left drawer + chat full-width */}
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <CodeAgentChatShell
-            projectRoot={projectRoot}
-            model={model}
-            maxSteps={maxSteps}
-            numCtx={numCtx}
-            autoRemember={autoRemember}
-            onAgentTouchedFile={handleAgentTouchedFile}
-          />
-        </div>
-
         {activeDrawer && (
           <>
-            {/* Resize handle */}
-            <div
-              onMouseDown={startResize}
-              style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
-              title="Тяни чтобы изменить ширину"
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  transform: "translate(-50%, -50%)",
-                  width: 1,
-                  height: 24,
-                  background: "var(--text-muted)",
-                  opacity: 0.4,
-                }}
-              />
-            </div>
-
-            {/* Drawer */}
+            {/* Drawer (LEFT side) */}
             <div
               style={{
                 flex: `0 0 ${drawerWidth}px`,
@@ -652,9 +622,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 display: "flex",
                 flexDirection: "column",
                 background: "var(--bg-root)",
-                borderLeft: "1px solid var(--border)",
+                borderRight: "1px solid var(--border)",
                 boxShadow: "var(--shadow-float)",
-                animation: "drawerSlideIn 200ms ease",
+                animation: "drawerSlideInLeft 200ms ease",
               }}
             >
               {/* Drawer header: in-drawer tabs + close button */}
@@ -732,8 +702,40 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 />
               </div>
             </div>
+
+            {/* Resize handle between drawer (left) and chat (right) */}
+            <div
+              onMouseDown={startResize}
+              style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
+              title="Тяни чтобы изменить ширину"
+            >
+              <div
+                style={{
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  transform: "translate(-50%, -50%)",
+                  width: 1,
+                  height: 24,
+                  background: "var(--text-muted)",
+                  opacity: 0.4,
+                }}
+              />
+            </div>
           </>
         )}
+
+        {/* Chat — always present, fills remaining space */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <CodeAgentChatShell
+            projectRoot={projectRoot}
+            model={model}
+            maxSteps={maxSteps}
+            numCtx={numCtx}
+            autoRemember={autoRemember}
+            onAgentTouchedFile={handleAgentTouchedFile}
+          />
+        </div>
       </div>
     </div>
   );
