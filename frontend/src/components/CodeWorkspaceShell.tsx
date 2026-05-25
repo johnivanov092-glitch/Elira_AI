@@ -24,6 +24,7 @@ import {
   Database,
   FileText,
   Files,
+  Folder,
   FolderOpen,
   GitBranch,
   History,
@@ -54,6 +55,34 @@ const CTX_OPTIONS = [4096, 8192, 16384, 32768, 65536];
 const TOOL_FRIENDLY = ["qwen2.5-coder", "qwen2.5", "qwen3", "llama3.2", "llama3.1", "mistral-nemo", "command-r"];
 
 type Model = { name: string; size?: number };
+
+/** Open a native folder picker via Tauri's dialog API. Returns the
+ *  selected absolute path with forward slashes (normalized), or null
+ *  if the user cancelled / Tauri isn't available (browser dev mode).
+ */
+async function pickFolder(defaultPath?: string): Promise<string | null> {
+  // Tauri 1.x: @tauri-apps/api/dialog. We import dynamically so the
+  // module doesn't break in non-Tauri contexts (npm run dev in browser).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const w = window as any;
+  if (!w.__TAURI__) return null;
+  try {
+    const mod = await import("@tauri-apps/api/dialog");
+    const selected = await mod.open({
+      directory: true,
+      multiple: false,
+      defaultPath: defaultPath || undefined,
+      title: "Выбери корень проекта",
+    });
+    if (typeof selected === "string" && selected) {
+      return selected.replace(/\\/g, "/");
+    }
+    return null;
+  } catch (err) {
+    console.error("pickFolder failed:", err);
+    return null;
+  }
+}
 
 type DrawerKey = "artifacts" | "git" | "filetree" | "rag" | "history";
 
@@ -380,7 +409,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             onChange={(e) => setProjectRoot(e.target.value)}
             placeholder="D:/AIWork/MyProject"
             spellCheck={false}
-            title="Корень проекта для code-агента"
+            title="Корень проекта для code-агента (можно ввести вручную или выбрать через кнопку справа)"
             style={{
               width: 220,
               padding: "5px 8px",
@@ -393,6 +422,17 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
               fontFamily: "var(--font-mono)",
             }}
           />
+          <button
+            onClick={async () => {
+              const picked = await pickFolder(projectRoot);
+              if (picked) setProjectRoot(picked);
+            }}
+            className="soft-btn"
+            title="Выбрать папку проекта через системный диалог"
+            style={{ padding: "5px 7px", fontSize: 11 }}
+          >
+            <UiIcon icon={Folder} size={12} />
+          </button>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
