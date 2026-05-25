@@ -17,6 +17,7 @@ import {
   Check,
   Code2,
   Copy,
+  Database,
   FileCode2,
   FileText,
   Files,
@@ -31,6 +32,7 @@ import {
   Search,
   Terminal,
   TestTube2,
+  Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -121,7 +123,24 @@ type GitData = {
   status?: GitStatusData;
 };
 
-type MainView = "artifacts" | "filetree" | "git" | "history";
+type MainView = "artifacts" | "filetree" | "git" | "history" | "rag";
+
+type RagItem = {
+  id: number;
+  text: string;
+  category: string;
+  importance: number;
+  access_count?: number;
+  created_at?: string;
+  score?: number;
+};
+
+type RagStatsState = {
+  total: number;
+  with_embeddings: number;
+  model?: string;
+  by_category?: Record<string, number>;
+};
 type FilterTab = "all" | "code" | "files";
 type GitTab = "diff" | "log" | "status";
 type SaveStatus = "error" | "ok" | "saving" | null;
@@ -272,6 +291,88 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   const [ftSelected,setFtSelected]=useState<string | null>(null);
   const [ftContent,setFtContent]=useState<string | null>(null);
 
+  // RAG sub-tab state
+  const [ragItems, setRagItems] = useState<RagItem[]>([]);
+  const [ragStats, setRagStats] = useState<RagStatsState | null>(null);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragError, setRagError] = useState<string | null>(null);
+  const [ragCategory, setRagCategory] = useState<string>("all");
+  const [ragSearch, setRagSearch] = useState<string>("");
+  const [ragSearchMode, setRagSearchMode] = useState(false);
+  const [ragExpanded, setRagExpanded] = useState<Record<number, boolean>>({});
+
+  const loadRagList = useCallback(async () => {
+    setRagLoading(true);
+    setRagError(null);
+    setRagSearchMode(false);
+    try {
+      const [statsRes, listRes] = await Promise.all([
+        api.getRagStats(),
+        api.listRagItems(500),
+      ]);
+      if (statsRes.ok) {
+        const by_category: Record<string, number> = {};
+        for (const it of (listRes.items || [])) {
+          by_category[it.category] = (by_category[it.category] || 0) + 1;
+        }
+        setRagStats({
+          total: statsRes.total,
+          with_embeddings: statsRes.with_embeddings,
+          model: statsRes.model,
+          by_category,
+        });
+      }
+      setRagItems((listRes.items || []) as RagItem[]);
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    } finally {
+      setRagLoading(false);
+    }
+  }, []);
+
+  const runRagSearch = useCallback(async () => {
+    const q = ragSearch.trim();
+    if (!q) { loadRagList(); return; }
+    setRagLoading(true);
+    setRagError(null);
+    setRagSearchMode(true);
+    try {
+      const res = await api.recallFromRag(q, 30, 0.0);
+      setRagItems(((res.items || []) as unknown as RagItem[]));
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    } finally {
+      setRagLoading(false);
+    }
+  }, [ragSearch, loadRagList]);
+
+  const deleteRagOne = useCallback(async (id: number) => {
+    try {
+      await api.deleteRagItem(id);
+      setRagItems((prev) => prev.filter((i) => i.id !== id));
+      setRagStats((prev) => prev ? { ...prev, total: Math.max(0, prev.total - 1) } : prev);
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    }
+  }, []);
+
+  const clearCategoryItems = useCallback(async (category: string) => {
+    const label = category === "all" ? "ВСЕ записи RAG" : `все записи категории «${category}»`;
+    if (!confirm(`Удалить ${label}? Это нельзя отменить.`)) return;
+    try {
+      await api.clearRagCategory(category === "all" ? undefined : category);
+      await loadRagList();
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    }
+  }, [loadRagList]);
+
+  useEffect(() => {
+    if (mainView !== "rag") return;
+    if (ragItems.length === 0 && !ragLoading) loadRagList();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainView]);
+
   const libraryFiles=propLib||[];
   function setLibraryFiles(next: LibraryFile[]){if(propSetLib)propSetLib(next);saveJson(LIBRARY_KEY,next);}
 
@@ -393,7 +494,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",borderBottom:"1px solid var(--border)",flexWrap:"wrap"}}>
         {onBackToChat && <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>}
         <div style={{display:"flex",gap:2,marginLeft:6}}>
-          {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["history","История", History]].map(([k,l,Icon])=>(
+          {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["rag","RAG", Database],["history","История", History]].map(([k,l,Icon])=>(
             <button key={String(k)} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k as MainView)} style={{fontSize:11,padding:"3px 9px"}}><IconText icon={Icon as IconComponent} size={12} gap={5}>{String(l)}</IconText></button>
           ))}
         </div>
@@ -588,6 +689,112 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                 ?<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-muted)",fontSize:12,gap:6}}><UiIcon icon={Loader2} size={13} />Загрузка...</div>
                 :<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-muted)",fontSize:12}}><div style={{textAlign:"center"}}><div style={{display:"flex",justifyContent:"center",opacity:0.18,marginBottom:8}}><UiIcon icon={FolderOpen} size={28} /></div><div>Выбери файл слева</div></div></div>
             }
+          </div>
+        </div>
+      )}
+
+      {/* RAG */}
+      {mainView==="rag"&&(
+        <div style={{flex:1,display:"flex",flexDirection:"column",minHeight:0,overflow:"hidden"}}>
+          {/* Stats bar */}
+          <div style={{padding:"8px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:"var(--bg-surface)"}}>
+            <UiIcon icon={Database} size={13} />
+            <span style={{fontSize:11,fontWeight:500}}>RAG memory</span>
+            {ragStats ? (
+              <>
+                <span style={{fontSize:11,color:"var(--text-muted)"}}>{ragStats.total} записей</span>
+                <span style={{fontSize:11,color:"var(--text-muted)"}}>· с эмбеддингами: {ragStats.with_embeddings}</span>
+                {ragStats.model && <span style={{fontSize:10,color:"var(--text-muted)",fontFamily:"var(--font-mono)"}}>· {ragStats.model}</span>}
+                {ragStats.by_category && Object.entries(ragStats.by_category).map(([cat,n]) => (
+                  <button key={cat} onClick={()=>setRagCategory(cat)} className={`soft-btn ${ragCategory===cat?"active":""}`} style={{fontSize:10,padding:"2px 8px"}}>
+                    {cat}: {n}
+                  </button>
+                ))}
+              </>
+            ) : <span style={{fontSize:11,color:"var(--text-muted)"}}>загрузка...</span>}
+            <button onClick={()=>setRagCategory("all")} className={`soft-btn ${ragCategory==="all"?"active":""}`} style={{fontSize:10,padding:"2px 8px"}}>все</button>
+            <button onClick={loadRagList} disabled={ragLoading} className="soft-btn" style={{marginLeft:"auto",fontSize:11,padding:"4px 10px",opacity:ragLoading?0.5:1}}>
+              <IconText icon={RefreshCw} size={11} gap={4}>Обновить</IconText>
+            </button>
+            <button onClick={()=>clearCategoryItems(ragCategory)} disabled={ragLoading} className="soft-btn" style={{fontSize:11,padding:"4px 10px",color:"#ff6b6b",borderColor:"rgba(255,107,107,0.4)"}}>
+              <IconText icon={Trash2} size={11} gap={4}>Очистить {ragCategory==="all"?"всё":`«${ragCategory}»`}</IconText>
+            </button>
+          </div>
+
+          {/* Search */}
+          <div style={{padding:"8px 14px",borderBottom:"1px solid var(--border)",display:"flex",gap:6,alignItems:"center"}}>
+            <UiIcon icon={Search} size={12} />
+            <input
+              value={ragSearch}
+              onChange={(e)=>setRagSearch(e.target.value)}
+              onKeyDown={(e)=>{if(e.key==="Enter")runRagSearch();}}
+              placeholder="Семантический поиск по RAG (Enter)..."
+              spellCheck={false}
+              style={{flex:1,padding:"5px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:11,outline:"none"}}
+            />
+            <button onClick={runRagSearch} disabled={ragLoading} className="soft-btn" style={{fontSize:11,padding:"4px 10px"}}>
+              Искать
+            </button>
+            {ragSearchMode && (
+              <button onClick={()=>{setRagSearch("");loadRagList();}} className="soft-btn" style={{fontSize:11,padding:"4px 10px"}}>
+                Сбросить
+              </button>
+            )}
+          </div>
+
+          {ragError && (
+            <div style={{padding:"6px 14px",background:"rgba(255,107,107,0.08)",color:"#ff6b6b",fontSize:11,borderBottom:"1px solid var(--border)"}}>
+              {ragError}
+            </div>
+          )}
+
+          {/* List */}
+          <div style={{flex:1,overflow:"auto",padding:"6px 14px"}}>
+            {ragLoading && (
+              <div style={{padding:18,fontSize:12,color:"var(--text-muted)",display:"flex",alignItems:"center",gap:8,justifyContent:"center"}}>
+                <UiIcon icon={Loader2} size={14}/>
+                <span>Загружаю...</span>
+              </div>
+            )}
+            {!ragLoading && ragItems.length === 0 && (
+              <div style={{padding:30,fontSize:12,color:"var(--text-muted)",textAlign:"center",lineHeight:1.6}}>
+                {ragSearchMode ? "Ничего не найдено по запросу." : (
+                  <>
+                    RAG пуст.<br/>
+                    <span style={{fontSize:11}}>Нажми «Индексировать» в верхней панели Code workspace, или дай агенту задачу с auto-remember=on — записи появятся здесь.</span>
+                  </>
+                )}
+              </div>
+            )}
+            {!ragLoading && ragItems
+              .filter((it)=>ragCategory==="all"||it.category===ragCategory)
+              .map((it)=>{
+                const isOpen = !!ragExpanded[it.id];
+                const preview = (it.text || "").slice(0, 200);
+                return (
+                  <div key={it.id} style={{marginBottom:6,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-surface)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderBottom:isOpen?"1px solid var(--border)":"none"}}>
+                      <span style={{fontSize:10,padding:"1px 7px",borderRadius:10,background:"rgba(99,102,241,0.18)",color:"var(--accent, #6366f1)",fontFamily:"var(--font-mono)",flexShrink:0}}>{it.category}</span>
+                      {typeof it.score === "number" && (
+                        <span style={{fontSize:10,color:"#4ade80",fontFamily:"var(--font-mono)",flexShrink:0}}>score={it.score.toFixed(2)}</span>
+                      )}
+                      <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>imp={it.importance}</span>
+                      <button onClick={()=>setRagExpanded((p)=>({...p,[it.id]:!p[it.id]}))} style={{flex:1,minWidth:0,border:"none",background:"transparent",cursor:"pointer",textAlign:"left",fontSize:11,color:"var(--text-secondary)",fontFamily:"var(--font-mono)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:0}}>
+                        {preview}
+                      </button>
+                      {it.created_at && <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>{it.created_at.slice(0,10)}</span>}
+                      <button onClick={()=>{if(confirm("Удалить эту запись?"))deleteRagOne(it.id);}} style={{border:"none",background:"transparent",cursor:"pointer",color:"var(--text-muted)",padding:2,flexShrink:0}} title="Удалить">
+                        <UiIcon icon={Trash2} size={11}/>
+                      </button>
+                    </div>
+                    {isOpen && (
+                      <pre style={{margin:0,padding:"8px 12px",fontSize:11,fontFamily:"var(--font-mono)",lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-primary)",background:"rgba(0,0,0,0.15)",maxHeight:400,overflow:"auto"}}>
+                        {it.text}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}

@@ -98,6 +98,26 @@ def rag_get_stats():
     return rag_stats()
 
 
+@router.delete("/rag/clear")
+def rag_clear_category(category: str | None = None):
+    """Bulk delete. If category is provided, deletes only items in that
+    category; otherwise nukes everything in rag_items. Returns the
+    number of rows removed.
+    """
+    from app.application.rag_memory.service import _conn  # type: ignore[attr-defined]
+
+    conn = _conn()
+    try:
+        if category:
+            cur = conn.execute("DELETE FROM rag_items WHERE category = ?", (category,))
+        else:
+            cur = conn.execute("DELETE FROM rag_items")
+        conn.commit()
+        return {"ok": True, "deleted": cur.rowcount, "category": category}
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════
 # PROJECT MODE
 # ═══════════════════════════════════════════════════════════════

@@ -300,6 +300,60 @@ export async function recallFromRag(
   });
 }
 
+// ── RAG store admin (list / delete / stats) ──────────────────────────────
+
+export type RagStats = {
+  ok: boolean;
+  total: number;
+  with_embeddings: number;
+  model?: string;
+  by_category?: Record<string, number>;
+  error?: string;
+};
+
+export type RagListItem = {
+  id: number;
+  text: string;
+  category: string;
+  importance: number;
+  access_count?: number;
+  created_at?: string;
+};
+
+export type RagListResult = {
+  ok: boolean;
+  items: RagListItem[];
+  count?: number;
+};
+
+export async function getRagStats(): Promise<RagStats> {
+  return request<RagStats>("/api/advanced/rag/stats");
+}
+
+export async function listRagItems(limit: number = 200): Promise<RagListResult> {
+  const qs = new URLSearchParams({ limit: String(limit) }).toString();
+  return request<RagListResult>(`/api/advanced/rag/list?${qs}`);
+}
+
+export async function deleteRagItem(itemId: number): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/advanced/rag/${itemId}`, { method: "DELETE" });
+}
+
+export async function clearRagCategory(category?: string): Promise<{ ok: boolean; deleted: number; category: string | null }> {
+  const qs = category ? `?${new URLSearchParams({ category }).toString()}` : "";
+  return request<{ ok: boolean; deleted: number; category: string | null }>(
+    `/api/advanced/rag/clear${qs}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function addRagItem(text: string, category: string = "fact", importance: number = 5): Promise<{ ok: boolean; id?: number; has_embedding?: boolean; error?: string }> {
+  return request("/api/advanced/rag/add", {
+    method: "POST",
+    body: { text, category, importance },
+  });
+}
+
 /** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
  *  is closer to 4. We compute per-character class to be reasonable. */
 export function estimateTokens(text: string): number {
