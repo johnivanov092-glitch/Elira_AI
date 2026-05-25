@@ -1245,8 +1245,10 @@ export default function EliraChatShell(): JSX.Element {
                 <div className="settings-tile">
                   <div className="settings-title">Модель по умолчанию</div>
                   <select value={settingsModel} onChange={e=>{setSettingsModel(e.target.value);setSettingsSaved(false);}} className="topbar-select full dark-select">
+                    <option value="auto">🪄 Авто (оркестрация)</option>
                     {(modelOpts?.length?modelOpts:[{name:settingsModel}]).map((i,idx)=>{const n=getName(i);return <option key={n+idx} value={n}>{n}</option>})}
                   </select>
+                  <div className="settings-desc" style={{marginTop:4,fontSize:10}}>«Авто» — модель выбирается по таблице «Оркестрация» ниже, в зависимости от типа задачи (код / проект / исследование / чат).</div>
                 </div>
                 <div className="settings-tile">
                   <div className="settings-title">Контекст Ollama</div>
@@ -1395,7 +1397,10 @@ export default function EliraChatShell(): JSX.Element {
                   <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
                 </div>
                 <div className="composer-selectors" style={{justifyContent:"center"}}>
-                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select">{(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=getName(i);return <option key={n+idx} value={n}>{shortModelName(n)}</option>})}</select>
+                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select" title={model==="auto"?"Авто — модель выбирается оркестрацией под тип задачи":"Текущая модель: "+model}>
+                    <option value="auto">🪄 Авто</option>
+                    {(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=getName(i);return <option key={n+idx} value={n}>{shortModelName(n)}</option>})}
+                  </select>
                   <select value={profile} onChange={e=>setProfile(e.target.value)} className="composer-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select>
                   <button onClick={() => setMultiAgent(p => !p)} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (multiAgent ? "rgba(244,114,182,0.4)" : "var(--border)"),background:multiAgent ? "rgba(244,114,182,0.12)" : "transparent",color:multiAgent ? "#f472b6" : "var(--text-muted)",cursor:"pointer"}}>{multiAgent ? "Multi ON" : "Multi"}</button>
                 </div>

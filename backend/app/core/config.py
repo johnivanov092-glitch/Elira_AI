@@ -66,13 +66,30 @@ def _get_route_map() -> dict[str, list[str]]:
         return _FALLBACK_ROUTE_MAP
 
 
+# Sentinel values that mean "route via orchestration table, don't trust
+# user_model verbatim". Anything matching is auto-routed; everything else
+# is treated as an explicit choice the user wants honoured.
+AUTO_ROUTE_TOKENS = frozenset({"", "auto", "авто", DEFAULT_MODEL})
+
+
+def is_auto_route(user_model: str | None) -> bool:
+    """True when the chat request asks for orchestration-based routing."""
+    if user_model is None:
+        return True
+    return str(user_model).strip().lower() in AUTO_ROUTE_TOKENS
+
+
 def pick_model_for_route(route: str, user_model: str, available_models: list[str] | None = None) -> str:
     """
-    Авто-выбор модели. Если user_model НЕ дефолт — уважаем выбор пользователя.
-    Если дефолт — подбираем лучшую доступную модель под route.
-    Маппинг берётся из настроек пользователя (SQLite).
+    Авто-выбор модели:
+      - Если user_model — сентинель ("", "auto", "авто" или DEFAULT_MODEL) →
+        читаем таблицу оркестрации (route_map) и выбираем первую доступную
+        модель из кандидатов для данного route.
+      - Иначе — уважаем явный выбор пользователя, оркестрация не вмешивается.
+
+    Маппинг берётся из настроек пользователя (SQLite); при ошибке — fallback.
     """
-    if user_model != DEFAULT_MODEL:
+    if not is_auto_route(user_model):
         return user_model
 
     route_map = _get_route_map()
@@ -84,7 +101,7 @@ def pick_model_for_route(route: str, user_model: str, available_models: list[str
             if candidate in available_set:
                 return candidate
 
-    return candidates[0] if candidates else user_model
+    return candidates[0] if candidates else (user_model or DEFAULT_MODEL)
 
 
 # ═══════════════════════════════════════════════════════════════

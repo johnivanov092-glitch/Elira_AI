@@ -32,8 +32,18 @@ export function deriveChatTitle(t: unknown): string {
 
 export function shortModelName(name: string | null | undefined): string {
   if (!name) return "model";
-  if (name.toLowerCase().includes("yandex")) return "YandexGPT";
+  const low = name.toLowerCase();
+  if (low === "auto" || low === "авто") return "🪄 Авто";
+  if (low.includes("yandex")) return "YandexGPT";
   return name;
+}
+
+/** True if the chat's model selection is a sentinel asking the backend
+ *  to pick via the orchestration table (Settings → Оркестрация). */
+export function isAutoModel(name: string | null | undefined): boolean {
+  if (!name) return true;
+  const v = String(name).trim().toLowerCase();
+  return v === "" || v === "auto" || v === "авто";
 }
 
 export function normalizeErrorMessage(e: unknown, fb = "Ошибка"): string {
