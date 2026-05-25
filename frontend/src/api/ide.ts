@@ -112,6 +112,8 @@ import {
   cancelCodeAgent,
   estimateTokens,
   getProjectPrompt,
+  indexProject,
+  recallFromRag,
   runCodeAgent,
   setProjectPromptApi,
   streamCodeAgent,
@@ -232,6 +234,8 @@ export {
   cancelCodeAgent,
   estimateTokens,
   getProjectPrompt,
+  indexProject,
+  recallFromRag,
   runCodeAgent,
   setProjectPromptApi,
   streamCodeAgent,
@@ -243,7 +247,10 @@ export type {
   CodeAgentStreamEvent,
   CodeAgentToolCall,
   ConversationMessage,
+  IndexProjectResult,
   ProjectPromptInfo,
+  RecallItem,
+  RecallResult,
 } from "./codeAgent";
 
 export const api = {
@@ -336,6 +343,8 @@ export const api = {
   setProjectPromptApi,
   summarizeHistory,
   estimateTokens,
+  indexProject,
+  recallFromRag,
   DEFAULT_CODE_AGENT_MODEL,
   DEFAULT_CODE_AGENT_MAX_STEPS,
   DEFAULT_CODE_AGENT_NUM_CTX,

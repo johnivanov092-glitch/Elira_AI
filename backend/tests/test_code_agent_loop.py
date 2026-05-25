@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +17,8 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.code_agent.agent_loop import (  # noqa: E402
     DEFAULT_NUM_CTX,
     get_project_prompt,
+    index_project,
+    recall_from_rag,
     request_cancel,
     run_code_agent,
     set_project_prompt,
@@ -23,10 +27,12 @@ from app.application.code_agent.agent_loop import (  # noqa: E402
 )
 from app.application.code_agent.tools import (  # noqa: E402
     SandboxError,
+    build_tool_schemas,
     tool_edit_file,
     tool_glob,
     tool_grep,
     tool_read_file,
+    tool_recall,
     tool_run_bash,
     tool_write_file,
 )
@@ -390,6 +396,81 @@ class AgentLoopTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["summary"], "")
         self.assertEqual(result["turn_count"], 0)
+
+    def test_tool_schemas_include_recall(self) -> None:
+        names = [t["function"]["name"] for t in build_tool_schemas()]
+        self.assertIn("recall", names)
+        self.assertIn("read_file", names)
+        self.assertIn("run_bash", names)
+
+    def test_recall_tool_handles_no_matches(self) -> None:
+        # search_rag with empty DB returns no matches
+        result = tool_recall(self.root, query="something_that_will_not_match_xyz123", top_k=3)
+        text = result.get("text", "")
+        # Either "No matches" or an error if Ollama is offline — both are OK
+        self.assertTrue(
+            "No matches" in text or text.startswith("ERROR"),
+            f"unexpected recall output: {text}",
+        )
+
+    def test_recall_from_rag_endpoint_helper(self) -> None:
+        result = recall_from_rag(query="anything", top_k=3)
+        # ok=True even if no items, as long as RAG service is importable
+        self.assertIn("ok", result)
+        self.assertIn("items", result)
+
+    def test_index_project_walks_files(self) -> None:
+        # Lay down a small fake project
+        (self.root / "src").mkdir()
+        (self.root / "src" / "a.py").write_text("def foo():\n    return 42\n", encoding="utf-8")
+        (self.root / "src" / "b.py").write_text("def bar():\n    return 'hi'\n", encoding="utf-8")
+        (self.root / "node_modules").mkdir()
+        (self.root / "node_modules" / "junk.py").write_text("# should be skipped\n", encoding="utf-8")
+        result = index_project(self.root, replace=False)
+        self.assertTrue(result["ok"], result.get("error"))
+        # Must process the 2 real files, not the node_modules one
+        self.assertEqual(result["files_processed"], 2)
+        # If RAG/Ollama isn't running, chunks_indexed may be 0 but the walker still works
+        self.assertIn("chunks_indexed", result)
+        self.assertIn("failed_chunks", result)
+
+    def test_index_project_rejects_bad_root(self) -> None:
+        result = index_project("/clearly/not/a/path/zzz")
+        self.assertFalse(result["ok"])
+        self.assertIn("error", result)
+
+    def test_auto_remember_skipped_when_disabled(self) -> None:
+        responses = iter([{"message": {"content": "done", "tool_calls": []}}])
+
+        remember_calls: list[Any] = []
+        with patch(
+            "app.application.code_agent.agent_loop._try_remember_turn",
+            side_effect=lambda **kw: remember_calls.append(kw),
+        ):
+            run_code_agent(
+                user_message="task A",
+                project_root=self.root,
+                auto_remember=False,
+                chat_fn=lambda **kw: next(responses),
+            )
+        self.assertEqual(remember_calls, [])
+
+    def test_auto_remember_called_on_success(self) -> None:
+        responses = iter([{"message": {"content": "fixed bug X", "tool_calls": []}}])
+        remember_calls: list[Any] = []
+        with patch(
+            "app.application.code_agent.agent_loop._try_remember_turn",
+            side_effect=lambda **kw: remember_calls.append(kw),
+        ):
+            run_code_agent(
+                user_message="fix the bug",
+                project_root=self.root,
+                auto_remember=True,
+                chat_fn=lambda **kw: next(responses),
+            )
+        self.assertEqual(len(remember_calls), 1)
+        self.assertEqual(remember_calls[0]["user_message"], "fix the bug")
+        self.assertEqual(remember_calls[0]["response_text"], "fixed bug X")
 
     def test_project_prompt_get_and_set_roundtrip(self) -> None:
         # No prompt yet

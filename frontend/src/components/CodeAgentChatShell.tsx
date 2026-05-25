@@ -343,6 +343,7 @@ export type CodeAgentChatShellProps = {
   model: string;
   maxSteps: number;
   numCtx: number;
+  autoRemember: boolean;
   /** Called whenever a tool call touches a file path (read/write/edit). */
   onAgentTouchedFile?: (path: string) => void;
 };
@@ -352,6 +353,7 @@ export default function CodeAgentChatShell({
   model,
   maxSteps,
   numCtx,
+  autoRemember,
   onAgentTouchedFile,
 }: CodeAgentChatShellProps) {
   const [history, setHistory] = useState<Turn[]>(() => loadHistory());
@@ -471,6 +473,7 @@ export default function CodeAgentChatShell({
         model,
         maxSteps,
         numCtx,
+        autoRemember,
         conversationHistory,
         signal: controller.signal,
         onRunId: (rid) => {
@@ -533,7 +536,7 @@ export default function CodeAgentChatShell({
       // If the stream finished without a 'done' (e.g. server crash), mark turn finished.
       patchAgent((prev) => (prev.in_progress ? { ...prev, in_progress: false } : prev));
     }
-  }, [input, running, projectRoot, model, maxSteps, numCtx, buildHistoryPayload, onAgentTouchedFile]);
+  }, [input, running, projectRoot, model, maxSteps, numCtx, autoRemember, buildHistoryPayload, onAgentTouchedFile]);
 
   const compressHistory = useCallback(async () => {
     if (summarizing || running) return;

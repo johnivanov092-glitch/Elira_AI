@@ -12,7 +12,7 @@
  * Layout state (split %, IDE collapsed) is persisted to localStorage.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Cpu, FileText, FolderOpen, RefreshCw, Save, X } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Cpu, Database, FileText, FolderOpen, RefreshCw, Save, X } from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import CodeAgentChatShell from "./CodeAgentChatShell";
 import { api } from "../api/ide";
@@ -24,6 +24,7 @@ const SPLIT_KEY = "elira_code_workspace_split";
 const COLLAPSE_KEY = "elira_code_workspace_collapse";
 const STEPS_KEY = "elira_code_agent_steps";
 const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
+const AUTO_REMEMBER_KEY = "elira_code_agent_auto_remember";
 const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
 const DEFAULT_MODEL = "qwen2.5-coder:7b";
 const DEFAULT_MAX_STEPS = 20;
@@ -98,6 +99,12 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [maxSteps, setMaxSteps] = useState<number>(() => readNumber(STEPS_KEY, DEFAULT_MAX_STEPS));
   // num_ctx is per-model (different models have different effective context).
   const [numCtx, setNumCtx] = useState<number>(() => readNumber(CTX_KEY_PREFIX + readString(MODEL_KEY, DEFAULT_MODEL), DEFAULT_NUM_CTX));
+  const [autoRemember, setAutoRemember] = useState<boolean>(() => readBool(AUTO_REMEMBER_KEY, true));
+
+  // Index project state
+  const [indexing, setIndexing] = useState(false);
+  const [indexStatus, setIndexStatus] = useState<string | null>(null);
+  const [indexError, setIndexError] = useState<string | null>(null);
   const [splitPct, setSplitPct] = useState<number>(() => Math.max(20, Math.min(80, readNumber(SPLIT_KEY, 45))));
   const [ideCollapsed, setIdeCollapsed] = useState<boolean>(() => readBool(COLLAPSE_KEY, false));
 
@@ -124,6 +131,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   useEffect(() => writeNumber(STEPS_KEY, maxSteps), [maxSteps]);
   useEffect(() => writeNumber(SPLIT_KEY, splitPct), [splitPct]);
   useEffect(() => writeBool(COLLAPSE_KEY, ideCollapsed), [ideCollapsed]);
+  useEffect(() => writeBool(AUTO_REMEMBER_KEY, autoRemember), [autoRemember]);
   // Persist num_ctx per-model and switch when model changes.
   useEffect(() => { writeNumber(CTX_KEY_PREFIX + model, numCtx); }, [model, numCtx]);
   useEffect(() => {
@@ -217,6 +225,33 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
       setPromptLoading(false);
     }
   }, [projectRoot]);
+
+  const runIndex = useCallback(async () => {
+    if (indexing) return;
+    setIndexing(true);
+    setIndexStatus("Индексирую...");
+    setIndexError(null);
+    try {
+      const res = await api.indexProject({ projectRoot, replace: true });
+      if (!res.ok) {
+        setIndexError(res.error || "Индексация не удалась");
+        setIndexStatus(null);
+        return;
+      }
+      const okMsg = `✓ ${res.files_processed} файлов, ${res.chunks_indexed} чанков в RAG`;
+      const errCount = res.failed_chunks ?? 0;
+      setIndexStatus(errCount ? `${okMsg} (${errCount} ошибок embedding)` : okMsg);
+      if (errCount && res.chunks_indexed === 0) {
+        setIndexError("Все чанки провалились — скорее всего nomic-embed-text не установлен. Запусти: ollama pull nomic-embed-text");
+      }
+      setTimeout(() => setIndexStatus(null), 6000);
+    } catch (e) {
+      setIndexError(String((e as Error)?.message || e));
+      setIndexStatus(null);
+    } finally {
+      setIndexing(false);
+    }
+  }, [indexing, projectRoot]);
 
   const savePrompt = useCallback(async () => {
     setPromptStatus("saving");
@@ -388,6 +423,42 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         </button>
 
         <button
+          onClick={runIndex}
+          disabled={indexing}
+          className="soft-btn"
+          title="Проиндексировать файлы проекта в RAG: агент сможет искать код семантически через инструмент recall"
+          style={{ fontSize: 11, padding: "5px 10px", opacity: indexing ? 0.6 : 1 }}
+        >
+          <IconText icon={Database} size={12} gap={5}>
+            {indexing ? "Индексирую..." : "Индексировать"}
+          </IconText>
+        </button>
+
+        <label
+          title="Сохранять короткое summary каждого успешного запуска агента в RAG (категория agent_turn). Агент сможет «вспомнить» прошлые задачи через recall."
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 11,
+            color: autoRemember ? "var(--text-primary)" : "var(--text-muted)",
+            cursor: "pointer",
+            padding: "5px 8px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: autoRemember ? "var(--accent-soft, rgba(99,102,241,0.15))" : "transparent",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={autoRemember}
+            onChange={(e) => setAutoRemember(e.target.checked)}
+            style={{ margin: 0 }}
+          />
+          <span>Запоминать</span>
+        </label>
+
+        <button
           onClick={() => setIdeCollapsed((v) => !v)}
           className="soft-btn"
           title={ideCollapsed ? "Показать IDE-панель справа" : "Скрыть IDE-панель справа"}
@@ -398,6 +469,33 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </IconText>
         </button>
       </div>
+
+      {/* Index status banner */}
+      {(indexStatus || indexError) && (
+        <div
+          style={{
+            padding: "6px 14px",
+            borderBottom: "1px solid var(--border)",
+            background: indexError ? "rgba(255,107,107,0.08)" : "rgba(74,222,128,0.08)",
+            color: indexError ? "#ff6b6b" : "#4ade80",
+            fontSize: 11,
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <UiIcon icon={Database} size={12} />
+          <span style={{ flex: 1 }}>{indexError || indexStatus}</span>
+          <button
+            onClick={() => { setIndexError(null); setIndexStatus(null); }}
+            className="soft-btn"
+            style={{ fontSize: 10, padding: "2px 6px" }}
+          >
+            <UiIcon icon={X} size={10} />
+          </button>
+        </div>
+      )}
 
       {/* Project-prompt editor (inline) */}
       {promptOpen && (
@@ -484,6 +582,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             model={model}
             maxSteps={maxSteps}
             numCtx={numCtx}
+            autoRemember={autoRemember}
             onAgentTouchedFile={handleAgentTouchedFile}
           />
         </div>

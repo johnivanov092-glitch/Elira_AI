@@ -35,6 +35,7 @@ export type CodeAgentRunArgs = {
   model?: string;
   maxSteps?: number;
   numCtx?: number;
+  autoRemember?: boolean;
   conversationHistory?: ConversationMessage[];
 };
 
@@ -45,6 +46,7 @@ export async function runCodeAgent({
   model = DEFAULT_CODE_AGENT_MODEL,
   maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
   numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
+  autoRemember = true,
   conversationHistory,
 }: CodeAgentRunArgs): Promise<CodeAgentResponse> {
   return request<CodeAgentResponse>("/api/code-agent/run", {
@@ -55,6 +57,7 @@ export async function runCodeAgent({
       model,
       max_steps: maxSteps,
       num_ctx: numCtx,
+      auto_remember: autoRemember,
       conversation_history: conversationHistory,
     },
   });
@@ -95,6 +98,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     model = DEFAULT_CODE_AGENT_MODEL,
     maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
     numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
+    autoRemember = true,
     conversationHistory,
     runId,
     signal,
@@ -115,6 +119,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         model,
         max_steps: maxSteps,
         num_ctx: numCtx,
+        auto_remember: autoRemember,
         conversation_history: conversationHistory,
         run_id: runId,
       }),
@@ -239,6 +244,61 @@ export async function summarizeHistory({
 }
 
 // ── Rough token estimator ────────────────────────────────────────────────
+
+// ── RAG: project indexing + manual recall ───────────────────────────────
+
+export type IndexProjectArgs = {
+  projectRoot: string;
+  patterns?: string[];
+  replace?: boolean;
+};
+
+export type IndexProjectResult = {
+  ok: boolean;
+  files_processed?: number;
+  chunks_indexed?: number;
+  failed_chunks?: number;
+  patterns?: string[];
+  errors?: string[];
+  error?: string;
+};
+
+export async function indexProject({
+  projectRoot,
+  patterns,
+  replace = true,
+}: IndexProjectArgs): Promise<IndexProjectResult> {
+  return request<IndexProjectResult>("/api/code-agent/index-project", {
+    method: "POST",
+    body: { project_root: projectRoot, patterns, replace },
+  });
+}
+
+export type RecallItem = {
+  id: number;
+  text: string;
+  category: string;
+  importance?: number;
+  score?: number;
+};
+
+export type RecallResult = {
+  ok: boolean;
+  items: RecallItem[];
+  count?: number;
+  error?: string;
+};
+
+export async function recallFromRag(
+  query: string,
+  topK: number = 10,
+  minScore: number = 0.3,
+): Promise<RecallResult> {
+  return request<RecallResult>("/api/code-agent/recall", {
+    method: "POST",
+    body: { query, top_k: topK, min_score: minScore },
+  });
+}
 
 /** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
  *  is closer to 4. We compute per-character class to be reasonable. */

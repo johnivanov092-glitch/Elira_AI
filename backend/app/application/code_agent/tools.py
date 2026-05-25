@@ -177,6 +177,42 @@ def tool_grep(
     return {"text": "\n".join(out) if out else f"No matches for '{pattern}' in {path}"}
 
 
+def tool_recall(
+    project_root: Path,
+    *,
+    query: str,
+    top_k: int = 5,
+    min_score: float = 0.3,
+) -> dict[str, Any]:
+    """Semantic search over RAG memory. Returns top matching items —
+    relevant code chunks (if the project was indexed) and summaries of
+    prior agent turns. Project_root is currently unused; RAG is global
+    per Elira instance, so we may want to add filtering by project in
+    a follow-up.
+    """
+    del project_root  # currently RAG is global; flagged for future scoping
+    try:
+        from app.application.rag_memory.service import search_rag
+    except Exception as exc:
+        return {"text": f"ERROR: RAG service unavailable: {exc}"}
+
+    result = search_rag(query=query, limit=max(1, int(top_k)), min_score=float(min_score))
+    if not result.get("ok"):
+        return {"text": f"ERROR: {result.get('error', 'recall failed')}"}
+    items = result.get("items", []) or []
+    if not items:
+        return {"text": f"No matches for '{query}' (min_score={min_score})"}
+    lines = [f"Found {len(items)} relevant items:"]
+    for i, item in enumerate(items, 1):
+        score = item.get("score", 0.0)
+        category = item.get("category", "fact")
+        text = (item.get("text") or "").strip()
+        if len(text) > 600:
+            text = text[:600] + " [...]"
+        lines.append(f"\n[{i}] score={score:.2f}  category={category}\n{text}")
+    return {"text": "\n".join(lines)}
+
+
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
     try:
         proc = subprocess.run(
@@ -285,6 +321,28 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "recall",
+                "description": (
+                    "Semantic search over the agent's RAG memory. Returns "
+                    "relevant code chunks (if the project was indexed) and "
+                    "summaries of prior agent runs. Use this before grep when "
+                    "looking for 'where is X implemented' or 'what did I do "
+                    "last time about Y'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Natural-language search query."},
+                        "top_k": {"type": "integer", "description": "Max results (default 5)."},
+                        "min_score": {"type": "number", "description": "Cosine similarity threshold 0..1 (default 0.3)."},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "run_bash",
                 "description": "Run a shell command inside the project root. Returns stdout, stderr, and exit code.",
                 "parameters": {
@@ -307,5 +365,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "edit_file": lambda **kw: tool_edit_file(project_root, **kw),
         "glob": lambda **kw: tool_glob(project_root, **kw),
         "grep": lambda **kw: tool_grep(project_root, **kw),
+        "recall": lambda **kw: tool_recall(project_root, **kw),
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
     }

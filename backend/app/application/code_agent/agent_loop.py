@@ -36,10 +36,13 @@ PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 
 BASE_SYSTEM_PROMPT = (
     "Ты — code-агент Elira. Работаешь в локальной директории проекта пользователя.\n"
-    "У тебя есть инструменты: read_file, write_file, edit_file, glob, grep, run_bash.\n"
+    "У тебя есть инструменты: read_file, write_file, edit_file, glob, grep, recall, run_bash.\n"
     "Все пути — относительно корня проекта. Действуй пошагово: смотри, правь, проверяй.\n"
     "Перед записью файла читай его, чтобы не затереть существующий код. "
     "После изменений запускай `run_bash` чтобы проверить что всё работает.\n"
+    "Используй `recall(query)` чтобы семантически искать в RAG-памяти: "
+    "проиндексированные куски кода и summary прошлых задач. Полезно когда "
+    "нужно понять «где это реализовано» или «что я делал в прошлый раз».\n"
     "Когда задача выполнена — отвечай обычным текстом без вызова инструментов."
 )
 
@@ -162,6 +165,31 @@ def _truncate(text: str, limit: int = 4000) -> str:
     return text[:limit] + "\n[... truncated]"
 
 
+def _try_remember_turn(*, user_message: str, response_text: str, project_root: Path) -> None:
+    """Fire-and-forget: write a short summary of a successful agent turn
+    to RAG so future `recall(query)` can surface it. Failures are logged
+    but never raised.
+    """
+    try:
+        from app.application.rag_memory.service import add_to_rag
+    except Exception:
+        return
+    user = (user_message or "").strip()
+    answer = (response_text or "").strip()
+    if not user or not answer:
+        return
+    if len(user) > 300:
+        user = user[:300] + " [...]"
+    if len(answer) > 600:
+        answer = answer[:600] + " [...]"
+    project_name = project_root.name or str(project_root)
+    summary = f"[agent_turn project={project_name}] task: {user} | outcome: {answer}"
+    try:
+        add_to_rag(text=summary, category="agent_turn", importance=3)
+    except Exception as exc:
+        logger.debug("auto-remember failed: %s", exc)
+
+
 def stream_code_agent(
     *,
     user_message: str,
@@ -171,6 +199,7 @@ def stream_code_agent(
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     num_ctx: int = DEFAULT_NUM_CTX,
+    auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
@@ -262,7 +291,14 @@ def stream_code_agent(
                 last_text = content
 
             if not tool_calls:
-                yield {"type": "final_response", "step": step, "text": content or last_text}
+                final_text = content or last_text
+                yield {"type": "final_response", "step": step, "text": final_text}
+                if auto_remember:
+                    _try_remember_turn(
+                        user_message=user_message,
+                        response_text=final_text,
+                        project_root=root,
+                    )
                 yield {
                     "type": "done",
                     "ok": True,
@@ -321,6 +357,7 @@ def run_code_agent(
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     num_ctx: int = DEFAULT_NUM_CTX,
+    auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
@@ -340,6 +377,7 @@ def run_code_agent(
         max_steps=max_steps,
         conversation_history=conversation_history,
         num_ctx=num_ctx,
+        auto_remember=auto_remember,
         chat_fn=chat_fn,
     ):
         et = event.get("type")
@@ -450,6 +488,136 @@ def summarize_history(
     msg = (response or {}).get("message") or {}
     text = (msg.get("content") or "").strip()
     return {"ok": True, "summary": text, "error": None, "turn_count": len(cleaned)}
+
+
+DEFAULT_INDEX_PATTERNS = [
+    "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx",
+    "**/*.md", "**/*.rs", "**/*.go", "**/*.java", "**/*.cpp", "**/*.c", "**/*.h",
+]
+INDEX_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".pytest_cache", ".mypy_cache", "data"}
+INDEX_CHUNK_LINES = 80
+INDEX_CHUNK_OVERLAP = 10
+INDEX_MAX_FILE_BYTES = 200_000  # skip files larger than 200 KB
+INDEX_MAX_TOTAL_CHUNKS = 5000
+
+
+def _chunk_file(file_path: Path, project_root: Path) -> Iterator[tuple[str, int, int]]:
+    """Yield (text, start_line, end_line) chunks for one file. start_line is 1-based."""
+    try:
+        size = file_path.stat().st_size
+    except OSError:
+        return
+    if size > INDEX_MAX_FILE_BYTES:
+        return
+    try:
+        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except Exception:
+        return
+    if not lines:
+        return
+    rel = str(file_path.relative_to(project_root)).replace("\\", "/")
+    step = max(1, INDEX_CHUNK_LINES - INDEX_CHUNK_OVERLAP)
+    for start in range(0, len(lines), step):
+        end = min(start + INDEX_CHUNK_LINES, len(lines))
+        if end <= start:
+            break
+        chunk_text = "".join(lines[start:end])
+        if not chunk_text.strip():
+            continue
+        header = f"[file:{rel}:{start + 1}-{end}]\n"
+        yield header + chunk_text, start + 1, end
+        if end >= len(lines):
+            break
+
+
+def _iter_project_files(project_root: Path, patterns: list[str]) -> Iterator[Path]:
+    root = project_root.resolve()
+    for pattern in patterns:
+        for match in root.glob(pattern):
+            if not match.is_file():
+                continue
+            if any(part in INDEX_SKIP_DIRS for part in match.parts):
+                continue
+            yield match
+
+
+def index_project(
+    project_root: Path | str,
+    *,
+    patterns: list[str] | None = None,
+    replace: bool = True,
+) -> dict[str, Any]:
+    """Walk the project, chunk source files, write each chunk into RAG.
+    If replace=True, prior code_index entries are nuked first.
+
+    Returns counts of files / chunks processed and any per-file errors.
+    """
+    root = Path(project_root).resolve()
+    if not root.exists() or not root.is_dir():
+        return {"ok": False, "error": f"project_root does not exist: {root}"}
+
+    try:
+        from app.application.rag_memory.service import add_to_rag, _conn
+    except Exception as exc:
+        return {"ok": False, "error": f"RAG service unavailable: {exc}"}
+
+    if replace:
+        try:
+            conn = _conn()
+            try:
+                conn.execute("DELETE FROM rag_items WHERE category = ?", ("code_index",))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("Failed to nuke prior code_index entries: %s", exc)
+
+    pats = patterns or DEFAULT_INDEX_PATTERNS
+    seen_files: set[Path] = set()
+    files_processed = 0
+    chunks_indexed = 0
+    failed_chunks = 0
+    errors: list[str] = []
+
+    for file_path in _iter_project_files(root, pats):
+        if file_path in seen_files:
+            continue
+        seen_files.add(file_path)
+        files_processed += 1
+        for chunk_text, _start, _end in _chunk_file(file_path, root):
+            if chunks_indexed >= INDEX_MAX_TOTAL_CHUNKS:
+                errors.append(f"Stopped at INDEX_MAX_TOTAL_CHUNKS={INDEX_MAX_TOTAL_CHUNKS}")
+                break
+            try:
+                result = add_to_rag(text=chunk_text, category="code_index", importance=4)
+                if result.get("ok"):
+                    chunks_indexed += 1
+                else:
+                    failed_chunks += 1
+            except Exception as exc:
+                failed_chunks += 1
+                logger.debug("indexing chunk failed for %s: %s", file_path, exc)
+        if chunks_indexed >= INDEX_MAX_TOTAL_CHUNKS:
+            break
+
+    return {
+        "ok": True,
+        "files_processed": files_processed,
+        "chunks_indexed": chunks_indexed,
+        "failed_chunks": failed_chunks,
+        "patterns": pats,
+        "errors": errors,
+    }
+
+
+def recall_from_rag(query: str, top_k: int = 10, min_score: float = 0.3) -> dict[str, Any]:
+    """Thin wrapper for the UI to query RAG without going through the agent."""
+    try:
+        from app.application.rag_memory.service import search_rag
+    except Exception as exc:
+        return {"ok": False, "items": [], "error": f"RAG service unavailable: {exc}"}
+    return search_rag(query=query, limit=max(1, int(top_k)), min_score=float(min_score))
 
 
 def set_project_prompt(project_root: Path | str, content: str) -> dict[str, Any]:

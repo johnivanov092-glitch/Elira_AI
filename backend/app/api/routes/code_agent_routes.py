@@ -23,6 +23,8 @@ from app.application.code_agent.agent_loop import (
     DEFAULT_MODEL,
     DEFAULT_NUM_CTX,
     get_project_prompt,
+    index_project,
+    recall_from_rag,
     request_cancel,
     run_code_agent,
     set_project_prompt,
@@ -44,6 +46,7 @@ class CodeAgentRequest(BaseModel):
     model: str = Field(default=DEFAULT_MODEL)
     max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=50)
     num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
+    auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")
     conversation_history: list[ConversationMessage] | None = None
 
 
@@ -82,6 +85,18 @@ class SummarizeHistoryResponse(BaseModel):
     error: Optional[str] = None
 
 
+class IndexProjectRequest(BaseModel):
+    project_root: str
+    patterns: Optional[list[str]] = None
+    replace: bool = True
+
+
+class RecallRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=10, ge=1, le=50)
+    min_score: float = Field(default=0.3, ge=0.0, le=1.0)
+
+
 @router.post("/run", response_model=CodeAgentResponse)
 def run(payload: CodeAgentRequest) -> CodeAgentResponse:
     history = [m.model_dump() for m in (payload.conversation_history or [])]
@@ -92,6 +107,7 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
         max_steps=payload.max_steps,
         conversation_history=history,
         num_ctx=payload.num_ctx,
+        auto_remember=payload.auto_remember,
     )
     return CodeAgentResponse(**result)
 
@@ -114,6 +130,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 max_steps=payload.max_steps,
                 conversation_history=history,
                 num_ctx=payload.num_ctx,
+                auto_remember=payload.auto_remember,
                 run_id=run_id,
             ):
                 yield _sse_format(event)
@@ -164,3 +181,20 @@ def summarize(payload: SummarizeHistoryRequest) -> SummarizeHistoryResponse:
     messages = [m.model_dump() for m in payload.messages]
     result = summarize_history(messages=messages, model=payload.model, num_ctx=payload.num_ctx)
     return SummarizeHistoryResponse(**result)
+
+
+@router.post("/index-project")
+def index_project_endpoint(payload: IndexProjectRequest) -> dict[str, Any]:
+    result = index_project(
+        project_root=payload.project_root,
+        patterns=payload.patterns,
+        replace=payload.replace,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "indexing failed"))
+    return result
+
+
+@router.post("/recall")
+def recall(payload: RecallRequest) -> dict[str, Any]:
+    return recall_from_rag(query=payload.query, top_k=payload.top_k, min_score=payload.min_score)
