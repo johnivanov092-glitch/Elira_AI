@@ -31,7 +31,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { BookmarkPlus, ChevronDown, ChevronRight, Loader2, Minimize2, Pin, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
+import { BookmarkPlus, ChevronDown, ChevronRight, Loader2, Minimize2, Pin, Plus, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
 import type {
   CodeAgentStreamEvent,
@@ -614,6 +614,24 @@ export default function CodeAgentChatShell({
     setHistory([]);
   }
 
+  function startNewSession() {
+    // If a stream is running, ask first — otherwise we'd cut it off.
+    if (running) {
+      if (!confirm("Сейчас идёт стрим. Прервать его и начать новую сессию?")) return;
+      abortRef.current?.abort();
+      setRunning(false);
+      setLiveStep(null);
+    }
+    // Save current history if non-trivial? For now: just wipe. Future:
+    // multi-session support with stored threads (separate batch).
+    if (history.length > 0) {
+      if (!confirm(`Начать новую сессию? Текущая история (${history.length} сообщений) будет удалена. Сначала «Сжать» если хочешь её сохранить как summary.`)) return;
+    }
+    setHistory([]);
+    setInput("");
+    setSummaryError(null);
+  }
+
   const empty = useMemo(() => history.length === 0 && !running, [history.length, running]);
 
   return (
@@ -629,6 +647,15 @@ export default function CodeAgentChatShell({
           flexShrink: 0,
         }}
       >
+        <button
+          onClick={startNewSession}
+          className="soft-btn"
+          title="Начать новую сессию code-агента (текущая история будет удалена)"
+          style={{ fontSize: 11, padding: "4px 10px", border: "1px solid var(--accent)", color: "var(--accent)", background: "transparent", display: "inline-flex", alignItems: "center", gap: 5 }}
+        >
+          <UiIcon icon={Plus} size={12} />
+          <span>Новый чат</span>
+        </button>
         <UiIcon icon={Sparkles} size={13} />
         <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
           {history.length} turns

@@ -466,10 +466,12 @@ export default function EliraChatShell(): JSX.Element {
   }
 
   function resetDraftChat(clearError = false) {
-    streamRef.current?.abort();
-    streamRef.current = null;
+    // Note: do NOT abort streamRef — that would kill a background stream
+    // belonging to another chat. The view just resets to draft.
+    activeChatIdRef.current = "";
     setChatId(""); setMessages([]); setInput(""); setRenaming(false);
     setStreamText(""); setStreaming(false); setWorking(false); setPhase(""); setShowExportMenu(false);
+    streamRef.current = null;
     if (clearError) setError("");
   }
 
@@ -477,6 +479,7 @@ export default function EliraChatShell(): JSX.Element {
     try {
       setMessages([]); setInput(""); setRenaming(false); setStreamText(""); setStreaming(false); setPhase("");
       const c = await api.createChat({ title: "Новый чат", clean: true }) as ChatItem;
+      activeChatIdRef.current = c.id;
       await loadChats(c.id); setChatId(c.id); setSideTab("chats");
       if (!silent) setError(""); return c;
     } catch (e) { setError(normalizeErrorMessage(e)); return null; }
@@ -487,6 +490,10 @@ export default function EliraChatShell(): JSX.Element {
       // Do NOT abort the in-flight stream for the previous chat — it must
       // finish in the background and append its result via onDone's
       // targetChatId closure. We just visually swap to the new chat here.
+      // Update the ref BEFORE setChatId so any onError/onDone callback that
+      // fires synchronously in the same tick sees the new active chat and
+      // doesn't leak the previous chat's error into the new view.
+      activeChatIdRef.current = id;
       setChatId(id);
       const loaded = (await api.getMessages({ chatId: id }) as ChatMessage[]) || [];
       setMessages(loaded);

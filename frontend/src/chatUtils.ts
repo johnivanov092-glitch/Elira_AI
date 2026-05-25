@@ -50,8 +50,14 @@ export function normalizeErrorMessage(e: unknown, fb = "Ошибка"): string {
   const v = (e as Record<string, unknown>)?.message ?? (e as Record<string, unknown>)?.detail ?? e;
   if (!v) return fb;
   if (typeof v === "string") {
-    if (v === "Failed to fetch" || v.toLowerCase().includes("failed to fetch") || v.toLowerCase().includes("networkerror")) {
+    const low = v.toLowerCase();
+    if (v === "Failed to fetch" || low.includes("failed to fetch") || low.includes("networkerror")) {
       return "Бэкенд недоступен — убедитесь, что Elira.bat запущен и порт 8000 свободен";
+    }
+    // Ollama side died: backend got [WinError 10061] / "connection refused"
+    // from the ollama lib. Surface a friendlier hint.
+    if (v.includes("10061") || low.includes("отверг запрос") || low.includes("connection refused") || low.includes("connect to ollama")) {
+      return "Ollama не запущена или упала. Открой Ollama (Win-меню → Ollama) и повтори запрос.";
     }
     return v;
   }
