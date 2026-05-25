@@ -56,13 +56,16 @@ _RESEARCH_WORDS = _w([
     # English
     "search", ("documentation", 2), "docs", "site", "official", ("article", 2),
     "news", ("review", 2), ("compare", 2), ("comparison", 2), ("tutorial", 2),
-    ("guide", 2), "wikipedia", "how to",
+    ("guide", 2), "wikipedia", "how to", "blog post",
     # Russian
     ("найди", 2), ("найти", 2), ("найдите", 2), ("поиск", 2), ("поищ*", 2),
-    "загугли", ("источник", 2), "источник*", "ссыл*", "сайт", ("статья", 2),
-    ("новости", 2), "новост*", "что нового", "последние", "актуальн*",
-    ("обзор", 2), "сравни*", "руководств*", "гайд", "вики",
+    "загугли", ("источник", 2), "источник*", "ссыл*", "сайт",
+    ("статья", 2), "стат*", ("новость", 2), ("новости", 2), "новост*",
+    "что нового", "последние", "актуальн*", ("свеж*", 2),
+    ("обзор", 2), "сравни*", "сравнен*", "руководств*", "гайд",
+    "вики", "энциклопеди*", ("туториал", 2),
     "информация о", "расскажи про", "что такое", "who is", "what is",
+    ("биография", 2), "биограф*", ("история", 2),
 ])
 
 _NEEDS_WEB_PATTERNS = _w([
@@ -80,12 +83,15 @@ _NEEDS_WEB_PATTERNS = _w([
 ])
 
 _PROJECT_WORDS = _w([
-    "project", "проект", "repo", "репозиторий", "repository",
-    "файл*", "backend", "frontend", "структур*", "tree",
+    "project", "проект*", "repo", "репозитор*", "repository",
+    "файл*", "backend", "frontend", "fullstack", "структур*", "tree",
     "read file", "project tree", "кодовая база", "codebase",
-    "папк*", "folder", "directory", "каталог",
+    "папк*", "folder", "directory", "каталог*",
     ("открой проект", 3), ("покажи файл", 3), ("show file", 2),
-    "модуль", "module", ("компонент", 2), "component",
+    ("покажи структуру", 3), ("show structure", 2),
+    "модул*", "module", ("компонент*", 2), "component",
+    "namespace", "пакет*", "package",
+    "зависимост*", "dependencies",
 ])
 
 _CODE_WORDS = _w([
@@ -166,23 +172,30 @@ def _score_code_agent(query: str) -> int:
     return total
 
 _MULTI_AGENT_WORDS = _w([
-    ("распиши план", 3), ("разбей задачу", 3), ("декомпозиц*", 2),
+    ("распиши план", 3), ("составь план", 3), ("план рефактор*", 3),
+    ("разбей задачу", 3), ("декомпозиц*", 2),
     ("комплексн*", 2), ("полный анализ", 3), ("глубокий анализ", 3),
     ("code review всего", 3), ("code review проект*", 3),
-    ("проведи ревью", 3), ("сделай ревью", 3),
+    ("проведи ревью", 3), ("сделай ревью", 3), ("ревью проекта", 3),
     ("research and implement", 3), ("исследуй и реализуй", 3),
     ("исследуй и напиши", 3),
     ("мульти-агент", 2), ("мультиагент", 2), ("multi-agent", 2),
     ("с рефлекс*", 2), ("с проверкой и", 2),
     ("аудит кода", 2), ("audit code", 2),
+    ("полное тестирование", 3), ("прогон тестов", 2),
+    ("end-to-end", 2), ("e2e", 2),
 ])
 
 _PYTHON_WORDS = _w([
+    # Only explicit Python-REPL or numerical-eval triggers. Bare verbs
+    # like 'запусти' / 'run' were too greedy — they're better handled
+    # by code_agent co-occurrence (run+edit, create+run).
     ("python script", 3), ("execute python", 2), ("run python", 2),
     ("выполни в python", 3), ("выполни python", 2),
-    ("запусти скрипт", 2), ("посчитай в python", 3),
-    ("python repl", 2), "вычисли число", "evaluate expression",
-    # Note: lone "запусти" / "run" / "calculate" were too greedy — moved out.
+    ("посчитай в python", 3), ("python repl", 2),
+    ("eval expression", 2), ("evaluate expression", 2),
+    ("interactive python", 2),
+    ("pandas", 1), ("numpy", 1), ("matplotlib", 1),
 ])
 
 _MEMORY_WORDS = _w([
