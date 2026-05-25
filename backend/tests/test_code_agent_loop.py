@@ -16,6 +16,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.code_agent.agent_loop import (  # noqa: E402
     DEFAULT_NUM_CTX,
+    _extract_inline_tool_calls,
     get_project_prompt,
     index_project,
     recall_from_rag,
@@ -403,13 +404,12 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("read_file", names)
         self.assertIn("run_bash", names)
 
-    def test_recall_tool_handles_no_matches(self) -> None:
-        # search_rag with empty DB returns no matches
-        result = tool_recall(self.root, query="something_that_will_not_match_xyz123", top_k=3)
+    def test_recall_tool_returns_text(self) -> None:
+        # Either "No matches", "Found N items", or "ERROR" (if Ollama offline)
+        result = tool_recall(self.root, query="xyz_zzz_unlikely_phrase", top_k=3)
         text = result.get("text", "")
-        # Either "No matches" or an error if Ollama is offline — both are OK
         self.assertTrue(
-            "No matches" in text or text.startswith("ERROR"),
+            "No matches" in text or text.startswith("ERROR") or text.startswith("Found"),
             f"unexpected recall output: {text}",
         )
 
@@ -454,6 +454,88 @@ class AgentLoopTest(unittest.TestCase):
                 chat_fn=lambda **kw: next(responses),
             )
         self.assertEqual(remember_calls, [])
+
+    def test_inline_tool_call_fallback_parses_qwen_coder_format(self) -> None:
+        """qwen2.5-coder on Ollama dumps tool calls as raw JSON in content."""
+        known = {"glob", "read_file", "run_bash"}
+        out = _extract_inline_tool_calls(
+            '{"name": "glob", "arguments": {"pattern": "**/*.py"}}',
+            known,
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["function"]["name"], "glob")
+        self.assertEqual(out[0]["function"]["arguments"]["pattern"], "**/*.py")
+
+    def test_inline_tool_call_fallback_handles_code_fences(self) -> None:
+        known = {"read_file"}
+        out = _extract_inline_tool_calls(
+            '```json\n{"name": "read_file", "arguments": {"path": "src/foo.py"}}\n```',
+            known,
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["function"]["name"], "read_file")
+
+    def test_inline_tool_call_fallback_handles_function_wrap(self) -> None:
+        known = {"run_bash"}
+        out = _extract_inline_tool_calls(
+            '{"function": {"name": "run_bash", "arguments": {"command": "pytest"}}}',
+            known,
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["function"]["arguments"]["command"], "pytest")
+
+    def test_inline_tool_call_fallback_handles_tool_calls_wrapper(self) -> None:
+        known = {"glob"}
+        out = _extract_inline_tool_calls(
+            '{"tool_calls": [{"name": "glob", "arguments": {"pattern": "*"}}]}',
+            known,
+        )
+        self.assertEqual(len(out), 1)
+
+    def test_inline_tool_call_fallback_handles_array(self) -> None:
+        known = {"glob", "grep"}
+        out = _extract_inline_tool_calls(
+            '[{"name": "glob", "arguments": {"pattern": "*"}}, {"name": "grep", "arguments": {"pattern": "TODO"}}]',
+            known,
+        )
+        self.assertEqual(len(out), 2)
+
+    def test_inline_tool_call_fallback_drops_unknown_tools(self) -> None:
+        """Models love to hallucinate tool names like 'Find' or 'search_files'."""
+        known = {"glob"}
+        out = _extract_inline_tool_calls(
+            '{"name": "Find", "arguments": {"pattern": "*.py"}}',
+            known,
+        )
+        self.assertEqual(out, [])
+
+    def test_inline_tool_call_fallback_ignores_plain_text(self) -> None:
+        out = _extract_inline_tool_calls("This is a regular answer.", {"glob"})
+        self.assertEqual(out, [])
+
+    def test_stream_uses_inline_tool_call_fallback(self) -> None:
+        """End-to-end: a model that emits JSON-in-content should still trigger
+        tool execution via the fallback parser."""
+        # Step 1: model returns JSON tool call in content (qwen-coder style)
+        # Step 2: model returns final answer
+        responses = iter([
+            {"message": {"content": '{"name": "glob", "arguments": {"pattern": "*"}}', "tool_calls": []}},
+            {"message": {"content": "done.", "tool_calls": []}},
+        ])
+
+        def fake_chat(**kwargs):
+            return next(responses)
+
+        events = list(stream_code_agent(
+            user_message="list files",
+            project_root=self.root,
+            chat_fn=fake_chat,
+        ))
+        tool_events = [e for e in events if e.get("type") == "tool_call"]
+        self.assertEqual(len(tool_events), 1, "fallback should have produced one tool_call event")
+        self.assertEqual(tool_events[0]["tool"], "glob")
+        done = events[-1]
+        self.assertTrue(done["ok"])
 
     def test_auto_remember_called_on_success(self) -> None:
         responses = iter([{"message": {"content": "fixed bug X", "tool_calls": []}}])

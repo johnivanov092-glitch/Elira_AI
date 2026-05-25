@@ -29,6 +29,17 @@ from app.application.code_agent.tools import (
 
 logger = logging.getLogger(__name__)
 
+# NOTE on model choice: not every Ollama-installed model emits the
+# structured `tool_calls` field — some (qwen2.5-coder:7b, granite-code:8b,
+# codegeex4) dump tool calls as plain JSON in `content` instead. The
+# agent loop tolerates that via _extract_inline_tool_calls, but a model
+# that natively supports tools is faster and more reliable. Models
+# verified to emit native tool_calls on Ollama 0.24:
+#   - sorc/qwen3.5-instruct-uncensored:4b (fast, ~12s/call)
+#   - sorc/qwen3.5-instruct:4b
+#   - gemma4:e2b
+#   - llama3.2, llama3.1, mistral-nemo (not installed here)
+# qwen2.5-coder:7b also works thanks to the fallback but is slower.
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 DEFAULT_MAX_STEPS = 20
 DEFAULT_NUM_CTX = 16384  # Ollama's default is 2048 — way too small for tool-using agents.
@@ -165,6 +176,136 @@ def _truncate(text: str, limit: int = 4000) -> str:
     return text[:limit] + "\n[... truncated]"
 
 
+_INLINE_TOOL_NAMES_PATTERN = None  # built lazily once dispatch is known
+
+
+def _iter_json_object_substrings(text: str) -> Iterator[str]:
+    """Yield every balanced top-level JSON-object substring inside `text`.
+    Used to recover from models that emit multiple ```json blocks back to
+    back, or just multiple JSON objects with prose around them.
+    """
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for j in range(i, n):
+            ch = text[j]
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[i : j + 1]
+                    i = j + 1
+                    break
+        else:
+            # Unbalanced; stop scanning
+            break
+
+
+def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict[str, Any]]:
+    """Some Ollama models (notably qwen2.5-coder, granite-code, codegeex)
+    emit tool calls as plain JSON in `message.content` instead of populating
+    the structured `message.tool_calls` field. This helper recovers those
+    so the agent loop still progresses.
+
+    Recognized formats (any may appear in code fences, multiple times,
+    with prose around them):
+      {"name": "tool", "arguments": {...}}
+      {"name": "tool", "parameters": {...}}
+      [{"name": ...}, ...]
+      {"tool_calls": [{...}]}
+      {"function": {"name": ..., "arguments": {...}}}
+
+    Tool names not present in `known_tools` are dropped (the model
+    hallucinated). Returns a list shaped like Ollama's native
+    `tool_calls`: [{"function": {"name": ..., "arguments": {...}}}].
+
+    Multiple JSON objects in one content string are all returned — the
+    agent loop will execute them in order.
+    """
+    if not content:
+        return []
+
+    def _normalize(item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        # Unwrap {"function": {...}}
+        if "function" in item and isinstance(item["function"], dict):
+            fn = item["function"]
+            name = fn.get("name")
+            args = fn.get("arguments") or fn.get("parameters") or {}
+        else:
+            name = item.get("name")
+            args = item.get("arguments") or item.get("parameters") or {}
+        if not isinstance(name, str) or name not in known_tools:
+            return None
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        return {"function": {"name": name, "arguments": args}}
+
+    out: list[dict[str, Any]] = []
+    # Scan ALL JSON-object substrings (handles multiple ```json blocks,
+    # arrays of tool calls embedded in prose, etc.)
+    for raw in _iter_json_object_substrings(content):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
+                for it in parsed["tool_calls"]:
+                    norm = _normalize(it)
+                    if norm:
+                        out.append(norm)
+            else:
+                norm = _normalize(parsed)
+                if norm:
+                    out.append(norm)
+
+    # Also try top-level array (rare but seen): "[{...},{...}]"
+    if not out:
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
+            if stripped.endswith("```"):
+                stripped = stripped[:-3]
+            stripped = stripped.strip()
+        if stripped.startswith("["):
+            try:
+                arr = json.loads(stripped)
+                if isinstance(arr, list):
+                    for it in arr:
+                        norm = _normalize(it)
+                        if norm:
+                            out.append(norm)
+            except json.JSONDecodeError:
+                pass
+
+    return out
+
+
 def _try_remember_turn(*, user_message: str, response_text: str, project_root: Path) -> None:
     """Fire-and-forget: write a short summary of a successful agent turn
     to RAG so future `recall(query)` can surface it. Failures are logged
@@ -286,6 +427,16 @@ def stream_code_agent(
             message = (response or {}).get("message") or {}
             content = (message.get("content") or "").strip()
             tool_calls = message.get("tool_calls") or []
+
+            # Some models (qwen2.5-coder etc.) emit tool calls as JSON in
+            # content instead of structured tool_calls. Recover them so the
+            # loop still works.
+            inline_calls: list[dict[str, Any]] = []
+            if not tool_calls and content:
+                inline_calls = _extract_inline_tool_calls(content, set(dispatch.keys()))
+                if inline_calls:
+                    tool_calls = inline_calls
+                    content = ""  # JSON was the tool call, not a text reply
 
             if content:
                 last_text = content
