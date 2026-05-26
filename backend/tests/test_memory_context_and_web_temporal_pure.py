@@ -1,17 +1,16 @@
-"""Tests for pure helpers across three previously zero-covered modules.
+"""Tests for pure helpers across two web-search modules.
 
   infrastructure/search/web_temporal.py - compute_freshness
   infrastructure/search/web_query.py   - is_strict_web_only_query
-  application/memory/context.py        - default_content_hash,
-                                         _memory_type_weight,
-                                         _clean_memory_text,
-                                         _memory_query_words
 
 All functions are pure (no DB, no HTTP, no FS).
 
-Note: tests for `core.memory._content_hash` were removed when that
-facade module was deleted (it just re-exported `default_content_hash`
-from `application/memory/context.py`, which is still tested below).
+History: this file used to also test helpers from
+application/memory/context.py and core/memory.py — both modules were
+removed in the memory.db cleanup. The functions they hosted
+(default_content_hash, _memory_type_weight, _clean_memory_text,
+_memory_query_words) were part of the legacy memory pipeline that's
+fully replaced by smart_memory + rag_memory.
 """
 from __future__ import annotations
 
@@ -27,12 +26,6 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.infrastructure.search.web_temporal import compute_freshness  # noqa: E402
 from app.infrastructure.search.web_query import is_strict_web_only_query  # noqa: E402
-from app.application.memory.context import (  # noqa: E402
-    default_content_hash,
-    _memory_type_weight,
-    _clean_memory_text,
-    _memory_query_words,
-)
 
 
 # infrastructure/search/web_temporal.py - compute_freshness
@@ -163,151 +156,6 @@ class IsStrictWebOnlyQueryTest(unittest.TestCase):
 
     def test_mixed_case_today(self) -> None:
         self.assertTrue(is_strict_web_only_query("Today in tech"))
-
-
-# application/memory/context.py - default_content_hash
-
-class DefaultContentHashTest(unittest.TestCase):
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(default_content_hash("hello"), str)
-
-    def test_32_hex_chars(self) -> None:
-        self.assertEqual(len(default_content_hash("hello")), 32)
-
-    def test_deterministic(self) -> None:
-        self.assertEqual(default_content_hash("foo"), default_content_hash("foo"))
-
-    def test_different_texts_different_hashes(self) -> None:
-        self.assertNotEqual(default_content_hash("foo"), default_content_hash("bar"))
-
-    def test_strips_whitespace_and_lowercases(self) -> None:
-        # "Hello" stripped/lowercased = "hello"
-        self.assertEqual(default_content_hash("  HELLO  "), default_content_hash("hello"))
-
-    def test_empty_string_produces_hash(self) -> None:
-        result = default_content_hash("")
-        self.assertEqual(len(result), 32)
-
-
-# application/memory/context.py - _memory_type_weight
-
-class MemoryTypeWeightTest(unittest.TestCase):
-    def test_returns_float(self) -> None:
-        self.assertIsInstance(_memory_type_weight("profile"), float)
-
-    def test_profile_highest(self) -> None:
-        self.assertGreater(_memory_type_weight("profile"), _memory_type_weight("chat"))
-
-    def test_profile_weight(self) -> None:
-        self.assertAlmostEqual(_memory_type_weight("profile"), 4.2)
-
-    def test_chat_weight(self) -> None:
-        self.assertAlmostEqual(_memory_type_weight("chat"), 1.0)
-
-    def test_unknown_type_fallback(self) -> None:
-        self.assertAlmostEqual(_memory_type_weight("nonexistent_type"), 1.2)
-
-    def test_pinned_flag_adds_bonus(self) -> None:
-        base = _memory_type_weight("chat", pinned=False)
-        boosted = _memory_type_weight("chat", pinned=True)
-        self.assertGreater(boosted, base)
-        self.assertAlmostEqual(boosted - base, 1.2)
-
-    def test_manual_source_adds_bonus(self) -> None:
-        base = _memory_type_weight("chat", source="")
-        boosted = _memory_type_weight("chat", source="manual")
-        self.assertAlmostEqual(boosted - base, 0.3)
-
-    def test_insight_weight_above_chat(self) -> None:
-        self.assertGreater(_memory_type_weight("insight"), _memory_type_weight("chat"))
-
-    def test_pinned_type_weight(self) -> None:
-        self.assertAlmostEqual(_memory_type_weight("pinned"), 4.0)
-
-    def test_summary_weight(self) -> None:
-        self.assertAlmostEqual(_memory_type_weight("summary"), 2.9)
-
-    def test_all_positive(self) -> None:
-        for mt in ("profile", "pinned", "insight", "summary", "file", "chat", "general"):
-            self.assertGreater(_memory_type_weight(mt), 0)
-
-
-# application/memory/context.py - _clean_memory_text
-
-class CleanMemoryTextTest(unittest.TestCase):
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(_clean_memory_text("hello"), str)
-
-    def test_short_text_unchanged(self) -> None:
-        self.assertEqual(_clean_memory_text("hello world"), "hello world")
-
-    def test_strips_leading_trailing_whitespace(self) -> None:
-        self.assertEqual(_clean_memory_text("  hello  "), "hello")
-
-    def test_collapses_multiple_spaces(self) -> None:
-        result = _clean_memory_text("hello   world")
-        self.assertNotIn("   ", result)
-        self.assertIn("hello world", result)
-
-    def test_long_text_truncated(self) -> None:
-        long = "A " * 500
-        result = _clean_memory_text(long, max_chars=50)
-        self.assertLessEqual(len(result), 55)  # 50 + ellipsis
-
-    def test_truncated_ends_with_ellipsis(self) -> None:
-        long = "B" * 1000
-        result = _clean_memory_text(long, max_chars=50)
-        self.assertIn("\u2026", result)
-
-    def test_empty_string_empty_result(self) -> None:
-        self.assertEqual(_clean_memory_text(""), "")
-
-    def test_none_treated_as_empty(self) -> None:
-        self.assertEqual(_clean_memory_text(None), "")  # type: ignore[arg-type]
-
-    def test_exact_limit_not_truncated(self) -> None:
-        text = "A" * 900
-        result = _clean_memory_text(text)
-        self.assertNotIn("\u2026", result)
-
-
-# application/memory/context.py - _memory_query_words
-
-class MemoryQueryWordsTest(unittest.TestCase):
-    def test_returns_list(self) -> None:
-        self.assertIsInstance(_memory_query_words("hello"), list)
-
-    def test_short_words_excluded(self) -> None:
-        # "ab" is < 3 chars
-        result = _memory_query_words("ab cd python")
-        self.assertNotIn("ab", result)
-        self.assertNotIn("cd", result)
-
-    def test_long_words_included(self) -> None:
-        result = _memory_query_words("python testing framework")
-        self.assertIn("python", result)
-        self.assertIn("testing", result)
-        self.assertIn("framework", result)
-
-    def test_empty_string_empty_list(self) -> None:
-        self.assertEqual(_memory_query_words(""), [])
-
-    def test_none_empty_list(self) -> None:
-        self.assertEqual(_memory_query_words(None), [])  # type: ignore[arg-type]
-
-    def test_returns_lowercase(self) -> None:
-        result = _memory_query_words("HELLO WORLD PYTHON")
-        self.assertIn("hello", result)
-        self.assertIn("world", result)
-        self.assertIn("python", result)
-
-    def test_minimum_length_three_chars_included(self) -> None:
-        result = _memory_query_words("abc")
-        self.assertIn("abc", result)
-
-    def test_minimum_length_two_chars_excluded(self) -> None:
-        result = _memory_query_words("ab")
-        self.assertNotIn("ab", result)
 
 
 if __name__ == "__main__":

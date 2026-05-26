@@ -117,8 +117,6 @@ def reflection_v2(
     profile_name: str = "",
     num_ctx: int = 4096,
 ) -> dict:
-    from app.domain.memory.task_tracking import record_reflection
-
     context = "\n\n".join(x for x in [memory_context, kb_context] if x.strip())
     prompt = (
         "\u0422\u044b evaluator.\n\n"
@@ -167,10 +165,8 @@ def reflection_v2(
         "notes": str(data.get("notes", "") or ""),
         "improved_answer": str(data.get("improved_answer", "") or answer or ""),
     }
-    try:
-        record_reflection(task, answer, result, profile_name=profile_name)
-    except Exception:
-        pass
+    # Legacy: used to record into memory.db `reflections` table (deleted in
+    # the memory.db cleanup pass — all writes were already silently failing).
     return result
 
 

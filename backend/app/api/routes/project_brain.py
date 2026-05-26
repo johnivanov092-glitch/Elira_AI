@@ -104,9 +104,35 @@ class LocalAgentPlanRequest(BaseModel):
     model: str | None = Field(default=None, max_length=200)
 
 
+def _vector_memory_capability_status() -> dict:
+    """Report whether the optional FAISS/sentence-transformers stack is
+    installed. Used to surface 'vector memory available' badge in UI.
+
+    Note: the actual vector memory in Elira is rag_memory.db (Ollama
+    nomic-embed-text). FAISS is a separate optional dependency that
+    used to back the (now removed) legacy memory.db search path.
+    """
+    import importlib.util
+
+    def _has(name: str) -> bool:
+        return importlib.util.find_spec(name) is not None
+
+    missing = [
+        name for name in ("sentence_transformers", "faiss", "numpy") if not _has(name)
+    ]
+    available = not missing
+    return {
+        "feature": "vector_memory",
+        "available": available,
+        "mode": "vector" if available else "keyword_fallback",
+        "reason": None if available else "optional_dependency_missing",
+        "missing_packages": missing,
+        "hint": None if available else "pip install -r requirements-optional.txt",
+    }
+
+
 @router.get("/status")
 def project_brain_status():
-    from app.application.memory.search import vector_memory_capability_status
     from app.application.skills import screenshot_capability_status
 
     return {
@@ -116,7 +142,7 @@ def project_brain_status():
         "max_read_bytes": project_brain_state.MAX_READ_BYTES,
         "chat_upload_root": str(project_brain_state.UPLOAD_ROOT),
         "capabilities": {
-            "vector_memory": vector_memory_capability_status(),
+            "vector_memory": _vector_memory_capability_status(),
             "screenshot": screenshot_capability_status(),
         },
     }

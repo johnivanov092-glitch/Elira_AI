@@ -45,8 +45,6 @@ def run_agent_v8(
     progress_callback: ProgressCallback = None,
     force_strategy: str | None = None,
 ) -> dict:
-    from app.domain.memory.strategy_tracking import record_v8_strategy_usage
-    from app.domain.memory.task_tracking import record_task_run
     from app.domain.agents.reflection import run_graph_with_retry_v8
     run_started = time.time()
     run_id = uuid4().hex[:12]
@@ -91,30 +89,12 @@ def run_agent_v8(
     )
     state = run_graph_with_retry_v8(graph, runtime.handlers, state, max_retries=2)
 
-    status = "ok" if not state.get("failed_node") else "failed"
-    try:
-        record_task_run(
-            task_text=task, route_mode=mode,
-            graph_used=" -> ".join(graph),
-            final_status=status, profile_name=memory_profile,
-        )
-    except Exception:
-        pass
-
+    # Legacy: used to record into memory.db `task_runs` and `v8_strategy_usage`
+    # tables. Both were perpetually empty and the DB is gone now.
     latency = round(time.time() - run_started, 3)
     reflection = state.get("reflection", {}) or {}
     answer_ok = bool(state.get("answer", "").strip()) and not state.get("failed_node")
     quality_score = compute_reflection_quality_score(reflection)
-    try:
-        record_v8_strategy_usage(
-            strategy=selected_strategy, route_mode=mode,
-            task_hint=task, ok=answer_ok,
-            score=round(quality_score, 3), latency=latency,
-            notes=str(strategy.get("reason", ""))[:1000],
-            profile_name=memory_profile,
-        )
-    except Exception:
-        pass
 
     persona_meta = observe_persona_dialogue(
         dialog_id=run_id,
@@ -154,8 +134,6 @@ def run_self_improving_agent(
     progress_callback: ProgressCallback = None,
     base_force_strategy: str | None = None,
 ) -> Dict[str, Any]:
-    from app.domain.memory.knowledge_base import record_tool_usage
-
     total_steps = max(2, int(max_iters) + 1)
 
     def _progress(step: int, label: str):
@@ -193,17 +171,7 @@ def run_self_improving_agent(
     iterations = loop_result.get("iterations", [])
     working_context = loop_result.get("working_context", "") or ""
 
-    try:
-        record_tool_usage(
-            tool_name="self_improving_agent",
-            task_hint=task,
-            ok=bool(answer.strip()),
-            score=1.5 if answer.strip() else 0.0,
-            notes=f"iterations={len(iterations)}",
-            profile_name=memory_profile,
-        )
-    except Exception:
-        pass
+    # Legacy: used to record into memory.db `tool_usage`. Table gone.
 
     persona_meta = observe_persona_dialogue(
         dialog_id=run_id or f"self-improve-{memory_profile}",

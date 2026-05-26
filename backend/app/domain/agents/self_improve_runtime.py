@@ -17,27 +17,11 @@ def load_self_improve_context(
     run_id: str,
     working_context: str = "",
 ) -> Tuple[str, str, str]:
-    from app.application.memory.context import build_default_memory_context
-    from app.domain.memory.knowledge_base import build_kb_context
-    from app.domain.memory.working_memory import build_working_memory_context
-
-    mem_ctx = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
-    kb_ctx = build_kb_context(task, profile_name=memory_profile, top_k=4)
-    updated_working_context = working_context or ""
-    if run_id:
-        try:
-            updated_working_context = build_working_memory_context(
-                run_id,
-                profile_name=memory_profile,
-                limit=12,
-            )
-        except Exception:
-            pass
-    return mem_ctx, kb_ctx, updated_working_context
+    # Legacy: pulled mem_ctx + kb_ctx + working_context from memory.db
+    # (memories, knowledge_chunks, working_memory tables). All gone.
+    # Self-improving agent now runs without those side-channels; chat
+    # memory enrichment happens upstream via smart_memory + rag_memory.
+    return "", "", working_context or ""
 
 
 def build_self_improve_combined_context(
@@ -137,7 +121,6 @@ def run_self_improve_iterations(
     progress_callback: IterationProgressCallback = None,
 ) -> Dict[str, Any]:
     from app.domain.agents.reflection import reflection_v2
-    from app.domain.memory.strategy_tracking import record_self_improve_run
 
     current_answer = (answer or "").strip()
     current_reflection: Any = reflection or {}
@@ -190,17 +173,7 @@ def run_self_improve_iterations(
                 "reflection": current_reflection,
             }
             iterations.append(item)
-            try:
-                record_self_improve_run(
-                    task,
-                    idx,
-                    current_answer,
-                    critique,
-                    current_reflection,
-                    memory_profile,
-                )
-            except Exception:
-                pass
+            # Legacy: record_self_improve_run → memory.db. Gone.
             break
 
         improve_prompt = build_self_improve_prompt(
@@ -245,17 +218,7 @@ def run_self_improve_iterations(
             "reflection": current_reflection,
         }
         iterations.append(item)
-        try:
-            record_self_improve_run(
-                task,
-                idx,
-                current_answer,
-                critique,
-                current_reflection,
-                memory_profile,
-            )
-        except Exception:
-            pass
+        # Legacy: record_self_improve_run → memory.db. Gone.
 
         if is_self_improve_complete(current_reflection):
             break

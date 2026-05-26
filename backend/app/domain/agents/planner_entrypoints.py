@@ -29,20 +29,16 @@ def run_planner_agent(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.application.memory.context import build_default_memory_context
-    from app.domain.memory.knowledge_base import record_tool_usage
-
     total_steps = 3
 
     def progress(step: int, label: str) -> None:
         if progress_callback:
             progress_callback(step, total_steps, label)
 
-    memory_context = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
+    # Legacy: memory_context came from memory.db (gone). Planner now
+    # operates without prior memory; the real chat memory pathway
+    # (smart_memory + rag_memory) already enriched the input upstream.
+    memory_context = ""
 
     progress(1, "Planner: building plan")
     planner_prompt = build_planner_plan_prompt(task)
@@ -98,14 +94,7 @@ def run_planner_agent(
         extra_context=context_blob,
         num_ctx=num_ctx,
     )
-    record_tool_usage(
-        "planner_agent",
-        task,
-        True,
-        score=1.2,
-        notes="planner + execution + reflection",
-        profile_name=memory_profile,
-    )
+    # Legacy: record_tool_usage → memory.db `tool_usage`. Gone.
     return {
         "plan": normalized_plan,
         "steps": steps_log,
@@ -121,14 +110,8 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.application.memory.context import build_default_memory_context
-    from app.domain.memory.knowledge_base import record_tool_usage
-
-    memory_context = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
+    # Legacy: memory_context came from memory.db. Gone.
+    memory_context = ""
     graph = make_task_graph(task, model_name, memory_profile, num_ctx=num_ctx)
 
     total_steps = max(len(graph) + 1, 2)
@@ -207,15 +190,7 @@ def run_task_graph(
         extra_context=state_blob,
         num_ctx=num_ctx,
     )
-    graph_ok = any(item.get("ok") for item in execution_log)
-    record_tool_usage(
-        "task_graph",
-        task,
-        graph_ok,
-        score=1.3 if graph_ok else 0.6,
-        notes="task graph + auto-retry + reflection",
-        profile_name=memory_profile,
-    )
+    # Legacy: record_tool_usage → memory.db `tool_usage`. Gone.
     return {
         "graph": graph,
         "steps": execution_log,

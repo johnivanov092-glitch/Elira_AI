@@ -14,11 +14,6 @@ from app.application.media.image_generation import (  # noqa: F401
     prepare_image_prompt,
     stop_ollama_model,
 )
-from app.application.memory.persistence import persist_web_knowledge  # noqa: F401
-from app.application.memory.web_knowledge import (  # noqa: F401
-    build_browser_rag_records,
-    build_web_knowledge_records,
-)
 from app.domain.agents.orchestrator import (  # noqa: F401
     run_agent_v8,
     run_self_improving_agent,

@@ -93,8 +93,6 @@ def choose_v8_strategy(
     force_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Select an execution strategy based on task, route, and learned history."""
-    from app.domain.memory.strategy_tracking import get_v8_strategy_preferences
-
     if force_strategy:
         return {
             "strategy": str(force_strategy),
@@ -179,11 +177,10 @@ def choose_v8_strategy(
     if any(x in text for x in _SELF_IMPROVE_KW):
         scores["self_improve"] += 1.10
 
+    # Legacy: get_v8_strategy_preferences came from memory.db
+    # `v8_strategy_usage` (gone). Without learned bias, strategy is
+    # chosen purely from heuristics above — same as a cold-start system.
     learned: list[dict] = []
-    try:
-        learned = get_v8_strategy_preferences(task, profile_name=memory_profile, limit=5)
-    except Exception:
-        learned = []
 
     for pref in learned:
         strategy = pref.get("strategy")

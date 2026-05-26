@@ -9,7 +9,6 @@ import re
 from typing import Any, Dict, List, Tuple
 from urllib.parse import quote_plus
 
-from app.application.memory.persistence import persist_web_knowledge
 from app.core.files import truncate_text
 from app.core.llm import ask_model
 from app.domain.agents.planner_prompts import build_task_graph_reasoning_prompt
@@ -60,17 +59,8 @@ def execute_planner_step(
             "output": output[:12000],
         }
         if result.get("ok"):
-            try:
-                persist_web_knowledge(
-                    query=step["goal"],
-                    web_context=output,
-                    profile_name=memory_profile,
-                    source_kind="planner_browser",
-                    url=url,
-                    title=step["goal"],
-                )
-            except Exception:
-                pass
+            # Legacy: used to persist into memory.db (memories +
+            # knowledge_chunks + web_learning_runs). DB gone.
             gathered_context = (
                 f"[BROWSER]\nURL: {url}\nGOAL: {step['goal']}\n{output[:12000]}"
             )
@@ -135,8 +125,6 @@ def execute_task_graph_node(
     node_results: Dict[str, dict],
     num_ctx: int = 4096,
 ) -> dict:
-    from app.application.memory.context import build_default_memory_context
-
     dep_context = task_graph_context_from_deps(node, node_results)
     tool = node["tool"]
 
@@ -155,18 +143,7 @@ def execute_task_graph_node(
             "trace": result.get("trace", []),
             "output": output[:15000],
         }
-        if result.get("ok"):
-            try:
-                persist_web_knowledge(
-                    query=node["goal"],
-                    web_context=output,
-                    profile_name=memory_profile,
-                    source_kind="task_graph_browser",
-                    url=url,
-                    title=node["goal"],
-                )
-            except Exception:
-                pass
+        # Legacy: persist_web_knowledge used to write into memory.db. Gone.
         return node_result
 
     if tool == "terminal":
@@ -191,22 +168,14 @@ def execute_task_graph_node(
         }
 
     if tool == "memory_lookup":
-        lookup_query = node.get("goal") or task
-        memory_output = build_default_memory_context(
-            query=lookup_query,
-            profile_name=memory_profile,
-            top_k=8,
-        )
+        # Legacy: this looked up via memory.db memories+knowledge_chunks.
+        # DB gone; planner now skips this branch with "memory not found".
         return {
             "id": node["id"],
             "tool": tool,
             "goal": node["goal"],
             "ok": True,
-            "output": (
-                memory_output[:12000]
-                if memory_output
-                else "Релевантная память не найдена."
-            ),
+            "output": "Релевантная память не найдена.",
         }
 
     reasoning_prompt = build_task_graph_reasoning_prompt(
@@ -258,18 +227,7 @@ def retry_failed_task_graph_steps(
                 "output": retry.get("text", "")[:12000],
             }
             retried.append(retry_node)
-            if retry.get("ok"):
-                try:
-                    persist_web_knowledge(
-                        query=item.get("goal", task),
-                        web_context=retry.get("text", ""),
-                        profile_name=memory_profile,
-                        source_kind="task_graph_browser_retry",
-                        url=retry_url,
-                        title=item.get("goal", task),
-                    )
-                except Exception:
-                    pass
+            # Legacy: persist_web_knowledge → memory.db. Gone.
         elif item.get("tool") == "terminal":
             retried.append({
                 "id": f"{item['id']}_retry",

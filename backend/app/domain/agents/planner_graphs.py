@@ -200,13 +200,8 @@ def make_task_graph(
     memory_profile: str,
     num_ctx: int = 4096,
 ) -> List[dict]:
-    from app.application.memory.context import build_default_memory_context
-
-    memory_context = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
+    # Legacy: memory_context came from memory.db. Gone.
+    memory_context = ""
     planner_prompt = build_task_graph_prompt(task)
     raw_graph = ask_model(
         model_name=model_name,

@@ -44,51 +44,28 @@ def build_v8_graph_runtime(
     progress_callback: ProgressCallback = None,
     run_self_improving_agent_func: RunSelfImprovingAgentFunc,
 ) -> V8GraphRuntime:
-    from app.domain.memory.knowledge_base import record_tool_usage
-    from app.domain.memory.working_memory import (
-        add_working_memory,
-        build_working_memory_context,
-    )
+    # Legacy: this used to wire up writers into memory.db's
+    # `working_memory` and `tool_usage` tables, and a reader that built
+    # `working_context` from the same DB. The DB was perpetually empty
+    # so reads always returned "" and writes were silent no-ops. With
+    # memory.db removed, the closures below are explicit no-ops — the
+    # handler signatures stay unchanged so we don't have to also
+    # rewrite the seven `handle_*` functions downstream.
 
     def progress(step: int, label: str) -> None:
         if progress_callback:
             progress_callback(step, total_steps, label)
 
     def record_working_memory(step_name: str, fact_type: str, content: str, score: float = 1.0) -> None:
-        try:
-            add_working_memory(
-                run_id=run_id,
-                step_name=step_name,
-                fact_type=fact_type,
-                content=(content or "")[:6000],
-                score=score,
-                profile_name=memory_profile,
-            )
-        except Exception:
-            pass
+        return  # legacy memory.db write — table gone
 
     def refresh_working_context() -> None:
-        try:
-            state["working_context"] = build_working_memory_context(
-                run_id,
-                profile_name=memory_profile,
-                limit=12,
-            )
-        except Exception:
-            state["working_context"] = state.get("working_context", "")
+        # The working_context fed multi-step reasoning. Since the source
+        # table is gone, hold whatever's already in state (usually "").
+        state["working_context"] = state.get("working_context", "")
 
     def record_tool(tool_name: str, ok: bool, meta: str = "") -> None:
-        try:
-            record_tool_usage(
-                tool_name=tool_name,
-                task_hint=task,
-                ok=ok,
-                score=1.0 if ok else 0.0,
-                notes=meta[:1000],
-                profile_name=memory_profile,
-            )
-        except Exception:
-            pass
+        return  # legacy memory.db write — table gone
 
     def h_retrieve_memory(current_state: dict[str, Any]) -> dict[str, Any]:
         return handle_retrieve_memory(

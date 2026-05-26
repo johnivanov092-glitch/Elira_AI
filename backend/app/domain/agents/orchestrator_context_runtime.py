@@ -36,21 +36,13 @@ def handle_retrieve_memory(
     record_working_memory: WorkingMemoryRecorder,
     refresh_working_context: WorkingContextRefresher,
 ) -> Dict[str, Any]:
-    from app.application.memory.context import build_default_memory_context
-
+    # Legacy: this used to call build_default_memory_context which pulled
+    # from memory.db (memories + knowledge_chunks + tool_usage tables \u2014
+    # all empty, DB removed). The real memory pathway for chat now goes
+    # through smart_memory.db / rag_memory.db before the orchestrator
+    # ever runs, so this handler just records an empty context here.
     progress_callback("\U0001f9e0 \u041f\u0430\u043c\u044f\u0442\u044c")
-    state["memory_context"] = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
-    if state["memory_context"].strip():
-        record_working_memory(
-            "retrieve_memory",
-            "finding",
-            state["memory_context"][:2000],
-            0.9,
-        )
+    state["memory_context"] = ""
     refresh_working_context()
     return state
 
@@ -64,17 +56,9 @@ def handle_retrieve_kb(
     record_working_memory: WorkingMemoryRecorder,
     refresh_working_context: WorkingContextRefresher,
 ) -> Dict[str, Any]:
-    from app.domain.memory.knowledge_base import build_kb_context
-
+    # Legacy: pulled from memory.db `knowledge_chunks`. Table empty, DB gone.
     progress_callback("\U0001f4da KB")
-    state["kb_context"] = build_kb_context(task, profile_name=memory_profile, top_k=4)
-    if state["kb_context"].strip():
-        record_working_memory(
-            "retrieve_kb",
-            "source",
-            state["kb_context"][:2000],
-            0.85,
-        )
+    state["kb_context"] = ""
     refresh_working_context()
     return state
 
@@ -99,22 +83,8 @@ def handle_tool_hint(
     record_working_memory: WorkingMemoryRecorder,
     refresh_working_context: WorkingContextRefresher,
 ) -> Dict[str, Any]:
-    from app.domain.memory.knowledge_base import get_tool_preferences
-
+    # Legacy: pulled tool preferences from memory.db `tool_usage`. Empty/gone.
     progress_callback("\U0001f6e0 Tool memory")
-    try:
-        preferences = get_tool_preferences(task, profile_name=memory_profile, limit=3)
-    except Exception:
-        preferences = []
-    if preferences:
-        state["tool_hint"] = build_tool_hint_text(preferences)
-        record_working_memory(
-            "tool_hint",
-            "decision",
-            state["tool_hint"][:1800],
-            0.75,
-        )
-    else:
-        state["tool_hint"] = ""
+    state["tool_hint"] = ""
     refresh_working_context()
     return state
