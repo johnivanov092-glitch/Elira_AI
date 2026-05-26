@@ -106,18 +106,31 @@ def _strip_technical_source_phrases(text: str) -> str:
     cleaned = INLINE_SOURCE_CITATION_RE.sub("", cleaned)
     cleaned = BARE_URL_RE.sub("", cleaned)
 
-    sentences = SENTENCE_SPLIT_RE.split(cleaned)
-    kept: list[str] = []
-    for sentence in sentences:
-        normalized = sentence.strip()
-        if not normalized:
-            continue
-        if UNWANTED_SOURCE_SENTENCE_RE.search(normalized):
-            continue
-        kept.append(normalized)
+    # Fast path: if nothing matches the unwanted-sentence patterns, return as-is
+    # so we don't destroy the streamed paragraph structure.
+    if not UNWANTED_SOURCE_SENTENCE_RE.search(cleaned):
+        return _normalize_whitespace(cleaned)
 
-    if kept:
-        cleaned = " ".join(kept)
+    # Otherwise: split per paragraph, sentence-strip inside each paragraph,
+    # then re-join paragraphs with '\n\n' so markdown structure survives.
+    paragraphs = cleaned.split("\n\n")
+    out_paragraphs: list[str] = []
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        sentences = SENTENCE_SPLIT_RE.split(para)
+        kept: list[str] = []
+        for sentence in sentences:
+            normalized = sentence.strip()
+            if not normalized:
+                continue
+            if UNWANTED_SOURCE_SENTENCE_RE.search(normalized):
+                continue
+            kept.append(normalized)
+        if kept:
+            out_paragraphs.append(" ".join(kept))
+    if out_paragraphs:
+        cleaned = "\n\n".join(out_paragraphs)
     return _normalize_whitespace(cleaned)
 
 
