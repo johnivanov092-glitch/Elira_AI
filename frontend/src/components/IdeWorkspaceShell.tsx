@@ -38,6 +38,7 @@ import {
 } from "lucide-react";
 import { api } from "../api/ide";
 import TerminalPanel from "./TerminalPanel";
+import { toast } from "./ToastHost";
 
 const LIBRARY_KEY = "elira_library_files_v7";
 
@@ -442,8 +443,18 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     if(!commitMsg.trim())return;setGitLoading(true);
     try{
       const d=await api.createGitCommit({message:commitMsg,add_all:true});
-      if(d.ok){setCommitMsg("");fetchGit("status");}else alert("Ошибка Git: "+String(d.error || ""));
-    }catch(e){alert(String(e));}finally{setGitLoading(false);}
+      if(d.ok){
+        setCommitMsg("");
+        fetchGit("status");
+        toast.success("Коммит создан");
+      } else {
+        toast.error("Git: " + String(d.error || "неизвестная ошибка"));
+      }
+    } catch(e){
+      toast.error("Git: " + String(e));
+    } finally {
+      setGitLoading(false);
+    }
   }
   useEffect(()=>{if(mainView==="git"&&!gitData.status)fetchGit("status");},[mainView]);
 

@@ -464,6 +464,20 @@ select, option {
   50% { opacity: 1; }
 }
 
+/* ── Toast slide-in (ToastHost) ───────────────────────────── */
+@keyframes elira-toast-slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* Spinner for in-progress states */
+.lucide-spin {
+  animation: lucide-spin 0.9s linear infinite;
+}
+@keyframes lucide-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* в"Ђв"Ђ Typing cursor (streaming) в"Ђв"Ђ */
 .streaming-active { position: relative; }
 .typing-cursor {

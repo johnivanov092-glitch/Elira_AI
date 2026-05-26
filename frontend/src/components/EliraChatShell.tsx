@@ -20,6 +20,7 @@ import MemoryPanel from "./MemoryPanel";
 import ProjectPanel from "./ProjectPanel";
 import SpotlightOverlay from "./SpotlightOverlay";
 import type { SpotlightHit } from "../api/spotlight";
+import { toast } from "./ToastHost";
 import "../styles/markdown.css";
 import { PROFILE_DESCRIPTIONS, SKILLS } from "../chatConstants";
 import {
@@ -841,9 +842,17 @@ export default function EliraChatShell(): JSX.Element {
     try {
       const data = await api.testTelegramBot() as Record<string, unknown>;
       setTelegramError(""); setError("");
-      if (data?.ok) alert(`Бот: @${data.bot_username as string} (${data.bot_name as string})`);
-      else alert(`❌ ${(data?.error as string) || "Ошибка"}`);
-    } catch (e) { const message = normalizeErrorMessage(e); setTelegramError(message); setError(`Telegram: ${message}`); alert("Ошибка соединения"); }
+      if (data?.ok) {
+        toast.success(`Бот: @${data.bot_username as string} (${data.bot_name as string})`);
+      } else {
+        toast.error((data?.error as string) || "Telegram: неизвестная ошибка");
+      }
+    } catch (e) {
+      const message = normalizeErrorMessage(e);
+      setTelegramError(message);
+      setError(`Telegram: ${message}`);
+      toast.error(`Telegram: ${message}`);
+    }
   }
   async function saveTelegramToken() {
     if (!tgTokenInput.trim()) return;
