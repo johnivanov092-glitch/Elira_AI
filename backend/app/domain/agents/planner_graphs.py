@@ -200,14 +200,12 @@ def make_task_graph(
     memory_profile: str,
     num_ctx: int = 4096,
 ) -> List[dict]:
-    # Legacy: memory_context came from memory.db. Gone.
-    memory_context = ""
     planner_prompt = build_task_graph_prompt(task)
     raw_graph = ask_model(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=planner_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         temp=0.05,
         include_history=False,

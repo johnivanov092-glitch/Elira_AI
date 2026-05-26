@@ -1,7 +1,7 @@
 """Planner runtime helpers extracted from planner.py.
 
-Keeps browser/terminal/memory execution paths isolated from the
-LLM plan/graph construction logic.
+Keeps browser/terminal execution paths isolated from the LLM
+plan/graph construction logic.
 """
 from __future__ import annotations
 
@@ -40,7 +40,6 @@ def execute_planner_step(
     idx: int,
     step: dict,
     task: str,
-    memory_profile: str,
 ) -> Tuple[dict, str | None]:
     tool = step["tool"]
     if tool == "browser":
@@ -59,8 +58,6 @@ def execute_planner_step(
             "output": output[:12000],
         }
         if result.get("ok"):
-            # Legacy: used to persist into memory.db (memories +
-            # knowledge_chunks + web_learning_runs). DB gone.
             gathered_context = (
                 f"[BROWSER]\nURL: {url}\nGOAL: {step['goal']}\n{output[:12000]}"
             )
@@ -120,8 +117,6 @@ def execute_task_graph_node(
     task: str,
     node: dict[str, Any],
     model_name: str,
-    memory_profile: str,
-    memory_context: str,
     node_results: Dict[str, dict],
     num_ctx: int = 4096,
 ) -> dict:
@@ -134,7 +129,7 @@ def execute_task_graph_node(
             url = f"https://duckduckgo.com/?q={quote_plus(node['goal'][:200])}"
         result = run_browser_agent(url, node["goal"], max_pages=3)
         output = result.get("text", "")
-        node_result = {
+        return {
             "id": node["id"],
             "tool": tool,
             "goal": node["goal"],
@@ -143,8 +138,6 @@ def execute_task_graph_node(
             "trace": result.get("trace", []),
             "output": output[:15000],
         }
-        # Legacy: persist_web_knowledge used to write into memory.db. Gone.
-        return node_result
 
     if tool == "terminal":
         cmd = node.get("command", "").strip()
@@ -167,17 +160,6 @@ def execute_task_graph_node(
             "output": output[:12000],
         }
 
-    if tool == "memory_lookup":
-        # Legacy: this looked up via memory.db memories+knowledge_chunks.
-        # DB gone; planner now skips this branch with "memory not found".
-        return {
-            "id": node["id"],
-            "tool": tool,
-            "goal": node["goal"],
-            "ok": True,
-            "output": "Релевантная память не найдена.",
-        }
-
     reasoning_prompt = build_task_graph_reasoning_prompt(
         task=task,
         node_goal=node["goal"],
@@ -187,7 +169,7 @@ def execute_task_graph_node(
         model_name=model_name,
         profile_name="Аналитик",
         user_input=reasoning_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         include_history=False,
         num_ctx=num_ctx,
@@ -205,7 +187,6 @@ def retry_failed_task_graph_steps(
     *,
     task: str,
     execution_log: List[dict],
-    memory_profile: str,
 ) -> List[dict]:
     retried: List[dict] = []
     for item in execution_log:
@@ -217,7 +198,7 @@ def retry_failed_task_graph_steps(
                 or f"https://duckduckgo.com/?q={quote_plus(item.get('goal', task)[:200])}"
             )
             retry = run_browser_agent(retry_url, item.get("goal", task), max_pages=2)
-            retry_node = {
+            retried.append({
                 "id": f"{item['id']}_retry",
                 "tool": "browser_retry",
                 "goal": item.get("goal", task),
@@ -225,9 +206,7 @@ def retry_failed_task_graph_steps(
                 "url": retry_url,
                 "trace": retry.get("trace", []),
                 "output": retry.get("text", "")[:12000],
-            }
-            retried.append(retry_node)
-            # Legacy: persist_web_knowledge → memory.db. Gone.
+            })
         elif item.get("tool") == "terminal":
             retried.append({
                 "id": f"{item['id']}_retry",

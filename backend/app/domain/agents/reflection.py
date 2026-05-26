@@ -165,8 +165,6 @@ def reflection_v2(
         "notes": str(data.get("notes", "") or ""),
         "improved_answer": str(data.get("improved_answer", "") or answer or ""),
     }
-    # Legacy: used to record into memory.db `reflections` table (deleted in
-    # the memory.db cleanup pass — all writes were already silently failing).
     return result
 
 

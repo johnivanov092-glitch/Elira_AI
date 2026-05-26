@@ -4,9 +4,6 @@ from __future__ import annotations
 from typing import Any, Callable, Dict
 
 
-WorkingMemoryRecorder = Callable[[str, str, str, float], None]
-WorkingContextRefresher = Callable[[], None]
-ToolUsageRecorder = Callable[[str, bool, str], None]
 StepLabelCallback = Callable[[str], None]
 
 
@@ -37,9 +34,6 @@ def handle_planner(
     memory_profile: str,
     num_ctx: int,
     progress_callback: StepLabelCallback,
-    record_working_memory: WorkingMemoryRecorder,
-    record_tool_usage: ToolUsageRecorder,
-    refresh_working_context: WorkingContextRefresher,
 ) -> Dict[str, Any]:
     from app.domain.agents.planner import run_planner_agent
 
@@ -53,10 +47,6 @@ def handle_planner(
     )
     state["plan_result"] = plan
     state["answer"] = plan.get("final") or plan.get("summary") or ""
-    if plan:
-        record_working_memory("planner", "decision", str(plan)[:2500], 0.85)
-    record_tool_usage("planner_agent", True, "run_planner_agent")
-    refresh_working_context()
     return state
 
 
@@ -68,9 +58,6 @@ def handle_task_graph(
     memory_profile: str,
     num_ctx: int,
     progress_callback: StepLabelCallback,
-    record_working_memory: WorkingMemoryRecorder,
-    record_tool_usage: ToolUsageRecorder,
-    refresh_working_context: WorkingContextRefresher,
 ) -> Dict[str, Any]:
     from app.domain.agents.planner import run_task_graph
 
@@ -85,10 +72,6 @@ def handle_task_graph(
     state["task_graph_result"] = result
     final_answer = extract_task_graph_answer(result)
     state["answer"] = final_answer or state.get("answer", "")
-    if result:
-        record_working_memory("task_graph", "finding", str(result)[:3000], 0.9)
-    record_tool_usage("task_graph", True, "run_task_graph")
-    refresh_working_context()
     return state
 
 
@@ -100,9 +83,6 @@ def handle_multi_agent(
     memory_profile: str,
     num_ctx: int,
     progress_callback: StepLabelCallback,
-    record_working_memory: WorkingMemoryRecorder,
-    record_tool_usage: ToolUsageRecorder,
-    refresh_working_context: WorkingContextRefresher,
 ) -> Dict[str, Any]:
     from app.application.workflows.multi_agent import run_legacy_multi_agent_workflow
 
@@ -116,8 +96,4 @@ def handle_multi_agent(
     )
     state["multi_agent_result"] = result
     state["answer"] = (result or {}).get("final", "") or state.get("answer", "")
-    if result:
-        record_working_memory("multi_agent", "finding", str(result)[:3000], 0.92)
-    record_tool_usage("multi_agent", True, "run_multi_agent")
-    refresh_working_context()
     return state

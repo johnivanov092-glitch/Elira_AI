@@ -388,12 +388,10 @@ def run_legacy_multi_agent_workflow(
     from app.application.workflows.runtime import start_workflow_run
 
     seed_builtin_workflows()
-    # Legacy: memory_context came from memory.db. Gone.
-    memory_context = ""
     run = start_workflow_run(
         workflow_id=MULTI_AGENT_FULL_WORKFLOW_ID,
         workflow_input={"query": task, "context": "", "project_context": project_context, "file_context": file_context},
-        context={"model_name": model_name, "memory_context": memory_context, "num_ctx": num_ctx},
+        context={"model_name": model_name, "memory_context": "", "num_ctx": num_ctx},
         trigger_source="core.multi_agent",
         progress_callback=progress_callback,
     )

@@ -35,18 +35,13 @@ def run_planner_agent(
         if progress_callback:
             progress_callback(step, total_steps, label)
 
-    # Legacy: memory_context came from memory.db (gone). Planner now
-    # operates without prior memory; the real chat memory pathway
-    # (smart_memory + rag_memory) already enriched the input upstream.
-    memory_context = ""
-
     progress(1, "Planner: building plan")
     planner_prompt = build_planner_plan_prompt(task)
     raw_plan = ask_model(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=planner_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         temp=0.05,
         include_history=False,
@@ -65,7 +60,6 @@ def run_planner_agent(
             idx=idx,
             step=step,
             task=task,
-            memory_profile=memory_profile,
         )
         steps_log.append(step_log)
         if gathered_context:
@@ -82,7 +76,7 @@ def run_planner_agent(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=final_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         include_history=False,
         num_ctx=num_ctx,
@@ -94,7 +88,6 @@ def run_planner_agent(
         extra_context=context_blob,
         num_ctx=num_ctx,
     )
-    # Legacy: record_tool_usage → memory.db `tool_usage`. Gone.
     return {
         "plan": normalized_plan,
         "steps": steps_log,
@@ -110,8 +103,6 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    # Legacy: memory_context came from memory.db. Gone.
-    memory_context = ""
     graph = make_task_graph(task, model_name, memory_profile, num_ctx=num_ctx)
 
     total_steps = max(len(graph) + 1, 2)
@@ -138,8 +129,6 @@ def run_task_graph(
                 task=task,
                 node=node,
                 model_name=model_name,
-                memory_profile=memory_profile,
-                memory_context=memory_context,
                 node_results=node_results,
                 num_ctx=num_ctx,
             )
@@ -163,7 +152,6 @@ def run_task_graph(
         retry_failed_task_graph_steps(
             task=task,
             execution_log=execution_log,
-            memory_profile=memory_profile,
         )
     )
 
@@ -178,7 +166,7 @@ def run_task_graph(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=final_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         include_history=False,
         num_ctx=num_ctx,
@@ -190,7 +178,6 @@ def run_task_graph(
         extra_context=state_blob,
         num_ctx=num_ctx,
     )
-    # Legacy: record_tool_usage → memory.db `tool_usage`. Gone.
     return {
         "graph": graph,
         "steps": execution_log,

@@ -1,4 +1,4 @@
-"""Tests for pure helpers across three previously zero-covered modules.
+"""Tests for pure helpers across three modules.
 
   domain/agents/planner_runtime.py:
     extract_first_url
@@ -7,8 +7,6 @@
     build_task_graph_state_blob
 
   domain/agents/orchestrator_postprocess_runtime.py:
-    build_reflection_kb_context
-    build_reflection_memory_context
     build_finalize_prompt
 
   domain/tools/terminal_tool.py:
@@ -35,8 +33,6 @@ from app.domain.agents.planner_runtime import (  # noqa: E402
     build_task_graph_state_blob,
 )
 from app.domain.agents.orchestrator_postprocess_runtime import (  # noqa: E402
-    build_reflection_kb_context,
-    build_reflection_memory_context,
     build_finalize_prompt,
 )
 from app.domain.tools.terminal_tool import is_dangerous_command  # noqa: E402
@@ -262,127 +258,24 @@ class BuildTaskGraphStateBlobTest(unittest.TestCase):
         self.assertIsInstance(result, str)
 
 
-# orchestrator_postprocess_runtime.py - build_reflection_kb_context
-
-class BuildReflectionKbContextTest(unittest.TestCase):
-
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(build_reflection_kb_context({}), str)
-
-    def test_empty_state_returns_empty(self) -> None:
-        self.assertEqual(build_reflection_kb_context({}), "")
-
-    def test_only_kb_context_returns_it(self) -> None:
-        result = build_reflection_kb_context({"kb_context": "KB data here"})
-        self.assertEqual(result, "KB data here")
-
-    def test_only_working_context_returns_it(self) -> None:
-        result = build_reflection_kb_context({"working_context": "Working data"})
-        self.assertEqual(result, "Working data")
-
-    def test_both_joined(self) -> None:
-        result = build_reflection_kb_context({
-            "kb_context": "KB part",
-            "working_context": "Working part",
-        })
-        self.assertIn("KB part", result)
-        self.assertIn("Working part", result)
-
-    def test_empty_string_values_skipped(self) -> None:
-        result = build_reflection_kb_context({"kb_context": "", "working_context": ""})
-        self.assertEqual(result, "")
-
-    def test_whitespace_only_skipped(self) -> None:
-        result = build_reflection_kb_context({"kb_context": "   ", "working_context": "  "})
-        self.assertEqual(result, "")
-
-    def test_other_keys_ignored(self) -> None:
-        result = build_reflection_kb_context({"memory_context": "mem", "kb_context": "KB"})
-        self.assertNotIn("mem", result)
-        self.assertIn("KB", result)
-
-
-# orchestrator_postprocess_runtime.py - build_reflection_memory_context
-
-class BuildReflectionMemoryContextTest(unittest.TestCase):
-
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(build_reflection_memory_context({}), str)
-
-    def test_empty_state_returns_empty(self) -> None:
-        self.assertEqual(build_reflection_memory_context({}), "")
-
-    def test_only_memory_context_returns_it(self) -> None:
-        result = build_reflection_memory_context({"memory_context": "Memory data"})
-        self.assertEqual(result, "Memory data")
-
-    def test_only_working_context_returns_it(self) -> None:
-        result = build_reflection_memory_context({"working_context": "Working data"})
-        self.assertEqual(result, "Working data")
-
-    def test_both_joined(self) -> None:
-        result = build_reflection_memory_context({
-            "memory_context": "Memory part",
-            "working_context": "Working part",
-        })
-        self.assertIn("Memory part", result)
-        self.assertIn("Working part", result)
-
-    def test_empty_values_skipped(self) -> None:
-        result = build_reflection_memory_context({"memory_context": "", "working_context": ""})
-        self.assertEqual(result, "")
-
-    def test_kb_context_ignored(self) -> None:
-        result = build_reflection_memory_context({"kb_context": "KB", "memory_context": "Mem"})
-        self.assertNotIn("KB", result)
-        self.assertIn("Mem", result)
-
-
 # orchestrator_postprocess_runtime.py - build_finalize_prompt
 
 class BuildFinalizePromptTest(unittest.TestCase):
 
-    def _state(self, memory="", kb="", working="", tool_hint=""):
-        return {
-            "memory_context": memory,
-            "kb_context": kb,
-            "working_context": working,
-            "tool_hint": tool_hint,
-        }
-
     def test_returns_string(self) -> None:
-        self.assertIsInstance(build_finalize_prompt(task="task", state={}), str)
+        self.assertIsInstance(build_finalize_prompt(task="task"), str)
 
     def test_nonempty(self) -> None:
-        result = build_finalize_prompt(task="task", state={})
+        result = build_finalize_prompt(task="task")
         self.assertTrue(len(result) > 0)
 
     def test_contains_task(self) -> None:
-        result = build_finalize_prompt(task="analyze python code", state={})
+        result = build_finalize_prompt(task="analyze python code")
         self.assertIn("analyze python code", result)
 
-    def test_contains_memory_context(self) -> None:
-        state = self._state(memory="relevant memory data")
-        result = build_finalize_prompt(task="task", state=state)
-        self.assertIn("relevant memory data", result)
-
-    def test_contains_kb_context(self) -> None:
-        state = self._state(kb="knowledge base info")
-        result = build_finalize_prompt(task="task", state=state)
-        self.assertIn("knowledge base info", result)
-
-    def test_contains_working_context(self) -> None:
-        state = self._state(working="working memory content")
-        result = build_finalize_prompt(task="task", state=state)
-        self.assertIn("working memory content", result)
-
-    def test_empty_state_does_not_raise(self) -> None:
-        result = build_finalize_prompt(task="task", state={})
-        self.assertIsInstance(result, str)
-
     def test_different_tasks_different_prompts(self) -> None:
-        r1 = build_finalize_prompt(task="task one", state={})
-        r2 = build_finalize_prompt(task="task two", state={})
+        r1 = build_finalize_prompt(task="task one")
+        r2 = build_finalize_prompt(task="task two")
         self.assertNotEqual(r1, r2)
 
 

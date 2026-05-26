@@ -151,10 +151,6 @@ def process_uploaded_files(files, profile_name: str) -> Dict[str, Any]:
         saved_names.append(path.name)
         content = truncate_text(read_file_content(path), 9000)
         pieces.append(f"\n\n===== ФАЙЛ: {path.name} =====\n{content}")
-        # Legacy: this used to write the file content into core/memory.add_memory
-        # (data/memory.db `memories` table). That table stayed at 0 rows for
-        # months — the new file-context flow lives in elira_state.db chats/
-        # messages + rag_memory.db. Removed with the memory.db cleanup.
 
     file_context = truncate_text("\n".join(pieces), 25000)
     return {

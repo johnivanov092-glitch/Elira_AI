@@ -1,11 +1,14 @@
 """V8 agent orchestrator and self-improving agent.
 
-Extracted from core/agents.py — run_agent_v8 (graph-based strategy
-dispatch with memory, KB, tool hints, and reflection) and
-run_self_improving_agent (iterative critique-and-improve loop).
+run_agent_v8: graph-based strategy dispatch — picks a strategy
+(direct / planner / task_graph / multi_agent / self_improve) by
+route + heuristics, runs the corresponding graph through
+build_v8_graph_runtime, then reflects on the answer.
 
-Heavy runtime helpers are imported lazily from their canonical modules
-to avoid circular imports.
+run_self_improving_agent: iterative critique-and-improve loop.
+
+Heavy runtime helpers are imported lazily inside the functions to
+keep this module's import surface light.
 """
 from __future__ import annotations
 
@@ -18,7 +21,6 @@ from app.domain.agents.orchestrator_runtime import (
     build_run_agent_v8_result,
     build_self_improving_result,
     build_v8_state,
-    compute_reflection_quality_score,
     normalize_v8_route,
     observe_persona_dialogue,
     select_v8_graph,
@@ -89,12 +91,9 @@ def run_agent_v8(
     )
     state = run_graph_with_retry_v8(graph, runtime.handlers, state, max_retries=2)
 
-    # Legacy: used to record into memory.db `task_runs` and `v8_strategy_usage`
-    # tables. Both were perpetually empty and the DB is gone now.
     latency = round(time.time() - run_started, 3)
     reflection = state.get("reflection", {}) or {}
     answer_ok = bool(state.get("answer", "").strip()) and not state.get("failed_node")
-    quality_score = compute_reflection_quality_score(reflection)
 
     persona_meta = observe_persona_dialogue(
         dialog_id=run_id,
@@ -160,7 +159,6 @@ def run_self_improving_agent(
         run_id=run_id,
         answer=(base.get("answer", "") or "").strip(),
         reflection=base.get("reflection", {}) or {},
-        working_context=base.get("working_context", "") or "",
         progress_callback=lambda idx, label: _progress(
             min(idx + 1, total_steps),
             label,
@@ -169,9 +167,6 @@ def run_self_improving_agent(
     answer = loop_result.get("answer", "")
     reflection: dict | Any = loop_result.get("reflection", {}) or {}
     iterations = loop_result.get("iterations", [])
-    working_context = loop_result.get("working_context", "") or ""
-
-    # Legacy: used to record into memory.db `tool_usage`. Table gone.
 
     persona_meta = observe_persona_dialogue(
         dialog_id=run_id or f"self-improve-{memory_profile}",
@@ -191,6 +186,5 @@ def run_self_improving_agent(
         answer=answer,
         iterations=iterations,
         reflection=reflection,
-        working_context=working_context,
         persona_meta=persona_meta,
     )

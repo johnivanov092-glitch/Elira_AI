@@ -16,30 +16,11 @@ _FALLBACK_ROUTE = {
 }
 
 _GRAPH_MAP = {
-    "direct": [
-        "retrieve_memory", "retrieve_kb",
-        "retrieve_working_memory", "finalize",
-    ],
-    "planner": [
-        "retrieve_memory", "retrieve_kb",
-        "retrieve_working_memory", "planner",
-        "reflection_v2", "finalize",
-    ],
-    "task_graph": [
-        "retrieve_memory", "retrieve_kb",
-        "retrieve_working_memory", "tool_hint",
-        "task_graph", "reflection_v2", "finalize",
-    ],
-    "multi_agent": [
-        "retrieve_memory", "retrieve_kb",
-        "retrieve_working_memory", "multi_agent",
-        "reflection_v2", "finalize",
-    ],
-    "self_improve": [
-        "retrieve_memory", "retrieve_kb",
-        "retrieve_working_memory", "self_improve",
-        "finalize",
-    ],
+    "direct": ["finalize"],
+    "planner": ["planner", "reflection_v2", "finalize"],
+    "task_graph": ["task_graph", "reflection_v2", "finalize"],
+    "multi_agent": ["multi_agent", "reflection_v2", "finalize"],
+    "self_improve": ["self_improve", "finalize"],
 }
 
 
@@ -52,10 +33,7 @@ def normalize_v8_route(route: Any) -> dict[str, Any]:
 def select_v8_graph(selected_strategy: str, mode: str) -> List[str]:
     return (
         _GRAPH_MAP.get(selected_strategy)
-        or TASK_GRAPH_TEMPLATES_V8.get(
-            mode,
-            ["retrieve_memory", "retrieve_working_memory", "finalize"],
-        )
+        or TASK_GRAPH_TEMPLATES_V8.get(mode, ["finalize"])
     )
 
 
@@ -81,10 +59,6 @@ def build_v8_state(
         "strategy": strategy,
         "selected_strategy": selected_strategy,
         "graph": graph,
-        "memory_context": "",
-        "kb_context": "",
-        "working_context": "",
-        "tool_hint": "",
         "plan_result": None,
         "task_graph_result": None,
         "multi_agent_result": None,
@@ -94,18 +68,6 @@ def build_v8_state(
         "errors": [],
         "timeline": [],
     }
-
-
-def compute_reflection_quality_score(reflection: Any) -> float:
-    if not reflection:
-        return 1.0
-    return (
-        0.2
-        + 0.2 * float(bool(reflection.get("answered", True)))
-        + 0.2 * float(bool(reflection.get("grounded", True)))
-        + 0.2 * float(bool(reflection.get("complete", True)))
-        + 0.2 * float(bool(reflection.get("actionable", True)))
-    )
 
 
 def observe_persona_dialogue(
@@ -166,10 +128,6 @@ def build_run_agent_v8_result(
         "errors": state.get("errors", []),
         "timeline": state.get("timeline", []),
         "failed_node": state.get("failed_node", ""),
-        "memory_context": state.get("memory_context", ""),
-        "kb_context": state.get("kb_context", ""),
-        "working_context": state.get("working_context", ""),
-        "tool_hint": state.get("tool_hint", ""),
         "latency_seconds": latency,
         "persona": persona_meta,
     }
@@ -182,7 +140,6 @@ def build_self_improving_result(
     answer: str,
     iterations: List[Dict[str, Any]],
     reflection: Any,
-    working_context: str,
     persona_meta: Any,
 ) -> Dict[str, Any]:
     return {
@@ -196,8 +153,5 @@ def build_self_improving_result(
         "graph": base.get("graph", []),
         "timeline": base.get("timeline", []),
         "errors": base.get("errors", []),
-        "memory_context": base.get("memory_context", ""),
-        "kb_context": base.get("kb_context", ""),
-        "working_context": working_context or base.get("working_context", ""),
         "persona": persona_meta,
     }
