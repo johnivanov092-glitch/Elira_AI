@@ -978,6 +978,94 @@ def recall_from_rag(query: str, top_k: int = 10, min_score: float = 0.3) -> dict
     return search_rag(query=query, limit=max(1, int(top_k)), min_score=float(min_score))
 
 
+def unindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, Any]:
+    """Remove RAG chunks belonging to a single file.
+
+    Chunks emitted by `index_project` carry a `[file:<rel-path>:<a>-<b>]\\n`
+    header — we LIKE-match that header so we delete only this file's
+    chunks, scoped to the project they belong to.
+    """
+    root = Path(project_root).resolve()
+    target = Path(file_path).resolve()
+    project_name = root.name or str(root)
+    try:
+        rel = str(target.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return {"ok": False, "error": "file is outside project_root"}
+
+    try:
+        from app.application.rag_memory.service import _conn
+    except Exception as exc:
+        return {"ok": False, "error": f"RAG service unavailable: {exc}"}
+
+    pattern = f"[file:{rel}:%"
+    conn = _conn()
+    try:
+        cur = conn.execute(
+            """
+            DELETE FROM rag_items
+            WHERE category = ?
+              AND (project = ? OR COALESCE(project, '') = '')
+              AND text LIKE ?
+            """,
+            ("code_index", project_name, pattern),
+        )
+        deleted = cur.rowcount or 0
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "deleted_chunks": deleted, "file": rel}
+
+
+def reindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, Any]:
+    """Replace a single file's chunks in RAG.
+
+    Used by the realtime file watcher. Equivalent to calling
+    `unindex_file` then re-chunking + adding only this file. Cheaper
+    than rebuilding the full project index when one source file
+    changes during a coding session.
+    """
+    root = Path(project_root).resolve()
+    target = Path(file_path).resolve()
+    if not target.is_file():
+        # Treat as removal — caller may not have intended this but
+        # honoring delete-after-rename semantics is the right default.
+        return unindex_file(root, target)
+    if not target.exists():
+        return {"ok": False, "error": f"file does not exist: {target}"}
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return {"ok": False, "error": "file is outside project_root"}
+    if any(part in INDEX_SKIP_DIRS for part in target.parts):
+        return {"ok": True, "skipped": True, "reason": "path under skip dir"}
+
+    try:
+        from app.application.rag_memory.service import add_to_rag
+    except Exception as exc:
+        return {"ok": False, "error": f"RAG service unavailable: {exc}"}
+
+    unindex_file(root, target)  # blow away the old chunks first
+    project_name = root.name or str(root)
+    added = 0
+    failed = 0
+    for chunk_text, _start, _end in _chunk_file(target, root):
+        try:
+            result = add_to_rag(
+                text=chunk_text,
+                category="code_index",
+                importance=4,
+                project=project_name,
+            )
+            if result.get("ok"):
+                added += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    return {"ok": True, "chunks_added": added, "failed": failed, "file": str(target.relative_to(root)).replace("\\", "/")}
+
+
 def set_project_prompt(project_root: Path | str, content: str) -> dict[str, Any]:
     root = Path(project_root).resolve()
     if not root.exists() or not root.is_dir():

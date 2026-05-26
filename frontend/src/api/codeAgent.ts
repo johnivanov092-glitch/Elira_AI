@@ -441,6 +441,40 @@ export async function addRagItem(text: string, category: string = "fact", import
   });
 }
 
+// ── File watcher (realtime auto-reindex of RAG on source edits) ───────
+
+export type WatcherStatus = {
+  watching: boolean;
+  project_root: string;
+  started_at?: number;
+  events_seen?: number;
+  reindex_runs?: number;
+  last_error?: string | null;
+};
+
+export async function startProjectWatcher(
+  projectRoot: string,
+): Promise<{ ok: boolean; already_watching?: boolean; project_root: string }> {
+  return request("/api/code-agent/watcher/start", {
+    method: "POST",
+    body: { project_root: projectRoot },
+  });
+}
+
+export async function stopProjectWatcher(
+  projectRoot: string,
+): Promise<{ ok: boolean; was_watching?: boolean; project_root: string }> {
+  return request("/api/code-agent/watcher/stop", {
+    method: "POST",
+    body: { project_root: projectRoot },
+  });
+}
+
+export async function getProjectWatcherStatus(projectRoot: string): Promise<WatcherStatus> {
+  const qs = new URLSearchParams({ project_root: projectRoot }).toString();
+  return request<WatcherStatus>(`/api/code-agent/watcher/status?${qs}`);
+}
+
 /** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
  *  is closer to 4. We compute per-character class to be reasonable. */
 export function estimateTokens(text: string): number {

@@ -201,6 +201,33 @@ def recall(payload: RecallRequest) -> dict[str, Any]:
     return recall_from_rag(query=payload.query, top_k=payload.top_k, min_score=payload.min_score)
 
 
+# ── File watcher (realtime auto-reindex on edits) ────────────────────────
+
+class WatcherRequest(BaseModel):
+    project_root: str
+
+
+@router.post("/watcher/start")
+def watcher_start(payload: WatcherRequest) -> dict[str, Any]:
+    from app.application.code_agent.file_watcher import start_watcher
+    result = start_watcher(payload.project_root)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "watcher start failed"))
+    return result
+
+
+@router.post("/watcher/stop")
+def watcher_stop(payload: WatcherRequest) -> dict[str, Any]:
+    from app.application.code_agent.file_watcher import stop_watcher
+    return stop_watcher(payload.project_root)
+
+
+@router.get("/watcher/status")
+def watcher_status_endpoint(project_root: Optional[str] = None) -> dict[str, Any]:
+    from app.application.code_agent.file_watcher import watcher_status
+    return watcher_status(project_root)
+
+
 # ── Sessions ────────────────────────────────────────────────────────────
 
 

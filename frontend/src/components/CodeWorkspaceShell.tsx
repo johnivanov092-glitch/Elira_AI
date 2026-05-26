@@ -47,12 +47,14 @@ import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHis
 import type { CodeSessionMeta } from "../api/codeAgent";
 import { api } from "../api/ide";
 import { UiIcon, IconText } from "./StatusPanels";
+import { toast } from "./ToastHost";
 
 const ROOT_KEY = "elira_code_agent_root";
 const MODEL_KEY = "elira_code_agent_model";
 const STEPS_KEY = "elira_code_agent_steps";
 const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
 const AUTO_REMEMBER_KEY = "elira_code_agent_auto_remember";
+const AUTO_INDEX_KEY_PREFIX = "elira_code_agent_auto_index_v1::";
 const DRAWER_KEY = "elira_code_workspace_drawer";
 const DRAWER_WIDTH_KEY = "elira_code_workspace_drawer_width";
 const SESSIONS_SIDEBAR_KEY = "elira_code_workspace_sidebar_collapsed";
@@ -211,6 +213,10 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [maxSteps, setMaxSteps] = useState<number>(() => readNumber(STEPS_KEY, DEFAULT_MAX_STEPS));
   const [numCtx, setNumCtx] = useState<number>(() => readNumber(CTX_KEY_PREFIX + readString(MODEL_KEY, DEFAULT_MODEL), DEFAULT_NUM_CTX));
   const [autoRemember, setAutoRemember] = useState<boolean>(() => readBool(AUTO_REMEMBER_KEY, true));
+  // Auto-index toggle: watchdog on backend rewrites RAG chunks for any
+  // edited source file in `projectRoot`. Per-project setting (a user
+  // may want it on for repo A and off for repo B).
+  const [autoIndex, setAutoIndex] = useState<boolean>(() => readBool(AUTO_INDEX_KEY_PREFIX + readString(ROOT_KEY, DEFAULT_ROOT), false));
 
   // ─── Sessions sidebar state (backed by SQLite via /api/code-agent/sessions) ───
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
@@ -532,6 +538,40 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   useEffect(() => writeString(MODEL_KEY, model), [model]);
   useEffect(() => writeNumber(STEPS_KEY, maxSteps), [maxSteps]);
   useEffect(() => writeBool(AUTO_REMEMBER_KEY, autoRemember), [autoRemember]);
+  // Persist auto-index per project_root + sync with backend watcher.
+  useEffect(() => {
+    writeBool(AUTO_INDEX_KEY_PREFIX + projectRoot, autoIndex);
+  }, [projectRoot, autoIndex]);
+  useEffect(() => {
+    // When project_root changes, reload the toggle for the new root.
+    const saved = readBool(AUTO_INDEX_KEY_PREFIX + projectRoot, false);
+    setAutoIndex(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectRoot]);
+  useEffect(() => {
+    // Drive backend: start watcher when toggle is on (or projectRoot
+    // changes while on), stop when toggled off.
+    let cancelled = false;
+    const root = projectRoot;
+    if (!root) return;
+    if (autoIndex) {
+      api.startProjectWatcher(root)
+        .then((r) => { if (!cancelled && r.ok && !r.already_watching) toast.info(`Auto-index: слежу за ${root}`); })
+        .catch((e) => { if (!cancelled) toast.error(`Auto-index не запустился: ${String((e as Error).message || e)}`); });
+    } else {
+      api.stopProjectWatcher(root).catch(() => {});
+    }
+    return () => {
+      cancelled = true;
+      // Stop watcher when the projectRoot effect re-runs OR when the
+      // component unmounts. The "off" branch above already handles
+      // the toggle-off case, so this catches "user changes projectRoot
+      // while auto-index is on" (we stop the OLD root's watcher).
+      if (autoIndex) {
+        api.stopProjectWatcher(root).catch(() => {});
+      }
+    };
+  }, [projectRoot, autoIndex]);
   useEffect(() => { writeNumber(CTX_KEY_PREFIX + model, numCtx); }, [model, numCtx]);
   useEffect(() => {
     const saved = readNumber(CTX_KEY_PREFIX + model, DEFAULT_NUM_CTX);
@@ -886,6 +926,25 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         >
           <input type="checkbox" checked={autoRemember} onChange={(e) => setAutoRemember(e.target.checked)} style={{ margin: 0 }} />
           <span>Запоминать</span>
+        </label>
+
+        <label
+          title="Автоматически обновлять RAG-индекс при изменении исходников проекта (watchdog следит за .py/.ts/.md/...). Backend держит наблюдателя пока галочка стоит."
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            fontSize: 11,
+            color: autoIndex ? "var(--text-primary)" : "var(--text-muted)",
+            cursor: "pointer",
+            padding: "5px 8px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: autoIndex ? "var(--accent-soft, rgba(99,102,241,0.15))" : "transparent",
+          }}
+        >
+          <input type="checkbox" checked={autoIndex} onChange={(e) => setAutoIndex(e.target.checked)} style={{ margin: 0 }} />
+          <span>Auto-index</span>
         </label>
       </div>
 
