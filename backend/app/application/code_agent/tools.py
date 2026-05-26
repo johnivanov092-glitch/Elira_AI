@@ -220,6 +220,67 @@ def tool_recall(
     return {"text": "\n".join(lines)}
 
 
+def tool_web_search(*, query: str, top_k: int = 5) -> dict[str, Any]:
+    """Search the web via the configured engines (Tavily / DuckDuckGo /
+    Wikipedia). Returns ranked results with title + URL + snippet. Use
+    `web_fetch` after this to read the full content of a specific result.
+    """
+    cleaned = (query or "").strip()
+    if not cleaned:
+        return {"text": "ERROR: query is empty"}
+    try:
+        from app.infrastructure.search.web_search import search_web
+    except Exception as exc:  # pragma: no cover - import path
+        return {"text": f"ERROR: web search unavailable: {exc}"}
+
+    limit = max(1, min(int(top_k), 10))
+    result = search_web(cleaned, max_results=limit)
+    sources = result.get("sources") or []
+    if not sources:
+        return {"text": f"No web results for '{cleaned}'"}
+
+    engines = ", ".join(result.get("engines_used") or []) or "?"
+    lines = [f"Found {len(sources)} results via {engines}:"]
+    for i, item in enumerate(sources[:limit], 1):
+        title = (item.get("title") or "").strip() or "(no title)"
+        url = (item.get("url") or "").strip()
+        snippet = (item.get("snippet") or item.get("content") or "").strip()
+        if len(snippet) > 350:
+            snippet = snippet[:350] + " […]"
+        lines.append(f"\n[{i}] {title}\n    {url}\n    {snippet}" if snippet else f"\n[{i}] {title}\n    {url}")
+    return {"text": "\n".join(lines)}
+
+
+def tool_web_fetch(*, url: str, max_chars: int = 8000) -> dict[str, Any]:
+    """Fetch a single web page and extract its main readable text.
+
+    HTML noise (nav, footer, ads, scripts) is stripped via the project's
+    existing BeautifulSoup-based extractor. Use this AFTER `web_search`
+    has surfaced URLs worth reading in full.
+    """
+    cleaned_url = (url or "").strip()
+    if not cleaned_url:
+        return {"text": "ERROR: url is empty"}
+    if not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
+        return {"text": f"ERROR: url must start with http:// or https:// — got '{cleaned_url[:80]}'"}
+
+    try:
+        from app.infrastructure.search.web_search import fetch_page_text
+    except Exception as exc:  # pragma: no cover
+        return {"text": f"ERROR: web fetch unavailable: {exc}"}
+
+    limit = max(500, min(int(max_chars), 50000))
+    try:
+        body = fetch_page_text(cleaned_url, max_chars=limit)
+    except Exception as exc:
+        return {"text": f"ERROR: {exc}"}
+
+    body = (body or "").strip()
+    if not body:
+        return {"text": f"ERROR: empty or non-HTML response from {cleaned_url}"}
+    return {"text": f"[fetched: {cleaned_url}]\n\n{body}"}
+
+
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
     try:
         proc = subprocess.run(
@@ -362,6 +423,47 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": (
+                    "Search the web for current information. Returns ranked "
+                    "list of {title, url, snippet}. Use this BEFORE answering "
+                    "any question that depends on facts you don't already "
+                    "know — current events, library versions, niche docs. "
+                    "Call `web_fetch` after on URLs that look relevant."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query."},
+                        "top_k": {"type": "integer", "description": "Max results (default 5, max 10)."},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "web_fetch",
+                "description": (
+                    "Fetch one URL and extract the main readable text "
+                    "(navigation, ads, scripts stripped). Use AFTER "
+                    "`web_search` to actually read a page, not just see "
+                    "its snippet. Output is plain text up to max_chars."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Full http(s) URL."},
+                        "max_chars": {"type": "integer", "description": "Truncate body to this many chars (default 8000, max 50000)."},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
     ]
 
 
@@ -374,4 +476,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "grep": lambda **kw: tool_grep(project_root, **kw),
         "recall": lambda **kw: tool_recall(project_root, **kw),
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
+        "web_search": lambda **kw: tool_web_search(**kw),
+        "web_fetch": lambda **kw: tool_web_fetch(**kw),
     }
