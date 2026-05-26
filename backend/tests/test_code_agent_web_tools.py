@@ -156,13 +156,18 @@ class WebFetchToolTest(unittest.TestCase):
 
 
 class ToolRegistrationTest(unittest.TestCase):
-    """The two new tools must be visible to the LLM (schemas) AND
-    callable via the dispatch table."""
+    """The new tools must be visible to the LLM (schemas) AND callable
+    via the dispatch table."""
 
     def test_schemas_include_web_search_and_web_fetch(self) -> None:
         names = [s["function"]["name"] for s in build_tool_schemas()]
         self.assertIn("web_search", names)
         self.assertIn("web_fetch", names)
+
+    def test_schemas_include_sandbox_run_and_reset(self) -> None:
+        names = [s["function"]["name"] for s in build_tool_schemas()]
+        self.assertIn("sandbox_run", names)
+        self.assertIn("sandbox_reset", names)
 
     def test_dispatch_includes_web_search_and_web_fetch(self) -> None:
         dispatch = build_tool_dispatch(Path("."))
@@ -170,6 +175,13 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertIn("web_fetch", dispatch)
         self.assertTrue(callable(dispatch["web_search"]))
         self.assertTrue(callable(dispatch["web_fetch"]))
+
+    def test_dispatch_includes_sandbox_run_and_reset(self) -> None:
+        dispatch = build_tool_dispatch(Path("."))
+        self.assertIn("sandbox_run", dispatch)
+        self.assertIn("sandbox_reset", dispatch)
+        self.assertTrue(callable(dispatch["sandbox_run"]))
+        self.assertTrue(callable(dispatch["sandbox_reset"]))
 
     def test_web_search_schema_requires_query(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
@@ -180,6 +192,11 @@ class ToolRegistrationTest(unittest.TestCase):
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
         params = schemas["web_fetch"]["function"]["parameters"]
         self.assertEqual(params["required"], ["url"])
+
+    def test_sandbox_run_schema_requires_code(self) -> None:
+        schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
+        params = schemas["sandbox_run"]["function"]["parameters"]
+        self.assertEqual(params["required"], ["code"])
 
 
 if __name__ == "__main__":
