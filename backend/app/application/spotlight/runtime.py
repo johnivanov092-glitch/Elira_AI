@@ -48,11 +48,19 @@ def _snippet(text: str, query: str, max_chars: int = 140) -> str:
 
 def _search_chats(query: str) -> list[dict[str, Any]]:
     """Title match OR message-content match. Returns up to
-    _PER_SOURCE_LIMIT results, most-recent first."""
-    from app.application.elira_memory.service import DB_PATH
+    _PER_SOURCE_LIMIT results, most-recent first. Any DB error
+    yields [] instead of bubbling — Spotlight should degrade
+    gracefully when one source is broken."""
+    try:
+        from app.application.elira_memory.service import DB_PATH
+    except Exception:
+        return []
 
     pattern = f"%{query.lower()}%"
-    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+    except sqlite3.Error:
+        return []
     conn.row_factory = sqlite3.Row
     try:
         # Title hits
@@ -80,6 +88,8 @@ def _search_chats(query: str) -> list[dict[str, Any]]:
             """,
             (pattern, _PER_SOURCE_LIMIT * 4),  # over-fetch to dedup against title hits
         ).fetchall()
+    except sqlite3.Error:
+        return []
     finally:
         conn.close()
 
@@ -114,11 +124,17 @@ def _search_chats(query: str) -> list[dict[str, Any]]:
 def _search_sessions(query: str) -> list[dict[str, Any]]:
     """Code-agent session title match. Turn-content search is also
     folded in by scanning the JSON blob — fine for the typical case
-    where sessions have <100 turns."""
-    from app.application.code_agent.sessions import DB_PATH
+    where sessions have <100 turns. DB error → [] (graceful degrade)."""
+    try:
+        from app.application.code_agent.sessions import DB_PATH
+    except Exception:
+        return []
 
     pattern = f"%{query.lower()}%"
-    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+    except sqlite3.Error:
+        return []
     conn.row_factory = sqlite3.Row
     try:
         # Title hits
@@ -145,6 +161,8 @@ def _search_sessions(query: str) -> list[dict[str, Any]]:
             """,
             (pattern, _PER_SOURCE_LIMIT * 2),
         ).fetchall()
+    except sqlite3.Error:
+        return []
     finally:
         conn.close()
 
@@ -224,7 +242,10 @@ def _search_library(query: str) -> list[dict[str, Any]]:
         return []
 
     pattern = f"%{query.lower()}%"
-    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+    except sqlite3.Error:
+        return []
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(

@@ -30,7 +30,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -85,7 +85,7 @@ class DebouncedHandler(FileSystemEventHandler):
     """Coalesces rapid-fire events per-path and dispatches reindex
     on a worker thread."""
 
-    def __init__(self, project_root: Path, *, on_run: callable | None = None) -> None:
+    def __init__(self, project_root: Path, *, on_run: Optional[Callable[..., None]] = None) -> None:
         self.project_root = project_root.resolve()
         self.patterns = list(DEFAULT_INDEX_PATTERNS)
         # path → timer handle. We replace any pending timer each time

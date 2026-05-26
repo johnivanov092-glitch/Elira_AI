@@ -209,6 +209,23 @@ class SpotlightSearchTest(unittest.TestCase):
         result = self.spotlight.search_everywhere("авториз")
         self.assertEqual(len(result["chats"]), 1)
 
+    # ── graceful degrade ──────────────────────────────────────
+
+    def test_broken_chat_db_doesnt_break_other_sources(self) -> None:
+        """If one source's DB is malformed, the others still return
+        results — Spotlight should never propagate a 500 to the UI."""
+        # Seed a session that should still match
+        self._seed_session("auth session")
+
+        # Corrupt chats DB by writing garbage over its file
+        self.elira_memory.DB_PATH.write_bytes(b"not a sqlite file at all")
+
+        # The whole query should still succeed
+        result = self.spotlight.search_everywhere("auth")
+        self.assertEqual(result["chats"], [])
+        # Sessions bucket still populated
+        self.assertEqual(len(result["sessions"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

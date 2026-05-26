@@ -58,7 +58,12 @@ export type SpotlightResponse = {
   total: number;
 };
 
-export async function spotlightSearch(query: string): Promise<SpotlightResponse> {
+export async function spotlightSearch(
+  query: string,
+  options?: { signal?: AbortSignal },
+): Promise<SpotlightResponse> {
   const q = encodeURIComponent(query);
-  return request<SpotlightResponse>(`/api/spotlight/search?q=${q}`);
+  return request<SpotlightResponse>(`/api/spotlight/search?q=${q}`, {
+    signal: options?.signal,
+  });
 }

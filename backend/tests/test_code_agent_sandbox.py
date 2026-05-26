@@ -196,6 +196,29 @@ class SandboxRuntimeTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("ok", result["stdout"])
 
+    def test_install_blocks_pip_option_flags(self) -> None:
+        """Option flags like --extra-index-url could point pip at an
+        attacker-controlled mirror. Must be dropped before pip sees them."""
+        result = self.sandbox.run_in_sandbox(
+            self.project_root,
+            code="print('ok')",
+            install=["--extra-index-url=http://evil.example/", "-r"],
+        )
+        # Both args start with "-" → filtered out → no pip invocation → no log
+        self.assertTrue(result["ok"])
+        self.assertEqual(result.get("install_log", ""), "")
+
+    def test_install_blocks_filesystem_paths(self) -> None:
+        """Local-file refs like ./pkg or /abs/path could install from
+        attacker-controlled files. Must be dropped."""
+        result = self.sandbox.run_in_sandbox(
+            self.project_root,
+            code="print('ok')",
+            install=["./malicious", "/etc/passwd", "..\\evil"],
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result.get("install_log", ""), "")
+
     # ── output truncation ──────────────────────────────────────
 
     def test_huge_stdout_is_truncated(self) -> None:

@@ -116,11 +116,13 @@ export default function SpotlightOverlay({ open, onClose, onPick }: Props) {
     debounceRef.current = setTimeout(async () => {
       // Cancel any in-flight call before kicking off a new one
       abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      const controller = new AbortController();
+      abortRef.current = controller;
       setLoading(true);
       setError(null);
       try {
-        const data = await spotlightSearch(trimmed);
+        const data = await spotlightSearch(trimmed, { signal: controller.signal });
+        if (controller.signal.aborted) return;
         setResponse(data);
         setSelectedIdx(0);
       } catch (e) {
@@ -128,7 +130,7 @@ export default function SpotlightOverlay({ open, onClose, onPick }: Props) {
         setError(String((e as Error)?.message || e));
         setResponse(EMPTY_RESPONSE);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }, DEBOUNCE_MS);
   }, [query, open]);

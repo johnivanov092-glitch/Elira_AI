@@ -155,6 +155,17 @@ class MemoryStorageRegressionTest(unittest.TestCase):
 
             env = os.environ.copy()
             env["ELIRA_DATA_DIR"] = str(data_path)
+            # Strip any web-search API keys so this test always
+            # asserts the no-keys fallback (duckduckgo). Without this,
+            # if pytest's own process loaded backend/.env.local via
+            # another test that imported app.main (test_route_registry,
+            # test_web_engine_stack), the subprocess inherits the keys
+            # and primary_engine becomes "tavily", flaking this test.
+            for key in (
+                "TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY",
+                "BING_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CSE_ID",
+            ):
+                env.pop(key, None)
 
             proc = subprocess.run(
                 [sys.executable, "-c", script],

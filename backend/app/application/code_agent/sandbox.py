@@ -140,10 +140,23 @@ def run_in_sandbox(
     if install:
         # Filter junk: empty strings, '.', shell-injection candidates.
         clean = [p.strip() for p in install if isinstance(p, str) and p.strip()]
-        # pip accepts version specifiers (==, >=) and extras ([foo]).
-        # Reject anything with shell metas that doesn't belong in a
-        # pip arg — a malicious LLM could try to chain commands.
-        safe = [p for p in clean if not any(c in p for c in (";", "|", "&", "$", "`", "\n", "\r"))]
+        # Drop:
+        #   - shell metas (subprocess.run uses args list so this is
+        #     defense-in-depth, but cheap to do)
+        #   - option flags (-r requirements.txt, --extra-index-url=evil,
+        #     --index-url, etc.) — pip would happily honor them
+        #   - filesystem refs (./pkg, ../pkg, /absolute/path) that could
+        #     point at attacker-controlled files
+        def _is_pkg_spec(p: str) -> bool:
+            if any(c in p for c in (";", "|", "&", "$", "`", "\n", "\r", " ", "\t")):
+                return False
+            if p.startswith("-"):
+                return False
+            if p.startswith(".") or p.startswith("/") or "\\" in p:
+                return False
+            return True
+
+        safe = [p for p in clean if _is_pkg_spec(p)]
         if safe:
             try:
                 proc = subprocess.run(
