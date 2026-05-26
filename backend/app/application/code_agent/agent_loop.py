@@ -190,10 +190,19 @@ def _maybe_inject_execution_reminder(user_message: str) -> str:
     return user_message
 
 
+_SUMMARY_PREFIX = "[CONTEXT SUMMARY]"
+
+
 def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Validate / normalize prior conversation messages from the client.
     Only role + content fields are kept; tool_calls and tool results from
     past turns are dropped (we feed the agent fresh tools each turn).
+
+    Compressed summary turns (assistant messages with the
+    `[CONTEXT SUMMARY]` prefix that the frontend produces after a
+    `summarize_history` call) are re-tagged as system messages so the
+    LLM treats them as out-of-band context rather than as its own prior
+    reply — that prevents 'I never said that' confusion.
     """
     if not history:
         return []
@@ -206,6 +215,19 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
         if role not in {"user", "assistant"}:
             continue
         if not isinstance(content, str) or not content:
+            continue
+        if role == "assistant" and content.startswith(_SUMMARY_PREFIX):
+            stripped = content[len(_SUMMARY_PREFIX):].lstrip("\n").lstrip()
+            if not stripped:
+                continue
+            out.append({
+                "role": "system",
+                "content": (
+                    "Earlier conversation summary (compressed from prior turns by the "
+                    "user — treat as context, not as your own previous answer):\n"
+                    + stripped
+                ),
+            })
             continue
         out.append({"role": role, "content": content})
     return out
@@ -730,16 +752,55 @@ def summarize_history(
 
     chat = chat_fn or _ollama_chat
 
-    # Build a compact transcript to summarize. Truncate any single
-    # message to keep the prompt itself sane.
-    lines: list[str] = []
-    for m in cleaned:
+    # Build a compact transcript to summarize. Two layers of protection:
+    #
+    #   1. Per-message cap (4000 chars) so a single long agent answer
+    #      doesn't dominate the input.
+    #   2. Total transcript cap (TRANSCRIPT_CAP, ~30K chars ≈ 7.5K
+    #      tokens) so the whole prompt + SUMMARIZE_SYSTEM_PROMPT fits
+    #      inside `num_ctx` with room to spare. Without this, a long
+    #      session (50+ turns) would silently produce a garbage summary
+    #      because Ollama would truncate our instructions off the front.
+    #
+    # When the cap kicks in we keep the MOST RECENT turns (oldest are
+    # least relevant) and emit a marker so the LLM knows context is
+    # incomplete.
+    TRANSCRIPT_CAP = 30000
+    PER_MESSAGE_CAP = 4000
+
+    # First pass: walk newest -> oldest, take as much as fits.
+    rev_lines: list[str] = []
+    total = 0
+    dropped_any = False
+    for m in reversed(cleaned):
         role = m["role"]
         content = m["content"]
-        if len(content) > 4000:
-            content = content[:4000] + " [...]"
-        prefix = "USER:" if role == "user" else "AGENT:"
-        lines.append(f"{prefix} {content}")
+        if role == "system":
+            # System messages (re-tagged summary turns from earlier
+            # compressions) should appear with a distinctive prefix
+            # so the summarizer treats them as prior summary context.
+            prefix = "PRIOR_SUMMARY:"
+        elif role == "user":
+            prefix = "USER:"
+        else:
+            prefix = "AGENT:"
+        if len(content) > PER_MESSAGE_CAP:
+            content = content[:PER_MESSAGE_CAP] + " [...]"
+        line = f"{prefix} {content}"
+        # +2 for the "\n\n" separator we'll add when joining
+        if rev_lines and total + len(line) + 2 > TRANSCRIPT_CAP:
+            dropped_any = True
+            break
+        rev_lines.append(line)
+        total += len(line) + 2
+
+    lines = list(reversed(rev_lines))
+    if dropped_any:
+        lines.insert(
+            0,
+            "[... earlier messages dropped to stay under transcript cap; "
+            "only most recent shown ...]",
+        )
     transcript = "\n\n".join(lines)
 
     try:

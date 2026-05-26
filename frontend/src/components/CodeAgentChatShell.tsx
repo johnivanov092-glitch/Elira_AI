@@ -126,6 +126,36 @@ type SummaryTurn = {
 
 type Turn = UserTurn | AgentTurn | SummaryTurn;
 
+function summarizeToolCall(tc: CodeAgentToolCall): string {
+  // Compact one-line description of a tool invocation. Used when
+  // building the compress-history payload — we want the summarizer to
+  // know WHAT THE AGENT DID, not just what it said in plain text. Show
+  // tool name + the most identifying argument(s); avoid dumping full
+  // results (they'd blow out the transcript cap on backend).
+  const tool = tc.tool;
+  const args: Record<string, unknown> = (tc.arguments as Record<string, unknown>) || {};
+  const path = typeof args.path === "string" ? (args.path as string) : "";
+  const pattern = typeof args.pattern === "string" ? (args.pattern as string) : "";
+  const query = typeof args.query === "string" ? (args.query as string) : "";
+  const command = typeof args.command === "string" ? (args.command as string) : "";
+  const content = typeof args.content === "string" ? (args.content as string) : "";
+
+  if (tool === "read_file") return `read_file(${path})`;
+  if (tool === "write_file") return `write_file(${path}, ${content.length} chars)`;
+  if (tool === "edit_file") return `edit_file(${path})`;
+  if (tool === "glob") return `glob(${pattern})`;
+  if (tool === "grep") {
+    const inPath = typeof args.path === "string" && args.path !== "." ? `, path=${args.path}` : "";
+    return `grep(${pattern}${inPath})`;
+  }
+  if (tool === "run_bash") {
+    const short = command.length > 80 ? command.slice(0, 80) + "..." : command;
+    return `run_bash(${short})`;
+  }
+  if (tool === "recall") return `recall(${query})`;
+  return `${tool}(${Object.keys(args).slice(0, 3).join(",")})`;
+}
+
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -602,9 +632,29 @@ export default function CodeAgentChatShell({
     let replaced = 0;
     for (const t of history) {
       if (lastTwoIds.includes(t.id)) continue;
-      if (t.kind === "user") { olderText.push({ role: "user", content: t.text }); replaced++; }
-      else if (t.kind === "agent" && t.text) { olderText.push({ role: "assistant", content: t.text }); replaced++; }
-      else if (t.kind === "summary" && t.text) { olderText.push({ role: "assistant", content: "[PRIOR SUMMARY]\n" + t.text }); replaced++; }
+      if (t.kind === "user") {
+        olderText.push({ role: "user", content: t.text });
+        replaced++;
+      } else if (t.kind === "agent") {
+        // Include tool-call summary alongside the agent text so the
+        // summarizer sees WHAT THE AGENT DID, not just what it said.
+        // Without this an 8-step turn that did write_file + run_bash +
+        // edit_file ... but ended with "Готово." would collapse to just
+        // "Готово." in the summary — completely useless for resuming.
+        const parts: string[] = [];
+        if (t.tool_calls && t.tool_calls.length > 0) {
+          const calls = t.tool_calls.map(summarizeToolCall).join("; ");
+          parts.push(`[tools used] ${calls}`);
+        }
+        if (t.text) parts.push(t.text);
+        if (parts.length > 0) {
+          olderText.push({ role: "assistant", content: parts.join("\n\n") });
+          replaced++;
+        }
+      } else if (t.kind === "summary" && t.text) {
+        olderText.push({ role: "assistant", content: "[PRIOR SUMMARY]\n" + t.text });
+        replaced++;
+      }
     }
     if (olderText.length < 2) {
       setSummaryError("Слишком мало сообщений для сжатия (нужно ≥ 2 в старой части).");
