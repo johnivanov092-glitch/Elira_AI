@@ -40,6 +40,7 @@ import type {
 } from "../api/codeAgent";
 import { estimateTokens } from "../api/codeAgent";
 import { UiIcon, IconText } from "./StatusPanels";
+import MarkdownRenderer from "./MarkdownRenderer";
 
 const HISTORY_KEY_PREFIX = "elira_code_agent_history_v2_"; // suffix = sessionId
 const LEGACY_HISTORY_KEY = "elira_code_agent_history_v2";   // pre-session key (one global history)
@@ -901,11 +902,10 @@ export default function CodeAgentChatShell({
                     color: "var(--text-primary)",
                     fontSize: 12,
                     lineHeight: 1.6,
-                    whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
                   }}
                 >
-                  {turn.text}
+                  <MarkdownRenderer content={turn.text} />
                 </div>
               )}
               {!turn.in_progress && (
