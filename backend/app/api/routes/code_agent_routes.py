@@ -228,6 +228,38 @@ def watcher_status_endpoint(project_root: Optional[str] = None) -> dict[str, Any
     return watcher_status(project_root)
 
 
+# ── SSH allowlist (the security boundary for the SshToolProvider) ───────
+
+class SshConfigRequest(BaseModel):
+    allowed_hosts: list[str]
+
+
+@router.get("/ssh/config")
+def ssh_config_get() -> dict[str, Any]:
+    """Return the current SSH allowlist + enabled flag.
+
+    Enabled iff allowed_hosts is non-empty — there's no separate
+    toggle. To disable SSH entirely, POST allowed_hosts=[]."""
+    from app.application.tool_providers.ssh_acl import get_allowed_hosts, is_ssh_enabled
+    return {
+        "enabled": is_ssh_enabled(),
+        "allowed_hosts": get_allowed_hosts(),
+    }
+
+
+@router.post("/ssh/config")
+def ssh_config_set(payload: SshConfigRequest) -> dict[str, Any]:
+    """Replace the SSH allowlist atomically. Returns the persisted
+    list after normalization (trimmed, deduped, empty entries removed)."""
+    from app.application.tool_providers.ssh_acl import set_allowed_hosts, is_ssh_enabled
+    persisted = set_allowed_hosts(payload.allowed_hosts)
+    return {
+        "ok": True,
+        "enabled": is_ssh_enabled(),
+        "allowed_hosts": persisted,
+    }
+
+
 # ── Sessions ────────────────────────────────────────────────────────────
 
 

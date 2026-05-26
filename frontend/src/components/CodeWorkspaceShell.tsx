@@ -39,12 +39,14 @@ import {
   RefreshCw,
   Save,
   Search,
+  Shield,
   Trash2,
   X,
 } from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHistory } from "./CodeAgentChatShell";
-import type { CodeSessionMeta } from "../api/codeAgent";
+import SshConfigDialog from "./SshConfigDialog";
+import type { CodeSessionMeta, SshConfig } from "../api/codeAgent";
 import { api } from "../api/ide";
 import { UiIcon, IconText } from "./StatusPanels";
 import { toast } from "./ToastHost";
@@ -217,6 +219,11 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   // edited source file in `projectRoot`. Per-project setting (a user
   // may want it on for repo A and off for repo B).
   const [autoIndex, setAutoIndex] = useState<boolean>(() => readBool(AUTO_INDEX_KEY_PREFIX + readString(ROOT_KEY, DEFAULT_ROOT), false));
+  // SSH allowlist state — single source of truth comes from the
+  // backend (data/ssh_acl.json). We mirror it here so the toolbar
+  // badge can show host count without refetching on every render.
+  const [sshConfig, setSshConfig] = useState<SshConfig>({ enabled: false, allowed_hosts: [] });
+  const [sshDialogOpen, setSshDialogOpen] = useState(false);
 
   // ─── Sessions sidebar state (backed by SQLite via /api/code-agent/sessions) ───
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
@@ -572,6 +579,16 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
       }
     };
   }, [projectRoot, autoIndex]);
+  // Fetch SSH config once at mount so the toolbar badge starts with
+  // the right state; subsequent changes flow through SshConfigDialog
+  // via onChange.
+  useEffect(() => {
+    let cancelled = false;
+    api.getSshConfig()
+      .then((c) => { if (!cancelled) setSshConfig(c); })
+      .catch(() => {/* not fatal; toolbar will show "off" */});
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => { writeNumber(CTX_KEY_PREFIX + model, numCtx); }, [model, numCtx]);
   useEffect(() => {
     const saved = readNumber(CTX_KEY_PREFIX + model, DEFAULT_NUM_CTX);
@@ -946,6 +963,32 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           <input type="checkbox" checked={autoIndex} onChange={(e) => setAutoIndex(e.target.checked)} style={{ margin: 0 }} />
           <span>Auto-index</span>
         </label>
+
+        <button
+          onClick={() => setSshDialogOpen(true)}
+          className="soft-btn"
+          title={
+            sshConfig.enabled
+              ? `Агент может SSH-иться в ${sshConfig.allowed_hosts.length} хост(а/ов). Клик — управление списком.`
+              : "SSH-инструменты выключены для агента. Клик — добавить разрешённые хосты."
+          }
+          style={{
+            fontSize: 11,
+            padding: "5px 10px",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 5,
+            color: sshConfig.enabled ? "var(--text-primary)" : "var(--text-muted)",
+            background: sshConfig.enabled ? "var(--accent-soft, rgba(99,102,241,0.15))" : "transparent",
+            border: "1px solid var(--border)",
+          }}
+        >
+          <UiIcon icon={Shield} size={12} />
+          <span>
+            SSH
+            {sshConfig.allowed_hosts.length > 0 && ` (${sshConfig.allowed_hosts.length})`}
+          </span>
+        </button>
       </div>
 
       {/* Index status banner */}
@@ -1356,6 +1399,12 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </>
         )}
       </div>
+
+      <SshConfigDialog
+        open={sshDialogOpen}
+        onClose={() => setSshDialogOpen(false)}
+        onChange={(c) => setSshConfig(c)}
+      />
     </div>
   );
 }

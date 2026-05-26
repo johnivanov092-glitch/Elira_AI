@@ -475,6 +475,24 @@ export async function getProjectWatcherStatus(projectRoot: string): Promise<Watc
   return request<WatcherStatus>(`/api/code-agent/watcher/status?${qs}`);
 }
 
+// ── SSH allowlist (security gate for the SshToolProvider) ─────────────
+
+export type SshConfig = {
+  enabled: boolean;
+  allowed_hosts: string[];
+};
+
+export async function getSshConfig(): Promise<SshConfig> {
+  return request<SshConfig>("/api/code-agent/ssh/config");
+}
+
+export async function setSshConfig(allowedHosts: string[]): Promise<SshConfig> {
+  return request<SshConfig>("/api/code-agent/ssh/config", {
+    method: "POST",
+    body: { allowed_hosts: allowedHosts },
+  });
+}
+
 /** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
  *  is closer to 4. We compute per-character class to be reasonable. */
 export function estimateTokens(text: string): number {

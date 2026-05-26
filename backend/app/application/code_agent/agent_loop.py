@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from app.application.tool_providers import BuiltinToolProvider, ToolRegistry
+from app.application.tool_providers import BuiltinToolProvider, SshToolProvider, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -476,10 +476,16 @@ def stream_code_agent(
             }
             return
 
-        # Aggregate every tool source (built-in for now; SSH + MCP
-        # plug in here in later phases) into one registry. The agent
-        # loop only talks to the registry from here on.
-        registry = ToolRegistry([BuiltinToolProvider(root)])
+        # Aggregate every tool source (built-in + SSH; MCP comes in
+        # the next phase) into one registry. The agent loop only
+        # talks to the registry from here on. SshToolProvider
+        # auto-disables when the allowlist is empty, so adding it
+        # unconditionally here costs nothing if the user hasn't
+        # opted in.
+        registry = ToolRegistry([
+            BuiltinToolProvider(root),
+            SshToolProvider(),
+        ])
         tool_schemas = registry.collect_schemas()
         chat = chat_fn or _ollama_chat
 
