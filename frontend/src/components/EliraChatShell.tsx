@@ -780,16 +780,64 @@ export default function EliraChatShell(): JSX.Element {
   async function handleFiles(fl: FileList | null) {
     const files = Array.from(fl || []); if (!files.length) return;
     const recs: LibraryFile[] = [];
+    const failed: string[] = [];
     for (const f of files) {
-      recs.push(await fileToLibraryRecord(f));
-      try { await api.uploadLibraryFile(f, { useInContext: false }); } catch {}
+      try {
+        recs.push(await fileToLibraryRecord(f));
+        await api.uploadLibraryFile(f, { useInContext: false });
+      } catch (e) {
+        failed.push(`${f.name}: ${normalizeErrorMessage(e)}`);
+      }
     }
-    const next = [...recs, ...libraryFiles]; setLibraryFiles(next); saveLibraryFiles(next); setSideTab("library"); setSelLibId(recs[0]?.id || "");
-    if (chatId) { const map = loadChatContextMap(); map[chatId] = Array.from(new Set([...recs.map(r => r.id), ...(map[chatId] || [])])); saveChatContextMap(map); }
+    if (recs.length) {
+      const next = [...recs, ...libraryFiles];
+      setLibraryFiles(next); saveLibraryFiles(next);
+      setSideTab("library"); setSelLibId(recs[0]?.id || "");
+      if (chatId) {
+        const map = loadChatContextMap();
+        map[chatId] = Array.from(new Set([...recs.map(r => r.id), ...(map[chatId] || [])]));
+        saveChatContextMap(map);
+      }
+      const names = recs.map(r => r.name).join(", ");
+      toast.success(
+        recs.length === 1
+          ? `Прикреплён файл: ${names}`
+          : `Прикреплено ${recs.length} файлов: ${names}`,
+      );
+    }
+    if (failed.length) {
+      toast.error(`Не загрузилось:\n${failed.join("\n")}`);
+    }
   }
-  function onDrop(e: React.DragEvent) { e.preventDefault(); e.stopPropagation(); setDrag(false); handleFiles(e.dataTransfer.files); }
-  function onDragOver(e: React.DragEvent) { e.preventDefault(); e.stopPropagation(); setDrag(true); }
-  function onDragLeave(e: React.DragEvent) { e.preventDefault(); e.stopPropagation(); setDrag(false); }
+  // Counter-based drag tracking — `dragenter`/`dragleave` fire for every
+  // child element, so a simple boolean would flicker. We increment on
+  // enter and decrement on leave; the overlay is visible while count > 0.
+  const dragCounterRef = useRef(0);
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current = 0;
+    setDrag(false);
+    handleFiles(e.dataTransfer.files);
+  }
+  function onDragOver(e: React.DragEvent) {
+    // Required for the drop to fire; effect hints the cursor.
+    e.preventDefault(); e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  }
+  function onDragEnter(e: React.DragEvent) {
+    e.preventDefault(); e.stopPropagation();
+    // Only react when the drag actually carries files (not e.g. text from
+    // a selection inside the page).
+    const hasFiles = Array.from(e.dataTransfer?.types || []).includes("Files");
+    if (!hasFiles) return;
+    dragCounterRef.current += 1;
+    if (dragCounterRef.current === 1) setDrag(true);
+  }
+  function onDragLeave(e: React.DragEvent) {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setDrag(false);
+  }
 
   async function removeLib(id: string) {
     try { if (String(id).startsWith("db-")) { await api.deleteLibraryFile(String(id).slice(3)); } } catch {}
@@ -969,7 +1017,24 @@ export default function EliraChatShell(): JSX.Element {
   ];
 
   return (
-    <div className="elira-shell" style={showPanel && sideTab === "chats" ? {gridTemplateColumns: "200px 1fr auto"} : undefined}>
+    <div
+      className="elira-shell"
+      style={showPanel && sideTab === "chats" ? {gridTemplateColumns: "200px 1fr auto"} : undefined}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {drag && (
+        <div className="elira-drop-overlay" aria-hidden="true">
+          <div className="elira-drop-overlay-inner">
+            <div className="elira-drop-overlay-title">📎 Отпусти, чтобы прикрепить</div>
+            <div className="elira-drop-overlay-sub">
+              Файл попадёт в библиотеку и подключится как контекст текущего чата.
+            </div>
+          </div>
+        </div>
+      )}
       {mobileSidebar && <div className="mobile-overlay" onClick={()=>setMobileSidebar(false)}/>}
       <aside className={`elira-sidebar ${mobileSidebar?"mobile-open":""}`}>
         <button className="sidebar-newchat-btn" onClick={() => newChat(false)}>+ Новый чат</button>

@@ -470,6 +470,44 @@ select, option {
   to   { transform: translateX(0);    opacity: 1; }
 }
 
+/* ── Global DnD overlay (EliraChatShell) ──────────────────── */
+.elira-drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  background: rgba(99, 102, 241, 0.18);
+  border: 4px dashed rgba(99, 102, 241, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+  animation: elira-drop-fade-in 120ms ease-out;
+}
+.elira-drop-overlay-inner {
+  background: var(--bg-surface, #1a1a1a);
+  border: 1px solid var(--accent, #6366f1);
+  border-radius: 12px;
+  padding: 22px 32px;
+  text-align: center;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.55);
+}
+.elira-drop-overlay-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.elira-drop-overlay-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  max-width: 320px;
+}
+@keyframes elira-drop-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 /* Spinner for in-progress states */
 .lucide-spin {
   animation: lucide-spin 0.9s linear infinite;
