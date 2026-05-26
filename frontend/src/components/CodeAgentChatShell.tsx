@@ -31,7 +31,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { BookmarkPlus, ChevronDown, ChevronRight, Loader2, Minimize2, Pin, Plus, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
+import { BookmarkPlus, ChevronDown, ChevronRight, GitPullRequest, Loader2, Minimize2, Pin, Plus, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
 import type {
   CodeAgentStreamEvent,
@@ -53,6 +53,43 @@ type SavedPrompt = {
   ts: number;
 };
 
+/**
+ * Diff review prompt — used both by the "Review diff" toolbar button
+ * and by the corresponding template in DEFAULT_SAVED_PROMPTS. Kept as
+ * a single source so updates only need to happen in one place.
+ *
+ * The prompt is deliberately prescriptive about the workflow (status →
+ * diff → file reads → structured report) and the output sections, so
+ * small models produce consistent reviews instead of free-form prose.
+ */
+const DIFF_REVIEW_PROMPT = `Сделай code review текущих изменений в проекте.
+
+ПОШАГОВО:
+1. Запусти \`git status --short\` чтобы увидеть какие файлы изменены/добавлены/удалены.
+2. Запусти \`git diff HEAD\` чтобы увидеть полный diff. Если ничего нет, попробуй \`git diff --cached\` (для staged).
+3. Если git не инициализирован или diff пуст — честно скажи это и остановись.
+4. Для каждого затронутого файла прочитай его через \`read_file\` чтобы понять контекст вокруг изменений.
+5. Проанализируй и выдай отчёт ТОЧНО в этом формате:
+
+## 🐛 Баги
+(конкретные баги: нерабочая логика, race conditions, off-by-one, неверная обработка edge cases. Цитируй файл:строку.)
+
+## 🔒 Безопасность
+(SQL/command injection, утечки secrets, unsafe deserialization, отсутствие валидации входа, эскалация прав.)
+
+## ⚡ Производительность
+(N+1 запросы, лишние циклы, неиспользуемая память, блокирующие I/O.)
+
+## 🎨 Стиль / читаемость
+(длинные функции, magic numbers, плохие имена, отсутствие type hints, дублирование.)
+
+## ✅ Что хорошо
+(удачные решения которые стоит сохранить.)
+
+Если в какой-то секции пусто — пиши "—".
+
+В конце дай **verdict** одной строкой: 🟢 ready to ship / 🟡 minor fixes / 🔴 blocking issues.`;
+
 const DEFAULT_SAVED_PROMPTS: SavedPrompt[] = [
   {
     id: "tpl-tests",
@@ -61,9 +98,9 @@ const DEFAULT_SAVED_PROMPTS: SavedPrompt[] = [
     ts: 0,
   },
   {
-    id: "tpl-review",
-    label: "Code review",
-    text: "Проведи code review файла <путь>. Найди баги, security issues, плохой стиль. В конце дай короткий verdict.",
+    id: "tpl-diff-review",
+    label: "Diff review",
+    text: DIFF_REVIEW_PROMPT,
     ts: 0,
   },
   {
@@ -508,8 +545,10 @@ export default function CodeAgentChatShell({
   const ctxPct = Math.min(100, Math.round((tokenEstimate / numCtx) * 100));
   const ctxColor = ctxPct >= 90 ? "#ff6b6b" : ctxPct >= 70 ? "#f0a020" : "#4ade80";
 
-  const runTurn = useCallback(async () => {
-    const text = input.trim();
+  const runTurn = useCallback(async (overrideText?: string) => {
+    // overrideText is used by toolbar buttons that submit a pre-built
+    // prompt (e.g. "Review diff") without going through the textarea.
+    const text = (overrideText ?? input).trim();
     if (!text || running) return;
 
     const userTurn: UserTurn = { kind: "user", id: makeId("u"), text, ts: Date.now() };
@@ -534,7 +573,9 @@ export default function CodeAgentChatShell({
 
     setHistory((h) => [...h, userTurn, liveTurn]);
     onUserTurn?.(text);
-    setInput("");
+    // Only clear the textarea if we just consumed it. For toolbar-driven
+    // submits (overrideText), leave the user's draft alone.
+    if (overrideText === undefined) setInput("");
     setRunning(true);
     setLiveStep(null);
 
@@ -809,6 +850,16 @@ export default function CodeAgentChatShell({
             ? <IconText icon={Loader2} size={11} gap={4}>Сжимаю...</IconText>
             : <IconText icon={Minimize2} size={11} gap={4}>Сжать</IconText>
           }
+        </button>
+
+        <button
+          onClick={() => { void runTurn(DIFF_REVIEW_PROMPT); }}
+          disabled={running}
+          className="soft-btn"
+          title="Code review текущего git diff. Агент сам запустит git status + git diff, прочитает контекст файлов и выдаст структурированный отчёт (баги / безопасность / perf / стиль)."
+          style={{ fontSize: 10, padding: "3px 8px", opacity: running ? 0.4 : 1 }}
+        >
+          <IconText icon={GitPullRequest} size={11} gap={4}>Review diff</IconText>
         </button>
 
         <button
@@ -1132,7 +1183,7 @@ export default function CodeAgentChatShell({
             </button>
           ) : (
             <button
-              onClick={runTurn}
+              onClick={() => { void runTurn(); }}
               disabled={!input.trim()}
               style={{
                 padding: "9px 14px",
