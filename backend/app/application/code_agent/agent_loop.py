@@ -22,11 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from app.application.code_agent.tools import (
-    SandboxError,
-    build_tool_dispatch,
-    build_tool_schemas,
-)
+from app.application.tool_providers import BuiltinToolProvider, ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -239,38 +235,6 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
             continue
         out.append({"role": role, "content": content})
     return out
-
-
-def _execute_tool_call(
-    dispatch: dict[str, Callable[..., dict[str, Any]]],
-    name: str,
-    raw_args: Any,
-) -> tuple[dict[str, Any], Any]:
-    """Run a single tool call. Returns (tool_meta, parsed_args)."""
-    if isinstance(raw_args, str):
-        try:
-            args = json.loads(raw_args)
-        except json.JSONDecodeError:
-            args = {}
-    else:
-        args = dict(raw_args) if isinstance(raw_args, dict) else {}
-
-    handler = dispatch.get(name)
-    if handler is None:
-        return ({"text": f"ERROR: unknown tool '{name}'"}, args)
-    try:
-        result = handler(**args)
-    except SandboxError as exc:
-        return ({"text": f"ERROR: sandbox violation: {exc}"}, args)
-    except TypeError as exc:
-        return ({"text": f"ERROR: bad arguments to {name}: {exc}"}, args)
-    except Exception as exc:
-        logger.exception("Tool %s crashed", name)
-        return ({"text": f"ERROR: {exc}"}, args)
-
-    if not isinstance(result, dict):
-        return ({"text": str(result)}, args)
-    return (result, args)
 
 
 def _truncate(text: str, limit: int = 4000) -> str:
@@ -512,8 +476,11 @@ def stream_code_agent(
             }
             return
 
-        dispatch = build_tool_dispatch(root)
-        tool_schemas = build_tool_schemas()
+        # Aggregate every tool source (built-in for now; SSH + MCP
+        # plug in here in later phases) into one registry. The agent
+        # loop only talks to the registry from here on.
+        registry = ToolRegistry([BuiltinToolProvider(root)])
+        tool_schemas = registry.collect_schemas()
         chat = chat_fn or _ollama_chat
 
         system_prompt = _build_system_prompt(root)
@@ -576,7 +543,7 @@ def stream_code_agent(
             # loop still works.
             inline_calls: list[dict[str, Any]] = []
             if not tool_calls and content:
-                inline_calls = _extract_inline_tool_calls(content, set(dispatch.keys()))
+                inline_calls = _extract_inline_tool_calls(content, registry.known_tools())
                 if inline_calls:
                     tool_calls = inline_calls
                     content = ""  # JSON was the tool call, not a text reply
@@ -612,7 +579,7 @@ def stream_code_agent(
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
-                tool_meta, parsed_args = _execute_tool_call(dispatch, name, raw_args)
+                tool_meta, parsed_args = registry.dispatch(name, raw_args)
                 text_result = str(tool_meta.get("text", ""))
                 event: dict[str, Any] = {
                     "type": "tool_call",
