@@ -18,6 +18,8 @@ import MarkdownRenderer from "./MarkdownRenderer";
 import ArtifactPanel from "./ArtifactPanel";
 import MemoryPanel from "./MemoryPanel";
 import ProjectPanel from "./ProjectPanel";
+import SpotlightOverlay from "./SpotlightOverlay";
+import type { SpotlightHit } from "../api/spotlight";
 import "../styles/markdown.css";
 import { PROFILE_DESCRIPTIONS, SKILLS } from "../chatConstants";
 import {
@@ -190,6 +192,11 @@ export default function EliraChatShell(): JSX.Element {
 
   const [mainTab, setMainTab] = useState("chat");
   const [sideTab, setSideTab] = useState("chats");
+  const [spotlightOpen, setSpotlightOpen] = useState(false);
+  // When the user picks a code-agent session from Spotlight we need to
+  // tell CodeWorkspaceShell to switch to that session. Lifted here as
+  // a "request" that the child consumes once and clears.
+  const [codeSessionRequest, setCodeSessionRequest] = useState<string | null>(null);
   const [model, setModel] = useState("gemma3:4b");
   const [modelOpts, setModelOpts] = useState<unknown[]>([]);
   const [profile, setProfile] = useState("Универсальный");
@@ -516,6 +523,49 @@ export default function EliraChatShell(): JSX.Element {
       setSideTab("chats"); setMainTab("chat"); setRenaming(false); setMobileSidebar(false);
     } catch (e) { setError(normalizeErrorMessage(e)); }
   }
+
+  // ── Spotlight (Cmd/Ctrl+K) ──────────────────────────────────────
+  // Global keyboard listener: open the overlay from anywhere unless
+  // the user is typing in an input/textarea — we still trigger inside
+  // text fields because that's the universal expectation (Cursor,
+  // VS Code, Slack, Linear all behave this way).
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSpotlightOpen((open) => !open);
+      }
+    }
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  const handleSpotlightPick = useCallback(
+    (hit: SpotlightHit) => {
+      if (hit.type === "chat") {
+        // hit.id was stringified on the backend; chat ids are integers.
+        void openChat(hit.id);
+        return;
+      }
+      if (hit.type === "session") {
+        setMainTab("code");
+        setCodeSessionRequest(hit.id);
+        return;
+      }
+      if (hit.type === "file") {
+        setMainTab("chat");
+        setSideTab("library");
+        // No way to focus a specific file yet — sidebar shows full list.
+        return;
+      }
+      if (hit.type === "rag") {
+        setMainTab("chat");
+        setSideTab("memory");
+        return;
+      }
+    },
+    [openChat],
+  );
 
   async function renameActive() {
     const t = renameVal.trim();
@@ -878,7 +928,24 @@ export default function EliraChatShell(): JSX.Element {
   );
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (mainTab === "code") return <CodeWorkspaceShell messages={messages as any} libraryFiles={libraryFiles as any} setLibraryFiles={setLibraryFiles as any} onBackToChat={() => setMainTab("chat")} onSendToChat={(txt: string) => { setMainTab("chat"); setTimeout(() => setInput(txt), 100); }} />;
+  if (mainTab === "code") return (
+    <>
+      <CodeWorkspaceShell
+        messages={messages as any}
+        libraryFiles={libraryFiles as any}
+        setLibraryFiles={setLibraryFiles as any}
+        onBackToChat={() => setMainTab("chat")}
+        onSendToChat={(txt: string) => { setMainTab("chat"); setTimeout(() => setInput(txt), 100); }}
+        externalSessionRequest={codeSessionRequest}
+        onSessionRequestConsumed={() => setCodeSessionRequest(null)}
+      />
+      <SpotlightOverlay
+        open={spotlightOpen}
+        onClose={() => setSpotlightOpen(false)}
+        onPick={handleSpotlightPick}
+      />
+    </>
+  );
 
   const navItems: [string, string, LucideIcon][] = [
     ["chats", "Чаты", MessageSquare],
@@ -1566,6 +1633,12 @@ export default function EliraChatShell(): JSX.Element {
           onClose={() => setShowPanel(false)}
         />
       )}
+
+      <SpotlightOverlay
+        open={spotlightOpen}
+        onClose={() => setSpotlightOpen(false)}
+        onPick={handleSpotlightPick}
+      />
     </div>
   );
 }

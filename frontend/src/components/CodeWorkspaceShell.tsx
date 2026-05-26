@@ -187,11 +187,24 @@ type CodeWorkspaceShellProps = {
   setLibraryFiles?: (files: any[]) => void;
   onBackToChat?: () => void;
   onSendToChat?: (text: string) => void;
+  /** Spotlight (or any future caller) can request a specific session
+   * be made active. The shell consumes the id once and then calls
+   * onSessionRequestConsumed so the parent can clear the request. */
+  externalSessionRequest?: string | null;
+  onSessionRequestConsumed?: () => void;
 };
 
 
 export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
-  const { messages, libraryFiles, setLibraryFiles, onBackToChat, onSendToChat } = props;
+  const {
+    messages,
+    libraryFiles,
+    setLibraryFiles,
+    onBackToChat,
+    onSendToChat,
+    externalSessionRequest,
+    onSessionRequestConsumed,
+  } = props;
 
   const [projectRoot, setProjectRoot] = useState<string>(() => readString(ROOT_KEY, DEFAULT_ROOT));
   const [model, setModel] = useState<string>(() => readString(MODEL_KEY, DEFAULT_MODEL));
@@ -310,6 +323,19 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   }, [visibleSessions]);
 
   const switchSession = useCallback((id: string) => setActiveSessionId(id), []);
+
+  // Spotlight (or any parent) can pre-select a session via the
+  // `externalSessionRequest` prop. We accept it once and ack the
+  // parent so the request doesn't fire repeatedly across re-renders.
+  useEffect(() => {
+    if (!externalSessionRequest) return;
+    if (externalSessionRequest === activeSessionId) {
+      onSessionRequestConsumed?.();
+      return;
+    }
+    setActiveSessionId(externalSessionRequest);
+    onSessionRequestConsumed?.();
+  }, [externalSessionRequest, activeSessionId, onSessionRequestConsumed]);
 
   const refetchSessions = useCallback(async () => {
     try {

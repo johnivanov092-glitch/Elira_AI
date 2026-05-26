@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from app.core.config import DATA_DIR
+from app.core.data_files import sqlite_data_file
 
-DB_PATH = DATA_DIR / "library.db"
+DB_PATH = sqlite_data_file("library.db", key_tables=("files",))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 _CREATE_SQL = """

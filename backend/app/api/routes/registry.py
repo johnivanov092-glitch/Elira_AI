@@ -27,6 +27,7 @@ from app.api.routes.runtime import router as runtime_router
 from app.api.routes.skills_extra_routes import router as skills_extra_router
 from app.api.routes.skills_routes import router as skills_router
 from app.api.routes.smart_memory_routes import router as smart_memory_router
+from app.api.routes.spotlight_routes import router as spotlight_router
 from app.api.routes.task_planner_routes import router as task_planner_router
 from app.api.routes.telegram_routes import router as telegram_router
 from app.api.routes.terminal import router as terminal_router
@@ -51,6 +52,7 @@ ALL_ROUTERS = (
     pdf_router,
     tools_exec_router,
     smart_memory_router,
+    spotlight_router,
     file_ops_router,
     terminal_router,
     library_sqlite_router,
