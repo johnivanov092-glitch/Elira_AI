@@ -249,6 +249,42 @@ def _truncate(text: str, limit: int = 4000) -> str:
     return text[:limit] + "\n[... truncated]"
 
 
+# How much of a tool's text output to send back to the LLM as the
+# 'tool' message on the next turn. Locally we don't pay for tokens, but
+# `num_ctx` is a hard limit — a single 80K-char `pytest -v` dump would
+# eat the entire context and start truncating the system prompt + user
+# task. 12000 chars is ~3000 tokens ≈ 18% of the default 16K context per
+# call, leaving room for several tool calls per turn plus the model's
+# own reasoning.
+TOOL_RESULT_LLM_LIMIT = 12000
+
+
+def _truncate_for_llm(text: str, limit: int = TOOL_RESULT_LLM_LIMIT) -> str:
+    """Truncate a tool output before feeding it back to the LLM.
+
+    Strategy: if the output fits, return it unchanged. Otherwise, keep
+    the start (typical context of what happened) *and* the end (final
+    lines / exit code / last error) — drop the middle. This matters for
+    `run_bash` long outputs where the exit code + stack trace at the
+    bottom is the most useful part, and for `read_file` of large files
+    where the start has imports / docstring and the end has main code.
+    """
+    if len(text) <= limit:
+        return text
+    # Reserve ~100 chars for the marker; split remainder 65/35 head/tail
+    # so we lean towards the start (where filenames, paths, signatures
+    # tend to live) but keep enough of the end for run_bash results.
+    budget = max(400, limit - 100)
+    head_size = int(budget * 0.65)
+    tail_size = budget - head_size
+    cut = len(text) - head_size - tail_size
+    return (
+        text[:head_size]
+        + f"\n[... truncated {cut} chars from middle to stay under context limit ...]\n"
+        + text[-tail_size:]
+    )
+
+
 _INLINE_TOOL_NAMES_PATTERN = None  # built lazily once dispatch is known
 
 
@@ -562,7 +598,15 @@ def stream_code_agent(
                         else:
                             event[opt] = val
                 yield event
-                messages.append({"role": "tool", "content": text_result, "name": name})
+                # Smart-truncate tool output before feeding it back to the
+                # LLM. Without this, a single huge `run_bash` or `read_file`
+                # could blow out `num_ctx` and start eating the system
+                # prompt off the front of the context.
+                messages.append({
+                    "role": "tool",
+                    "content": _truncate_for_llm(text_result),
+                    "name": name,
+                })
 
         yield {
             "type": "done",
