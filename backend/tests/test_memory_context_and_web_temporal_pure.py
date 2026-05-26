@@ -1,4 +1,4 @@
-"""Tests for pure helpers across four previously zero-covered modules.
+"""Tests for pure helpers across three previously zero-covered modules.
 
   infrastructure/search/web_temporal.py - compute_freshness
   infrastructure/search/web_query.py   - is_strict_web_only_query
@@ -6,9 +6,12 @@
                                          _memory_type_weight,
                                          _clean_memory_text,
                                          _memory_query_words
-  core/memory.py                       - _content_hash
 
 All functions are pure (no DB, no HTTP, no FS).
+
+Note: tests for `core.memory._content_hash` were removed when that
+facade module was deleted (it just re-exported `default_content_hash`
+from `application/memory/context.py`, which is still tested below).
 """
 from __future__ import annotations
 
@@ -30,7 +33,6 @@ from app.application.memory.context import (  # noqa: E402
     _clean_memory_text,
     _memory_query_words,
 )
-from app.core.memory import _content_hash  # noqa: E402
 
 
 # infrastructure/search/web_temporal.py - compute_freshness
@@ -306,37 +308,6 @@ class MemoryQueryWordsTest(unittest.TestCase):
     def test_minimum_length_two_chars_excluded(self) -> None:
         result = _memory_query_words("ab")
         self.assertNotIn("ab", result)
-
-
-# core/memory.py - _content_hash
-
-class CoreMemoryContentHashTest(unittest.TestCase):
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(_content_hash("hello"), str)
-
-    def test_32_hex_chars(self) -> None:
-        self.assertEqual(len(_content_hash("hello")), 32)
-
-    def test_deterministic(self) -> None:
-        self.assertEqual(_content_hash("test"), _content_hash("test"))
-
-    def test_different_texts_different_hashes(self) -> None:
-        self.assertNotEqual(_content_hash("foo"), _content_hash("bar"))
-
-    def test_normalizes_case_and_strips(self) -> None:
-        # strips whitespace + lowercases before hashing
-        self.assertEqual(_content_hash("  HELLO  "), _content_hash("hello"))
-
-    def test_empty_string_produces_known_hash(self) -> None:
-        result = _content_hash("")
-        self.assertEqual(len(result), 32)
-        # MD5 of "" is "d41d8cd98f00b204e9800998ecf8427e"
-        self.assertEqual(result, "d41d8cd98f00b204e9800998ecf8427e")
-
-    def test_matches_default_content_hash(self) -> None:
-        # Both should use the same algorithm (MD5 of stripped/lowercased text)
-        text = "The quick brown fox"
-        self.assertEqual(_content_hash(text), default_content_hash(text))
 
 
 if __name__ == "__main__":
