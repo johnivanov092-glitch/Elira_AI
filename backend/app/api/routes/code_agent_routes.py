@@ -260,6 +260,78 @@ def ssh_config_set(payload: SshConfigRequest) -> dict[str, Any]:
     }
 
 
+# ── MCP servers ─────────────────────────────────────────────────────────
+
+class McpServerSpec(BaseModel):
+    id: str
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class McpServersRequest(BaseModel):
+    servers: list[McpServerSpec]
+
+
+class McpServerActionRequest(BaseModel):
+    server_id: str
+
+
+@router.get("/mcp/servers")
+def mcp_list_servers() -> dict[str, Any]:
+    """All configured MCP servers + live status."""
+    from app.application.tool_providers.mcp_runtime import list_servers
+    return {"servers": list_servers()}
+
+
+@router.post("/mcp/servers")
+def mcp_save_servers(payload: McpServersRequest) -> dict[str, Any]:
+    """Replace the MCP server list atomically. Any server whose
+    spec changed (or that was removed) is stopped automatically."""
+    from app.application.tool_providers.mcp_runtime import save_servers
+    persisted = save_servers([s.model_dump() for s in payload.servers])
+    return {"ok": True, "servers": persisted}
+
+
+@router.post("/mcp/start")
+def mcp_start(payload: McpServerActionRequest) -> dict[str, Any]:
+    from app.application.tool_providers.mcp_runtime import start_server
+    result = start_server(payload.server_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "start failed"))
+    return result
+
+
+@router.post("/mcp/stop")
+def mcp_stop(payload: McpServerActionRequest) -> dict[str, Any]:
+    from app.application.tool_providers.mcp_runtime import stop_server
+    return stop_server(payload.server_id)
+
+
+@router.post("/mcp/restart")
+def mcp_restart(payload: McpServerActionRequest) -> dict[str, Any]:
+    from app.application.tool_providers.mcp_runtime import restart_server
+    result = restart_server(payload.server_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "restart failed"))
+    return result
+
+
+@router.get("/mcp/tools")
+def mcp_list_tools(server_id: str) -> dict[str, Any]:
+    """Tools exposed by a running MCP server (raw, no namespacing).
+    Used by the UI to preview what an MCP install actually offers."""
+    from app.application.tool_providers.mcp_runtime import get_live_client
+    client = get_live_client(server_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail=f"server '{server_id}' is not running")
+    try:
+        return {"server_id": server_id, "tools": client.list_tools()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 # ── Sessions ────────────────────────────────────────────────────────────
 
 

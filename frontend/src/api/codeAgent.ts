@@ -493,6 +493,70 @@ export async function setSshConfig(allowedHosts: string[]): Promise<SshConfig> {
   });
 }
 
+// ── MCP servers ─────────────────────────────────────────────────────
+
+export type McpServerSpec = {
+  id: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  enabled: boolean;
+  status?: "stopped" | "running" | "crashed" | "error";
+  last_error?: string | null;
+};
+
+export type McpServersResponse = {
+  servers: McpServerSpec[];
+};
+
+export type McpActionResponse = {
+  ok: boolean;
+  already_running?: boolean;
+  was_running?: boolean;
+  server_id?: string;
+  server_info?: Record<string, unknown>;
+  error?: string;
+};
+
+export async function listMcpServers(): Promise<McpServersResponse> {
+  return request<McpServersResponse>("/api/code-agent/mcp/servers");
+}
+
+export async function saveMcpServers(
+  servers: Omit<McpServerSpec, "status" | "last_error">[],
+): Promise<{ ok: boolean; servers: McpServerSpec[] }> {
+  return request("/api/code-agent/mcp/servers", {
+    method: "POST",
+    body: { servers },
+  });
+}
+
+export async function startMcpServer(serverId: string): Promise<McpActionResponse> {
+  return request<McpActionResponse>("/api/code-agent/mcp/start", {
+    method: "POST",
+    body: { server_id: serverId },
+  });
+}
+
+export async function stopMcpServer(serverId: string): Promise<McpActionResponse> {
+  return request<McpActionResponse>("/api/code-agent/mcp/stop", {
+    method: "POST",
+    body: { server_id: serverId },
+  });
+}
+
+export async function restartMcpServer(serverId: string): Promise<McpActionResponse> {
+  return request<McpActionResponse>("/api/code-agent/mcp/restart", {
+    method: "POST",
+    body: { server_id: serverId },
+  });
+}
+
+export async function getMcpServerTools(serverId: string): Promise<{ server_id: string; tools: Array<{ name: string; description?: string }> }> {
+  const qs = new URLSearchParams({ server_id: serverId }).toString();
+  return request(`/api/code-agent/mcp/tools?${qs}`);
+}
+
 /** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
  *  is closer to 4. We compute per-character class to be reasonable. */
 export function estimateTokens(text: string): number {

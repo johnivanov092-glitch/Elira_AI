@@ -35,6 +35,7 @@ import {
   Pencil,
   Pin,
   PinOff,
+  Plug,
   Plus,
   RefreshCw,
   Save,
@@ -46,7 +47,8 @@ import {
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
 import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHistory } from "./CodeAgentChatShell";
 import SshConfigDialog from "./SshConfigDialog";
-import type { CodeSessionMeta, SshConfig } from "../api/codeAgent";
+import McpConfigDialog from "./McpConfigDialog";
+import type { CodeSessionMeta, McpServerSpec, SshConfig } from "../api/codeAgent";
 import { api } from "../api/ide";
 import { UiIcon, IconText } from "./StatusPanels";
 import { toast } from "./ToastHost";
@@ -224,6 +226,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   // badge can show host count without refetching on every render.
   const [sshConfig, setSshConfig] = useState<SshConfig>({ enabled: false, allowed_hosts: [] });
   const [sshDialogOpen, setSshDialogOpen] = useState(false);
+  // MCP servers — tool sources beyond the built-in toolbox.
+  const [mcpServers, setMcpServers] = useState<McpServerSpec[]>([]);
+  const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
 
   // ─── Sessions sidebar state (backed by SQLite via /api/code-agent/sessions) ───
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
@@ -587,6 +592,15 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     api.getSshConfig()
       .then((c) => { if (!cancelled) setSshConfig(c); })
       .catch(() => {/* not fatal; toolbar will show "off" */});
+    return () => { cancelled = true; };
+  }, []);
+  // Same for MCP servers — fetch at mount, then McpConfigDialog
+  // pushes updates via onChange.
+  useEffect(() => {
+    let cancelled = false;
+    api.listMcpServers()
+      .then((res) => { if (!cancelled) setMcpServers(res.servers); })
+      .catch(() => {/* not fatal */});
     return () => { cancelled = true; };
   }, []);
   useEffect(() => { writeNumber(CTX_KEY_PREFIX + model, numCtx); }, [model, numCtx]);
@@ -989,6 +1003,40 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             {sshConfig.allowed_hosts.length > 0 && ` (${sshConfig.allowed_hosts.length})`}
           </span>
         </button>
+
+        {(() => {
+          const runningCount = mcpServers.filter((s) => s.status === "running").length;
+          const totalCount = mcpServers.length;
+          return (
+            <button
+              onClick={() => setMcpDialogOpen(true)}
+              className="soft-btn"
+              title={
+                runningCount > 0
+                  ? `${runningCount} из ${totalCount} MCP-серверов запущены. Клик — управление.`
+                  : totalCount > 0
+                    ? `${totalCount} MCP-сервер(ов) настроены, ни один не запущен. Клик — управление.`
+                    : "Подключить внешние MCP-серверы (GitHub, Slack, Notion, ...). Клик — настроить."
+              }
+              style={{
+                fontSize: 11,
+                padding: "5px 10px",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                color: runningCount > 0 ? "var(--text-primary)" : "var(--text-muted)",
+                background: runningCount > 0 ? "var(--accent-soft, rgba(99,102,241,0.15))" : "transparent",
+                border: "1px solid var(--border)",
+              }}
+            >
+              <UiIcon icon={Plug} size={12} />
+              <span>
+                MCP
+                {totalCount > 0 && ` (${runningCount}/${totalCount})`}
+              </span>
+            </button>
+          );
+        })()}
       </div>
 
       {/* Index status banner */}
@@ -1404,6 +1452,11 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
         open={sshDialogOpen}
         onClose={() => setSshDialogOpen(false)}
         onChange={(c) => setSshConfig(c)}
+      />
+      <McpConfigDialog
+        open={mcpDialogOpen}
+        onClose={() => setMcpDialogOpen(false)}
+        onChange={(servers) => setMcpServers(servers)}
       />
     </div>
   );
