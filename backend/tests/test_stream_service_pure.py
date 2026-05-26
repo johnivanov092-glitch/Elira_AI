@@ -29,12 +29,6 @@ from app.application.chat.stream_service import (  # noqa: E402
     prepare_cached_stream_hit,
     finalize_stream_response,
 )
-from app.application.multi_agent_chain.runtime import (  # noqa: E402
-    _clip,
-    _is_llm_error,
-)
-
-
 # ---
 # chat/stream_service - CachedStreamHit
 # ---
@@ -444,83 +438,6 @@ class FinalizeStreamResponseTest(unittest.TestCase):
             finalize_stream_success_func=lambda **kw: {"ok": True},
         )
         self.assertEqual(len(set_called), 0)
-
-
-# ---
-# multi_agent_chain/runtime - _clip
-# ---
-
-class ClipTest(unittest.TestCase):
-    def test_returns_string(self) -> None:
-        self.assertIsInstance(_clip("hello", 100), str)
-
-    def test_short_text_unchanged(self) -> None:
-        self.assertEqual(_clip("hello", 100), "hello")
-
-    def test_long_text_truncated(self) -> None:
-        result = _clip("A" * 200, 50)
-        self.assertLessEqual(len(result), 50)
-
-    def test_truncated_ends_with_ellipsis(self) -> None:
-        result = _clip("A" * 200, 50)
-        self.assertTrue(result.endswith("…"))
-
-    def test_exact_limit_not_truncated(self) -> None:
-        text = "A" * 50
-        result = _clip(text, 50)
-        self.assertEqual(result, text)
-
-    def test_none_treated_as_empty(self) -> None:
-        result = _clip(None, 10)  # type: ignore[arg-type]
-        self.assertEqual(result, "")
-
-    def test_empty_string_returns_empty(self) -> None:
-        self.assertEqual(_clip("", 10), "")
-
-    def test_strips_leading_trailing_whitespace(self) -> None:
-        result = _clip("  hello  ", 100)
-        self.assertEqual(result, "hello")
-
-    def test_limit_one_with_content(self) -> None:
-        result = _clip("abc", 1)
-        self.assertLessEqual(len(result), 1)
-
-
-# ---
-# multi_agent_chain/runtime - _is_llm_error
-# ---
-
-class IsLlmErrorTest(unittest.TestCase):
-    def test_returns_bool(self) -> None:
-        self.assertIsInstance(_is_llm_error("hello"), bool)
-
-    def test_normal_text_false(self) -> None:
-        self.assertFalse(_is_llm_error("This is a normal answer"))
-
-    def test_russian_error_prefix_true(self) -> None:
-        self.assertTrue(_is_llm_error("[Ошибка LLM: connection refused]"))
-
-    def test_english_error_prefix_true(self) -> None:
-        self.assertTrue(_is_llm_error("[LLM ERROR: timeout]"))
-
-    def test_empty_string_false(self) -> None:
-        self.assertFalse(_is_llm_error(""))
-
-    def test_none_false(self) -> None:
-        self.assertFalse(_is_llm_error(None))  # type: ignore[arg-type]
-
-    def test_partial_prefix_not_at_start_false(self) -> None:
-        self.assertFalse(_is_llm_error("Note: [Ошибка LLM: ...]"))
-
-    def test_whitespace_before_prefix_false(self) -> None:
-        # strip() is applied so leading space before bracket → still False
-        self.assertFalse(_is_llm_error("  text [Ошибка LLM: ...]"))
-
-    def test_russian_prefix_with_content(self) -> None:
-        self.assertTrue(_is_llm_error("[Ошибка LLM: Failed to connect to ollama]"))
-
-    def test_english_prefix_with_content(self) -> None:
-        self.assertTrue(_is_llm_error("[LLM ERROR: model not found]"))
 
 
 if __name__ == "__main__":

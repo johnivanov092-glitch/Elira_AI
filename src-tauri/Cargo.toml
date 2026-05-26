@@ -10,7 +10,7 @@ tauri-build = { version = "1", features = [] }
 
 [dependencies]
 serde_json = "1"
-tauri = { version = "1", features = [ "shell-open", "http-all"] }
+tauri = { version = "1", features = [ "dialog-open", "shell-open", "http-all"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

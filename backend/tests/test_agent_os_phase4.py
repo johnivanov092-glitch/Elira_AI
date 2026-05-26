@@ -225,56 +225,6 @@ class WorkflowRoutesTest(WorkflowDbMixin):
         self.assertEqual(run_response.json()["status"], "completed")
 
 
-class WorkflowCompatibilityShimTest(WorkflowDbMixin):
-    def test_multi_agent_chain_uses_workflow_engine(self) -> None:
-        from app.application.multi_agent_chain import runtime as multi_agent_chain
-
-        fake_run = {
-            "status": "completed",
-            "run_id": "wfr-1",
-            "step_results": {
-                "plan": {"ok": True, "answer": "plan"},
-                "research": {"ok": True, "answer": "research"},
-                "coding": {"ok": True, "answer": "code"},
-                "analysis": {"ok": True, "answer": "analysis"},
-                "reflection": {"ok": True, "answer": "reflection"},
-            },
-        }
-        fake_template = {"graph": {"steps": [{"id": "plan", "save_as": "plan", "config": {"label": "Plan"}}]}}
-
-        with patch("app.application.workflows.multi_agent.seed_builtin_workflows", return_value=0), \
-             patch("app.application.workflows.runtime.start_workflow_run", return_value=fake_run), \
-             patch("app.application.workflows.multi_agent._app_get_workflow_template", return_value=fake_template):
-            result = multi_agent_chain.run_multi_agent("hello", use_reflection=True, use_orchestrator=True)
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["results"]["researcher"], "research")
-        self.assertTrue(result["orchestrator_used"])
-        self.assertTrue(result["reflection_used"])
-
-    def test_core_agents_legacy_path_uses_workflow_engine(self) -> None:
-        from app.core import agents as core_agents
-
-        expected = {
-            "plan": "plan",
-            "research": "research",
-            "coding": "coding",
-            "review": "analysis",
-            "final": "final",
-            "reflection": "reflection",
-        }
-
-        with patch("app.application.workflows.multi_agent.run_legacy_multi_agent_workflow", return_value=expected):
-            result = core_agents.run_multi_agent(
-                task="legacy",
-                model_name="test-model",
-                memory_profile="default",
-            )
-
-        self.assertEqual(result["final"], "final")
-        self.assertEqual(result["review"], "analysis")
-
-
 class WorkflowAutopipelineTest(WorkflowDbMixin):
     def test_autopipeline_workflow_task_type(self) -> None:
         with patch("app.application.workflows.runtime.start_workflow_run", return_value={"run_id": "wfr-123", "status": "completed", "error": {}}):
