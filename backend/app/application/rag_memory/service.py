@@ -39,17 +39,28 @@ def _cosine_sim(a: list[float], b: list[float]) -> float:
     return rag_runtime.cosine_sim(a, b)
 
 
-def add_to_rag(text: str, category: str = "fact", importance: int = 5) -> dict:
+def add_to_rag(
+    text: str,
+    category: str = "fact",
+    importance: int = 5,
+    project: str = "",
+) -> dict:
     return rag_runtime.add_to_rag(
         conn_factory=_conn,
         get_embedding_func=_get_embedding,
         text=text,
         category=category,
         importance=importance,
+        project=project,
     )
 
 
-def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
+def search_rag(
+    query: str,
+    limit: int = 5,
+    min_score: float = 0.3,
+    project: str | None = None,
+) -> dict:
     return rag_runtime.search_rag(
         conn_factory=_conn,
         get_embedding_func=_get_embedding,
@@ -57,12 +68,18 @@ def search_rag(query: str, limit: int = 5, min_score: float = 0.3) -> dict:
         query=query,
         limit=limit,
         min_score=min_score,
+        project=project,
     )
 
 
-def get_rag_context(query: str, max_items: int = 5, max_chars: int = 2000) -> str:
+def get_rag_context(
+    query: str,
+    max_items: int = 5,
+    max_chars: int = 2000,
+    project: str | None = None,
+) -> str:
     return rag_runtime.get_rag_context(
-        search_rag_func=search_rag,
+        search_rag_func=lambda q, limit: search_rag(q, limit=limit, project=project),
         query=query,
         max_items=max_items,
         max_chars=max_chars,

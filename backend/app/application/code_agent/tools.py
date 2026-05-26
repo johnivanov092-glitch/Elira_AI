@@ -186,17 +186,24 @@ def tool_recall(
 ) -> dict[str, Any]:
     """Semantic search over RAG memory. Returns top matching items —
     relevant code chunks (if the project was indexed) and summaries of
-    prior agent turns. Project_root is currently unused; RAG is global
-    per Elira instance, so we may want to add filtering by project in
-    a follow-up.
+    prior agent turns.
+
+    Scope: results are restricted to entries tagged with this project
+    name, plus global entries (project='') so user-level facts still
+    surface. Cross-project leakage is prevented.
     """
-    del project_root  # currently RAG is global; flagged for future scoping
     try:
         from app.application.rag_memory.service import search_rag
     except Exception as exc:
         return {"text": f"ERROR: RAG service unavailable: {exc}"}
 
-    result = search_rag(query=query, limit=max(1, int(top_k)), min_score=float(min_score))
+    project_name = project_root.name or str(project_root)
+    result = search_rag(
+        query=query,
+        limit=max(1, int(top_k)),
+        min_score=float(min_score),
+        project=project_name,
+    )
     if not result.get("ok"):
         return {"text": f"ERROR: {result.get('error', 'recall failed')}"}
     items = result.get("items", []) or []

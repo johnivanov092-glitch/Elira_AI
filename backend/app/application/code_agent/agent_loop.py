@@ -457,7 +457,9 @@ def _try_remember_turn(*, user_message: str, response_text: str, project_root: P
     project_name = project_root.name or str(project_root)
     summary = f"[agent_turn project={project_name}] task: {user} | outcome: {answer}"
     try:
-        add_to_rag(text=summary, category="agent_turn", importance=3)
+        # Pass project= so the entry is scoped to this project and
+        # recall() from a different project doesn't pull it up.
+        add_to_rag(text=summary, category="agent_turn", importance=3, project=project_name)
     except Exception as exc:
         logger.debug("auto-remember failed: %s", exc)
 
@@ -893,11 +895,23 @@ def index_project(
     except Exception as exc:
         return {"ok": False, "error": f"RAG service unavailable: {exc}"}
 
+    project_name = root.name or str(root)
+
     if replace:
         try:
             conn = _conn()
             try:
-                conn.execute("DELETE FROM rag_items WHERE category = ?", ("code_index",))
+                # Only clear THIS project's code_index entries, not all
+                # projects globally. Older rows without a project tag
+                # are also cleared so a fresh re-index gets a clean slate.
+                conn.execute(
+                    """
+                    DELETE FROM rag_items
+                    WHERE category = ?
+                      AND (project = ? OR COALESCE(project, '') = '')
+                    """,
+                    ("code_index", project_name),
+                )
                 conn.commit()
             finally:
                 conn.close()
@@ -921,7 +935,12 @@ def index_project(
                 errors.append(f"Stopped at INDEX_MAX_TOTAL_CHUNKS={INDEX_MAX_TOTAL_CHUNKS}")
                 break
             try:
-                result = add_to_rag(text=chunk_text, category="code_index", importance=4)
+                result = add_to_rag(
+                    text=chunk_text,
+                    category="code_index",
+                    importance=4,
+                    project=project_name,
+                )
                 if result.get("ok"):
                     chunks_indexed += 1
                 else:
