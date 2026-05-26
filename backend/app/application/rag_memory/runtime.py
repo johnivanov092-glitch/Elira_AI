@@ -16,6 +16,42 @@ def _text_hash(text: str) -> str:
     return hashlib.sha1((text or "").strip().encode("utf-8")).hexdigest()[:16]
 
 
+def _embedding_to_blob(vec: list[float] | None) -> bytes | None:
+    """Pack an embedding into a compact float32 byte buffer.
+
+    768-dim float32 = 3072 bytes per embedding. ~5x smaller than the
+    JSON-text representation (~15KB per embedding) and ~50x faster to
+    read back via numpy.frombuffer than json.loads.
+    """
+    if not vec:
+        return None
+    try:
+        import numpy as np
+
+        return np.asarray(vec, dtype=np.float32).tobytes()
+    except Exception:
+        # Numpy missing — fall back to a manual pack so reads still work
+        import struct
+
+        return struct.pack(f"{len(vec)}f", *(float(x) for x in vec))
+
+
+def _blob_to_array(blob: bytes | None) -> Any:
+    """Inverse of _embedding_to_blob. Returns a numpy array on the fast
+    path, or a plain list as a fallback."""
+    if not blob:
+        return None
+    try:
+        import numpy as np
+
+        return np.frombuffer(blob, dtype=np.float32)
+    except Exception:
+        import struct
+
+        count = len(blob) // 4
+        return list(struct.unpack(f"{count}f", blob))
+
+
 def init_db(*, conn_factory: Callable[[], Any]) -> None:
     conn = conn_factory()
     try:
@@ -49,6 +85,36 @@ def init_db(*, conn_factory: Callable[[], Any]) -> None:
                 )
         if "project" not in existing_cols:
             conn.execute("ALTER TABLE rag_items ADD COLUMN project TEXT DEFAULT ''")
+        if "embedding_blob" not in existing_cols:
+            conn.execute("ALTER TABLE rag_items ADD COLUMN embedding_blob BLOB DEFAULT NULL")
+            # One-shot migration: convert any pre-existing JSON-text
+            # embeddings into the new BLOB column. Done once, in batch,
+            # so the perf win shows up immediately on first startup
+            # after this code lands.
+            rows_to_migrate = conn.execute(
+                """
+                SELECT id, embedding FROM rag_items
+                WHERE COALESCE(embedding, '') != '' AND embedding_blob IS NULL
+                """
+            ).fetchall()
+            migrated = 0
+            for row in rows_to_migrate:
+                row_id = row[0]
+                raw = row[1]
+                try:
+                    vec = json.loads(raw)
+                    if isinstance(vec, list) and vec:
+                        blob = _embedding_to_blob(vec)
+                        if blob is not None:
+                            conn.execute(
+                                "UPDATE rag_items SET embedding_blob = ? WHERE id = ?",
+                                (blob, row_id),
+                            )
+                            migrated += 1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            if migrated:
+                logger.info("rag_memory: migrated %d embeddings from JSON to BLOB", migrated)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rag_category ON rag_items(category)"
         )
@@ -147,16 +213,20 @@ def add_to_rag(
         conn.close()
 
     embedding = get_embedding_func(text)
-    embedding_json = json.dumps(embedding) if embedding else ""
+    # New rows store embeddings as compact float32 BLOB (3KB vs ~15KB
+    # for JSON). The TEXT `embedding` column stays empty — kept for
+    # back-compat with code that may still read it, but no new data
+    # goes there.
+    embedding_blob = _embedding_to_blob(embedding) if embedding else None
 
     conn = conn_factory()
     try:
         cursor = conn.execute(
             """
-            INSERT INTO rag_items (text, text_hash, category, embedding, importance, project)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO rag_items (text, text_hash, category, embedding, embedding_blob, importance, project)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (text, text_hash, category, embedding_json, importance, project or ""),
+            (text, text_hash, category, "", embedding_blob, importance, project or ""),
         )
         item_id = cursor.lastrowid
         conn.commit()
@@ -211,14 +281,23 @@ def search_rag(
 
     query_embedding = get_embedding_func(query)
 
+    # Explicit column list — never SELECT *. Pulling the legacy
+    # `embedding` TEXT column on every search wasted ~150ms at 2K rows
+    # because each row carried ~12KB of stale JSON we no longer use
+    # (BLOB is the source of truth now). We only fetch it when the BLOB
+    # is missing, via a separate query, to drive lazy migration.
+    base_cols = (
+        "id, text, category, importance, access_count, created_at, "
+        "embedding_blob, text_hash, project"
+    )
     conn = conn_factory()
     try:
         if project:
             # Project-scope: items tagged with this project + globals
             # (project == '') so user-level facts still surface.
             rows = conn.execute(
-                """
-                SELECT * FROM rag_items
+                f"""
+                SELECT {base_cols} FROM rag_items
                 WHERE project = ? OR project = '' OR project IS NULL
                 ORDER BY importance DESC
                 """,
@@ -226,7 +305,7 @@ def search_rag(
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM rag_items ORDER BY importance DESC"
+                f"SELECT {base_cols} FROM rag_items ORDER BY importance DESC"
             ).fetchall()
     finally:
         conn.close()
@@ -234,27 +313,89 @@ def search_rag(
     if not rows:
         return {"ok": True, "items": [], "count": 0}
 
-    # ── Bulk-parse embeddings into a single numpy matrix once. This
-    #    replaces the per-row `json.loads + python cosine` loop that
-    #    was the main perf bottleneck (~300ms at 5K rows → ~5ms).
+    # ── Bulk-parse embeddings into a single numpy matrix once.
+    # Fast path: read BLOB column → numpy.frombuffer (microseconds per row).
+    # Slow path (legacy data with no BLOB): a single follow-up query
+    # fetches JSON for all blob-less rows, then we lazy-migrate them
+    # to BLOB so subsequent searches hit the fast path.
     parsed_rows: list[dict[str, Any]] = []
-    embedding_list: list[list[float]] = []
+    raw_vecs: list[Any] = []   # numpy arrays or lists, one per row (or None)
     have_embedding: list[bool] = []
+    lazy_migrations: list[tuple[int, bytes]] = []
+    missing_blob_ids: list[int] = []
+    missing_blob_idx: dict[int, int] = {}  # id -> position in parsed_rows
     for row in rows:
         row_dict = dict(row)
+        idx = len(parsed_rows)
         parsed_rows.append(row_dict)
-        raw_embed = row_dict.get("embedding") or ""
-        if query_embedding and raw_embed:
-            try:
-                vec = json.loads(raw_embed)
-                if isinstance(vec, list) and vec:
-                    embedding_list.append(vec)
-                    have_embedding.append(True)
-                    continue
-            except (json.JSONDecodeError, TypeError):
-                pass
-        embedding_list.append([])
+        raw_vecs.append(None)
         have_embedding.append(False)
+        if not query_embedding:
+            continue
+        blob = row_dict.get("embedding_blob")
+        if blob:
+            vec = _blob_to_array(blob)
+            if vec is not None and hasattr(vec, "__len__") and len(vec) > 0:
+                raw_vecs[idx] = vec
+                have_embedding[idx] = True
+        else:
+            # No BLOB — defer to single batched JSON fetch below
+            rid = int(row_dict.get("id", 0) or 0)
+            if rid:
+                missing_blob_ids.append(rid)
+                missing_blob_idx[rid] = idx
+
+    # Bulk-fetch JSON embeddings for rows without BLOB (legacy data).
+    if missing_blob_ids and query_embedding:
+        try:
+            conn = conn_factory()
+            try:
+                placeholders = ",".join("?" for _ in missing_blob_ids)
+                json_rows = conn.execute(
+                    f"SELECT id, embedding FROM rag_items WHERE id IN ({placeholders})",
+                    missing_blob_ids,
+                ).fetchall()
+            finally:
+                conn.close()
+            for jrow in json_rows:
+                rid = jrow[0] if not hasattr(jrow, "keys") else jrow["id"]
+                raw_text = jrow[1] if not hasattr(jrow, "keys") else jrow["embedding"]
+                if not raw_text:
+                    continue
+                try:
+                    parsed = json.loads(raw_text)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not (isinstance(parsed, list) and parsed):
+                    continue
+                idx = missing_blob_idx.get(rid)
+                if idx is None:
+                    continue
+                raw_vecs[idx] = parsed
+                have_embedding[idx] = True
+                # Schedule write-back so next search is fast
+                blob_for_migrate = _embedding_to_blob(parsed)
+                if blob_for_migrate is not None:
+                    lazy_migrations.append((rid, blob_for_migrate))
+        except Exception:
+            logger.debug("rag_memory: bulk JSON fetch for legacy rows failed")
+
+    # Apply lazy migrations in batch — best-effort, failure doesn't
+    # affect the current search result.
+    if lazy_migrations:
+        try:
+            conn = conn_factory()
+            try:
+                for row_id, blob in lazy_migrations:
+                    conn.execute(
+                        "UPDATE rag_items SET embedding_blob = ? WHERE id = ? AND embedding_blob IS NULL",
+                        (blob, row_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            logger.debug("rag_memory: lazy migration failed (non-fatal)")
 
     # Vectorized cosine for rows that have an embedding.
     cosine_scores: list[float] = [0.0] * len(parsed_rows)
@@ -263,16 +404,19 @@ def search_rag(
             import numpy as np
 
             # Stack only the rows that have embeddings; remember their
-            # positions so we can map scores back.
+            # positions so we can map scores back. Vectors may be
+            # numpy arrays (BLOB fast path) or lists (JSON slow path) —
+            # np.asarray normalizes both.
             dim = None
             with_idx: list[int] = []
-            with_vecs: list[list[float]] = []
-            for i, vec in enumerate(embedding_list):
-                if not have_embedding[i]:
+            with_vecs: list[Any] = []
+            for i, vec in enumerate(raw_vecs):
+                if not have_embedding[i] or vec is None:
                     continue
+                vec_len = len(vec)
                 if dim is None:
-                    dim = len(vec)
-                if len(vec) != dim:
+                    dim = vec_len
+                if vec_len != dim:
                     # Bad row (mismatched dim) — skip from vector path,
                     # will fall through to keyword fallback below.
                     have_embedding[i] = False
@@ -287,9 +431,12 @@ def search_rag(
         except Exception:
             # Last-resort fallback: pairwise via the injected
             # cosine_sim_func — same behavior as old code, slower.
-            for i, vec in enumerate(embedding_list):
-                if have_embedding[i]:
-                    cosine_scores[i] = cosine_sim_func(query_embedding, vec)
+            for i, vec in enumerate(raw_vecs):
+                if have_embedding[i] and vec is not None:
+                    cosine_scores[i] = cosine_sim_func(
+                        query_embedding,
+                        list(vec) if not isinstance(vec, list) else vec,
+                    )
 
     # Score, optionally fall back to keyword overlap, apply importance
     # boost, then filter by min_score.
@@ -303,8 +450,9 @@ def search_rag(
             score = max(score, matches / len(keywords) * 0.5)
         score *= 1 + (row_dict.get("importance", 5) or 5) / 20.0
         if score >= min_score:
-            row_dict.pop("embedding", None)  # don't leak vector to caller
-            row_dict.pop("text_hash", None)  # internal
+            row_dict.pop("embedding", None)       # don't leak vector to caller
+            row_dict.pop("embedding_blob", None)  # don't leak BLOB bytes either
+            row_dict.pop("text_hash", None)       # internal
             scored.append((score, row_dict))
 
     scored.sort(key=lambda item: -item[0])
@@ -382,8 +530,14 @@ def rag_stats(*, conn_factory: Callable[[], Any], embed_model: str) -> dict[str,
     conn = conn_factory()
     try:
         total = conn.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0]
+        # A row counts as "embedded" if it has either the new BLOB or
+        # legacy JSON form. The lazy-migration path eventually pushes
+        # everything to BLOB, but during transition both can coexist.
         with_embeddings = conn.execute(
-            "SELECT COUNT(*) FROM rag_items WHERE embedding != ''"
+            """
+            SELECT COUNT(*) FROM rag_items
+            WHERE embedding_blob IS NOT NULL OR COALESCE(embedding, '') != ''
+            """
         ).fetchone()[0]
     finally:
         conn.close()
