@@ -50,6 +50,7 @@ import SshConfigDialog from "./SshConfigDialog";
 import McpConfigDialog from "./McpConfigDialog";
 import type { CodeSessionMeta, McpServerSpec, SshConfig } from "../api/codeAgent";
 import { api } from "../api/ide";
+import { waitForBackend } from "../api/client";
 import { UiIcon, IconText } from "./StatusPanels";
 import { toast } from "./ToastHost";
 
@@ -561,22 +562,40 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     let cancelled = false;
     const root = projectRoot;
     if (!root) return;
-    if (autoIndex) {
-      api.startProjectWatcher(root)
-        .then((r) => { if (!cancelled && r.ok && !r.already_watching) toast.info(`Auto-index: слежу за ${root}`); })
-        .catch((e) => { if (!cancelled) toast.error(`Auto-index не запустился: ${String((e as Error).message || e)}`); });
-    } else {
+
+    if (!autoIndex) {
       api.stopProjectWatcher(root).catch(() => {});
+      // Cleanup still runs below; stopping twice is an idempotent no-op.
+    } else {
+      (async () => {
+        // On cold start the window mounts before uvicorn is listening, which
+        // used to surface a scary "Failed to fetch" toast. Wait for the
+        // backend first; if it never comes up, stay quiet (user can retoggle).
+        const ready = await waitForBackend(10, 1500);
+        if (cancelled || !ready) return;
+        try {
+          const r = await api.startProjectWatcher(root);
+          if (!cancelled && r.ok && !r.already_watching) toast.info(`Auto-index: слежу за ${root}`);
+        } catch {
+          // One retry after a short backoff before treating it as a real failure.
+          await new Promise<void>((res) => setTimeout(res, 1200));
+          if (cancelled) return;
+          try {
+            const r = await api.startProjectWatcher(root);
+            if (!cancelled && r.ok && !r.already_watching) toast.info(`Auto-index: слежу за ${root}`);
+          } catch (e2) {
+            if (!cancelled) toast.error(`Auto-index не запустился: ${String((e2 as Error).message || e2)}`);
+          }
+        }
+      })();
     }
+
     return () => {
       cancelled = true;
-      // Stop watcher when the projectRoot effect re-runs OR when the
-      // component unmounts. The "off" branch above already handles
-      // the toggle-off case, so this catches "user changes projectRoot
-      // while auto-index is on" (we stop the OLD root's watcher).
-      if (autoIndex) {
-        api.stopProjectWatcher(root).catch(() => {});
-      }
+      // When auto-index is on, stop the OLD root's watcher as projectRoot
+      // changes or on unmount. The "off" branch above already handled the
+      // toggle-off case, so this is the "changed root while watching" path.
+      if (autoIndex) api.stopProjectWatcher(root).catch(() => {});
     };
   }, [projectRoot, autoIndex]);
   // Fetch SSH config once at mount so the toolbar badge starts with

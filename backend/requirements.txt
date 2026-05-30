@@ -26,5 +26,8 @@ python-docx>=1.1
 # Secrets / file encryption
 cryptography>=43.0
 
+# File watching (realtime auto-index of the code-agent project)
+watchdog>=4.0,<7.0
+
 # Heavy capabilities (image-gen, vector memory, OCR, Excel/PDF tables, pandas)
 # live in requirements-optional.txt and load lazily when first used.
