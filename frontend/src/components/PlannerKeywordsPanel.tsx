@@ -26,7 +26,9 @@ import { UiIcon, IconText } from "./StatusPanels";
 // rules, exposing them would just confuse.
 const VISIBLE_BAGS: { key: string; label: string; hint: string }[] = [
   { key: "code", label: "Код", hint: "Пиши/правь код, тесты, рефакторинг — обычный single-shot." },
-  { key: "code_agent", label: "Code-агент", hint: "Многошаговые файл-операции через tool use." },
+  // NOTE: no "code_agent" bag — the planner only classifies chat queries into
+  // research/project/code. The Code-агент is its own tab, not a chat route, so
+  // editing a code_agent bag had no effect (backend ignores unknown keys).
   { key: "multi_agent", label: "Мульти-агент", hint: "Сложная оркестрация: план → ресёрч → код → анализ → рефлексия." },
   { key: "project", label: "Проект", hint: "Файловое дерево, структура, навигация." },
   { key: "research", label: "Исследование", hint: "Веб-поиск, факты, документация." },
