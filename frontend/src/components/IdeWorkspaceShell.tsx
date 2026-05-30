@@ -267,7 +267,6 @@ function CodeView({code,lang}: { code?: string; lang?: string }) {
 
 const SB=(e: CSSProperties = {}): CSSProperties => ({padding:"3px 9px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:11,...e});
 const SBG=SB({color:"#4ade80",borderColor:"rgba(74,222,128,0.35)"});
-const SBB=SB({color:"#60a5fa",borderColor:"rgba(96,165,250,0.35)"});
 
 function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }: { icon: IconComponent; size?: number; strokeWidth?: number; style?: CSSProperties }) {
   return <Icon size={size} strokeWidth={strokeWidth} style={{ display: "block", flexShrink: 0, ...style }} aria-hidden="true" />;
