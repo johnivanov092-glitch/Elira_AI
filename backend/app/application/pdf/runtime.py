@@ -18,11 +18,38 @@ pdf_pro.py — продвинутая работа с PDF.
 from __future__ import annotations
 import io
 import logging
+import os
+import shutil
 import time
 
 from app.core.config import GENERATED_DIR
 
 logger = logging.getLogger(__name__)
+
+# Common Tesseract install locations to fall back to when it isn't on PATH
+# (e.g. the UB-Mannheim Windows installer puts it under Program Files but does
+# not always add it to PATH).
+_TESSERACT_CANDIDATES = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+    os.path.expandvars(r"%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe"),
+    "/usr/bin/tesseract",
+    "/usr/local/bin/tesseract",
+    "/opt/homebrew/bin/tesseract",
+)
+
+
+def _ensure_tesseract(pytesseract) -> bool:
+    """Point pytesseract at the Tesseract binary. Returns True if a usable
+    binary is found (on PATH or in a known install dir), False otherwise."""
+    if shutil.which("tesseract"):
+        return True
+    for path in _TESSERACT_CANDIDATES:
+        if path and os.path.isfile(path):
+            pytesseract.pytesseract.tesseract_cmd = path
+            return True
+    return False
 
 OUTPUT_DIR = GENERATED_DIR
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -139,6 +166,10 @@ def _try_ocr(data: bytes, max_chars: int) -> str:
         from pdf2image import convert_from_bytes
         import pytesseract
     except ImportError:
+        return ""
+
+    if not _ensure_tesseract(pytesseract):
+        logger.warning("OCR skipped: Tesseract binary not found (install it or add to PATH)")
         return ""
 
     try:
