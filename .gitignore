@@ -54,7 +54,9 @@ frontend/build/
 # ------------------------------
 src-tauri/target/
 target/
+# Ignore Cargo.lock for libraries; keep it for the Tauri binary (src-tauri/Cargo.lock).
 Cargo.lock
+!src-tauri/Cargo.lock
 
 # Tauri bundles / installers
 src-tauri/gen/
@@ -105,7 +107,6 @@ chroma/
 # ------------------------------
 backend/.venv/
 frontend/node_modules/
-src-tauri/target/
 __pycache__/
 
 # ------------------------------
@@ -124,8 +125,15 @@ backend/data/smart_memory.db
 backend/data/response_cache.db
 backend/data/rag_memory.db
 
+# user-uploaded runtime files — personal data, never commit
+data/uploads/
+
 # local env / secrets
 .env
 .env.local
 backend/.env
 backend/.env.local
+
+# Claude worktrees
+.claude/
+.claire/

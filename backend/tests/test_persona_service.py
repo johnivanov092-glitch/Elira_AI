@@ -16,7 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.services.identity_guard import guard_identity_response  # noqa: E402
+from app.application.chat.identity_guard import guard_identity_response  # noqa: E402
 
 
 class PersonaServiceTest(unittest.TestCase):
@@ -40,7 +40,7 @@ class PersonaServiceTest(unittest.TestCase):
                 import sys
                 sys.path.insert(0, r"{BACKEND_ROOT}")
 
-                from app.services.persona_service import (
+                from app.application.persona.service import (
                     get_model_calibration,
                     get_persona_status,
                     observe_dialogue,

@@ -4,7 +4,6 @@ Covers:
   normalize_v8_route             - normalize/fallback route dict
   select_v8_graph                - pick graph node list by strategy/mode
   build_v8_state                 - build initial orchestrator state dict
-  compute_reflection_quality_score - compute float 0.2-1.0
   build_run_agent_v8_result      - build run-result dict
   build_self_improving_result    - build self-improve result dict
 
@@ -26,7 +25,6 @@ from app.domain.agents.orchestrator_runtime import (  # noqa: E402
     normalize_v8_route,
     select_v8_graph,
     build_v8_state,
-    compute_reflection_quality_score,
     build_run_agent_v8_result,
     build_self_improving_result,
 )
@@ -172,12 +170,6 @@ class BuildV8StateTest(unittest.TestCase):
         result = self._call(graph=graph)
         self.assertEqual(result["graph"], graph)
 
-    def test_memory_context_starts_empty(self) -> None:
-        self.assertEqual(self._call()["memory_context"], "")
-
-    def test_kb_context_starts_empty(self) -> None:
-        self.assertEqual(self._call()["kb_context"], "")
-
     def test_answer_starts_empty(self) -> None:
         self.assertEqual(self._call()["answer"], "")
 
@@ -196,52 +188,10 @@ class BuildV8StateTest(unittest.TestCase):
         required = [
             "run_id", "task", "model_name", "memory_profile",
             "route", "mode", "strategy", "selected_strategy", "graph",
-            "memory_context", "kb_context", "working_context",
             "answer", "reflection", "errors", "timeline",
         ]
         for key in required:
             self.assertIn(key, result)
-
-
-# compute_reflection_quality_score
-
-class ComputeReflectionQualityScoreTest(unittest.TestCase):
-
-    def test_returns_float(self) -> None:
-        self.assertIsInstance(compute_reflection_quality_score({}), float)
-
-    def test_none_returns_1_0(self) -> None:
-        self.assertAlmostEqual(compute_reflection_quality_score(None), 1.0)
-
-    def test_empty_dict_returns_1_0(self) -> None:
-        # All defaults True -> 0.2 + 0.2 + 0.2 + 0.2 + 0.2 = 1.0
-        self.assertAlmostEqual(compute_reflection_quality_score({}), 1.0)
-
-    def test_all_false_returns_minimum(self) -> None:
-        reflection = {"answered": False, "grounded": False, "complete": False, "actionable": False}
-        result = compute_reflection_quality_score(reflection)
-        self.assertAlmostEqual(result, 0.2)
-
-    def test_all_true_returns_1_0(self) -> None:
-        reflection = {"answered": True, "grounded": True, "complete": True, "actionable": True}
-        self.assertAlmostEqual(compute_reflection_quality_score(reflection), 1.0)
-
-    def test_partial_flags_intermediate(self) -> None:
-        reflection = {"answered": True, "grounded": False, "complete": True, "actionable": False}
-        result = compute_reflection_quality_score(reflection)
-        self.assertGreater(result, 0.2)
-        self.assertLess(result, 1.0)
-
-    def test_score_between_0_and_1(self) -> None:
-        for reflection in [{}, None, {"answered": True}, {"complete": False}]:
-            result = compute_reflection_quality_score(reflection)
-            self.assertGreaterEqual(result, 0.0)
-            self.assertLessEqual(result, 1.0)
-
-    def test_non_dict_returns_1_0(self) -> None:
-        # Not a dict -> behaves as falsy
-        self.assertAlmostEqual(compute_reflection_quality_score(0), 1.0)
-        self.assertAlmostEqual(compute_reflection_quality_score(""), 1.0)
 
 
 # build_run_agent_v8_result
@@ -259,10 +209,6 @@ class BuildRunAgentV8ResultTest(unittest.TestCase):
             "errors": [],
             "timeline": [],
             "failed_node": "",
-            "memory_context": "",
-            "kb_context": "",
-            "working_context": "",
-            "tool_hint": "",
         }
         s.update(extra)
         return s
@@ -328,12 +274,9 @@ class BuildSelfImprovingResultTest(unittest.TestCase):
         b = {
             "mode": "chat",
             "route": {"mode": "chat"},
-            "graph": ["retrieve_memory", "finalize"],
+            "graph": ["finalize"],
             "timeline": [],
             "errors": [],
-            "memory_context": "mem",
-            "kb_context": "kb",
-            "working_context": "",
         }
         b.update(extra)
         return b
@@ -345,7 +288,6 @@ class BuildSelfImprovingResultTest(unittest.TestCase):
             answer="final answer",
             iterations=[{"step": 1, "score": 0.8}],
             reflection={"complete": True},
-            working_context="current working",
             persona_meta=None,
         )
         defaults.update(kwargs)
@@ -372,15 +314,6 @@ class BuildSelfImprovingResultTest(unittest.TestCase):
         result = self._call(reflection=refl)
         self.assertEqual(result["final_reflection"], refl)
 
-    def test_working_context_overrides_base(self) -> None:
-        result = self._call(working_context="override context")
-        self.assertEqual(result["working_context"], "override context")
-
-    def test_empty_working_context_uses_base(self) -> None:
-        base = self._base(working_context="base wc")
-        result = self._call(base=base, working_context="")
-        self.assertEqual(result["working_context"], "base wc")
-
     def test_mode_from_base(self) -> None:
         base = self._base(mode="research")
         result = self._call(base=base)
@@ -389,8 +322,7 @@ class BuildSelfImprovingResultTest(unittest.TestCase):
     def test_required_keys_present(self) -> None:
         result = self._call()
         for key in ("run_id", "base", "answer", "iterations", "final_reflection",
-                    "mode", "route", "graph", "errors", "timeline",
-                    "memory_context", "kb_context", "working_context"):
+                    "mode", "route", "graph", "errors", "timeline"):
             self.assertIn(key, result)
 
 

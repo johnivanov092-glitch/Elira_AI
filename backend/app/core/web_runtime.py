@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Callable, Dict, Iterable, List
 
 from bs4 import BeautifulSoup
@@ -27,6 +28,107 @@ from .web_engines import (
 
 
 logger = logging.getLogger(__name__)
+
+
+# ── Source confidence (epistemic layer) ──────────────────────────────────
+# Deterministic, code-side classification of each search result into one of
+# three tiers. The LLM only narrates these labels — it never decides them and
+# is forbidden (via the prompt) from upgrading a tier or inventing facts. This
+# is what keeps "found vs verified" honest instead of leaving it to a 4B model.
+
+# Broadly reputable sources, in addition to the topic-specific high-confidence
+# sets in web_engines. Kept deliberately small and conservative.
+REPUTABLE_DOMAINS = (
+    "wikipedia.org",
+    "reuters.com",
+    "apnews.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "bloomberg.com",
+    "ft.com",
+    "nytimes.com",
+    "theguardian.com",
+    "nature.com",
+    "arxiv.org",
+    "github.com",
+    "stackoverflow.com",
+    "who.int",
+    "europa.eu",
+)
+
+# How recent a dated source must be (days) to count as "fresh".
+FRESH_WINDOW_DAYS = 45
+
+CONFIDENCE_LABELS: Dict[str, str] = {
+    "verified": "✅ проверено/актуально",
+    "plausible": "🟡 правдоподобно",
+    "unverified": "⚠️ не подтверждено",
+}
+
+
+def is_trusted_domain(domain: str) -> bool:
+    if not domain:
+        return False
+    # Government / academic TLDs (incl. country forms like gov.uk, edu.au).
+    if domain.endswith((".gov", ".edu", ".int")) or ".gov." in domain or ".edu." in domain:
+        return True
+    return domain_matches(
+        domain,
+        REPUTABLE_DOMAINS + FINANCE_HIGH_CONFIDENCE_DOMAINS + KZ_LOCAL_NEWS_DOMAINS,
+    )
+
+
+def parse_result_date(raw: str) -> datetime | None:
+    """Best-effort parse of a result's date into an aware UTC datetime.
+    Returns None when absent or unparseable (most non-news web pages)."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    candidate = text.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(candidate)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d %b %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def classify_confidence(
+    item: Dict[str, str],
+    *,
+    all_results: Iterable[Dict[str, str]] = (),
+    now: datetime | None = None,
+    fresh_days: int = FRESH_WINDOW_DAYS,
+) -> str:
+    """Classify one result into 'verified' | 'plausible' | 'unverified'.
+
+    - verified: trusted domain AND (fresh dated OR corroborated by ≥2 trusted domains)
+    - plausible: trusted domain, OR corroborated, OR at least has a date
+    - unverified: untrusted, undated, uncorroborated
+    """
+    now = now or datetime.now(timezone.utc)
+    trusted = is_trusted_domain(extract_domain(item.get("href", "")))
+
+    parsed = parse_result_date(item.get("date", ""))
+    fresh = parsed is not None and 0 <= (now - parsed).days <= fresh_days
+
+    trusted_domains = {
+        d
+        for r in all_results
+        if (d := extract_domain(r.get("href", ""))) and is_trusted_domain(d)
+    }
+    corroborated = len(trusted_domains) >= 2
+
+    if trusted and (fresh or corroborated):
+        return "verified"
+    if trusted or corroborated or parsed is not None:
+        return "plausible"
+    return "unverified"
 
 
 def result_score(
@@ -151,6 +253,7 @@ def search_news(
     geo_scope: str = "",
     local_first: bool = False,
     preferred_domains: Iterable[str] | None = None,
+    raise_errors: bool = False,
 ) -> List[Dict[str, str]]:
     results: list[Dict[str, str]] = []
     try:
@@ -170,6 +273,8 @@ def search_news(
                     }
                 )
     except Exception:
+        if raise_errors:
+            raise
         return []
     deduped = dedupe_results(results, max_results=None)
     reranked = rerank_results(
@@ -227,12 +332,13 @@ def search_web_runtime(
 
 
 def format_search_results(results: List[Dict[str, str]]) -> str:
+    materialized = list(results)
     return "\n\n".join(
-        f"[{index}] {item.get('title', '')}\n"
+        f"[{index}] {item.get('title', '')}  — {CONFIDENCE_LABELS[classify_confidence(item, all_results=materialized)]}\n"
         f"Поисковик: {ENGINE_LABELS.get(item.get('engine', ''), item.get('engine', '') or '-')}\n"
         f"Ссылка: {item.get('href', '')}\n"
         f"Описание: {item.get('body', '')}"
-        for index, item in enumerate(results, start=1)
+        for index, item in enumerate(materialized, start=1)
     )
 
 

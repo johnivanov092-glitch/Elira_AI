@@ -12,9 +12,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.project_brain.service import ProjectBrainService  # noqa: E402
-from app.services.project_brain_service import (  # noqa: E402
-    ProjectBrainService as FacadeProjectBrainService,
-)
 
 
 class FakePatchService:
@@ -34,9 +31,6 @@ class FakePatchService:
 
 
 class ProjectBrainServiceFacadeTest(unittest.TestCase):
-    def test_legacy_service_facade_reexports_application_class(self) -> None:
-        self.assertIs(FacadeProjectBrainService, ProjectBrainService)
-
     def test_scan_project_delegates_to_storage_runtime(self) -> None:
         tree = {"ok": True, "items": []}
         with patch("app.application.project_brain.service.list_project_tree", return_value=tree) as mocked:

@@ -1,3 +1,16 @@
+from pathlib import Path
+
+# Load .env and .env.local from backend/ directory so API keys (TAVILY_API_KEY etc.)
+# are available whether the server is started via Elira.bat or manually.
+# existing_envs are not overridden — OS-level env vars always win.
+_backend_dir = Path(__file__).resolve().parent.parent  # backend/
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_backend_dir / ".env",       override=False)
+    load_dotenv(_backend_dir / ".env.local", override=False)
+except ImportError:
+    pass  # python-dotenv not installed — fall back to OS env only
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 

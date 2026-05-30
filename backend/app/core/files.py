@@ -9,7 +9,6 @@ import pandas as pd
 from pypdf import PdfReader
 
 from .config import UPLOAD_DIR, CHAT_DIR, OUTPUT_DIR
-from .memory import add_memory
 
 
 # ── Утилиты ───────────────────────────────────────────────────────────────────
@@ -152,12 +151,6 @@ def process_uploaded_files(files, profile_name: str) -> Dict[str, Any]:
         saved_names.append(path.name)
         content = truncate_text(read_file_content(path), 9000)
         pieces.append(f"\n\n===== ФАЙЛ: {path.name} =====\n{content}")
-        add_memory(
-            f"FILE: {path.name}\n{content[:3000]}",
-            source=f"file:{path.name}",
-            memory_type="file",
-            profile_name=profile_name,
-        )
 
     file_context = truncate_text("\n".join(pieces), 25000)
     return {

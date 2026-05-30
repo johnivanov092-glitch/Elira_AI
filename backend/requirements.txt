@@ -1,45 +1,35 @@
-# Elira AI core requirements
+# Elira AI core requirements (minimal — chat + tools + basic search)
 # Install core:
 #   cd backend && .venv\Scripts\pip install -r requirements.txt
 # Install optional capabilities:
 #   cd backend && .venv\Scripts\pip install -r requirements-optional.txt
 
 # Core runtime
+python-dotenv>=1.0
 fastapi>=0.115,<0.116
 uvicorn[standard]>=0.32,<0.35
 pydantic>=2.10,<3.0
 ollama>=0.4,<0.5
 httpx>=0.27,<0.29
 python-multipart>=0.0.12
-aiofiles>=24.1
 
-# Search, parsing, and memory
+# Numerics — RAG vector math (embeddings stored/compared as numpy buffers)
+numpy>=1.26,<3
+
+# Search + lightweight parsing
 ddgs>=7.0
 requests>=2.32
 beautifulsoup4>=4.12
 pypdf>=5.0
-scikit-learn>=1.5
 
-# Documents and structured data
+# Documents (lightweight only — heavy parsers live in optional)
 python-docx>=1.1
-openpyxl>=3.1
-pdfplumber>=0.11
-pandas>=2.2
+
+# Secrets / file encryption
 cryptography>=43.0
 
-# Image generation
-torch>=2.5
-diffusers>=0.30,<0.32
-transformers>=4.44,<5.0
-accelerate>=0.33
-sentencepiece>=0.2
-protobuf>=4.25
+# File watching (realtime auto-index of the code-agent project)
+watchdog>=4.0,<7.0
 
-# OCR helpers
-# Requires external Poppler + Tesseract binaries for full PDF OCR support.
-pytesseract>=0.3.13
-pdf2image>=1.17
-
-# Optional packages are intentionally split out:
-# - sentence-transformers + faiss-cpu for vector-memory semantic search
-# - playwright for website screenshots
+# Heavy capabilities (image-gen, OCR, Excel/PDF tables, pandas, screenshots)
+# live in requirements-optional.txt and load lazily when first used.

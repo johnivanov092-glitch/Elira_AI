@@ -57,19 +57,43 @@ def _project_root() -> Path | None:
     return Path(_project_path) if _project_path else None
 
 
+def _root_for(project_root: str | None) -> tuple[Path | None, str | None]:
+    """Resolve which project to operate on.
+
+    If `project_root` is given, use THAT path (validated) — this is how the
+    code-agent IDE drawer scopes to its own coding project without touching the
+    chat's open project. If omitted, fall back to the global open project (the
+    chat's docs/analysis project). The two surfaces therefore stay independent.
+    """
+    if project_root:
+        try:
+            p = Path(project_root).expanduser().resolve()
+        except (OSError, RuntimeError):
+            return None, "Invalid project root"
+        if not p.is_dir():
+            return None, "Project path does not exist"
+        return p, None
+    root = _project_root()
+    if root is None:
+        return None, "Project is not open"
+    return root, None
+
+
+def _resolve_inside(base: Path, relative_path: str) -> tuple[Path | None, str | None]:
+    try:
+        base = base.resolve()
+        full_path = (base / relative_path).resolve()
+        full_path.relative_to(base)
+    except (OSError, RuntimeError, ValueError):
+        return None, "Path is outside project"
+    return full_path, None
+
+
 def _resolve_inside_project(relative_path: str) -> tuple[Path | None, str | None]:
     root = _project_root()
     if root is None:
         return None, "Project is not open"
-
-    try:
-        root = root.resolve()
-        full_path = (root / relative_path).resolve()
-        full_path.relative_to(root)
-    except (OSError, RuntimeError, ValueError):
-        return None, "Path is outside project"
-
-    return full_path, None
+    return _resolve_inside(root, relative_path)
 
 
 def _is_blocked_relative(path: Path) -> bool:
@@ -104,10 +128,10 @@ def get_project_info() -> dict[str, Any]:
     }
 
 
-def project_tree(max_depth: int = 3, max_items: int = 300) -> dict[str, Any]:
-    root = _project_root()
-    if root is None:
-        return {"ok": False, "error": "Project is not open", "items": []}
+def project_tree(max_depth: int = 3, max_items: int = 300, project_root: str | None = None) -> dict[str, Any]:
+    root, error = _root_for(project_root)
+    if error or root is None:
+        return {"ok": False, "error": error or "Project is not open", "items": []}
     if not root.exists():
         return {"ok": False, "error": "Project path does not exist", "items": []}
 
@@ -157,11 +181,14 @@ def project_tree(max_depth: int = 3, max_items: int = 300) -> dict[str, Any]:
                 return
 
     walk(root, 0)
-    return {"ok": True, "items": items, "count": len(items), "root": _project_path}
+    return {"ok": True, "items": items, "count": len(items), "root": str(root)}
 
 
-def read_project_file(path: str, max_chars: int = 20_000) -> dict[str, Any]:
-    full_path, error = _resolve_inside_project(path)
+def read_project_file(path: str, max_chars: int = 20_000, project_root: str | None = None) -> dict[str, Any]:
+    base, root_error = _root_for(project_root)
+    if root_error or base is None:
+        return {"ok": False, "error": root_error or "Project is not open"}
+    full_path, error = _resolve_inside(base, path)
     if error:
         return {"ok": False, "error": error}
     if full_path is None or not full_path.exists() or not full_path.is_file():
@@ -175,10 +202,10 @@ def read_project_file(path: str, max_chars: int = 20_000) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)}
 
 
-def search_in_project(query: str, max_results: int = 20) -> dict[str, Any]:
-    root = _project_root()
-    if root is None:
-        return {"ok": False, "error": "Project is not open"}
+def search_in_project(query: str, max_results: int = 20, project_root: str | None = None) -> dict[str, Any]:
+    root, error = _root_for(project_root)
+    if error or root is None:
+        return {"ok": False, "error": error or "Project is not open"}
 
     normalized_query = (query or "").lower()
     safe_max_results = max(0, int(max_results))

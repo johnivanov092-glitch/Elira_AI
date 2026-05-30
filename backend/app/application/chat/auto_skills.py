@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import re as _re
-from typing import Any
 
 
 _FILE_TRIGGERS_WORD = ["в word", "word документ", "word файл", "docx", "в ворд",
@@ -31,7 +30,6 @@ def maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True)
     """После ответа LLM: если пользователь хотел Word/Excel — создаём файлы из ответа."""
     if not enabled:
         return ""
-    import time
     ql = user_input.lower()
 
     extra_parts = []
@@ -110,7 +108,6 @@ def maybe_generate_files(user_input: str, llm_answer: str, enabled: bool = True)
 
 def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
     """Авто-детект скиллов по ключевым словам. disabled — набор ID отключённых скиллов."""
-    import re as _re
     disabled = disabled or set()
     ql = user_input.lower()
     parts = []

@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api/ide";
-import type { ProjectResponse } from "../api/project";
+import { pickFolder } from "../pickFolder";
+import type { ProjectResponse, SavedProject } from "../api/project";
 
 type ProjectInfo = ProjectResponse & {
   name?: string;
@@ -65,8 +66,38 @@ export default function ProjectPanel() {
   const [searchResults, setSearchResults] = useState<ProjectSearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [saved, setSaved] = useState<SavedProject[]>([]);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+
+  async function loadSaved() {
+    try { setSaved(await api.listSavedProjects()); } catch { /* non-fatal */ }
+  }
+
+  async function openByPath(path: string) {
+    const p = (path || "").trim();
+    if (!p) return;
+    setLoading(true);
+    setError("");
+    try {
+      await api.addSavedProject(p);          // remember it in the registry
+      const data = await api.openAdvancedProject(p);
+      if (data?.ok) { setProject(data as ProjectInfo); await loadTree(); }
+      else setError(`Не удалось открыть проект: ${typeof data?.error === "string" ? data.error : "неизвестно"}`);
+      await loadSaved();
+      setSwitcherOpen(false);
+    } catch (e: unknown) {
+      setError(`Не удалось открыть проект: ${errorMessage(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function removeSaved(id: string) {
+    try { await api.removeSavedProject(id); await loadSaved(); } catch { /* non-fatal */ }
+  }
 
   useEffect(() => {
+    loadSaved();
     api.getAdvancedProjectInfo()
       .then((data) => {
         if (!data?.ok) return;
@@ -79,20 +110,14 @@ export default function ProjectPanel() {
   }, []);
 
   async function openProject() {
-    const path = pathInput.trim();
-    if (!path) return;
-    setLoading(true);
-    setError("");
-    try {
-      const data = await api.openAdvancedProject(path);
-      if (data?.ok) {
-        setProject(data as ProjectInfo);
-        await loadTree();
-      }
-    } catch (e: unknown) {
-      setError(`Не удалось открыть проект: ${errorMessage(e)}`);
-    } finally {
-      setLoading(false);
+    await openByPath(pathInput);
+  }
+
+  async function browseForProject() {
+    const picked = await pickFolder(pathInput || undefined);
+    if (picked) {
+      setPathInput(picked);
+      await openByPath(picked);
     }
   }
 
@@ -160,13 +185,33 @@ export default function ProjectPanel() {
     return (
       <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)" }}>📂 Открыть проект</div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Укажи путь к папке проекта</div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Выбери папку через проводник или укажи путь вручную</div>
+        <button
+          onClick={browseForProject}
+          disabled={loading}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            padding: "10px 16px",
+            borderRadius: 8,
+            border: "1px solid var(--accent)",
+            background: "var(--accent-dim)",
+            color: "var(--accent)",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          📁 {loading ? "Открываю..." : "Выбрать папку проекта"}
+        </button>
         <div style={{ display: "flex", gap: 6 }}>
           <input
             value={pathInput}
             onChange={(e) => setPathInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && openProject()}
-            placeholder="D:\\MyProject или /home/user/project"
+            placeholder="…или вставь путь: D:\\MyProject"
             style={{
               flex: 1,
               padding: "8px 12px",
@@ -184,9 +229,9 @@ export default function ProjectPanel() {
             style={{
               padding: "8px 16px",
               borderRadius: 8,
-              border: "1px solid var(--accent)",
-              background: "var(--accent-dim)",
-              color: "var(--accent)",
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--text-secondary)",
               cursor: "pointer",
               fontSize: 12,
             }}
@@ -195,9 +240,25 @@ export default function ProjectPanel() {
           </button>
         </div>
         {error && <div style={{ fontSize: 11, color: "#ff6b6b" }}>{error}</div>}
+
+        {saved.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>Сохранённые проекты</div>
+            {saved.map((p) => (
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-surface)" }}>
+                <button onClick={() => openByPath(p.path)} title={p.path} style={{ flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none", color: "var(--text-primary)", cursor: "pointer", padding: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                  <div style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)" }}>{p.path}</div>
+                </button>
+                <button onClick={() => removeSaved(p.id)} title="Удалить из списка" style={{ flexShrink: 0, background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 13, padding: "2px 6px" }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div style={{ fontSize: 10, color: "var(--text-muted)", lineHeight: 1.5 }}>
           Elira получит доступ к файлам проекта, сможет анализировать код, искать по содержимому и
-          предлагать изменения.
+          предлагать изменения. Путь сохраняется в список — переключайся между проектами в один клик.
         </div>
       </div>
     );
@@ -229,6 +290,38 @@ export default function ProjectPanel() {
         >
           {project.name || project.path}
         </span>
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <button
+            onClick={() => { if (!switcherOpen) loadSaved(); setSwitcherOpen((v) => !v); }}
+            title="Переключить проект"
+            style={{ border: "1px solid var(--border)", background: "var(--bg-surface)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 11, padding: "4px 8px", borderRadius: 6 }}
+          >
+            ⇄ Проекты
+          </button>
+          {switcherOpen && (
+            <div style={{ position: "absolute", top: "100%", right: 0, zIndex: 50, marginTop: 4, minWidth: 240, maxWidth: 340, maxHeight: 320, overflow: "auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, boxShadow: "0 6px 20px rgba(0,0,0,.25)", padding: 4 }}>
+              {saved.length === 0 && <div style={{ padding: 10, fontSize: 11, color: "var(--text-muted)" }}>Список пуст. Открой проект — он сохранится.</div>}
+              {saved.map((p) => {
+                const active = project.path === p.path;
+                return (
+                  <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 6px", borderRadius: 6, background: active ? "var(--accent-dim)" : "transparent" }}>
+                    <button onClick={() => openByPath(p.path)} title={p.path} style={{ flex: 1, minWidth: 0, textAlign: "left", background: "transparent", border: "none", color: active ? "var(--accent)" : "var(--text-primary)", cursor: "pointer", padding: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                      <div style={{ fontSize: 9, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "var(--font-mono)" }}>{p.path}</div>
+                    </button>
+                    <button onClick={() => removeSaved(p.id)} title="Удалить из списка" style={{ flexShrink: 0, background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 12, padding: "2px 5px" }}>✕</button>
+                  </div>
+                );
+              })}
+              <button
+                onClick={() => { setSwitcherOpen(false); browseForProject(); }}
+                style={{ width: "100%", textAlign: "left", marginTop: 4, padding: "6px", borderRadius: 6, border: "1px dashed var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 11 }}
+              >
+                📁 Выбрать другую папку…
+              </button>
+            </div>
+          )}
+        </div>
         <button
           onClick={closeProject}
           style={{ border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 11 }}

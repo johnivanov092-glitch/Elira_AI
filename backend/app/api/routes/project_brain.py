@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
@@ -10,72 +9,10 @@ from app.application.project_brain import files as project_brain_files
 from app.application.project_brain import ollama as project_brain_ollama
 from app.application.project_brain import state as project_brain_state
 from app.application.project_brain import uploads as project_brain_uploads
+from app.infrastructure.db.memory import vector_memory_capability_status
 
 
 router = APIRouter(prefix="/api/project-brain", tags=["project-brain"])
-
-LEGACY_AGENT_CATALOG = [
-    {
-        "id": "chat_agent",
-        "title": "Chat agent",
-        "kind": "conversation",
-        "description": "Базовый диалоговый агент для обычных запросов.",
-    },
-    {
-        "id": "planner_agent",
-        "title": "Planner agent",
-        "kind": "planning",
-        "description": "Пошаговый план и orchestration поверх reasoning/browser/terminal.",
-    },
-    {
-        "id": "browser_agent",
-        "title": "Browser agent",
-        "kind": "research",
-        "description": "Веб-поиск, чтение страниц и сбор контекста для ответа.",
-    },
-    {
-        "id": "coder_agent",
-        "title": "Coder agent",
-        "kind": "code",
-        "description": "Локальный кодовый агент для файла, diff-preview и безопасного patch-flow.",
-    },
-    {
-        "id": "task_graph",
-        "title": "Task graph",
-        "kind": "orchestration",
-        "description": "Граф выполнения шагов для research/code/file режимов.",
-    },
-    {
-        "id": "multi_agent",
-        "title": "Multi-agent",
-        "kind": "orchestration",
-        "description": "Planner + Researcher + Coder + Reviewer + Orchestrator.",
-    },
-    {
-        "id": "reflection_v2",
-        "title": "Reflection v2",
-        "kind": "quality",
-        "description": "Самопроверка ответа, groundedness, completeness, retry loop.",
-    },
-    {
-        "id": "self_improve",
-        "title": "Self-improving agent",
-        "kind": "quality",
-        "description": "Повторное улучшение ответа после критики.",
-    },
-    {
-        "id": "terminal",
-        "title": "Terminal",
-        "kind": "tool",
-        "description": "Безопасный локальный терминальный контекст только для read-only анализа.",
-    },
-    {
-        "id": "image_generation",
-        "title": "Image generation",
-        "kind": "media",
-        "description": "Наследуемый image-flow из старого Elira: routing и prompt prep для будущей генерации.",
-    },
-]
 
 
 class ChatRequest(BaseModel):
@@ -106,7 +43,6 @@ class LocalAgentPlanRequest(BaseModel):
 
 @router.get("/status")
 def project_brain_status():
-    from app.application.memory.search import vector_memory_capability_status
     from app.application.skills import screenshot_capability_status
 
     return {
@@ -130,11 +66,6 @@ def project_snapshot():
 @router.get("/file")
 def read_project_file(path: str = Query(..., min_length=1)):
     return project_brain_files.read_project_file_payload(path)
-
-
-@router.get("/agent/legacy/catalog")
-def legacy_agents_catalog():
-    return {"status": "ok", "agents": LEGACY_AGENT_CATALOG}
 
 
 @router.get("/agent/ollama/status")

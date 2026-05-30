@@ -29,20 +29,11 @@ def run_planner_agent(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.application.memory.context import build_default_memory_context
-    from app.domain.memory.knowledge_base import record_tool_usage
-
     total_steps = 3
 
     def progress(step: int, label: str) -> None:
         if progress_callback:
             progress_callback(step, total_steps, label)
-
-    memory_context = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
 
     progress(1, "Planner: building plan")
     planner_prompt = build_planner_plan_prompt(task)
@@ -50,7 +41,7 @@ def run_planner_agent(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=planner_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         temp=0.05,
         include_history=False,
@@ -69,7 +60,6 @@ def run_planner_agent(
             idx=idx,
             step=step,
             task=task,
-            memory_profile=memory_profile,
         )
         steps_log.append(step_log)
         if gathered_context:
@@ -86,7 +76,7 @@ def run_planner_agent(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=final_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         include_history=False,
         num_ctx=num_ctx,
@@ -97,14 +87,6 @@ def run_planner_agent(
         model_name,
         extra_context=context_blob,
         num_ctx=num_ctx,
-    )
-    record_tool_usage(
-        "planner_agent",
-        task,
-        True,
-        score=1.2,
-        notes="planner + execution + reflection",
-        profile_name=memory_profile,
     )
     return {
         "plan": normalized_plan,
@@ -121,14 +103,6 @@ def run_task_graph(
     num_ctx: int = 4096,
     progress_callback: ProgressCallback = None,
 ) -> Dict[str, Any]:
-    from app.application.memory.context import build_default_memory_context
-    from app.domain.memory.knowledge_base import record_tool_usage
-
-    memory_context = build_default_memory_context(
-        query=task,
-        profile_name=memory_profile,
-        top_k=8,
-    )
     graph = make_task_graph(task, model_name, memory_profile, num_ctx=num_ctx)
 
     total_steps = max(len(graph) + 1, 2)
@@ -155,8 +129,6 @@ def run_task_graph(
                 task=task,
                 node=node,
                 model_name=model_name,
-                memory_profile=memory_profile,
-                memory_context=memory_context,
                 node_results=node_results,
                 num_ctx=num_ctx,
             )
@@ -180,7 +152,6 @@ def run_task_graph(
         retry_failed_task_graph_steps(
             task=task,
             execution_log=execution_log,
-            memory_profile=memory_profile,
         )
     )
 
@@ -195,7 +166,7 @@ def run_task_graph(
         model_name=model_name,
         profile_name="Оркестратор",
         user_input=final_prompt,
-        memory_context=memory_context,
+        memory_context="",
         use_memory=True,
         include_history=False,
         num_ctx=num_ctx,
@@ -206,15 +177,6 @@ def run_task_graph(
         model_name,
         extra_context=state_blob,
         num_ctx=num_ctx,
-    )
-    graph_ok = any(item.get("ok") for item in execution_log)
-    record_tool_usage(
-        "task_graph",
-        task,
-        graph_ok,
-        score=1.3 if graph_ok else 0.6,
-        notes="task graph + auto-retry + reflection",
-        profile_name=memory_profile,
     )
     return {
         "graph": graph,

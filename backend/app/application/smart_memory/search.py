@@ -82,15 +82,21 @@ def search_memory(
 
     for index, row in enumerate(all_rows):
         doc_tokens = doc_tokens_list[index]
-        score = 0.0
+        # Base relevance = pure query↔fact token overlap (TF-IDF). The
+        # threshold gates on THIS, not on the importance-boosted score, so a
+        # high-importance fact (e.g. the user's name / PC specs) can't be
+        # surfaced into the prompt on a weak/incidental match. Importance only
+        # influences ranking among facts that already genuinely match.
+        base = 0.0
         for query_token in query_tokens:
             if query_token in doc_tokens:
                 idf = math.log(n_docs / (1 + doc_freq.get(query_token, 0)))
-                score += 1 + idf
+                base += 1 + idf
 
-        score *= 1 + row["importance"] / 20.0
-        if score >= min_score:
-            scored.append((score, dict(row)))
+        if base < min_score:
+            continue
+        rank = base * (1 + row["importance"] / 20.0)
+        scored.append((rank, dict(row)))
 
     scored.sort(key=lambda item: item[0], reverse=True)
     items = [item for _, item in scored[:safe_limit]]
@@ -134,4 +140,8 @@ def get_relevant_context(
     if not lines:
         return ""
 
-    return "Context notes (do not mention memory or source unless asked):\n" + "\n".join(lines)
+    return (
+        "Заметки о пользователе (используй ТОЛЬКО если они прямо относятся к вопросу; "
+        "не упоминай память/источник; НЕ перечисляй личные данные — имя, параметры ПК и т.п. — "
+        "если пользователь об этом прямо не спрашивал):\n" + "\n".join(lines)
+    )

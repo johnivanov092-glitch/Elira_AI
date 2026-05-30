@@ -22,10 +22,16 @@ def _run(cmd, cwd=None, timeout=15):
         return {"ok": False, "stdout": "", "stderr": str(e)}
 
 def _find_repo(path=None):
+    # When an explicit path is given, resolve the repo within it (or its
+    # parents — projectRoot may be a subdir of the repo). Crucially, do NOT
+    # fall back to the server's own working directory: opening a non-git
+    # project must report "not a repo", not silently show Elira's repo.
     if path:
-        p = Path(path).resolve()
-        if (p / ".git").exists():
-            return str(p)
+        start = Path(path).resolve()
+        for c in [start, *start.parents]:
+            if (c / ".git").exists():
+                return str(c)
+        return None
     cwd = Path(".").resolve()
     for c in [cwd, *cwd.parents]:
         if (c / ".git").exists():

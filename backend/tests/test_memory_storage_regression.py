@@ -142,8 +142,8 @@ class MemoryStorageRegressionTest(unittest.TestCase):
                 import sys
                 sys.path.insert(0, r"{BACKEND_ROOT}")
 
-                from app.services.elira_memory_sqlite import list_chats
-                from app.services.runtime_service import get_runtime_status
+                from app.application.elira_memory.service import list_chats
+                from app.application.runtime.status import get_runtime_status
 
                 payload = {{
                     "chat_titles": [chat["title"] for chat in list_chats()],
@@ -155,6 +155,17 @@ class MemoryStorageRegressionTest(unittest.TestCase):
 
             env = os.environ.copy()
             env["ELIRA_DATA_DIR"] = str(data_path)
+            # Strip any web-search API keys so this test always
+            # asserts the no-keys fallback (duckduckgo). Without this,
+            # if pytest's own process loaded backend/.env.local via
+            # another test that imported app.main (test_route_registry,
+            # test_web_engine_stack), the subprocess inherits the keys
+            # and primary_engine becomes "tavily", flaking this test.
+            for key in (
+                "TAVILY_API_KEY", "SERPER_API_KEY", "BRAVE_API_KEY",
+                "BING_API_KEY", "GOOGLE_API_KEY", "GOOGLE_CSE_ID",
+            ):
+                env.pop(key, None)
 
             proc = subprocess.run(
                 [sys.executable, "-c", script],
@@ -191,7 +202,7 @@ class MemoryStorageRegressionTest(unittest.TestCase):
 
                 from fastapi.testclient import TestClient
                 from app.main import app
-                from app.services.rag_memory_service import get_rag_context, rag_stats
+                from app.application.rag_memory.service import get_rag_context, rag_stats
 
                 client = TestClient(app)
                 client.post("/api/memory/add", json={{"profile": "default", "text": "alpha fact", "source": "manual"}})

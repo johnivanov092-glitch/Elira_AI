@@ -39,16 +39,25 @@ def _contains_model_identity(sentence: str) -> bool:
 
 
 def _rewrite_identity_drift(answer_text: str, persona_name: str) -> str:
-    sentences = SENTENCE_SPLIT_RE.split((answer_text or "").strip())
-    kept: list[str] = []
+    text = (answer_text or "").strip()
+    # Split by paragraphs first so we can keep '\n\n' structure intact.
+    paragraphs = text.split("\n\n")
+    out_paragraphs: list[str] = []
     removed_any = False
-    for sentence in sentences:
-        if _contains_model_identity(sentence):
-            removed_any = True
-            continue
-        kept.append(sentence.strip())
+    for para in paragraphs:
+        sentences = SENTENCE_SPLIT_RE.split(para)
+        kept: list[str] = []
+        for sentence in sentences:
+            if _contains_model_identity(sentence):
+                removed_any = True
+                continue
+            stripped = sentence.strip()
+            if stripped:
+                kept.append(stripped)
+        if kept:
+            out_paragraphs.append(" ".join(kept))
 
-    rewritten = " ".join(part for part in kept if part).strip()
+    rewritten = "\n\n".join(out_paragraphs).strip()
     if not rewritten:
         return _safe_identity_reply(persona_name)
     if removed_any and persona_name.lower() not in rewritten.lower():

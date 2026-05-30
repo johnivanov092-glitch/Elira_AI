@@ -2305,3 +2305,26 @@ Live repair log for concrete backend/runtime fixes.
   `python -m unittest discover -s backend/tests -p "test_*.py"` -> 2459 tests OK.
 - Result:
   the tool registry builtin factory is now a small assembler, with category-specific helper builders and no public contract change.
+### 164. Phase 8 TODO fixes: tool.executed event + _project_path import
+- Status: completed
+- Scope: resolved two live TODOs on `claude/phase8-todos` (based on `claude/phase7-tauri-cleanup`).
+- Finish:
+  1. `backend/app/application/tool_registry/runtime.py` — `execute_tool()` now emits a `tool.executed` event via `app.application.event_bus.runtime.emit_event()` after every invocation (success and failure). The emission is best-effort (wrapped in try/except) so it never blocks callers. This completes the audit trail that Phase 3 declared pending Phase 2 merge.
+  2. `backend/app/application/event_bus/runtime.py` — removed stale `# TODO: wire tool.executed after Phase 2 merge.` comment.
+  3. `backend/app/application/chat/context_builder.py` — replaced wrong-direction import `from app.api.routes.advanced_routes import _project_path` with `from app.application.advanced.runtime import _project_path`, eliminating an application-layer -> API-layer coupling violation.
+  4. `backend/tests/test_agent_os_phase8.py` — 4 new tests covering both fixes.
+- Verification:
+  `python -m pytest backend/tests/test_agent_os_phase8.py -v` -> 4/4 passed;
+  `python -m pytest backend/tests/ -q` -> 2463 tests OK.
+- Result:
+  event bus now records every tool invocation; context_builder has no API-layer imports.
+### 165. Fix "Failed to fetch" on all frontend tabs
+- Status: completed
+- Scope: frontend API base URL and error message quality.
+- Diagnosis: all backend endpoints return 200 OK; root cause was `API_BASE` falling back to `http://${window.location.hostname}:8000`. On Windows, "localhost" resolves to ::1 (IPv6 loopback) while uvicorn listens on 127.0.0.1 (IPv4 only), causing immediate "Failed to fetch" on every tab-load call.
+- Finish:
+  1. `frontend/src/api/client.ts` — replaced dynamic `window.location.hostname` fallback with explicit `http://127.0.0.1:8000`. VITE_API_BASE_URL env var still overrides for custom deployments.
+  2. `frontend/src/chatUtils.ts` — `normalizeErrorMessage()` now maps the raw JS "Failed to fetch" / "NetworkError" to a user-readable Russian message pointing to Elira.bat.
+  3. `frontend/src/components/EliraChatShell.tsx` — streaming `onError` and multi-agent error handlers now go through `normalizeErrorMessage` for consistent friendly messages.
+- Verification: `npm run build` passes clean (1773 modules, 0 errors).
+- Result: explicit IPv4 address eliminates IPv4/IPv6 mismatch; error messages guide the user to the correct fix when the backend is genuinely unreachable.

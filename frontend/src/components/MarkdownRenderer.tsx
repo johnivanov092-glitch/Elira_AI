@@ -80,6 +80,8 @@ const UL_RE = /^\s*[-*+]\s/;
 const OL_RE = /^\s*\d+[.)]\s/;
 const CODE_FENCE_SPLIT_RE = /(```[\s\S]*?```)/g;
 const DOUBLE_NEWLINE_RE = /\n{2,}/;
+const BOLD_SECTION_RE = /\*\*[^*\n]{1,80}?:\s*\*\*/g;
+const ITALIC_SECTION_RE = /(?<![*\w])\*[^*\n]{1,80}?:\s*\*(?![*\w])/g;
 
 function normalizeInlineEnumerations(block: string): string {
   if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
@@ -93,12 +95,43 @@ function normalizeInlineEnumerations(block: string): string {
   return normalized;
 }
 
+function normalizeInlineBoldSections(block: string): string {
+  // Small LLMs (gemma:2b/3b, qwen:4b, ...) often output a single flowing
+  // paragraph with multiple '**Heading:**' markers inline. Renders as a
+  // wall of text. When we detect ≥2 such markers inside one paragraph,
+  // split into separate paragraphs at each marker.
+  if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
+  const matches = block.match(BOLD_SECTION_RE) || [];
+  if (matches.length < 2) return block;
+  // Insert '\n\n' before any bold-section marker that has content before it.
+  return block.replace(/\s+(\*\*[^*\n]{1,80}?:\s*\*\*)/g, "\n\n$1");
+}
+
+function normalizeInlineItalicSections(block: string): string {
+  // After bold-section split: if a paragraph still contains ≥2 inline
+  // italic-section markers ('*Subheading:*'), break them onto separate
+  // lines so they read as sub-bullets, not run-on prose.
+  if (!block) return block;
+  const matches = block.match(ITALIC_SECTION_RE) || [];
+  if (matches.length < 2) return block;
+  return block.replace(/([.!?])\s+(\*[^*\n]{1,80}?:\s*\*)/g, "$1\n$2")
+              .replace(/(\S)\s+(\*[^*\n]{1,80}?:\s*\*)/g, "$1\n$2");
+}
+
 function normalizeStructuredMarkdown(text: unknown): string {
   const parts = String(text || "").split(CODE_FENCE_SPLIT_RE);
   return parts.map((part, index) => {
     if (index % 2 === 1) return part;
-    return part
+    // First pass: split flowing paragraphs that have inline bold sections.
+    // Result may contain new '\n\n' boundaries that the outer split below
+    // then picks up.
+    const pre = part
       .split("\n\n")
+      .map(normalizeInlineBoldSections)
+      .join("\n\n");
+    return pre
+      .split("\n\n")
+      .map(normalizeInlineItalicSections)
       .map(normalizeInlineEnumerations)
       .join("\n\n");
   }).join("");

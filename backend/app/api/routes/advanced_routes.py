@@ -98,6 +98,26 @@ def rag_get_stats():
     return rag_stats()
 
 
+@router.delete("/rag/clear")
+def rag_clear_category(category: str | None = None):
+    """Bulk delete. If category is provided, deletes only items in that
+    category; otherwise nukes everything in rag_items. Returns the
+    number of rows removed.
+    """
+    from app.application.rag_memory.service import _conn  # type: ignore[attr-defined]
+
+    conn = _conn()
+    try:
+        if category:
+            cur = conn.execute("DELETE FROM rag_items WHERE category = ?", (category,))
+        else:
+            cur = conn.execute("DELETE FROM rag_items")
+        conn.commit()
+        return {"ok": True, "deleted": cur.rowcount, "category": category}
+    finally:
+        conn.close()
+
+
 # ═══════════════════════════════════════════════════════════════
 # PROJECT MODE
 # ═══════════════════════════════════════════════════════════════
@@ -114,11 +134,67 @@ class OpenProjectRequest(BaseModel):
 class ReadFileRequest(BaseModel):
     path: str
     max_chars: int = 20000
+    # Optional explicit project root. When set, read is scoped to it instead of
+    # the global open project — lets the code-agent drawer stay independent of
+    # the chat's open project.
+    root: str = ""
 
 
 class SearchProjectRequest(BaseModel):
     query: str
     max_results: int = 20
+    root: str = ""
+
+
+class AddProjectRequest(BaseModel):
+    path: str
+    name: str = ""
+
+
+class OpenNamedProjectRequest(BaseModel):
+    # Either a saved project id, or a name/path to resolve in the registry.
+    id: str = ""
+    name: str = ""
+
+
+@router.get("/projects")
+def list_projects():
+    """Saved project registry (name + path)."""
+    from app.application.advanced import projects_registry
+    return projects_registry.list_projects()
+
+
+@router.post("/projects")
+def add_project(payload: AddProjectRequest):
+    """Add a project to the registry (validates the path exists)."""
+    from app.application.advanced import projects_registry
+    return projects_registry.add_project(payload.path, payload.name)
+
+
+@router.delete("/projects/{project_id}")
+def remove_project(project_id: str):
+    from app.application.advanced import projects_registry
+    return projects_registry.remove_project(project_id)
+
+
+@router.post("/projects/open")
+def open_named_project(payload: OpenNamedProjectRequest):
+    """Resolve a saved project (by id or name/path) and make it the active one."""
+    from app.application.advanced import projects_registry
+    proj = None
+    if payload.id:
+        for item in projects_registry.list_projects().get("projects", []):
+            if item["id"] == payload.id:
+                proj = item
+                break
+    if proj is None:
+        proj = projects_registry.resolve_project(payload.name)
+    if proj is None:
+        return {"ok": False, "error": "Проект не найден в списке"}
+    opened = project_runtime.open_project(proj["path"])
+    if opened.get("ok"):
+        opened["id"] = proj["id"]
+    return opened
 
 
 @router.post("/project/open")
@@ -133,21 +209,21 @@ def project_info():
 
 
 @router.get("/project/tree")
-def project_tree(max_depth: int = 3, max_items: int = 300):
-    """Дерево файлов проекта."""
-    return project_runtime.project_tree(max_depth=max_depth, max_items=max_items)
+def project_tree(max_depth: int = 3, max_items: int = 300, root: str = ""):
+    """Дерево файлов проекта. `root` (опц.) — конкретный путь вместо глобального."""
+    return project_runtime.project_tree(max_depth=max_depth, max_items=max_items, project_root=root or None)
 
 
 @router.post("/project/read")
 def read_project_file(payload: ReadFileRequest):
     """Читает файл из проекта."""
-    return project_runtime.read_project_file(payload.path, max_chars=payload.max_chars)
+    return project_runtime.read_project_file(payload.path, max_chars=payload.max_chars, project_root=payload.root or None)
 
 
 @router.post("/project/search")
 def search_in_project(payload: SearchProjectRequest):
     """Поиск текста по файлам проекта."""
-    return project_runtime.search_in_project(payload.query, max_results=payload.max_results)
+    return project_runtime.search_in_project(payload.query, max_results=payload.max_results, project_root=payload.root or None)
 
 
 @router.get("/project/close")

@@ -71,6 +71,13 @@ foreach ($listener in $listeners) {
     if (-not $isRepoBackend -and $healthIsElira -and $cmdLower.Contains("uvicorn") -and $cmdLower.Contains("app.main:app")) {
         $isRepoBackend = $true
     }
+    # Last-resort: /health reports elira-ai-api, but Win32_Process metadata is
+    # unreadable (process owned by a different user / integrity level, e.g.
+    # spawned via Claude Code). Trust the health endpoint; Stop-Process by PID
+    # works without reading metadata.
+    if (-not $isRepoBackend -and $healthIsElira -and -not $exePath -and -not $cmdLine) {
+        $isRepoBackend = $true
+    }
 
     if ($isRepoBackend) {
         $repoBackendFound = $true

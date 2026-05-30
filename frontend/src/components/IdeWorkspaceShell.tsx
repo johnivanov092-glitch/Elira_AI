@@ -17,6 +17,7 @@ import {
   Check,
   Code2,
   Copy,
+  Database,
   FileCode2,
   FileText,
   Files,
@@ -31,11 +32,13 @@ import {
   Search,
   Terminal,
   TestTube2,
+  Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "../api/ide";
 import TerminalPanel from "./TerminalPanel";
+import { toast } from "./ToastHost";
 
 const LIBRARY_KEY = "elira_library_files_v7";
 
@@ -121,7 +124,24 @@ type GitData = {
   status?: GitStatusData;
 };
 
-type MainView = "artifacts" | "filetree" | "git" | "history";
+type MainView = "artifacts" | "filetree" | "git" | "history" | "rag";
+
+type RagItem = {
+  id: number;
+  text: string;
+  category: string;
+  importance: number;
+  access_count?: number;
+  created_at?: string;
+  score?: number;
+};
+
+type RagStatsState = {
+  total: number;
+  with_embeddings: number;
+  model?: string;
+  by_category?: Record<string, number>;
+};
 type FilterTab = "all" | "code" | "files";
 type GitTab = "diff" | "log" | "status";
 type SaveStatus = "error" | "ok" | "saving" | null;
@@ -132,6 +152,24 @@ type IdeWorkspaceShellProps = {
   onBackToChat?: () => void;
   onSendToChat?: (text: string) => void;
   setLibraryFiles?: (files: LibraryFile[]) => void;
+  /** Path the code-agent just touched (read/write/edit). When this
+   *  changes, the shell auto-switches to the "Файлы" sub-tab and
+   *  opens the file. autoOpenNonce lets the parent retrigger even
+   *  when the same path is revisited. */
+  autoOpenFile?: string;
+  autoOpenNonce?: number;
+  /** Absolute path of the project the code-agent is working in. The shell
+   *  keeps the backend "advanced project" (a singleton shared with the chat
+   *  "Проекты" tab) in sync with it, so the file tree / read reflect the
+   *  same project the agent uses — no separate "открой проект" step. */
+  projectRoot?: string;
+  /** When set, render ONLY this sub-view and hide the toolbar tabs.
+   *  Lets the parent (CodeWorkspaceShell) embed each view in its own
+   *  drawer. Internal mainView state is ignored. */
+  forceView?: "artifacts" | "filetree" | "git" | "history" | "rag";
+  /** Hide the entire toolbar (back button + tabs + terminal toggle).
+   *  Useful when the parent already provides a header. */
+  hideToolbar?: boolean;
 };
 
 type HighlightJs = {
@@ -229,7 +267,6 @@ function CodeView({code,lang}: { code?: string; lang?: string }) {
 
 const SB=(e: CSSProperties = {}): CSSProperties => ({padding:"3px 9px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer",fontSize:11,...e});
 const SBG=SB({color:"#4ade80",borderColor:"rgba(74,222,128,0.35)"});
-const SBB=SB({color:"#60a5fa",borderColor:"rgba(96,165,250,0.35)"});
 
 function UiIcon({ icon: Icon, size = 14, strokeWidth = 2, style }: { icon: IconComponent; size?: number; strokeWidth?: number; style?: CSSProperties }) {
   return <Icon size={size} strokeWidth={strokeWidth} style={{ display: "block", flexShrink: 0, ...style }} aria-hidden="true" />;
@@ -244,7 +281,7 @@ function IconText({ icon, children, size = 14, gap = 6, style }: { children: Rea
   );
 }
 
-export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat}: IdeWorkspaceShellProps){
+export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat,autoOpenFile,autoOpenNonce,projectRoot,forceView,hideToolbar}: IdeWorkspaceShellProps){
   const fileRef=useRef<HTMLInputElement | null>(null);
   const [drag,setDrag]=useState(false);
   const [selectedId,setSelectedId]=useState("");
@@ -252,7 +289,10 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   const [filterTab,setFilterTab]=useState<FilterTab>("all");
   const [search,setSearch]=useState("");
   const [showTerminal,setShowTerminal]=useState(false);
-  const [mainView,setMainView]=useState<MainView>("artifacts");
+  const [internalMainView,setMainView]=useState<MainView>("artifacts");
+  // Parent can force a specific sub-view (drawer mode). When set, the
+  // toolbar tabs are hidden and only that view renders.
+  const mainView: MainView = forceView ?? internalMainView;
   const [editing,setEditing]=useState(false);
   const [editVal,setEditVal]=useState("");
   const [saveStatus,setSaveStatus]=useState<SaveStatus>(null);
@@ -265,6 +305,88 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   const [ftLoading,setFtLoading]=useState(false);
   const [ftSelected,setFtSelected]=useState<string | null>(null);
   const [ftContent,setFtContent]=useState<string | null>(null);
+
+  // RAG sub-tab state
+  const [ragItems, setRagItems] = useState<RagItem[]>([]);
+  const [ragStats, setRagStats] = useState<RagStatsState | null>(null);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragError, setRagError] = useState<string | null>(null);
+  const [ragCategory, setRagCategory] = useState<string>("all");
+  const [ragSearch, setRagSearch] = useState<string>("");
+  const [ragSearchMode, setRagSearchMode] = useState(false);
+  const [ragExpanded, setRagExpanded] = useState<Record<number, boolean>>({});
+
+  const loadRagList = useCallback(async () => {
+    setRagLoading(true);
+    setRagError(null);
+    setRagSearchMode(false);
+    try {
+      const [statsRes, listRes] = await Promise.all([
+        api.getRagStats(),
+        api.listRagItems(500),
+      ]);
+      if (statsRes.ok) {
+        const by_category: Record<string, number> = {};
+        for (const it of (listRes.items || [])) {
+          by_category[it.category] = (by_category[it.category] || 0) + 1;
+        }
+        setRagStats({
+          total: statsRes.total,
+          with_embeddings: statsRes.with_embeddings,
+          model: statsRes.model,
+          by_category,
+        });
+      }
+      setRagItems((listRes.items || []) as RagItem[]);
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    } finally {
+      setRagLoading(false);
+    }
+  }, []);
+
+  const runRagSearch = useCallback(async () => {
+    const q = ragSearch.trim();
+    if (!q) { loadRagList(); return; }
+    setRagLoading(true);
+    setRagError(null);
+    setRagSearchMode(true);
+    try {
+      const res = await api.recallFromRag(q, 30, 0.0);
+      setRagItems(((res.items || []) as unknown as RagItem[]));
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    } finally {
+      setRagLoading(false);
+    }
+  }, [ragSearch, loadRagList]);
+
+  const deleteRagOne = useCallback(async (id: number) => {
+    try {
+      await api.deleteRagItem(id);
+      setRagItems((prev) => prev.filter((i) => i.id !== id));
+      setRagStats((prev) => prev ? { ...prev, total: Math.max(0, prev.total - 1) } : prev);
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    }
+  }, []);
+
+  const clearCategoryItems = useCallback(async (category: string) => {
+    const label = category === "all" ? "ВСЕ записи RAG" : `все записи категории «${category}»`;
+    if (!confirm(`Удалить ${label}? Это нельзя отменить.`)) return;
+    try {
+      await api.clearRagCategory(category === "all" ? undefined : category);
+      await loadRagList();
+    } catch (e) {
+      setRagError(String((e as Error)?.message || e));
+    }
+  }, [loadRagList]);
+
+  useEffect(() => {
+    if (mainView !== "rag") return;
+    if (ragItems.length === 0 && !ragLoading) loadRagList();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainView]);
 
   const libraryFiles=propLib||[];
   function setLibraryFiles(next: LibraryFile[]){if(propSetLib)propSetLib(next);saveJson(LIBRARY_KEY,next);}
@@ -315,18 +437,28 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   async function fetchGit(tab: GitTab){
     setGitTab(tab);setGitLoading(true);
     try{
-      if(tab==="status"){const d=await api.getGitStatus() as GitStatusData;setGitData(p=>({...p,status:d}));}
-      else if(tab==="log"){const d=await api.getGitLog(20) as GitLogData;setGitData(p=>({...p,log:d}));}
-      else if(tab==="diff"){const d=await api.getGitDiff({repo_path:"",file_path:""}) as GitDiffData;setGitData(p=>({...p,diff:d}));}
+      if(tab==="status"){const d=await api.getGitStatus(projectRoot||"") as GitStatusData;setGitData(p=>({...p,status:d}));}
+      else if(tab==="log"){const d=await api.getGitLog(20,projectRoot||"") as GitLogData;setGitData(p=>({...p,log:d}));}
+      else if(tab==="diff"){const d=await api.getGitDiff({repo_path:projectRoot||"",file_path:""}) as GitDiffData;setGitData(p=>({...p,diff:d}));}
     }catch(e){setGitData(p=>({...p,[tab]:{ok:false,error:String(e)}}));}
     finally{setGitLoading(false);}
   }
   async function doCommit(){
     if(!commitMsg.trim())return;setGitLoading(true);
     try{
-      const d=await api.createGitCommit({message:commitMsg,add_all:true});
-      if(d.ok){setCommitMsg("");fetchGit("status");}else alert("Ошибка Git: "+String(d.error || ""));
-    }catch(e){alert(String(e));}finally{setGitLoading(false);}
+      const d=await api.createGitCommit({message:commitMsg,add_all:true,repo_path:projectRoot||""});
+      if(d.ok){
+        setCommitMsg("");
+        fetchGit("status");
+        toast.success("Коммит создан");
+      } else {
+        toast.error("Git: " + String(d.error || "неизвестная ошибка"));
+      }
+    } catch(e){
+      toast.error("Git: " + String(e));
+    } finally {
+      setGitLoading(false);
+    }
   }
   useEffect(()=>{if(mainView==="git"&&!gitData.status)fetchGit("status");},[mainView]);
 
@@ -335,20 +467,63 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     api.listToolRuns(50).then(d=>setRunHistory((d||[]) as ToolRunHistoryItem[])).catch(()=>setRunHistory([]));
   },[mainView]);
 
+  // The drawer reads the file tree / files SCOPED to the agent's projectRoot
+  // (passed as `root` to the path-parameterized endpoints). It does NOT open
+  // the global "advanced project", so the code-agent drawer stays independent
+  // of whatever project the chat's Проекты tab has open. Reset the tree when
+  // projectRoot changes so it reloads for the new path.
+  useEffect(()=>{
+    setFileTree(null);setFtSelected(null);setFtContent(null);
+  },[projectRoot]);
+
+  const reloadTree = useCallback(async()=>{
+    if(!projectRoot){setFileTree([]);return;}
+    setFtLoading(true);
+    try{
+      const d=await api.getAdvancedProjectTree({maxDepth:3,maxItems:300,root:projectRoot});
+      setFileTree(normalizeFileTree(d.items));
+    }catch{
+      setFileTree([]);
+    }finally{
+      setFtLoading(false);
+    }
+  },[projectRoot]);
+
   useEffect(()=>{
     if(mainView!=="filetree"||fileTree!==null)return;
+    if(!projectRoot){setFileTree([]);return;}
     setFtLoading(true);
-    api.getAdvancedProjectTree({maxDepth:3,maxItems:300}).then(d=>{setFileTree(normalizeFileTree(d.items));setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
-  },[mainView]);
+    api.getAdvancedProjectTree({maxDepth:3,maxItems:300,root:projectRoot}).then(d=>{setFileTree(normalizeFileTree(d.items));setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
+  },[mainView,fileTree,projectRoot]);
 
   async function openFtFile(item: FileTreeItem){
     if(item.type!=="file")return;
     setFtSelected(item.path);setFtContent(null);
     try{
-      const r={json: async()=>await api.readAdvancedProjectFile(item.path, 20000)};
+      const r={json: async()=>await api.readAdvancedProjectFile(item.path, 20000, projectRoot)};
       const d=await r.json();setFtContent(d.ok?String(d.content || ""):"Ошибка: "+String(d.error || ""));
     }catch(e){setFtContent("Ошибка: "+String(e));}
   }
+
+  // Auto-open: when the code-agent touches a file (via autoOpenFile prop),
+  // switch the IDE pane to the Файлы tab and load the file content. The
+  // nonce ensures we retrigger even if the agent reads the same path twice.
+  useEffect(() => {
+    if (!autoOpenFile) return;
+    setMainView("filetree");
+    setFtSelected(autoOpenFile);
+    setFtContent(null);
+    (async () => {
+      try {
+        const d = await api.readAdvancedProjectFile(autoOpenFile, 20000, projectRoot);
+        setFtContent(d.ok ? String(d.content || "") : "Ошибка: " + String(d.error || ""));
+      } catch (e) {
+        setFtContent("Ошибка: " + String(e));
+      }
+    })();
+  // autoOpenNonce participates so a re-touch of the same path retriggers.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenFile, autoOpenNonce]);
 
   const iconFor = (a: Artifact): IconComponent =>
     a.type === "code"
@@ -363,12 +538,12 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   return(
     <div className="ide-shell" style={{display:"flex",flexDirection:"column",height:"100%",padding:0}}>
 
-      {/* Toolbar */}
+      {/* Toolbar — hidden in drawer mode (parent provides its own header) */}
+      {!hideToolbar && !forceView && (
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"7px 12px",borderBottom:"1px solid var(--border)",flexWrap:"wrap"}}>
-        <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>
-        <span style={{fontSize:13,fontWeight:600}}>Код</span>
+        {onBackToChat && <button onClick={onBackToChat} className="soft-btn" style={{border:"1px solid var(--border)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={ArrowLeft} size={13} />Чат</button>}
         <div style={{display:"flex",gap:2,marginLeft:6}}>
-          {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["history","История", History]].map(([k,l,Icon])=>(
+          {[["artifacts","Артефакты", Files],["git","Git", GitBranch],["filetree","Файлы", FolderOpen],["rag","RAG", Database],["history","История", History]].map(([k,l,Icon])=>(
             <button key={String(k)} className={`soft-btn ${mainView===k?"active":""}`} onClick={()=>setMainView(k as MainView)} style={{fontSize:11,padding:"3px 9px"}}><IconText icon={Icon as IconComponent} size={12} gap={5}>{String(l)}</IconText></button>
           ))}
         </div>
@@ -386,6 +561,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
           </button>
         </div>
       </div>
+      )}
 
       {/* ARTIFACTS */}
       {mainView==="artifacts"&&(
@@ -545,7 +721,15 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
             {ftLoading&&<div style={{padding:16,fontSize:11,color:"var(--text-muted)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={Loader2} size={12} />Загрузка дерева...</div>}
             {!ftLoading&&fileTree&&fileTree.length===0&&(
               <div style={{padding:16,fontSize:11,color:"var(--text-muted)",lineHeight:1.6}}>
-                Проект не открыт.<br/>Напиши Elira:<br/><code style={{fontSize:10}}>открой проект /путь</code>
+                {projectRoot?(
+                  <>
+                    Дерево пусто.<br/>
+                    Проект: <code style={{fontSize:10,wordBreak:"break-all"}}>{projectRoot}</code><br/>
+                    <button onClick={reloadTree} style={{marginTop:8,padding:"3px 10px",fontSize:10,border:"1px solid var(--border)",borderRadius:6,background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Обновить дерево</button>
+                  </>
+                ):(
+                  <>Проект не выбран.<br/>Укажи папку проекта в панели Code Agent сверху.</>
+                )}
               </div>
             )}
             {(fileTree||[]).map((item,i)=>(
@@ -563,6 +747,112 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
                 ?<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-muted)",fontSize:12,gap:6}}><UiIcon icon={Loader2} size={13} />Загрузка...</div>
                 :<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-muted)",fontSize:12}}><div style={{textAlign:"center"}}><div style={{display:"flex",justifyContent:"center",opacity:0.18,marginBottom:8}}><UiIcon icon={FolderOpen} size={28} /></div><div>Выбери файл слева</div></div></div>
             }
+          </div>
+        </div>
+      )}
+
+      {/* RAG */}
+      {mainView==="rag"&&(
+        <div style={{flex:1,display:"flex",flexDirection:"column",minHeight:0,overflow:"hidden"}}>
+          {/* Stats bar */}
+          <div style={{padding:"8px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",background:"var(--bg-surface)"}}>
+            <UiIcon icon={Database} size={13} />
+            <span style={{fontSize:11,fontWeight:500}}>RAG memory</span>
+            {ragStats ? (
+              <>
+                <span style={{fontSize:11,color:"var(--text-muted)"}}>{ragStats.total} записей</span>
+                <span style={{fontSize:11,color:"var(--text-muted)"}}>· с эмбеддингами: {ragStats.with_embeddings}</span>
+                {ragStats.model && <span style={{fontSize:10,color:"var(--text-muted)",fontFamily:"var(--font-mono)"}}>· {ragStats.model}</span>}
+                {ragStats.by_category && Object.entries(ragStats.by_category).map(([cat,n]) => (
+                  <button key={cat} onClick={()=>setRagCategory(cat)} className={`soft-btn ${ragCategory===cat?"active":""}`} style={{fontSize:10,padding:"2px 8px"}}>
+                    {cat}: {n}
+                  </button>
+                ))}
+              </>
+            ) : <span style={{fontSize:11,color:"var(--text-muted)"}}>загрузка...</span>}
+            <button onClick={()=>setRagCategory("all")} className={`soft-btn ${ragCategory==="all"?"active":""}`} style={{fontSize:10,padding:"2px 8px"}}>все</button>
+            <button onClick={loadRagList} disabled={ragLoading} className="soft-btn" style={{marginLeft:"auto",fontSize:11,padding:"4px 10px",opacity:ragLoading?0.5:1}}>
+              <IconText icon={RefreshCw} size={11} gap={4}>Обновить</IconText>
+            </button>
+            <button onClick={()=>clearCategoryItems(ragCategory)} disabled={ragLoading} className="soft-btn" style={{fontSize:11,padding:"4px 10px",color:"#ff6b6b",borderColor:"rgba(255,107,107,0.4)"}}>
+              <IconText icon={Trash2} size={11} gap={4}>Очистить {ragCategory==="all"?"всё":`«${ragCategory}»`}</IconText>
+            </button>
+          </div>
+
+          {/* Search */}
+          <div style={{padding:"8px 14px",borderBottom:"1px solid var(--border)",display:"flex",gap:6,alignItems:"center"}}>
+            <UiIcon icon={Search} size={12} />
+            <input
+              value={ragSearch}
+              onChange={(e)=>setRagSearch(e.target.value)}
+              onKeyDown={(e)=>{if(e.key==="Enter")runRagSearch();}}
+              placeholder="Семантический поиск по RAG (Enter)..."
+              spellCheck={false}
+              style={{flex:1,padding:"5px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-input)",color:"var(--text-primary)",fontSize:11,outline:"none"}}
+            />
+            <button onClick={runRagSearch} disabled={ragLoading} className="soft-btn" style={{fontSize:11,padding:"4px 10px"}}>
+              Искать
+            </button>
+            {ragSearchMode && (
+              <button onClick={()=>{setRagSearch("");loadRagList();}} className="soft-btn" style={{fontSize:11,padding:"4px 10px"}}>
+                Сбросить
+              </button>
+            )}
+          </div>
+
+          {ragError && (
+            <div style={{padding:"6px 14px",background:"rgba(255,107,107,0.08)",color:"#ff6b6b",fontSize:11,borderBottom:"1px solid var(--border)"}}>
+              {ragError}
+            </div>
+          )}
+
+          {/* List */}
+          <div style={{flex:1,overflow:"auto",padding:"6px 14px"}}>
+            {ragLoading && (
+              <div style={{padding:18,fontSize:12,color:"var(--text-muted)",display:"flex",alignItems:"center",gap:8,justifyContent:"center"}}>
+                <UiIcon icon={Loader2} size={14}/>
+                <span>Загружаю...</span>
+              </div>
+            )}
+            {!ragLoading && ragItems.length === 0 && (
+              <div style={{padding:30,fontSize:12,color:"var(--text-muted)",textAlign:"center",lineHeight:1.6}}>
+                {ragSearchMode ? "Ничего не найдено по запросу." : (
+                  <>
+                    RAG пуст.<br/>
+                    <span style={{fontSize:11}}>Нажми «Индексировать» в верхней панели Code workspace, или дай агенту задачу с auto-remember=on — записи появятся здесь.</span>
+                  </>
+                )}
+              </div>
+            )}
+            {!ragLoading && ragItems
+              .filter((it)=>ragCategory==="all"||it.category===ragCategory)
+              .map((it)=>{
+                const isOpen = !!ragExpanded[it.id];
+                const preview = (it.text || "").slice(0, 200);
+                return (
+                  <div key={it.id} style={{marginBottom:6,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-surface)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderBottom:isOpen?"1px solid var(--border)":"none"}}>
+                      <span style={{fontSize:10,padding:"1px 7px",borderRadius:10,background:"rgba(99,102,241,0.18)",color:"var(--accent, #6366f1)",fontFamily:"var(--font-mono)",flexShrink:0}}>{it.category}</span>
+                      {typeof it.score === "number" && (
+                        <span style={{fontSize:10,color:"#4ade80",fontFamily:"var(--font-mono)",flexShrink:0}}>score={it.score.toFixed(2)}</span>
+                      )}
+                      <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>imp={it.importance}</span>
+                      <button onClick={()=>setRagExpanded((p)=>({...p,[it.id]:!p[it.id]}))} style={{flex:1,minWidth:0,border:"none",background:"transparent",cursor:"pointer",textAlign:"left",fontSize:11,color:"var(--text-secondary)",fontFamily:"var(--font-mono)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:0}}>
+                        {preview}
+                      </button>
+                      {it.created_at && <span style={{fontSize:10,color:"var(--text-muted)",flexShrink:0}}>{it.created_at.slice(0,10)}</span>}
+                      <button onClick={()=>{if(confirm("Удалить эту запись?"))deleteRagOne(it.id);}} style={{border:"none",background:"transparent",cursor:"pointer",color:"var(--text-muted)",padding:2,flexShrink:0}} title="Удалить">
+                        <UiIcon icon={Trash2} size={11}/>
+                      </button>
+                    </div>
+                    {isOpen && (
+                      <pre style={{margin:0,padding:"8px 12px",fontSize:11,fontFamily:"var(--font-mono)",lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-primary)",background:"rgba(0,0,0,0.15)",maxHeight:400,overflow:"auto"}}>
+                        {it.text}
+                      </pre>
+                    )}
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}

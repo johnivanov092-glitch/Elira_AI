@@ -8,8 +8,39 @@ export type ApiRequestOptions = Omit<RequestInit, "body"> & {
 
 export type FallbackValue<T> = T | ((error: unknown) => T | Promise<T>);
 
+// Always use the explicit IPv4 loopback address for the backend.
+// Tauri desktop app: backend is always on 127.0.0.1:8000.
+// Using window.location.hostname risks picking up "localhost" which on Windows
+// resolves to ::1 (IPv6) — the backend only listens on IPv4 (127.0.0.1:8000).
 export const API_BASE: string =
-  import.meta.env.VITE_API_BASE_URL || `http://${window.location.hostname}:8000`;
+  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+
+/** Poll /health until the backend answers or we give up.
+ *  Returns true if backend is reachable, false on timeout.
+ *  Uses manual AbortController instead of AbortSignal.timeout()
+ *  for compatibility with older WebView2 versions. */
+export async function waitForBackend(
+  maxAttempts = 15,
+  intervalMs = 2000,
+  onAttempt?: (attempt: number) => void,
+): Promise<boolean> {
+  for (let i = 0; i < maxAttempts; i++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    try {
+      const r = await fetch(`${API_BASE}/health`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (r.ok) return true;
+    } catch {
+      // network error or timeout — backend not ready yet
+    } finally {
+      clearTimeout(timer);
+    }
+    onAttempt?.(i + 1);
+    await new Promise<void>((res) => setTimeout(res, intervalMs));
+  }
+  return false;
+}
 
 export function buildApiUrl(path = ""): string {
   if (!path) return API_BASE;

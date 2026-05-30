@@ -6,7 +6,7 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 
 class ProjectBrainEngineService:
@@ -58,7 +58,6 @@ class ProjectBrainEngineService:
 
         for root, dirnames, filenames in os.walk(self.project_root):
             root_path = Path(root)
-            rel_root = root_path.relative_to(self.project_root)
             directories += len(dirnames)
 
             for name in filenames:

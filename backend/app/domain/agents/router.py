@@ -93,8 +93,6 @@ def choose_v8_strategy(
     force_strategy: str | None = None,
 ) -> dict[str, Any]:
     """Select an execution strategy based on task, route, and learned history."""
-    from app.domain.memory.strategy_tracking import get_v8_strategy_preferences
-
     if force_strategy:
         return {
             "strategy": str(force_strategy),
@@ -179,23 +177,6 @@ def choose_v8_strategy(
     if any(x in text for x in _SELF_IMPROVE_KW):
         scores["self_improve"] += 1.10
 
-    learned: list[dict] = []
-    try:
-        learned = get_v8_strategy_preferences(task, profile_name=memory_profile, limit=5)
-    except Exception:
-        learned = []
-
-    for pref in learned:
-        strategy = pref.get("strategy")
-        if strategy not in scores:
-            continue
-        runs = max(int(pref.get("runs", 0) or 0), 1)
-        success_rate = float(pref.get("success_rate", 0.0) or 0.0)
-        avg_latency = float(pref.get("avg_latency", 0.0) or 0.0)
-        learned_bonus = min(float(pref.get("score", 0.0)) / runs, 2.5) * 0.18
-        latency_penalty = min(avg_latency / 10.0, 0.35)
-        scores[strategy] += (success_rate * 0.95) + learned_bonus - latency_penalty
-
     strategy = max(scores.items(), key=lambda kv: kv[1])[0]
     ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     top_score = ordered[0][1]
@@ -205,20 +186,11 @@ def choose_v8_strategy(
         2,
     )
 
-    reason_parts = [f"mode={mode}"]
-    if learned:
-        best = learned[0]
-        reason_parts.append(
-            f"learned={best.get('strategy')} sr={best.get('success_rate')} runs={best.get('runs')}"
-        )
-    else:
-        reason_parts.append("learned=no_history")
-
     return {
         "strategy": strategy,
         "confidence": confidence,
-        "source": "learning_router",
-        "reason": "; ".join(reason_parts),
+        "source": "heuristic_router",
+        "reason": f"mode={mode}",
         "scores": {k: round(v, 3) for k, v in sorted(scores.items())},
-        "learned_preferences": learned,
+        "learned_preferences": [],
     }
