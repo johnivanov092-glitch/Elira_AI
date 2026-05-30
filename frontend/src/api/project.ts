@@ -15,11 +15,16 @@ export type ProjectBrainStatus = ProjectResponse & {
 export type ProjectTreeOptions = {
   maxDepth?: number;
   maxItems?: number;
+  /** Explicit project root. When set, scopes the call to this path instead of
+   *  the global open project (keeps the code-agent drawer independent of the
+   *  chat's open project). */
+  root?: string;
 };
 
 export type ReadProjectFileRequest = {
   path: string;
   max_chars?: number;
+  root?: string;
 };
 
 export type AdvancedMultiAgentRequest = {
@@ -105,11 +110,13 @@ export async function openSavedProject(arg: { id?: string; name?: string }): Pro
 export async function getAdvancedProjectTree({
   maxDepth = 3,
   maxItems = 300,
+  root = "",
 }: ProjectTreeOptions = {}): Promise<ProjectResponse> {
   return request<ProjectResponse>(
     withParams("/api/advanced/project/tree", {
       max_depth: maxDepth,
       max_items: maxItems,
+      root,
     }),
   );
 }
@@ -117,9 +124,11 @@ export async function getAdvancedProjectTree({
 export async function readAdvancedProjectFile(
   path: string,
   maxChars?: number,
+  root?: string,
 ): Promise<ProjectResponse> {
   const body: ReadProjectFileRequest = { path };
   if (maxChars) body.max_chars = maxChars;
+  if (root) body.root = root;
   return request<ProjectResponse>("/api/advanced/project/read", {
     method: "POST",
     body,

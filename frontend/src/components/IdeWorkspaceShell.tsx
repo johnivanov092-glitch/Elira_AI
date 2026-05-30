@@ -468,32 +468,20 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     api.listToolRuns(50).then(d=>setRunHistory((d||[]) as ToolRunHistoryItem[])).catch(()=>setRunHistory([]));
   },[mainView]);
 
-  // Keep the backend "advanced project" aligned with the agent's projectRoot.
-  // Opening is idempotent on the backend; openedRootRef avoids redundant calls.
-  const openedRootRef = useRef<string>("");
+  // The drawer reads the file tree / files SCOPED to the agent's projectRoot
+  // (passed as `root` to the path-parameterized endpoints). It does NOT open
+  // the global "advanced project", so the code-agent drawer stays independent
+  // of whatever project the chat's Проекты tab has open. Reset the tree when
+  // projectRoot changes so it reloads for the new path.
   useEffect(()=>{
-    if(!projectRoot){openedRootRef.current="";setFileTree(null);return;}
-    if(openedRootRef.current===projectRoot)return;
-    let cancelled=false;
-    (async()=>{
-      try{
-        await api.openAdvancedProject(projectRoot);
-        if(cancelled)return;
-        openedRootRef.current=projectRoot;
-        // Force the tree (and any open file) to reload for the new project.
-        setFileTree(null);setFtSelected(null);setFtContent(null);
-      }catch{
-        if(!cancelled)openedRootRef.current="";
-      }
-    })();
-    return()=>{cancelled=true;};
+    setFileTree(null);setFtSelected(null);setFtContent(null);
   },[projectRoot]);
 
   const reloadTree = useCallback(async()=>{
+    if(!projectRoot){setFileTree([]);return;}
     setFtLoading(true);
     try{
-      if(projectRoot)await api.openAdvancedProject(projectRoot);
-      const d=await api.getAdvancedProjectTree({maxDepth:3,maxItems:300});
+      const d=await api.getAdvancedProjectTree({maxDepth:3,maxItems:300,root:projectRoot});
       setFileTree(normalizeFileTree(d.items));
     }catch{
       setFileTree([]);
@@ -504,15 +492,16 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
 
   useEffect(()=>{
     if(mainView!=="filetree"||fileTree!==null)return;
+    if(!projectRoot){setFileTree([]);return;}
     setFtLoading(true);
-    api.getAdvancedProjectTree({maxDepth:3,maxItems:300}).then(d=>{setFileTree(normalizeFileTree(d.items));setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
-  },[mainView,fileTree]);
+    api.getAdvancedProjectTree({maxDepth:3,maxItems:300,root:projectRoot}).then(d=>{setFileTree(normalizeFileTree(d.items));setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
+  },[mainView,fileTree,projectRoot]);
 
   async function openFtFile(item: FileTreeItem){
     if(item.type!=="file")return;
     setFtSelected(item.path);setFtContent(null);
     try{
-      const r={json: async()=>await api.readAdvancedProjectFile(item.path, 20000)};
+      const r={json: async()=>await api.readAdvancedProjectFile(item.path, 20000, projectRoot)};
       const d=await r.json();setFtContent(d.ok?String(d.content || ""):"Ошибка: "+String(d.error || ""));
     }catch(e){setFtContent("Ошибка: "+String(e));}
   }
@@ -527,7 +516,7 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     setFtContent(null);
     (async () => {
       try {
-        const d = await api.readAdvancedProjectFile(autoOpenFile, 20000);
+        const d = await api.readAdvancedProjectFile(autoOpenFile, 20000, projectRoot);
         setFtContent(d.ok ? String(d.content || "") : "Ошибка: " + String(d.error || ""));
       } catch (e) {
         setFtContent("Ошибка: " + String(e));

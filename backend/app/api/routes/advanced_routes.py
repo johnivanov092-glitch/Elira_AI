@@ -134,11 +134,16 @@ class OpenProjectRequest(BaseModel):
 class ReadFileRequest(BaseModel):
     path: str
     max_chars: int = 20000
+    # Optional explicit project root. When set, read is scoped to it instead of
+    # the global open project — lets the code-agent drawer stay independent of
+    # the chat's open project.
+    root: str = ""
 
 
 class SearchProjectRequest(BaseModel):
     query: str
     max_results: int = 20
+    root: str = ""
 
 
 class AddProjectRequest(BaseModel):
@@ -204,21 +209,21 @@ def project_info():
 
 
 @router.get("/project/tree")
-def project_tree(max_depth: int = 3, max_items: int = 300):
-    """Дерево файлов проекта."""
-    return project_runtime.project_tree(max_depth=max_depth, max_items=max_items)
+def project_tree(max_depth: int = 3, max_items: int = 300, root: str = ""):
+    """Дерево файлов проекта. `root` (опц.) — конкретный путь вместо глобального."""
+    return project_runtime.project_tree(max_depth=max_depth, max_items=max_items, project_root=root or None)
 
 
 @router.post("/project/read")
 def read_project_file(payload: ReadFileRequest):
     """Читает файл из проекта."""
-    return project_runtime.read_project_file(payload.path, max_chars=payload.max_chars)
+    return project_runtime.read_project_file(payload.path, max_chars=payload.max_chars, project_root=payload.root or None)
 
 
 @router.post("/project/search")
 def search_in_project(payload: SearchProjectRequest):
     """Поиск текста по файлам проекта."""
-    return project_runtime.search_in_project(payload.query, max_results=payload.max_results)
+    return project_runtime.search_in_project(payload.query, max_results=payload.max_results, project_root=payload.root or None)
 
 
 @router.get("/project/close")
