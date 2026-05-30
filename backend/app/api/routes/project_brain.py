@@ -10,6 +10,7 @@ from app.application.project_brain import files as project_brain_files
 from app.application.project_brain import ollama as project_brain_ollama
 from app.application.project_brain import state as project_brain_state
 from app.application.project_brain import uploads as project_brain_uploads
+from app.infrastructure.db.memory import vector_memory_capability_status
 
 
 router = APIRouter(prefix="/api/project-brain", tags=["project-brain"])
@@ -41,33 +42,6 @@ class LocalAgentPlanRequest(BaseModel):
     model: str | None = Field(default=None, max_length=200)
 
 
-def _vector_memory_capability_status() -> dict:
-    """Report whether the optional FAISS/sentence-transformers stack is
-    installed. Used to surface 'vector memory available' badge in UI.
-
-    Elira's primary vector memory is rag_memory.db (Ollama nomic-embed-text);
-    FAISS is an optional extra dep some users may have installed for their
-    own scripts. This endpoint just reports presence.
-    """
-    import importlib.util
-
-    def _has(name: str) -> bool:
-        return importlib.util.find_spec(name) is not None
-
-    missing = [
-        name for name in ("sentence_transformers", "faiss", "numpy") if not _has(name)
-    ]
-    available = not missing
-    return {
-        "feature": "vector_memory",
-        "available": available,
-        "mode": "vector" if available else "keyword_fallback",
-        "reason": None if available else "optional_dependency_missing",
-        "missing_packages": missing,
-        "hint": None if available else "pip install -r requirements-optional.txt",
-    }
-
-
 @router.get("/status")
 def project_brain_status():
     from app.application.skills import screenshot_capability_status
@@ -79,7 +53,7 @@ def project_brain_status():
         "max_read_bytes": project_brain_state.MAX_READ_BYTES,
         "chat_upload_root": str(project_brain_state.UPLOAD_ROOT),
         "capabilities": {
-            "vector_memory": _vector_memory_capability_status(),
+            "vector_memory": vector_memory_capability_status(),
             "screenshot": screenshot_capability_status(),
         },
     }

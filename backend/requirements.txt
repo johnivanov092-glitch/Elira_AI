@@ -12,7 +12,9 @@ pydantic>=2.10,<3.0
 ollama>=0.4,<0.5
 httpx>=0.27,<0.29
 python-multipart>=0.0.12
-aiofiles>=24.1
+
+# Numerics — RAG vector math (embeddings stored/compared as numpy buffers)
+numpy>=1.26,<3
 
 # Search + lightweight parsing
 ddgs>=7.0
@@ -29,5 +31,5 @@ cryptography>=43.0
 # File watching (realtime auto-index of the code-agent project)
 watchdog>=4.0,<7.0
 
-# Heavy capabilities (image-gen, vector memory, OCR, Excel/PDF tables, pandas)
+# Heavy capabilities (image-gen, OCR, Excel/PDF tables, pandas, screenshots)
 # live in requirements-optional.txt and load lazily when first used.

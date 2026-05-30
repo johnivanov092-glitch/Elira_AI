@@ -3,11 +3,6 @@
 #   cd backend && .venv\Scripts\pip install -r requirements-optional.txt
 # Or pick a profile by copy-pasting just the section you need.
 
-# === Vector memory (semantic search) ===
-sentence-transformers>=3.0
-faiss-cpu>=1.8
-scikit-learn>=1.5
-
 # === Image generation (SDXL Turbo / FLUX.1-schnell) ===
 torch>=2.5
 diffusers>=0.30,<0.32

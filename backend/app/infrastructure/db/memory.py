@@ -1,31 +1,25 @@
-"""memory.py — optional vector memory capability check.
+"""memory.py — vector-memory capability probe.
 
-The active memory implementation lives in app.application.memory.smart_memory.
-This module retains only the dependency-probe used by the status endpoint.
+Elira's vector memory is rag_memory.db (Ollama nomic-embed-text embeddings
+compared as numpy buffers) and is part of core. numpy is the only hard
+requirement; when present, semantic recall is active, otherwise it degrades to
+keyword search. (The old FAISS/sentence-transformers stack was removed — no
+code used it.)
+
+Single source of truth for the capability shape consumed by the project-brain
+status endpoint and the smoke-contract check.
 """
 import importlib.util
-from typing import Any, Dict, List
-
-
-def _has(module_name: str) -> bool:
-    return importlib.util.find_spec(module_name) is not None
+from typing import Any, Dict
 
 
 def vector_memory_capability_status() -> Dict[str, Any]:
-    missing: List[str] = []
-    if not _has("sentence_transformers"):
-        missing.append("sentence-transformers")
-    if not _has("faiss"):
-        missing.append("faiss-cpu")
-    if not _has("numpy"):
-        missing.append("numpy")
-
-    available = not missing
+    has_numpy = importlib.util.find_spec("numpy") is not None
     return {
         "feature": "vector_memory",
-        "available": available,
-        "mode": "vector" if available else "keyword_fallback",
-        "reason": None if available else "optional_dependency_missing",
-        "missing_packages": missing,
-        "hint": None if available else "pip install -r requirements-optional.txt",
+        "available": has_numpy,
+        "mode": "vector" if has_numpy else "keyword_fallback",
+        "reason": None if has_numpy else "numpy_missing",
+        "missing_packages": [] if has_numpy else ["numpy"],
+        "hint": None if has_numpy else "pip install -r requirements.txt",
     }
