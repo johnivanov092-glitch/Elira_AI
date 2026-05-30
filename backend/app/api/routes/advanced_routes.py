@@ -141,6 +141,57 @@ class SearchProjectRequest(BaseModel):
     max_results: int = 20
 
 
+class AddProjectRequest(BaseModel):
+    path: str
+    name: str = ""
+
+
+class OpenNamedProjectRequest(BaseModel):
+    # Either a saved project id, or a name/path to resolve in the registry.
+    id: str = ""
+    name: str = ""
+
+
+@router.get("/projects")
+def list_projects():
+    """Saved project registry (name + path)."""
+    from app.application.advanced import projects_registry
+    return projects_registry.list_projects()
+
+
+@router.post("/projects")
+def add_project(payload: AddProjectRequest):
+    """Add a project to the registry (validates the path exists)."""
+    from app.application.advanced import projects_registry
+    return projects_registry.add_project(payload.path, payload.name)
+
+
+@router.delete("/projects/{project_id}")
+def remove_project(project_id: str):
+    from app.application.advanced import projects_registry
+    return projects_registry.remove_project(project_id)
+
+
+@router.post("/projects/open")
+def open_named_project(payload: OpenNamedProjectRequest):
+    """Resolve a saved project (by id or name/path) and make it the active one."""
+    from app.application.advanced import projects_registry
+    proj = None
+    if payload.id:
+        for item in projects_registry.list_projects().get("projects", []):
+            if item["id"] == payload.id:
+                proj = item
+                break
+    if proj is None:
+        proj = projects_registry.resolve_project(payload.name)
+    if proj is None:
+        return {"ok": False, "error": "Проект не найден в списке"}
+    opened = project_runtime.open_project(proj["path"])
+    if opened.get("ok"):
+        opened["id"] = proj["id"]
+    return opened
+
+
 @router.post("/project/open")
 def open_project(payload: OpenProjectRequest):
     """Открывает проект по пути."""

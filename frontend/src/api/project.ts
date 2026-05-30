@@ -80,6 +80,28 @@ export async function openAdvancedProject(
   });
 }
 
+export type SavedProject = { id: string; name: string; path: string; created_at?: number };
+
+export async function listSavedProjects(): Promise<SavedProject[]> {
+  const res = await request<{ ok: boolean; projects: SavedProject[] }>("/api/advanced/projects");
+  return Array.isArray(res?.projects) ? res.projects : [];
+}
+
+export async function addSavedProject(path: string, name = ""): Promise<ProjectResponse> {
+  return request<ProjectResponse>("/api/advanced/projects", { method: "POST", body: { path, name } });
+}
+
+export async function removeSavedProject(id: string): Promise<ProjectResponse> {
+  return request<ProjectResponse>(`/api/advanced/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function openSavedProject(arg: { id?: string; name?: string }): Promise<ProjectResponse> {
+  return request<ProjectResponse>("/api/advanced/projects/open", {
+    method: "POST",
+    body: { id: arg.id || "", name: arg.name || "" },
+  });
+}
+
 export async function getAdvancedProjectTree({
   maxDepth = 3,
   maxItems = 300,

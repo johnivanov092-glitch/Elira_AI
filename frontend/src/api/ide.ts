@@ -27,14 +27,18 @@ import {
   getGitStatus,
 } from "./git";
 import {
+  addSavedProject,
   closeAdvancedProject,
   getAdvancedProjectInfo,
   getAdvancedProjectTree,
   getProjectBrainStatus,
   getProjectFile,
   getProjectSnapshot,
+  listSavedProjects,
   openAdvancedProject,
+  openSavedProject,
   readAdvancedProjectFile,
+  removeSavedProject,
   runAdvancedMultiAgent,
   searchAdvancedProject,
 } from "./project";
@@ -171,14 +175,18 @@ export {
   getGitStatus,
 } from "./git";
 export {
+  addSavedProject,
   closeAdvancedProject,
   getAdvancedProjectInfo,
   getAdvancedProjectTree,
   getProjectBrainStatus,
   getProjectFile,
   getProjectSnapshot,
+  listSavedProjects,
   openAdvancedProject,
+  openSavedProject,
   readAdvancedProjectFile,
+  removeSavedProject,
   runAdvancedMultiAgent,
   searchAdvancedProject,
 } from "./project";
@@ -368,6 +376,10 @@ export const api = {
   searchAdvancedProject,
   closeAdvancedProject,
   runAdvancedMultiAgent,
+  listSavedProjects,
+  addSavedProject,
+  removeSavedProject,
+  openSavedProject,
   getGitStatus,
   getGitLog,
   getGitDiff,
