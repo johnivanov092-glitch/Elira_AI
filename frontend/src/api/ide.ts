@@ -46,6 +46,7 @@ import {
 import {
   createPipeline,
   deletePipeline,
+  getPipelineLogs,
   listPipelines,
   runPipeline,
   updatePipeline,
@@ -189,6 +190,7 @@ export {
 export {
   createPipeline,
   deletePipeline,
+  getPipelineLogs,
   listPipelines,
   runPipeline,
   updatePipeline,
@@ -342,6 +344,7 @@ export const api = {
   updateTask,
   deleteTask,
   listPipelines,
+  getPipelineLogs,
   createPipeline,
   runPipeline,
   updatePipeline,

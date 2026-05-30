@@ -40,6 +40,7 @@ class SettingsRequest(BaseModel):
     default_model: str = "gemma3:4b"
     agent_profile: str = "Универсальный"
     route_model_map: dict | None = None
+    orchestration_enabled: bool = False
 
 
 @router.on_event("startup")
@@ -66,6 +67,7 @@ def settings_put(payload: SettingsRequest):
         payload.default_model,
         payload.agent_profile,
         payload.route_model_map,
+        payload.orchestration_enabled,
     )
 
 

@@ -180,6 +180,7 @@ export async function execute(body: UnknownRecord = {}): Promise<UnknownRecord &
       use_memory: body.use_memory ?? true,
       use_library: body.use_library ?? true,
       use_reflection: body.use_reflection ?? false,
+      direct_llm: body.direct_llm ?? false,
     },
   });
   const routeError = extractAgentError(response);
@@ -222,6 +223,7 @@ export function executeStream(
     use_csv: body.use_csv ?? true,
     use_webhook: body.use_webhook ?? true,
     use_plugins: body.use_plugins ?? true,
+    direct_llm: body.direct_llm ?? false,
   };
 
   fetch(buildApiUrl("/api/chat/stream"), {

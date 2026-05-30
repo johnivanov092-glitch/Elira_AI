@@ -69,7 +69,7 @@ def _get_route_map() -> dict[str, list[str]]:
 # Sentinel values that mean "route via orchestration table, don't trust
 # user_model verbatim". Anything matching is auto-routed; everything else
 # is treated as an explicit choice the user wants honoured.
-AUTO_ROUTE_TOKENS = frozenset({"", "auto", "авто", DEFAULT_MODEL})
+AUTO_ROUTE_TOKENS = frozenset({"", "auto", "авто"})
 
 
 def is_auto_route(user_model: str | None) -> bool:
@@ -82,7 +82,7 @@ def is_auto_route(user_model: str | None) -> bool:
 def pick_model_for_route(route: str, user_model: str, available_models: list[str] | None = None) -> str:
     """
     Авто-выбор модели:
-      - Если user_model — сентинель ("", "auto", "авто" или DEFAULT_MODEL) →
+      - Если user_model — сентинель ("", "auto" или "авто") →
         читаем таблицу оркестрации (route_map) и выбираем первую доступную
         модель из кандидатов для данного route.
       - Иначе — уважаем явный выбор пользователя, оркестрация не вмешивается.

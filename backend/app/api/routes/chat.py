@@ -15,6 +15,7 @@ from app.application.chat.planner_v2 import (
     refresh_planner,
 )
 from app.application.chat.runtime import run_agent, run_agent_stream
+from app.application.chat.ollama_chat import run_chat, run_chat_stream
 from app.application.elira_memory.settings import (
     get_planner_keywords,
     save_planner_keywords,
@@ -98,12 +99,79 @@ class ChatRequest(BaseModel):
     use_csv: bool = True
     use_webhook: bool = True
     use_plugins: bool = True
+    direct_llm: bool = False
+
+
+def _direct_meta(payload: ChatRequest) -> dict[str, Any]:
+    return {
+        "model_name": payload.model_name,
+        "profile_name": payload.profile_name,
+        "route": "direct_llm",
+        "tools": [],
+        "direct_llm": True,
+    }
+
+
+def _direct_timeline(status: str = "done", detail: str = "") -> list[dict[str, Any]]:
+    item: dict[str, Any] = {
+        "step": "direct_llm",
+        "title": "Direct LLM",
+        "status": status,
+    }
+    if detail:
+        item["detail"] = detail
+    return [item]
+
+
+def _direct_history(payload: ChatRequest) -> list[dict[str, Any]]:
+    history = list(payload.history or [])
+    if not history:
+        return history
+    last = history[-1]
+    if (
+        isinstance(last, dict)
+        and last.get("role") == "user"
+        and str(payload.user_input).strip().startswith(str(last.get("content") or "").strip())
+    ):
+        return history[:-1]
+    return history
+
+
+def _run_direct_chat(payload: ChatRequest) -> dict[str, Any]:
+    result = run_chat(
+        model_name=payload.model_name,
+        profile_name=payload.profile_name,
+        user_input=payload.user_input,
+        history=_direct_history(payload),
+        num_ctx=payload.num_ctx,
+    )
+    answer = str(result.get("answer") or "")
+    warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+    error = "; ".join(str(item) for item in warnings if item) if result.get("ok") is False else ""
+    meta = {**_direct_meta(payload), **(result.get("meta") if isinstance(result.get("meta"), dict) else {})}
+    if error:
+        meta["error"] = error
+    return {
+        "ok": bool(result.get("ok")),
+        "answer": answer,
+        "content": answer,
+        "timeline": _direct_timeline("error" if error else "done", error),
+        "tool_results": [],
+        "meta": meta,
+    }
 
 
 # ── обычный запрос (без стриминга) ──────────────────────────────
 @router.post("/send")
 def chat_send(payload: ChatRequest):
     try:
+        if payload.direct_llm:
+            result = _run_direct_chat(payload)
+            return JSONResponse(
+                content=jsonable_encoder(result),
+                media_type="application/json; charset=utf-8",
+            )
+
         result = run_agent(
             model_name=payload.model_name,
             profile_name=payload.profile_name,
@@ -168,6 +236,27 @@ def chat_stream(payload: ChatRequest):
 
     def event_generator():
         try:
+            if payload.direct_llm:
+                full_text = ""
+                for token in run_chat_stream(
+                    model_name=payload.model_name,
+                    profile_name=payload.profile_name,
+                    user_input=payload.user_input,
+                    history=_direct_history(payload),
+                    num_ctx=payload.num_ctx,
+                ):
+                    full_text += token
+                    yield f"data: {json.dumps({'token': token, 'done': False}, ensure_ascii=False)}\n\n"
+                done_event = {
+                    "token": "",
+                    "done": True,
+                    "full_text": full_text,
+                    "meta": _direct_meta(payload),
+                    "timeline": _direct_timeline(),
+                }
+                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+                return
+
             for event in run_agent_stream(
                 model_name=payload.model_name,
                 profile_name=payload.profile_name,

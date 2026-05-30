@@ -25,7 +25,7 @@ import "../styles/markdown.css";
 import { PROFILE_DESCRIPTIONS, SKILLS } from "../chatConstants";
 import {
   loadLibraryFiles, saveLibraryFiles, loadChatContextMap, saveChatContextMap,
-  makeId, deriveChatTitle, shortModelName, normalizeErrorMessage, buildHistory,
+  makeId, deriveChatTitle, shortModelName, normalizeErrorMessage, buildHistory, isAutoModel,
 } from "../chatUtils";
 import {
   UiIcon, IconText, PanelNotice,
@@ -83,7 +83,19 @@ interface PipelineItem {
   run_count?: number;
   last_run?: string;
   next_run?: string;
+  last_result?: unknown;
+  last_result_preview?: unknown;
   last_error?: string;
+  [key: string]: unknown;
+}
+
+interface PipelineLogEntry {
+  id?: string | number;
+  started_at?: string;
+  finished_at?: string;
+  ok?: boolean | number;
+  result?: unknown;
+  error?: string;
   [key: string]: unknown;
 }
 
@@ -138,6 +150,226 @@ interface PipeForm {
 type RouteMap = Record<string, string[]>;
 
 // ── Helper functions ────────────────────────────────────────────────────────
+
+const PIPELINE_TYPE_LABELS: Record<string, string> = {
+  prompt: "Промпт",
+  web_search: "Веб-поиск",
+  plugin: "Плагин",
+  workflow: "Workflow",
+  http: "HTTP",
+};
+
+const PIPELINE_TASK_DATA_KEYS: Record<string, string> = {
+  prompt: "prompt",
+  web_search: "query",
+  plugin: "plugin_name",
+  workflow: "workflow_id",
+  http: "url",
+};
+
+const PIPELINE_TASK_PLACEHOLDERS: Record<string, string> = {
+  prompt: "Промпт для LLM",
+  web_search: "Поисковый запрос",
+  plugin: "Имя плагина",
+  workflow: "Workflow ID",
+  http: "URL",
+};
+const PIPELINE_DISPLAY_TIME_ZONE = "Asia/Almaty";
+
+function getPipelineTaskDataKey(taskType: string): string {
+  return PIPELINE_TASK_DATA_KEYS[taskType] || "prompt";
+}
+
+function getPipelineTaskInputValue(taskData: Record<string, string>): string {
+  return taskData.prompt || taskData.query || taskData.plugin_name || taskData.workflow_id || taskData.url || "";
+}
+
+function parsePipelineResult(value: unknown): unknown {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try { return JSON.parse(trimmed); } catch { return trimmed; }
+}
+
+function isPipelineResultVisible(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== "";
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parsePipelineTimestamp(raw: string): Date | null {
+  if (!raw) return null;
+  const normalized = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw) ? raw : `${raw}Z`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatPipelineTimestamp(raw?: string): string {
+  if (!raw) return "Без даты";
+  const date = parsePipelineTimestamp(raw);
+  return date ? date.toLocaleString("ru-RU", { timeZone: PIPELINE_DISPLAY_TIME_ZONE }) : raw;
+}
+
+function formatPipelineLogDate(log: PipelineLogEntry): string {
+  return formatPipelineTimestamp(log.finished_at || log.started_at);
+}
+
+function isPipelineLogOk(log: PipelineLogEntry): boolean {
+  return log.ok === true || log.ok === 1;
+}
+
+function getPipelineOutputLogs(pipeline: PipelineItem, logs: PipelineLogEntry[]): PipelineLogEntry[] {
+  if (logs.length > 0) return logs;
+  const preview = isPipelineResultVisible(pipeline.last_result_preview) ? pipeline.last_result_preview : pipeline.last_result;
+  if (!isPipelineResultVisible(preview)) return [];
+  return [{
+    id: "last_result",
+    started_at: pipeline.last_run,
+    finished_at: pipeline.last_run,
+    ok: !pipeline.last_error,
+    result: preview,
+    error: pipeline.last_error,
+  }];
+}
+
+function formatPipelineFallbackResult(value: unknown): string {
+  const parsed = parsePipelineResult(value);
+  if (parsed === null || parsed === undefined) return "";
+  if (typeof parsed === "string") return parsed;
+  if (isRecordValue(parsed)) {
+    const result = parsed as Record<string, unknown>;
+    if (typeof result.answer === "string" && result.answer.trim()) return result.answer;
+    if (typeof result.body === "string" && result.body.trim()) return result.body;
+    return JSON.stringify(parsed, null, 2);
+  }
+  return String(parsed);
+}
+
+function splitSearchSnippet(body: string): string[] {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  const sentences = normalized.split(/(?<=[.!?])\s+(?=[A-ZА-ЯЁ0-9])/u);
+  const items: string[] = [];
+
+  for (const sentence of sentences) {
+    const text = sentence.trim();
+    if (!text || /^\[Текст обрезан\]$/i.test(text) || /^Новости за сегодня\.?$/i.test(text)) continue;
+    if (/^Все материалы\b/i.test(text)) continue;
+
+    if (/^\d{1,2}\s+[а-яё]+\s+\d{4}\s*г\.,?\s*\d{1,2}:\d{2}\.?$/iu.test(text) && items.length > 0) {
+      items[items.length - 1] = `${items[items.length - 1]} ${text}`;
+      continue;
+    }
+
+    items.push(text);
+  }
+
+  return items.length > 0 ? items : [normalized];
+}
+
+function SearchSnippetText({ body }: { body: string }): JSX.Element {
+  const parts = splitSearchSnippet(body);
+  if (parts.length <= 1) {
+    return (
+      <div style={{marginTop:4,color:"var(--text)",whiteSpace:"normal",overflowWrap:"anywhere",wordBreak:"normal",lineHeight:1.45}}>
+        {parts[0] || body}
+      </div>
+    );
+  }
+
+  return (
+    <ul style={{margin:"6px 0 0 16px",padding:0,color:"var(--text)",display:"grid",gap:4,lineHeight:1.45}}>
+      {parts.map((part, index) => (
+        <li key={`${part.slice(0, 24)}-${index}`} style={{whiteSpace:"normal",overflowWrap:"anywhere",wordBreak:"normal"}}>
+          {part}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function PipelineResultView({ value }: { value: unknown }): JSX.Element {
+  const parsed = parsePipelineResult(value);
+
+  if (parsed === null || parsed === undefined || parsed === "") {
+    return <div style={{color:"var(--text-muted)"}}>Пустой результат</div>;
+  }
+
+  if (typeof parsed === "string") {
+    return <div style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{parsed}</div>;
+  }
+
+  if (!isRecordValue(parsed)) {
+    return <div style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{String(parsed)}</div>;
+  }
+
+  const results = Array.isArray(parsed.results) ? parsed.results.filter(isRecordValue) : [];
+  if (results.length > 0) {
+    const enginesAttempted = Array.isArray(parsed.engines_attempted) ? parsed.engines_attempted.map(String).filter(Boolean) : [];
+    const enginesUsed = Array.isArray(parsed.engines_used) ? parsed.engines_used.map(String).filter(Boolean) : [];
+    const engineErrors = isRecordValue(parsed.engine_errors)
+      ? Object.entries(parsed.engine_errors).filter(([, message]) => String(message || "").trim())
+      : [];
+    return (
+      <div style={{display:"grid",gap:8}}>
+        {typeof parsed.query === "string" && <div style={{color:"var(--text-muted)"}}>Запрос: {parsed.query}</div>}
+        {(enginesAttempted.length > 0 || enginesUsed.length > 0) && (
+          <div style={{color:"var(--text-muted)"}}>
+            {enginesAttempted.length > 0 && <span>Проверены: {enginesAttempted.join(", ")}</span>}
+            {enginesAttempted.length > 0 && enginesUsed.length > 0 && <span> • </span>}
+            {enginesUsed.length > 0 && <span>Сработали: {enginesUsed.join(", ")}</span>}
+          </div>
+        )}
+        {engineErrors.length > 0 && (
+          <div style={{color:"#f59e0b",display:"grid",gap:2}}>
+            {engineErrors.map(([engine, message]) => (
+              <div key={engine}>{engine}: {String(message)}</div>
+            ))}
+          </div>
+        )}
+        {results.map((item, index) => {
+          const title = typeof item.title === "string" ? item.title : `Результат ${index + 1}`;
+          const href = typeof item.href === "string" ? item.href : "";
+          const body = typeof item.body === "string" ? item.body : "";
+          const engine = typeof item.engine === "string" ? item.engine : "";
+          return (
+            <div key={`${href || title}-${index}`} style={{padding:"7px 8px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-surface)",display:"grid",gridTemplateColumns:"24px minmax(0, 1fr)",gap:6,minWidth:0,overflow:"hidden"}}>
+              <div style={{fontWeight:700,color:"var(--text-muted)"}}>{index + 1}.</div>
+              <div style={{minWidth:0}}>
+                {href ? <a href={href} target="_blank" rel="noreferrer" style={{color:"var(--accent)",fontWeight:600,overflowWrap:"anywhere"}}>{title}</a> : <span style={{fontWeight:600,overflowWrap:"anywhere"}}>{title}</span>}
+                {body && <SearchSnippetText body={body} />}
+                {engine && <div style={{marginTop:4,color:"var(--text-muted)"}}>Источник поиска: {engine}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  if (typeof parsed.answer === "string" && parsed.answer.trim()) {
+    return <div style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{parsed.answer}</div>;
+  }
+
+  if (typeof parsed.body === "string" && parsed.body.trim()) {
+    return (
+      <div>
+        {typeof parsed.status === "number" && <div style={{marginBottom:4,color:"var(--text-muted)"}}>HTTP {parsed.status}</div>}
+        <div style={{whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{parsed.body}</div>
+      </div>
+    );
+  }
+
+  if (typeof parsed.error === "string" && parsed.error.trim()) {
+    return <div style={{color:"#f44336",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{parsed.error}</div>;
+  }
+
+  return <pre style={{margin:0,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{formatPipelineFallbackResult(parsed)}</pre>;
+}
 
 function getChatContextFiles(lib: LibraryFile[], chatId: string): LibraryFile[] {
   if (!chatId) return [];
@@ -234,6 +466,7 @@ export default function EliraChatShell(): JSX.Element {
   const [personaBusy, setPersonaBusy] = useState(false);
   const [dashboardError, setDashboardError] = useState("");
   const [pipelinesList, setPipelinesList] = useState<PipelineItem[]>([]);
+  const [pipelineLogsById, setPipelineLogsById] = useState<Record<string, PipelineLogEntry[]>>({});
   const [pipelinesError, setPipelinesError] = useState("");
   const [pipeForm, setPipeForm] = useState<PipeForm>({name:"",task_type:"prompt",interval_minutes:60,task_data:{prompt:""}});
   const [tasksList, setTasksList] = useState<TaskItem[]>([]);
@@ -249,8 +482,7 @@ export default function EliraChatShell(): JSX.Element {
   const [tgTokenInput, setTgTokenInput] = useState("");
   const [tgTab, setTgTab] = useState("setup");
   const [multiAgent, setMultiAgent] = useState(false);
-  const [lastInput, setLastInput] = useState("");
-  const [lastModel, setLastModel] = useState("");
+  const [orchestrationEnabled, setOrchestrationEnabled] = useState(false);
   const [chartData, setChartData] = useState<ChartData | null>(null);
   const [ollamaContext, setOllamaContext] = useState(8192);
   const [settingsModel, setSettingsModel] = useState("gemma3:4b");
@@ -346,10 +578,12 @@ export default function EliraChatShell(): JSX.Element {
     try {
       const [m, c, settings] = await Promise.all([api.listOllamaModels(), api.listChats(), api.getSettings()]) as [Record<string, unknown>, unknown[], Record<string, unknown>];
       const ml = Array.isArray(m?.models) ? m.models as unknown[] : Array.isArray(m) ? m as unknown[] : [];
-      const savedModel = (settings?.default_model as string) || "gemma3:4b";
+      const rawSavedModel = (settings?.default_model as string) || "gemma3:4b";
       const savedProfile = (settings?.agent_profile as string) || "Универсальный";
       const savedCtx = (settings?.ollama_context as number) || 8192;
       const getName = (item: unknown) => typeof item === "string" ? item : ((item as Record<string, unknown>).name || (item as Record<string, unknown>).model || "") as string;
+      const fallbackModel = ml.length ? getName(ml[0]) : "gemma3:4b";
+      const savedModel = isAutoModel(rawSavedModel) ? fallbackModel : rawSavedModel;
       const preferred = ml.find((item) => getName(item) === savedModel);
       const chosenModel = preferred ? getName(preferred) : ml.length ? getName(ml[0]) : "gemma3:4b";
       setModelOpts(ml);
@@ -360,6 +594,7 @@ export default function EliraChatShell(): JSX.Element {
       setSettingsProfile(savedProfile);
       setSettingsContext(savedCtx);
       if (settings?.route_model_map) setRouteMap(settings.route_model_map as RouteMap);
+      setOrchestrationEnabled(Boolean(settings?.orchestration_enabled));
       setChats((c || []) as ChatItem[]);
       setChatId("");
       setMessages([]);
@@ -380,13 +615,72 @@ export default function EliraChatShell(): JSX.Element {
     } catch { return []; }
   }
 
+  function buildSettingsPayload(overrides: Record<string, unknown> = {}) {
+    const defaultModel = isAutoModel(settingsModel) ? (model || "gemma3:4b") : settingsModel;
+    return {
+      ollama_context: settingsContext,
+      default_model: defaultModel,
+      agent_profile: settingsProfile,
+      route_model_map: routeMap,
+      orchestration_enabled: orchestrationEnabled,
+      ...overrides,
+    };
+  }
+
+  async function saveSettings(overrides: Record<string, unknown> = {}, applyDefaults = true) {
+    const payload = buildSettingsPayload(overrides);
+    await api.updateSettings(payload);
+    if (typeof payload.default_model === "string") setSettingsModel(payload.default_model);
+    if (typeof payload.orchestration_enabled === "boolean") setOrchestrationEnabled(payload.orchestration_enabled);
+    if (applyDefaults) {
+      if (typeof payload.default_model === "string") setModel(payload.default_model);
+      setProfile(settingsProfile);
+      setOllamaContext(settingsContext);
+    }
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 2000);
+  }
+
+  async function toggleOrchestration(nextEnabled: boolean) {
+    setOrchestrationEnabled(nextEnabled);
+    if (nextEnabled) setMultiAgent(false);
+    setSettingsSaved(false);
+    try {
+      await saveSettings({ orchestration_enabled: nextEnabled }, false);
+    } catch (e) {
+      setOrchestrationEnabled(!nextEnabled);
+      setError(normalizeErrorMessage(e));
+    }
+  }
+
+  async function loadPipelineLogsForIds(ids: string[]) {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    if (!uniqueIds.length) {
+      setPipelineLogsById({});
+      return;
+    }
+
+    const pairs = await Promise.all(uniqueIds.map(async (id) => {
+      try {
+        const logs = await api.getPipelineLogs(id, 20) as PipelineLogEntry[];
+        return [id, logs] as const;
+      } catch {
+        return [id, []] as const;
+      }
+    }));
+    setPipelineLogsById(Object.fromEntries(pairs));
+  }
+
   async function loadPipelines() {
     setPipelinesError("");
     try {
-      setPipelinesList(await api.listPipelines() as PipelineItem[]);
+      const pipelines = await api.listPipelines() as PipelineItem[];
+      setPipelinesList(pipelines);
+      await loadPipelineLogsForIds(pipelines.map(p => p.id));
     } catch (e) {
       const message = normalizeErrorMessage(e);
       setPipelinesList([]);
+      setPipelineLogsById({});
       setPipelinesError(message);
       setError(`Pipelines: ${message}`);
     }
@@ -619,13 +913,6 @@ export default function EliraChatShell(): JSX.Element {
     URL.revokeObjectURL(a.href);
   }
 
-  function handleResend(withModel?: string) {
-    if (!lastInput || working) return;
-    if (withModel) setModel(withModel);
-    setInput(lastInput);
-    setTimeout(() => { taRef.current?.focus(); }, 80);
-  }
-
   function detectTableInText(text: string): ChartData | null {
     const rows = (text||"").match(/\|.+\|/g);
     if (!rows || rows.length < 3) return null;
@@ -649,7 +936,7 @@ export default function EliraChatShell(): JSX.Element {
     if (!text || working) return;
     try {
       setWorking(true); setStreaming(true); setStreamText(""); setError(""); setPhase(""); stoppedRef.current = false;
-      setLastInput(text); setLastModel(model);
+      const requestModel = orchestrationEnabled ? "auto" : (isAutoModel(model) ? (settingsModel || "gemma3:4b") : model);
       let activeChatId = chatId;
       const created = await api.addMessage({ chatId: activeChatId || null, role: "user", content: text }) as Record<string, unknown>;
       const userMsg = (created?.message || created) as ChatMessage;
@@ -705,7 +992,7 @@ export default function EliraChatShell(): JSX.Element {
       // so the finalized message lands in the right place.
       const targetChatId = activeChatId;
       const ctrl = executeStream(
-        { model_name: model, profile_name: profile, user_input: `${text}${cp}`, session_id: activeChatId || null, history, num_ctx: ollamaContext, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
+        { model_name: requestModel, profile_name: profile, user_input: `${text}${cp}`, session_id: activeChatId || null, history, num_ctx: ollamaContext, direct_llm: !orchestrationEnabled, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
           onToken(t: string) {
             fullText += t;
@@ -1042,7 +1329,7 @@ export default function EliraChatShell(): JSX.Element {
           {navItems.map(([k, l, Icon]) => (
             <button key={k} className={`sidebar-nav-item ${sideTab === k ? "active" : ""}`} onClick={() => {
               setSideTab(k); setMobileSidebar(false);
-              if(k==="settings"){setSettingsModel(model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();loadPluginList();}
+              if(k==="settings"){setSettingsModel(isAutoModel(model) ? settingsModel : model);setSettingsProfile(profile);setSettingsContext(ollamaContext);setSettingsSaved(false);refreshModels();loadPluginList();}
               if(k==="dashboard"){loadDashboard();}
               if(k==="pipelines"){loadPipelines();}
               if(k==="tasks"){loadTasks();}
@@ -1361,22 +1648,31 @@ export default function EliraChatShell(): JSX.Element {
                 <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
                   <input placeholder="Название" value={pipeForm.name} onChange={e=>setPipeForm({...pipeForm,name:e.target.value})} className="rename-input" style={{flex:1,minWidth:120,fontSize:11,padding:"4px 8px"}}/>
                   <select value={pipeForm.task_type} onChange={e=>setPipeForm({...pipeForm,task_type:e.target.value})} className="topbar-select dark-select" style={{fontSize:11}}>
-                    <option value="prompt">Промпт</option><option value="web_search">Веб-поиск</option><option value="plugin">Плагин</option><option value="http">HTTP</option>
+                    <option value="prompt">Промпт</option><option value="web_search">Веб-поиск</option><option value="plugin">Плагин</option><option value="workflow">Workflow</option><option value="http">HTTP</option>
                   </select>
                   <select value={pipeForm.interval_minutes} onChange={e=>setPipeForm({...pipeForm,interval_minutes:+e.target.value})} className="topbar-select dark-select" style={{fontSize:11}}>
                     <option value={5}>5 мин</option><option value={15}>15 мин</option><option value={30}>30 мин</option><option value={60}>1 час</option><option value={180}>3 часа</option><option value={360}>6 часов</option><option value={720}>12 часов</option><option value={1440}>24 часа</option>
                   </select>
                 </div>
-                <input placeholder={pipeForm.task_type==="prompt"?"Промпт для LLM":pipeForm.task_type==="web_search"?"Поисковый запрос":pipeForm.task_type==="plugin"?"Имя плагина":"URL"} value={pipeForm.task_data.prompt||pipeForm.task_data.query||pipeForm.task_data.plugin_name||pipeForm.task_data.url||""} onChange={e=>{const key=({prompt:"prompt",web_search:"query",plugin:"plugin_name",http:"url"} as Record<string,string>)[pipeForm.task_type]||"prompt";setPipeForm({...pipeForm,task_data:{[key]:e.target.value}})}} className="rename-input" style={{width:"100%",fontSize:11,padding:"4px 8px",marginBottom:6}}/>
+                <input placeholder={PIPELINE_TASK_PLACEHOLDERS[pipeForm.task_type] || "Параметр"} value={getPipelineTaskInputValue(pipeForm.task_data)} onChange={e=>{const key=getPipelineTaskDataKey(pipeForm.task_type);setPipeForm({...pipeForm,task_data:{...pipeForm.task_data,[key]:e.target.value}})}} className="rename-input" style={{width:"100%",fontSize:11,padding:"4px 8px",marginBottom:6}}/>
+                {pipeForm.task_type==="web_search" && (
+                  <select value={pipeForm.task_data.mode || ""} onChange={e=>setPipeForm({...pipeForm,task_data:{...pipeForm.task_data,mode:e.target.value}})} className="topbar-select dark-select" style={{fontSize:11,marginBottom:6}}>
+                    <option value="">Обычный поиск</option>
+                    <option value="news">Новости</option>
+                    <option value="local_news">Локальные новости</option>
+                  </select>
+                )}
                 <button className="soft-btn" style={{fontSize:11,padding:"4px 14px",background:"var(--accent)",color:"#fff",border:"none",borderRadius:6}} onClick={createPipeline}>Создать</button>
               </div>
               {pipelinesList.length===0 && !pipelinesError && <div style={{fontSize:11,color:"var(--text-muted)",padding:"12px 0",textAlign:"center"}}>Пайплайнов пока нет</div>}
-              {pipelinesList.map(p=>(
+              {pipelinesList.map(p=>{
+                const outputLogs = getPipelineOutputLogs(p, pipelineLogsById[p.id] || []);
+                return (
                 <div key={p.id} style={{padding:"10px 12px",borderRadius:10,border:"1px solid var(--border)",background:"var(--bg-surface)",marginBottom:6}}>
                   <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
                     <div>
                       <span style={{fontWeight:600,fontSize:12,color:"var(--text)"}}>{p.name}</span>
-                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{({prompt:"Промпт",web_search:"Веб-поиск",plugin:"Плагин",http:"HTTP"} as Record<string,string>)[p.task_type||""]||p.task_type} • каждые {p.interval_minutes} мин</span>
+                      <span style={{fontSize:10,color:"var(--text-muted)",marginLeft:8}}>{PIPELINE_TYPE_LABELS[p.task_type || ""] || p.task_type} • каждые {p.interval_minutes} мин</span>
                       <span style={{fontSize:9,color:p.enabled?"#4caf50":"#f44336",marginLeft:6}}>{p.enabled?"● вкл":"○ выкл"}</span>
                     </div>
                     <div style={{display:"flex",gap:4}}>
@@ -1387,12 +1683,32 @@ export default function EliraChatShell(): JSX.Element {
                   </div>
                   <div style={{fontSize:10,color:"var(--text-muted)"}}>
                     {(p.run_count||0)>0 && <span>Запусков: {p.run_count} • </span>}
-                    {p.last_run && <span>Посл.: {new Date(p.last_run).toLocaleString("ru-RU")} • </span>}
-                    {p.next_run && <span>След.: {new Date(p.next_run).toLocaleString("ru-RU")}</span>}
+                    {p.last_run && <span>Посл.: {formatPipelineTimestamp(p.last_run)} • </span>}
+                    {p.next_run && <span>След.: {formatPipelineTimestamp(p.next_run)}</span>}
                   </div>
+                  {outputLogs.length > 0 && (
+                    <details open style={{marginTop:6,fontSize:10,color:"var(--text)"}}>
+                      <summary style={{cursor:"pointer",color:"var(--text-muted)"}}>Выводы ({outputLogs.length})</summary>
+                      <div style={{marginTop:6,display:"grid",gap:6}}>
+                        {outputLogs.map((log, index) => (
+                          <details key={`${log.id || index}-${log.started_at || ""}`} style={{padding:8,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg)"}}>
+                            <summary style={{cursor:"pointer",color:"var(--text-muted)"}}>
+                              Вывод: {formatPipelineLogDate(log)}
+                              {!isPipelineLogOk(log) && <span style={{marginLeft:6,color:"#f44336"}}>ошибка</span>}
+                            </summary>
+                            <div style={{marginTop:8,maxHeight:260,overflow:"auto",fontSize:10,lineHeight:1.45}}>
+                              <PipelineResultView value={log.result} />
+                              {log.error && <div style={{marginTop:6,color:"#f44336",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>Ошибка: {log.error}</div>}
+                            </div>
+                          </details>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                   {p.last_error && <div style={{fontSize:10,color:"#f44336",marginTop:2}}>Ошибка: {p.last_error}</div>}
                 </div>
-              ))}
+                );
+              })}
             </div>
           ) : sideTab === "dashboard" ? (
             <div className="settings-main-card" style={{overflow:"auto"}}>
@@ -1485,10 +1801,9 @@ export default function EliraChatShell(): JSX.Element {
                 <div className="settings-tile">
                   <div className="settings-title">Модель по умолчанию</div>
                   <select value={settingsModel} onChange={e=>{setSettingsModel(e.target.value);setSettingsSaved(false);}} className="topbar-select full dark-select">
-                    <option value="auto">🪄 Авто (оркестрация)</option>
                     {(modelOpts?.length?modelOpts:[{name:settingsModel}]).map((i,idx)=>{const n=getName(i);return <option key={n+idx} value={n}>{n}</option>})}
                   </select>
-                  <div className="settings-desc" style={{marginTop:4,fontSize:10}}>«Авто» — модель выбирается по таблице «Оркестрация» ниже, в зависимости от типа задачи (код / проект / исследование / чат).</div>
+                  <div className="settings-desc" style={{marginTop:4,fontSize:10}}>Прямой режим: вопрос уходит в эту модель без маршрутизации и многошаговой оркестрации.</div>
                 </div>
                 <div className="settings-tile">
                   <div className="settings-title">Контекст Ollama</div>
@@ -1557,8 +1872,14 @@ export default function EliraChatShell(): JSX.Element {
                   </div>
                 </div>
                 <div className="settings-tile" style={{gridColumn:"1 / -1"}}>
-                  <div className="settings-title">Оркестрация моделей</div>
-                  <div className="settings-desc" style={{marginBottom:8}}>Какая модель отвечает за какой тип задачи.</div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:4}}>
+                    <div className="settings-title">Оркестрация моделей</div>
+                    <button
+                      onClick={()=>toggleOrchestration(!orchestrationEnabled)}
+                      style={{padding:"3px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (orchestrationEnabled ? "rgba(34,197,94,0.45)" : "var(--border)"),background:orchestrationEnabled ? "rgba(34,197,94,0.12)" : "transparent",color:orchestrationEnabled ? "#22c55e" : "var(--text-muted)",cursor:"pointer"}}
+                    >{orchestrationEnabled ? "Включена" : "Выключена"}</button>
+                  </div>
+                  <div className="settings-desc" style={{marginBottom:8}}>Отдельный режим: при включении чат использует таблицу ниже; модель по умолчанию не участвует.</div>
                   {(["code","project","research","chat"] as const).map(route => {
                     const routeLabels: Record<string,string> = {code:"Код",project:"Проект",research:"Исследование",chat:"Чат"};
                     const routeDescs: Record<string,string> = {code:"Написание, ревью и отладка кода",project:"Работа с файлами проекта",research:"Поиск, анализ, факты",chat:"Обычные вопросы и диалог"};
@@ -1580,6 +1901,11 @@ export default function EliraChatShell(): JSX.Element {
                       </div>
                     );
                   })}
+                  <button
+                    className="soft-btn"
+                    style={{fontSize:11,padding:"4px 12px",border:"1px solid var(--border)",marginTop:2}}
+                    onClick={async()=>{try{await saveSettings({ route_model_map: routeMap, orchestration_enabled: orchestrationEnabled }, false);}catch(e){setError(normalizeErrorMessage(e));}}}
+                  >Сохранить оркестрацию</button>
                 </div>
               </div>
               <div className="settings-desc" style={{marginTop:12,fontSize:10,color:"var(--text-muted)"}}>Горячие клавиши: Ctrl+N новый чат · Escape стоп · Ctrl+Shift+T тема</div>
@@ -1593,9 +1919,7 @@ export default function EliraChatShell(): JSX.Element {
                 style={{marginTop:14,padding:"8px 24px",borderRadius:8,border:"1px solid var(--accent)",background:settingsSaved?"rgba(16,185,129,0.15)":"var(--accent)",color:settingsSaved?"#10b981":"#fff",cursor:"pointer",fontSize:13,fontWeight:600,transition:"all 0.2s"}}
                 onClick={async()=>{
                   try {
-                    await api.updateSettings({ollama_context:settingsContext,default_model:settingsModel,agent_profile:settingsProfile,route_model_map:routeMap});
-                    setModel(settingsModel);setProfile(settingsProfile);setOllamaContext(settingsContext);
-                    setSettingsSaved(true);setTimeout(()=>setSettingsSaved(false),2000);
+                    await saveSettings();
                   } catch(e){setError(normalizeErrorMessage(e));}
                 }}
               >{settingsSaved?"✓ Сохранено":"Сохранить"}</button>
@@ -1687,12 +2011,12 @@ export default function EliraChatShell(): JSX.Element {
                   <input ref={fileRef} type="file" multiple hidden onChange={e=>handleFiles(e.target.files)}/>
                 </div>
                 <div className="composer-selectors" style={{justifyContent:"center"}}>
-                  <select value={model} onChange={e=>setModel(e.target.value)} className="composer-select" title={model==="auto"?"Авто — модель выбирается оркестрацией под тип задачи":"Текущая модель: "+model}>
-                    <option value="auto">🪄 Авто</option>
+                  <select value={isAutoModel(model) ? (settingsModel || "gemma3:4b") : model} onChange={e=>setModel(e.target.value)} className="composer-select" disabled={orchestrationEnabled} title={orchestrationEnabled?"Оркестрация включена: модель выбирается из таблицы в настройках":"Текущая модель: "+model}>
                     {(modelOpts?.length?modelOpts:[{name:model}]).map((i,idx)=>{const n=getName(i);return <option key={n+idx} value={n}>{shortModelName(n)}</option>})}
                   </select>
                   <select value={profile} onChange={e=>setProfile(e.target.value)} className="composer-select">{Object.keys(PROFILE_DESCRIPTIONS).map(n=><option key={n} value={n}>{n}</option>)}</select>
-                  <button onClick={() => setMultiAgent(p => !p)} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (multiAgent ? "rgba(244,114,182,0.4)" : "var(--border)"),background:multiAgent ? "rgba(244,114,182,0.12)" : "transparent",color:multiAgent ? "#f472b6" : "var(--text-muted)",cursor:"pointer"}}>{multiAgent ? "Multi ON" : "Multi"}</button>
+                  <button onClick={() => toggleOrchestration(!orchestrationEnabled)} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (orchestrationEnabled ? "rgba(34,197,94,0.45)" : "var(--border)"),background:orchestrationEnabled ? "rgba(34,197,94,0.12)" : "transparent",color:orchestrationEnabled ? "#22c55e" : "var(--text-muted)",cursor:"pointer"}}>{orchestrationEnabled ? "Орк ON" : "Орк"}</button>
+                  <button onClick={() => { const next = !multiAgent; setMultiAgent(next); if (next && orchestrationEnabled) toggleOrchestration(false); }} style={{padding:"2px 10px",borderRadius:99,fontSize:10,border:"1px solid " + (multiAgent ? "rgba(244,114,182,0.4)" : "var(--border)"),background:multiAgent ? "rgba(244,114,182,0.12)" : "transparent",color:multiAgent ? "#f472b6" : "var(--text-muted)",cursor:"pointer"}}>{multiAgent ? "Multi ON" : "Multi"}</button>
                 </div>
               </div>
             </>

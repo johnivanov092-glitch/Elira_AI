@@ -1,6 +1,7 @@
 """Tests for autopipeline CRUD/scheduler state and run history wrapper."""
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -43,6 +44,7 @@ class AutopipelineCRUDTest(unittest.TestCase):
         result = ap_rt.create_pipeline("Timer Task", interval_minutes=5)
         self.assertIn("next_run", result)
         self.assertIsNotNone(result["next_run"])
+        self.assertTrue(result["next_run"].endswith("+00:00"))
 
     def test_create_pipeline_with_task_data(self) -> None:
         result = ap_rt.create_pipeline(
@@ -143,6 +145,104 @@ class AutopipelineCRUDTest(unittest.TestCase):
         result = ap_rt.get_pipeline_logs(pid)
         self.assertIn("logs", result)
         self.assertIsInstance(result["logs"], list)
+
+    def test_run_pipeline_persists_visible_result_contract(self) -> None:
+        pid = ap_rt.create_pipeline("No Prompt", task_type="prompt", task_data={})["id"]
+        run = ap_rt.run_pipeline_now(pid)
+        self.assertTrue(run["ok"])
+        second_run = ap_rt.run_pipeline_now(pid)
+        self.assertTrue(second_run["ok"])
+
+        pipeline = ap_rt.list_pipelines()["pipelines"][0]
+        last_result = json.loads(pipeline["last_result"])
+        self.assertFalse(last_result["ok"])
+        self.assertIn("error", last_result)
+        self.assertEqual(pipeline["run_count"], 2)
+
+        logs = ap_rt.get_pipeline_logs(pid)["logs"]
+        self.assertEqual(len(logs), 2)
+        self.assertFalse(json.loads(logs[0]["result"])["ok"])
+
+    def test_run_pipeline_keeps_full_log_and_preview_result(self) -> None:
+        original_execute_task = ap_rt._execute_task
+        try:
+            ap_rt._execute_task = lambda _task_type, _task_data: {"ok": True, "answer": "x" * 6000}
+            pid = ap_rt.create_pipeline("Long Result", task_type="prompt", task_data={"prompt": "long"})["id"]
+            ap_rt.run_pipeline_now(pid)
+
+            pipeline = ap_rt.list_pipelines()["pipelines"][0]
+            self.assertEqual(len(pipeline["last_result"]), 5000)
+            self.assertEqual(len(pipeline["last_result_preview"]), 5000)
+
+            logs = ap_rt.get_pipeline_logs(pid)["logs"]
+            self.assertGreater(len(logs[0]["result"]), 6000)
+            self.assertEqual(json.loads(logs[0]["result"])["answer"], "x" * 6000)
+        finally:
+            ap_rt._execute_task = original_execute_task
+
+    def test_web_search_local_news_mode_uses_news_search(self) -> None:
+        from app.infrastructure.search import multisearch
+
+        original_news_multi_search = multisearch.news_multi_search
+        calls = []
+        try:
+            def fake_news_multi_search(query, max_results=10, **kwargs):
+                calls.append({"query": query, "max_results": max_results, **kwargs})
+                return {
+                    "ok": True,
+                    "query": query,
+                    "mode": "local_news",
+                    "results": [{"title": "Local", "href": "https://example.test", "body": "Body", "engine": "ddg-news"}],
+                    "count": 1,
+                    "engines": ["ddg-news"],
+                    "engines_attempted": ["tavily", "duckduckgo", "ddg-news"],
+                    "engines_used": ["ddg-news"],
+                    "engine_errors": {"tavily": "missing key"},
+                }
+
+            multisearch.news_multi_search = fake_news_multi_search
+            result = ap_rt._execute_task(
+                "web_search",
+                {"query": "Алматы новости", "mode": "local_news", "max_results": 7, "geo_scope": "Алматы"},
+            )
+        finally:
+            multisearch.news_multi_search = original_news_multi_search
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["mode"], "local_news")
+        self.assertEqual(result["engines_attempted"], ["tavily", "duckduckgo", "ddg-news"])
+        self.assertEqual(calls[0]["query"], "Алматы новости")
+        self.assertEqual(calls[0]["max_results"], 7)
+        self.assertTrue(calls[0]["local_first"])
+        self.assertEqual(calls[0]["geo_scope"], "Алматы")
+
+    def test_news_multi_search_returns_engine_diagnostics(self) -> None:
+        from app.core import web_engines, web_runtime
+        from app.infrastructure.search import multisearch
+
+        original_tavily = web_engines.search_tavily
+        original_duckduckgo = web_engines.search_duckduckgo
+        original_news = web_runtime.search_news
+        try:
+            web_engines.search_tavily = lambda _query, max_results=5: (_ for _ in ()).throw(RuntimeError("missing key"))
+            web_engines.search_duckduckgo = lambda _query, max_results=5: [
+                {"title": "DDG", "href": "https://example.test/ddg", "body": "Duck result", "engine": "duckduckgo"}
+            ]
+            web_runtime.search_news = lambda _query, max_results=5, **_kwargs: [
+                {"title": "News", "href": "https://example.test/news", "body": "News result", "engine": "ddg-news"}
+            ]
+
+            result = multisearch.news_multi_search("Алматы новости", max_results=5, local_first=True, geo_scope="Алматы")
+        finally:
+            web_engines.search_tavily = original_tavily
+            web_engines.search_duckduckgo = original_duckduckgo
+            web_runtime.search_news = original_news
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["engines_attempted"], ["tavily", "duckduckgo", "ddg-news"])
+        self.assertIn("tavily", result["engine_errors"])
+        self.assertEqual(set(result["engines_used"]), {"duckduckgo", "ddg-news"})
+        self.assertEqual(result["count"], 2)
 
     def test_scheduler_status_ok(self) -> None:
         result = ap_rt.scheduler_status()

@@ -18,7 +18,7 @@ import logging
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.config import DATA_DIR
@@ -32,6 +32,23 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _scheduler_thread: threading.Timer | None = None
 _running = False
 _TICK_INTERVAL = 30  # проверка каждые 30 сек
+_RESULT_PREVIEW_LIMIT = 5000
+
+
+def _serialize_result(result: dict) -> str:
+    return json.dumps(result, ensure_ascii=False)
+
+
+def _result_preview(result_json: str) -> str:
+    return result_json[:_RESULT_PREVIEW_LIMIT]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime | None = None) -> str:
+    return (value or _utc_now()).isoformat()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -91,8 +108,9 @@ def create_pipeline(
 ) -> dict:
     """Создаёт новый pipeline."""
     pid = str(uuid.uuid4())[:8]
-    now = datetime.utcnow().isoformat()
-    next_run = (datetime.utcnow() + timedelta(minutes=interval_minutes)).isoformat()
+    now_dt = _utc_now()
+    now = _utc_iso(now_dt)
+    next_run = _utc_iso(now_dt + timedelta(minutes=interval_minutes))
     conn = _connect()
     try:
         conn.execute(
@@ -118,6 +136,7 @@ def list_pipelines() -> dict:
             except Exception:
                 d["task_data"] = {}
             d["enabled"] = bool(d.get("enabled"))
+            d["last_result_preview"] = d.get("last_result")
             items.append(d)
         return {"ok": True, "pipelines": items, "count": len(items)}
     finally:
@@ -137,6 +156,7 @@ def get_pipeline(pid: str) -> dict:
         except Exception:
             d["task_data"] = {}
         d["enabled"] = bool(d.get("enabled"))
+        d["last_result_preview"] = d.get("last_result")
         return {"ok": True, **d}
     finally:
         conn.close()
@@ -215,13 +235,28 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
                 use_memory=False,
                 use_web_search=task_data.get("web_search", False),
             )
-            answer = result.get("answer", "")[:2000]
+            answer = str(result.get("answer", ""))
             return {"ok": True, "answer": answer, "length": len(answer)}
 
         elif task_type == "web_search":
             query = task_data.get("query", "")
             if not query:
                 return {"ok": False, "error": "Нет запроса"}
+            mode = str(task_data.get("mode") or task_data.get("search_mode") or "").strip().lower()
+            if mode in {"news", "local_news"}:
+                from app.infrastructure.search.multisearch import news_multi_search
+
+                preferred_domains = task_data.get("preferred_domains")
+                if not isinstance(preferred_domains, list):
+                    preferred_domains = None
+                return news_multi_search(
+                    query,
+                    max_results=task_data.get("max_results", 5),
+                    local_first=mode == "local_news",
+                    geo_scope=str(task_data.get("geo_scope", "")),
+                    preferred_domains=tuple(str(item) for item in preferred_domains) if preferred_domains else None,
+                )
+
             from app.infrastructure.search.multisearch import multi_search
             return multi_search(query, max_results=task_data.get("max_results", 5))
 
@@ -259,7 +294,7 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             if not url:
                 return {"ok": False, "error": "Нет URL"}
             resp = requests.request(method, url, timeout=30, json=task_data.get("body"))
-            return {"ok": True, "status": resp.status_code, "body": resp.text[:2000]}
+            return {"ok": True, "status": resp.status_code, "body": resp.text}
 
         else:
             return {"ok": False, "error": f"Неизвестный тип: {task_type}"}
@@ -274,23 +309,24 @@ def run_pipeline_now(pid: str) -> dict:
     if not p.get("ok"):
         return p
 
-    started = datetime.utcnow().isoformat()
+    started = _utc_iso()
     result = _execute_task(p["task_type"], p.get("task_data", {}))
-    finished = datetime.utcnow().isoformat()
+    finished = _utc_iso()
+    result_json = _serialize_result(result)
+    preview_json = _result_preview(result_json)
 
     # Сохраняем лог
     conn = _connect()
     try:
         conn.execute(
             "INSERT INTO pipeline_logs (pipeline_id, started_at, finished_at, ok, result, error) VALUES (?,?,?,?,?,?)",
-            (pid, started, finished, int(result.get("ok", False)),
-             json.dumps(result, ensure_ascii=False)[:5000], result.get("error", "")),
+            (pid, started, finished, int(result.get("ok", False)), result_json, result.get("error", "")),
         )
         # Обновляем pipeline
-        next_run = (datetime.utcnow() + timedelta(minutes=p.get("interval_minutes", 60))).isoformat()
+        next_run = _utc_iso(_utc_now() + timedelta(minutes=p.get("interval_minutes", 60)))
         conn.execute(
             "UPDATE pipelines SET last_run = ?, next_run = ?, run_count = run_count + 1, last_result = ?, last_error = ? WHERE id = ?",
-            (finished, next_run, json.dumps(result, ensure_ascii=False)[:2000], result.get("error", ""), pid),
+            (finished, next_run, preview_json, result.get("error", ""), pid),
         )
         conn.commit()
     finally:
@@ -309,7 +345,7 @@ def _tick():
     if not _running:
         return
 
-    now = datetime.utcnow().isoformat()
+    now = _utc_iso()
     conn = _connect()
     try:
         due = conn.execute(

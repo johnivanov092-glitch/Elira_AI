@@ -46,9 +46,8 @@ class AutoRouteSentinelTest(unittest.TestCase):
     def test_whitespace_only_is_auto(self):
         self.assertTrue(is_auto_route("   "))
 
-    def test_legacy_default_model_is_auto(self):
-        """Backwards compat: existing clients sending DEFAULT_MODEL still trigger orchestration."""
-        self.assertTrue(is_auto_route(DEFAULT_MODEL))
+    def test_default_model_is_explicit_direct_model(self):
+        self.assertFalse(is_auto_route(DEFAULT_MODEL))
 
     def test_explicit_model_is_not_auto(self):
         self.assertFalse(is_auto_route("qwen2.5-coder:7b"))
@@ -101,10 +100,9 @@ class PickModelForRouteTest(unittest.TestCase):
         result = pick_model_for_route("nonexistent_route", "auto", available_models=["gemma4:e2b"])
         self.assertEqual(result, "gemma4:e2b")
 
-    def test_legacy_default_model_still_routes_via_orchestration(self):
-        """Existing chat code that sends DEFAULT_MODEL keeps working."""
+    def test_default_model_does_not_route_via_orchestration(self):
         result = pick_model_for_route("code", DEFAULT_MODEL, available_models=["qwen2.5-coder:7b"])
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        self.assertEqual(result, DEFAULT_MODEL)
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ export async function execute(body: Record<string, unknown> = {}) {
       use_memory: body.use_memory ?? true,
       use_library: body.use_library ?? true,
       use_reflection: body.use_reflection ?? false,
+      direct_llm: body.direct_llm ?? false,
     },
   }) as Record<string, unknown>;
   const routeError = extractAgentError(response);
@@ -59,6 +60,7 @@ export function executeStream(body: Record<string, unknown> = {}, { onToken, onD
     use_csv: body.use_csv ?? true,
     use_webhook: body.use_webhook ?? true,
     use_plugins: body.use_plugins ?? true,
+    direct_llm: body.direct_llm ?? false,
   };
 
   fetch(buildApiUrl("/api/chat/stream"), {

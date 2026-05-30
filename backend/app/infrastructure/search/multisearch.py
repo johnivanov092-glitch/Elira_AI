@@ -40,6 +40,73 @@ def multi_search(
         return {"ok": False, "error": str(e), "results": [], "count": 0}
 
 
+def news_multi_search(
+    query: str,
+    max_results: int = 10,
+    *,
+    local_first: bool = False,
+    geo_scope: str = "",
+    preferred_domains: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """News search with per-engine diagnostics for scheduled pipelines."""
+    from app.core.web import format_search_results
+    from app.core.web_engines import KZ_LOCAL_NEWS_DOMAINS, search_duckduckgo, search_tavily
+    from app.core.web_runtime import dedupe_results, rerank_results, search_news
+
+    engines_attempted = ["tavily", "duckduckgo", "ddg-news"]
+    engine_errors: dict[str, str] = {}
+    combined: list[dict[str, str]] = []
+    per_engine = max(3, max_results)
+    domains = preferred_domains if preferred_domains is not None else (KZ_LOCAL_NEWS_DOMAINS if local_first else ())
+
+    for engine, search_func in (
+        ("tavily", search_tavily),
+        ("duckduckgo", search_duckduckgo),
+    ):
+        try:
+            combined.extend(search_func(query, max_results=per_engine))
+        except Exception as exc:
+            engine_errors[engine] = str(exc)
+
+    try:
+        combined.extend(
+            search_news(
+                query,
+                max_results=per_engine,
+                intent_kind="geo_news",
+                geo_scope=geo_scope,
+                local_first=local_first,
+                preferred_domains=domains,
+                raise_errors=True,
+            )
+        )
+    except Exception as exc:
+        engine_errors["ddg-news"] = str(exc)
+
+    merged = dedupe_results(combined, max_results=max(max_results, per_engine * len(engines_attempted)))
+    results = rerank_results(
+        merged,
+        intent_kind="geo_news",
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=domains,
+    )[:max_results]
+    engines_used = sorted({item.get("engine", "") for item in results if item.get("engine")})
+
+    return {
+        "ok": bool(results),
+        "query": query,
+        "mode": "local_news" if local_first else "news",
+        "results": results,
+        "count": len(results),
+        "engines": engines_used,
+        "engines_attempted": engines_attempted,
+        "engines_used": engines_used,
+        "engine_errors": engine_errors,
+        "formatted": format_search_results(results),
+    }
+
+
 def deep_search(
     query: str,
     engines: tuple[str, ...] = ("tavily", "duckduckgo", "wikipedia"),

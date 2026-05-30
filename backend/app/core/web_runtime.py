@@ -151,6 +151,7 @@ def search_news(
     geo_scope: str = "",
     local_first: bool = False,
     preferred_domains: Iterable[str] | None = None,
+    raise_errors: bool = False,
 ) -> List[Dict[str, str]]:
     results: list[Dict[str, str]] = []
     try:
@@ -170,6 +171,8 @@ def search_news(
                     }
                 )
     except Exception:
+        if raise_errors:
+            raise
         return []
     deduped = dedupe_results(results, max_results=None)
     reranked = rerank_results(

@@ -80,7 +80,7 @@ def _connect():
     )
 
 
-def _ensure_route_map_column():
+def _ensure_settings_columns():
     init_state_db()
     conn = _connect()
     try:
@@ -92,17 +92,24 @@ def _ensure_route_map_column():
                 (json.dumps(DEFAULT_ROUTE_MAP),),
             )
             conn.commit()
+        if "orchestration_enabled" not in columns:
+            conn.execute("ALTER TABLE settings ADD COLUMN orchestration_enabled INTEGER NOT NULL DEFAULT 0")
+            conn.commit()
     finally:
         conn.close()
 
 
+def _ensure_route_map_column():
+    _ensure_settings_columns()
+
+
 def get_settings():
-    _ensure_route_map_column()
+    _ensure_settings_columns()
     conn = _connect()
     try:
         row = conn.execute(
             """
-            SELECT ollama_context, default_model, agent_profile, route_model_map
+            SELECT ollama_context, default_model, agent_profile, route_model_map, orchestration_enabled
             FROM settings
             WHERE id = 1
             """
@@ -116,9 +123,11 @@ def get_settings():
             "default_model": "gemma3:4b",
             "agent_profile": DEFAULT_PROFILE,
             "route_model_map": DEFAULT_ROUTE_MAP,
+            "orchestration_enabled": False,
         }
 
     result = dict(row)
+    result["orchestration_enabled"] = bool(result.get("orchestration_enabled"))
     try:
         result["route_model_map"] = json.loads(result.get("route_model_map") or "{}")
     except (json.JSONDecodeError, TypeError):
@@ -129,23 +138,23 @@ def get_settings():
     return result
 
 
-def save_settings(ollama_context, default_model, agent_profile, route_model_map=None):
-    _ensure_route_map_column()
+def save_settings(ollama_context, default_model, agent_profile, route_model_map=None, orchestration_enabled=False):
+    _ensure_settings_columns()
     payload = json.dumps(route_model_map if route_model_map else DEFAULT_ROUTE_MAP)
     conn = _connect()
     try:
         conn.execute(
             """
             UPDATE settings
-            SET ollama_context = ?, default_model = ?, agent_profile = ?, route_model_map = ?
+            SET ollama_context = ?, default_model = ?, agent_profile = ?, route_model_map = ?, orchestration_enabled = ?
             WHERE id = 1
             """,
-            (int(ollama_context), default_model, agent_profile, payload),
+            (int(ollama_context), default_model, agent_profile, payload, int(bool(orchestration_enabled))),
         )
         conn.commit()
         row = conn.execute(
             """
-            SELECT ollama_context, default_model, agent_profile, route_model_map
+            SELECT ollama_context, default_model, agent_profile, route_model_map, orchestration_enabled
             FROM settings
             WHERE id = 1
             """
@@ -154,6 +163,7 @@ def save_settings(ollama_context, default_model, agent_profile, route_model_map=
         conn.close()
 
     result = dict(row)
+    result["orchestration_enabled"] = bool(result.get("orchestration_enabled"))
     try:
         result["route_model_map"] = json.loads(result.get("route_model_map") or "{}")
     except (json.JSONDecodeError, TypeError):
