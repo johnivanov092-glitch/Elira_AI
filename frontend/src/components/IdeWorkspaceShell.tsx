@@ -158,6 +158,11 @@ type IdeWorkspaceShellProps = {
    *  when the same path is revisited. */
   autoOpenFile?: string;
   autoOpenNonce?: number;
+  /** Absolute path of the project the code-agent is working in. The shell
+   *  keeps the backend "advanced project" (a singleton shared with the chat
+   *  "Проекты" tab) in sync with it, so the file tree / read reflect the
+   *  same project the agent uses — no separate "открой проект" step. */
+  projectRoot?: string;
   /** When set, render ONLY this sub-view and hide the toolbar tabs.
    *  Lets the parent (CodeWorkspaceShell) embed each view in its own
    *  drawer. Internal mainView state is ignored. */
@@ -277,7 +282,7 @@ function IconText({ icon, children, size = 14, gap = 6, style }: { children: Rea
   );
 }
 
-export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat,autoOpenFile,autoOpenNonce,forceView,hideToolbar}: IdeWorkspaceShellProps){
+export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setLibraryFiles:propSetLib,onBackToChat,onSendToChat,autoOpenFile,autoOpenNonce,projectRoot,forceView,hideToolbar}: IdeWorkspaceShellProps){
   const fileRef=useRef<HTMLInputElement | null>(null);
   const [drag,setDrag]=useState(false);
   const [selectedId,setSelectedId]=useState("");
@@ -463,11 +468,45 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     api.listToolRuns(50).then(d=>setRunHistory((d||[]) as ToolRunHistoryItem[])).catch(()=>setRunHistory([]));
   },[mainView]);
 
+  // Keep the backend "advanced project" aligned with the agent's projectRoot.
+  // Opening is idempotent on the backend; openedRootRef avoids redundant calls.
+  const openedRootRef = useRef<string>("");
+  useEffect(()=>{
+    if(!projectRoot){openedRootRef.current="";setFileTree(null);return;}
+    if(openedRootRef.current===projectRoot)return;
+    let cancelled=false;
+    (async()=>{
+      try{
+        await api.openAdvancedProject(projectRoot);
+        if(cancelled)return;
+        openedRootRef.current=projectRoot;
+        // Force the tree (and any open file) to reload for the new project.
+        setFileTree(null);setFtSelected(null);setFtContent(null);
+      }catch{
+        if(!cancelled)openedRootRef.current="";
+      }
+    })();
+    return()=>{cancelled=true;};
+  },[projectRoot]);
+
+  const reloadTree = useCallback(async()=>{
+    setFtLoading(true);
+    try{
+      if(projectRoot)await api.openAdvancedProject(projectRoot);
+      const d=await api.getAdvancedProjectTree({maxDepth:3,maxItems:300});
+      setFileTree(normalizeFileTree(d.items));
+    }catch{
+      setFileTree([]);
+    }finally{
+      setFtLoading(false);
+    }
+  },[projectRoot]);
+
   useEffect(()=>{
     if(mainView!=="filetree"||fileTree!==null)return;
     setFtLoading(true);
     api.getAdvancedProjectTree({maxDepth:3,maxItems:300}).then(d=>{setFileTree(normalizeFileTree(d.items));setFtLoading(false);}).catch(()=>{setFileTree([]);setFtLoading(false);});
-  },[mainView]);
+  },[mainView,fileTree]);
 
   async function openFtFile(item: FileTreeItem){
     if(item.type!=="file")return;
@@ -694,7 +733,15 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
             {ftLoading&&<div style={{padding:16,fontSize:11,color:"var(--text-muted)",display:"inline-flex",alignItems:"center",gap:6}}><UiIcon icon={Loader2} size={12} />Загрузка дерева...</div>}
             {!ftLoading&&fileTree&&fileTree.length===0&&(
               <div style={{padding:16,fontSize:11,color:"var(--text-muted)",lineHeight:1.6}}>
-                Проект не открыт.<br/>Напиши Elira:<br/><code style={{fontSize:10}}>открой проект /путь</code>
+                {projectRoot?(
+                  <>
+                    Дерево пусто.<br/>
+                    Проект: <code style={{fontSize:10,wordBreak:"break-all"}}>{projectRoot}</code><br/>
+                    <button onClick={reloadTree} style={{marginTop:8,padding:"3px 10px",fontSize:10,border:"1px solid var(--border)",borderRadius:6,background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>Обновить дерево</button>
+                  </>
+                ):(
+                  <>Проект не выбран.<br/>Укажи папку проекта в панели Code Agent сверху.</>
+                )}
               </div>
             )}
             {(fileTree||[]).map((item,i)=>(

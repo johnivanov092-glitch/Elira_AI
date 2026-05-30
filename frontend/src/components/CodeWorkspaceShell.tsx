@@ -1435,6 +1435,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                   onSendToChat={onSendToChat}
                   autoOpenFile={autoOpen?.path}
                   autoOpenNonce={autoOpen?.nonce}
+                  projectRoot={projectRoot}
                   forceView={activeDrawer}
                 />
               </div>
