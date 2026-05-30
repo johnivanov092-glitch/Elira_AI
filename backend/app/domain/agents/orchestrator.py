@@ -13,7 +13,7 @@ keep this module's import surface light.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict
 from uuid import uuid4
 
 from app.domain.agents.orchestrator_graph_runtime import build_v8_graph_runtime

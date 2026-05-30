@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field

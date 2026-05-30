@@ -2,8 +2,7 @@
 skills_routes.py — API скиллов: генерация файлов, SQL, HTTP, скриншоты.
 """
 from __future__ import annotations
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import FileResponse

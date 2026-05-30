@@ -7,7 +7,7 @@ from typing import Optional
 
 from app.application.smart_memory import (
     add_memory, list_memories, delete_memory, clear_all_memories,
-    search_memory, get_stats, extract_and_save,
+    search_memory, get_stats,
 )
 
 router = APIRouter(prefix="/api/smart-memory", tags=["smart-memory"])

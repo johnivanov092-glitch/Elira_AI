@@ -137,8 +137,6 @@ def apply_response_guards(
 
     Shared pipeline used by both synchronous and streaming orchestrators.
     """
-    original_text = text
-
     # Auto-execute Python snippets
     try:
         if maybe_auto_exec_python_func is not None:

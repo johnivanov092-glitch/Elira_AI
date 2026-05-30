@@ -161,13 +161,18 @@ def cancel_workflow_run(run_id: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════
 
 from app.application.workflows.multi_agent import (  # noqa: E402
-    MULTI_AGENT_DEFAULT_WORKFLOW_ID,
-    MULTI_AGENT_REFLECTION_WORKFLOW_ID,
-    MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
-    MULTI_AGENT_FULL_WORKFLOW_ID,
-    run_multi_agent_workflow,
-    run_legacy_multi_agent_workflow,
     seed_builtin_workflows as _app_seed_builtin_workflows,
+)
+
+# Facade re-exports: callers and tests access these via workflow_engine.runtime.
+# The `as` aliases mark them as an intentional public re-export.
+from app.application.workflows.multi_agent import (  # noqa: E402,F401
+    MULTI_AGENT_DEFAULT_WORKFLOW_ID as MULTI_AGENT_DEFAULT_WORKFLOW_ID,
+    MULTI_AGENT_REFLECTION_WORKFLOW_ID as MULTI_AGENT_REFLECTION_WORKFLOW_ID,
+    MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID as MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
+    MULTI_AGENT_FULL_WORKFLOW_ID as MULTI_AGENT_FULL_WORKFLOW_ID,
+    run_multi_agent_workflow as run_multi_agent_workflow,
+    run_legacy_multi_agent_workflow as run_legacy_multi_agent_workflow,
 )
 
 _BUILTIN_WORKFLOWS_SEEDED = False

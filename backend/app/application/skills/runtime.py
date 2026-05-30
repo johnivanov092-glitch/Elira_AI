@@ -7,8 +7,6 @@ skills_service.py — 4 скилла Elira.
 4. Скриншот сайта (playwright)
 """
 from __future__ import annotations
-import io
-import json
 import logging
 import sqlite3
 import time

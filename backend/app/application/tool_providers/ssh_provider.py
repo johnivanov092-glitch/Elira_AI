@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from app.application.tool_providers.ssh_acl import (

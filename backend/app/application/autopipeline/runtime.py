@@ -19,7 +19,6 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from app.core.config import DATA_DIR
 from app.infrastructure.db.connection import connect_sqlite

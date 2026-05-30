@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 # Load .env and .env.local from backend/ directory so API keys (TAVILY_API_KEY etc.)

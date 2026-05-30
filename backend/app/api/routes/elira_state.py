@@ -5,7 +5,6 @@ from app.application.elira_memory.service import (
     init_db,
     list_chats,
     create_chat,
-    rename_chat,
     update_chat,
     set_chat_pinned,
     set_chat_memory_saved,

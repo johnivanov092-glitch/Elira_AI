@@ -42,7 +42,6 @@ def _extract_pdf(data: bytes, max_chars: int = 50000) -> str:
                 for row in rows[:20]:
                     table_lines.append(" | ".join(str(c or "") for c in row))
             text += "\n".join(table_lines)
-        method = result.get("method", "")
         if result.get("ocr_used"):
             text = f"[OCR распознавание]\n{text}"
         return text[:max_chars]

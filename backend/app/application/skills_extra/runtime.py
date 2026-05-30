@@ -11,16 +11,12 @@ skills_extra.py — дополнительные скиллы Elira.
 """
 from __future__ import annotations
 import csv
-import io
 import json
-import os
 import re
-import shutil
 import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from app.core.config import DATA_DIR, GENERATED_DIR, UPLOAD_DIR
 
