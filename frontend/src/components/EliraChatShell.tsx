@@ -1031,6 +1031,9 @@ export default function EliraChatShell(): JSX.Element {
         { model_name: requestModel, profile_name: profile, user_input: `${text}${cp}`, session_id: activeChatId || null, history, num_ctx: ollamaContext, direct_llm: !orchestrationEnabled, use_memory: skills.includes("memory"), use_library: skills.includes("file_context"), use_reflection: skills.includes("reflection"), use_web_search: skills.includes("web_search"), use_python_exec: skills.includes("python_exec"), use_image_gen: skills.includes("image_gen"), use_file_gen: skills.includes("file_gen"), use_http_api: skills.includes("http_api"), use_sql: skills.includes("sql_query"), use_screenshot: skills.includes("screenshot"), use_encrypt: skills.includes("encrypt"), use_archiver: skills.includes("archiver"), use_converter: skills.includes("converter"), use_regex: skills.includes("regex"), use_translator: skills.includes("translator"), use_csv: skills.includes("csv_analysis"), use_webhook: skills.includes("webhook"), use_plugins: skills.includes("plugins") },
         {
           onToken(t: string) {
+            // Ignore any tokens that arrive after the user pressed Stop, so a
+            // few buffered chunks can't re-paint the stream as if it restarted.
+            if (stoppedRef.current) return;
             fullText += t;
             // Mirror into the per-chat buffer so the stream survives switches.
             chatRuns.update(targetChatId, { text: fullText, phase: "" });
@@ -1177,6 +1180,9 @@ export default function EliraChatShell(): JSX.Element {
   function handleStop() {
     stoppedRef.current = true;
     if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
+    // Drop the run from the registry so it stops streaming, the sidebar dot
+    // clears, and a chat re-open won't re-attach to a dead run.
+    if (chatId) chatRuns.end(chatId);
     if (streamText) {
       setMessages(prev => [...prev, { id: `a-${Date.now()}`, role: "assistant", content: streamText + "\n\n*[остановлено]*" }]);
       api.addMessage({ chatId, role: "assistant", content: streamText + "\n\n*[остановлено]*" }).catch(() => {});

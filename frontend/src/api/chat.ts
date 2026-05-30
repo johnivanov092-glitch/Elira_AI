@@ -245,11 +245,19 @@ export function executeStream(
       const reader = response.body?.getReader();
       if (!reader) throw new Error("Streaming response body is not available");
 
+      // Aborting the fetch signal does NOT reliably reject an in-flight
+      // reader.read() in WebView2/Chromium, so the loop would keep draining
+      // tokens after Stop. Explicitly cancel the reader when the signal fires.
+      const onAbort = () => { reader.cancel().catch(() => {}); };
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort);
+
       const decoder = new TextDecoder();
       let buffer = "";
 
       try {
         while (true) {
+          if (controller.signal.aborted) break;
           const { done, value } = await reader.read();
           if (done) break;
 
@@ -287,8 +295,9 @@ export function executeStream(
           }
         }
 
-        onDone?.({ full_text: "", meta: {}, timeline: [] });
+        if (!controller.signal.aborted) onDone?.({ full_text: "", meta: {}, timeline: [] });
       } finally {
+        controller.signal.removeEventListener("abort", onAbort);
         reader.cancel().catch(() => {});
       }
     })
