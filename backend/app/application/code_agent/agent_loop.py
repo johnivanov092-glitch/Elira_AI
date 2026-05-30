@@ -410,7 +410,47 @@ def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict
             except json.JSONDecodeError:
                 pass
 
+    # Fallback: call-expression syntax `tool_name(key="value", ...)`. Some
+    # models (qwen2.5-coder) write the call as pseudo-code inside a ```bash/code
+    # fence instead of JSON. Only for known tools and only if no JSON-format
+    # call was recovered, to avoid misreading prose examples.
+    if not out and known_tools:
+        name_alt = "|".join(re.escape(t) for t in sorted(known_tools, key=len, reverse=True))
+        for m in re.finditer(rf"\b({name_alt})\s*\(([^()]*)\)", content):
+            args = _parse_call_expr_args(m.group(2))
+            if isinstance(args, dict):
+                out.append({"function": {"name": m.group(1), "arguments": args}})
+
     return out
+
+
+def _parse_call_expr_args(arg_str: str) -> dict[str, Any]:
+    """Parse `key="value", key2='v2', key3=123, key4=true` from a call
+    expression. Best-effort: respects quotes, falls back to bare tokens."""
+    args: dict[str, Any] = {}
+    pair = re.compile(
+        r"""(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]+)"""
+    )
+    for m in pair.finditer(arg_str or ""):
+        key = m.group(1)
+        raw = m.group(2).strip()
+        if (raw[:1], raw[-1:]) in (('"', '"'), ("'", "'")):
+            inner = raw[1:-1]
+            value: Any = inner.encode().decode("unicode_escape") if "\\" in inner else inner
+        else:
+            low = raw.lower()
+            if low in ("true", "false"):
+                value = low == "true"
+            else:
+                try:
+                    value = int(raw)
+                except ValueError:
+                    try:
+                        value = float(raw)
+                    except ValueError:
+                        value = raw
+        args[key] = value
+    return args
 
 
 def _try_remember_turn(*, user_message: str, response_text: str, project_root: Path) -> None:

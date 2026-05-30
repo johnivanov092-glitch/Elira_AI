@@ -962,6 +962,12 @@ export default function EliraChatShell(): JSX.Element {
       const created = await api.addMessage({ chatId: activeChatId || null, role: "user", content: text }) as Record<string, unknown>;
       const userMsg = (created?.message || created) as ChatMessage;
       activeChatId = String(created?.chat_id ?? activeChatId ?? "");
+      // Point the "visible chat" ref at the resolved id synchronously. The
+      // [chatId] effect that normally does this runs async (after render), so
+      // for a brand-new chat the first stream tokens could arrive before it
+      // updated — and the display gate (activeChatIdRef === targetChatId) would
+      // silently drop them, leaving the answer invisible. Set it now.
+      if (activeChatId) activeChatIdRef.current = activeChatId;
       let currentChats = chats;
       if (!chatId && activeChatId) { currentChats = await loadChats(activeChatId); setChatId(activeChatId); }
       const nextMessages = [...messages, userMsg];
@@ -2064,7 +2070,17 @@ export default function EliraChatShell(): JSX.Element {
       {sideTab === "chats" && (() => {
         const activeTasks = tasksList.filter(t => t.status !== "done");
         return (
-          <div style={{ position: "fixed", right: 18, bottom: 110, zIndex: 60, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+          <div style={{ position: "fixed", right: 16, top: 60, zIndex: 60, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+            <button
+              onClick={() => { const n = !taskDockOpen; setTaskDockOpen(n); if (n) loadTasks(); }}
+              title="Задачи"
+              style={{ width: 40, height: 40, borderRadius: "50%", border: `1px solid ${taskDockOpen ? "var(--accent)" : "var(--border)"}`, background: taskDockOpen ? "var(--accent-dim)" : "var(--bg-surface)", color: taskDockOpen ? "var(--accent)" : "var(--text)", cursor: "pointer", boxShadow: "0 4px 14px rgba(0,0,0,.25)", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
+            >
+              <UiIcon icon={ListTodo} size={18} />
+              {activeTasks.length > 0 && (
+                <span style={{ position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8, background: "var(--accent)", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" }}>{activeTasks.length}</span>
+              )}
+            </button>
             {taskDockOpen && (
               <div style={{ width: 286, maxHeight: 360, overflow: "auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, boxShadow: "0 8px 28px rgba(0,0,0,.3)", padding: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
@@ -2082,16 +2098,6 @@ export default function EliraChatShell(): JSX.Element {
                   ))}
               </div>
             )}
-            <button
-              onClick={() => { const n = !taskDockOpen; setTaskDockOpen(n); if (n) loadTasks(); }}
-              title="Задачи"
-              style={{ width: 44, height: 44, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--bg-surface)", color: "var(--text)", cursor: "pointer", boxShadow: "0 4px 14px rgba(0,0,0,.25)", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
-            >
-              <UiIcon icon={ListTodo} size={18} />
-              {activeTasks.length > 0 && (
-                <span style={{ position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8, background: "var(--accent)", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" }}>{activeTasks.length}</span>
-              )}
-            </button>
           </div>
         );
       })()}
