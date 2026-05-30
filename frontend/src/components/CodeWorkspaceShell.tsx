@@ -60,7 +60,6 @@ const STEPS_KEY = "elira_code_agent_steps";
 const CTX_KEY_PREFIX = "elira_code_agent_ctx_";
 const AUTO_REMEMBER_KEY = "elira_code_agent_auto_remember";
 const AUTO_INDEX_KEY_PREFIX = "elira_code_agent_auto_index_v1::";
-const DRAWER_KEY = "elira_code_workspace_drawer";
 const DRAWER_WIDTH_KEY = "elira_code_workspace_drawer_width";
 const SESSIONS_SIDEBAR_KEY = "elira_code_workspace_sidebar_collapsed";
 const SESSIONS_SIDEBAR_WIDTH_KEY = "elira_code_workspace_sidebar_width";
@@ -512,11 +511,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     };
   }, [projectRoot, model, numCtx, activeSession]);
 
-  // Drawer state (replaces the old split-view ideCollapsed)
-  const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(() => {
-    const raw = readString(DRAWER_KEY, "");
-    return (DRAWER_DEFS.find((d) => d.key === raw)?.key) ?? null;
-  });
+  // Drawer state. Always starts collapsed (rail visible, panel closed) — the
+  // panel never opens on its own; the user opens it from the rail.
+  const [activeDrawer, setActiveDrawer] = useState<DrawerKey | null>(null);
   const [drawerWidth, setDrawerWidth] = useState<number>(() => {
     const n = readNumber(DRAWER_WIDTH_KEY, DEFAULT_DRAWER_WIDTH);
     return Math.max(MIN_DRAWER_WIDTH, Math.min(MAX_DRAWER_WIDTH, n));
@@ -627,7 +624,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     setNumCtx(saved);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [model]);
-  useEffect(() => writeString(DRAWER_KEY, activeDrawer ?? ""), [activeDrawer]);
   useEffect(() => writeNumber(DRAWER_WIDTH_KEY, drawerWidth), [drawerWidth]);
 
   // ─── models ──────────────────────────────────────────────────────────
@@ -698,14 +694,10 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   }, []);
 
   // ─── drawer behavior ────────────────────────────────────────────────
-  // Toolbar icon: toggle. Clicking active icon closes the drawer.
+  // Rail icon: toggle. Clicking the active icon collapses the panel; the
+  // rail itself always stays visible.
   const toggleDrawer = useCallback((key: DrawerKey) => {
     setActiveDrawer((cur) => (cur === key ? null : key));
-  }, []);
-
-  // Drawer tab: switch only. Never closes the drawer (close is a separate X).
-  const switchDrawerView = useCallback((key: DrawerKey) => {
-    setActiveDrawer(key);
   }, []);
 
   const closeDrawer = useCallback(() => setActiveDrawer(null), []);
@@ -730,9 +722,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeDrawer, toggleDrawer, closeDrawer]);
 
-  // Auto-open file: open Файлы drawer when agent touches a file
+  // When the agent touches a file, record it so the Файлы panel can jump to
+  // it — but do NOT auto-open the panel (user controls the rail explicitly).
   const handleAgentTouchedFile = useCallback((path: string) => {
-    setActiveDrawer((cur) => cur || "filetree");
     setAutoOpen({ path, nonce: Date.now() });
   }, []);
 
@@ -831,34 +823,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           </button>
         )}
 
-        {/* DRAWER ICONS — left-aligned, right after Back */}
-        <div style={{ display: "flex", gap: 4, alignItems: "center", paddingRight: 8, borderRight: "1px solid var(--border-light)" }}>
-          {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
-            const isActive = activeDrawer === key;
-            return (
-              <button
-                key={key}
-                onClick={() => toggleDrawer(key)}
-                title={`${label}  (Ctrl+${hotkey})`}
-                className="soft-btn"
-                style={{
-                  padding: "5px 8px",
-                  fontSize: 11,
-                  border: `1px solid ${isActive ? "var(--accent)" : "var(--border)"}`,
-                  background: isActive ? "var(--accent-dim)" : "transparent",
-                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 5,
-                  transition: "all 0.12s",
-                }}
-              >
-                <UiIcon icon={icon} size={13} />
-                <span style={{ fontSize: 10 }}>{label}</span>
-              </button>
-            );
-          })}
-        </div>
+        {/* Drawer triggers now live in the persistent vertical rail on the
+            far right (Codex-style), not here. */}
 
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <UiIcon icon={FolderOpen} size={13} />
@@ -1360,9 +1326,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           />
         </div>
 
+        {/* Expandable panel — only when a rail icon is selected. Resizable. */}
         {activeDrawer && (
           <>
-            {/* Resize handle between chat (left) and drawer (right) */}
             <div
               onMouseDown={startResize}
               style={{ width: 4, cursor: "col-resize", background: "var(--border)", flexShrink: 0, position: "relative" }}
@@ -1382,7 +1348,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
               />
             </div>
 
-            {/* Drawer (RIGHT side) */}
             <div
               style={{
                 flex: `0 0 ${drawerWidth}px`,
@@ -1392,73 +1357,36 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                 flexDirection: "column",
                 background: "var(--bg-root)",
                 borderLeft: "1px solid var(--border)",
-                boxShadow: "var(--shadow-float)",
-                animation: "drawerSlideIn 200ms ease",
               }}
             >
-              {/* Drawer header: in-drawer tabs + close button */}
+              {/* Panel header: active view title + collapse button. The view
+                  switcher itself lives in the persistent rail to the right. */}
               <div
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  padding: "6px 8px",
+                  justifyContent: "space-between",
+                  padding: "8px 10px",
                   borderBottom: "1px solid var(--border)",
                   flexShrink: 0,
-                  gap: 2,
-                  overflow: "hidden",
+                  gap: 8,
                 }}
               >
-                {/* Compact tab row — 5 buttons that share the drawer width.
-                    Shows only the icon at narrow widths, icon + label when
-                    there is room. */}
-                <div style={{ display: "flex", gap: 2, flex: 1, minWidth: 0, overflow: "hidden" }}>
-                  {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
-                    const isActive = activeDrawer === key;
-                    return (
-                      <button
-                        key={key}
-                        onClick={() => switchDrawerView(key)}
-                        title={`${label}  (Ctrl+${hotkey})`}
-                        className="soft-btn"
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          padding: "5px 6px",
-                          fontSize: 11,
-                          border: `1px solid ${isActive ? "var(--accent)" : "transparent"}`,
-                          background: isActive ? "var(--accent-dim)" : "transparent",
-                          color: isActive ? "var(--text-primary)" : "var(--text-muted)",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          gap: 5,
-                          overflow: "hidden",
-                          transition: "all 0.12s",
-                          fontWeight: isActive ? 600 : 400,
-                        }}
-                      >
-                        <UiIcon icon={icon} size={13} />
-                        {/* Show label only when drawer is wide enough */}
-                        {drawerWidth > 360 && (
-                          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>
-                            {label}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {activeDrawerDef && <UiIcon icon={activeDrawerDef.icon} size={14} />}
+                  {activeDrawerDef?.label}
+                </span>
                 <button
                   onClick={closeDrawer}
                   className="soft-btn"
-                  title="Закрыть (Esc)"
-                  style={{ fontSize: 11, padding: "5px 8px", marginLeft: 4, flexShrink: 0 }}
+                  title="Свернуть (Esc)"
+                  style={{ fontSize: 11, padding: "4px 7px", flexShrink: 0 }}
                 >
                   <UiIcon icon={X} size={12} />
                 </button>
               </div>
 
-              {/* Drawer body — single IDE view via forceView */}
+              {/* Panel body — single IDE view via forceView */}
               <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
                 <IdeWorkspaceShell
                   messages={messages as never}
@@ -1474,6 +1402,48 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             </div>
           </>
         )}
+
+        {/* Persistent vertical rail (Codex-style) — always visible on the far
+            right. Click an icon to open/collapse its panel. Never auto-opens. */}
+        <div
+          style={{
+            flex: "0 0 46px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 6,
+            padding: "10px 0",
+            borderLeft: "1px solid var(--border)",
+            background: "var(--bg-sidebar)",
+            flexShrink: 0,
+          }}
+        >
+          {DRAWER_DEFS.map(({ key, label, icon, hotkey }) => {
+            const isActive = activeDrawer === key;
+            return (
+              <button
+                key={key}
+                onClick={() => toggleDrawer(key)}
+                title={`${label}  (Ctrl+${hotkey})`}
+                style={{
+                  width: 34,
+                  height: 34,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: 8,
+                  border: `1px solid ${isActive ? "var(--accent)" : "transparent"}`,
+                  background: isActive ? "var(--accent-dim)" : "transparent",
+                  color: isActive ? "var(--text-primary)" : "var(--text-muted)",
+                  cursor: "pointer",
+                  transition: "all 0.12s",
+                }}
+              >
+                <UiIcon icon={icon} size={16} />
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <SshConfigDialog
