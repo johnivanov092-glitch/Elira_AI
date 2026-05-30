@@ -311,7 +311,15 @@ select, option {
   line-height: 1.35;
 }
 .chat-list-item.simple:hover { background: var(--bg-surface-hover); color: var(--text-primary); }
-.chat-list-item.active { background: var(--bg-surface-active); color: var(--text-primary); }
+/* Active chat: clearly distinct — accent-tinted background, a solid left
+   accent bar (inset shadow avoids layout shift), and bolder text. */
+.chat-list-item.active {
+  background: var(--accent-dim);
+  color: var(--text-primary);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 0 var(--accent);
+}
+.chat-list-item.active:hover { background: var(--accent-dim); }
 .chat-list-title { font-weight: 400; flex: 1; min-width: 0; }
 .chat-list-title.truncate { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
