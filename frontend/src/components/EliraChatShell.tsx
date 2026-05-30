@@ -23,7 +23,7 @@ import SpotlightOverlay from "./SpotlightOverlay";
 import type { SpotlightHit } from "../api/spotlight";
 import { toast } from "./ToastHost";
 import "../styles/markdown.css";
-import { PROFILE_DESCRIPTIONS, SKILLS } from "../chatConstants";
+import { CHAT_WORKING_SKILLS, PROFILE_DESCRIPTIONS, SKILLS } from "../chatConstants";
 import {
   loadLibraryFiles, saveLibraryFiles, loadChatContextMap, saveChatContextMap,
   makeId, deriveChatTitle, shortModelName, normalizeErrorMessage, buildHistory, isAutoModel,
@@ -453,7 +453,9 @@ export default function EliraChatShell(): JSX.Element {
   const [model, setModel] = useState("gemma3:4b");
   const [modelOpts, setModelOpts] = useState<unknown[]>([]);
   const [profile, setProfile] = useState("Универсальный");
-  const [skills, setSkills] = useState<string[]>(["web_search","file_context","memory","pdf_reader","python_exec","code_analysis","file_gen","translator","converter","archiver","http_api","screenshot","image_gen"]);
+  // Enable only the skills that actually work in chat now (the rest are shown
+  // disabled — they need a 14B+ model for reliable tool-calling).
+  const [skills, setSkills] = useState<string[]>([...CHAT_WORKING_SKILLS]);
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [chatId, setChatId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1176,7 +1178,10 @@ export default function EliraChatShell(): JSX.Element {
     const m = loadChatContextMap(); const s = new Set(m[chatId]||[]);
     on ? s.add(id) : s.delete(id); m[chatId] = Array.from(s); saveChatContextMap(m);
   }
-  function toggleSkill(id: string) { setSkills(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]); }
+  function toggleSkill(id: string) {
+    if (!CHAT_WORKING_SKILLS.has(id)) return; // disabled until 14B+ models
+    setSkills(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]);
+  }
   function handleStop() {
     stoppedRef.current = true;
     if (streamRef.current) { streamRef.current.abort(); streamRef.current = null; }
@@ -2005,8 +2010,20 @@ export default function EliraChatShell(): JSX.Element {
               >{settingsSaved?"✓ Сохранено":"Сохранить"}</button>
               <div style={{marginTop:18}}>
                 <div className="settings-title" style={{marginBottom:8}}>Навыки</div>
-                <div className="settings-desc" style={{marginBottom:10}}>Включи / выключи возможности</div>
-                <div className="skills-grid">{SKILLS.map(s=><button key={s.id} className={`skill-chip ${skills.includes(s.id)?"active":""}`} onClick={()=>toggleSkill(s.id)} title={s.desc}>{s.label}</button>)}</div>
+                <div className="settings-desc" style={{marginBottom:10}}>Включи / выключи возможности. Серые недоступны на текущих моделях — нужны 14B+ для надёжного вызова инструментов.</div>
+                <div className="skills-grid">{SKILLS.map(s=>{
+                  const works = CHAT_WORKING_SKILLS.has(s.id);
+                  return (
+                    <button
+                      key={s.id}
+                      className={`skill-chip ${skills.includes(s.id)?"active":""}`}
+                      onClick={()=>toggleSkill(s.id)}
+                      disabled={!works}
+                      title={works ? s.desc : `${s.desc} — недоступно на текущей модели (нужна 14B+ для надёжных tool-calls)`}
+                      style={works ? undefined : {opacity:0.4, cursor:"not-allowed"}}
+                    >{s.label}</button>
+                  );
+                })}</div>
               </div>
               <div style={{marginTop:18}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>

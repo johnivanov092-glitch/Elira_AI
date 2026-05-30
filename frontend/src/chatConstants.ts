@@ -43,3 +43,20 @@ export const SKILLS: Skill[] = [
   { id: "image_gen", label: "Картинки", desc: "FLUX.1 генерация изображений" },
   { id: "git", label: "Git", desc: "Статус, log, diff репозитория" },
 ];
+
+// Skills that actually function in the regular chat today: planner-routed or
+// injection/mode based, so they work regardless of the local model's (weak)
+// tool-calling. The rest need reliable function-calling — only viable on 14B+
+// models — so they're shown disabled for now (not removed; flip them back here
+// when running a bigger model).
+export const CHAT_WORKING_SKILLS = new Set<string>([
+  "web_search",
+  "code_analysis",
+  "file_context",
+  "memory",
+  "python_exec",
+  "project_patch",
+  "pdf_reader",
+  "reflection",
+  "image_gen",
+]);
