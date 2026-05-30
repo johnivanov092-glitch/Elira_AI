@@ -616,14 +616,22 @@ export default function EliraChatShell(): JSX.Element {
       setSettingsContext(savedCtx);
       if (settings?.route_model_map) setRouteMap(settings.route_model_map as RouteMap);
       setOrchestrationEnabled(Boolean(settings?.orchestration_enabled));
-      setChats((c || []) as ChatItem[]);
-      setChatId("");
-      setMessages([]);
+      const chatList = (c || []) as ChatItem[];
+      setChats(chatList);
       setInput("");
       setRenaming(false);
       setStreamText("");
       setStreaming(false);
       setPhase("");
+      // Land on the most recent chat (with its action toolbar + history)
+      // instead of a blank draft, so the header icons are present on launch.
+      // Falls back to an empty draft only when there are no chats yet.
+      if (chatList.length > 0) {
+        await openChat(chatList[0].id);
+      } else {
+        setChatId("");
+        setMessages([]);
+      }
     } catch (e) { setError(normalizeErrorMessage(e)); }
   }
 
