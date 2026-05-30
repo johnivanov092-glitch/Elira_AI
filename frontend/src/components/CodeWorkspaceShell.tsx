@@ -893,6 +893,14 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           <button onClick={loadModels} disabled={modelsLoading} className="soft-btn" title="Обновить список моделей" style={{ padding: "5px 7px", fontSize: 11, opacity: modelsLoading ? 0.6 : 1 }}>
             <UiIcon icon={RefreshCw} size={11} />
           </button>
+          {model && !isToolFriendly(model) && (
+            <span
+              title="Эта модель не поддерживает вызов инструментов (tools). Code-агент работает через read_file / write_file / run_bash и т.п., поэтому такая модель вернёт ошибку 400. Выбери модель с ★."
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "1px solid rgba(240,160,32,0.5)", background: "rgba(240,160,32,0.12)", color: "#f0a020", whiteSpace: "nowrap" }}
+            >
+              ⚠ без поддержки tools
+            </span>
+          )}
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
