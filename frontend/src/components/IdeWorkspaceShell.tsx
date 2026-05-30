@@ -438,16 +438,16 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
   async function fetchGit(tab: GitTab){
     setGitTab(tab);setGitLoading(true);
     try{
-      if(tab==="status"){const d=await api.getGitStatus() as GitStatusData;setGitData(p=>({...p,status:d}));}
-      else if(tab==="log"){const d=await api.getGitLog(20) as GitLogData;setGitData(p=>({...p,log:d}));}
-      else if(tab==="diff"){const d=await api.getGitDiff({repo_path:"",file_path:""}) as GitDiffData;setGitData(p=>({...p,diff:d}));}
+      if(tab==="status"){const d=await api.getGitStatus(projectRoot||"") as GitStatusData;setGitData(p=>({...p,status:d}));}
+      else if(tab==="log"){const d=await api.getGitLog(20,projectRoot||"") as GitLogData;setGitData(p=>({...p,log:d}));}
+      else if(tab==="diff"){const d=await api.getGitDiff({repo_path:projectRoot||"",file_path:""}) as GitDiffData;setGitData(p=>({...p,diff:d}));}
     }catch(e){setGitData(p=>({...p,[tab]:{ok:false,error:String(e)}}));}
     finally{setGitLoading(false);}
   }
   async function doCommit(){
     if(!commitMsg.trim())return;setGitLoading(true);
     try{
-      const d=await api.createGitCommit({message:commitMsg,add_all:true});
+      const d=await api.createGitCommit({message:commitMsg,add_all:true,repo_path:projectRoot||""});
       if(d.ok){
         setCommitMsg("");
         fetchGit("status");

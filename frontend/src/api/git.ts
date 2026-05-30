@@ -29,12 +29,12 @@ function withParams(
   return suffix ? `${path}?${suffix}` : path;
 }
 
-export async function getGitStatus(): Promise<GitResponse> {
-  return request<GitResponse>("/api/git/status");
+export async function getGitStatus(repoPath = ""): Promise<GitResponse> {
+  return request<GitResponse>(withParams("/api/git/status", { repo_path: repoPath }));
 }
 
-export async function getGitLog(limit = 20): Promise<GitResponse> {
-  return request<GitResponse>(withParams("/api/git/log", { limit }));
+export async function getGitLog(limit = 20, repoPath = ""): Promise<GitResponse> {
+  return request<GitResponse>(withParams("/api/git/log", { limit, repo_path: repoPath }));
 }
 
 export async function getGitDiff(
