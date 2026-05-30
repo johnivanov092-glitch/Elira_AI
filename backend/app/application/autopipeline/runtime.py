@@ -242,6 +242,12 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             query = task_data.get("query", "")
             if not query:
                 return {"ok": False, "error": "Нет запроса"}
+            # The UI sends max_results as a string; coerce to a sane int.
+            try:
+                max_results = int(task_data.get("max_results") or 5)
+            except (TypeError, ValueError):
+                max_results = 5
+            max_results = max(1, min(20, max_results))
             mode = str(task_data.get("mode") or task_data.get("search_mode") or "").strip().lower()
             if mode in {"news", "local_news"}:
                 from app.infrastructure.search.multisearch import news_multi_search
@@ -251,14 +257,14 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
                     preferred_domains = None
                 return news_multi_search(
                     query,
-                    max_results=task_data.get("max_results", 5),
+                    max_results=max_results,
                     local_first=mode == "local_news",
                     geo_scope=str(task_data.get("geo_scope", "")),
                     preferred_domains=tuple(str(item) for item in preferred_domains) if preferred_domains else None,
                 )
 
             from app.infrastructure.search.multisearch import multi_search
-            return multi_search(query, max_results=task_data.get("max_results", 5))
+            return multi_search(query, max_results=max_results)
 
         elif task_type == "plugin":
             name = task_data.get("plugin_name", "")
