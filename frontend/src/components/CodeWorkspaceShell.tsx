@@ -45,7 +45,7 @@ import {
   X,
 } from "lucide-react";
 import IdeWorkspaceShell from "./IdeWorkspaceShell";
-import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHistory } from "./CodeAgentChatShell";
+import CodeAgentChatShell, { clearLegacyHistory, deleteHistoryFor, readLegacyHistory, isCodeSessionStreaming, subscribeCodeRuns } from "./CodeAgentChatShell";
 import SshConfigDialog from "./SshConfigDialog";
 import McpConfigDialog from "./McpConfigDialog";
 import type { CodeSessionMeta, McpServerSpec, SshConfig } from "../api/codeAgent";
@@ -236,6 +236,10 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => readString(ACTIVE_SESSION_KEY, ""));
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
+  // Bumped whenever a background stream starts/stops so the session-list
+  // streaming dot re-renders.
+  const [, setRunsTick] = useState(0);
+  useEffect(() => subscribeCodeRuns(() => setRunsTick((t) => t + 1)), []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => readBool(SESSIONS_SIDEBAR_KEY, false));
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     const n = readNumber(SESSIONS_SIDEBAR_WIDTH_KEY, DEFAULT_SIDEBAR_WIDTH);
@@ -1266,6 +1270,7 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                           >
                             {s.title || "Без названия"}
                           </div>
+                          {isCodeSessionStreaming(s.id) && <span className="chat-streaming-dot" title="Идёт стрим в этой сессии" />}
                           <div style={{ display: "flex", gap: 1, opacity: 0.7 }}>
                             <button
                               onClick={(e) => { e.stopPropagation(); togglePin(s.id); }}
