@@ -269,12 +269,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
           let imported = false;
           if (legacy.length > 0) {
             const created = await api.createCodeSession({ title: "Импорт прошлой истории" });
-            // Push legacy turns into the new session on backend
+            // Push legacy turns into the new session on backend (source of truth)
             await api.patchCodeSession(created.id, { turns: legacy });
-            // Cache turns locally too so the chat shell sees them immediately
-            try {
-              localStorage.setItem(`elira_code_agent_history_v2_${created.id}`, JSON.stringify(legacy.slice(-200)));
-            } catch {}
             clearLegacyHistory();
             imported = true;
           }
@@ -291,7 +287,6 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                   const created = await api.createCodeSession({ title: s.title || "Новый чат" });
                   if (turns.length > 0) {
                     await api.patchCodeSession(created.id, { turns });
-                    try { localStorage.setItem(`elira_code_agent_history_v2_${created.id}`, JSON.stringify(turns.slice(-200))); } catch {}
                   }
                   imported = true;
                 }

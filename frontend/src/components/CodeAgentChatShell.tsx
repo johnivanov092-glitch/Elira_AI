@@ -197,23 +197,9 @@ function makeId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function loadHistoryFor(sessionId: string): Turn[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY_PREFIX + sessionId);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as Turn[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveHistoryFor(sessionId: string, turns: Turn[]): void {
-  try {
-    localStorage.setItem(HISTORY_KEY_PREFIX + sessionId, JSON.stringify(turns.slice(-200)));
-  } catch {}
-}
-
+/** Remove any lingering pre-backend localStorage history for a session.
+ *  History now lives on the backend (sessions.turns); this only cleans up
+ *  stale keys written by older builds when a session is deleted. */
 export function deleteHistoryFor(sessionId: string): void {
   try { localStorage.removeItem(HISTORY_KEY_PREFIX + sessionId); } catch {}
 }
@@ -461,7 +447,7 @@ export default function CodeAgentChatShell({
   onUserTurn,
   onRequestNewSession,
 }: CodeAgentChatShellProps) {
-  const [history, setHistory] = useState<Turn[]>(() => loadHistoryFor(sessionId));
+  const [history, setHistory] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [liveStep, setLiveStep] = useState<number | null>(null);
@@ -472,6 +458,12 @@ export default function CodeAgentChatShell({
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Which session the in-state `history` belongs to, whether it has finished
+  // loading from the backend, and whether the next settle should skip the
+  // persist write (used to avoid writing freshly-loaded history straight back).
+  const historySessionRef = useRef<string>("");
+  const historyLoadedRef = useRef(false);
+  const skipPersistRef = useRef(false);
 
   useEffect(() => { persistSavedPrompts(savedPrompts); }, [savedPrompts]);
 
@@ -491,23 +483,56 @@ export default function CodeAgentChatShell({
     setSavedPrompts((prev) => prev.filter((p) => p.id !== id));
   }
 
+  // Keep the conversation pinned to the bottom as it grows.
   useEffect(() => {
-    saveHistoryFor(sessionId, history);
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [history, sessionId]);
+  }, [history]);
 
-  // When the active session id changes (sidebar click), abort the running
-  // stream of the previous session and reload the new session's history.
+  // Load the active session's history from the backend (the source of truth).
+  // On session switch: abort any running stream of the previous session,
+  // reset live state, then fetch turns. `historySessionRef` guards against a
+  // late response from a previous session overwriting the current one.
   useEffect(() => {
     abortRef.current?.abort();
     abortRef.current = null;
     setRunning(false);
     setLiveStep(null);
-    setHistory(loadHistoryFor(sessionId));
     setInput("");
     setSummaryError(null);
+    historySessionRef.current = sessionId;
+    historyLoadedRef.current = false;
+    skipPersistRef.current = true; // don't write the freshly-loaded history back
+    setHistory([]);
+    if (!sessionId) {
+      historyLoadedRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const full = await api.getCodeSession(sessionId);
+        if (cancelled || historySessionRef.current !== sessionId) return;
+        setHistory(Array.isArray(full?.turns) ? (full.turns as Turn[]) : []);
+      } catch {
+        if (!cancelled && historySessionRef.current === sessionId) setHistory([]);
+      } finally {
+        if (!cancelled && historySessionRef.current === sessionId) historyLoadedRef.current = true;
+      }
+    })();
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
+
+  // Persist settled history to the backend. Skipped while a stream is running
+  // (avoids a write per token), until the session has finished loading, and
+  // for the one settle right after a load (avoids echoing it straight back).
+  useEffect(() => {
+    if (!sessionId || !historyLoadedRef.current || running) return;
+    if (skipPersistRef.current) { skipPersistRef.current = false; return; }
+    api.patchCodeSession(sessionId, { turns: history }).catch((e) => {
+      console.warn("session history save failed:", e);
+    });
+  }, [history, running, sessionId]);
 
   // Build conversation_history payload from prior text turns (skip tool data —
   // backend doesn't need our local tool transcript, it re-runs fresh tools).
