@@ -39,6 +39,7 @@ import type {
   ConversationMessage,
 } from "../api/codeAgent";
 import { estimateTokens } from "../api/codeAgent";
+import { createStreamRegistry } from "../streamRegistry";
 import { UiIcon, IconText } from "./StatusPanels";
 import MarkdownRenderer from "./MarkdownRenderer";
 
@@ -222,35 +223,20 @@ export function clearLegacyHistory(): void {
   try { localStorage.removeItem(LEGACY_HISTORY_KEY); } catch {}
 }
 
-// ─── Background run registry ──────────────────────────────────────────────
-// Streams must survive the chat unmounting (switching to another sidebar
-// session, or leaving the Code tab entirely) WITHOUT being aborted or losing
-// the turn. We keep each in-flight run at module scope, keyed by session id,
-// so a freshly mounted shell can re-attach to it and the run can persist its
-// final turn to the backend even if no shell is currently showing it.
-type LiveRun = {
-  sessionId: string;
-  controller: AbortController;
-  turns: Turn[];      // latest full history snapshot (incl. the in-progress turn)
-  running: boolean;
-};
-const LIVE_RUNS = new Map<string, LiveRun>();
-const LIVE_RUN_LISTENERS = new Set<() => void>();
-
-function notifyLiveRuns(): void {
-  for (const fn of LIVE_RUN_LISTENERS) { try { fn(); } catch { /* ignore */ } }
-}
+// Background run registry — shared module-level stream survival (see
+// streamRegistry.ts). Keyed by session id; the buffer is the evolving turn
+// list. Lets the shell re-attach after unmount and persist on done.
+const codeRuns = createStreamRegistry<Turn[]>();
 
 /** True while a background stream is in flight for this session. */
 export function isCodeSessionStreaming(sessionId: string): boolean {
-  return LIVE_RUNS.get(sessionId)?.running === true;
+  return codeRuns.isRunning(sessionId);
 }
 
 /** Subscribe to live-run changes (start/stop). Returns an unsubscribe fn.
  *  Used by the session list to show a streaming indicator. */
 export function subscribeCodeRuns(fn: () => void): () => void {
-  LIVE_RUN_LISTENERS.add(fn);
-  return () => { LIVE_RUN_LISTENERS.delete(fn); };
+  return codeRuns.subscribe(fn);
 }
 
 export type CodeAgentTurnSummary = { user_count: number; last_user?: string; last_ts?: number };
@@ -530,7 +516,7 @@ export default function CodeAgentChatShell({
   }, [history]);
 
   // Switch to the active session. We do NOT abort the previous session's
-  // stream — it keeps running in the background (LIVE_RUNS) and persists its
+  // stream — it keeps running in the background (codeRuns) and persists its
   // final turn to the backend on its own. If the session we're switching to
   // has a live run, re-attach to it (show its evolving turns live); otherwise
   // load the persisted history from the backend (the source of truth).
@@ -542,11 +528,11 @@ export default function CodeAgentChatShell({
     historyLoadedRef.current = false;
     skipPersistRef.current = true; // don't write the freshly-loaded history back
 
-    const live = sessionId ? LIVE_RUNS.get(sessionId) : undefined;
+    const live = sessionId ? codeRuns.get(sessionId) : undefined;
     if (live) {
       // Re-attach: render the in-flight turns and wire stop to its controller.
-      setHistory(live.turns);
-      setRunning(live.running);
+      setHistory(live.buffer);
+      setRunning(true);
       abortRef.current = live.controller;
       historyLoadedRef.current = true;
       return;
@@ -582,9 +568,9 @@ export default function CodeAgentChatShell({
   // running state and the composer lock stay in sync if it finishes while
   // we're watching another path of the UI).
   useEffect(() => subscribeCodeRuns(() => {
-    const live = LIVE_RUNS.get(historySessionRef.current);
-    if (live) { setRunning(live.running); setHistory(live.turns); }
-    else if (running && !LIVE_RUNS.get(sessionId)) {
+    const live = codeRuns.get(historySessionRef.current);
+    if (live) { setRunning(true); setHistory(live.buffer); }
+    else if (running && !codeRuns.isRunning(sessionId)) {
       // Our run finished elsewhere — reflect the final persisted state.
       setRunning(false);
     }
@@ -666,17 +652,15 @@ export default function CodeAgentChatShell({
 
     const controller = new AbortController();
     // Authoritative working copy of this run's history. Lives in the closure
-    // (and mirrored into LIVE_RUNS) so the stream survives the shell
+    // (and mirrored into codeRuns) so the stream survives the shell
     // unmounting — `commit` only touches React state when this shell is
     // actually showing runSessionId.
     let workingTurns: Turn[] = [...history, userTurn, liveTurn];
-    LIVE_RUNS.set(runSessionId, { sessionId: runSessionId, controller, turns: workingTurns, running: true });
-    notifyLiveRuns();
+    codeRuns.start(runSessionId, controller, workingTurns);
 
     const commit = (next: Turn[]) => {
       workingTurns = next;
-      const run = LIVE_RUNS.get(runSessionId);
-      if (run) run.turns = next;
+      codeRuns.update(runSessionId, next);
       if (historySessionRef.current === runSessionId) setHistory(next);
     };
     const patchAgent = (patch: (prev: AgentTurn) => AgentTurn) => {
@@ -762,9 +746,7 @@ export default function CodeAgentChatShell({
       // independent of whether a shell is still mounted to show it. This is
       // what makes a stream survive leaving the Code tab mid-run.
       api.patchCodeSession(runSessionId, { turns: workingTurns }).catch(() => {});
-      const run = LIVE_RUNS.get(runSessionId);
-      if (run) { run.running = false; LIVE_RUNS.delete(runSessionId); }
-      notifyLiveRuns();
+      codeRuns.end(runSessionId);
       if (historySessionRef.current === runSessionId) {
         setRunning(false);
         setLiveStep(null);
@@ -872,7 +854,7 @@ export default function CodeAgentChatShell({
   function startNewSession() {
     // If parent owns sessions (sidebar), delegate — preserves current
     // session, creates a new one alongside, switches active. A running
-    // stream is NOT aborted: it keeps going in the background (LIVE_RUNS)
+    // stream is NOT aborted: it keeps going in the background (codeRuns)
     // and persists its result to its own session, marked by a dot in the
     // session list. The new chat opens clean.
     if (onRequestNewSession) {
