@@ -732,6 +732,12 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
     setAutoOpen({ path, nonce: Date.now() });
   }, []);
 
+  // Folder picker shared with the chat header's "проект не выбран" chip.
+  const pickProject = useCallback(async () => {
+    const picked = await pickFolder(projectRoot);
+    if (picked) setProjectRoot(picked);
+  }, [projectRoot]);
+
   // ─── project prompt ─────────────────────────────────────────────────
   const openPromptEditor = useCallback(async () => {
     setPromptOpen(true);
@@ -1341,6 +1347,8 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
             maxSteps={maxSteps}
             numCtx={numCtx}
             autoRemember={autoRemember}
+            autoIndex={autoIndex}
+            onPickProject={pickProject}
             onAgentTouchedFile={handleAgentTouchedFile}
             onUserTurn={handleUserTurn}
             onRequestNewSession={createSession}

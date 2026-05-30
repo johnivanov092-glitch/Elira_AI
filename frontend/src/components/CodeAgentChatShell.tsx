@@ -31,7 +31,7 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { BookmarkPlus, ChevronDown, ChevronRight, GitPullRequest, Loader2, Minimize2, Pin, Plus, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
+import { BookmarkPlus, ChevronDown, ChevronRight, FolderOpen, GitPullRequest, Loader2, Minimize2, Pin, Plus, Send, Sparkles, Square, Star, Trash2, Wrench } from "lucide-react";
 import { api } from "../api/ide";
 import type {
   CodeAgentStreamEvent,
@@ -426,6 +426,13 @@ export type CodeAgentChatShellProps = {
   maxSteps: number;
   numCtx: number;
   autoRemember: boolean;
+  /** Whether realtime auto-index is on for the current project. Shown as a
+   *  context chip in the chat header so the agent's working context is
+   *  always visible above the conversation. */
+  autoIndex?: boolean;
+  /** Open the folder picker for the project root (delegated to the parent,
+   *  which owns projectRoot). Used by the header chip's empty state. */
+  onPickProject?: () => void;
   /** Called whenever a tool call touches a file path (read/write/edit). */
   onAgentTouchedFile?: (path: string) => void;
   /** Called when the user submits a new task — gives the parent a chance
@@ -443,6 +450,8 @@ export default function CodeAgentChatShell({
   maxSteps,
   numCtx,
   autoRemember,
+  autoIndex,
+  onPickProject,
   onAgentTouchedFile,
   onUserTurn,
   onRequestNewSession,
@@ -458,6 +467,7 @@ export default function CodeAgentChatShell({
   const abortRef = useRef<AbortController | null>(null);
   const runIdRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   // Which session the in-state `history` belongs to, whether it has finished
   // loading from the backend, and whether the next settle should skip the
   // persist write (used to avoid writing freshly-loaded history straight back).
@@ -512,7 +522,10 @@ export default function CodeAgentChatShell({
       try {
         const full = await api.getCodeSession(sessionId);
         if (cancelled || historySessionRef.current !== sessionId) return;
-        setHistory(Array.isArray(full?.turns) ? (full.turns as Turn[]) : []);
+        const turns = Array.isArray(full?.turns) ? (full.turns as Turn[]) : [];
+        setHistory(turns);
+        // A fresh/empty chat is ready to type into — focus the composer.
+        if (turns.length === 0) setTimeout(() => inputRef.current?.focus(), 0);
       } catch {
         if (!cancelled && historySessionRef.current === sessionId) setHistory([]);
       } finally {
@@ -812,6 +825,10 @@ export default function CodeAgentChatShell({
   }
 
   const empty = useMemo(() => history.length === 0 && !running, [history.length, running]);
+  const projectName = useMemo(
+    () => projectRoot.split(/[\\/]/).filter(Boolean).pop() || "",
+    [projectRoot],
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -840,6 +857,31 @@ export default function CodeAgentChatShell({
           {history.length} turns
           {liveStep != null && running ? `  ·  шаг ${liveStep}` : ""}
         </span>
+
+        {/* Context chip — the project the agent works in + auto-index state.
+            Read-only mirror of the toolbar; keeps the agent's context glued
+            to the conversation. Empty state offers a quick folder pick. */}
+        {projectName ? (
+          <span
+            title={`Проект: ${projectRoot}${autoIndex ? "  ·  авто-индекс включён" : "  ·  авто-индекс выключен"}`}
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 10, background: "var(--bg-surface)", border: "1px solid var(--border)", fontSize: 10, maxWidth: 220 }}
+          >
+            <UiIcon icon={FolderOpen} size={12} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-secondary)" }}>{projectName}</span>
+            <span title={autoIndex ? "Авто-индекс включён" : "Авто-индекс выключен"} style={{ width: 6, height: 6, borderRadius: "50%", background: autoIndex ? "#4ade80" : "var(--text-muted)", flexShrink: 0 }} />
+          </span>
+        ) : (
+          <button
+            onClick={onPickProject}
+            disabled={!onPickProject}
+            className="soft-btn"
+            title="Проект не выбран — выбрать папку проекта"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 10, fontSize: 10, border: "1px dashed var(--border)", background: "transparent", color: "var(--text-muted)", cursor: onPickProject ? "pointer" : "default" }}
+          >
+            <UiIcon icon={FolderOpen} size={12} />
+            <span>проект не выбран</span>
+          </button>
+        )}
 
         {/* Context meter */}
         <div
@@ -1164,6 +1206,7 @@ export default function CodeAgentChatShell({
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
           <textarea
+            ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onInputKey}
