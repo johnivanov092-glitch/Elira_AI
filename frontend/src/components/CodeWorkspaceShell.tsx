@@ -51,6 +51,7 @@ import McpConfigDialog from "./McpConfigDialog";
 import type { CodeSessionMeta, McpServerSpec, SshConfig } from "../api/codeAgent";
 import { api } from "../api/ide";
 import { waitForBackend } from "../api/client";
+import { pickFolder } from "../pickFolder";
 import { UiIcon, IconText } from "./StatusPanels";
 import { toast } from "./ToastHost";
 
@@ -100,33 +101,6 @@ function formatRelTime(ts: number): string {
   return `${d}д`;
 }
 
-/** Open a native folder picker via Tauri's dialog API. Returns the
- *  selected absolute path with forward slashes (normalized), or null
- *  if the user cancelled / Tauri isn't available (browser dev mode).
- */
-async function pickFolder(defaultPath?: string): Promise<string | null> {
-  // Tauri 1.x: @tauri-apps/api/dialog. We import dynamically so the
-  // module doesn't break in non-Tauri contexts (npm run dev in browser).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = window as any;
-  if (!w.__TAURI__) return null;
-  try {
-    const mod = await import("@tauri-apps/api/dialog");
-    const selected = await mod.open({
-      directory: true,
-      multiple: false,
-      defaultPath: defaultPath || undefined,
-      title: "Выбери корень проекта",
-    });
-    if (typeof selected === "string" && selected) {
-      return selected.replace(/\\/g, "/");
-    }
-    return null;
-  } catch (err) {
-    console.error("pickFolder failed:", err);
-    return null;
-  }
-}
 
 type DrawerKey = "artifacts" | "git" | "filetree" | "rag" | "history";
 

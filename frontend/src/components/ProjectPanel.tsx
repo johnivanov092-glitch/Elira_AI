@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api/ide";
+import { pickFolder } from "../pickFolder";
 import type { ProjectResponse, SavedProject } from "../api/project";
 
 type ProjectInfo = ProjectResponse & {
@@ -112,6 +113,14 @@ export default function ProjectPanel() {
     await openByPath(pathInput);
   }
 
+  async function browseForProject() {
+    const picked = await pickFolder(pathInput || undefined);
+    if (picked) {
+      setPathInput(picked);
+      await openByPath(picked);
+    }
+  }
+
   async function loadTree() {
     try {
       const data = await api.getAdvancedProjectTree({ maxDepth: 3, maxItems: 300 });
@@ -176,13 +185,33 @@ export default function ProjectPanel() {
     return (
       <div style={{ padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)" }}>📂 Открыть проект</div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Укажи путь к папке проекта</div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Выбери папку через проводник или укажи путь вручную</div>
+        <button
+          onClick={browseForProject}
+          disabled={loading}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            padding: "10px 16px",
+            borderRadius: 8,
+            border: "1px solid var(--accent)",
+            background: "var(--accent-dim)",
+            color: "var(--accent)",
+            cursor: "pointer",
+            fontSize: 13,
+            fontWeight: 600,
+          }}
+        >
+          📁 {loading ? "Открываю..." : "Выбрать папку проекта"}
+        </button>
         <div style={{ display: "flex", gap: 6 }}>
           <input
             value={pathInput}
             onChange={(e) => setPathInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && openProject()}
-            placeholder="D:\\MyProject или /home/user/project"
+            placeholder="…или вставь путь: D:\\MyProject"
             style={{
               flex: 1,
               padding: "8px 12px",
@@ -200,9 +229,9 @@ export default function ProjectPanel() {
             style={{
               padding: "8px 16px",
               borderRadius: 8,
-              border: "1px solid var(--accent)",
-              background: "var(--accent-dim)",
-              color: "var(--accent)",
+              border: "1px solid var(--border)",
+              background: "transparent",
+              color: "var(--text-secondary)",
               cursor: "pointer",
               fontSize: 12,
             }}
@@ -284,6 +313,12 @@ export default function ProjectPanel() {
                   </div>
                 );
               })}
+              <button
+                onClick={() => { setSwitcherOpen(false); browseForProject(); }}
+                style={{ width: "100%", textAlign: "left", marginTop: 4, padding: "6px", borderRadius: 6, border: "1px dashed var(--border)", background: "transparent", color: "var(--text-secondary)", cursor: "pointer", fontSize: 11 }}
+              >
+                📁 Выбрать другую папку…
+              </button>
             </div>
           )}
         </div>
