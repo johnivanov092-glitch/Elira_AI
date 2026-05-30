@@ -180,18 +180,19 @@ const PIPELINE_TASK_PLACEHOLDERS: Record<string, string> = {
   workflow: "Workflow ID",
   http: "URL",
 };
-// Shown under "Автоматические задачи по расписанию", changes with the type.
+// Per-function explainer, changes with the selected type. Each: что делает +
+// что вводить ниже.
 const PIPELINE_TYPE_DESCRIPTIONS: Record<string, string> = {
-  prompt: "Отправляет промпт в LLM по расписанию и сохраняет ответ. Веб-поиск выключен — модель отвечает из своих знаний.",
-  web_search: "Выполняет поисковый запрос по расписанию и сохраняет найденные результаты. Кол-во результатов задаётся ниже.",
-  plugin: "Запускает указанный плагин с аргументами по расписанию.",
-  workflow: "Запускает workflow по его ID (движок Workflows) по расписанию.",
-  http: "Делает HTTP-запрос на URL (webhook / внешний API) по расписанию и сохраняет ответ.",
+  prompt: "Промпт → LLM по расписанию. По таймеру отправляет ваш текст модели и сохраняет ответ (веб-поиск выключен, отвечает из своих знаний). Ниже введите промпт. Пример: «кратко: что нового стоит изучить по Python».",
+  web_search: "Веб-поиск по расписанию. По таймеру ищет в интернете и сохраняет результаты со ссылками. Ниже введите запрос, затем режим и число результатов.",
+  plugin: "Запуск плагина по расписанию. По таймеру выполняет плагин из раздела «Плагины». Ниже введите точное имя плагина (как в списке плагинов).",
+  workflow: "Запуск workflow по расписанию. По таймеру стартует готовый workflow из движка Workflows. Ниже введите его workflow_id.",
+  http: "HTTP-запрос по расписанию. По таймеру дёргает URL (webhook / внешний API) и сохраняет ответ. Ниже введите URL.",
 };
 const PIPELINE_WEB_MODE_DESCRIPTIONS: Record<string, string> = {
-  "": "Обычный поиск: Tavily + DuckDuckGo + Wikipedia.",
-  news: "Поиск по новостным источникам (свежие новости).",
-  local_news: "Приоритет локальным (KZ) новостным сайтам — nur.kz, tengrinews.kz и т.п.",
+  "": "Обычный поиск: по всему интернету — Tavily + DuckDuckGo + Wikipedia. Для общих вопросов и фактов.",
+  news: "Новости: только новостные источники, свежие материалы по запросу. Для слежения за темой.",
+  local_news: "Локальные новости: приоритет казахстанским сайтам — nur.kz, tengrinews.kz, zakon.kz и т.п.",
 };
 const PIPELINE_DISPLAY_TIME_ZONE = "Asia/Almaty";
 
@@ -1715,8 +1716,11 @@ export default function EliraChatShell(): JSX.Element {
                     <option value={5}>5 мин</option><option value={15}>15 мин</option><option value={30}>30 мин</option><option value={60}>1 час</option><option value={180}>3 часа</option><option value={360}>6 часов</option><option value={720}>12 часов</option><option value={1440}>24 часа</option>
                   </select>
                 </div>
-                {/* Description of the selected task type — changes with the dropdown. */}
-                <div style={{fontSize:10,color:"var(--text-muted)",marginBottom:6,lineHeight:1.4}}>{PIPELINE_TYPE_DESCRIPTIONS[pipeForm.task_type] || ""}</div>
+                {/* Prominent explainer for the selected task type — changes with the dropdown. */}
+                <div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.5,background:"var(--bg-input)",border:"1px solid var(--border)",borderRadius:8,padding:"8px 10px",marginBottom:8}}>
+                  <span style={{fontWeight:600,color:"var(--text)"}}>{PIPELINE_TYPE_LABELS[pipeForm.task_type] || pipeForm.task_type}: </span>
+                  {PIPELINE_TYPE_DESCRIPTIONS[pipeForm.task_type] || ""}
+                </div>
                 <input placeholder={PIPELINE_TASK_PLACEHOLDERS[pipeForm.task_type] || "Параметр"} value={getPipelineTaskInputValue(pipeForm.task_data)} onChange={e=>{const key=getPipelineTaskDataKey(pipeForm.task_type);setPipeForm({...pipeForm,task_data:{...pipeForm.task_data,[key]:e.target.value}})}} className="rename-input" style={{width:"100%",fontSize:11,padding:"4px 8px",marginBottom:6}}/>
                 {pipeForm.task_type==="web_search" && (
                   <>
@@ -1725,7 +1729,7 @@ export default function EliraChatShell(): JSX.Element {
                       <option value="news">Новости</option>
                       <option value="local_news">Локальные новости</option>
                     </select>
-                    <div style={{fontSize:10,color:"var(--text-muted)",marginBottom:6,lineHeight:1.4}}>{PIPELINE_WEB_MODE_DESCRIPTIONS[pipeForm.task_data.mode || ""]}</div>
+                    <div style={{fontSize:11,color:"var(--text-secondary)",lineHeight:1.5,background:"var(--bg-input)",border:"1px solid var(--border)",borderRadius:8,padding:"6px 10px",marginBottom:6}}>{PIPELINE_WEB_MODE_DESCRIPTIONS[pipeForm.task_data.mode || ""]}</div>
                     <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
                       <span style={{fontSize:10,color:"var(--text-muted)"}}>Кол-во результатов</span>
                       <input type="number" min={1} max={20} value={pipeForm.task_data.max_results || "5"} onChange={e=>{const v=String(Math.max(1,Math.min(20,Number(e.target.value)||5)));setPipeForm({...pipeForm,task_data:{...pipeForm.task_data,max_results:v}})}} className="rename-input" style={{width:64,fontSize:11,padding:"4px 6px"}}/>
