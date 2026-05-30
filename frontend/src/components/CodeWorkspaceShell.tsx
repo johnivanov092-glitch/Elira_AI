@@ -1196,8 +1196,9 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
                       marginBottom: 2,
                       borderRadius: 6,
                       cursor: isEditing ? "default" : "pointer",
-                      background: isActive ? "var(--bg-surface-active)" : "transparent",
-                      border: `1px solid ${isActive ? "var(--accent)" : "transparent"}`,
+                      background: isActive ? "var(--accent-dim)" : "transparent",
+                      border: "1px solid transparent",
+                      boxShadow: isActive ? "inset 3px 0 0 0 var(--accent)" : "none",
                       transition: "all 0.1s",
                       position: "relative",
                     }}
