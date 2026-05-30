@@ -1407,8 +1407,8 @@ export default function EliraChatShell(): JSX.Element {
                     <button className="export-item" onClick={()=>{exportChat("txt");setShowExportMenu(false)}}><IconText icon={ScrollText}>Текстовый файл</IconText></button>
                   </div>}
                 </div>
-                <button className="soft-btn icon-btn" title="Сохранить в память" onClick={() => saveToMemory(chatId, chats.find(c=>c.id===chatId)?.memory_saved)}><UiIcon icon={BrainCircuit} size={14} /></button>
-                <button className="soft-btn icon-btn" title="Закрепить чат" onClick={() => pinChat(chatId, chats.find(c=>c.id===chatId)?.pinned)}><UiIcon icon={Pin} size={14} /></button>
+                <button className={`soft-btn icon-btn ${chats.find(c=>c.id===chatId)?.memory_saved ? "on" : ""}`} title={chats.find(c=>c.id===chatId)?.memory_saved ? "В памяти — нажми, чтобы убрать" : "Сохранить в память"} onClick={() => saveToMemory(chatId, chats.find(c=>c.id===chatId)?.memory_saved)}><UiIcon icon={BrainCircuit} size={14} /></button>
+                <button className={`soft-btn icon-btn ${chats.find(c=>c.id===chatId)?.pinned ? "on" : ""}`} title={chats.find(c=>c.id===chatId)?.pinned ? "Закреплён — нажми, чтобы открепить" : "Закрепить чат"} onClick={() => pinChat(chatId, chats.find(c=>c.id===chatId)?.pinned)}><UiIcon icon={Pin} size={14} /></button>
                 <button className="soft-btn icon-btn" title="Переименовать чат" onClick={() => { setRenaming(true); setRenameVal(chats.find(c=>c.id===chatId)?.title||""); }}><UiIcon icon={Pencil} size={14} /></button>
                 <button className="soft-btn icon-btn" title="Удалить чат" onClick={() => deleteChat(chatId)}><UiIcon icon={Trash2} size={14} /></button>
               </div>

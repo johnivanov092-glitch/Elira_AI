@@ -421,6 +421,21 @@ select, option {
   justify-content: center;
   border-radius: var(--radius-sm);
   font-size: 14px;
+  /* Visible at rest — these were transparent and hard to find. */
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+.icon-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+/* "on" = persisted state is active (saved to memory / pinned). */
+.icon-btn.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
 }
 
 /* Export dropdown */
