@@ -125,6 +125,9 @@ backend/data/smart_memory.db
 backend/data/response_cache.db
 backend/data/rag_memory.db
 
+# user-uploaded runtime files — personal data, never commit
+data/uploads/
+
 # local env / secrets
 .env
 .env.local
