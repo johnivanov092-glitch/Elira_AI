@@ -60,7 +60,11 @@ function normalizeChat(item: unknown = {}): Chat {
   const source = isRecord(item) ? item : {};
   return {
     ...source,
-    id: source.id ?? "",
+    // Backend chat ids are integers; the whole frontend treats chat ids as
+    // strings (state, refs, stream-registry keys). Stringify here at the API
+    // boundary so comparisons like activeChatIdRef === targetChatId don't fail
+    // with `42 !== "42"` — which left streamed answers stuck on "Думаю…".
+    id: source.id != null && source.id !== "" ? String(source.id) : "",
     title: source.title ?? "New chat",
     pinned: Boolean(source.pinned),
     memory_saved: Boolean(source.memory_saved),
