@@ -490,6 +490,7 @@ export default function EliraChatShell(): JSX.Element {
   const [pipelinesError, setPipelinesError] = useState("");
   const [pipeForm, setPipeForm] = useState<PipeForm>({name:"",task_type:"prompt",interval_minutes:60,task_data:{prompt:""}});
   const [tasksList, setTasksList] = useState<TaskItem[]>([]);
+  const [taskDockOpen, setTaskDockOpen] = useState(false);
   const [tasksError, setTasksError] = useState("");
   const [taskFilter, setTaskFilter] = useState("active");
   const [taskForm, setTaskForm] = useState<TaskForm>({title:"",description:"",category:"general",priority:"medium",due_date:""});
@@ -2057,6 +2058,43 @@ export default function EliraChatShell(): JSX.Element {
           onClose={() => setShowPanel(false)}
         />
       )}
+
+      {/* Floating, collapsible Tasks dock — small list of active tasks without
+          leaving the chat. Only on the chat surface. */}
+      {sideTab === "chats" && (() => {
+        const activeTasks = tasksList.filter(t => t.status !== "done");
+        return (
+          <div style={{ position: "fixed", right: 18, bottom: 110, zIndex: 60, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
+            {taskDockOpen && (
+              <div style={{ width: 286, maxHeight: 360, overflow: "auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, boxShadow: "0 8px 28px rgba(0,0,0,.3)", padding: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}><IconText icon={ListTodo} size={13}>Задачи</IconText></span>
+                  <button onClick={() => { setSideTab("tasks"); setTaskDockOpen(false); }} title="Открыть все задачи" style={{ border: "none", background: "transparent", color: "var(--text-muted)", cursor: "pointer", fontSize: 12 }}>Все ↗</button>
+                </div>
+                {activeTasks.length === 0
+                  ? <div style={{ fontSize: 11, color: "var(--text-muted)", padding: "8px 2px" }}>Активных задач нет</div>
+                  : activeTasks.slice(0, 8).map(t => (
+                    <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 2px", borderBottom: "1px solid var(--border)" }}>
+                      <span onClick={() => updateTaskStatus(t.id, "done")} title="Выполнено" style={{ cursor: "pointer", fontSize: 14, color: "var(--text-muted)" }}>✓</span>
+                      <span style={{ flex: 1, minWidth: 0, fontSize: 11, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.title}>{t.title}</span>
+                      {t.status === "in_progress" && <span title="В работе" style={{ fontSize: 9, color: "#f0a020" }}>● в работе</span>}
+                    </div>
+                  ))}
+              </div>
+            )}
+            <button
+              onClick={() => { const n = !taskDockOpen; setTaskDockOpen(n); if (n) loadTasks(); }}
+              title="Задачи"
+              style={{ width: 44, height: 44, borderRadius: "50%", border: "1px solid var(--border)", background: "var(--bg-surface)", color: "var(--text)", cursor: "pointer", boxShadow: "0 4px 14px rgba(0,0,0,.25)", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}
+            >
+              <UiIcon icon={ListTodo} size={18} />
+              {activeTasks.length > 0 && (
+                <span style={{ position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8, background: "var(--accent)", color: "#fff", fontSize: 9, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px" }}>{activeTasks.length}</span>
+              )}
+            </button>
+          </div>
+        );
+      })()}
 
       <SpotlightOverlay
         open={spotlightOpen}
