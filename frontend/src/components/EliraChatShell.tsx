@@ -1080,7 +1080,10 @@ export default function EliraChatShell(): JSX.Element {
     if (recs.length) {
       const next = [...recs, ...libraryFiles];
       setLibraryFiles(next); saveLibraryFiles(next);
-      setSideTab("library"); setSelLibId(recs[0]?.id || "");
+      // Don't yank the user to the Files tab when they attach from the chat
+      // composer — stay in the chat (the file is added to context + toast).
+      // Only select the new file if they're already in the Files view.
+      if (sideTab === "library") setSelLibId(recs[0]?.id || "");
       if (chatId) {
         const map = loadChatContextMap();
         map[chatId] = Array.from(new Set([...recs.map(r => r.id), ...(map[chatId] || [])]));

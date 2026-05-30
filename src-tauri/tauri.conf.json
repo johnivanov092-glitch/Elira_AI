@@ -48,7 +48,8 @@
         "resizable": true,
         "center": true,
         "decorations": true,
-        "theme": "Dark"
+        "theme": "Dark",
+        "fileDropEnabled": false
       }
     ]
   }
