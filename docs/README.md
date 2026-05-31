@@ -1,39 +1,59 @@
-# Elira AI Docs
+# Elira AI — Documentation
 
-This folder now keeps only the current working documentation at the top level.
+Elira AI is a **fully local, private AI workspace**: a Tauri desktop app over a
+FastAPI backend and local Ollama models, with everything — chats, memory, keys,
+generated files — living on your own machine. This folder is the map of where
+the project is and, more importantly, where it is going.
 
-## Current docs
+## Direction — where Elira is heading
 
-- `ACTUAL_WORK.md`
-  Live work log: what was repaired, what was upgraded, what was verified, and what is queued next.
-  Also includes the current Tavily/DuckDuckGo/Wikipedia web stack, local key wiring, failover behavior, hidden internal time awareness, and current chat UX behavior such as draft-first chat creation.
+The north star is a self-contained AI workspace that grows more capable as your
+local hardware does:
 
-- `ROADMAP_STABILIZATION_2026-03-29.md`
-  Current stabilization roadmap: what is done, what is left, logging follow-up, and next priorities.
+- **Bigger local models, more autonomy.** The tool/skill system already works;
+  reliability scales with model size, so the near-term target is 14–20B local
+  models that can drive multi-step tool use and the code agent end to end.
+- **Two first-class environments.** A planner-routed **chat** (memory, web
+  search, document/image generation, autopipelines) and a **code agent** (file
+  tools, SSH, MCP) — kept independent, each deepening over time.
+- **Automation that compounds.** Autopipelines (scheduled tasks), the task
+  planner, and the Agent OS layer (tool registry, plugins, event bus, workflows,
+  monitoring) are the foundation for letting Elira run real work on a schedule,
+  not just answer prompts.
+- **Local-first, private by default.** No cloud dependency for the core loop;
+  secrets stay in local env files, data stays on disk.
 
-## Source of truth
+For the concrete next steps, start with the roadmap below.
 
-- `README_Elira_AI.md`
-  Setup, dependencies, startup order, launchers, and smoke checks.
+## Where it is today
 
-- `docs/ROADMAP_STABILIZATION_2026-03-29.md`
-  Current project status, completed work, remaining work, logging follow-up, and next priorities.
+- **`ROADMAP_STABILIZATION_2026-03-29.md`** — the live roadmap: what is done,
+  what is left, the logging follow-up, and the next priorities.
+  **Start here for direction.**
+- **`ACTUAL_WORK.md`** — the execution log: what was repaired, upgraded, and
+  verified, plus the current web-search stack (Tavily / DuckDuckGo / Wikipedia
+  with failover and local key wiring), internal time awareness, and current chat
+  UX such as draft-first chat creation.
 
-- `docs/ACTUAL_WORK.md`
-  Actual execution log for concrete repair steps: started, completed, verified, and queued follow-up.
+## Getting started
 
-If you need to know how to install or run the project, use the root README.
-If you need to know what was actually repaired and verified, use `docs/ACTUAL_WORK.md`.
-If you need the broader status and next priorities, use the roadmap in `docs/`.
+- **`README_Elira_AI.md`** (repo root) — setup, dependencies, startup order,
+  launchers, and smoke checks.
+
+## How to navigate
+
+- To **install or run** the project → root `README_Elira_AI.md`.
+- To see **what was actually repaired and verified** → `docs/ACTUAL_WORK.md`.
+- To understand **status and where we go next** →
+  `docs/ROADMAP_STABILIZATION_2026-03-29.md`.
 
 ## Archive
 
-Historical notes were moved out of the top level to keep `docs` readable:
+Historical notes live outside the top level so `docs/` stays focused on the
+present and the road ahead:
 
-- `archive/notes/`
-  One-off patch notes, migration notes, and temporary checklists.
+- `archive/notes/` — one-off patch notes, migration notes, temporary checklists.
+- `archive/stages/` — stage-by-stage implementation notes from earlier migration
+  work.
 
-- `archive/stages/`
-  Stage-by-stage historical implementation notes from earlier migration work.
-
-These archived files are useful for context, but they are not the current source of truth.
+Useful for context, but not the current source of truth.
