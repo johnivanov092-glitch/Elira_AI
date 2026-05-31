@@ -171,16 +171,16 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
 
         self.assertEqual(bad_files, [])
 
-    def test_live_coordination_docs_do_not_contain_mojibake(self) -> None:
+    def test_docs_do_not_contain_mojibake(self) -> None:
+        docs_root = ROOT / "docs"
         bad_files = []
-        for relative_path in (
-            "docs/ACTUAL_WORK.md",
-            "docs/WORKPLAN_CODEX_CLAUDE.md",
-        ):
-            text = (ROOT / relative_path).read_text(encoding="utf-8")
+        for path in sorted(docs_root.rglob("*.md")):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
             score = mojibake_score(text)
             if score:
-                bad_files.append(f"{relative_path}:{score}")
+                bad_files.append(f"{path.relative_to(ROOT)}:{score}")
 
         self.assertEqual(bad_files, [])
 
