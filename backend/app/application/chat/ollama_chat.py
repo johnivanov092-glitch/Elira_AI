@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from typing import Any, Generator
+
+import ollama
+
+from app.core.persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
+from app.application.persona.service import build_persona_prompt
+
+
+def normalize_profile(name: str) -> str:
+    if not name or name.lower() == "default":
+        return DEFAULT_PROFILE
+    return name if name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
+
+
+def run_chat(
+    model_name: str,
+    profile_name: str,
+    user_input: str,
+    history: list[dict] | None = None,
+    num_ctx: int = 8192,
+    task_context: str = "",
+) -> dict[str, Any]:
+    profile = normalize_profile(profile_name)
+    system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
+
+    messages = [{"role": "system", "content": system}]
+
+    for item in history or []:
+        role = item.get("role", "")
+        content = item.get("content", "")
+        if role in ("user", "assistant") and content.strip():
+            messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": user_input})
+
+    try:
+        client = ollama.Client()
+        resp = client.chat(model=model_name, messages=messages, options={"num_ctx": num_ctx})
+        text = resp.message.content or ""
+        return {"ok": True, "answer": text, "warnings": [], "meta": {"profile": profile}}
+    except Exception as e:
+        return {"ok": False, "answer": "", "warnings": [str(e)], "meta": {}}
+
+
+def run_chat_stream(
+    model_name: str,
+    profile_name: str,
+    user_input: str,
+    history: list[dict] | None = None,
+    num_ctx: int = 8192,
+    task_context: str = "",
+) -> Generator[str, None, None]:
+    profile = normalize_profile(profile_name)
+    system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
+
+    messages = [{"role": "system", "content": system}]
+
+    for item in history or []:
+        role = item.get("role", "")
+        content = item.get("content", "")
+        if role in ("user", "assistant") and content.strip():
+            messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": user_input})
+
+    try:
+        client = ollama.Client()
+        stream = client.chat(model=model_name, messages=messages, stream=True, options={"num_ctx": num_ctx})
+        for chunk in stream:
+            token = chunk.message.content or ""
+            if token:
+                yield token
+    except Exception as e:
+        result = run_chat(model_name, profile_name, user_input, history, num_ctx=num_ctx, task_context=task_context)
+        if result.get("ok") and result.get("answer"):
+            yield result["answer"]
+        else:
+            yield f"\n\n⚠️ Ошибка: {e}"

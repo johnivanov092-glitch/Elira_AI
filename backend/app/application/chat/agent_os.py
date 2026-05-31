@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.application.monitoring.runtime import record_agent_run_metric
+
+
+logger = logging.getLogger(__name__)
+
+
+def resolve_agent_os_source_id(
+    agent_id: str | None,
+    registry_agent: dict[str, Any] | None,
+) -> str:
+    return str(agent_id or (registry_agent or {}).get("id") or "")
+
+
+def emit_agent_os_event(
+    *,
+    event_type: str,
+    source_agent_id: str = "",
+    payload: dict[str, Any] | None = None,
+) -> None:
+    try:
+        from app.application.event_bus.runtime import emit_event
+
+        emit_event(
+            event_type=event_type,
+            source_agent_id=source_agent_id,
+            payload=payload or {},
+        )
+    except Exception:
+        logger.debug("event_bus_emit_failed", exc_info=True)
+
+
+def record_agent_os_monitoring(
+    *,
+    agent_id: str,
+    run_id: str,
+    route: str,
+    model_name: str,
+    ok: bool,
+    duration_ms: int,
+    streaming: bool,
+    num_ctx: int,
+    selected_tools: list[str] | None,
+) -> None:
+    try:
+        record_agent_run_metric(
+            agent_id=agent_id,
+            run_id=run_id,
+            route=route,
+            model_name=model_name,
+            ok=ok,
+            duration_ms=duration_ms,
+            streaming=streaming,
+            num_ctx=int(num_ctx or 0),
+            tools=list(selected_tools or []),
+        )
+    except Exception:
+        logger.debug("agent_monitor_record_failed", exc_info=True)
+
+
+def record_registry_agent_run(
+    *,
+    agent_id: str | None,
+    registry_agent: dict[str, Any] | None,
+    run_id: str,
+    input_summary: str,
+    output_summary: str,
+    ok: bool,
+    route: str,
+    model_name: str,
+    duration_ms: int,
+) -> None:
+    resolved_agent_id = str(agent_id or (registry_agent or {}).get("id") or "")
+    if not resolved_agent_id:
+        return
+
+    try:
+        from app.application.agent_registry.runtime import record_agent_run
+
+        record_agent_run(
+            {
+                "agent_id": resolved_agent_id,
+                "run_id": run_id,
+                "input_summary": input_summary[:500],
+                "output_summary": output_summary[:500],
+                "ok": ok,
+                "route": route,
+                "model_used": model_name,
+                "duration_ms": duration_ms,
+            }
+        )
+    except Exception:
+        logger.debug("agent_registry_record_failed", exc_info=True)
