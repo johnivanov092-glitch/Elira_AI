@@ -1,140 +1,229 @@
 # Elira AI
 
-Local AI workspace with:
-- FastAPI backend
-- React + Vite frontend
-- Tauri desktop shell
-- Ollama for local inference
+**Local, private AI workspace** — FastAPI backend · React + Vite frontend · Tauri
+desktop shell · Ollama for local inference. Everything runs on your machine.
 
-## Documentation map
+**Language / Язык: [English](#english) · [Русский](#русский)**
 
-Use the repo root README for:
-- dependencies;
-- startup order;
-- launchers;
-- smoke checks.
+---
 
-Use `docs/` for:
-- current project status;
-- what is already done;
-- what still needs to be finished;
-- stabilization roadmap;
-- logging follow-up.
+## English
 
-Primary docs:
-- `README_Elira_AI.md` - setup, dependencies, startup, checks
-- `docs/README.md` - docs index
-- `docs/ROADMAP_STABILIZATION_2026-03-29.md` - active status and next work
+### What it is
 
-## Dependencies
+A fully local AI workspace with two environments:
+- **Chat** — assistant with skill routing (planner), memory, web search,
+  document/image generation, and autopipelines.
+- **Code agent** — separate workspace for working with code: file tools, git,
+  terminal, SSH, and MCP.
 
-### Core dependencies
-Core dependencies are enough to start the backend, frontend, dashboard, tasks, pipelines, Telegram panel, and desktop shell.
+No cloud dependency for the core loop; web search is the only optional outbound
+network use. Keys stay in local env files, data stays on disk.
 
-Backend:
+### Documentation
+
+- `docs/ARCHITECTURE.md` — technical documentation (how it works, why).
+- `docs/PROJECT_MAP.md` — project tree, data flow, and all dependencies.
+- `docs/README.md` — docs index.
+
+This root README covers setup, dependencies, startup order, launchers, and smoke
+checks.
+
+### Dependencies
+
+**Core** — enough to run backend, frontend, dashboard, tasks, pipelines, Telegram
+panel, and the desktop shell.
+
 ```bash
+# Backend
 cd backend
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
-```
 
-Frontend:
-```bash
+# Frontend
 cd frontend
 npm install
 ```
 
-### Optional dependencies
-Optional packages unlock degraded features that are now reported in `/api/project-brain/status`.
+**Optional** — heavy capabilities, loaded lazily on first use. The app starts
+without them; the dashboard and `/api/project-brain/status` report any missing
+capability (`available`, `reason`, `missing_packages`, `hint`).
 
-Install them with:
 ```bash
 cd backend
 .venv\Scripts\pip install -r requirements-optional.txt
-playwright install chromium
+playwright install chromium   # only for the screenshot skill
 ```
 
-Optional packages and what they enable:
-- `sentence-transformers` + `faiss-cpu`: vector memory instead of keyword fallback
-- `playwright`: screenshot skill
+| Section | Enables |
+|---------|---------|
+| Image generation | SDXL Turbo / FLUX.1-schnell (`torch`, `diffusers`, `transformers`, …) |
+| Document parsing | Excel, PDF tables, OCR (`pdfplumber`, `pandas`, `openpyxl`, `pytesseract`, `pdf2image`) |
+| Browser screenshots | `playwright` |
 
-If optional packages are missing:
-- the app still starts
-- dashboard shows the missing capability
-- `/api/project-brain/status` reports `available`, `reason`, `missing_packages`, and `hint`
+### Startup order
 
-## Startup order
-
-### Backend
 ```bash
+# Backend (127.0.0.1:8000)
 cd backend
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-```
 
-### Frontend
-```bash
+# Frontend dev server (browser UI, 5173)
 cd frontend
 npm run dev
-```
 
-Frontend expects the backend at:
-- `http://127.0.0.1:8000`
-- or `VITE_API_BASE_URL` if set
-
-### Tauri desktop
-From the repo root:
-```bash
+# Tauri desktop (from repo root)
 npm run tauri dev
 ```
 
-Recommended local order:
-1. Start backend on `127.0.0.1:8000`
-2. Start frontend dev server on `5173` if you are testing the browser UI
-3. Start Tauri if you are testing the desktop shell
+The frontend expects the backend at `http://127.0.0.1:8000` (or `VITE_API_BASE_URL`
+if set). Recommended order: backend → frontend (if testing browser UI) → Tauri.
 
-## Windows launchers
+> Deploy note: the desktop app serves the built bundle `frontend/dist`. After any
+> frontend change run `npm --prefix frontend run build` and restart the app.
+> Changes to `src-tauri/tauri.conf.json` need a full Tauri rebuild.
 
-- `Elira.bat`: starts backend, prints capability notes, then opens Tauri
-- `run_tauri_dev.bat`: installs frontend packages if needed, starts backend, then runs Tauri dev
-- `Elira_Mobile.bat`: LAN/mobile launcher
+### Windows launchers
 
-## Smoke checks
+- `Elira.bat` — starts the backend, prints capability notes, opens Tauri.
+- `run_tauri_dev.bat` — installs frontend packages if needed, starts backend, runs Tauri dev.
+- `Elira_Mobile.bat` — LAN / mobile launcher.
+- `kill_elira.bat` — stops all Elira processes.
 
-Backend:
+### Smoke checks
+
 ```bash
+# Backend imports + compile
 cd backend
 .venv\Scripts\python.exe -c "from app.main import app; print(len(app.routes), len(app.openapi().get('paths', {})))"
 .venv\Scripts\python.exe -m compileall app
-```
 
-Contract checks:
-```bash
+# Contract + tests
 backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py
-backend\.venv\Scripts\python.exe -m unittest discover -s backend/tests -p "test_*.py"
-```
+backend\.venv\Scripts\python.exe -m pytest -q
 
-Frontend build:
-```bash
+# Frontend build + typecheck
 npm --prefix frontend run build
+cd frontend && npx tsc --noEmit
 ```
 
-## Runtime smoke checklist
+### Project layout
 
-In browser dev mode and in Tauri:
-- open `Dashboard`
-- open `Tasks`
-- open `Pipelines`
-- open `Telegram`
-- verify requests go to `127.0.0.1:8000`
-- stop backend and confirm panels show an error state instead of empty content
-- verify missing optional packages appear in the dashboard capability cards
+- `backend/` — FastAPI API with layered `application` / `domain` / `infrastructure`.
+- `frontend/` — React + Vite + TypeScript UI.
+- `src-tauri/` — Rust/Tauri desktop shell.
+- `scripts/` — smoke and utility scripts.
+- `data/` — local runtime root (SQLite DBs, uploads, generated, secret key).
+- `docs/` — project documentation.
 
-## Project layout
+---
 
-- `backend/`: API, services, storage, orchestration
-- `frontend/`: UI
-- `src-tauri/`: desktop shell
-- `scripts/`: smoke and utility scripts
-- `docs/`: project docs
+## Русский
 
-For current implementation status and remaining work, go to `docs/README.md` and `docs/ROADMAP_STABILIZATION_2026-03-29.md`.
+### Что это
+
+Полностью локальный приватный AI-воркспейс с двумя окружениями:
+- **Чат** — ассистент с маршрутизацией навыков (planner), памятью, веб-поиском,
+  генерацией документов/картинок, автопайплайнами.
+- **Код-агент** — отдельный воркспейс для работы с кодом: файловые инструменты,
+  git, терминал, SSH и MCP.
+
+Для основного цикла внешняя сеть не нужна; единственный опциональный выход в сеть —
+веб-поиск. Ключи — в локальных env-файлах, данные — на диске.
+
+### Документация
+
+- `docs/ARCHITECTURE.md` — техническая документация (как устроено и почему).
+- `docs/PROJECT_MAP.md` — дерево проекта, потоки данных и все зависимости.
+- `docs/README.md` — индекс документации.
+
+Этот корневой README — про установку, зависимости, порядок запуска, лаунчеры и
+smoke-проверки.
+
+### Зависимости
+
+**Базовые** — их достаточно для бэкенда, фронтенда, дашборда, задач, пайплайнов,
+Telegram-панели и десктоп-оболочки.
+
+```bash
+# Бэкенд
+cd backend
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+
+# Фронтенд
+cd frontend
+npm install
+```
+
+**Опциональные** — тяжёлые возможности, грузятся лениво при первом использовании.
+Приложение запускается и без них; дашборд и `/api/project-brain/status` сообщают о
+недостающей возможности (`available`, `reason`, `missing_packages`, `hint`).
+
+```bash
+cd backend
+.venv\Scripts\pip install -r requirements-optional.txt
+playwright install chromium   # только для навыка скриншотов
+```
+
+| Раздел | Что включает |
+|--------|--------------|
+| Генерация изображений | SDXL Turbo / FLUX.1-schnell (`torch`, `diffusers`, `transformers`, …) |
+| Разбор документов | Excel, таблицы PDF, OCR (`pdfplumber`, `pandas`, `openpyxl`, `pytesseract`, `pdf2image`) |
+| Скриншоты браузера | `playwright` |
+
+### Порядок запуска
+
+```bash
+# Бэкенд (127.0.0.1:8000)
+cd backend
+.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+# Dev-сервер фронтенда (браузерный UI, 5173)
+cd frontend
+npm run dev
+
+# Десктоп Tauri (из корня репозитория)
+npm run tauri dev
+```
+
+Фронтенд ожидает бэкенд на `http://127.0.0.1:8000` (или `VITE_API_BASE_URL`, если
+задан). Рекомендуемый порядок: бэкенд → фронтенд (если тестируешь браузерный UI) →
+Tauri.
+
+> Про деплой: десктоп отдаёт собранный бандл `frontend/dist`. После любой правки
+> фронта выполни `npm --prefix frontend run build` и перезапусти приложение.
+> Изменения `src-tauri/tauri.conf.json` требуют полной пересборки Tauri.
+
+### Лаунчеры (Windows)
+
+- `Elira.bat` — запускает бэкенд, печатает заметки о возможностях, открывает Tauri.
+- `run_tauri_dev.bat` — ставит пакеты фронта при необходимости, запускает бэкенд, поднимает Tauri dev.
+- `Elira_Mobile.bat` — лаунчер для локальной сети / мобильного.
+- `kill_elira.bat` — останавливает все процессы Elira.
+
+### Smoke-проверки
+
+```bash
+# Импорты + компиляция бэкенда
+cd backend
+.venv\Scripts\python.exe -c "from app.main import app; print(len(app.routes), len(app.openapi().get('paths', {})))"
+.venv\Scripts\python.exe -m compileall app
+
+# Контракт + тесты
+backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py
+backend\.venv\Scripts\python.exe -m pytest -q
+
+# Сборка + типизация фронта
+npm --prefix frontend run build
+cd frontend && npx tsc --noEmit
+```
+
+### Структура проекта
+
+- `backend/` — FastAPI API со слоями `application` / `domain` / `infrastructure`.
+- `frontend/` — UI на React + Vite + TypeScript.
+- `src-tauri/` — десктоп-оболочка на Rust/Tauri.
+- `scripts/` — smoke- и вспомогательные скрипты.
+- `data/` — локальный runtime-root (SQLite-БД, uploads, generated, ключ).
+- `docs/` — документация проекта.
