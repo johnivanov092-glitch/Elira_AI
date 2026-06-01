@@ -594,6 +594,15 @@ def stream_code_agent(
 
             yield {"type": "step_started", "step": step}
 
+            # Compact context before calling the model if we're above 70% budget.
+            from app.application.context.compaction import maybe_compact
+            messages, _compacted = maybe_compact(
+                messages, safe_num_ctx, model, chat,
+                summarize_fn=summarize_history,
+            )
+            if _compacted:
+                yield {"type": "context_compacted", "step": step}
+
             try:
                 response = chat(
                     model=model,
