@@ -26,7 +26,13 @@ CREATE TABLE IF NOT EXISTS tools (
     enabled INTEGER NOT NULL DEFAULT 1,
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    permission TEXT NOT NULL DEFAULT 'auto',
+    side_effect INTEGER NOT NULL DEFAULT 0,
+    scopes TEXT NOT NULL DEFAULT '[]',
+    timeout_seconds INTEGER NOT NULL DEFAULT 30,
+    max_output_chars INTEGER NOT NULL DEFAULT 50000,
+    idempotent INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -43,6 +49,7 @@ def _conn() -> sqlite3.Connection:
 
 def _init_db() -> None:
     registry_store.init_db(conn_factory=_conn, create_sql=_CREATE_SQL)
+    registry_store.migrate_toolspec_columns(conn_factory=_conn)
 
 
 _init_db()
@@ -67,6 +74,12 @@ def register_tool(
     category: str = "general",
     parameters_schema: dict[str, Any] | None = None,
     source: str = "builtin",
+    permission: str = "auto",
+    side_effect: bool = False,
+    scopes: list[str] | None = None,
+    timeout_seconds: int = 30,
+    max_output_chars: int = 50000,
+    idempotent: bool = False,
 ) -> dict:
     return registry_store.register_tool(
         conn_factory=_conn,
@@ -82,6 +95,12 @@ def register_tool(
         category=category,
         parameters_schema=parameters_schema,
         source=source,
+        permission=permission,
+        side_effect=side_effect,
+        scopes=scopes,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=max_output_chars,
+        idempotent=idempotent,
     )
 
 

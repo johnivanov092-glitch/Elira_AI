@@ -3,6 +3,24 @@ from __future__ import annotations
 import json
 from typing import Any, Callable
 
+_TOOLSPEC_NEW_COLUMNS = [
+    ("permission",       "TEXT NOT NULL DEFAULT 'auto'"),
+    ("side_effect",      "INTEGER NOT NULL DEFAULT 0"),
+    ("scopes",           "TEXT NOT NULL DEFAULT '[]'"),
+    ("timeout_seconds",  "INTEGER NOT NULL DEFAULT 30"),
+    ("max_output_chars", "INTEGER NOT NULL DEFAULT 50000"),
+    ("idempotent",       "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def migrate_toolspec_columns(*, conn_factory: Callable[[], Any]) -> None:
+    """Additive migration: add ToolSpec columns introduced in P1."""
+    with conn_factory() as con:
+        existing = {row[1] for row in con.execute("PRAGMA table_info(tools)").fetchall()}
+        for col_name, col_def in _TOOLSPEC_NEW_COLUMNS:
+            if col_name not in existing:
+                con.execute(f"ALTER TABLE tools ADD COLUMN {col_name} {col_def}")
+
 
 def now_utc_iso(now_func: Callable[[], str]) -> str:
     return now_func()
@@ -27,6 +45,14 @@ def row_to_dict(row: Any) -> dict[str, Any]:
         del data["parameters_schema_json"]
     if "enabled" in data:
         data["enabled"] = bool(data["enabled"])
+    if "scopes" in data:
+        try:
+            data["scopes"] = json.loads(data["scopes"])
+        except (json.JSONDecodeError, TypeError):
+            data["scopes"] = []
+    for _bool_col in ("side_effect", "idempotent"):
+        if _bool_col in data:
+            data[_bool_col] = bool(data[_bool_col])
     return data
 
 
@@ -45,6 +71,12 @@ def register_tool(
     category: str = "general",
     parameters_schema: dict[str, Any] | None = None,
     source: str = "builtin",
+    permission: str = "auto",
+    side_effect: bool = False,
+    scopes: list[str] | None = None,
+    timeout_seconds: int = 30,
+    max_output_chars: int = 50000,
+    idempotent: bool = False,
 ) -> dict[str, Any]:
     handlers[name] = handler
     now = now_func()
@@ -53,8 +85,9 @@ def register_tool(
         con.execute(
             """INSERT INTO tools
                (name, display_name, display_name_ru, description, description_ru,
-                category, parameters_schema_json, source, enabled, version, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+                category, parameters_schema_json, source, enabled, version, created_at, updated_at,
+                permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                 display_name=excluded.display_name,
                 display_name_ru=excluded.display_name_ru,
@@ -63,6 +96,12 @@ def register_tool(
                 category=excluded.category,
                 parameters_schema_json=excluded.parameters_schema_json,
                 source=excluded.source,
+                permission=excluded.permission,
+                side_effect=excluded.side_effect,
+                scopes=excluded.scopes,
+                timeout_seconds=excluded.timeout_seconds,
+                max_output_chars=excluded.max_output_chars,
+                idempotent=excluded.idempotent,
                 updated_at=excluded.updated_at""",
             (
                 name,
@@ -75,6 +114,12 @@ def register_tool(
                 source,
                 now,
                 now,
+                permission,
+                1 if side_effect else 0,
+                json.dumps(scopes or [], ensure_ascii=False),
+                timeout_seconds,
+                max_output_chars,
+                1 if idempotent else 0,
             ),
         )
     return get_tool_func(name) or {"name": name}
@@ -101,6 +146,12 @@ def register_tool_from_dict(
         category=tool_def.get("category", "custom"),
         parameters_schema=tool_def.get("parameters_schema"),
         source=tool_def.get("source", "custom"),
+        permission=tool_def.get("permission", "auto"),
+        side_effect=tool_def.get("side_effect", False),
+        scopes=tool_def.get("scopes"),
+        timeout_seconds=tool_def.get("timeout_seconds", 30),
+        max_output_chars=tool_def.get("max_output_chars", 50000),
+        idempotent=tool_def.get("idempotent", False),
     )
 
 
@@ -163,21 +214,28 @@ def update_tool(
     name: str,
     updates: dict[str, Any],
 ) -> dict[str, Any]:
-    allowed = {"display_name", "display_name_ru", "description", "description_ru", "category", "enabled"}
+    allowed = {
+        "display_name", "display_name_ru", "description", "description_ru", "category", "enabled",
+        "permission", "timeout_seconds", "max_output_chars",
+    }
+    bool_cols = {"enabled", "side_effect", "idempotent"}
     sets: list[str] = []
     params: list[Any] = []
 
     for key, val in updates.items():
         if val is None:
             continue
-        if key in allowed:
-            if key == "enabled":
+        if key in allowed or key in bool_cols:
+            if key in bool_cols:
                 val = 1 if val else 0
             sets.append(f"{key} = ?")
             params.append(val)
         elif key == "parameters_schema":
             sets.append("parameters_schema_json = ?")
             params.append(json.dumps(val, ensure_ascii=False))
+        elif key == "scopes":
+            sets.append("scopes = ?")
+            params.append(json.dumps(val if isinstance(val, list) else [], ensure_ascii=False))
 
     if not sets:
         return get_tool_func(name) or {}
