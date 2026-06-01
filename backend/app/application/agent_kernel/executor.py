@@ -98,7 +98,22 @@ def execute_tool(
 
     # 3. Approval gate (implemented in Шаг 4/P1) — require_approval tools
     # need a valid human approval before dispatch.
-    if spec and spec.get("permission") == "require_approval":
+    #
+    # Exception: run_bash with a read-only allowlisted command auto-executes
+    # without approval (P4 Шаг 11). This covers status/inspection commands
+    # like `git status`, `ls`, `pytest --collect-only`, etc.
+    _needs_approval = bool(spec and spec.get("permission") == "require_approval")
+    if _needs_approval and tool_name == "run_bash":
+        _cmd = str(request.args.get("command", "")).strip()
+        if _cmd:
+            try:
+                from app.application.code_agent.tools import is_shell_safe
+                if is_shell_safe(_cmd):
+                    _needs_approval = False
+            except Exception:
+                pass  # conservative: keep approval requirement on import error
+
+    if _needs_approval:
         import uuid as _uuid
         from app.application.monitoring import runtime as _mon
 

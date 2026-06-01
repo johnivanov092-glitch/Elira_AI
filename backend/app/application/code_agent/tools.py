@@ -44,6 +44,75 @@ _BLOCKED_SHELL_FRAGMENTS = (
 )
 
 
+# Read-only command prefixes that auto-execute without user approval.
+# A command is safe if it starts with one of these prefixes (case-insensitive).
+# Anything not in this list and not in _BLOCKED_SHELL_FRAGMENTS requires approval.
+_SHELL_READONLY_PREFIXES: tuple[str, ...] = (
+    # VCS read-only
+    "git status", "git log", "git diff", "git show", "git branch",
+    "git remote", "git stash list", "git tag", "git fetch --dry-run",
+    "git ls-files", "git describe", "git rev-parse",
+    # File listing / reading
+    "ls", "dir", "find ", "tree",
+    "cat ", "head ", "tail ", "less ", "more ", "type ",
+    "wc ", "file ",
+    # Search
+    "grep ", "egrep ", "fgrep ", "rg ", "ag ",
+    # System info / status
+    "echo ", "pwd", "whoami", "id", "hostname",
+    "which ", "where ", "command -v",
+    "env", "printenv", "set",
+    "ps ", "ps aux", "top -bn1",
+    "df ", "du -sh", "free ",
+    # Python / package status
+    "python --version", "python3 --version", "python -V", "python3 -V",
+    "pip list", "pip show ", "pip freeze", "pip check",
+    "uv list", "poetry show",
+    # Testing — collect only
+    "pytest --collect-only", "pytest -v --collect-only",
+    "jest --listTests", "cargo test -- --list",
+    # Node / npm status
+    "node --version", "npm list", "yarn list", "pnpm list",
+    "npm outdated", "npm audit",
+    # Docker status
+    "docker ps", "docker images", "docker stats", "docker info",
+    "docker compose ps", "docker-compose ps",
+    # Rust / Go / etc.
+    "cargo --version", "rustc --version", "go version",
+    # Network / DNS read-only
+    "nslookup ", "dig ", "host ", "ping ",
+)
+
+
+def is_shell_safe(command: str) -> bool:
+    """Return True if *command* is in the read-only shell allowlist.
+
+    Commands in this set auto-execute without user approval. Matching is
+    prefix-based and case-insensitive so ``git status --short`` passes as
+    a ``git status`` prefix.
+
+    Prefixes that end with a space (e.g. ``"cat "``) match any command that
+    starts with that string (``cat README.md``). Prefixes without a trailing
+    space (e.g. ``"git status"``) are matched as exact or word-boundary
+    (``git status``, ``git status --short``).
+    """
+    cmd = (command or "").strip().lower()
+    if not cmd:
+        return False
+    # Shell output redirects write to files — never safe regardless of prefix.
+    if ">" in cmd:
+        return False
+    for prefix in _SHELL_READONLY_PREFIXES:
+        p = prefix.lower()
+        if p.endswith(" "):
+            if cmd.startswith(p) or cmd == p.rstrip():
+                return True
+        else:
+            if cmd == p or cmd.startswith(p + " ") or cmd.startswith(p + "\t"):
+                return True
+    return False
+
+
 class SandboxError(Exception):
     """Raised when a tool tries to access a path outside the project root."""
 
