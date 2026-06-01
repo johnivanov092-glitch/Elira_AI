@@ -375,6 +375,55 @@ def _build_project_brain_tools(map_service, brain_service) -> list[dict[str, Any
     ]
 
 
+def _build_native_code_agent_tools() -> list[dict[str, Any]]:
+    """Metadata-only ToolSpec records for code_agent native tools.
+
+    These records provide permission/timeout/output metadata so the executor
+    can enforce policy. Handlers are noops — actual dispatch goes through
+    BuiltinToolProvider, not through tool_registry.execute_tool.
+    """
+    _noop = lambda a: {"ok": False, "error": "native tool — execute via code-agent, not tool_registry"}
+
+    # ── Read-only (auto) ────────────────────────────────────────────────────
+    auto_tools = [
+        ("read_file",   "Read File",    "project", "Read a file in the project root",         15, 50000, True),
+        ("glob",        "Glob",         "project", "List files matching a glob pattern",       15, 20000, True),
+        ("grep",        "Grep",         "project", "Search files by content pattern",          15, 20000, True),
+        ("recall",      "Recall",       "memory",  "Recall from project RAG memory",           15, 20000, True),
+        ("web_search",  "Web Search",   "web",     "Search the web",                          30, 50000, True),
+        ("web_fetch",   "Web Fetch",    "web",     "Fetch and parse a web page",              30, 50000, True),
+    ]
+    # ── Side-effect (require_approval) ─────────────────────────────────────
+    approval_tools = [
+        ("write_file",     "Write File",     "project", "Write content to a project file",       15,  5000, False),
+        ("edit_file",      "Edit File",      "project", "Apply text replacement in a file",      15,  5000, False),
+        ("run_bash",       "Run Bash",       "system",  "Execute a shell command in project",   120, 20000, False),
+        ("sandbox_run",    "Sandbox Run",    "code",    "Run code in the project sandbox",       60, 20000, False),
+        ("sandbox_reset",  "Sandbox Reset",  "code",    "Reset the project sandbox",             30,  5000, False),
+    ]
+
+    result: list[dict[str, Any]] = []
+    for name, display, cat, desc, timeout, max_chars, idempotent in auto_tools:
+        result.append({
+            "name": name, "handler": _noop,
+            "display_name": display, "category": cat, "description": desc,
+            "source": "code_agent",
+            "permission": "auto", "side_effect": False,
+            "idempotent": idempotent,
+            "timeout_seconds": timeout, "max_output_chars": max_chars,
+        })
+    for name, display, cat, desc, timeout, max_chars, idempotent in approval_tools:
+        result.append({
+            "name": name, "handler": _noop,
+            "display_name": display, "category": cat, "description": desc,
+            "source": "code_agent",
+            "permission": "require_approval", "side_effect": True,
+            "idempotent": idempotent,
+            "timeout_seconds": timeout, "max_output_chars": max_chars,
+        })
+    return result
+
+
 def build_builtin_tools() -> list[dict[str, Any]]:
     from app.application.git.runtime import git_commit as _git_commit_fn
     from app.application.git.runtime import git_status as _git_status_fn
@@ -412,4 +461,5 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         *_build_system_tools(_git_status_fn, _git_commit_fn),
         *_build_library_tools(list_library_files, build_library_context),
         *_build_project_brain_tools(map_service, brain_service),
+        *_build_native_code_agent_tools(),
     ]

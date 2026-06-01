@@ -38,7 +38,7 @@ class ToolExecutionRequest:
 
 @dataclass
 class ToolExecutionResult:
-    status: str  # "ok" | "error" | "blocked"
+    status: str  # "ok" | "error" | "blocked" | "forbidden" | "waiting_approval"
     output: dict[str, Any]
     error: str | None = None
 
@@ -56,6 +56,19 @@ def execute_tool(
     # 1. Resolve ToolSpec for limits (best-effort — fall back to safe defaults)
     spec = get_tool(tool_name)
     max_chars: int = int((spec or {}).get("max_output_chars") or 50000)
+
+    # 1b. Forbidden tier — no approval possible, immediate block.
+    if spec and spec.get("permission") == "forbidden":
+        _emit_blocked(request, f"tool '{tool_name}' is forbidden")
+        return ToolExecutionResult(
+            status="forbidden",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' is permanently forbidden and cannot be executed.",
+                "error": f"forbidden:{tool_name}",
+            },
+            error=f"forbidden:{tool_name}",
+        )
 
     # 2. Policy preflight — rate-limit and context-budget check.
     # selected_tools is intentionally omitted: the allowed_tools sandbox list is a

@@ -151,12 +151,15 @@ class AgentLoopTest(unittest.TestCase):
         def fake_chat(**kwargs):
             return next(scripted_responses)
 
-        result = run_code_agent(
-            user_message="Создай out.txt с текстом Hello Elira",
-            project_root=self.root,
-            model="test-model",
-            chat_fn=fake_chat,
-        )
+        # Patch get_tool to return None so the executor applies no permission check.
+        # This test verifies loop behaviour, not P2 approval policy.
+        with patch("app.application.tool_registry.runtime.get_tool", return_value=None):
+            result = run_code_agent(
+                user_message="Создай out.txt с текстом Hello Elira",
+                project_root=self.root,
+                model="test-model",
+                chat_fn=fake_chat,
+            )
 
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["stop_reason"], "answer")
@@ -301,11 +304,14 @@ class AgentLoopTest(unittest.TestCase):
         def fake_chat(**kwargs):
             return next(responses)
 
-        events = list(stream_code_agent(
-            user_message="bump version",
-            project_root=self.root,
-            chat_fn=fake_chat,
-        ))
+        # Patch get_tool to return None so the executor applies no permission check.
+        # This test verifies diff metadata propagation, not P2 approval policy.
+        with patch("app.application.tool_registry.runtime.get_tool", return_value=None):
+            events = list(stream_code_agent(
+                user_message="bump version",
+                project_root=self.root,
+                chat_fn=fake_chat,
+            ))
         tool_events = [e for e in events if e.get("type") == "tool_call"]
         self.assertEqual(len(tool_events), 1)
         tc = tool_events[0]
