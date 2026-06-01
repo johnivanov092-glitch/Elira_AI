@@ -52,7 +52,7 @@ def load_instructions(project_root: Path) -> str:
     parts: list[str] = []
     total = 0
 
-    for _label, path_fn in _SOURCES:
+    for _, path_fn in _SOURCES:
         path: Path = path_fn(project_root)  # type: ignore[operator]
         content = _read_capped(path)
         if not content:

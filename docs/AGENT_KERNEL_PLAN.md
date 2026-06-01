@@ -116,7 +116,10 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 
 ## P3: Контекст и память
 
-### Шаг 7 — Instruction loader
+### Шаг 7 — Instruction loader  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (056fe69). instructions/loader.py: global+project+local, 4k/12k limits, SHA-256 dedup. 12 тестов. Gates: tsc clean, pytest 2443 passed. **Sonnet: начинай со Шага 8.**
+
+### Шаг 7 (детали)
 
 **Что есть:** `.elira/agent.md` уже читается в `_read_project_prompt`. Нет глобальных инструкций, нет `.elira/agent.local.md`, нет лимитов и дедупа.
 

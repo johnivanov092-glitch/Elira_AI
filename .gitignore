@@ -142,6 +142,9 @@ data/uploads/
 backend/.env
 backend/.env.local
 
+# Local agent instruction override (contains personal/machine-specific notes)
+**/.elira/agent.local.md
+
 # Claude worktrees
 .claude/
 .claire/
