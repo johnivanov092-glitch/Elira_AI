@@ -27,6 +27,11 @@ SubqueryBuilderFunc = Callable[[dict[str, Any]], dict[str, Any]]
 
 def fetch_page_text(url: str, max_chars: int = 4000) -> str:
     """Fetch and extract main text content from a web page."""
+    from app.application.web.ssrf_guard import check_ssrf
+    ssrf_reason = check_ssrf(url)
+    if ssrf_reason:
+        return f"ERROR: SSRF blocked — {ssrf_reason}"
+
     try:
         import requests
         from bs4 import BeautifulSoup

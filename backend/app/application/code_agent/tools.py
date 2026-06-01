@@ -357,6 +357,11 @@ def tool_web_fetch(*, url: str, max_chars: int = 8000) -> dict[str, Any]:
     if not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
         return {"text": f"ERROR: url must start with http:// or https:// — got '{cleaned_url[:80]}'"}
 
+    from app.application.web.ssrf_guard import check_ssrf
+    ssrf_reason = check_ssrf(cleaned_url)
+    if ssrf_reason:
+        return {"text": f"ERROR: SSRF blocked — {ssrf_reason}"}
+
     try:
         from app.infrastructure.search.web_search import fetch_page_text
     except Exception as exc:  # pragma: no cover
