@@ -110,7 +110,47 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - Гейты зелёные
 
 ### Шаг 6 — Runs API + P2 acceptance tests  ✅ ВЫПОЛНЕНО
-**Готово:** Opus PASS (4e793b7). GET /api/agent-os/runs (agent_id, source, status, limit, offset фильтры). 7 тестов. Gates: tsc clean, pytest 2430 passed. **P2 завершён. Следующий этап: P3 Context & Memory по роадмапу.**
+**Готово:** Opus PASS (4e793b7 + c9583f9). GET /api/agent-os/runs (agent_id, source, status, limit, offset фильтры). 7 тестов. Gates: tsc clean, pytest 2431 passed. P2 завершён.
+
+---
+
+## P3: Контекст и память
+
+### Шаг 7 — Instruction loader
+
+**Что есть:** `.elira/agent.md` уже читается в `_read_project_prompt`. Нет глобальных инструкций, нет `.elira/agent.local.md`, нет лимитов и дедупа.
+
+**Реализовать:**
+- Новый `application/instructions/loader.py`: load_instructions(project_root) → str.
+- Порядок загрузки: global `~/.elira/agent.md` → project `.elira/agent.md` → local `.elira/agent.local.md`.
+- Лимит: 4 000 символов на файл, 12 000 суммарно — лишнее обрезается с предупреждением.
+- Дедупликация секций по SHA-256 content hash (одинаковые блоки не включаются дважды).
+- Обновить `_build_system_prompt` в `agent_loop.py` использовать loader.
+- Acceptance: три файла объединяются; дубли выброшены; превышение лимита усекается; гейты зелёные.
+
+### Шаг 8 — Context compaction
+
+**Что есть:** В code-agent loop нет compaction. Длинные сессии обрезаются произвольно.
+
+**Реализовать:**
+- Новый `application/context/compaction.py`: compact_messages(messages, num_ctx, model, chat_fn) → messages.
+- Порог срабатывания: когда примерная длина messages > 70% num_ctx (токены ≈ chars / 4).
+- Compaction: запрос модели на rolling summary, сохранить system + summary + последние 4 пары assistant/user.
+- Deterministic fallback: если модель недоступна или ошибка — оставить system + «[context compacted]» + последние 8 сообщений.
+- Вызывать в начале каждого шага loop перед model call.
+- Acceptance: сессия > 70% num_ctx → messages компактируются и summary сохраняется в начале; fallback работает при ошибке модели; гейты зелёные.
+
+### Шаг 9 — MemoryCandidate store + API
+
+**Что есть:** `smart_memory` добавляет записи напрямую в RAG. Нет staging-слоя для проверки пользователем.
+
+**Реализовать:**
+- Таблица `memory_candidates` в `agent_monitor.db`: id, namespace, content, source, confidence, status (pending|accepted|rejected|expired), created_at, expires_at.
+- Additive migration через `monitoring/store.py`.
+- CRUD в `monitoring/{store,runtime}.py`.
+- Маршруты `/api/agent-os/memory/candidates`: GET (list, filter status), GET /{id}, POST /{id}/accept, POST /{id}/reject, DELETE /{id}.
+- В prompt (система code-agent) добавлять только `accepted` кандидаты с namespace=project.
+- Acceptance: кандидат создаётся → остаётся pending → при accept попадает в prompt → при reject не попадает; гейты зелёные.
 
 ### Шаг 6 (детали)
 
