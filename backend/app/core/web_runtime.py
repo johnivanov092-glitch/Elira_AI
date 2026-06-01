@@ -343,6 +343,11 @@ def format_search_results(results: List[Dict[str, str]]) -> str:
 
 
 def fetch_page_text(url: str) -> str:
+    from app.application.web.ssrf_guard import check_ssrf
+    ssrf_reason = check_ssrf(url)
+    if ssrf_reason:
+        return f"Ошибка чтения страницы: SSRF blocked — {ssrf_reason}"
+
     try:
         response = session().get(url, timeout=20)
         response.raise_for_status()

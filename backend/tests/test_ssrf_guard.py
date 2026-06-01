@@ -104,6 +104,18 @@ class TestCheckSsrf(unittest.TestCase):
         result = fetch_page_text("http://10.0.0.1/internal")
         self.assertIn("SSRF blocked", result)
 
+    # ── Integration: core/web_runtime.fetch_page_text (third sink) ──────────
+
+    def test_core_web_runtime_fetch_blocks_private(self):
+        from app.core.web_runtime import fetch_page_text as core_fetch
+        result = core_fetch("http://169.254.169.254/latest/meta-data/")
+        self.assertIn("SSRF blocked", result)
+
+    def test_core_web_runtime_fetch_blocks_loopback(self):
+        from app.core.web_runtime import fetch_page_text as core_fetch
+        result = core_fetch("http://127.0.0.1:8080/admin")
+        self.assertIn("SSRF blocked", result)
+
 
 if __name__ == "__main__":
     unittest.main()
