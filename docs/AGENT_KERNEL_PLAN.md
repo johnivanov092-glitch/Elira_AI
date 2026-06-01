@@ -109,7 +109,10 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - Чтение (`read_file`, `glob`) → `status="ok"` без approval
 - Гейты зелёные
 
-### Шаг 6 — Runs API + P2 acceptance tests
+### Шаг 6 — Runs API + P2 acceptance tests  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (4e793b7). GET /api/agent-os/runs (agent_id, source, status, limit, offset фильтры). 7 тестов. Gates: tsc clean, pytest 2430 passed. **P2 завершён. Следующий этап: P3 Context & Memory по роадмапу.**
+
+### Шаг 6 (детали)
 
 - `GET /api/agent-os/runs` — последние записи `tool.executed` из event_bus с
   фильтрами `agent_id`, `source`, `status` и `limit`.

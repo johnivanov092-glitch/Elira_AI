@@ -113,6 +113,18 @@ class TestRunsRoute(unittest.TestCase):
         self.assertFalse(item["ok"])
         self.assertIsNone(item["error"])
 
+    def test_runs_filter_by_status(self):
+        evts = [
+            self._make_event("run_bash", status="waiting_approval", ok=False),
+            self._make_event("glob", status="ok", ok=True),
+        ]
+        client = self._make_client()
+        with self._mock_events(evts):
+            r = client.get("/api/agent-os/runs?status=waiting_approval")
+        items = r.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "waiting_approval")
+
     def test_runs_limit_query_param(self):
         evts = [self._make_event(f"tool_{i}") for i in range(10)]
         client = self._make_client()
