@@ -19,7 +19,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import unittest
 
-import app.application.tools.tool_registry as reg  # noqa: E402
+import app.application.tool_registry.runtime as reg  # noqa: E402
 
 
 _PLUGIN_SRC = textwrap.dedent("""\

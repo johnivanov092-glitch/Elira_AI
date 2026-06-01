@@ -97,7 +97,7 @@ def _build_plugin_record(name: str, mod, py_file, config: dict) -> dict:
 def _register_plugin_in_tool_registry(name: str, info: dict) -> None:
     """Register a loaded plugin as a tool in the Tool Registry (source='plugin')."""
     try:
-        import app.application.tools.tool_registry as _tr
+        import app.application.tool_registry.runtime as _tr
 
         def _handler(args: dict, _name: str = name) -> dict:
             return run_plugin(_name, args)
@@ -118,7 +118,7 @@ def _register_plugin_in_tool_registry(name: str, info: dict) -> None:
 def _unregister_plugin_from_tool_registry(name: str) -> None:
     """Remove a plugin entry from the Tool Registry when it's deleted."""
     try:
-        import app.application.tools.tool_registry as _tr
+        import app.application.tool_registry.runtime as _tr
         _tr.delete_tool(name)
     except Exception as exc:
         logger.warning(f"Plugin '{name}' tool-registry removal failed: {exc}")
@@ -237,7 +237,7 @@ def enable_plugin(name: str) -> dict:
     _set_plugin_config(name, {"enabled": True})
     # Sync enabled state with Tool Registry
     try:
-        import app.application.tools.tool_registry as _tr
+        import app.application.tool_registry.runtime as _tr
         _tr.update_tool(name, {"enabled": True})
     except Exception as exc:
         logger.warning(f"Plugin '{name}' enable sync to tool-registry failed: {exc}")
@@ -253,7 +253,7 @@ def disable_plugin(name: str) -> dict:
     _set_plugin_config(name, {"enabled": False})
     # Sync disabled state with Tool Registry
     try:
-        import app.application.tools.tool_registry as _tr
+        import app.application.tool_registry.runtime as _tr
         _tr.update_tool(name, {"enabled": False})
     except Exception as exc:
         logger.warning(f"Plugin '{name}' disable sync to tool-registry failed: {exc}")
