@@ -99,8 +99,10 @@ def is_shell_safe(command: str) -> bool:
     cmd = (command or "").strip().lower()
     if not cmd:
         return False
-    # Shell output redirects write to files — never safe regardless of prefix.
-    if ">" in cmd:
+    # Reject any command containing shell composition or redirection metacharacters.
+    # These could chain an unsafe subcommand past the prefix check.
+    _UNSAFE_METACHAR = ("&&", "||", ";;", "|", ";", ">", "<", "`", "$(", "\n", "\r")
+    if any(meta in cmd for meta in _UNSAFE_METACHAR):
         return False
     for prefix in _SHELL_READONLY_PREFIXES:
         p = prefix.lower()
