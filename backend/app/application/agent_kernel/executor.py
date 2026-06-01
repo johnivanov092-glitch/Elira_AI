@@ -1,13 +1,16 @@
 """Unified ToolExecutor — single execution path for all agent sources.
 
 Flow per call:
-  1. Resolve ToolSpec (permission, timeout, max_output_chars)
-  2. Policy preflight via sandbox (allowed_tools check)
-  3. Approval gate — stub for P1; always proceeds. Шаг 4 will add ApprovalStore.
-  4. Dispatch via caller-supplied dispatch_fn
-  5. Truncate text output to max_output_chars
-  6. Emit tool.executed (or sandbox.policy.blocked) to event bus
-  7. Return ToolExecutionResult
+  1. Resolve ToolSpec (permission, timeout, max_output_chars).
+  1b. Forbidden tier — permission == "forbidden" is blocked immediately.
+  2. Policy preflight via sandbox (rate-limit + context-budget check).
+  3. Approval gate — permission == "require_approval" requires a valid human
+     approval (ApprovalStore in agent_monitor.db); otherwise the call returns
+     "waiting_approval" until one is granted.
+  4. Dispatch via caller-supplied dispatch_fn.
+  5. Truncate text output to max_output_chars.
+  6. Emit tool.executed / sandbox.policy.blocked / tool.approval_pending to the event bus.
+  7. Return ToolExecutionResult (ok | error | blocked | forbidden | waiting_approval).
 
 Design: dispatch_fn is injected by callers so that:
   - Chat/workflow passes a function backed by tool_registry database handlers.
