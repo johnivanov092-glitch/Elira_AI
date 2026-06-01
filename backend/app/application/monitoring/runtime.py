@@ -20,6 +20,7 @@ _LIMIT_SEED_DONE = False
 
 def _init_db() -> None:
     monitoring_store.init_db(DB_PATH)
+    monitoring_store.migrate_memory_candidates_table(DB_PATH)
 
 
 _init_db()
@@ -401,3 +402,66 @@ def find_approved_approval(
 
 def expire_old_approvals() -> int:
     return monitoring_store.expire_old_approvals(DB_PATH)
+
+
+# ── MemoryCandidate ───────────────────────────────────────────────────────────
+
+def create_candidate(
+    *,
+    id: str,
+    namespace: str = "project",
+    content: str,
+    source: str = "",
+    confidence: float = 1.0,
+    project_scope_id: str = "",
+    expires_at: str | None = None,
+) -> dict[str, Any]:
+    return monitoring_store.create_candidate(
+        DB_PATH, id=id, namespace=namespace, content=content,
+        source=source, confidence=confidence,
+        project_scope_id=project_scope_id, expires_at=expires_at,
+    )
+
+
+def get_candidate(candidate_id: str) -> dict[str, Any] | None:
+    return monitoring_store.get_candidate(DB_PATH, candidate_id)
+
+
+def list_candidates(
+    *,
+    status: str | None = None,
+    namespace: str | None = None,
+    project_scope_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    return monitoring_store.list_candidates(
+        DB_PATH, status=status, namespace=namespace,
+        project_scope_id=project_scope_id, limit=limit,
+    )
+
+
+def update_candidate_status(
+    candidate_id: str,
+    *,
+    status: str,
+    content: str | None = None,
+) -> dict[str, Any] | None:
+    return monitoring_store.update_candidate_status(
+        DB_PATH, candidate_id, status=status, content=content,
+    )
+
+
+def delete_candidate(candidate_id: str) -> dict[str, Any]:
+    return monitoring_store.delete_candidate(DB_PATH, candidate_id)
+
+
+def list_accepted_candidates(
+    *,
+    namespace: str = "project",
+    project_scope_id: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    return monitoring_store.list_accepted_candidates(
+        DB_PATH, namespace=namespace,
+        project_scope_id=project_scope_id, limit=limit,
+    )

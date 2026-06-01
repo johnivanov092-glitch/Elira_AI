@@ -124,12 +124,29 @@ def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
 
 def _build_system_prompt(project_root: Path) -> str:
     from app.application.instructions.loader import load_instructions
+    from app.application.projects.scope import project_scope_id as _scope_id
 
     base = _build_base_system_prompt(project_root)
+    parts: list[str] = [base]
+
     instructions = load_instructions(project_root)
-    if not instructions:
-        return base
-    return base + "\n\n--- Instructions (.elira/agent.md) ---\n" + instructions
+    if instructions:
+        parts.append("--- Instructions (.elira/agent.md) ---\n" + instructions)
+
+    # Inject accepted MemoryCandidate entries for this project into the prompt.
+    try:
+        from app.application.monitoring import runtime as _mon
+        scope = _scope_id(project_root)
+        candidates = _mon.list_accepted_candidates(
+            namespace="project", project_scope_id=scope, limit=20
+        )
+        if candidates:
+            mem_lines = "\n".join(f"- {c['content']}" for c in candidates)
+            parts.append("--- Remembered facts ---\n" + mem_lines)
+    except Exception:
+        pass  # Memory is best-effort; never block the agent
+
+    return "\n\n".join(parts)
 
 
 # Global registry of active cancel events so an external HTTP route can flip

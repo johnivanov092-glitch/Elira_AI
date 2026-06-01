@@ -131,7 +131,10 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - Обновить `_build_system_prompt` в `agent_loop.py` использовать loader.
 - Acceptance: три файла объединяются; дубли выброшены; превышение лимита усекается; гейты зелёные.
 
-### Шаг 8 — Context compaction
+### Шаг 8 — Context compaction  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (9895031). context/compaction.py: maybe_compact с DI summarize_fn, threshold 70%, keep 4 пары, fallback. stream_code_agent эмитит context_compacted. 13 тестов. Gates: tsc clean, pytest 2456 passed. **Sonnet: начинай со Шага 9.**
+
+### Шаг 8 (детали)
 
 **Что есть:** В code-agent loop нет compaction. Длинные сессии обрезаются произвольно.
 

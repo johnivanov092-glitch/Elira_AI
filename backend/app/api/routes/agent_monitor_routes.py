@@ -135,3 +135,57 @@ def list_runs(
         if _matches(e)
     ]
     return {"items": runs, "total": total}
+
+
+# ── MemoryCandidate ───────────────────────────────────────────────────────────
+
+@router.get("/memory/candidates", summary="List memory candidates")
+def list_candidates(
+    status: str | None = Query(None, description="pending|accepted|rejected|expired"),
+    namespace: str | None = Query(None),
+    project_scope_id: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    items = agent_monitor.list_candidates(
+        status=status, namespace=namespace,
+        project_scope_id=project_scope_id, limit=limit,
+    )
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/memory/candidates/{candidate_id}", summary="Get memory candidate")
+def get_candidate(candidate_id: str):
+    item = agent_monitor.get_candidate(candidate_id)
+    if not item:
+        raise HTTPException(404, f"Candidate '{candidate_id}' not found")
+    return item
+
+
+@router.post("/memory/candidates/{candidate_id}/accept", summary="Accept a memory candidate")
+def accept_candidate(candidate_id: str, content: str | None = None):
+    item = agent_monitor.get_candidate(candidate_id)
+    if not item:
+        raise HTTPException(404, f"Candidate '{candidate_id}' not found")
+    if item["status"] not in ("pending", "rejected"):
+        raise HTTPException(400, f"Cannot accept: status is '{item['status']}'")
+    return agent_monitor.update_candidate_status(
+        candidate_id, status="accepted", content=content
+    )
+
+
+@router.post("/memory/candidates/{candidate_id}/reject", summary="Reject a memory candidate")
+def reject_candidate(candidate_id: str):
+    item = agent_monitor.get_candidate(candidate_id)
+    if not item:
+        raise HTTPException(404, f"Candidate '{candidate_id}' not found")
+    if item["status"] not in ("pending", "accepted"):
+        raise HTTPException(400, f"Cannot reject: status is '{item['status']}'")
+    return agent_monitor.update_candidate_status(candidate_id, status="rejected")
+
+
+@router.delete("/memory/candidates/{candidate_id}", summary="Delete a memory candidate")
+def delete_candidate(candidate_id: str):
+    item = agent_monitor.get_candidate(candidate_id)
+    if not item:
+        raise HTTPException(404, f"Candidate '{candidate_id}' not found")
+    return agent_monitor.delete_candidate(candidate_id)

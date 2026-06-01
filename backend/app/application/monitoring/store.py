@@ -598,3 +598,140 @@ def expire_old_approvals(db_path: str | Path) -> int:
             (now, now),
         )
     return cursor.rowcount if cursor else 0
+
+
+# ── MemoryCandidate ──────────────────────────────────────────────────────────
+
+_MEMORY_CANDIDATES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS memory_candidates (
+    id TEXT PRIMARY KEY,
+    namespace TEXT NOT NULL DEFAULT 'project',
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL DEFAULT 1.0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    project_scope_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memcand_status ON memory_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_memcand_ns ON memory_candidates(namespace);
+CREATE INDEX IF NOT EXISTS idx_memcand_scope ON memory_candidates(project_scope_id);
+"""
+
+
+def migrate_memory_candidates_table(db_path: str | Path) -> None:
+    """Additive migration: create memory_candidates table if not present."""
+    with get_connection(db_path) as con:
+        con.executescript(_MEMORY_CANDIDATES_TABLE_SQL)
+
+
+def row_to_candidate(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return dict(row)
+
+
+def create_candidate(
+    db_path: str | Path,
+    *,
+    id: str,
+    namespace: str = "project",
+    content: str,
+    source: str = "",
+    confidence: float = 1.0,
+    project_scope_id: str = "",
+    expires_at: str | None = None,
+) -> dict[str, Any]:
+    now = now_utc()
+    with get_connection(db_path) as con:
+        con.execute(
+            """INSERT INTO memory_candidates
+               (id, namespace, content, source, confidence, status,
+                project_scope_id, created_at, updated_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+            (id, namespace, content, source, float(confidence),
+             project_scope_id, now, now, expires_at),
+        )
+    return get_candidate(db_path, id) or {}
+
+
+def get_candidate(db_path: str | Path, candidate_id: str) -> dict[str, Any] | None:
+    with get_connection(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM memory_candidates WHERE id = ?", (candidate_id,)
+        ).fetchone()
+    return row_to_candidate(row)
+
+
+def list_candidates(
+    db_path: str | Path,
+    *,
+    status: str | None = None,
+    namespace: str | None = None,
+    project_scope_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        clauses.append("status = ?"); params.append(status)
+    if namespace:
+        clauses.append("namespace = ?"); params.append(namespace)
+    if project_scope_id:
+        clauses.append("project_scope_id = ?"); params.append(project_scope_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, int(limit)))
+    with get_connection(db_path) as con:
+        rows = con.execute(
+            f"SELECT * FROM memory_candidates {where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [c for c in (row_to_candidate(r) for r in rows) if c]
+
+
+def update_candidate_status(
+    db_path: str | Path,
+    candidate_id: str,
+    *,
+    status: str,
+    content: str | None = None,
+) -> dict[str, Any] | None:
+    now = now_utc()
+    if content is not None:
+        with get_connection(db_path) as con:
+            con.execute(
+                "UPDATE memory_candidates SET status = ?, content = ?, updated_at = ? WHERE id = ?",
+                (status, content, now, candidate_id),
+            )
+    else:
+        with get_connection(db_path) as con:
+            con.execute(
+                "UPDATE memory_candidates SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, candidate_id),
+            )
+    return get_candidate(db_path, candidate_id)
+
+
+def delete_candidate(db_path: str | Path, candidate_id: str) -> dict[str, Any]:
+    with get_connection(db_path) as con:
+        con.execute("DELETE FROM memory_candidates WHERE id = ?", (candidate_id,))
+    return {"id": candidate_id, "deleted": True}
+
+
+def list_accepted_candidates(
+    db_path: str | Path,
+    *,
+    namespace: str = "project",
+    project_scope_id: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return accepted candidates for prompt injection."""
+    return list_candidates(
+        db_path,
+        status="accepted",
+        namespace=namespace,
+        project_scope_id=project_scope_id or None,
+        limit=limit,
+    )
