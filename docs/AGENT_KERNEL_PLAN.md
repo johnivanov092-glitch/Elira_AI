@@ -187,7 +187,10 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 
 ## P5: Фоновые задачи
 
-### Шаг 12 — Task durability: retry, dead_letter, waiting_approval
+### Шаг 12 — Task durability  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (6ac54c8 + f059e4c). bump_retry (exponential backoff, dead_letter), set_waiting_approval, /api/tasks/{id}/retry + /waiting_approval. 12 тестов. Gates: pytest 2545 passed. **P4+P5 backend завершён.**
+
+### Шаг 12 (детали)
 - Добавить в task_planner схему: `idempotency_key`, `retry_count`, `max_retries` (default 3), `next_retry_at`, `dead_letter` (bool), `status="waiting_approval"`.
 - Additive migration через `task_planner/runtime.py`.
 - `bump_retry(task_id)` — инкрементит retry_count, устанавливает exponential backoff `next_retry_at`, при исчерпании переводит в dead_letter=True.
