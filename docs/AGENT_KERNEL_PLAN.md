@@ -57,10 +57,8 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 ### Шаг 1 — Убрать дубль реестра инструментов  ✅ ВЫПОЛНЕНО
 **Готово:** Opus PASS (5372a85). Удалён монолит `application/tools/tool_registry.py` и все 4 шима-сироты (`builtin_tools`, `tool_service`, `code_analyzer`, `__init__`). `plugin_system.py` и тест переведены на `app.application.tool_registry.runtime`. Один реестр пишет в `tool_registry.db`. Gates: tsc 0 ошибок, pytest 2381 passed. **Sonnet: начинай со Шага 2.**
 
-### Шаг 2 — Расширить ToolSpec
-- Добавить в `tool_registry/{store,builtins}.py` колонки `permission`, `side_effect`, `scopes`, `timeout_seconds`, `max_output_chars`, `idempotent` (миграция аддитивная, дефолты безопасные: read-only авто, side-effect → require approval).
-- Builtins проставляют permission-тиры.
-- Acceptance: схема мигрируется без потери данных; гейты зелёные.
+### Шаг 2 — Расширить ToolSpec  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (b4301c0). 6 новых колонок (permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent) + additive migration + builtins с tier-аннотациями + 6 тестов. Gates: tsc clean, pytest 2387 passed. Замечание Opus к Шагу 3: расширить Pydantic-схемы `ToolDefinition`/`ToolUpdate` (`api/schemas/tool_registry.py`) новыми полями. **Sonnet: начинай со Шага 3.**
 
 ### Шаг 3 — Единый ToolExecutor
 - Новый `application/agent_kernel/executor.py`: resolve ToolSpec (`tool_registry`) → policy preflight (`agent_registry/sandbox`, на уровне tool-call) → approval-gate → dispatch (`tool_providers` router) → метрика (`monitoring`) + событие (`event_bus`) → truncate по `max_output_chars`.

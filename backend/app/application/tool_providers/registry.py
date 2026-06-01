@@ -109,6 +109,25 @@ class ToolRegistry:
             tool_meta = {"text": str(tool_meta)}
         return ToolDispatchResult(tool_meta=tool_meta, parsed_args=args)
 
+    def dispatch_raw(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch pre-coerced args. Returns tool_meta dict (no ToolDispatchResult).
+
+        Used by the unified ToolExecutor so it can own arg coercion and audit
+        without re-parsing args a second time inside dispatch().
+        """
+        provider = self._owner.get(tool_name)
+        if provider is None:
+            return {"text": f"ERROR: unknown tool '{tool_name}'"}
+        try:
+            result = provider.dispatch(tool_name, args)
+        except Exception as exc:
+            logger.exception(
+                "ToolRegistry.dispatch_raw: provider %r leaked exception for %r",
+                getattr(provider, "name", "?"), tool_name,
+            )
+            result = {"text": f"ERROR: {exc}"}
+        return result if isinstance(result, dict) else {"text": str(result)}
+
     # ── Helpers ─────────────────────────────────────────────────
 
     @staticmethod

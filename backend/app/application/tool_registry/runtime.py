@@ -156,14 +156,18 @@ def delete_tool(name: str) -> dict:
     )
 
 
-def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict:
-    result = registry_store.execute_tool(
+def _execute_raw(name: str, args: dict[str, Any] | None = None) -> dict:
+    """Execute handler without event emission — caller owns the audit trail."""
+    return registry_store.execute_tool(
         handlers=_handlers,
         get_tool_func=get_tool,
         name=name,
         args=args,
     )
-    # Emit tool.executed event for audit trail (best-effort - never blocks callers).
+
+
+def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict:
+    result = _execute_raw(name, args)
     try:
         from app.application.event_bus import runtime as _eb
         _eb.emit_event(

@@ -178,6 +178,8 @@ def _execute_tool_step(
 
     tool_name = str(step.get("tool_name", "")).strip()
     args = mapped_inputs if isinstance(mapped_inputs, dict) else {"input": mapped_inputs}
+    # Per-tool allowed_tools check for the workflow engine (raises SandboxPolicyError
+    # which the workflow execution layer catches to set sandbox_reason on the step).
     preflight_or_raise(
         agent_id=WORKFLOW_ENGINE_AGENT_ID,
         num_ctx=int(run_context.get("num_ctx") or 0),
@@ -188,7 +190,15 @@ def _execute_tool_step(
         route="workflow.tool",
         streaming=False,
     )
-    result = run_tool(tool_name, args)
+    result = run_tool(
+        tool_name,
+        args,
+        agent_id=WORKFLOW_ENGINE_AGENT_ID,
+        run_id=run_id,
+        source="workflow",
+        workflow_id=workflow_id,
+        step_id=str(step.get("id", "")),
+    )
     ok = bool(result.get("ok"))
     emit_workflow_event(
         "tool.executed",

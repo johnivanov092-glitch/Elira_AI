@@ -15,6 +15,12 @@ class ToolDefinition(BaseModel):
     parameters_schema: dict[str, Any] = Field(default_factory=dict)
     source: str = Field("builtin")
     enabled: bool = True
+    permission: str = Field("auto")
+    side_effect: bool = False
+    scopes: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 30
+    max_output_chars: int = 50000
+    idempotent: bool = False
 
 
 class ToolUpdate(BaseModel):
@@ -25,6 +31,12 @@ class ToolUpdate(BaseModel):
     category: str | None = None
     parameters_schema: dict[str, Any] | None = None
     enabled: bool | None = None
+    permission: str | None = None
+    side_effect: bool | None = None
+    scopes: list[str] | None = None
+    timeout_seconds: int | None = None
+    max_output_chars: int | None = None
+    idempotent: bool | None = None
 
 
 class ToolExecuteRequest(BaseModel):

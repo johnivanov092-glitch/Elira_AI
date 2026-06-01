@@ -29,6 +29,7 @@ from app.application.tool_providers import (
     build_mcp_providers,
 )
 from app.application.projects.scope import legacy_project_key, project_scope_id
+from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool as _kernel_exec
 
 logger = logging.getLogger(__name__)
 
@@ -510,6 +511,7 @@ def stream_code_agent(
          "error": str | None}
     """
     root = Path(project_root).resolve()
+    scope_id = project_scope_id(root)
     rid = run_id or uuid.uuid4().hex
     cancel_event = _register_run(rid)
 
@@ -688,7 +690,19 @@ def stream_code_agent(
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
-                tool_meta, parsed_args = registry.dispatch(name, raw_args)
+                parsed_args = ToolRegistry._coerce_args(raw_args)
+                _exec_result = _kernel_exec(
+                    ToolExecutionRequest(
+                        run_id=rid,
+                        agent_id="code-agent",
+                        project_scope_id=scope_id,
+                        tool_name=name,
+                        args=parsed_args,
+                        source="code_agent",
+                    ),
+                    dispatch_fn=registry.dispatch_raw,
+                )
+                tool_meta = _exec_result.output
                 text_result = str(tool_meta.get("text", ""))
                 event: dict[str, Any] = {
                     "type": "tool_call",

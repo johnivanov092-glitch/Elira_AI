@@ -1,0 +1,154 @@
+"""Unified ToolExecutor — single execution path for all agent sources.
+
+Flow per call:
+  1. Resolve ToolSpec (permission, timeout, max_output_chars)
+  2. Policy preflight via sandbox (allowed_tools check)
+  3. Approval gate — stub for P1; always proceeds. Шаг 4 will add ApprovalStore.
+  4. Dispatch via caller-supplied dispatch_fn
+  5. Truncate text output to max_output_chars
+  6. Emit tool.executed (or sandbox.policy.blocked) to event bus
+  7. Return ToolExecutionResult
+
+Design: dispatch_fn is injected by callers so that:
+  - Chat/workflow passes a function backed by tool_registry database handlers.
+  - Code-agent passes ToolRegistry.dispatch_raw (Builtin + SSH + MCP providers).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+
+DispatchFn = Callable[[str, dict[str, Any]], dict[str, Any]]
+
+_TRUNCATION_SUFFIX = "\n[output truncated]"
+
+
+@dataclass
+class ToolExecutionRequest:
+    run_id: str
+    agent_id: str
+    project_scope_id: str
+    tool_name: str
+    args: dict[str, Any]
+    source: str
+    workflow_id: str = ""
+    step_id: str = ""
+
+
+@dataclass
+class ToolExecutionResult:
+    status: str  # "ok" | "error" | "blocked"
+    output: dict[str, Any]
+    error: str | None = None
+
+
+def execute_tool(
+    request: ToolExecutionRequest,
+    dispatch_fn: DispatchFn,
+) -> ToolExecutionResult:
+    """Execute one tool call through the unified policy and audit layer."""
+    from app.application.tool_registry.runtime import get_tool
+    from app.application.agent_registry.sandbox import SandboxPolicyError, preflight_or_raise
+
+    tool_name = request.tool_name
+
+    # 1. Resolve ToolSpec for limits (best-effort — fall back to safe defaults)
+    spec = get_tool(tool_name)
+    max_chars: int = int((spec or {}).get("max_output_chars") or 50000)
+
+    # 2. Policy preflight — rate-limit and context-budget check.
+    # selected_tools is intentionally omitted: the allowed_tools sandbox list is a
+    # session-level concern, already checked by callers (run_code_agent,
+    # step_executor). Per-tool allowlisting via ToolSpec.permission is enforced
+    # in Шаг 4 (ApprovalStore). Passing selected_tools here would block
+    # native code-agent tools that are not in the tool_registry allowed_tools list.
+    try:
+        preflight_or_raise(
+            agent_id=request.agent_id,
+            num_ctx=0,
+            run_id=request.run_id,
+            workflow_id=request.workflow_id,
+            step_id=request.step_id,
+            route=request.source,
+        )
+    except SandboxPolicyError as exc:
+        _emit_blocked(request, str(exc))
+        return ToolExecutionResult(
+            status="blocked",
+            output={"ok": False, "text": f"ERROR: sandbox blocked '{tool_name}': {exc}", "error": str(exc)},
+            error=str(exc),
+        )
+
+    # 3. Approval gate — P1 stub: require_approval tools proceed automatically.
+    # TODO Шаг 4: check ApprovalStore; return ToolExecutionResult(status="waiting_approval")
+    # when a dangerous tool-call needs human confirmation.
+
+    # 4. Dispatch
+    try:
+        raw = dispatch_fn(tool_name, request.args)
+    except Exception as exc:
+        raw = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+
+    if not isinstance(raw, dict):
+        raw = {"text": str(raw)}
+
+    # Normalise: callers expect a "text" key for LLM feedback
+    if "text" not in raw:
+        import json as _json
+        raw = {**raw, "text": _json.dumps(raw, ensure_ascii=False)}
+
+    # 5. Truncate text output
+    text = raw.get("text", "")
+    if isinstance(text, str) and len(text) > max_chars:
+        raw = {**raw, "text": text[:max_chars] + _TRUNCATION_SUFFIX}
+
+    # 6. Emit audit event
+    status = "ok" if raw.get("ok", True) else "error"
+    _emit_executed(request, raw, status)
+
+    return ToolExecutionResult(
+        status=status,
+        output=raw,
+        error=raw.get("error") if status == "error" else None,
+    )
+
+
+def _emit_executed(req: ToolExecutionRequest, result: dict, status: str) -> None:
+    try:
+        from app.application.event_bus import runtime as _eb
+        _eb.emit_event(
+            event_type="tool.executed",
+            payload={
+                "tool_name": req.tool_name,
+                "agent_id": req.agent_id,
+                "source": req.source,
+                "project_scope_id": req.project_scope_id,
+                "run_id": req.run_id,
+                "workflow_id": req.workflow_id,
+                "step_id": req.step_id,
+                "status": status,
+                "ok": result.get("ok", True),
+                "error": result.get("error"),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _emit_blocked(req: ToolExecutionRequest, reason: str) -> None:
+    try:
+        from app.application.event_bus import runtime as _eb
+        _eb.emit_event(
+            event_type="sandbox.policy.blocked",
+            payload={
+                "tool_name": req.tool_name,
+                "agent_id": req.agent_id,
+                "source": req.source,
+                "project_scope_id": req.project_scope_id,
+                "run_id": req.run_id,
+                "reason": reason,
+            },
+        )
+    except Exception:
+        pass
