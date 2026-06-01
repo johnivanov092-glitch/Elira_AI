@@ -233,32 +233,39 @@ class SandboxRuntimeTest(unittest.TestCase):
 
 
 class SlugTest(unittest.TestCase):
-    """`_slug` produces filesystem-safe keys from project basenames."""
+    """`_slug` produces filesystem-safe keys unique to the project path."""
 
     def setUp(self) -> None:
         from app.application.code_agent import sandbox
         self.slug = sandbox._slug
 
     def test_lowercase_ascii_kept(self) -> None:
-        self.assertEqual(self.slug(Path("myproject")), "myproject")
+        self.assertRegex(self.slug(Path("myproject")), r"^myproject-[0-9a-f]{16}$")
 
     def test_uppercase_lowered(self) -> None:
-        self.assertEqual(self.slug(Path("MyProject")), "myproject")
+        self.assertRegex(self.slug(Path("MyProject")), r"^myproject-[0-9a-f]{16}$")
 
     def test_spaces_become_underscore(self) -> None:
-        self.assertEqual(self.slug(Path("my project")), "my_project")
+        self.assertRegex(self.slug(Path("my project")), r"^my_project-[0-9a-f]{16}$")
 
     def test_dots_become_underscore(self) -> None:
-        self.assertEqual(self.slug(Path("my.project.v2")), "my_project_v2")
+        self.assertRegex(self.slug(Path("my.project.v2")), r"^my_project_v2-[0-9a-f]{16}$")
 
     def test_cyrillic_becomes_underscore(self) -> None:
-        # Non-ASCII gets collapsed, result must be non-empty
+        # Non-ASCII gets collapsed, but the hash keeps the key unique.
         result = self.slug(Path("Проект"))
-        self.assertEqual(result, "default")  # all non-ASCII → empty → "default"
+        self.assertRegex(result, r"^project-[0-9a-f]{16}$")
 
-    def test_empty_falls_back_to_default(self) -> None:
-        self.assertEqual(self.slug(Path("")), "default")
-        self.assertEqual(self.slug(Path("___")), "default")
+    def test_empty_label_falls_back_to_project(self) -> None:
+        self.assertRegex(self.slug(Path("___")), r"^project-[0-9a-f]{16}$")
+
+    def test_same_basename_under_different_parents_gets_distinct_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "a" / "shared"
+            second = Path(tmp) / "b" / "shared"
+            first.mkdir(parents=True)
+            second.mkdir(parents=True)
+            self.assertNotEqual(self.slug(first), self.slug(second))
 
 
 if __name__ == "__main__":

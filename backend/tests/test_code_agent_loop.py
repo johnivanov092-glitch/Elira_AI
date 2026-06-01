@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -37,6 +38,7 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_run_bash,
     tool_write_file,
 )
+from app.application.projects.scope import project_scope_id  # noqa: E402
 
 
 class SandboxedToolsTest(unittest.TestCase):
@@ -103,6 +105,17 @@ class SandboxedToolsTest(unittest.TestCase):
         res = tool_run_bash(self.root, command="python -c \"print(42)\"")
         self.assertIn("exit=0", res["text"])
         self.assertIn("42", res["text"])
+
+    def test_run_bash_blocks_dangerous_command(self) -> None:
+        res = tool_run_bash(self.root, command="git reset --hard")
+        self.assertIn("blocked dangerous", res["text"])
+
+    def test_run_bash_truncates_large_output(self) -> None:
+        completed = SimpleNamespace(returncode=0, stdout="A" * 30000, stderr="")
+        with patch("app.application.code_agent.tools.subprocess.run", return_value=completed):
+            res = tool_run_bash(self.root, command="echo lots")
+        self.assertIn("truncated", res["text"])
+        self.assertLess(len(res["text"]), 17000)
 
 
 class AgentLoopTest(unittest.TestCase):
@@ -182,6 +195,37 @@ class AgentLoopTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertEqual(result["steps"], 3)
+
+    def test_stream_reports_preflight_block(self) -> None:
+        with patch(
+            "app.application.agent_registry.sandbox.preflight_or_raise",
+            side_effect=RuntimeError("context rejected"),
+        ):
+            events = list(stream_code_agent(
+                user_message="x",
+                project_root=self.root,
+                chat_fn=lambda **kw: {"message": {"content": "unused", "tool_calls": []}},
+            ))
+        self.assertEqual([event["type"] for event in events], ["run_started", "done"])
+        self.assertFalse(events[-1]["ok"])
+        self.assertIn("preflight blocked", events[-1]["error"])
+
+    def test_stream_stops_at_wall_clock_boundary(self) -> None:
+        with patch(
+            "app.application.agent_registry.sandbox.preflight_or_raise",
+            return_value={"limit": {"max_execution_seconds": 10}},
+        ), patch(
+            "app.application.code_agent.agent_loop.time.monotonic",
+            side_effect=[0.0, 11.0],
+        ):
+            events = list(stream_code_agent(
+                user_message="x",
+                project_root=self.root,
+                chat_fn=lambda **kw: {"message": {"content": "unused", "tool_calls": []}},
+            ))
+        self.assertEqual([event["type"] for event in events], ["run_started", "done"])
+        self.assertFalse(events[-1]["ok"])
+        self.assertIn("timed out", events[-1]["error"])
 
     def test_loop_rejects_invalid_project_root(self) -> None:
         result = run_code_agent(
@@ -418,6 +462,14 @@ class AgentLoopTest(unittest.TestCase):
         # ok=True even if no items, as long as RAG service is importable
         self.assertIn("ok", result)
         self.assertIn("items", result)
+
+    def test_recall_from_rag_scopes_project_root(self) -> None:
+        with patch(
+            "app.application.rag_memory.service.search_rag",
+            return_value={"ok": True, "items": [], "count": 0},
+        ) as search:
+            recall_from_rag(query="anything", top_k=3, project_root=self.root)
+        self.assertEqual(search.call_args.kwargs["project"], project_scope_id(self.root))
 
     def test_index_project_walks_files(self) -> None:
         # Lay down a small fake project

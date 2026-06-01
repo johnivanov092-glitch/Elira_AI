@@ -380,10 +380,11 @@ export async function recallFromRag(
   query: string,
   topK: number = 10,
   minScore: number = 0.3,
+  projectRoot?: string,
 ): Promise<RecallResult> {
   return request<RecallResult>("/api/code-agent/recall", {
     method: "POST",
-    body: { query, top_k: topK, min_score: minScore },
+    body: { query, top_k: topK, min_score: minScore, project_root: projectRoot },
   });
 }
 
@@ -569,4 +570,3 @@ export function estimateTokens(text: string): number {
   const ascii = text.length - cyr;
   return Math.ceil(cyr / 2.8 + ascii / 4);
 }
-

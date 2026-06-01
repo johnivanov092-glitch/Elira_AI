@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -27,6 +28,7 @@ from app.application.tool_providers import (
     ToolRegistry,
     build_mcp_providers,
 )
+from app.application.projects.scope import legacy_project_key, project_scope_id
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen2.5-coder:7b"
 DEFAULT_MAX_STEPS = 20
 DEFAULT_NUM_CTX = 16384  # Ollama's default is 2048 — way too small for tool-using agents.
+DEFAULT_MAX_EXECUTION_SECONDS = 180
+MAX_CODE_AGENT_STEPS = 50
 PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 
 BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ ДОСТУПОМ к файловой системе и shell.
@@ -74,7 +78,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ 
 
 4. Когда пользователь спрашивает «что в файле X» / «как устроено Y» — ты вызываешь `read_file` или `grep`. Не отговариваешься «нужно посмотреть».
 
-5. Никаких подтверждений. Никаких «можно я это сделаю?». Просто делай.
+5. Выполняй доступные инструменты самостоятельно. Если runtime блокирует опасное действие или требует подтверждение пользователя — честно сообщи об этом и не пытайся обходить ограничение.
 
 6. Все пути относительно корня проекта (см. выше). `src/calc.py` — это {project_root}/src/calc.py. Не нужно полных путей.
 
@@ -471,11 +475,12 @@ def _try_remember_turn(*, user_message: str, response_text: str, project_root: P
     if len(answer) > 600:
         answer = answer[:600] + " [...]"
     project_name = project_root.name or str(project_root)
+    scope_id = project_scope_id(project_root)
     summary = f"[agent_turn project={project_name}] task: {user} | outcome: {answer}"
     try:
         # Pass project= so the entry is scoped to this project and
         # recall() from a different project doesn't pull it up.
-        add_to_rag(text=summary, category="agent_turn", importance=3, project=project_name)
+        add_to_rag(text=summary, category="agent_turn", importance=3, project=scope_id)
     except Exception as exc:
         logger.debug("auto-remember failed: %s", exc)
 
@@ -520,6 +525,37 @@ def stream_code_agent(
             }
             return
 
+        safe_max_steps = max(1, min(int(max_steps), MAX_CODE_AGENT_STEPS))
+        safe_num_ctx = max(1024, int(num_ctx))
+        try:
+            from app.application.agent_registry.sandbox import preflight_or_raise
+
+            preflight = preflight_or_raise(
+                agent_id="code-agent",
+                num_ctx=safe_num_ctx,
+                run_id=rid,
+                route="code-agent",
+                streaming=True,
+            )
+            execution_seconds = int(
+                (preflight.get("limit") or {}).get(
+                    "max_execution_seconds",
+                    DEFAULT_MAX_EXECUTION_SECONDS,
+                )
+                or DEFAULT_MAX_EXECUTION_SECONDS
+            )
+        except Exception as exc:
+            yield {"type": "run_started", "run_id": rid}
+            yield {
+                "type": "done",
+                "ok": False,
+                "steps": 0,
+                "stop_reason": "error",
+                "error": f"code-agent preflight blocked run: {exc}",
+            }
+            return
+        deadline = time.monotonic() + max(1, execution_seconds)
+
         # Aggregate every tool source into one registry. The agent
         # loop only talks to the registry from here on.
         #   - BuiltinToolProvider is always on.
@@ -547,7 +583,7 @@ def stream_code_agent(
         yield {"type": "run_started", "run_id": rid}
 
         last_text = ""
-        for step in range(1, max_steps + 1):
+        for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
                     "type": "done",
@@ -558,6 +594,16 @@ def stream_code_agent(
                 }
                 return
 
+            if time.monotonic() >= deadline:
+                yield {
+                    "type": "done",
+                    "ok": False,
+                    "steps": step - 1,
+                    "stop_reason": "error",
+                    "error": f"code-agent execution timed out after {execution_seconds}s",
+                }
+                return
+
             yield {"type": "step_started", "step": step}
 
             try:
@@ -565,7 +611,7 @@ def stream_code_agent(
                     model=model,
                     messages=messages,
                     tools=tool_schemas,
-                    options={"num_ctx": int(num_ctx)},
+                    options={"num_ctx": safe_num_ctx},
                 )
             except Exception as exc:
                 logger.exception("Ollama chat failed at step %d", step)
@@ -630,6 +676,15 @@ def stream_code_agent(
             })
 
             for call in tool_calls:
+                if time.monotonic() >= deadline:
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "error",
+                        "error": f"code-agent execution timed out after {execution_seconds}s",
+                    }
+                    return
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
@@ -664,9 +719,9 @@ def stream_code_agent(
         yield {
             "type": "done",
             "ok": False,
-            "steps": max_steps,
+            "steps": safe_max_steps,
             "stop_reason": "max_steps",
-            "error": f"reached max_steps={max_steps} without final answer",
+            "error": f"reached max_steps={safe_max_steps} without final answer",
         }
     finally:
         _unregister_run(rid)
@@ -924,7 +979,8 @@ def index_project(
     except Exception as exc:
         return {"ok": False, "error": f"RAG service unavailable: {exc}"}
 
-    project_name = root.name or str(root)
+    scope_id = project_scope_id(root)
+    legacy_key = legacy_project_key(root)
 
     if replace:
         try:
@@ -937,9 +993,9 @@ def index_project(
                     """
                     DELETE FROM rag_items
                     WHERE category = ?
-                      AND (project = ? OR COALESCE(project, '') = '')
+                      AND (project = ? OR project = ? OR COALESCE(project, '') = '')
                     """,
-                    ("code_index", project_name),
+                    ("code_index", scope_id, legacy_key),
                 )
                 conn.commit()
             finally:
@@ -968,7 +1024,7 @@ def index_project(
                     text=chunk_text,
                     category="code_index",
                     importance=4,
-                    project=project_name,
+                    project=scope_id,
                 )
                 if result.get("ok"):
                     chunks_indexed += 1
@@ -990,13 +1046,24 @@ def index_project(
     }
 
 
-def recall_from_rag(query: str, top_k: int = 10, min_score: float = 0.3) -> dict[str, Any]:
+def recall_from_rag(
+    query: str,
+    top_k: int = 10,
+    min_score: float = 0.3,
+    project_root: Path | str | None = None,
+) -> dict[str, Any]:
     """Thin wrapper for the UI to query RAG without going through the agent."""
     try:
         from app.application.rag_memory.service import search_rag
     except Exception as exc:
         return {"ok": False, "items": [], "error": f"RAG service unavailable: {exc}"}
-    return search_rag(query=query, limit=max(1, int(top_k)), min_score=float(min_score))
+    scope_id = project_scope_id(project_root) if project_root else None
+    return search_rag(
+        query=query,
+        limit=max(1, int(top_k)),
+        min_score=float(min_score),
+        project=scope_id,
+    )
 
 
 def unindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, Any]:
@@ -1008,7 +1075,8 @@ def unindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, A
     """
     root = Path(project_root).resolve()
     target = Path(file_path).resolve()
-    project_name = root.name or str(root)
+    scope_id = project_scope_id(root)
+    legacy_key = legacy_project_key(root)
     try:
         rel = str(target.relative_to(root)).replace("\\", "/")
     except ValueError:
@@ -1026,10 +1094,10 @@ def unindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, A
             """
             DELETE FROM rag_items
             WHERE category = ?
-              AND (project = ? OR COALESCE(project, '') = '')
+              AND (project = ? OR project = ? OR COALESCE(project, '') = '')
               AND text LIKE ?
             """,
-            ("code_index", project_name, pattern),
+            ("code_index", scope_id, legacy_key, pattern),
         )
         deleted = cur.rowcount or 0
         conn.commit()
@@ -1067,7 +1135,7 @@ def reindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, A
         return {"ok": False, "error": f"RAG service unavailable: {exc}"}
 
     unindex_file(root, target)  # blow away the old chunks first
-    project_name = root.name or str(root)
+    scope_id = project_scope_id(root)
     added = 0
     failed = 0
     for chunk_text, _start, _end in _chunk_file(target, root):
@@ -1076,7 +1144,7 @@ def reindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, A
                 text=chunk_text,
                 category="code_index",
                 importance=4,
-                project=project_name,
+                project=scope_id,
             )
             if result.get("ok"):
                 added += 1

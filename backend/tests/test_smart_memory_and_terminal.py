@@ -379,6 +379,10 @@ class ExecCommandTest(unittest.TestCase):
         result = term_rt.exec_command("shutdown -h now")
         self.assertFalse(result["ok"])
 
+    def test_blocked_git_reset_hard(self) -> None:
+        result = term_rt.exec_command("git reset --hard")
+        self.assertFalse(result["ok"])
+
     def test_cd_delegates_to_change_dir_nonexistent(self) -> None:
         result = term_rt.exec_command("cd /nonexistent/path/xyz_nope")
         self.assertFalse(result["ok"])
@@ -415,6 +419,17 @@ class ExecCommandTest(unittest.TestCase):
             result = term_rt.exec_command("nonexistent_command_xyz")
         self.assertFalse(result["ok"])
         self.assertIn("error", result)
+
+    def test_exec_truncates_large_stdout(self) -> None:
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"A" * 30000 if term_rt._IS_WINDOWS else "A" * 30000
+        mock_result.stderr = b"" if term_rt._IS_WINDOWS else ""
+        with patch("app.application.terminal.runtime.subprocess.run", return_value=mock_result):
+            result = term_rt.exec_command("echo lots")
+        self.assertTrue(result["ok"])
+        self.assertIn("truncated", result["stdout"])
+        self.assertLess(len(result["stdout"]), 17000)
 
     def test_blocked_list_has_expected_entries(self) -> None:
         # Verify that the BLOCKED list is non-empty and has known entries

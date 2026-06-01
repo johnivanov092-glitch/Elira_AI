@@ -96,6 +96,7 @@ class RecallRequest(BaseModel):
     query: str
     top_k: int = Field(default=10, ge=1, le=50)
     min_score: float = Field(default=0.3, ge=0.0, le=1.0)
+    project_root: Optional[str] = Field(default=None, description="Optional project path for scoped recall")
 
 
 @router.post("/run", response_model=CodeAgentResponse)
@@ -198,7 +199,12 @@ def index_project_endpoint(payload: IndexProjectRequest) -> dict[str, Any]:
 
 @router.post("/recall")
 def recall(payload: RecallRequest) -> dict[str, Any]:
-    return recall_from_rag(query=payload.query, top_k=payload.top_k, min_score=payload.min_score)
+    return recall_from_rag(
+        query=payload.query,
+        top_k=payload.top_k,
+        min_score=payload.min_score,
+        project_root=payload.project_root,
+    )
 
 
 # ── File watcher (realtime auto-reindex on edits) ────────────────────────

@@ -122,6 +122,9 @@ def init_db(*, conn_factory: Callable[[], Any]) -> None:
             "CREATE INDEX IF NOT EXISTS idx_rag_hash_cat ON rag_items(text_hash, category)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rag_hash_cat_project ON rag_items(text_hash, category, project)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rag_project ON rag_items(project)"
         )
         conn.commit()
@@ -182,16 +185,21 @@ def add_to_rag(
         return {"ok": False, "error": "Текст слишком короткий"}
 
     text_hash = _text_hash(text)
+    project_key = project or ""
 
-    # Dedup: if a row with the same text + category exists, just bump
-    # its importance (capped at 10) instead of inserting a duplicate.
+    # Dedup: if a row with the same text + category + project exists,
+    # just bump its importance (capped at 10) instead of inserting a duplicate.
     # This is the fix for `_try_remember_turn` flooding RAG with near-
     # identical agent_turn summaries.
     conn = conn_factory()
     try:
         existing = conn.execute(
-            "SELECT id, importance FROM rag_items WHERE text_hash = ? AND category = ? LIMIT 1",
-            (text_hash, category),
+            """
+            SELECT id, importance FROM rag_items
+            WHERE text_hash = ? AND category = ? AND COALESCE(project, '') = ?
+            LIMIT 1
+            """,
+            (text_hash, category, project_key),
         ).fetchone()
         if existing:
             existing_id = existing[0] if not hasattr(existing, "keys") else existing["id"]
@@ -226,7 +234,7 @@ def add_to_rag(
             INSERT INTO rag_items (text, text_hash, category, embedding, embedding_blob, importance, project)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (text, text_hash, category, "", embedding_blob, importance, project or ""),
+            (text, text_hash, category, "", embedding_blob, importance, project_key),
         )
         item_id = cursor.lastrowid
         conn.commit()

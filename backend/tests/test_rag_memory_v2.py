@@ -171,6 +171,25 @@ class DedupTest(unittest.TestCase):
         count = self.holder.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0]
         self.assertEqual(count, 2)
 
+    def test_same_text_in_different_projects_inserts_both(self) -> None:
+        first = runtime.add_to_rag(
+            conn_factory=self.factory,
+            get_embedding_func=lambda t: None,
+            text="shared code chunk",
+            category="code_index",
+            project="scope:first",
+        )
+        second = runtime.add_to_rag(
+            conn_factory=self.factory,
+            get_embedding_func=lambda t: None,
+            text="shared code chunk",
+            category="code_index",
+            project="scope:second",
+        )
+        self.assertEqual(first["action"], "created")
+        self.assertEqual(second["action"], "created")
+        self.assertNotEqual(first["id"], second["id"])
+
 
 class ProjectScopingTest(unittest.TestCase):
     def setUp(self) -> None:

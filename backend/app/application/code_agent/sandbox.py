@@ -11,7 +11,7 @@ project files.
 This module provides a sandboxed alternative:
 
   - Each project gets its own venv at `<data>/sandbox/<slug>/venv/`
-    where slug is a filesystem-safe form of the project basename.
+    where slug includes a hash of the normalized absolute project path.
   - Scripts execute with `cwd` set to `<data>/sandbox/<slug>/work/`,
     which starts empty and stays empty unless the script writes into
     it. The user's actual project root is never touched.
@@ -30,7 +30,6 @@ API:
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +38,7 @@ import venv
 from pathlib import Path
 from typing import Any
 
+from app.application.projects.scope import project_scope_slug
 from app.core.data_files import DATA_DIR
 
 
@@ -52,17 +52,8 @@ _STDERR_LIMIT = 6000
 
 
 def _slug(project_root: Path) -> str:
-    """Filesystem-safe key derived from the project basename.
-
-    Two different projects whose folder name maps to the same slug
-    would share a sandbox. That's acceptable — it's the same risk
-    profile as keying by basename for project-scoped RAG.
-    """
-    name = (project_root.name or "default").strip().lower()
-    # Allow ASCII letters, digits, hyphen, underscore. Replace everything
-    # else (including spaces, dots, cyrillic) with underscore.
-    cleaned = re.sub(r"[^a-z0-9_-]+", "_", name).strip("_")
-    return cleaned or "default"
+    """Filesystem-safe key unique to the normalized absolute project path."""
+    return project_scope_slug(project_root)
 
 
 def _sandbox_dir(project_root: Path) -> Path:

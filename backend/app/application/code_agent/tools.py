@@ -18,6 +18,31 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
+from app.application.projects.scope import project_scope_id
+
+
+_SHELL_TIMEOUT_MAX = 120
+_SHELL_STDOUT_LIMIT = 16000
+_SHELL_STDERR_LIMIT = 6000
+_BLOCKED_SHELL_FRAGMENTS = (
+    "rm -rf /",
+    "rm -rf /*",
+    "mkfs",
+    "dd if=",
+    "format c:",
+    "shutdown",
+    "reboot",
+    ":(){:|:&};:",
+    "deltree",
+    "remove-item -recurse",
+    "del /s",
+    "rd /s",
+    "rmdir /s",
+    "git reset --hard",
+    "git clean -fd",
+    "git checkout --",
+)
+
 
 class SandboxError(Exception):
     """Raised when a tool tries to access a path outside the project root."""
@@ -40,6 +65,25 @@ def _resolve_safe(project_root: Path, raw_path: str) -> Path:
             f"project root {root_resolved}"
         ) from exc
     return resolved
+
+
+def _truncate_middle(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    budget = max(400, limit - 100)
+    head_size = int(budget * 0.65)
+    tail_size = budget - head_size
+    removed = len(text) - head_size - tail_size
+    return (
+        text[:head_size]
+        + f"\n[... truncated {removed} chars from middle ...]\n"
+        + text[-tail_size:]
+    )
+
+
+def _blocked_shell_fragment(command: str) -> str | None:
+    lowered = (command or "").strip().lower()
+    return next((fragment for fragment in _BLOCKED_SHELL_FRAGMENTS if fragment in lowered), None)
 
 
 # ─── tool implementations ────────────────────────────────────────────────────
@@ -195,12 +239,12 @@ def tool_recall(
     except Exception as exc:
         return {"text": f"ERROR: RAG service unavailable: {exc}"}
 
-    project_name = project_root.name or str(project_root)
+    scope_id = project_scope_id(project_root)
     result = search_rag(
         query=query,
         limit=max(1, int(top_k)),
         min_score=float(min_score),
-        project=project_name,
+        project=scope_id,
     )
     if not result.get("ok"):
         return {"text": f"ERROR: {result.get('error', 'recall failed')}"}
@@ -331,24 +375,31 @@ def tool_web_fetch(*, url: str, max_chars: int = 8000) -> dict[str, Any]:
 
 
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
+    cleaned_command = (command or "").strip()
+    if not cleaned_command:
+        return {"text": "ERROR: command is empty"}
+    blocked = _blocked_shell_fragment(cleaned_command)
+    if blocked:
+        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}"}
+    safe_timeout = max(1, min(int(timeout), _SHELL_TIMEOUT_MAX))
     try:
         proc = subprocess.run(
-            command,
+            cleaned_command,
             shell=True,
             capture_output=True,
             text=True,
-            timeout=int(timeout),
+            timeout=safe_timeout,
             cwd=str(project_root.resolve()),
         )
     except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: command timed out after {timeout}s"}
+        return {"text": f"ERROR: command timed out after {safe_timeout}s"}
     except Exception as exc:
         return {"text": f"ERROR: {exc}"}
-    parts = [f"$ {command}", f"exit={proc.returncode}"]
+    parts = [f"$ {cleaned_command}", f"exit={proc.returncode}"]
     if proc.stdout:
-        parts.append(f"STDOUT:\n{proc.stdout.rstrip()}")
+        parts.append(f"STDOUT:\n{_truncate_middle(proc.stdout.rstrip(), _SHELL_STDOUT_LIMIT)}")
     if proc.stderr:
-        parts.append(f"STDERR:\n{proc.stderr.rstrip()}")
+        parts.append(f"STDERR:\n{_truncate_middle(proc.stderr.rstrip(), _SHELL_STDERR_LIMIT)}")
     return {"text": "\n".join(parts)}
 
 

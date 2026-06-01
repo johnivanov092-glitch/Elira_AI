@@ -10,12 +10,17 @@ import subprocess
 from app.core.config import APP_DIR, TERMINAL_BLOCKED
 
 
+_OUTPUT_LIMIT = 16000
+
+
 def is_dangerous_command(cmd: str) -> bool:
     low = (cmd or "").lower().strip()
     return any(blocked in low for blocked in TERMINAL_BLOCKED)
 
 
 def run_terminal(cmd: str, timeout: int = 25) -> str:
+    if is_dangerous_command(cmd):
+        return f"$ {cmd}\n\nERROR: blocked dangerous command"
     try:
         proc = subprocess.run(
             cmd,
@@ -25,7 +30,9 @@ def run_terminal(cmd: str, timeout: int = 25) -> str:
             timeout=timeout,
             cwd=str(APP_DIR),
         )
-        return f"$ {cmd}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+        stdout = (proc.stdout or "")[:_OUTPUT_LIMIT]
+        stderr = (proc.stderr or "")[:_OUTPUT_LIMIT]
+        return f"$ {cmd}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
     except subprocess.TimeoutExpired:
         return f"$ {cmd}\n\nКоманда остановлена по таймауту ({timeout} сек.)"
     except Exception as exc:

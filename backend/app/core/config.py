@@ -193,6 +193,8 @@ AGENT_PROFILE_UI = {
 TERMINAL_BLOCKED = [
     "rm -rf /", "mkfs", "dd if=", ":(){:|:&};:",
     "shutdown", "reboot", "format c:", "deltree", ":(){ :|:& };:",
+    "remove-item -recurse", "del /s", "rd /s", "rmdir /s",
+    "git reset --hard", "git clean -fd", "git checkout --",
 ]
 
 SESSION_DEFAULTS: dict = {

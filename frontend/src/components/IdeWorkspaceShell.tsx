@@ -352,14 +352,14 @@ export default function IdeWorkspaceShell({messages=[],libraryFiles:propLib,setL
     setRagError(null);
     setRagSearchMode(true);
     try {
-      const res = await api.recallFromRag(q, 30, 0.0);
+      const res = await api.recallFromRag(q, 30, 0.0, projectRoot);
       setRagItems(((res.items || []) as unknown as RagItem[]));
     } catch (e) {
       setRagError(String((e as Error)?.message || e));
     } finally {
       setRagLoading(false);
     }
-  }, [ragSearch, loadRagList]);
+  }, [ragSearch, loadRagList, projectRoot]);
 
   const deleteRagOne = useCallback(async (id: number) => {
     try {
