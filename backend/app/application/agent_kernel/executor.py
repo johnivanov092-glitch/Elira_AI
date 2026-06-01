@@ -80,9 +80,43 @@ def execute_tool(
             error=str(exc),
         )
 
-    # 3. Approval gate — P1 stub: require_approval tools proceed automatically.
-    # TODO Шаг 4: check ApprovalStore; return ToolExecutionResult(status="waiting_approval")
-    # when a dangerous tool-call needs human confirmation.
+    # 3. Approval gate — require_approval tools need a valid human approval.
+    if spec and spec.get("permission") == "require_approval":
+        import uuid as _uuid
+        from app.application.monitoring import runtime as _mon
+
+        _mon.expire_old_approvals()
+        existing = _mon.find_approved_approval(
+            tool_name=tool_name,
+            agent_id=request.agent_id,
+            run_id=request.run_id,
+        )
+        if existing:
+            _mon.update_approval_status(existing["id"], status="used")
+        else:
+            approval = _mon.create_approval(
+                id=_uuid.uuid4().hex,
+                tool_name=tool_name,
+                agent_id=request.agent_id,
+                source=request.source,
+                run_id=request.run_id,
+                project_scope_id=request.project_scope_id,
+                args=request.args,
+            )
+            _emit_approval_pending(request, approval["id"])
+            return ToolExecutionResult(
+                status="waiting_approval",
+                output={
+                    "ok": False,
+                    "approval_id": approval["id"],
+                    "text": (
+                        f"Tool '{tool_name}' requires approval. "
+                        f"Approve at /api/agent-os/approvals/{approval['id']}/approve"
+                    ),
+                    "error": f"waiting_approval:{approval['id']}",
+                },
+                error=f"waiting_approval:{approval['id']}",
+            )
 
     # 4. Dispatch
     try:
@@ -130,6 +164,24 @@ def _emit_executed(req: ToolExecutionRequest, result: dict, status: str) -> None
                 "status": status,
                 "ok": result.get("ok", True),
                 "error": result.get("error"),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _emit_approval_pending(req: ToolExecutionRequest, approval_id: str) -> None:
+    try:
+        from app.application.event_bus import runtime as _eb
+        _eb.emit_event(
+            event_type="tool.approval_pending",
+            payload={
+                "tool_name": req.tool_name,
+                "agent_id": req.agent_id,
+                "source": req.source,
+                "project_scope_id": req.project_scope_id,
+                "run_id": req.run_id,
+                "approval_id": approval_id,
             },
         )
     except Exception:

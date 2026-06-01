@@ -45,3 +45,48 @@ def put_agent_limit(agent_id: str, body: AgentLimitUpdate):
         return agent_monitor.update_agent_limit(agent_id, body.model_dump(exclude_none=True))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+# ── Approvals ────────────────────────────────────────────────────────────────
+
+@router.get("/approvals", summary="List tool-call approvals")
+def list_approvals(
+    status: str | None = Query(None, description="Filter by status: pending|approved|rejected|expired|used"),
+    agent_id: str | None = Query(None),
+    tool_name: str | None = Query(None),
+    run_id: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+):
+    agent_monitor.expire_old_approvals()
+    items = agent_monitor.list_approvals(
+        status=status, agent_id=agent_id, tool_name=tool_name, run_id=run_id, limit=limit
+    )
+    return {"items": items, "total": len(items)}
+
+
+@router.get("/approvals/{approval_id}", summary="Get approval details")
+def get_approval(approval_id: str):
+    item = agent_monitor.get_approval(approval_id)
+    if not item:
+        raise HTTPException(404, f"Approval '{approval_id}' not found")
+    return item
+
+
+@router.post("/approvals/{approval_id}/approve", summary="Approve a pending tool call")
+def approve_approval(approval_id: str):
+    item = agent_monitor.get_approval(approval_id)
+    if not item:
+        raise HTTPException(404, f"Approval '{approval_id}' not found")
+    if item["status"] != "pending":
+        raise HTTPException(400, f"Cannot approve: status is '{item['status']}' (must be 'pending')")
+    return agent_monitor.update_approval_status(approval_id, status="approved")
+
+
+@router.post("/approvals/{approval_id}/reject", summary="Reject a pending tool call")
+def reject_approval(approval_id: str):
+    item = agent_monitor.get_approval(approval_id)
+    if not item:
+        raise HTTPException(404, f"Approval '{approval_id}' not found")
+    if item["status"] != "pending":
+        raise HTTPException(400, f"Cannot reject: status is '{item['status']}' (must be 'pending')")
+    return agent_monitor.update_approval_status(approval_id, status="rejected")

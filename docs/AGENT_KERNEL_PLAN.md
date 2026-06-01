@@ -60,6 +60,9 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 ### Шаг 2 — Расширить ToolSpec  ✅ ВЫПОЛНЕНО
 **Готово:** Opus PASS (b4301c0). 6 новых колонок (permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent) + additive migration + builtins с tier-аннотациями + 6 тестов. Gates: tsc clean, pytest 2387 passed. Замечание Opus к Шагу 3: расширить Pydantic-схемы `ToolDefinition`/`ToolUpdate` (`api/schemas/tool_registry.py`) новыми полями. **Sonnet: начинай со Шага 3.**
 
+### Шаг 3 — Единый ToolExecutor  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (2d139a2). agent_kernel/executor.py + ChatBuiltinToolProvider + ToolRegistry.dispatch_raw + service.run_tool → executor + agent_loop → executor. Одинаковая policy-семантика из всех контуров. Gates: tsc clean, pytest 2387 passed. **Sonnet: начинай со Шага 4.**
+
 ### Шаг 3 — Единый ToolExecutor
 - Новый `application/agent_kernel/executor.py`: resolve ToolSpec (`tool_registry`) → policy preflight (`agent_registry/sandbox`, на уровне tool-call) → approval-gate → dispatch (`tool_providers` router) → метрика (`monitoring`) + событие (`event_bus`) → truncate по `max_output_chars`.
 - Обернуть встроенные чат-инструменты в `ChatBuiltinToolProvider`, чтобы один executor видел все.

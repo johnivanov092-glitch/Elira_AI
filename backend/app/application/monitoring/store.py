@@ -58,6 +58,27 @@ CREATE INDEX IF NOT EXISTS idx_resource_usage_resource ON resource_usage(resourc
 CREATE INDEX IF NOT EXISTS idx_resource_usage_created ON resource_usage(created_at);
 """
 
+_APPROVALS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    agent_id TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    run_id TEXT NOT NULL DEFAULT '',
+    project_scope_id TEXT NOT NULL DEFAULT '',
+    args_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    ttl_seconds INTEGER NOT NULL DEFAULT 300,
+    expires_at TEXT NOT NULL,
+    decided_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_tool ON approvals(tool_name);
+"""
+
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -70,6 +91,13 @@ def get_connection(db_path: str | Path) -> sqlite3.Connection:
 def init_db(db_path: str | Path) -> None:
     with get_connection(db_path) as con:
         con.executescript(CREATE_SQL)
+    migrate_approvals_table(db_path)
+
+
+def migrate_approvals_table(db_path: str | Path) -> None:
+    """Additive migration: create approvals table if not present."""
+    with get_connection(db_path) as con:
+        con.executescript(_APPROVALS_TABLE_SQL)
 
 
 def dumps_json(value: Any) -> str:
@@ -446,3 +474,127 @@ def get_recent_blocked_runs(
         ).fetchall()
     items = [row_to_metric(row) for row in rows]
     return [item for item in items if item]
+
+
+# ── Approvals ────────────────────────────────────────────────────────────────
+
+def row_to_approval(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    data = dict(row)
+    data["args"] = loads_json(data.pop("args_json", "{}"), {})
+    return data
+
+
+def create_approval(
+    db_path: str | Path,
+    *,
+    id: str,
+    tool_name: str,
+    agent_id: str = "",
+    source: str = "",
+    run_id: str = "",
+    project_scope_id: str = "",
+    args: dict[str, Any] | None = None,
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    now = now_utc()
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=max(1, ttl_seconds))).isoformat()
+    with get_connection(db_path) as con:
+        con.execute(
+            """INSERT INTO approvals
+               (id, tool_name, agent_id, source, run_id, project_scope_id,
+                args_json, status, ttl_seconds, expires_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+            (id, tool_name, agent_id, source, run_id, project_scope_id,
+             dumps_json(args or {}), ttl_seconds, expires_at, now, now),
+        )
+    return get_approval(db_path, id) or {}
+
+
+def get_approval(db_path: str | Path, approval_id: str) -> dict[str, Any] | None:
+    with get_connection(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+        ).fetchone()
+    return row_to_approval(row)
+
+
+def list_approvals(
+    db_path: str | Path,
+    *,
+    status: str | None = None,
+    agent_id: str | None = None,
+    tool_name: str | None = None,
+    run_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if agent_id:
+        clauses.append("agent_id = ?")
+        params.append(agent_id)
+    if tool_name:
+        clauses.append("tool_name = ?")
+        params.append(tool_name)
+    if run_id:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, int(limit)))
+    with get_connection(db_path) as con:
+        rows = con.execute(
+            f"SELECT * FROM approvals {where} ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+    return [a for a in (row_to_approval(r) for r in rows) if a]
+
+
+def update_approval_status(
+    db_path: str | Path,
+    approval_id: str,
+    *,
+    status: str,
+) -> dict[str, Any] | None:
+    now = now_utc()
+    decided_at = now if status in ("approved", "rejected", "expired", "used") else None
+    with get_connection(db_path) as con:
+        con.execute(
+            "UPDATE approvals SET status = ?, decided_at = ?, updated_at = ? WHERE id = ?",
+            (status, decided_at, now, approval_id),
+        )
+    return get_approval(db_path, approval_id)
+
+
+def find_approved_approval(
+    db_path: str | Path,
+    *,
+    tool_name: str,
+    agent_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Return the first approved, non-expired approval for this tool+agent+run, or None."""
+    now = now_utc()
+    with get_connection(db_path) as con:
+        row = con.execute(
+            """SELECT * FROM approvals
+               WHERE tool_name = ? AND agent_id = ? AND run_id = ?
+                 AND status = 'approved' AND expires_at > ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (tool_name, agent_id, run_id, now),
+        ).fetchone()
+    return row_to_approval(row)
+
+
+def expire_old_approvals(db_path: str | Path) -> int:
+    """Mark expired pending/approved approvals as 'expired'. Returns count updated."""
+    now = now_utc()
+    with get_connection(db_path) as con:
+        cursor = con.execute(
+            "UPDATE approvals SET status = 'expired', updated_at = ? WHERE status IN ('pending', 'approved') AND expires_at <= ?",
+            (now, now),
+        )
+    return cursor.rowcount if cursor else 0

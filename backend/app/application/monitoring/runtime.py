@@ -337,3 +337,67 @@ def get_agent_os_dashboard(window_hours: int = 24) -> dict[str, Any]:
         ensure_agent_limit=ensure_agent_limit,
         workflow_engine_agent_id=WORKFLOW_ENGINE_AGENT_ID,
     )
+
+
+# ── Approvals ─────────────────────────────────────────────────────────────────
+
+def create_approval(
+    *,
+    id: str,
+    tool_name: str,
+    agent_id: str = "",
+    source: str = "",
+    run_id: str = "",
+    project_scope_id: str = "",
+    args: dict[str, Any] | None = None,
+    ttl_seconds: int = 300,
+) -> dict[str, Any]:
+    return monitoring_store.create_approval(
+        DB_PATH,
+        id=id,
+        tool_name=tool_name,
+        agent_id=agent_id,
+        source=source,
+        run_id=run_id,
+        project_scope_id=project_scope_id,
+        args=args,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def get_approval(approval_id: str) -> dict[str, Any] | None:
+    return monitoring_store.get_approval(DB_PATH, approval_id)
+
+
+def list_approvals(
+    *,
+    status: str | None = None,
+    agent_id: str | None = None,
+    tool_name: str | None = None,
+    run_id: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    return monitoring_store.list_approvals(
+        DB_PATH,
+        status=status,
+        agent_id=agent_id,
+        tool_name=tool_name,
+        run_id=run_id,
+        limit=limit,
+    )
+
+
+def update_approval_status(approval_id: str, *, status: str) -> dict[str, Any] | None:
+    return monitoring_store.update_approval_status(DB_PATH, approval_id, status=status)
+
+
+def find_approved_approval(
+    *, tool_name: str, agent_id: str, run_id: str
+) -> dict[str, Any] | None:
+    return monitoring_store.find_approved_approval(
+        DB_PATH, tool_name=tool_name, agent_id=agent_id, run_id=run_id
+    )
+
+
+def expire_old_approvals() -> int:
+    return monitoring_store.expire_old_approvals(DB_PATH)
