@@ -146,7 +146,10 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - Вызывать в начале каждого шага loop перед model call.
 - Acceptance: сессия > 70% num_ctx → messages компактируются и summary сохраняется в начале; fallback работает при ошибке модели; гейты зелёные.
 
-### Шаг 9 — MemoryCandidate store + API
+### Шаг 9 — MemoryCandidate store + API  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (58f1a55). memory_candidates в agent_monitor.db, CRUD, /api/agent-os/memory/candidates, accepted→prompt. 19 тестов. Gates: tsc clean, pytest 2475 passed. **P3 завершён. Следующий этап: P4 Desktop Operator MVP.**
+
+### Шаг 9 (детали)
 
 **Что есть:** `smart_memory` добавляет записи напрямую в RAG. Нет staging-слоя для проверки пользователем.
 
