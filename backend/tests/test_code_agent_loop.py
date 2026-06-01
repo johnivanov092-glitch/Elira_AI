@@ -385,7 +385,8 @@ class AgentLoopTest(unittest.TestCase):
         )
         sys_content = captured["messages"][0]["content"]
         self.assertIn("Never touch backend/legacy", sys_content)
-        self.assertIn("Project-specific instructions", sys_content)
+        # Header changed in Шаг 7: loader now uses "Instructions (.elira/agent.md)"
+        self.assertIn("Instructions (.elira/agent.md)", sys_content)
 
     def test_num_ctx_passed_to_ollama_options(self) -> None:
         captured: dict[str, Any] = {}

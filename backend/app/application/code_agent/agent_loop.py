@@ -122,28 +122,14 @@ def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
     return ollama.chat(**kwargs)
 
 
-def _read_project_prompt(project_root: Path) -> str:
-    """Return the contents of .elira/agent.md (project-specific system
-    prompt) if it exists, else empty string. Project prompt is appended
-    to the base system prompt so per-project conventions / rules /
-    forbidden paths are always loaded.
-    """
-    target = project_root / PROJECT_PROMPT_FILENAME
-    if not target.is_file():
-        return ""
-    try:
-        text = target.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
-    return text
-
-
 def _build_system_prompt(project_root: Path) -> str:
+    from app.application.instructions.loader import load_instructions
+
     base = _build_base_system_prompt(project_root)
-    extra = _read_project_prompt(project_root)
-    if not extra:
+    instructions = load_instructions(project_root)
+    if not instructions:
         return base
-    return base + "\n\n--- Project-specific instructions (.elira/agent.md) ---\n" + extra
+    return base + "\n\n--- Instructions (.elira/agent.md) ---\n" + instructions
 
 
 # Global registry of active cancel events so an external HTTP route can flip
