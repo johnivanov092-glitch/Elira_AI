@@ -161,6 +161,34 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - В prompt (система code-agent) добавлять только `accepted` кандидаты с namespace=project.
 - Acceptance: кандидат создаётся → остаётся pending → при accept попадает в prompt → при reject не попадает; гейты зелёные.
 
+---
+
+## P4: Desktop Operator MVP (backend)
+
+### Шаг 10 — SSRF guard
+- Новый `application/web/ssrf_guard.py`: `check_ssrf(url) -> str | None` — блокирует private/link-local/loopback адреса (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, ::1 и т.п.), возвращает причину или None если OK.
+- Подключить в `code_agent/tools.py::tool_web_fetch` до вызова `fetch_page_text`.
+- Подключить в `infrastructure/search/web_search.py::fetch_page_text` (если доступно).
+- Acceptance: приватные и loopback URL блокируются; публичные URLs проходят; гейты зелёные.
+
+### Шаг 11 — Shell read-only allowlist
+- Добавить `_SHELL_READONLY_PATTERNS` в `code_agent/tools.py`: команды анализа (git status, ls, cat, grep, pytest --collect-only и т.п.), которые разрешены без подтверждения.
+- Добавить `is_shell_safe(command)` функцию.
+- В executor: если tool_name="run_bash" и `is_shell_safe(args["command"])` → пропускать approval gate.
+- Acceptance: `git status` выполняется автоматически; `rm -rf` блокируется dangerous-fragment; произвольный `pip install` требует approval; гейты зелёные.
+
+---
+
+## P5: Фоновые задачи
+
+### Шаг 12 — Task durability: retry, dead_letter, waiting_approval
+- Добавить в task_planner схему: `idempotency_key`, `retry_count`, `max_retries` (default 3), `next_retry_at`, `dead_letter` (bool), `status="waiting_approval"`.
+- Additive migration через `task_planner/runtime.py`.
+- `bump_retry(task_id)` — инкрементит retry_count, устанавливает exponential backoff `next_retry_at`, при исчерпании переводит в dead_letter=True.
+- `set_waiting_approval(task_id)` — переводит task в status="waiting_approval".
+- Маршруты: `POST /api/tasks/{id}/retry`, `GET /api/tasks?dead_letter=true`.
+- Acceptance: задача исчерпывает retries → dead_letter=True; waiting_approval блокирует автоисполнение; гейты зелёные.
+
 ### Шаг 6 (детали)
 
 - `GET /api/agent-os/runs` — последние записи `tool.executed` из event_bus с
