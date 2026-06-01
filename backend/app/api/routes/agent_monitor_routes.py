@@ -90,3 +90,45 @@ def reject_approval(approval_id: str):
     if item["status"] != "pending":
         raise HTTPException(400, f"Cannot reject: status is '{item['status']}' (must be 'pending')")
     return agent_monitor.update_approval_status(approval_id, status="rejected")
+
+
+# ── Runs ─────────────────────────────────────────────────────────────────────
+
+@router.get("/runs", summary="List recent tool execution runs")
+def list_runs(
+    agent_id: str | None = Query(None, description="Filter by agent_id from event payload"),
+    source: str | None = Query(None, description="Filter by source (chat|code_agent|workflow)"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """Return recent tool.executed events, newest first.
+
+    Each item contains tool_name, agent_id, source, run_id, status, ok, error
+    fields from the event payload, plus the event's created_at timestamp.
+    """
+    from app.application.event_bus import runtime as event_bus
+
+    events, total = event_bus.list_events(event_type="tool.executed", limit=limit, offset=offset)
+
+    # Filter by payload fields (agent_id, source) if requested
+    def _matches(evt: dict) -> bool:
+        p = evt.get("payload", {})
+        if agent_id and p.get("agent_id") != agent_id:
+            return False
+        if source and p.get("source") != source:
+            return False
+        return True
+
+    runs = [
+        {
+            "event_id": e["event_id"],
+            "created_at": e["created_at"],
+            **{k: e["payload"].get(k) for k in
+               ("tool_name", "agent_id", "source", "run_id",
+                "project_scope_id", "workflow_id", "step_id",
+                "status", "ok", "error")},
+        }
+        for e in events
+        if _matches(e)
+    ]
+    return {"items": runs, "total": total}

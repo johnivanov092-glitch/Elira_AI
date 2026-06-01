@@ -93,7 +93,8 @@ def execute_tool(
             error=str(exc),
         )
 
-    # 3. Approval gate — require_approval tools need a valid human approval.
+    # 3. Approval gate (implemented in Шаг 4/P1) — require_approval tools
+    # need a valid human approval before dispatch.
     if spec and spec.get("permission") == "require_approval":
         import uuid as _uuid
         from app.application.monitoring import runtime as _mon

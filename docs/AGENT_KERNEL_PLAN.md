@@ -83,7 +83,10 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 
 ## P2: Политика действий
 
-### Шаг 5 — Нативные инструменты code-agent в ToolSpec + tier "forbidden"
+### Шаг 5 — Нативные инструменты code-agent в ToolSpec + tier "forbidden"  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (da1985a). 11 нативных инструментов зарегистрированы в ToolSpec с правильными тирами (auto/require_approval). Forbidden tier в executor. 19 тестов. Gates: tsc clean, pytest 2424 passed. **Sonnet: начинай со Шага 6.**
+
+### Шаг 5 (детали)
 
 **Проблема:** Нативные инструменты code-agent (`run_bash`, `write_file`, `edit_file`,
 `sandbox_run` и др. из `code_agent/tools.py`) диспатчатся через `BuiltinToolProvider`

@@ -382,7 +382,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     can enforce policy. Handlers are noops — actual dispatch goes through
     BuiltinToolProvider, not through tool_registry.execute_tool.
     """
-    _noop = lambda a: {"ok": False, "error": "native tool — execute via code-agent, not tool_registry"}
+    def _noop(a: dict) -> dict:
+        return {"ok": False, "error": "native tool — execute via code-agent, not tool_registry"}
 
     # ── Read-only (auto) ────────────────────────────────────────────────────
     auto_tools = [

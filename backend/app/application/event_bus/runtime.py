@@ -18,6 +18,7 @@ SUPPORTED_EVENT_TYPES = (
     "agent.limit.updated",
     "sandbox.policy.blocked",
     "tool.executed",
+    "tool.approval_pending",
     "workflow.run.started",
     "workflow.run.paused",
     "workflow.run.resumed",
