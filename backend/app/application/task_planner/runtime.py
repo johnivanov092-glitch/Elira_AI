@@ -12,9 +12,6 @@ _DURABILITY_COLUMNS = [
     ("dead_letter",      "INTEGER NOT NULL DEFAULT 0"),
 ]
 
-_DURABILITY_STATUSES = {"waiting_approval"}
-
-
 def init_db(*, connect_func: Callable[[], Any]) -> None:
     conn = connect_func()
     try:
@@ -146,7 +143,7 @@ def update_task(
 ) -> dict[str, Any]:
     allowed = {
         "title", "description", "category", "priority", "status", "due_date", "tags",
-        "idempotency_key", "max_retries", "waiting_approval",
+        "idempotency_key", "max_retries",
     }
     updates = ["updated_at = ?"]
     values = [now_func()]
@@ -195,8 +192,6 @@ def bump_retry(
     If retry_count + 1 > max_retries the task is marked dead_letter=1
     and status='failed'. Returns the updated task dict.
     """
-    import math
-
     conn = connect_func()
     try:
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
