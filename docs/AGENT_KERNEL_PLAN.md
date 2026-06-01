@@ -61,15 +61,18 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 **Готово:** Opus PASS (b4301c0). 6 новых колонок (permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent) + additive migration + builtins с tier-аннотациями + 6 тестов. Gates: tsc clean, pytest 2387 passed. Замечание Opus к Шагу 3: расширить Pydantic-схемы `ToolDefinition`/`ToolUpdate` (`api/schemas/tool_registry.py`) новыми полями. **Sonnet: начинай со Шага 3.**
 
 ### Шаг 3 — Единый ToolExecutor  ✅ ВЫПОЛНЕНО
-**Готово:** Opus PASS (2d139a2). agent_kernel/executor.py + ChatBuiltinToolProvider + ToolRegistry.dispatch_raw + service.run_tool → executor + agent_loop → executor. Одинаковая policy-семантика из всех контуров. Gates: tsc clean, pytest 2387 passed. **Sonnet: начинай со Шага 4.**
+**Готово:** Opus PASS (2d139a2). agent_kernel/executor.py + ChatBuiltinToolProvider + ToolRegistry.dispatch_raw + service.run_tool → executor + agent_loop → executor. Одинаковая policy-семантика из всех контуров. Gates: tsc clean, pytest 2387 passed.
 
-### Шаг 3 — Единый ToolExecutor
+### Шаг 3 — Единый ToolExecutor (детали)
 - Новый `application/agent_kernel/executor.py`: resolve ToolSpec (`tool_registry`) → policy preflight (`agent_registry/sandbox`, на уровне tool-call) → approval-gate → dispatch (`tool_providers` router) → метрика (`monitoring`) + событие (`event_bus`) → truncate по `max_output_chars`.
 - Обернуть встроенные чат-инструменты в `ChatBuiltinToolProvider`, чтобы один executor видел все.
 - Перевести `tool_registry.service.run_tool` (чат/workflows) и `code_agent/agent_loop.py` на executor.
 - Acceptance: один инструмент = одинаковая policy-семантика из chat/code-agent/workflow; второй путь исполнения не остаётся; гейты зелёные.
 
-### Шаг 4 — Approvals
+### Шаг 4 — Approvals  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (1ebedc6). approvals в agent_monitor.db, TTL, одноразовость, маршруты /api/agent-os/approvals, 18 тестов. Gates: tsc clean, pytest 2405 passed. **P1 завершён. Следующий этап: P2 (Policy) по роадмапу.**
+
+### Шаг 4 — Approvals (детали)
 - Таблица `approvals` в `agent_monitor.db` (`monitoring/{store,runtime}.py`); маршруты `/api/agent-os/approvals` в `agent_monitor_routes.py`.
 - Policy возвращает `waiting_approval` для write/delete/shell/install/etc.; модель не подтверждает своё действие; TTL; одноразовость.
 - Acceptance: опасный tool-call ждёт подтверждения; approval истекает по TTL; гейты зелёные.
