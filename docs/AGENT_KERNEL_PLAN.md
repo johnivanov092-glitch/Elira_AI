@@ -78,3 +78,38 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - Acceptance: опасный tool-call ждёт подтверждения; approval истекает по TTL; гейты зелёные.
 
 > tasks/schedules в этот kernel НЕ добавлять — это `autopipeline` + `task_planner` (P5).
+
+---
+
+## P2: Политика действий
+
+### Шаг 5 — Нативные инструменты code-agent в ToolSpec + tier "forbidden"
+
+**Проблема:** Нативные инструменты code-agent (`run_bash`, `write_file`, `edit_file`,
+`sandbox_run` и др. из `code_agent/tools.py`) диспатчатся через `BuiltinToolProvider`
+и обходят approval-gate: `get_tool("run_bash")` → None → `spec=None` → gate пропущен.
+
+**Решение:**
+- Добавить в `tool_registry/builtins.py` секцию `_build_native_code_agent_tools()`:
+  metadata-записи с `source="code_agent"`, handler=noop (dispatch остаётся
+  в `BuiltinToolProvider`). Правила:
+  - `read_file`, `glob`, `grep`, `recall`, `web_search`, `web_fetch` → `permission="auto"`
+  - `write_file`, `edit_file`, `run_bash`, `sandbox_run`, `sandbox_reset` → `permission="require_approval"`
+- Добавить tier `"forbidden"` в executor: немедленный возврат
+  `ToolExecutionResult(status="forbidden")` без approval, без dispatch.
+  Пример: инструменты с `permission="forbidden"` блокируются полностью.
+
+**Acceptance:**
+- `get_tool("run_bash")` → `{permission: "require_approval"}`
+- Первый вызов `run_bash` через executor → `status="waiting_approval"`
+- Инструмент с `permission="forbidden"` → `status="forbidden"` без создания approval
+- Чтение (`read_file`, `glob`) → `status="ok"` без approval
+- Гейты зелёные
+
+### Шаг 6 — Runs API + P2 acceptance tests
+
+- `GET /api/agent-os/runs` — последние записи `tool.executed` из event_bus с
+  фильтрами `agent_id`, `source`, `status` и `limit`.
+- E2E-тест: code-agent loop + `run_bash` → первый вызов → `waiting_approval`.
+- E2E-тест: code-agent loop + `glob` → выполняется автоматически (нет approval).
+- Acceptance: эндпоинт возвращает список runs; гейты зелёные.
