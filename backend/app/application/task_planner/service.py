@@ -79,3 +79,20 @@ def task_stats() -> dict:
         connect_func=_connect,
         now_func=lambda: datetime.utcnow().isoformat(),
     )
+
+
+def bump_retry(tid: str, backoff_base_seconds: int = 60) -> dict:
+    return planner_runtime.bump_retry(
+        connect_func=_connect,
+        now_func=lambda: datetime.utcnow().isoformat(),
+        tid=tid,
+        backoff_base_seconds=backoff_base_seconds,
+    )
+
+
+def set_waiting_approval(tid: str) -> dict:
+    return planner_runtime.set_waiting_approval(
+        connect_func=_connect,
+        now_func=lambda: datetime.utcnow().isoformat(),
+        tid=tid,
+    )

@@ -4,6 +4,17 @@ import json
 from typing import Any, Callable
 
 
+_DURABILITY_COLUMNS = [
+    ("idempotency_key",  "TEXT"),
+    ("retry_count",      "INTEGER NOT NULL DEFAULT 0"),
+    ("max_retries",      "INTEGER NOT NULL DEFAULT 3"),
+    ("next_retry_at",    "TEXT"),
+    ("dead_letter",      "INTEGER NOT NULL DEFAULT 0"),
+]
+
+_DURABILITY_STATUSES = {"waiting_approval"}
+
+
 def init_db(*, connect_func: Callable[[], Any]) -> None:
     conn = connect_func()
     try:
@@ -26,6 +37,20 @@ def init_db(*, connect_func: Callable[[], Any]) -> None:
             CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
             """
         )
+        conn.commit()
+    finally:
+        conn.close()
+    migrate_durability(connect_func=connect_func)
+
+
+def migrate_durability(*, connect_func: Callable[[], Any]) -> None:
+    """Additive migration: add durability columns if missing."""
+    conn = connect_func()
+    try:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+        for col_name, col_def in _DURABILITY_COLUMNS:
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col_name} {col_def}")
         conn.commit()
     finally:
         conn.close()
@@ -119,7 +144,10 @@ def update_task(
     tid: str,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    allowed = {"title", "description", "category", "priority", "status", "due_date", "tags"}
+    allowed = {
+        "title", "description", "category", "priority", "status", "due_date", "tags",
+        "idempotency_key", "max_retries", "waiting_approval",
+    }
     updates = ["updated_at = ?"]
     values = [now_func()]
 
@@ -151,6 +179,75 @@ def delete_task(*, connect_func: Callable[[], Any], tid: str) -> dict[str, Any]:
         conn.execute("DELETE FROM tasks WHERE id = ?", (tid,))
         conn.commit()
         return {"ok": True, "deleted": tid}
+    finally:
+        conn.close()
+
+
+def bump_retry(
+    *,
+    connect_func: Callable[[], Any],
+    now_func: Callable[[], str],
+    tid: str,
+    backoff_base_seconds: int = 60,
+) -> dict[str, Any]:
+    """Increment retry_count and set next_retry_at with exponential backoff.
+
+    If retry_count + 1 > max_retries the task is marked dead_letter=1
+    and status='failed'. Returns the updated task dict.
+    """
+    import math
+
+    conn = connect_func()
+    try:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+        if not row:
+            return {"ok": False, "error": "Task not found"}
+        task = dict(row)
+        retry_count = int(task.get("retry_count") or 0) + 1
+        max_retries = int(task.get("max_retries") or 3)
+        now = now_func()
+
+        if retry_count > max_retries:
+            conn.execute(
+                "UPDATE tasks SET dead_letter=1, status='failed', retry_count=?, updated_at=? WHERE id=?",
+                (retry_count, now, tid),
+            )
+        else:
+            delay_secs = backoff_base_seconds * (2 ** (retry_count - 1))
+            from datetime import datetime, timedelta, timezone
+            next_retry = (
+                datetime.now(timezone.utc) + timedelta(seconds=delay_secs)
+            ).isoformat()
+            conn.execute(
+                "UPDATE tasks SET retry_count=?, next_retry_at=?, status='todo', updated_at=? WHERE id=?",
+                (retry_count, next_retry, now, tid),
+            )
+        conn.commit()
+        row2 = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+        return {"ok": True, **dict(row2)}
+    finally:
+        conn.close()
+
+
+def set_waiting_approval(
+    *,
+    connect_func: Callable[[], Any],
+    now_func: Callable[[], str],
+    tid: str,
+) -> dict[str, Any]:
+    """Set task status to 'waiting_approval' — pauses automatic execution."""
+    conn = connect_func()
+    try:
+        now = now_func()
+        conn.execute(
+            "UPDATE tasks SET status='waiting_approval', updated_at=? WHERE id=?",
+            (now, tid),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+        if not row:
+            return {"ok": False, "error": "Task not found"}
+        return {"ok": True, **dict(row)}
     finally:
         conn.close()
 

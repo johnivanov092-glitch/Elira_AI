@@ -66,3 +66,17 @@ def api_delete(tid: str):
 def api_stats():
     from app.application.task_planner.service import task_stats
     return task_stats()
+
+
+@router.post("/{tid}/retry")
+def api_retry(tid: str, backoff_base_seconds: int = 60):
+    """Increment retry_count with exponential backoff. Marks dead_letter when max_retries exceeded."""
+    from app.application.task_planner.service import bump_retry
+    return bump_retry(tid, backoff_base_seconds=backoff_base_seconds)
+
+
+@router.post("/{tid}/waiting_approval")
+def api_waiting_approval(tid: str):
+    """Set task status to waiting_approval to pause automatic execution."""
+    from app.application.task_planner.service import set_waiting_approval
+    return set_waiting_approval(tid)

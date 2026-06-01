@@ -165,7 +165,13 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 
 ## P4: Desktop Operator MVP (backend)
 
-### Шаг 10 — SSRF guard
+### Шаг 10 — SSRF guard  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (fe7c2be). ssrf_guard.py блокирует private/loopback/metadata. Подключён к tool_web_fetch, web_runtime (infra), web_runtime (core). 19 тестов. Gates: pytest 2494 passed.
+
+### Шаг 11 — Shell read-only allowlist  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (a1aab16 + metachar fix). is_shell_safe: prefix-based allowlist + shell metachar блок. Executor bypass для safe commands. 41 тест. Gates: pytest 2533 passed. **P4 backend завершён. Начинай Шаг 12.**
+
+### Шаг 10 (детали)
 - Новый `application/web/ssrf_guard.py`: `check_ssrf(url) -> str | None` — блокирует private/link-local/loopback адреса (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, ::1 и т.п.), возвращает причину или None если OK.
 - Подключить в `code_agent/tools.py::tool_web_fetch` до вызова `fetch_page_text`.
 - Подключить в `infrastructure/search/web_search.py::fetch_page_text` (если доступно).
