@@ -110,3 +110,58 @@ class ScreenshotRequest(BaseModel):
 @router.post("/screenshot")
 def api_screenshot(payload: ScreenshotRequest):
     return screenshot_url(payload.url, payload.width, payload.height, payload.full_page)
+
+
+# ── Skill catalog ──────────────────────────────────────────────────────────────
+
+@router.get("/catalog", summary="Discover available skills (manifests only, no full content)")
+def api_catalog(enabled_only: bool = True):
+    from app.application.skills.catalog import discover_skills
+    manifests = discover_skills(enabled_only=enabled_only)
+    return {
+        "skills": [
+            {
+                "id": m.id,
+                "name": m.name,
+                "description_short": m.description_short,
+                "capabilities": m.capabilities,
+                "trigger_words": m.trigger_words,
+                "enabled": m.enabled,
+            }
+            for m in manifests
+        ],
+        "total": len(manifests),
+    }
+
+
+# NOTE: /catalog/match MUST be defined before /catalog/{skill_id}
+# so FastAPI doesn't treat "match" as a skill_id.
+@router.get("/catalog/match", summary="Match skills by trigger words in text")
+def api_match_skills(text: str, top_k: int = 3):
+    from app.application.skills.catalog import match_skills_by_trigger
+    matches = match_skills_by_trigger(text, top_k=top_k)
+    return {
+        "matches": [
+            {"id": m.id, "name": m.name, "description_short": m.description_short}
+            for m in matches
+        ],
+        "count": len(matches),
+    }
+
+
+@router.get("/catalog/{skill_id}", summary="Get full skill content by id")
+def api_skill_content(skill_id: str):
+    from fastapi import HTTPException
+    from app.application.skills.catalog import load_skill_content, discover_skills
+    content = load_skill_content(skill_id)
+    if content is None:
+        raise HTTPException(404, f"Skill '{skill_id}' not found")
+    manifests = {m.id: m for m in discover_skills(enabled_only=False)}
+    m = manifests.get(skill_id)
+    return {
+        "id": skill_id,
+        "name": m.name if m else skill_id,
+        "content": content,
+        "capabilities": m.capabilities if m else [],
+        "enabled": m.enabled if m else False,
+    }
