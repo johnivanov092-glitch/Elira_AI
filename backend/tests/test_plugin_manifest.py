@@ -1,4 +1,4 @@
-"""Tests — Plugin manifest + disabled-by-default + subprocess execution (P6 Шаг 14)."""
+"""Tests — Plugin manifest + subprocess isolation (P6 Step 14, P9.1 hardening)."""
 from __future__ import annotations
 
 import json
@@ -37,11 +37,36 @@ def run(args):
     return {"ok": True}
 """
 
+_CRASH_IMPORT_SRC = """\
+raise RuntimeError("plugin crash at import time")
+
+def run(args):
+    return {"ok": True}
+"""
+
+_HOOK_PLUGIN_SRC = """\
+def on_message(data):
+    return f"hook received: {data}"
+
+def run(args):
+    return {"ok": True}
+"""
+
+_INFINITE_HOOK_SRC = """\
+import time
+
+def on_start():
+    time.sleep(60)
+
+def run(args):
+    return {"ok": True}
+"""
+
 _MANIFEST = {
     "name": "Test Plugin",
     "version": "1.0.0",
     "capabilities": ["testing"],
-    "enabled": False,  # disabled by default
+    "enabled": False,
 }
 
 
@@ -96,8 +121,7 @@ class TestLoadPluginsManifestRequirement(unittest.TestCase):
             # NO manifest.json written
             with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
                 result = load_plugins()
-            self.assertNotIn("manifest_test_plugin", [e if isinstance(e, str) else "" for e in result["loaded"]])
-            # Should appear in errors
+            self.assertNotIn("manifest_test_plugin", result["loaded"])
             error_names = [e["name"] for e in result["errors"]]
             self.assertIn("manifest_test_plugin", error_names)
 
@@ -141,7 +165,7 @@ class TestSubprocessExecution(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             py = Path(tmp) / "subprocess_test.py"
             py.write_text(_SIMPLE_PLUGIN_SRC)
-            result = _run_plugin_subprocess(str(py), {"value": "hello"})
+            result = _run_plugin_subprocess(str(py), {"action": "run", "args": {"value": "hello"}})
             self.assertTrue(result.get("ok"), result)
             self.assertEqual(result.get("echo"), "hello")
 
@@ -149,7 +173,7 @@ class TestSubprocessExecution(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             py = Path(tmp) / "timeout_plugin.py"
             py.write_text(_TIMEOUT_PLUGIN_SRC)
-            result = _run_plugin_subprocess(str(py), {}, timeout=1)
+            result = _run_plugin_subprocess(str(py), {"action": "run", "args": {}}, timeout=1)
             self.assertFalse(result.get("ok"))
             self.assertIn("timed out", result.get("error", "").lower())
 
@@ -161,7 +185,6 @@ class TestProductionPathHardened(unittest.TestCase):
     """Verify that app.application.plugins uses the hardened runtime."""
 
     def test_application_plugins_imports_hardened_run_plugin(self):
-        """run_plugin from app.application.plugins should use subprocess execution."""
         from app.application.plugins import run_plugin
         from app.infrastructure.plugins.plugin_system import run_plugin as infra_run_plugin
         self.assertIs(run_plugin, infra_run_plugin,
@@ -176,11 +199,124 @@ class TestProductionPathHardened(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             (tmp_path / "no_manifest_plugin.py").write_text(_SIMPLE_PLUGIN_SRC)
-            # No manifest.json
             with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
                 result = load_plugins()
         error_names = [e["name"] for e in result["errors"]]
         self.assertIn("no_manifest_plugin", error_names)
+
+
+# ─── P9.1 isolation tests ─────────────────────────────────────────────────────
+
+class TestP91PluginIsolation(unittest.TestCase):
+    """P9.1: plugin .py must never be imported into the backend process."""
+
+    def tearDown(self):
+        for name in ("crash_p91_plugin", "disabled_p91_plugin",
+                     "hook_p91_plugin", "infinite_hook_p91_plugin"):
+            try:
+                import app.application.tool_registry.runtime as r
+                r.delete_tool(name)
+            except Exception:
+                pass
+
+    def test_crashing_plugin_does_not_crash_backend(self):
+        """load_plugins() must succeed even when the plugin has a top-level exception."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "crash_p91_plugin", _CRASH_IMPORT_SRC, {
+                "name": "Crash", "version": "1.0", "capabilities": [],
+                "enabled": False,  # disabled → no subprocess call at load time
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                result = load_plugins()
+        # load succeeds — manifest was readable
+        self.assertIn("crash_p91_plugin", result["loaded"])
+        # Running the plugin returns an error, not an exception
+        plugin = psys._plugins.get("crash_p91_plugin")
+        self.assertIsNotNone(plugin)
+        # Enable and run to verify subprocess captures the crash
+        psys._plugins["crash_p91_plugin"]["enabled"] = True
+        run_result = psys.run_plugin("crash_p91_plugin", {})
+        self.assertFalse(run_result.get("ok"))
+        self.assertIn("import error", run_result.get("error", "").lower())
+
+    def test_disabled_plugin_is_not_run(self):
+        """Disabled plugin must not execute even when run_plugin is called."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "disabled_p91_plugin", _SIMPLE_PLUGIN_SRC, {
+                "name": "Disabled", "version": "1.0", "capabilities": [], "enabled": False,
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                load_plugins()
+        result = psys.run_plugin("disabled_p91_plugin", {})
+        self.assertFalse(result.get("ok"))
+        self.assertIn("выключен", result.get("error", ""))
+
+    def test_hook_fires_in_subprocess(self):
+        """on_message hook must execute in a child process and return its value."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "hook_p91_plugin", _HOOK_PLUGIN_SRC, {
+                "name": "Hook Plugin", "version": "1.0", "capabilities": [],
+                "enabled": True, "hooks": ["on_message"],
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                load_plugins()
+            # fire_hook must be called while temp dir still exists
+            results = psys.fire_hook("on_message", "hello")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["plugin"], "hook_p91_plugin")
+        self.assertEqual(results[0]["result"], "hook received: hello")
+
+    def test_infinite_hook_terminates_by_timeout(self):
+        """An on_start hook that blocks must be killed by the plugin timeout."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "infinite_hook_p91_plugin", _INFINITE_HOOK_SRC, {
+                "name": "Infinite", "version": "1.0", "capabilities": [],
+                "enabled": True, "hooks": ["on_start"], "timeout": 1,
+            })
+            start = time.monotonic()
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                load_plugins()
+            elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 5, f"on_start should have timed out in 1s, took {elapsed:.1f}s")
+
+    def test_hook_action_dispatched_via_subprocess_runner(self):
+        """_run_plugin_subprocess with action='hook' must call the named hook function."""
+        with tempfile.TemporaryDirectory() as tmp:
+            py = Path(tmp) / "hook_runner_test.py"
+            py.write_text(_HOOK_PLUGIN_SRC)
+            result = _run_plugin_subprocess(
+                str(py),
+                {"action": "hook", "hook_name": "on_message", "data": "test_data"},
+            )
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(result.get("result"), "hook received: test_data")
+
+    def test_inspect_action_returns_module_metadata(self):
+        """action='inspect' must return declared metadata without crashing backend."""
+        with tempfile.TemporaryDirectory() as tmp:
+            py = Path(tmp) / "inspect_test.py"
+            py.write_text(_SIMPLE_PLUGIN_SRC)
+            result = _run_plugin_subprocess(str(py), {"action": "inspect"})
+        self.assertTrue(result.get("ok"), result)
+        self.assertIn("category", result)
+        self.assertEqual(result["category"], "testing")
+
+    def test_no_module_key_in_plugin_record(self):
+        """Plugin records must not contain a 'module' key (no in-process import)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "nomod_p91_plugin", _SIMPLE_PLUGIN_SRC, {
+                "name": "NoMod", "version": "1.0", "capabilities": [], "enabled": False,
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                load_plugins()
+        plugin = psys._plugins.get("nomod_p91_plugin")
+        self.assertIsNotNone(plugin)
+        self.assertNotIn("module", plugin)
 
 
 if __name__ == "__main__":

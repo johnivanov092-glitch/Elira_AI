@@ -1,26 +1,21 @@
 """
-plugin_system.py — система плагинов Elira AI v2.
+plugin_system.py — hardened plugin system for Elira AI (P9.1).
 
-Плагины = .py файлы в data/plugins/
-Каждый плагин должен иметь: def run(args: dict) -> dict
+Discovery reads metadata ONLY from <plugin>.manifest.json.
+No plugin .py is ever imported into the backend process.
+All plugin code executes in a child subprocess via JSON I/O.
 
-Расширенный API плагинов:
-  - TRIGGERS: list[str]  — фразы автоматического вызова (AI сама решит)
-  - HOOKS: dict          — хуки: on_start, on_message, on_response, on_error
-  - CONFIG: dict         — настройки по умолчанию (пользователь может менять)
-  - CATEGORY: str        — категория: "utility", "integration", "analysis", etc.
-  - ICON: str            — эмодзи иконка
-
-Lifecycle:
-  on_start()          — вызывается при загрузке плагина
-  on_message(text)    — вызывается на каждое сообщение пользователя (до AI)
-  on_response(text)   — вызывается после ответа AI
-  run(args)           — основная функция (вызов пользователем или авто-триггер)
+Manifest schema (fields used by this module):
+  name, version, enabled, timeout, capabilities,
+  category, icon, description, author, triggers,
+  hooks (list of hook names: "on_start"|"on_message"|"on_response"),
+  config (dict of default settings)
 """
 from __future__ import annotations
-import importlib.util
+
 import json
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -36,15 +31,39 @@ PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 _RUNNER_SCRIPT = Path(__file__).parent / "_subprocess_runner.py"
 _BACKEND_ROOT = str(Path(__file__).parents[3])  # .../backend
 PLUGIN_DEFAULT_TIMEOUT: int = 30  # seconds
+PLUGIN_MAX_OUTPUT_CHARS: int = 50_000
+
+# Allowlist of env vars passed to plugin subprocesses.
+# Application secrets (DB URLs, API keys) use custom names and are excluded.
+_SUBPROCESS_ENV_PASSTHROUGH = frozenset({
+    # Windows essentials
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+    # Executable resolution
+    "PATH", "PATHEXT",
+    # Temp dirs
+    "TEMP", "TMP",
+    # Python runtime
+    "PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME",
+    # User profile (needed by Python on Windows for site-packages)
+    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
+    # Unix/macOS equivalents
+    "HOME", "USER", "LANG", "LC_ALL",
+})
 
 
-# ── Manifest support ──────────────────────────────────────────────────────────
+def _make_subprocess_env() -> dict[str, str]:
+    """Build a minimal environment for plugin subprocesses."""
+    env = {k: v for k, v in os.environ.items() if k.upper() in _SUBPROCESS_ENV_PASSTHROUGH}
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
+# ── Manifest loading ──────────────────────────────────────────────────────────
 
 def _load_plugin_manifest(py_file: Path) -> dict | None:
     """Load <stem>.manifest.json alongside the plugin .py file.
 
     Returns the parsed manifest dict, or None if no manifest exists.
-    Logs a warning for malformed manifests.
     """
     manifest_path = py_file.with_suffix(".manifest.json")
     if not manifest_path.exists():
@@ -56,24 +75,38 @@ def _load_plugin_manifest(py_file: Path) -> dict | None:
         return None
 
 
-def _run_plugin_subprocess(py_file: str, full_args: dict, timeout: int = PLUGIN_DEFAULT_TIMEOUT) -> dict:
-    """Execute plugin out-of-process via JSON I/O.
+# ── Subprocess runner ─────────────────────────────────────────────────────────
 
-    The plugin's run(args) is called in a fresh Python subprocess that imports
-    only the plugin module. A crashing or hanging plugin cannot affect the
-    main backend process.
+def _run_plugin_subprocess(
+    py_file: str,
+    payload: dict,
+    timeout: int = PLUGIN_DEFAULT_TIMEOUT,
+) -> dict:
+    """Execute a plugin action out-of-process via JSON I/O.
+
+    payload schema:
+      {"action": "run",  "args": {...}}
+      {"action": "hook", "hook_name": "<name>", "data": <any>}
+      {"action": "inspect"}
     """
+    env = _make_subprocess_env() or None  # None = inherit if allowlist returns empty
     try:
         proc = subprocess.run(
             [sys.executable, str(_RUNNER_SCRIPT), py_file, _BACKEND_ROOT],
-            input=json.dumps(full_args, ensure_ascii=False),
+            input=json.dumps(payload, ensure_ascii=False),
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=str(PLUGINS_DIR),
+            env=env,
         )
         stdout = (proc.stdout or "").strip()
+        if len(stdout) > PLUGIN_MAX_OUTPUT_CHARS:
+            stdout = stdout[:PLUGIN_MAX_OUTPUT_CHARS]
         if proc.returncode != 0 and not stdout:
-            return {"ok": False, "error": (proc.stderr or "Plugin process exited with error")[:500]}
+            stderr = (proc.stderr or "Plugin process exited with error")[:500]
+            logger.warning("Plugin subprocess error (%s): %s", py_file, stderr)
+            return {"ok": False, "error": stderr}
         if not stdout:
             return {"ok": False, "error": "Plugin produced no output"}
         return json.loads(stdout)
@@ -82,7 +115,9 @@ def _run_plugin_subprocess(py_file: str, full_args: dict, timeout: int = PLUGIN_
     except json.JSONDecodeError as exc:
         return {"ok": False, "error": f"Plugin output is not valid JSON: {exc}"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        logger.warning("Plugin subprocess exception (%s): %s", py_file, exc)
+        return {"ok": False, "error": "Plugin execution error"}
+
 
 _CONFIG_FILE = DATA_DIR / "plugins_config.json"
 
@@ -91,11 +126,10 @@ _plugin_states: dict[str, bool] = {}  # name → enabled/disabled
 
 
 # ═══════════════════════════════════════════════════════════════
-# КОНФИГ (включение/выключение, пользовательские настройки)
+# КОНФИГ
 # ═══════════════════════════════════════════════════════════════
 
 def _load_config() -> dict:
-    """Загружает конфиг плагинов из JSON."""
     try:
         if _CONFIG_FILE.exists():
             return json.loads(_CONFIG_FILE.read_text(encoding="utf-8"))
@@ -104,16 +138,14 @@ def _load_config() -> dict:
     return {}
 
 
-def _save_config(config: dict):
-    """Сохраняет конфиг плагинов."""
+def _save_config(config: dict) -> None:
     try:
         _CONFIG_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         logger.warning(f"Plugin config save error: {e}")
 
 
-def _set_plugin_config(name: str, data: dict):
-    """Обновляет конфиг плагина."""
+def _set_plugin_config(name: str, data: dict) -> None:
     config = _load_config()
     config[name] = {**config.get(name, {}), **data}
     _save_config(config)
@@ -123,32 +155,27 @@ def _set_plugin_config(name: str, data: dict):
 # ЗАГРУЗКА / ПЕРЕЗАГРУЗКА
 # ═══════════════════════════════════════════════════════════════
 
-def _build_plugin_record(name: str, mod, py_file: Path, config: dict, manifest: dict) -> dict:
-    """Build the _plugins registry entry for a loaded plugin module.
+def _build_plugin_record(name: str, py_file: Path, config: dict, manifest: dict) -> dict:
+    """Build the _plugins registry entry from manifest.json only.
 
-    *manifest* is the parsed manifest.json for this plugin. The manifest's
-    ``enabled`` field controls the default; user config in plugins_config.json
-    can override it. Plugins without a manifest default to disabled.
+    No plugin .py is imported. All metadata is read from the manifest.
+    hooks is a list of declared hook names, e.g. ["on_start", "on_message"].
     """
-    triggers = getattr(mod, "TRIGGERS", [])
-    hooks = getattr(mod, "HOOKS", {})
-    default_config = getattr(mod, "CONFIG", {})
     plugin_conf = config.get(name, {})
-    # Disabled by default: manifest.enabled (default False) → overridden by user config
     manifest_enabled = bool(manifest.get("enabled", False))
     enabled = plugin_conf.get("enabled", manifest_enabled)
+    default_config = manifest.get("config", {})
     user_settings = plugin_conf.get("settings", {})
     timeout = int(manifest.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
     return {
-        "module": mod,
         "path": str(py_file),
-        "description": manifest.get("name") or getattr(mod, "DESCRIPTION", ""),
-        "author": getattr(mod, "AUTHOR", ""),
-        "version": manifest.get("version", getattr(mod, "VERSION", "1.0")),
-        "category": getattr(mod, "CATEGORY", "utility"),
-        "icon": getattr(mod, "ICON", "🔌"),
-        "triggers": triggers if isinstance(triggers, list) else [],
-        "hooks": hooks if isinstance(hooks, dict) else {},
+        "description": manifest.get("description") or manifest.get("name", ""),
+        "author": manifest.get("author", ""),
+        "version": manifest.get("version", "1.0"),
+        "category": manifest.get("category", "utility"),
+        "icon": manifest.get("icon", "🔌"),
+        "triggers": list(manifest.get("triggers", [])),
+        "hooks": list(manifest.get("hooks", [])),
         "default_config": default_config,
         "user_settings": {**default_config, **user_settings},
         "enabled": enabled,
@@ -188,7 +215,11 @@ def _unregister_plugin_from_tool_registry(name: str) -> None:
 
 
 def load_plugins() -> dict:
-    """Загружает все плагины из data/plugins/."""
+    """Discover plugins from data/plugins/ by reading manifest.json only.
+
+    No plugin .py is imported into the backend process.
+    on_start hooks run in a child subprocess if the plugin is enabled.
+    """
     global _plugins, _plugin_states
     _plugins = {}
     loaded = []
@@ -200,34 +231,25 @@ def load_plugins() -> dict:
         if name.startswith("_"):
             continue
         try:
-            # Require manifest.json — plugins without manifest are rejected.
             manifest = _load_plugin_manifest(py_file)
             if manifest is None:
                 errors.append({"name": name, "error": "manifest.json not found — plugin skipped"})
                 logger.warning("Plugin '%s' has no manifest.json — skipping", name)
                 continue
 
-            spec = importlib.util.spec_from_file_location(f"elira_plugin_{name}", py_file)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-
-            if not hasattr(mod, "run") or not callable(mod.run):
-                errors.append({"name": name, "error": "Нет функции run(args)"})
-                continue
-
-            _plugins[name] = _build_plugin_record(name, mod, py_file, config, manifest)
+            _plugins[name] = _build_plugin_record(name, py_file, config, manifest)
             _plugin_states[name] = _plugins[name]["enabled"]
             loaded.append(name)
-
-            # Register in Tool Registry so plugins are discoverable via /api/agent-os/tools
             _register_plugin_in_tool_registry(name, _plugins[name])
 
-            # Вызываем on_start хук если есть
-            if _plugins[name]["enabled"] and hasattr(mod, "on_start") and callable(mod.on_start):
-                try:
-                    mod.on_start()
-                except Exception as e:
-                    logger.warning(f"Plugin {name} on_start error: {e}")
+            if _plugins[name]["enabled"] and "on_start" in _plugins[name]["hooks"]:
+                result = _run_plugin_subprocess(
+                    _plugins[name]["path"],
+                    {"action": "hook", "hook_name": "on_start", "data": None},
+                    timeout=_plugins[name]["timeout"],
+                )
+                if not result.get("ok"):
+                    logger.warning("Plugin '%s' on_start error: %s", name, result.get("error"))
 
         except Exception as e:
             errors.append({"name": name, "error": str(e)})
@@ -237,9 +259,6 @@ def load_plugins() -> dict:
 
 def reload_plugins() -> dict:
     """Перезагружает все плагины."""
-    for name in list(sys.modules.keys()):
-        if name.startswith("elira_plugin_"):
-            del sys.modules[name]
     return load_plugins()
 
 
@@ -260,9 +279,7 @@ def list_plugins() -> dict:
             "icon": info["icon"],
             "enabled": info["enabled"],
             "triggers": info["triggers"],
-            "has_hooks": bool(info["hooks"]) or any(
-                hasattr(info["module"], h) for h in ("on_message", "on_response", "on_start")
-            ),
+            "has_hooks": bool(info["hooks"]),
             "config": info["user_settings"],
             "path": info["path"],
         })
@@ -284,10 +301,7 @@ def get_plugin_info(name: str) -> dict:
         "icon": info["icon"],
         "enabled": info["enabled"],
         "triggers": info["triggers"],
-        "hooks": list(info["hooks"].keys()) + [
-            h for h in ("on_start", "on_message", "on_response")
-            if hasattr(info["module"], h)
-        ],
+        "hooks": list(info["hooks"]),
         "config": info["user_settings"],
         "default_config": info["default_config"],
         "path": info["path"],
@@ -305,7 +319,6 @@ def enable_plugin(name: str) -> dict:
     _plugins[name]["enabled"] = True
     _plugin_states[name] = True
     _set_plugin_config(name, {"enabled": True})
-    # Sync enabled state with Tool Registry
     try:
         import app.application.tool_registry.runtime as _tr
         _tr.update_tool(name, {"enabled": True})
@@ -321,7 +334,6 @@ def disable_plugin(name: str) -> dict:
     _plugins[name]["enabled"] = False
     _plugin_states[name] = False
     _set_plugin_config(name, {"enabled": False})
-    # Sync disabled state with Tool Registry
     try:
         import app.application.tool_registry.runtime as _tr
         _tr.update_tool(name, {"enabled": False})
@@ -345,18 +357,15 @@ def update_plugin_settings(name: str, settings: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def run_plugin(name: str, args: dict = None) -> dict:
-    """Запускает плагин по имени."""
+    """Запускает плагин по имени в дочернем процессе."""
     if name not in _plugins:
         return {"ok": False, "error": f"Плагин не найден: {name}. Доступные: {list(_plugins.keys())}"}
-
     info = _plugins[name]
     if not info["enabled"]:
         return {"ok": False, "error": f"Плагин {name} выключен"}
-
-    # Добавляем user_settings в аргументы
     full_args = {**info["user_settings"], **(args or {})}
     timeout = int(info.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
-    return _run_plugin_subprocess(info["path"], full_args, timeout=timeout)
+    return _run_plugin_subprocess(info["path"], {"action": "run", "args": full_args}, timeout=timeout)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -364,20 +373,29 @@ def run_plugin(name: str, args: dict = None) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def fire_hook(hook_name: str, data: Any = None) -> list[dict]:
-    """Вызывает хук во всех активных плагинах, которые его реализуют."""
+    """Fire a lifecycle hook in all enabled plugins that declare it.
+
+    Each hook runs in a dedicated child subprocess with the plugin's timeout.
+    Returns [{"plugin": name, "result": value}, ...] for hooks that return a value.
+    """
     results = []
     for name, info in _plugins.items():
         if not info["enabled"]:
             continue
-        mod = info["module"]
-        fn = getattr(mod, hook_name, None)
-        if fn and callable(fn):
-            try:
-                result = fn(data)
-                if result:
-                    results.append({"plugin": name, "result": result})
-            except Exception as e:
-                logger.warning(f"Plugin {name} hook {hook_name} error: {e}")
+        if hook_name not in info["hooks"]:
+            continue
+        timeout = int(info.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
+        try:
+            proc_result = _run_plugin_subprocess(
+                info["path"],
+                {"action": "hook", "hook_name": hook_name, "data": data},
+                timeout=timeout,
+            )
+            hook_value = proc_result.get("result")
+            if hook_value:
+                results.append({"plugin": name, "result": hook_value})
+        except Exception as exc:
+            logger.warning("Plugin '%s' hook '%s' error: %s", name, hook_name, exc)
     return results
 
 
@@ -411,30 +429,23 @@ def run_triggered(user_text: str) -> list[dict]:
 
 load_plugins()
 
-# Создаём примеры если папка пустая
-_EXAMPLE = PLUGINS_DIR / "example_hello.py"
-if not _EXAMPLE.exists() and not list(PLUGINS_DIR.glob("*.py")):
-    _EXAMPLE.write_text('''"""Пример плагина Elira AI."""
-DESCRIPTION = "Приветствие — пример плагина"
-AUTHOR = "Elira"
-VERSION = "1.0"
-ICON = "👋"
-CATEGORY = "utility"
-TRIGGERS = ["привет плагин", "hello plugin"]
+# Create example plugin if the plugins dir is empty (skeleton only; needs manifest to load)
+_EXAMPLE_PY = PLUGINS_DIR / "example_hello.py"
+_EXAMPLE_MF = PLUGINS_DIR / "example_hello.manifest.json"
+if not _EXAMPLE_PY.exists() and not list(PLUGINS_DIR.glob("*.py")):
+    _EXAMPLE_PY.write_text('''\
+"""Example plugin for Elira AI.
 
-# Настройки по умолчанию (пользователь может менять в UI)
-CONFIG = {
-    "greeting": "Привет",
-    "emoji": True,
-}
+Declare metadata in example_hello.manifest.json.
+"""
+TRIGGERS = ["привет плагин", "hello plugin"]
+CONFIG = {"greeting": "Привет", "emoji": True}
 
 def on_start():
-    """Вызывается при загрузке плагина."""
     pass
 
 def on_message(text):
-    """Вызывается на каждое сообщение пользователя."""
-    return None  # Вернуть строку = добавить в контекст AI
+    return None  # return a string to inject context before the AI response
 
 def run(args: dict) -> dict:
     name = args.get("name", "мир")
@@ -442,4 +453,18 @@ def run(args: dict) -> dict:
     emoji = "! 👋" if args.get("emoji") else "!"
     return {"ok": True, "message": f"{greeting}, {name}{emoji}"}
 ''', encoding="utf-8")
+    _EXAMPLE_MF.write_text(json.dumps({
+        "name": "Example Hello",
+        "description": "Приветствие — пример плагина",
+        "author": "Elira",
+        "version": "1.0",
+        "category": "utility",
+        "icon": "👋",
+        "enabled": False,
+        "timeout": 30,
+        "capabilities": [],
+        "triggers": ["привет плагин", "hello plugin"],
+        "hooks": ["on_start", "on_message"],
+        "config": {"greeting": "Привет", "emoji": True},
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
     load_plugins()
