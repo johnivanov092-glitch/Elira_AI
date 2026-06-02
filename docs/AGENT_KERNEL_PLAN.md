@@ -198,6 +198,46 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 - Маршруты: `POST /api/tasks/{id}/retry`, `GET /api/tasks?dead_letter=true`.
 - Acceptance: задача исчерпывает retries → dead_letter=True; waiting_approval блокирует автоисполнение; гейты зелёные.
 
+---
+
+## P6: Навыки и расширения
+
+### Шаг 13 — Skill manifest catalog
+- `application/skills/catalog.py`: `SkillManifest(id, name, description_short, capabilities, trigger_words, enabled)`.
+- `discover_skills(enabled_only=True)` → список манифестов (без полного контента).
+- `load_skill_content(skill_id)` → полный prompt/инструкции навыка.
+- Встроенные навыки объявляются в Python-dicts (не требуют нового DB).
+- Маршруты: `GET /api/skills/catalog`, `GET /api/skills/catalog/{skill_id}`.
+- Acceptance: discover возвращает манифесты без full content; load_skill_content возвращает полный текст; гейты зелёные.
+
+### Шаг 14 — Plugin manifest + disabled-by-default + subprocess timeout
+- Добавить `manifest.json` для плагинов: поля `name`, `version`, `capabilities[]`, `enabled` (default false).
+- Плагины без `manifest.json` → не загружаются (logged as warning).
+- `plugin_system.py`: wrap `mod.run(args)` в subprocess с таймаутом (30s default) через `concurrent.futures.ProcessPoolExecutor` или subprocess + JSON I/O.
+- Acceptance: плагин без manifest не загружается; плагин с timeout > 30s убивается; гейты зелёные.
+
+---
+
+## P7: Post-MVP Extensions
+
+### Шаг 15 — Telegram approval inbox
+- Новый эндпоинт `POST /api/telegram/approval_callback`: принимает JSON `{approval_id, action: approve|reject, chat_id}` — webhook от Telegram-бота.
+- Существующий Telegram-бот получает pending approvals и отправляет confirmation message.
+- `send_approval_notification(approval)` — вызывается из executor при создании pending approval.
+- Acceptance: POST /approval_callback с action=approve меняет статус approval; уведомление отправляется если бот сконфигурирован; гейты зелёные.
+
+---
+
+## P8: Model Profiles (Стратегия моделей, Раздел 11 роадмапа)
+
+### Шаг 16 — Model profile registry
+- Новый `application/models/profiles.py`: `ModelProfile(id, provider, model, role, context_limit, timeout_seconds, enabled, cloud_consent_required)`.
+- Роли: `fast` (4-8B local), `code` (local coder), `strong` (30B+ или cloud), `embedding`.
+- Таблица `model_profiles` в `agent_monitor.db` (additive migration).
+- Seed дефолтных профилей из config; cloud profiles `enabled=False` по умолчанию.
+- Маршруты: `GET /api/models/profiles`, `POST /api/models/profiles/{id}/enable`, `POST /api/models/profiles/{id}/disable`.
+- Acceptance: GET list возвращает профили; cloud profile disabled by default; enable/disable работают; гейты зелёные.
+
 ### Шаг 6 (детали)
 
 - `GET /api/agent-os/runs` — последние записи `tool.executed` из event_bus с
