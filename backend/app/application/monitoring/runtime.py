@@ -22,6 +22,7 @@ def _init_db() -> None:
     monitoring_store.init_db(DB_PATH)
     monitoring_store.migrate_memory_candidates_table(DB_PATH)
     monitoring_store.migrate_model_profiles_table(DB_PATH)
+    monitoring_store.migrate_approval_args_sha256(DB_PATH)
 
 
 _init_db()
@@ -394,10 +395,22 @@ def update_approval_status(approval_id: str, *, status: str) -> dict[str, Any] |
 
 
 def find_approved_approval(
-    *, tool_name: str, agent_id: str, run_id: str
+    *,
+    tool_name: str,
+    agent_id: str,
+    source: str,
+    run_id: str,
+    project_scope_id: str,
+    args: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     return monitoring_store.find_approved_approval(
-        DB_PATH, tool_name=tool_name, agent_id=agent_id, run_id=run_id
+        DB_PATH,
+        tool_name=tool_name,
+        agent_id=agent_id,
+        source=source,
+        run_id=run_id,
+        project_scope_id=project_scope_id,
+        args=args,
     )
 
 

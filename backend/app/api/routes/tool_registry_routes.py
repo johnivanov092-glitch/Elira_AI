@@ -64,6 +64,9 @@ def delete_tool(name: str):
 
 @router.post("/tools/{name}/execute", summary="Выполнить инструмент", response_model=ToolExecuteResponse)
 def execute_tool(name: str, body: ToolExecuteRequest):
+    import uuid as _uuid
+    run_id = (body.run_id or "").strip() or _uuid.uuid4().hex
+
     tool = registry.get_tool(name)
     if not tool:
         raise HTTPException(404, f"Tool '{name}' not found")
@@ -77,6 +80,7 @@ def execute_tool(name: str, body: ToolExecuteRequest):
         tool_name=name,
         result=result if isinstance(result, dict) else {"value": result},
         errors=errors,
+        run_id=run_id,
     )
 
 

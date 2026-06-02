@@ -41,6 +41,10 @@ class ToolUpdate(BaseModel):
 
 class ToolExecuteRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
+    run_id: str | None = Field(
+        None,
+        description="Stable run_id for approval retry. Server generates a UUID if absent.",
+    )
 
 
 class ToolExecuteResponse(BaseModel):
@@ -48,6 +52,7 @@ class ToolExecuteResponse(BaseModel):
     tool_name: str
     result: dict[str, Any] = Field(default_factory=dict)
     errors: list[str] = Field(default_factory=list)
+    run_id: str = Field("", description="Always returned so client can retry after approval.")
 
 
 class ToolListResponse(BaseModel):

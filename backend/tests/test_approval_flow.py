@@ -33,6 +33,7 @@ def _temp_db():
     tmp.close()
     db = Path(tmp.name)
     mon_store.migrate_approvals_table(db)
+    mon_store.migrate_approval_args_sha256(db)  # P9.2A0
     return db
 
 
@@ -79,7 +80,8 @@ class TestApprovalStoreCrud(unittest.TestCase):
         )
         mon_store.update_approval_status(self.db, "apr-2", status="approved")
         found = mon_store.find_approved_approval(
-            self.db, tool_name="git_commit_push", agent_id="code-agent", run_id="run-2"
+            self.db, tool_name="git_commit_push", agent_id="code-agent",
+            source="", run_id="run-2", project_scope_id="scope:x", args={},
         )
         self.assertIsNotNone(found)
         assert found is not None
@@ -88,14 +90,20 @@ class TestApprovalStoreCrud(unittest.TestCase):
     def test_rejected_not_findable(self):
         mon_store.create_approval(self.db, id="apr-3", tool_name="python_execute", agent_id="chat", run_id="run-3", project_scope_id="")
         mon_store.update_approval_status(self.db, "apr-3", status="rejected")
-        found = mon_store.find_approved_approval(self.db, tool_name="python_execute", agent_id="chat", run_id="run-3")
+        found = mon_store.find_approved_approval(
+            self.db, tool_name="python_execute", agent_id="chat",
+            source="", run_id="run-3", project_scope_id="", args={},
+        )
         self.assertIsNone(found)
 
     def test_one_shot_used_approval(self):
         mon_store.create_approval(self.db, id="apr-4", tool_name="write_file", agent_id="chat", run_id="run-4", project_scope_id="")
         mon_store.update_approval_status(self.db, "apr-4", status="approved")
         mon_store.update_approval_status(self.db, "apr-4", status="used")
-        found = mon_store.find_approved_approval(self.db, tool_name="write_file", agent_id="chat", run_id="run-4")
+        found = mon_store.find_approved_approval(
+            self.db, tool_name="write_file", agent_id="chat",
+            source="", run_id="run-4", project_scope_id="", args={},
+        )
         self.assertIsNone(found)
 
     def test_ttl_expiry(self):

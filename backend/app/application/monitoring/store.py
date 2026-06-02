@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS approvals (
     run_id TEXT NOT NULL DEFAULT '',
     project_scope_id TEXT NOT NULL DEFAULT '',
     args_json TEXT NOT NULL DEFAULT '{}',
+    args_sha256 TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     ttl_seconds INTEGER NOT NULL DEFAULT 300,
     expires_at TEXT NOT NULL,
@@ -184,10 +186,34 @@ def migrate_model_profiles_table(db_path: str | Path) -> None:
             )
 
 
+def canonical_args_digest(args: dict[str, Any] | None) -> str:
+    """SHA-256 of canonically serialised args.
+
+    Uses sort_keys=True and stable separators so identical args produce
+    identical digests regardless of insertion order or Python version.
+    Both create_approval and find_approved_approval call this function;
+    they MUST both use it to guarantee the digests match.
+    """
+    payload = json.dumps(args or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def migrate_approvals_table(db_path: str | Path) -> None:
     """Additive migration: create approvals table if not present."""
     with get_connection(db_path) as con:
         con.executescript(_APPROVALS_TABLE_SQL)
+
+
+def migrate_approval_args_sha256(db_path: str | Path) -> None:
+    """Additive idempotent migration: add args_sha256 column to approvals.
+
+    Safe to run on databases created before this column existed.
+    New databases already have the column from _APPROVALS_TABLE_SQL.
+    """
+    with get_connection(db_path) as con:
+        existing = {row[1] for row in con.execute("PRAGMA table_info(approvals)").fetchall()}
+        if "args_sha256" not in existing:
+            con.execute("ALTER TABLE approvals ADD COLUMN args_sha256 TEXT NOT NULL DEFAULT ''")
 
 
 def dumps_json(value: Any) -> str:
@@ -590,14 +616,15 @@ def create_approval(
 ) -> dict[str, Any]:
     now = now_utc()
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=max(1, ttl_seconds))).isoformat()
+    args_digest = canonical_args_digest(args)
     with get_connection(db_path) as con:
         con.execute(
             """INSERT INTO approvals
                (id, tool_name, agent_id, source, run_id, project_scope_id,
-                args_json, status, ttl_seconds, expires_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
+                args_json, args_sha256, status, ttl_seconds, expires_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
             (id, tool_name, agent_id, source, run_id, project_scope_id,
-             dumps_json(args or {}), ttl_seconds, expires_at, now, now),
+             dumps_json(args or {}), args_digest, ttl_seconds, expires_at, now, now),
         )
     return get_approval(db_path, id) or {}
 
@@ -664,17 +691,35 @@ def find_approved_approval(
     *,
     tool_name: str,
     agent_id: str,
+    source: str,
     run_id: str,
+    project_scope_id: str,
+    args: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Return the first approved, non-expired approval for this tool+agent+run, or None."""
+    """Return the first approved, non-expired approval matching all 6 binding fields.
+
+    Binding fields: tool_name, agent_id, source, run_id, project_scope_id, args_sha256.
+    Legacy approvals with an empty digest (args_sha256 = '') are never accepted;
+    an empty run_id never matches any stored approval.
+    """
+    if not run_id:
+        return None
+    digest = canonical_args_digest(args)
     now = now_utc()
     with get_connection(db_path) as con:
         row = con.execute(
             """SELECT * FROM approvals
-               WHERE tool_name = ? AND agent_id = ? AND run_id = ?
-                 AND status = 'approved' AND expires_at > ?
+               WHERE tool_name        = ?
+                 AND agent_id         = ?
+                 AND source           = ?
+                 AND run_id           = ?
+                 AND project_scope_id = ?
+                 AND args_sha256      = ?
+                 AND args_sha256     != ''
+                 AND status           = 'approved'
+                 AND expires_at       > ?
                ORDER BY created_at DESC LIMIT 1""",
-            (tool_name, agent_id, run_id, now),
+            (tool_name, agent_id, source, run_id, project_scope_id, digest, now),
         ).fetchone()
     return row_to_approval(row)
 

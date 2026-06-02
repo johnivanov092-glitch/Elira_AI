@@ -129,6 +129,7 @@ def api_webhook_clear():
 class PluginRunRequest(BaseModel):
     name: str
     args: dict = {}
+    run_id: str | None = None  # optional; server generates UUID if absent
 
 class PluginSettingsRequest(BaseModel):
     name: str
@@ -144,7 +145,10 @@ def api_plugin_info(name: str):
 
 @router.post("/plugins/run")
 def api_plugin_run(p: PluginRunRequest):
-    return run_plugin(p.name, p.args)
+    import uuid as _uuid
+    run_id = (p.run_id or "").strip() or _uuid.uuid4().hex
+    result = run_plugin(p.name, p.args)
+    return {**result, "run_id": run_id}
 
 @router.post("/plugins/enable/{name}")
 def api_plugin_enable(name: str):

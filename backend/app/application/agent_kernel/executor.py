@@ -114,6 +114,22 @@ def execute_tool(
                 pass  # conservative: keep approval requirement on import error
 
     if _needs_approval:
+        # A stable run_id is required so the approval can be matched on retry.
+        if not request.run_id:
+            _emit_blocked(request, "approval_requires_run_id")
+            return ToolExecutionResult(
+                status="blocked",
+                output={
+                    "ok": False,
+                    "text": (
+                        f"Tool '{tool_name}' requires approval but the request carries no run_id. "
+                        "Retry with a stable run_id so the approval can be matched."
+                    ),
+                    "error": "approval_requires_run_id",
+                },
+                error="approval_requires_run_id",
+            )
+
         import uuid as _uuid
         from app.application.monitoring import runtime as _mon
 
@@ -121,7 +137,10 @@ def execute_tool(
         existing = _mon.find_approved_approval(
             tool_name=tool_name,
             agent_id=request.agent_id,
+            source=request.source,
             run_id=request.run_id,
+            project_scope_id=request.project_scope_id,
+            args=request.args,
         )
         if existing:
             _mon.update_approval_status(existing["id"], status="used")
