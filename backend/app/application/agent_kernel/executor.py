@@ -136,6 +136,12 @@ def execute_tool(
                 args=request.args,
             )
             _emit_approval_pending(request, approval["id"])
+            # Best-effort Telegram notification — never blocks the agent
+            try:
+                from app.application.telegram.runtime import send_approval_notification
+                send_approval_notification(approval)
+            except Exception:
+                pass
             return ToolExecutionResult(
                 status="waiting_approval",
                 output={

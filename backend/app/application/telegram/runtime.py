@@ -344,3 +344,63 @@ def telegram_bot_status() -> dict[str, Any]:
         "has_token": config.get("has_token", False),
         "bot_token_preview": config.get("bot_token", ""),
     }
+
+
+# ── Approval inbox ────────────────────────────────────────────────────────────
+
+def send_approval_notification(approval: dict[str, Any]) -> bool:
+    """Send a Telegram notification for a pending tool-call approval.
+
+    Best-effort: returns True if the message was sent, False otherwise.
+    A missing bot token or any send error is logged and silently swallowed
+    so it never blocks the agent loop.
+
+    The notification is sent to the configured admin chat_id (stored as
+    "admin_chat_id" in telegram_config).  The recipient can then call
+    POST /api/telegram/approval_callback or POST /api/agent-os/approvals/{id}/approve.
+    """
+    try:
+        token = get_config_value("bot_token", "")
+        admin_chat_id = get_config_value("admin_chat_id", "")
+        if not token or not admin_chat_id:
+            return False
+
+        tool_name = approval.get("tool_name", "?")
+        approval_id = approval.get("id", "?")
+        agent_id = approval.get("agent_id", "?")
+        args_preview = str(approval.get("args", {}))
+        if len(args_preview) > 200:
+            args_preview = args_preview[:200] + "…"
+
+        text = (
+            f"🔐 *Требуется подтверждение*\n\n"
+            f"Инструмент: `{tool_name}`\n"
+            f"Агент: `{agent_id}`\n"
+            f"Аргументы: `{args_preview}`\n\n"
+            f"ID: `{approval_id}`\n\n"
+            f"✅ `/approve {approval_id}`\n"
+            f"❌ `/reject {approval_id}`"
+        )
+        result = tg_request(
+            "sendMessage",
+            token,
+            {"chat_id": int(admin_chat_id), "text": text, "parse_mode": "Markdown"},
+        )
+        return bool(result.get("ok"))
+    except Exception as exc:
+        logger.warning("send_approval_notification failed: %s", exc)
+        return False
+
+
+def handle_approval_command(text: str, chat_id: int) -> dict[str, Any] | None:
+    """Parse /approve <id> or /reject <id> from a Telegram message.
+
+    Returns {"action": "approve"|"reject", "approval_id": str} or None.
+    """
+    text = (text or "").strip().lower()
+    for action in ("approve", "reject"):
+        if text.startswith(f"/{action} "):
+            parts = text.split(None, 1)
+            if len(parts) == 2 and parts[1]:
+                return {"action": action, "approval_id": parts[1].strip(), "chat_id": chat_id}
+    return None

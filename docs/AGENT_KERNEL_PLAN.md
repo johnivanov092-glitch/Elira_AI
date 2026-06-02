@@ -202,7 +202,13 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 
 ## P6: Навыки и расширения
 
-### Шаг 13 — Skill manifest catalog
+### Шаг 13 — Skill manifest catalog  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (febe524). catalog.py: SkillManifest, discover_skills, load_skill_content, match_skills_by_trigger. 19 тестов. Gates: pytest 2564 passed.
+
+### Шаг 14 — Plugin manifest + disabled-by-default + subprocess timeout  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (7c3c97d). manifest.json обязателен, enabled=False by default, subprocess runner + 30s timeout. app/application/plugins → hardened infrastructure. 12 тестов. Gates: pytest 2576 passed. **Sonnet: начинай со Шага 15.**
+
+### Шаг 13 (детали)
 - `application/skills/catalog.py`: `SkillManifest(id, name, description_short, capabilities, trigger_words, enabled)`.
 - `discover_skills(enabled_only=True)` → список манифестов (без полного контента).
 - `load_skill_content(skill_id)` → полный prompt/инструкции навыка.
