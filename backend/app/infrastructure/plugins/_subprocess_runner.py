@@ -18,6 +18,10 @@ import json
 import sys
 from pathlib import Path
 
+# Only these lifecycle hook names may be dispatched via action="hook".
+# This mirrors _ALLOWED_HOOKS in plugin_system.py and provides defence-in-depth.
+_ALLOWED_HOOKS: frozenset[str] = frozenset({"on_start", "on_message", "on_response"})
+
 
 def main() -> None:
     if len(sys.argv) < 3:
@@ -60,13 +64,18 @@ def main() -> None:
 
         elif action == "hook":
             hook_name = payload.get("hook_name", "")
-            hook_data = payload.get("data")
-            fn = getattr(mod, hook_name, None)
-            if fn is None or not callable(fn):
-                result = {"ok": False, "error": f"Hook '{hook_name}' not found in plugin"}
+            if hook_name not in _ALLOWED_HOOKS:
+                result = {"ok": False, "error": f"Hook '{hook_name}' is not an allowed lifecycle hook"}
             else:
-                raw_result = fn(hook_data)
-                result = raw_result if isinstance(raw_result, dict) else {"ok": True, "result": raw_result}
+                hook_data = payload.get("data")
+                fn = getattr(mod, hook_name, None)
+                if fn is None or not callable(fn):
+                    result = {"ok": False, "error": f"Hook '{hook_name}' not found in plugin"}
+                else:
+                    raw_result = fn(hook_data)
+                    # Always wrap in a consistent envelope — including dicts — so
+                    # the caller can reliably extract the value via result.get("result").
+                    result = {"ok": True, "result": raw_result}
 
         elif action == "inspect":
             result = {

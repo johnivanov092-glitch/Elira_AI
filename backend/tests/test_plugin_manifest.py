@@ -62,6 +62,48 @@ def run(args):
     return {"ok": True}
 """
 
+# --- P9.1 fixup sources ---
+
+_STDOUT_OVERFLOW_SRC = """\
+import sys
+
+def run(args):
+    # Write > PLUGIN_MAX_OUTPUT_CHARS * 3 bytes to trigger stdout overflow
+    chunk = b"X" * 4096
+    for _ in range(40):          # 40 * 4096 = 163840 > 150000 limit
+        sys.stdout.buffer.write(chunk)
+        sys.stdout.buffer.flush()
+    return {"ok": True}
+"""
+
+_STDERR_OVERFLOW_SRC = """\
+import sys
+
+def run(args):
+    # Write > _STDERR_MAX_BYTES (2000) to stderr
+    sys.stderr.write("E" * 10_000)
+    return {"ok": True}
+"""
+
+_TIMEOUT_HOOK_SRC = """\
+import time
+
+def on_message(data):
+    time.sleep(60)
+    return "late result"
+
+def run(args):
+    return {"ok": True}
+"""
+
+_DICT_HOOK_SRC = """\
+def on_message(data):
+    return {"context": "from_hook", "value": 42}
+
+def run(args):
+    return {"ok": True}
+"""
+
 _MANIFEST = {
     "name": "Test Plugin",
     "version": "1.0.0",
@@ -211,8 +253,12 @@ class TestP91PluginIsolation(unittest.TestCase):
     """P9.1: plugin .py must never be imported into the backend process."""
 
     def tearDown(self):
-        for name in ("crash_p91_plugin", "disabled_p91_plugin",
-                     "hook_p91_plugin", "infinite_hook_p91_plugin"):
+        for name in (
+            "crash_p91_plugin", "disabled_p91_plugin",
+            "hook_p91_plugin", "infinite_hook_p91_plugin",
+            "nomod_p91_plugin",
+            "timeout_log_p91", "dict_hook_p91",
+        ):
             try:
                 import app.application.tool_registry.runtime as r
                 r.delete_tool(name)
@@ -317,6 +363,74 @@ class TestP91PluginIsolation(unittest.TestCase):
         plugin = psys._plugins.get("nomod_p91_plugin")
         self.assertIsNotNone(plugin)
         self.assertNotIn("module", plugin)
+
+    # ── P9.1 fixup: bounded output, hook envelope, allowlist ──────────────────
+
+    def test_stdout_overflow_kills_plugin(self):
+        """Plugin writing > PLUGIN_MAX_OUTPUT_CHARS*3 bytes to stdout must be killed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            py = Path(tmp) / "stdout_overflow.py"
+            py.write_text(_STDOUT_OVERFLOW_SRC)
+            result = _run_plugin_subprocess(str(py), {"action": "run", "args": {}})
+        self.assertFalse(result.get("ok"), result)
+        self.assertIn("limit", result.get("error", "").lower())
+
+    def test_stderr_overflow_kills_plugin(self):
+        """Plugin writing > _STDERR_MAX_BYTES (2000) to stderr must be killed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            py = Path(tmp) / "stderr_overflow.py"
+            py.write_text(_STDERR_OVERFLOW_SRC)
+            result = _run_plugin_subprocess(str(py), {"action": "run", "args": {}})
+        self.assertFalse(result.get("ok"), result)
+        err = result.get("error", "").lower()
+        self.assertTrue("stderr" in err or "limit" in err, f"Unexpected error: {err}")
+
+    def test_hook_timeout_logged_warning(self):
+        """fire_hook must log a WARNING (not silently drop) when hook subprocess times out."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "timeout_log_p91", _TIMEOUT_HOOK_SRC, {
+                "name": "TimeoutLog", "version": "1.0", "capabilities": [],
+                "enabled": True, "hooks": ["on_message"], "timeout": 1,
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                load_plugins()
+            with self.assertLogs("app.infrastructure.plugins.plugin_system", level="WARNING") as cm:
+                results = psys.fire_hook("on_message", "hello")
+        self.assertEqual(results, [])
+        self.assertTrue(
+            any("timeout_log_p91" in msg for msg in cm.output),
+            f"Expected warning about timeout_log_p91. Got: {cm.output}",
+        )
+
+    def test_hook_returning_dict_preserved(self):
+        """A hook that returns a dict must have its value preserved in fire_hook results."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "dict_hook_p91", _DICT_HOOK_SRC, {
+                "name": "DictHook", "version": "1.0", "capabilities": [],
+                "enabled": True, "hooks": ["on_message"],
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                load_plugins()
+            results = psys.fire_hook("on_message", "hello")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["plugin"], "dict_hook_p91")
+        self.assertEqual(results[0]["result"], {"context": "from_hook", "value": 42})
+
+    def test_unknown_hook_rejected(self):
+        """fire_hook must reject unknown hook names; runner must also reject them."""
+        # fire_hook gate
+        results = psys.fire_hook("arbitrary_hook", "test")
+        self.assertEqual(results, [])
+
+        # subprocess runner gate (defence-in-depth)
+        with tempfile.TemporaryDirectory() as tmp:
+            py = Path(tmp) / "hook_test.py"
+            py.write_text("def on_message(d): return 'ok'\ndef run(a): return {'ok': True}")
+            result = _run_plugin_subprocess(str(py), {"action": "hook", "hook_name": "evil_hook"})
+        self.assertFalse(result.get("ok"))
+        self.assertIn("allowed", result.get("error", "").lower())
 
 
 if __name__ == "__main__":

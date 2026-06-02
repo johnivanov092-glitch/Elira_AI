@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,14 @@ _RUNNER_SCRIPT = Path(__file__).parent / "_subprocess_runner.py"
 _BACKEND_ROOT = str(Path(__file__).parents[3])  # .../backend
 PLUGIN_DEFAULT_TIMEOUT: int = 30  # seconds
 PLUGIN_MAX_OUTPUT_CHARS: int = 50_000
+
+# Only these lifecycle hook names may be invoked via fire_hook or the runner.
+_ALLOWED_HOOKS: frozenset[str] = frozenset({"on_start", "on_message", "on_response"})
+
+# Hard byte limits for subprocess output reading; prevents memory DoS.
+# Reads are incremental — the process is killed as soon as a limit is crossed.
+_STDOUT_MAX_BYTES: int = PLUGIN_MAX_OUTPUT_CHARS * 3   # 3 bytes/char (UTF-8 headroom)
+_STDERR_MAX_BYTES: int = 2_000
 
 # Allowlist of env vars passed to plugin subprocesses.
 # Application secrets (DB URLs, API keys) use custom names and are excluded.
@@ -82,41 +91,131 @@ def _run_plugin_subprocess(
     payload: dict,
     timeout: int = PLUGIN_DEFAULT_TIMEOUT,
 ) -> dict:
-    """Execute a plugin action out-of-process via JSON I/O.
+    """Execute a plugin action out-of-process with bounded incremental reads.
+
+    stdout and stderr are drained in threads so that:
+      - The subprocess cannot deadlock by filling the OS pipe buffer.
+      - Each stream has a hard byte cap; exceeding it kills the process
+        immediately and returns a controlled error (no memory accumulation).
+      - Timeout and overflow leave no dangling child processes.
 
     payload schema:
       {"action": "run",  "args": {...}}
       {"action": "hook", "hook_name": "<name>", "data": <any>}
       {"action": "inspect"}
     """
-    env = _make_subprocess_env() or None  # None = inherit if allowlist returns empty
+    env = _make_subprocess_env() or None
+    input_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             [sys.executable, str(_RUNNER_SCRIPT), py_file, _BACKEND_ROOT],
-            input=json.dumps(payload, ensure_ascii=False),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=str(PLUGINS_DIR),
             env=env,
         )
-        stdout = (proc.stdout or "").strip()
-        if len(stdout) > PLUGIN_MAX_OUTPUT_CHARS:
-            stdout = stdout[:PLUGIN_MAX_OUTPUT_CHARS]
-        if proc.returncode != 0 and not stdout:
-            stderr = (proc.stderr or "Plugin process exited with error")[:500]
-            logger.warning("Plugin subprocess error (%s): %s", py_file, stderr)
-            return {"ok": False, "error": stderr}
-        if not stdout:
-            return {"ok": False, "error": "Plugin produced no output"}
-        return json.loads(stdout)
+    except Exception as exc:
+        logger.warning("Plugin subprocess start failed (%s): %s", py_file, exc)
+        return {"ok": False, "error": "Plugin execution error"}
+
+    stdout_buf: list[bytes] = []
+    stderr_buf: list[bytes] = []
+    _flags: dict[str, bool] = {"stdout_overflow": False, "stderr_overflow": False}
+
+    def _write_stdin() -> None:
+        try:
+            proc.stdin.write(input_bytes)
+            proc.stdin.close()
+        except Exception:
+            pass
+
+    def _read_stdout() -> None:
+        total = 0
+        try:
+            while True:
+                chunk = proc.stdout.read(8192)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _STDOUT_MAX_BYTES:
+                    _flags["stdout_overflow"] = True
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return
+                stdout_buf.append(chunk)
+        except Exception:
+            pass
+
+    def _read_stderr() -> None:
+        total = 0
+        try:
+            while True:
+                chunk = proc.stderr.read(1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _STDERR_MAX_BYTES:
+                    _flags["stderr_overflow"] = True
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return
+                stderr_buf.append(chunk)
+        except Exception:
+            pass
+
+    t_in  = threading.Thread(target=_write_stdin,  daemon=True)
+    t_out = threading.Thread(target=_read_stdout,  daemon=True)
+    t_err = threading.Thread(target=_read_stderr,  daemon=True)
+    t_in.start()
+    t_out.start()
+    t_err.start()
+
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+            proc.wait()
+        except Exception:
+            pass
+        timed_out = True
+
+    t_in.join(timeout=1.0)
+    t_out.join(timeout=2.0)
+    t_err.join(timeout=2.0)
+
+    if timed_out:
         return {"ok": False, "error": f"Plugin timed out after {timeout}s"}
+
+    if _flags["stdout_overflow"]:
+        return {"ok": False, "error": f"Plugin stdout exceeded {PLUGIN_MAX_OUTPUT_CHARS} char limit"}
+
+    if _flags["stderr_overflow"]:
+        snippet = b"".join(stderr_buf).decode("utf-8", errors="replace")[:200]
+        logger.warning("Plugin stderr overflow (%s): %.200s…", py_file, snippet)
+        return {"ok": False, "error": f"Plugin stderr exceeded {_STDERR_MAX_BYTES} byte limit"}
+
+    stdout = b"".join(stdout_buf).decode("utf-8", errors="replace").strip()
+    stderr = b"".join(stderr_buf).decode("utf-8", errors="replace").strip()
+
+    if not stdout:
+        if proc.returncode != 0:
+            err_msg = stderr[:500] if stderr else "Plugin process exited with error"
+            logger.warning("Plugin non-zero exit (%s, rc=%d): %s", py_file, proc.returncode, err_msg)
+            return {"ok": False, "error": err_msg}
+        return {"ok": False, "error": "Plugin produced no output"}
+
+    try:
+        return json.loads(stdout)
     except json.JSONDecodeError as exc:
         return {"ok": False, "error": f"Plugin output is not valid JSON: {exc}"}
-    except Exception as exc:
-        logger.warning("Plugin subprocess exception (%s): %s", py_file, exc)
-        return {"ok": False, "error": "Plugin execution error"}
 
 
 _CONFIG_FILE = DATA_DIR / "plugins_config.json"
@@ -375,9 +474,14 @@ def run_plugin(name: str, args: dict = None) -> dict:
 def fire_hook(hook_name: str, data: Any = None) -> list[dict]:
     """Fire a lifecycle hook in all enabled plugins that declare it.
 
-    Each hook runs in a dedicated child subprocess with the plugin's timeout.
-    Returns [{"plugin": name, "result": value}, ...] for hooks that return a value.
+    Only on_start, on_message, on_response are allowed. Each hook runs in a
+    dedicated child subprocess with the plugin's timeout. Subprocess errors
+    and timeouts are logged as controlled warnings (not silently dropped).
+    Returns [{"plugin": name, "result": value}, ...] for non-None hook results.
     """
+    if hook_name not in _ALLOWED_HOOKS:
+        logger.warning("fire_hook: '%s' is not an allowed lifecycle hook", hook_name)
+        return []
     results = []
     for name, info in _plugins.items():
         if not info["enabled"]:
@@ -391,11 +495,17 @@ def fire_hook(hook_name: str, data: Any = None) -> list[dict]:
                 {"action": "hook", "hook_name": hook_name, "data": data},
                 timeout=timeout,
             )
+            if not proc_result.get("ok"):
+                logger.warning(
+                    "Plugin '%s' hook '%s' failed: %s",
+                    name, hook_name, proc_result.get("error"),
+                )
+                continue
             hook_value = proc_result.get("result")
             if hook_value:
                 results.append({"plugin": name, "result": hook_value})
         except Exception as exc:
-            logger.warning("Plugin '%s' hook '%s' error: %s", name, hook_name, exc)
+            logger.warning("Plugin '%s' hook '%s' unexpected error: %s", name, hook_name, exc)
     return results
 
 
