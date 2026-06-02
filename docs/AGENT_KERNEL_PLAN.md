@@ -226,7 +226,13 @@ Reviewer пишет `.claude/review/<sha>.md`. Stop-hook увидит `PASS` и 
 
 ## P7: Post-MVP Extensions
 
-### Шаг 15 — Telegram approval inbox
+### Шаг 15 — Telegram approval inbox  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (4016ef8). send_approval_notification, handle_approval_command, /api/telegram/approval_callback. 15 тестов. pytest 2591 passed.
+
+### Шаг 16 — Model profile registry  ✅ ВЫПОЛНЕНО
+**Готово:** Opus PASS (9e32d3c). model_profiles в agent_monitor.db, 5 дефолтных профилей (cloud disabled). /api/agent-os/models/*. 22 теста. pytest 2613 passed. **P8 завершён. Роадмап P0-P8 выполнен полностью.**
+
+### Шаг 15 (детали)
 - Новый эндпоинт `POST /api/telegram/approval_callback`: принимает JSON `{approval_id, action: approve|reject, chat_id}` — webhook от Telegram-бота.
 - Существующий Telegram-бот получает pending approvals и отправляет confirmation message.
 - `send_approval_notification(approval)` — вызывается из executor при создании pending approval.

@@ -206,9 +206,7 @@ def enable_model_profile(profile_id: str):
     item = agent_monitor.get_model_profile(profile_id)
     if not item:
         raise HTTPException(404, f"Model profile '{profile_id}' not found")
-    if item.get("cloud_consent_required") and not item.get("enabled"):
-        # Warn but allow — consent is tracked at the application layer
-        pass
+    # cloud_consent_required is informational — consent tracked at application layer
     return agent_monitor.enable_model_profile(profile_id)
 
 

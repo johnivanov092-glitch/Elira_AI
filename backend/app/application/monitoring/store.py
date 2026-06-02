@@ -855,7 +855,8 @@ def list_model_profiles(
     clauses: list[str] = []
     params: list[Any] = []
     if role:
-        clauses.append("role = ?"); params.append(role)
+        clauses.append("role = ?")
+        params.append(role)
     if enabled_only:
         clauses.append("enabled = 1")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
