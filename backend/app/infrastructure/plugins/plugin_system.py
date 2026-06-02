@@ -21,7 +21,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 from app.core.config import DATA_DIR
@@ -30,6 +32,57 @@ logger = logging.getLogger(__name__)
 
 PLUGINS_DIR = DATA_DIR / "plugins"
 PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+
+_RUNNER_SCRIPT = Path(__file__).parent / "_subprocess_runner.py"
+_BACKEND_ROOT = str(Path(__file__).parents[3])  # .../backend
+PLUGIN_DEFAULT_TIMEOUT: int = 30  # seconds
+
+
+# ── Manifest support ──────────────────────────────────────────────────────────
+
+def _load_plugin_manifest(py_file: Path) -> dict | None:
+    """Load <stem>.manifest.json alongside the plugin .py file.
+
+    Returns the parsed manifest dict, or None if no manifest exists.
+    Logs a warning for malformed manifests.
+    """
+    manifest_path = py_file.with_suffix(".manifest.json")
+    if not manifest_path.exists():
+        return None
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Plugin '%s' has malformed manifest: %s", py_file.stem, exc)
+        return None
+
+
+def _run_plugin_subprocess(py_file: str, full_args: dict, timeout: int = PLUGIN_DEFAULT_TIMEOUT) -> dict:
+    """Execute plugin out-of-process via JSON I/O.
+
+    The plugin's run(args) is called in a fresh Python subprocess that imports
+    only the plugin module. A crashing or hanging plugin cannot affect the
+    main backend process.
+    """
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(_RUNNER_SCRIPT), py_file, _BACKEND_ROOT],
+            input=json.dumps(full_args, ensure_ascii=False),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        stdout = (proc.stdout or "").strip()
+        if proc.returncode != 0 and not stdout:
+            return {"ok": False, "error": (proc.stderr or "Plugin process exited with error")[:500]}
+        if not stdout:
+            return {"ok": False, "error": "Plugin produced no output"}
+        return json.loads(stdout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"Plugin timed out after {timeout}s"}
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "error": f"Plugin output is not valid JSON: {exc}"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
 
 _CONFIG_FILE = DATA_DIR / "plugins_config.json"
 
@@ -70,20 +123,28 @@ def _set_plugin_config(name: str, data: dict):
 # ЗАГРУЗКА / ПЕРЕЗАГРУЗКА
 # ═══════════════════════════════════════════════════════════════
 
-def _build_plugin_record(name: str, mod, py_file, config: dict) -> dict:
-    """Build the _plugins registry entry for a loaded plugin module."""
+def _build_plugin_record(name: str, mod, py_file: Path, config: dict, manifest: dict) -> dict:
+    """Build the _plugins registry entry for a loaded plugin module.
+
+    *manifest* is the parsed manifest.json for this plugin. The manifest's
+    ``enabled`` field controls the default; user config in plugins_config.json
+    can override it. Plugins without a manifest default to disabled.
+    """
     triggers = getattr(mod, "TRIGGERS", [])
     hooks = getattr(mod, "HOOKS", {})
     default_config = getattr(mod, "CONFIG", {})
     plugin_conf = config.get(name, {})
-    enabled = plugin_conf.get("enabled", True)
+    # Disabled by default: manifest.enabled (default False) → overridden by user config
+    manifest_enabled = bool(manifest.get("enabled", False))
+    enabled = plugin_conf.get("enabled", manifest_enabled)
     user_settings = plugin_conf.get("settings", {})
+    timeout = int(manifest.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
     return {
         "module": mod,
         "path": str(py_file),
-        "description": getattr(mod, "DESCRIPTION", ""),
+        "description": manifest.get("name") or getattr(mod, "DESCRIPTION", ""),
         "author": getattr(mod, "AUTHOR", ""),
-        "version": getattr(mod, "VERSION", "1.0"),
+        "version": manifest.get("version", getattr(mod, "VERSION", "1.0")),
         "category": getattr(mod, "CATEGORY", "utility"),
         "icon": getattr(mod, "ICON", "🔌"),
         "triggers": triggers if isinstance(triggers, list) else [],
@@ -91,6 +152,8 @@ def _build_plugin_record(name: str, mod, py_file, config: dict) -> dict:
         "default_config": default_config,
         "user_settings": {**default_config, **user_settings},
         "enabled": enabled,
+        "capabilities": list(manifest.get("capabilities", [])),
+        "timeout": timeout,
     }
 
 
@@ -137,6 +200,13 @@ def load_plugins() -> dict:
         if name.startswith("_"):
             continue
         try:
+            # Require manifest.json — plugins without manifest are rejected.
+            manifest = _load_plugin_manifest(py_file)
+            if manifest is None:
+                errors.append({"name": name, "error": "manifest.json not found — plugin skipped"})
+                logger.warning("Plugin '%s' has no manifest.json — skipping", name)
+                continue
+
             spec = importlib.util.spec_from_file_location(f"elira_plugin_{name}", py_file)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
@@ -145,7 +215,7 @@ def load_plugins() -> dict:
                 errors.append({"name": name, "error": "Нет функции run(args)"})
                 continue
 
-            _plugins[name] = _build_plugin_record(name, mod, py_file, config)
+            _plugins[name] = _build_plugin_record(name, mod, py_file, config, manifest)
             _plugin_states[name] = _plugins[name]["enabled"]
             loaded.append(name)
 
@@ -283,15 +353,10 @@ def run_plugin(name: str, args: dict = None) -> dict:
     if not info["enabled"]:
         return {"ok": False, "error": f"Плагин {name} выключен"}
 
-    try:
-        # Добавляем user_settings в аргументы
-        full_args = {**info["user_settings"], **(args or {})}
-        result = info["module"].run(full_args)
-        if not isinstance(result, dict):
-            result = {"ok": True, "result": result}
-        return result
-    except Exception as e:
-        return {"ok": False, "error": f"Ошибка плагина {name}: {e}"}
+    # Добавляем user_settings в аргументы
+    full_args = {**info["user_settings"], **(args or {})}
+    timeout = int(info.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
+    return _run_plugin_subprocess(info["path"], full_args, timeout=timeout)
 
 
 # ═══════════════════════════════════════════════════════════════

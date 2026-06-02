@@ -48,6 +48,16 @@ class TestPluginToolRegistryWire(unittest.TestCase):
     def _make_plugin_dir_with_file(self, tmpdir: Path, name: str, src: str) -> Path:
         py_file = tmpdir / f"{name}.py"
         py_file.write_text(src, encoding="utf-8")
+        # Шаг 14: plugins now require a manifest.json to load
+        manifest = {
+            "name": name,
+            "version": "1.0.0",
+            "capabilities": ["testing"],
+            "enabled": True,  # enabled=True so wire tests can verify registration
+        }
+        (tmpdir / f"{name}.manifest.json").write_text(
+            __import__("json").dumps(manifest), encoding="utf-8"
+        )
         return py_file
 
     def test_plugin_registered_after_load(self) -> None:
