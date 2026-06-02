@@ -146,9 +146,26 @@ def api_plugin_info(name: str):
 @router.post("/plugins/run")
 def api_plugin_run(p: PluginRunRequest):
     import uuid as _uuid
+    from app.application.agent_kernel.executor import (
+        ToolExecutionRequest,
+        execute_tool as _kernel_execute,
+    )
+
     run_id = (p.run_id or "").strip() or _uuid.uuid4().hex
-    result = run_plugin(p.name, p.args)
-    return {**result, "run_id": run_id}
+    # Route through the unified kernel so plugin execution gets the same policy,
+    # approval and audit as every other tool. The kernel dispatches to run_plugin.
+    result = _kernel_execute(
+        ToolExecutionRequest(
+            run_id=run_id,
+            agent_id="api-direct",
+            project_scope_id="",
+            tool_name=p.name,
+            args=p.args or {},
+            source="plugin_api",
+        ),
+        dispatch_fn=run_plugin,
+    )
+    return {**result.output, "run_id": run_id}
 
 @router.post("/plugins/enable/{name}")
 def api_plugin_enable(name: str):

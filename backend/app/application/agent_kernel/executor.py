@@ -115,7 +115,8 @@ def execute_tool(
 
     if _needs_approval:
         # A stable run_id is required so the approval can be matched on retry.
-        if not request.run_id:
+        # Block empty AND whitespace-only run_id uniformly.
+        if not str(request.run_id or "").strip():
             _emit_blocked(request, "approval_requires_run_id")
             return ToolExecutionResult(
                 status="blocked",
@@ -220,6 +221,7 @@ def _emit_executed(req: ToolExecutionRequest, result: dict, status: str) -> None
                 "step_id": req.step_id,
                 "status": status,
                 "ok": result.get("ok", True),
+                "success": result.get("ok", True),
                 "error": result.get("error"),
             },
         )

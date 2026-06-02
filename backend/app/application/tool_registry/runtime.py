@@ -166,22 +166,39 @@ def _execute_raw(name: str, args: dict[str, Any] | None = None) -> dict:
     )
 
 
-def execute_tool(name: str, args: dict[str, Any] | None = None) -> dict:
-    result = _execute_raw(name, args)
-    try:
-        from app.application.event_bus import runtime as _eb
-        _eb.emit_event(
-            event_type="tool.executed",
-            payload={
-                "tool_name": name,
-                "args": args or {},
-                "success": result.get("ok", True),
-                "error": result.get("error"),
-            },
-        )
-    except Exception:
-        pass
-    return result
+def execute_tool(
+    name: str,
+    args: dict[str, Any] | None = None,
+    *,
+    run_id: str = "",
+    agent_id: str = "api-direct",
+    project_scope_id: str = "",
+    source: str = "tool_registry_api",
+) -> dict:
+    """Public tool execution — routes through the unified kernel executor so that
+    API-direct calls get the same policy, approval and audit as agent calls.
+
+    The kernel dispatches via the internal ``_execute_raw`` primitive and owns the
+    ``tool.executed`` audit event. Returns the dispatched result dict (the kernel
+    ToolExecutionResult.output), preserving the previous return contract.
+    """
+    from app.application.agent_kernel.executor import (
+        ToolExecutionRequest,
+        execute_tool as _kernel_execute,
+    )
+
+    result = _kernel_execute(
+        ToolExecutionRequest(
+            run_id=run_id,
+            agent_id=agent_id,
+            project_scope_id=project_scope_id,
+            tool_name=name,
+            args=args or {},
+            source=source,
+        ),
+        dispatch_fn=_execute_raw,
+    )
+    return result.output
 
 
 def validate_tool_args(name: str, args: dict) -> list[str]:
