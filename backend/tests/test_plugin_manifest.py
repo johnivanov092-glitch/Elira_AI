@@ -104,6 +104,13 @@ def run(args):
     return {"ok": True}
 """
 
+# Produces ~60 024 chars of ASCII output — exceeds PLUGIN_MAX_OUTPUT_CHARS (50 000)
+# but stays below _STDOUT_MAX_BYTES (150 000 bytes), so exercises the char check.
+_ASCII_NEAR_BYTE_CAP_SRC = """\
+def run(args):
+    return {"ok": True, "data": "A" * 60_000}
+"""
+
 _MANIFEST = {
     "name": "Test Plugin",
     "version": "1.0.0",
@@ -258,6 +265,7 @@ class TestP91PluginIsolation(unittest.TestCase):
             "hook_p91_plugin", "infinite_hook_p91_plugin",
             "nomod_p91_plugin",
             "timeout_log_p91", "dict_hook_p91",
+            "timeout_max_p91", "timeout_min_p91", "timeout_invalid_p91",
         ):
             try:
                 import app.application.tool_registry.runtime as r
@@ -431,6 +439,62 @@ class TestP91PluginIsolation(unittest.TestCase):
             result = _run_plugin_subprocess(str(py), {"action": "hook", "hook_name": "evil_hook"})
         self.assertFalse(result.get("ok"))
         self.assertIn("allowed", result.get("error", "").lower())
+
+    # ── P9.1 final fixup: char limit + timeout bounds ─────────────────────────
+
+    def test_char_limit_enforced_after_decode(self):
+        """ASCII output between 50k and 150k chars must fail the char check (not the byte cap)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            py = Path(tmp) / "ascii_near_cap.py"
+            py.write_text(_ASCII_NEAR_BYTE_CAP_SRC)
+            result = _run_plugin_subprocess(str(py), {"action": "run", "args": {}})
+        self.assertFalse(result.get("ok"), result)
+        self.assertIn("char", result.get("error", "").lower())
+
+    def test_timeout_clamped_to_max(self):
+        """Manifest timeout above PLUGIN_MAX_TIMEOUT_SECONDS must be clamped with a warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "timeout_max_p91", _SIMPLE_PLUGIN_SRC, {
+                "name": "TimeoutMax", "version": "1.0", "capabilities": [],
+                "enabled": False, "timeout": 9999,
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                with self.assertLogs("app.infrastructure.plugins.plugin_system", level="WARNING"):
+                    load_plugins()
+            plugin = psys._plugins.get("timeout_max_p91")
+        self.assertIsNotNone(plugin)
+        self.assertLessEqual(plugin["timeout"], psys.PLUGIN_MAX_TIMEOUT_SECONDS)
+
+    def test_timeout_clamped_to_min(self):
+        """Manifest timeout below PLUGIN_MIN_TIMEOUT_SECONDS must be clamped with a warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "timeout_min_p91", _SIMPLE_PLUGIN_SRC, {
+                "name": "TimeoutMin", "version": "1.0", "capabilities": [],
+                "enabled": False, "timeout": 0,
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                with self.assertLogs("app.infrastructure.plugins.plugin_system", level="WARNING"):
+                    load_plugins()
+            plugin = psys._plugins.get("timeout_min_p91")
+        self.assertIsNotNone(plugin)
+        self.assertGreaterEqual(plugin["timeout"], psys.PLUGIN_MIN_TIMEOUT_SECONDS)
+
+    def test_timeout_invalid_uses_default(self):
+        """Non-integer manifest timeout must fall back to PLUGIN_DEFAULT_TIMEOUT with a warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_plugin(tmp_path, "timeout_invalid_p91", _SIMPLE_PLUGIN_SRC, {
+                "name": "TimeoutInvalid", "version": "1.0", "capabilities": [],
+                "enabled": False, "timeout": "not-a-number",
+            })
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                with self.assertLogs("app.infrastructure.plugins.plugin_system", level="WARNING"):
+                    load_plugins()
+            plugin = psys._plugins.get("timeout_invalid_p91")
+        self.assertIsNotNone(plugin)
+        self.assertEqual(plugin["timeout"], psys.PLUGIN_DEFAULT_TIMEOUT)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,9 @@ PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 
 _RUNNER_SCRIPT = Path(__file__).parent / "_subprocess_runner.py"
 _BACKEND_ROOT = str(Path(__file__).parents[3])  # .../backend
-PLUGIN_DEFAULT_TIMEOUT: int = 30  # seconds
+PLUGIN_DEFAULT_TIMEOUT: int = 30    # seconds
+PLUGIN_MIN_TIMEOUT_SECONDS: int = 1
+PLUGIN_MAX_TIMEOUT_SECONDS: int = 120
 PLUGIN_MAX_OUTPUT_CHARS: int = 50_000
 
 # Only these lifecycle hook names may be invoked via fire_hook or the runner.
@@ -67,6 +69,35 @@ def _make_subprocess_env() -> dict[str, str]:
     return env
 
 
+def _normalize_timeout(raw: Any, plugin_name: str) -> int:
+    """Validate and clamp a timeout value from a plugin manifest.
+
+    Invalid type → PLUGIN_DEFAULT_TIMEOUT + warning.
+    Out of [PLUGIN_MIN_TIMEOUT_SECONDS, PLUGIN_MAX_TIMEOUT_SECONDS] → clamped + warning.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Plugin '%s': invalid timeout %r — using default %ds",
+            plugin_name, raw, PLUGIN_DEFAULT_TIMEOUT,
+        )
+        return PLUGIN_DEFAULT_TIMEOUT
+    if value < PLUGIN_MIN_TIMEOUT_SECONDS:
+        logger.warning(
+            "Plugin '%s': timeout %ds below minimum %ds — clamping",
+            plugin_name, value, PLUGIN_MIN_TIMEOUT_SECONDS,
+        )
+        return PLUGIN_MIN_TIMEOUT_SECONDS
+    if value > PLUGIN_MAX_TIMEOUT_SECONDS:
+        logger.warning(
+            "Plugin '%s': timeout %ds exceeds maximum %ds — clamping",
+            plugin_name, value, PLUGIN_MAX_TIMEOUT_SECONDS,
+        )
+        return PLUGIN_MAX_TIMEOUT_SECONDS
+    return value
+
+
 # ── Manifest loading ──────────────────────────────────────────────────────────
 
 def _load_plugin_manifest(py_file: Path) -> dict | None:
@@ -97,7 +128,9 @@ def _run_plugin_subprocess(
       - The subprocess cannot deadlock by filling the OS pipe buffer.
       - Each stream has a hard byte cap; exceeding it kills the process
         immediately and returns a controlled error (no memory accumulation).
-      - Timeout and overflow leave no dangling child processes.
+      - The direct runner process is reaped on timeout and overflow;
+        child processes spawned inside the plugin are not tracked
+        (plugins remain disabled by default — no OS-level sandbox here).
 
     payload schema:
       {"action": "run",  "args": {...}}
@@ -205,6 +238,10 @@ def _run_plugin_subprocess(
     stdout = b"".join(stdout_buf).decode("utf-8", errors="replace").strip()
     stderr = b"".join(stderr_buf).decode("utf-8", errors="replace").strip()
 
+    # Byte cap allows UTF-8 headroom; enforce the exact char limit after decode.
+    if len(stdout) > PLUGIN_MAX_OUTPUT_CHARS:
+        return {"ok": False, "error": f"Plugin output exceeded {PLUGIN_MAX_OUTPUT_CHARS} char limit"}
+
     if not stdout:
         if proc.returncode != 0:
             err_msg = stderr[:500] if stderr else "Plugin process exited with error"
@@ -265,7 +302,7 @@ def _build_plugin_record(name: str, py_file: Path, config: dict, manifest: dict)
     enabled = plugin_conf.get("enabled", manifest_enabled)
     default_config = manifest.get("config", {})
     user_settings = plugin_conf.get("settings", {})
-    timeout = int(manifest.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
+    timeout = _normalize_timeout(manifest.get("timeout", PLUGIN_DEFAULT_TIMEOUT), name)
     return {
         "path": str(py_file),
         "description": manifest.get("description") or manifest.get("name", ""),
