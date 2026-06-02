@@ -21,6 +21,7 @@ _LIMIT_SEED_DONE = False
 def _init_db() -> None:
     monitoring_store.init_db(DB_PATH)
     monitoring_store.migrate_memory_candidates_table(DB_PATH)
+    monitoring_store.migrate_model_profiles_table(DB_PATH)
 
 
 _init_db()
@@ -465,3 +466,25 @@ def list_accepted_candidates(
         DB_PATH, namespace=namespace,
         project_scope_id=project_scope_id, limit=limit,
     )
+
+
+# ── Model Profiles ────────────────────────────────────────────────────────────
+
+def list_model_profiles(*, role: str | None = None, enabled_only: bool = False) -> list[dict[str, Any]]:
+    return monitoring_store.list_model_profiles(DB_PATH, role=role, enabled_only=enabled_only)
+
+
+def get_model_profile(profile_id: str) -> dict[str, Any] | None:
+    return monitoring_store.get_model_profile(DB_PATH, profile_id)
+
+
+def enable_model_profile(profile_id: str) -> dict[str, Any] | None:
+    return monitoring_store.set_model_profile_enabled(DB_PATH, profile_id, enabled=True)
+
+
+def disable_model_profile(profile_id: str) -> dict[str, Any] | None:
+    return monitoring_store.set_model_profile_enabled(DB_PATH, profile_id, enabled=False)
+
+
+def get_profile_for_role(role: str) -> dict[str, Any] | None:
+    return monitoring_store.get_profile_for_role(DB_PATH, role)

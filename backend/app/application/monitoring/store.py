@@ -79,6 +79,77 @@ CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_tool ON approvals(tool_name);
 """
 
+_MODEL_PROFILES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS model_profiles (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT 'ollama',
+    model TEXT NOT NULL,
+    role TEXT NOT NULL,
+    context_limit INTEGER NOT NULL DEFAULT 16384,
+    timeout_seconds INTEGER NOT NULL DEFAULT 120,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    cloud_consent_required INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_role ON model_profiles(role);
+CREATE INDEX IF NOT EXISTS idx_model_profiles_enabled ON model_profiles(enabled);
+"""
+
+# Default profiles — cloud profiles are disabled by default (Section 11 of roadmap)
+_DEFAULT_MODEL_PROFILES = [
+    {
+        "id": "local-fast",
+        "provider": "ollama",
+        "model": "qwen2.5:4b",
+        "role": "fast",
+        "context_limit": 16384,
+        "timeout_seconds": 30,
+        "enabled": True,
+        "cloud_consent_required": False,
+    },
+    {
+        "id": "local-code",
+        "provider": "ollama",
+        "model": "qwen2.5-coder:7b",
+        "role": "code",
+        "context_limit": 32768,
+        "timeout_seconds": 120,
+        "enabled": True,
+        "cloud_consent_required": False,
+    },
+    {
+        "id": "local-strong",
+        "provider": "ollama",
+        "model": "qwen2.5:32b",
+        "role": "strong",
+        "context_limit": 32768,
+        "timeout_seconds": 300,
+        "enabled": False,   # Disabled until 24GB VRAM available
+        "cloud_consent_required": False,
+    },
+    {
+        "id": "local-embedding",
+        "provider": "ollama",
+        "model": "nomic-embed-text",
+        "role": "embedding",
+        "context_limit": 8192,
+        "timeout_seconds": 30,
+        "enabled": True,
+        "cloud_consent_required": False,
+    },
+    {
+        "id": "cloud-claude-sonnet",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "role": "strong",
+        "context_limit": 200000,
+        "timeout_seconds": 120,
+        "enabled": False,  # Cloud disabled by default — requires explicit consent
+        "cloud_consent_required": True,
+    },
+]
+
 
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -92,6 +163,25 @@ def init_db(db_path: str | Path) -> None:
     with get_connection(db_path) as con:
         con.executescript(CREATE_SQL)
     migrate_approvals_table(db_path)
+
+
+def migrate_model_profiles_table(db_path: str | Path) -> None:
+    """Additive migration: create model_profiles table and seed defaults."""
+    with get_connection(db_path) as con:
+        con.executescript(_MODEL_PROFILES_TABLE_SQL)
+        now = now_utc()
+        for p in _DEFAULT_MODEL_PROFILES:
+            con.execute(
+                """INSERT OR IGNORE INTO model_profiles
+                   (id, provider, model, role, context_limit, timeout_seconds,
+                    enabled, cloud_consent_required, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (p["id"], p["provider"], p["model"], p["role"],
+                 p["context_limit"], p["timeout_seconds"],
+                 1 if p["enabled"] else 0,
+                 1 if p["cloud_consent_required"] else 0,
+                 now, now),
+            )
 
 
 def migrate_approvals_table(db_path: str | Path) -> None:
@@ -735,3 +825,69 @@ def list_accepted_candidates(
         project_scope_id=project_scope_id or None,
         limit=limit,
     )
+
+
+# ── Model Profiles ─────────────────────────────────────────────────────────────
+
+def row_to_profile(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    data = dict(row)
+    data["enabled"] = bool(data["enabled"])
+    data["cloud_consent_required"] = bool(data["cloud_consent_required"])
+    return data
+
+
+def get_model_profile(db_path: str | Path, profile_id: str) -> dict[str, Any] | None:
+    with get_connection(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM model_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+    return row_to_profile(row)
+
+
+def list_model_profiles(
+    db_path: str | Path,
+    *,
+    role: str | None = None,
+    enabled_only: bool = False,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if role:
+        clauses.append("role = ?"); params.append(role)
+    if enabled_only:
+        clauses.append("enabled = 1")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_connection(db_path) as con:
+        rows = con.execute(
+            f"SELECT * FROM model_profiles {where} ORDER BY role, id", params
+        ).fetchall()
+    return [p for p in (row_to_profile(r) for r in rows) if p]
+
+
+def set_model_profile_enabled(
+    db_path: str | Path,
+    profile_id: str,
+    *,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    now = now_utc()
+    with get_connection(db_path) as con:
+        con.execute(
+            "UPDATE model_profiles SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, now, profile_id),
+        )
+    return get_model_profile(db_path, profile_id)
+
+
+def get_profile_for_role(
+    db_path: str | Path, role: str
+) -> dict[str, Any] | None:
+    """Return the first enabled profile for *role*, or None."""
+    with get_connection(db_path) as con:
+        row = con.execute(
+            "SELECT * FROM model_profiles WHERE role = ? AND enabled = 1 ORDER BY id LIMIT 1",
+            (role,),
+        ).fetchone()
+    return row_to_profile(row)

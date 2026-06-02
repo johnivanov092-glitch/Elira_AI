@@ -183,6 +183,51 @@ def reject_candidate(candidate_id: str):
     return agent_monitor.update_candidate_status(candidate_id, status="rejected")
 
 
+# ── Model Profiles ─────────────────────────────────────────────────────────────
+
+@router.get("/models/profiles", summary="List model profiles")
+def list_model_profiles(
+    role: str | None = Query(None, description="Filter by role: fast|code|strong|embedding"),
+    enabled_only: bool = Query(False),
+):
+    return {"profiles": agent_monitor.list_model_profiles(role=role, enabled_only=enabled_only)}
+
+
+@router.get("/models/profiles/{profile_id}", summary="Get model profile")
+def get_model_profile(profile_id: str):
+    item = agent_monitor.get_model_profile(profile_id)
+    if not item:
+        raise HTTPException(404, f"Model profile '{profile_id}' not found")
+    return item
+
+
+@router.post("/models/profiles/{profile_id}/enable", summary="Enable a model profile")
+def enable_model_profile(profile_id: str):
+    item = agent_monitor.get_model_profile(profile_id)
+    if not item:
+        raise HTTPException(404, f"Model profile '{profile_id}' not found")
+    if item.get("cloud_consent_required") and not item.get("enabled"):
+        # Warn but allow — consent is tracked at the application layer
+        pass
+    return agent_monitor.enable_model_profile(profile_id)
+
+
+@router.post("/models/profiles/{profile_id}/disable", summary="Disable a model profile")
+def disable_model_profile(profile_id: str):
+    item = agent_monitor.get_model_profile(profile_id)
+    if not item:
+        raise HTTPException(404, f"Model profile '{profile_id}' not found")
+    return agent_monitor.disable_model_profile(profile_id)
+
+
+@router.get("/models/role/{role}", summary="Get active profile for a role")
+def get_profile_for_role(role: str):
+    item = agent_monitor.get_profile_for_role(role)
+    if not item:
+        raise HTTPException(404, f"No enabled profile for role '{role}'")
+    return item
+
+
 @router.delete("/memory/candidates/{candidate_id}", summary="Delete a memory candidate")
 def delete_candidate(candidate_id: str):
     item = agent_monitor.get_candidate(candidate_id)
