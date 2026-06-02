@@ -157,5 +157,31 @@ class TestSubprocessExecution(unittest.TestCase):
         self.assertEqual(PLUGIN_DEFAULT_TIMEOUT, 30)
 
 
+class TestProductionPathHardened(unittest.TestCase):
+    """Verify that app.application.plugins uses the hardened runtime."""
+
+    def test_application_plugins_imports_hardened_run_plugin(self):
+        """run_plugin from app.application.plugins should use subprocess execution."""
+        from app.application.plugins import run_plugin
+        from app.infrastructure.plugins.plugin_system import run_plugin as infra_run_plugin
+        self.assertIs(run_plugin, infra_run_plugin,
+                      "app.application.plugins.run_plugin must delegate to infrastructure")
+
+    def test_application_plugins_has_timeout_constant(self):
+        from app.application.plugins import PLUGIN_DEFAULT_TIMEOUT
+        self.assertEqual(PLUGIN_DEFAULT_TIMEOUT, 30)
+
+    def test_production_path_rejects_plugin_without_manifest(self):
+        from app.application.plugins import load_plugins
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            (tmp_path / "no_manifest_plugin.py").write_text(_SIMPLE_PLUGIN_SRC)
+            # No manifest.json
+            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+                result = load_plugins()
+        error_names = [e["name"] for e in result["errors"]]
+        self.assertIn("no_manifest_plugin", error_names)
+
+
 if __name__ == "__main__":
     unittest.main()

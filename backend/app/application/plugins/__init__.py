@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.application.plugins.runtime import (
     PLUGINS_DIR,
+    PLUGIN_DEFAULT_TIMEOUT,
     check_triggers,
     disable_plugin,
     enable_plugin,
@@ -17,6 +18,7 @@ from app.application.plugins.runtime import (
 
 __all__ = [
     "PLUGINS_DIR",
+    "PLUGIN_DEFAULT_TIMEOUT",
     "check_triggers",
     "disable_plugin",
     "enable_plugin",
