@@ -76,9 +76,32 @@ class TestBumpRetry(unittest.TestCase):
         self.db = _make_db()
         _setup(self.db)
         self.tid = _create(self.db)
+        # P9.2C: bounded auto-retry now requires an idempotency_key; key this task
+        # so the retry-mechanism tests below exercise the allowed keyed path.
+        con = _connect(self.db)
+        con.execute("UPDATE tasks SET idempotency_key='durability-key' WHERE id=?", (self.tid,))
+        con.commit()
+        con.close()
 
     def tearDown(self):
         self.db.unlink(missing_ok=True)
+
+    def test_keyless_retry_is_blocked(self):
+        # P9.2C: a task without an idempotency_key must not be auto-retried.
+        keyless = planner_rt.create_task(
+            connect_func=lambda: _connect(self.db),
+            id_func=lambda: "keyless-id",
+            now_func=lambda: "2026-01-01T00:00:00",
+            title="keyless task",
+        )["id"]
+        result = planner_rt.bump_retry(
+            connect_func=lambda: _connect(self.db),
+            now_func=lambda: "2026-01-01T00:00:00",
+            tid=keyless,
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.get("error"), "retry_blocked_no_idempotency_key")
+        self.assertEqual(result["status"], "blocked")
 
     def _bump(self, **kwargs):
         return planner_rt.bump_retry(
@@ -160,6 +183,11 @@ class TestTaskDurabilityRoutes(unittest.TestCase):
         self.db = _make_db()
         _setup(self.db)
         self.tid = _create(self.db, "Route test task")
+        # P9.2C: key the task so route-level bounded retry uses the allowed path.
+        con = _connect(self.db)
+        con.execute("UPDATE tasks SET idempotency_key='route-key' WHERE id=?", (self.tid,))
+        con.commit()
+        con.close()
 
         from app.application.task_planner import service as svc
         self._orig_db = svc.DB_PATH

@@ -202,6 +202,20 @@ def bump_retry(
         max_retries = int(task.get("max_retries") or 3)
         now = now_func()
 
+        # P9.2C: only a task carrying an idempotency_key may be auto-retried. A
+        # keyless (generic) retry could re-execute a non-idempotent side effect,
+        # so block it for manual resume instead of rescheduling. Bounded keyed
+        # retry is preserved below; full persisted tool replay is deferred to P12.0.
+        idempotency_key = str(task.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            conn.execute(
+                "UPDATE tasks SET status='blocked', retry_count=?, updated_at=? WHERE id=?",
+                (retry_count, now, tid),
+            )
+            conn.commit()
+            row_blocked = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+            return {"ok": False, "error": "retry_blocked_no_idempotency_key", **dict(row_blocked)}
+
         if retry_count > max_retries:
             conn.execute(
                 "UPDATE tasks SET dead_letter=1, status='failed', retry_count=?, updated_at=? WHERE id=?",
