@@ -403,6 +403,14 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("sandbox_reset",  "Sandbox Reset",  "code",    "Reset the project sandbox",             30,  5000, False),
     ]
 
+    # P9.2A2: declared scopes (from the fixed vocabulary) for native tools.
+    _native_scopes = {
+        "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"], "recall": ["fs.read"],
+        "web_search": ["net.outbound"], "web_fetch": ["net.outbound"],
+        "write_file": ["fs.write"], "edit_file": ["fs.write"],
+        "run_bash": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
+    }
+
     result: list[dict[str, Any]] = []
     for name, display, cat, desc, timeout, max_chars, idempotent in auto_tools:
         result.append({
@@ -410,6 +418,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
             "permission": "auto", "side_effect": False,
+            "scopes": _native_scopes.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         })
@@ -419,6 +428,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
             "permission": "require_approval", "side_effect": True,
+            "scopes": _native_scopes.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         })

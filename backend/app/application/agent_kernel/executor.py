@@ -112,6 +112,31 @@ def execute_tool(
             error=str(exc),
         )
 
+    # 2b. Scope enforcement (P9.2A2). A tool may run only if its declared scopes
+    # are within the agent's granted scopes. An empty grant means "unrestricted"
+    # (mirrors allowed_tools), so existing flows are unaffected until an agent is
+    # explicitly scope-restricted.
+    _tool_scopes = list((spec or {}).get("scopes") or [])
+    if _tool_scopes:
+        try:
+            from app.application.monitoring import runtime as _mon
+            _granted = {str(s) for s in ((_mon.get_agent_limit(request.agent_id) or {}).get("allowed_scopes") or [])}
+        except Exception:
+            _granted = set()
+        if _granted:  # empty grant = unrestricted
+            _missing = [s for s in _tool_scopes if s not in _granted]
+            if _missing:
+                _emit_blocked(request, f"scope_block:{_missing}")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={
+                        "ok": False,
+                        "text": f"Tool '{tool_name}' requires scopes {_missing} not granted to agent '{request.agent_id}'.",
+                        "error": "scope_block:" + ",".join(_missing),
+                    },
+                    error="scope_block",
+                )
+
     # 3. Approval gate (implemented in Шаг 4/P1) — require_approval tools
     # need a valid human approval before dispatch.
     #

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS agent_limits (
     max_execution_seconds INTEGER NOT NULL,
     max_context_tokens INTEGER NOT NULL,
     allowed_tools_json TEXT NOT NULL DEFAULT '[]',
+    allowed_scopes_json TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -234,6 +235,7 @@ def row_to_limit(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return None
     data = dict(row)
     data["allowed_tools"] = loads_json(data.pop("allowed_tools_json", "[]"), [])
+    data["allowed_scopes"] = loads_json(data.pop("allowed_scopes_json", "[]"), [])
     return data
 
 
@@ -292,6 +294,16 @@ def all_known_tools() -> list[str]:
     return deduped
 
 
+def migrate_agent_limits_columns(db_path: str | Path) -> None:
+    """Additive migration: add the allowed_scopes column to agent_limits."""
+    with get_connection(db_path) as con:
+        existing = {row[1] for row in con.execute("PRAGMA table_info(agent_limits)").fetchall()}
+        if "allowed_scopes_json" not in existing:
+            con.execute(
+                "ALTER TABLE agent_limits ADD COLUMN allowed_scopes_json TEXT NOT NULL DEFAULT '[]'"
+            )
+
+
 def default_limit_payload(agent_id: str) -> dict[str, Any]:
     timestamp = now_utc()
     return {
@@ -300,6 +312,7 @@ def default_limit_payload(agent_id: str) -> dict[str, Any]:
         "max_execution_seconds": DEFAULT_MAX_EXECUTION_SECONDS,
         "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
         "allowed_tools": all_known_tools(),
+        "allowed_scopes": [],
         "created_at": timestamp,
         "updated_at": timestamp,
     }
@@ -360,13 +373,14 @@ def upsert_limit(db_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]
             """
             INSERT INTO agent_limits
                 (agent_id, max_runs_per_hour, max_execution_seconds, max_context_tokens,
-                 allowed_tools_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 allowed_tools_json, allowed_scopes_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(agent_id) DO UPDATE SET
                 max_runs_per_hour = excluded.max_runs_per_hour,
                 max_execution_seconds = excluded.max_execution_seconds,
                 max_context_tokens = excluded.max_context_tokens,
                 allowed_tools_json = excluded.allowed_tools_json,
+                allowed_scopes_json = excluded.allowed_scopes_json,
                 updated_at = excluded.updated_at
             """,
             (
@@ -375,6 +389,7 @@ def upsert_limit(db_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]
                 int(payload.get("max_execution_seconds", DEFAULT_MAX_EXECUTION_SECONDS)),
                 int(payload.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
                 dumps_json(payload.get("allowed_tools", [])),
+                dumps_json(payload.get("allowed_scopes", [])),
                 str(created_at),
                 timestamp,
             ),

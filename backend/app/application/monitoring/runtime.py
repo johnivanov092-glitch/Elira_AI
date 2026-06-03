@@ -23,6 +23,7 @@ def _init_db() -> None:
     monitoring_store.migrate_memory_candidates_table(DB_PATH)
     monitoring_store.migrate_model_profiles_table(DB_PATH)
     monitoring_store.migrate_approval_args_sha256(DB_PATH)
+    monitoring_store.migrate_agent_limits_columns(DB_PATH)
 
 
 _init_db()
@@ -115,6 +116,7 @@ def update_agent_limit(agent_id: str, updates: dict[str, Any]) -> dict[str, Any]
             )
         ),
         "allowed_tools": list(updates.get("allowed_tools", current.get("allowed_tools", []))),
+        "allowed_scopes": list(updates.get("allowed_scopes", current.get("allowed_scopes", []))),
     }
     updated = monitoring_store.upsert_limit(DB_PATH, merged)
     try:

@@ -340,6 +340,7 @@ def _register_plugin_in_tool_registry(name: str, info: dict) -> None:
             # the approval policy instead of auto-executing.
             permission="require_approval",
             side_effect=True,
+            scopes=["shell.exec"],
         )
     except Exception as exc:
         logger.warning(f"Plugin '{name}' tool-registry registration failed: {exc}")
