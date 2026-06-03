@@ -118,6 +118,10 @@ class TemporalInternetModeTest(unittest.TestCase):
 
             env = os.environ.copy()
             env["ELIRA_DATA_DIR"] = data_dir
+            # Force the child to emit UTF-8 so the parent can decode it
+            # deterministically regardless of the system locale (e.g. cp1251
+            # on Windows), which would otherwise mojibake Cyrillic output.
+            env["PYTHONIOENCODING"] = "utf-8"
 
             proc = subprocess.run(
                 [sys.executable, "-c", script],
@@ -125,6 +129,8 @@ class TemporalInternetModeTest(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
 
