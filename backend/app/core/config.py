@@ -79,19 +79,66 @@ def is_auto_route(user_model: str | None) -> bool:
     return str(user_model).strip().lower() in AUTO_ROUTE_TOKENS
 
 
+# ═══════════════════════════════════════════════════════════════
+# P9.3 — Model Profiles в общем routing-path.
+# Детерминированное сопоставление route → role. Роли совпадают с
+# таблицей model_profiles (monitoring): fast / code / strong / embedding.
+# Это ЕДИНСТВЕННЫЙ источник истины для ролей маршрутизации — вызывающий
+# код не должен заводить второй маппинг.
+# ═══════════════════════════════════════════════════════════════
+ROUTE_TO_ROLE: dict[str, str] = {
+    "chat":     "fast",
+    "research": "strong",
+    "code":     "code",
+    "project":  "code",
+}
+DEFAULT_ROUTE_ROLE = "fast"
+
+
+def route_to_role(route: str | None) -> str:
+    """Сопоставить route планировщика с ролью model_profiles (детерминированно)."""
+    return ROUTE_TO_ROLE.get(str(route or "").strip().lower(), DEFAULT_ROUTE_ROLE)
+
+
+def _get_profile_for_role(role: str) -> dict | None:
+    """Первый включённый профиль модели для *role*, или None при любой ошибке.
+
+    Ленивый импорт держит app.core свободным от зависимости на app.application
+    во время загрузки модуля (зеркалит _get_route_map)."""
+    try:
+        from app.application.monitoring.runtime import get_profile_for_role
+        return get_profile_for_role(role)
+    except Exception:
+        return None
+
+
 def pick_model_for_route(route: str, user_model: str, available_models: list[str] | None = None) -> str:
     """
-    Авто-выбор модели:
-      - Если user_model — сентинель ("", "auto" или "авто") →
-        читаем таблицу оркестрации (route_map) и выбираем первую доступную
-        модель из кандидатов для данного route.
-      - Иначе — уважаем явный выбор пользователя, оркестрация не вмешивается.
+    Авто-выбор модели — общий порядок маршрутизации (P9.3):
+      1. явный выбор пользователя — уважается дословно, оркестрация молчит;
+      2. включённый профиль для роли маршрута — если его модель доступна
+         (cloud-профили без явного consent здесь пропускаются: их включает
+         расширенный resolver с согласием);
+      3. существующий route_model_map — первый доступный кандидат;
+      4. DEFAULT_MODEL.
 
-    Маппинг берётся из настроек пользователя (SQLite); при ошибке — fallback.
+    Маппинг route_map берётся из настроек пользователя (SQLite); при ошибке —
+    fallback. Недоступная/неизвестная модель профиля → ограниченный fallback
+    на route_map (бесконечный retry не допускается).
     """
+    # 1. Явный выбор пользователя выигрывает.
     if not is_auto_route(user_model):
         return user_model
 
+    # 2. Включённый не-cloud профиль для роли маршрута — только если его модель
+    #    подтверждённо доступна (недоступна/неизвестна → fallback на route_map).
+    profile = _get_profile_for_role(route_to_role(route))
+    if profile and not profile.get("cloud_consent_required"):
+        profile_model = str(profile.get("model") or "")
+        if profile_model and available_models and profile_model in set(available_models):
+            return profile_model
+
+    # 3. Существующая таблица оркестрации route_model_map.
     route_map = _get_route_map()
     candidates = route_map.get(route, route_map.get("chat", [DEFAULT_MODEL]))
 
@@ -101,6 +148,7 @@ def pick_model_for_route(route: str, user_model: str, available_models: list[str
             if candidate in available_set:
                 return candidate
 
+    # 4. Default.
     return candidates[0] if candidates else (user_model or DEFAULT_MODEL)
 
 
