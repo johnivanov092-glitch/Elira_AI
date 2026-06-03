@@ -91,7 +91,9 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
                 psys.load_plugins()
 
-            result = reg.execute_tool("wire_test_plugin", {"value": "hello"})
+            # Plugins are require_approval (P9.2A1); _execute_raw is the raw
+            # wiring primitive this test targets (registration -> handler).
+            result = reg._execute_raw("wire_test_plugin", {"value": "hello"})
             self.assertTrue(result.get("ok"), f"Expected ok=True, got: {result}")
             self.assertEqual(result.get("echoed"), "hello")
 
@@ -113,7 +115,9 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             assert tool is not None
             self.assertFalse(tool["enabled"], "Tool should be disabled after plugin disable")
 
-            result = reg.execute_tool("wire_test_plugin", {})
+            # _execute_raw still enforces the enabled flag (P9.2A1: plugins are
+            # require_approval, so execute_tool would gate before the disabled check).
+            result = reg._execute_raw("wire_test_plugin", {})
             self.assertFalse(result.get("ok"))
             self.assertIn("disabled", result.get("error", "").lower())
 

@@ -13,6 +13,17 @@ _TOOLSPEC_NEW_COLUMNS = [
 ]
 
 
+# P9.2A1 — fail-closed ToolSpec classification vocabulary.
+VALID_PERMISSIONS: frozenset[str] = frozenset({"auto", "require_approval", "forbidden"})
+
+# Minimal fixed scope vocabulary (P9.2). Tools declare a subset of these; an
+# unknown scope is rejected at registration (never silently accepted).
+VALID_SCOPES: frozenset[str] = frozenset({
+    "fs.read", "fs.write", "shell.exec", "net.outbound",
+    "secrets.read", "desktop.control", "home.control",
+})
+
+
 def migrate_toolspec_columns(*, conn_factory: Callable[[], Any]) -> None:
     """Additive migration: add ToolSpec columns introduced in P1."""
     with conn_factory() as con:
@@ -78,6 +89,19 @@ def register_tool(
     max_output_chars: int = 50000,
     idempotent: bool = False,
 ) -> dict[str, Any]:
+    # P9.2A1 fail-closed: reject unknown permission/scope at registration so a
+    # typo or omission can never silently degrade to an unguarded "auto" tool.
+    if permission not in VALID_PERMISSIONS:
+        raise ValueError(
+            f"invalid ToolSpec permission {permission!r} for tool {name!r}; "
+            f"must be one of {sorted(VALID_PERMISSIONS)}"
+        )
+    _unknown_scopes = [s for s in (scopes or []) if s not in VALID_SCOPES]
+    if _unknown_scopes:
+        raise ValueError(
+            f"invalid ToolSpec scopes {_unknown_scopes} for tool {name!r}; "
+            f"must be a subset of {sorted(VALID_SCOPES)}"
+        )
     handlers[name] = handler
     now = now_func()
 

@@ -73,6 +73,22 @@ def execute_tool(
             error=f"forbidden:{tool_name}",
         )
 
+    # 1c. Fail-closed: a resolved spec whose permission tier is not recognized
+    # is blocked — it must never be treated as "auto".
+    if spec is not None:
+        from app.application.tool_registry.store import VALID_PERMISSIONS as _VALID_PERMS
+        if spec.get("permission") not in _VALID_PERMS:
+            _emit_blocked(request, f"invalid_permission:{spec.get('permission')!r}")
+            return ToolExecutionResult(
+                status="blocked",
+                output={
+                    "ok": False,
+                    "text": f"Tool '{tool_name}' has an invalid permission tier and cannot be executed.",
+                    "error": "invalid_permission",
+                },
+                error="invalid_permission",
+            )
+
     # 2. Policy preflight — rate-limit and context-budget check.
     # selected_tools is intentionally omitted: the allowed_tools sandbox list is a
     # session-level concern, already checked by callers (run_code_agent,

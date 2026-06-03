@@ -336,6 +336,10 @@ def _register_plugin_in_tool_registry(name: str, info: dict) -> None:
             description=info.get("description", ""),
             category=info.get("category", "plugin"),
             source="plugin",
+            # P9.2A1: plugin code runs untrusted in a subprocess → gate it behind
+            # the approval policy instead of auto-executing.
+            permission="require_approval",
+            side_effect=True,
         )
     except Exception as exc:
         logger.warning(f"Plugin '{name}' tool-registry registration failed: {exc}")

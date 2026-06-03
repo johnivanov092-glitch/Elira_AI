@@ -187,7 +187,7 @@ class TestToolSpecMigration(unittest.TestCase):
                 description="test",
                 permission="require_approval",
                 side_effect=True,
-                scopes=["project"],
+                scopes=["fs.read"],
                 timeout_seconds=45,
                 max_output_chars=1000,
                 idempotent=False,
@@ -197,7 +197,7 @@ class TestToolSpecMigration(unittest.TestCase):
             assert tool is not None
             self.assertEqual(tool["permission"], "require_approval")
             self.assertTrue(tool["side_effect"])
-            self.assertEqual(tool["scopes"], ["project"])
+            self.assertEqual(tool["scopes"], ["fs.read"])
             self.assertEqual(tool["timeout_seconds"], 45)
             self.assertEqual(tool["max_output_chars"], 1000)
             self.assertFalse(tool["idempotent"])
