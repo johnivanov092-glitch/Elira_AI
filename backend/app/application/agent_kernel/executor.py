@@ -217,11 +217,20 @@ def execute_tool(
                 error=f"waiting_approval:{approval['id']}",
             )
 
-    # 4. Dispatch
+    # 4. Dispatch. In-process handlers get an OBSERVED deadline only — we time the
+    # call and emit tool.timeout if it overran, but we do NOT pretend to cancel a
+    # synchronous call. Hard timeouts live where they can be enforced: subprocess
+    # (subprocess.run timeout) and MCP (per-request deadline).
+    import time as _time
+    _t0 = _time.monotonic()
     try:
         raw = dispatch_fn(tool_name, request.args)
     except Exception as exc:
         raw = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+    _elapsed = _time.monotonic() - _t0
+    _budget = int((spec or {}).get("timeout_seconds") or 0)
+    if _budget > 0 and _elapsed > _budget:
+        _emit_timeout(request, _elapsed, _budget)
 
     if not isinstance(raw, dict):
         raw = {"text": str(raw)}
@@ -282,6 +291,25 @@ def _emit_approval_pending(req: ToolExecutionRequest, approval_id: str) -> None:
                 "project_scope_id": req.project_scope_id,
                 "run_id": req.run_id,
                 "approval_id": approval_id,
+            },
+        )
+    except Exception:
+        pass
+
+
+def _emit_timeout(req: ToolExecutionRequest, elapsed: float, budget: int) -> None:
+    try:
+        from app.application.event_bus import runtime as _eb
+        _eb.emit_event(
+            event_type="tool.timeout",
+            payload={
+                "tool_name": req.tool_name,
+                "agent_id": req.agent_id,
+                "source": req.source,
+                "run_id": req.run_id,
+                "elapsed_seconds": round(elapsed, 3),
+                "budget_seconds": budget,
+                "observed": True,
             },
         )
     except Exception:

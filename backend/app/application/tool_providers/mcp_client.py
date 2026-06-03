@@ -135,6 +135,18 @@ class McpClient:
         )
         self._reader.start()
 
+        # P9.2B: continuously drain stderr so the pipe never fills and blocks the
+        # server. A bounded tail is kept for diagnostics; reading continues past
+        # the cap (discarding) rather than stopping — stopping would deadlock.
+        self._stderr_tail = []
+        self._stderr_chars = 0
+        self._stderr_reader = threading.Thread(
+            target=self._drain_stderr,
+            name=f"mcp-stderr-{self._command}",
+            daemon=True,
+        )
+        self._stderr_reader.start()
+
         # MCP initialize handshake.
         try:
             init_response = self._request(
@@ -168,6 +180,30 @@ class McpClient:
         # Per spec, client must send `notifications/initialized` after
         # the initialize handshake succeeds. No response expected.
         self._notify("notifications/initialized", {})
+
+    def _drain_stderr(self) -> None:
+        """Drain the child's stderr continuously (P9.2B).
+
+        If stderr is piped but never read, the pipe buffer fills and the server
+        blocks. This reads every line until EOF, keeping only a bounded tail for
+        diagnostics and discarding the rest — but it never stops reading after the
+        cap, which would re-introduce the deadlock.
+        """
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        cap = 8000
+        if not hasattr(self, "_stderr_tail"):
+            self._stderr_tail = []
+            self._stderr_chars = 0
+        try:
+            for line in proc.stderr:  # blocks per line until EOF
+                self._stderr_tail.append(line)
+                self._stderr_chars += len(line)
+                while self._stderr_chars > cap and len(self._stderr_tail) > 1:
+                    self._stderr_chars -= len(self._stderr_tail.pop(0))
+        except Exception:
+            pass
 
     def stop(self) -> None:
         """Tear the subprocess down. Idempotent and safe to call from
