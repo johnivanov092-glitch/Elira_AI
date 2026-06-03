@@ -89,7 +89,11 @@ def run_agent_stream_impl(
             use_library=use_library,
             use_web_search=use_web_search,
             is_memory_command_func=deps.is_memory_command_func,
-            pick_model_for_route_func=deps.pick_model_for_route_func,
+            resolve_model_for_route_func=deps.resolve_model_for_route_func,
+            effective_context_limit_func=deps.effective_context_limit_func,
+            available_models_func=deps.available_models_func,
+            get_max_context_tokens_func=deps.get_max_context_tokens_func,
+            record_metric_func=deps.record_metric_func,
             run_id=run["run_id"],
             history_service=deps.history_service,
             extract_and_save_func=deps.extract_and_save_func,
@@ -172,8 +176,9 @@ def run_agent_stream_impl(
             profile_name=profile_name,
             user_input=prompt_bundle.prompt + deps.compose_human_style_rules_func(temporal),
             history=bootstrap.history,
-            num_ctx=num_ctx,
+            num_ctx=execution.effective_num_ctx,
             task_context=prompt_bundle.task_context,
+            timeout=execution.effective_timeout_seconds,
         ):
             full_text += token
             yield {"token": token, "done": False}

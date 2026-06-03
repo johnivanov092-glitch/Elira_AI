@@ -6,7 +6,6 @@ from typing import Any, Callable
 
 PlanRunner = Callable[[str], dict[str, Any]]
 MemoryCommandChecker = Callable[[str], bool]
-ModelPicker = Callable[[str, str], str]
 HistoryTrimmer = Callable[[list[Any], int], list[Any]]
 InputStripper = Callable[[str], str]
 PlannerFactory = Callable[[], Any]
@@ -27,6 +26,7 @@ class ChatPlanPreparation:
     web_plan: dict[str, Any]
     selected_tools: list[str]
     effective_model: str
+    decision: Any = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,9 @@ class ChatExecutionPreparation:
     selected_tools: list[str]
     effective_model: str
     saved_memory_items: int
+    effective_num_ctx: int = 0
+    effective_timeout_seconds: int | None = None
+    decision: Any = None
 
 
 @dataclass(frozen=True)
@@ -184,7 +187,8 @@ def prepare_chat_plan(
     use_library: bool,
     use_web_search: bool,
     is_memory_command_func: MemoryCommandChecker,
-    pick_model_for_route_func: ModelPicker,
+    resolve_model_for_route_func: Callable[..., Any],
+    available_models: list[str] | None = None,
 ) -> ChatPlanPreparation:
     plan = plan_runner(planner_input) or {}
     route = str(plan.get("route", "chat") or "chat")
@@ -215,14 +219,15 @@ def prepare_chat_plan(
     if is_memory_command_func(planner_input):
         selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
 
-    effective_model = pick_model_for_route_func(route, model_name)
+    decision = resolve_model_for_route_func(route, model_name, available_models)
     return ChatPlanPreparation(
         plan=plan,
         route=route,
         temporal=temporal,
         web_plan=web_plan,
         selected_tools=selected_tools,
-        effective_model=effective_model,
+        effective_model=decision.model,
+        decision=decision,
     )
 
 
@@ -235,7 +240,11 @@ def prepare_chat_execution(
     use_library: bool,
     use_web_search: bool,
     is_memory_command_func: MemoryCommandChecker,
-    pick_model_for_route_func: ModelPicker,
+    resolve_model_for_route_func: Callable[..., Any],
+    effective_context_limit_func: Callable[..., int],
+    available_models_func: Callable[[], list[str] | None],
+    get_max_context_tokens_func: Callable[[str], int | None],
+    record_metric_func: Callable[..., Any],
     history_service: Any,
     run_id: str,
     extract_and_save_func: Callable[[str], Any],
@@ -248,6 +257,7 @@ def prepare_chat_execution(
     log_memory_save: bool = False,
     log_auto_model_switch: bool = False,
 ) -> ChatExecutionPreparation:
+    available_models = available_models_func()
     chat_plan = prepare_chat_plan(
         planner_input=planner_input,
         model_name=model_name,
@@ -256,9 +266,26 @@ def prepare_chat_execution(
         use_library=use_library,
         use_web_search=use_web_search,
         is_memory_command_func=is_memory_command_func,
-        pick_model_for_route_func=pick_model_for_route_func,
+        resolve_model_for_route_func=resolve_model_for_route_func,
+        available_models=available_models,
     )
     history_service.add_event(run_id, "planner", chat_plan.plan)
+
+    # P9.3: effective num_ctx caps the request to the tightest known limit so
+    # the model AND the sandbox preflight see the same value; an explicit user
+    # model cannot bypass these caps (only a selected profile contributes its
+    # context_limit; an unknown model is not auto-cut to DEFAULT_SAFE_CTX).
+    decision = chat_plan.decision
+    profile_context_limit = (
+        decision.context_limit if (decision is not None and decision.source == "profile") else None
+    )
+    effective_num_ctx = effective_context_limit_func(
+        num_ctx,
+        monitoring_max_context=get_max_context_tokens_func(agent_id),
+        profile_context_limit=profile_context_limit,
+        model=chat_plan.effective_model,
+    )
+    effective_timeout_seconds = decision.timeout_seconds if decision is not None else None
 
     saved_memory_items = 0
     try:
@@ -281,12 +308,38 @@ def prepare_chat_execution(
 
     preflight_or_raise_func(
         agent_id=agent_id,
-        num_ctx=num_ctx,
+        num_ctx=effective_num_ctx,
         selected_tools=chat_plan.selected_tools,
         run_id=run_id,
         route=chat_plan.route,
         streaming=streaming,
     )
+
+    # P9.3: record routing provenance into run metrics (no schema change —
+    # details_json). Best-effort: telemetry must never break a chat run.
+    if decision is not None:
+        try:
+            record_metric_func(
+                metric_type="model.routed",
+                agent_id=agent_id,
+                run_id=run_id,
+                ok=True,
+                details={
+                    "model": decision.model,
+                    "provider": decision.provider,
+                    "profile_id": decision.profile_id,
+                    "route": decision.route,
+                    "role": decision.role,
+                    "routing_source": decision.source,
+                    "requested_model": decision.requested_model,
+                    "effective_num_ctx": effective_num_ctx,
+                    "timeout_seconds": decision.timeout_seconds,
+                    "fallback_reason": decision.fallback_reason,
+                    "cloud_skipped": decision.cloud_skipped,
+                },
+            )
+        except Exception:
+            pass
 
     if (
         log_auto_model_switch
@@ -310,6 +363,9 @@ def prepare_chat_execution(
         selected_tools=chat_plan.selected_tools,
         effective_model=chat_plan.effective_model,
         saved_memory_items=saved_memory_items,
+        effective_num_ctx=effective_num_ctx,
+        effective_timeout_seconds=effective_timeout_seconds,
+        decision=decision,
     )
 
 

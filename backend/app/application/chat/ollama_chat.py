@@ -21,6 +21,7 @@ def run_chat(
     history: list[dict] | None = None,
     num_ctx: int = 8192,
     task_context: str = "",
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     profile = normalize_profile(profile_name)
     system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
@@ -36,7 +37,9 @@ def run_chat(
     messages.append({"role": "user", "content": user_input})
 
     try:
-        client = ollama.Client()
+        # P9.3: honour a profile timeout via the native httpx timeout the
+        # ollama client supports (no fake ThreadPool / no claimed hard cancel).
+        client = ollama.Client(timeout=timeout) if timeout else ollama.Client()
         resp = client.chat(model=model_name, messages=messages, options={"num_ctx": num_ctx})
         text = resp.message.content or ""
         return {"ok": True, "answer": text, "warnings": [], "meta": {"profile": profile}}
@@ -51,6 +54,7 @@ def run_chat_stream(
     history: list[dict] | None = None,
     num_ctx: int = 8192,
     task_context: str = "",
+    timeout: float | None = None,
 ) -> Generator[str, None, None]:
     profile = normalize_profile(profile_name)
     system = build_persona_prompt(profile, model_name=model_name, task_context=task_context)
@@ -66,14 +70,14 @@ def run_chat_stream(
     messages.append({"role": "user", "content": user_input})
 
     try:
-        client = ollama.Client()
+        client = ollama.Client(timeout=timeout) if timeout else ollama.Client()
         stream = client.chat(model=model_name, messages=messages, stream=True, options={"num_ctx": num_ctx})
         for chunk in stream:
             token = chunk.message.content or ""
             if token:
                 yield token
     except Exception as e:
-        result = run_chat(model_name, profile_name, user_input, history, num_ctx=num_ctx, task_context=task_context)
+        result = run_chat(model_name, profile_name, user_input, history, num_ctx=num_ctx, task_context=task_context, timeout=timeout)
         if result.get("ok") and result.get("answer"):
             yield result["answer"]
         else:

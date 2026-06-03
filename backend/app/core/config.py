@@ -1,4 +1,5 @@
 """config.py — пути, модели, промпты."""
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT_DIR      = Path(__file__).resolve().parents[3]
@@ -112,44 +113,155 @@ def _get_profile_for_role(role: str) -> dict | None:
         return None
 
 
-def pick_model_for_route(route: str, user_model: str, available_models: list[str] | None = None) -> str:
+@dataclass(frozen=True)
+class ModelRouteDecision:
+    """Структурированный результат маршрутизации запроса к конкретной модели.
+
+    Единый источник истины для решения о модели (P9.3). pick_model_for_route —
+    back-compat обёртка, возвращающая только .model.
     """
-    Авто-выбор модели — общий порядок маршрутизации (P9.3):
-      1. явный выбор пользователя — уважается дословно, оркестрация молчит;
+    model: str
+    route: str
+    role: str
+    requested_model: str
+    source: str  # explicit | profile | route_map | default
+    profile_id: str | None = None
+    provider: str | None = None
+    context_limit: int | None = None
+    timeout_seconds: int | None = None
+    fallback_reason: str | None = None
+    cloud_consent_required: bool = False
+    cloud_skipped: bool = False
+
+
+def _safe_positive_int(value: object) -> int | None:
+    try:
+        ivalue = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return ivalue if ivalue > 0 else None
+
+
+def resolve_model_for_route(
+    route: str,
+    requested_model: str | None,
+    available_models: list[str] | None = None,
+    *,
+    cloud_consent: bool = False,
+) -> ModelRouteDecision:
+    """Единый resolver маршрутизации модели (P9.3). Порядок выбора:
+
+      1. явный выбор пользователя — уважается дословно;
       2. включённый профиль для роли маршрута — если его модель доступна
-         (cloud-профили без явного consent здесь пропускаются: их включает
-         расширенный resolver с согласием);
-      3. существующий route_model_map — первый доступный кандидат;
+         (cloud — только при cloud_consent, иначе пропуск);
+      3. route_model_map — первый доступный кандидат;
       4. DEFAULT_MODEL.
 
-    Маппинг route_map берётся из настроек пользователя (SQLite); при ошибке —
-    fallback. Недоступная/неизвестная модель профиля → ограниченный fallback
-    на route_map (бесконечный retry не допускается).
+    Недоступная/неизвестная модель профиля → ограниченный fallback на route_map
+    (бесконечный retry не допускается). Не создаёт второй router — это и есть
+    общий routing-path; pick_model_for_route делегирует сюда.
     """
-    # 1. Явный выбор пользователя выигрывает.
-    if not is_auto_route(user_model):
-        return user_model
+    role = route_to_role(route)
+    requested = "" if requested_model is None else str(requested_model)
 
-    # 2. Включённый не-cloud профиль для роли маршрута — только если его модель
-    #    подтверждённо доступна (недоступна/неизвестна → fallback на route_map).
-    profile = _get_profile_for_role(route_to_role(route))
-    if profile and not profile.get("cloud_consent_required"):
+    # 1. Explicit user choice wins (honoured verbatim).
+    if not is_auto_route(requested_model):
+        return ModelRouteDecision(
+            model=requested, route=route, role=role,
+            requested_model=requested, source="explicit",
+        )
+
+    fallback_reason: str | None = None
+    cloud_required = False
+    cloud_skipped = False
+
+    # 2. Enabled profile for the route's role.
+    profile = _get_profile_for_role(role)
+    if not profile:
+        fallback_reason = "no_profile_for_role"
+    else:
         profile_model = str(profile.get("model") or "")
-        if profile_model and available_models and profile_model in set(available_models):
-            return profile_model
+        cloud_required = bool(profile.get("cloud_consent_required"))
+        if cloud_required and not cloud_consent:
+            cloud_skipped = True
+            fallback_reason = "cloud_consent_required"
+        elif not profile_model:
+            fallback_reason = "profile_model_empty"
+        elif available_models is None:
+            fallback_reason = "available_models_unknown"
+        elif profile_model not in set(available_models):
+            fallback_reason = "profile_model_unavailable"
+        else:
+            return ModelRouteDecision(
+                model=profile_model, route=route, role=role,
+                requested_model=requested, source="profile",
+                profile_id=(str(profile.get("id") or "") or None),
+                provider=(str(profile.get("provider") or "") or None),
+                context_limit=_safe_positive_int(profile.get("context_limit")),
+                timeout_seconds=_safe_positive_int(profile.get("timeout_seconds")),
+                cloud_consent_required=cloud_required,
+            )
 
-    # 3. Существующая таблица оркестрации route_model_map.
+    # 3. Existing orchestration route map.
     route_map = _get_route_map()
     candidates = route_map.get(route, route_map.get("chat", [DEFAULT_MODEL]))
-
+    chosen: str | None = None
     if available_models:
         available_set = set(available_models)
         for candidate in candidates:
             if candidate in available_set:
-                return candidate
+                chosen = candidate
+                break
+    if chosen is None and candidates:
+        chosen = candidates[0]
+
+    if chosen:
+        return ModelRouteDecision(
+            model=chosen, route=route, role=role, requested_model=requested,
+            source="route_map", fallback_reason=fallback_reason,
+            cloud_consent_required=cloud_required, cloud_skipped=cloud_skipped,
+        )
 
     # 4. Default.
-    return candidates[0] if candidates else (user_model or DEFAULT_MODEL)
+    return ModelRouteDecision(
+        model=(requested or DEFAULT_MODEL), route=route, role=role,
+        requested_model=requested, source="default",
+        fallback_reason=(fallback_reason or "empty_route_map"),
+        cloud_consent_required=cloud_required, cloud_skipped=cloud_skipped,
+    )
+
+
+def effective_context_limit(
+    requested_num_ctx: int,
+    *,
+    monitoring_max_context: int | None = None,
+    profile_context_limit: int | None = None,
+    model: str | None = None,
+) -> int:
+    """min(requested, monitoring cap, profile cap, model safe-ctx если известен).
+
+    Неизвестная модель НЕ режется автоматически до DEFAULT_SAFE_CTX — model cap
+    применяется только когда известен (MODEL_SAFE_CTX). Возвращает requested,
+    если ни одного положительного ограничения нет. Никогда не увеличивает
+    requested — только ограничивает (явный выбор не обходит лимиты).
+    """
+    caps: list[int] = []
+    for value in (requested_num_ctx, monitoring_max_context, profile_context_limit):
+        if isinstance(value, int) and value > 0:
+            caps.append(value)
+    model_cap = MODEL_SAFE_CTX.get(model) if model else None
+    if isinstance(model_cap, int) and model_cap > 0:
+        caps.append(model_cap)
+    return min(caps) if caps else requested_num_ctx
+
+
+def pick_model_for_route(route: str, user_model: str, available_models: list[str] | None = None) -> str:
+    """Back-compat обёртка над resolve_model_for_route — возвращает только модель.
+
+    Сохраняет прежний контракт (str) для существующих вызовов (agent_registry и
+    т.д.); общий порядок маршрутизации и поведение полностью совпадают.
+    """
+    return resolve_model_for_route(route, user_model, available_models).model
 
 
 # ═══════════════════════════════════════════════════════════════

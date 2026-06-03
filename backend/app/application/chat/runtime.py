@@ -58,9 +58,11 @@ from app.application.chat.agent_os import (
     emit_agent_os_event as _app_emit_agent_os_event,
     record_registry_agent_run as _app_record_registry_agent_run,
 )
-from app.core.config import pick_model_for_route
+from app.core.config import effective_context_limit, resolve_model_for_route
 from app.infrastructure.search.web_search import do_temporal_web_search as _infra_do_temporal_web_search
+from app.infrastructure.llm.ollama_models import get_models
 from app.application.agent_registry.sandbox import preflight_or_raise, resolve_effective_agent_id
+from app.application.monitoring.runtime import ensure_agent_limit, record_metric
 from app.application.chat.ollama_chat import run_chat, run_chat_stream
 from app.application.persona.service import observe_dialogue
 from app.application.chat.planner_v2 import PlannerV2Service
@@ -205,6 +207,38 @@ def _resolve_agent(**kwargs: Any) -> Any:
     return resolve_agent(**kwargs)
 
 
+def _chat_available_models() -> list[str] | None:
+    """Installed Ollama model identifiers (name + model tags), or None when
+    Ollama is unreachable so the P9.3 profile step stays inert and routing
+    falls back to the route map exactly as before."""
+    try:
+        result = get_models()
+    except Exception:
+        return None
+    if not result.get("ok"):
+        return None
+    names: list[str] = []
+    for item in result.get("models", []):
+        for key in ("name", "model"):
+            value = item.get(key)
+            if value:
+                names.append(str(value))
+    return names
+
+
+def _get_max_context_tokens(agent_id: str) -> int | None:
+    """Per-agent monitoring context cap (max_context_tokens), or None."""
+    try:
+        limit = ensure_agent_limit(agent_id)
+    except Exception:
+        return None
+    try:
+        value = int((limit or {}).get("max_context_tokens"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def _build_chat_agent_deps() -> ChatAgentDeps:
     return ChatAgentDeps(
         history_service=_HISTORY,
@@ -243,7 +277,11 @@ def _build_chat_agent_deps() -> ChatAgentDeps:
         prepare_cached_stream_hit_func=prepare_cached_stream_hit,
         record_registry_agent_run_func=_record_registry_agent_run,
         is_memory_command_func=is_memory_command,
-        pick_model_for_route_func=pick_model_for_route,
+        resolve_model_for_route_func=resolve_model_for_route,
+        effective_context_limit_func=effective_context_limit,
+        available_models_func=_chat_available_models,
+        get_max_context_tokens_func=_get_max_context_tokens,
+        record_metric_func=record_metric,
         extract_and_save_func=extract_and_save,
         preflight_or_raise_func=preflight_or_raise,
         should_cache_func=should_cache,

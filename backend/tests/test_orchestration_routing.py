@@ -14,8 +14,11 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.core.config import (  # noqa: E402
     DEFAULT_MODEL,
+    ModelRouteDecision,
+    effective_context_limit,
     is_auto_route,
     pick_model_for_route,
+    resolve_model_for_route,
     route_to_role,
 )
 
@@ -206,6 +209,104 @@ class ModelProfileRoutingTest(unittest.TestCase):
         self._patch_profile(None)
         result = pick_model_for_route("code", "auto", available_models=["qwen2.5-coder:7b"])
         self.assertEqual(result, "qwen2.5-coder:7b")
+
+
+class ResolveModelForRouteTest(unittest.TestCase):
+    """The structured resolver underlying pick_model_for_route (P9.3 commit 2)."""
+
+    def setUp(self):
+        self.route_patcher = patch("app.core.config._get_route_map", return_value=_FAKE_ROUTE_MAP)
+        self.route_patcher.start()
+
+    def tearDown(self):
+        self.route_patcher.stop()
+
+    def _patch_profile(self, profile):
+        patcher = patch("app.core.config._get_profile_for_role", return_value=profile)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_explicit_source(self):
+        self._patch_profile(None)
+        decision = resolve_model_for_route("code", "gemma3:4b", ["gemma3:4b"])
+        self.assertIsInstance(decision, ModelRouteDecision)
+        self.assertEqual(decision.source, "explicit")
+        self.assertEqual(decision.model, "gemma3:4b")
+        self.assertEqual(decision.requested_model, "gemma3:4b")
+        self.assertEqual(decision.role, "code")
+
+    def test_profile_source_populates_metadata(self):
+        self._patch_profile(_profile("qwen2.5-coder:7b", role="code"))
+        decision = resolve_model_for_route("code", "auto", ["qwen2.5-coder:7b"])
+        self.assertEqual(decision.source, "profile")
+        self.assertEqual(decision.model, "qwen2.5-coder:7b")
+        self.assertEqual(decision.profile_id, "p-qwen2.5-coder:7b")
+        self.assertEqual(decision.provider, "ollama")
+        self.assertEqual(decision.context_limit, 16384)
+        self.assertEqual(decision.timeout_seconds, 30)
+
+    def test_route_map_source_with_fallback_reason(self):
+        self._patch_profile(_profile("qwen2.5:4b", role="code"))  # not installed
+        decision = resolve_model_for_route("code", "auto", ["qwen2.5-coder:7b"])
+        self.assertEqual(decision.source, "route_map")
+        self.assertEqual(decision.model, "qwen2.5-coder:7b")
+        self.assertEqual(decision.fallback_reason, "profile_model_unavailable")
+
+    def test_no_profile_fallback_reason(self):
+        self._patch_profile(None)
+        decision = resolve_model_for_route("code", "auto", ["qwen2.5-coder:7b"])
+        self.assertEqual(decision.source, "route_map")
+        self.assertEqual(decision.fallback_reason, "no_profile_for_role")
+
+    def test_availability_unknown_fallback_reason(self):
+        self._patch_profile(_profile("qwen2.5:4b", role="research"))
+        decision = resolve_model_for_route("research", "auto")
+        self.assertEqual(decision.source, "route_map")
+        self.assertEqual(decision.fallback_reason, "available_models_unknown")
+
+    def test_cloud_skipped_flag(self):
+        self._patch_profile(_profile("claude", role="strong", cloud=True))
+        decision = resolve_model_for_route("research", "auto", ["claude", "mistral-nemo:latest"])
+        self.assertEqual(decision.source, "route_map")
+        self.assertTrue(decision.cloud_skipped)
+        self.assertEqual(decision.fallback_reason, "cloud_consent_required")
+
+    def test_cloud_used_with_consent(self):
+        self._patch_profile(_profile("claude", role="strong", cloud=True))
+        decision = resolve_model_for_route("research", "auto", ["claude"], cloud_consent=True)
+        self.assertEqual(decision.source, "profile")
+        self.assertEqual(decision.model, "claude")
+
+    def test_pick_model_matches_resolve_model(self):
+        self._patch_profile(None)
+        self.assertEqual(
+            pick_model_for_route("research", "auto", ["mistral-nemo:latest"]),
+            resolve_model_for_route("research", "auto", ["mistral-nemo:latest"]).model,
+        )
+
+
+class EffectiveContextLimitTest(unittest.TestCase):
+    def test_returns_requested_when_no_caps(self):
+        self.assertEqual(effective_context_limit(8192), 8192)
+
+    def test_capped_by_monitoring(self):
+        self.assertEqual(effective_context_limit(99999, monitoring_max_context=8192), 8192)
+
+    def test_capped_by_profile(self):
+        self.assertEqual(
+            effective_context_limit(99999, monitoring_max_context=16384, profile_context_limit=4096),
+            4096,
+        )
+
+    def test_capped_by_known_model_safe_ctx(self):
+        # qwen2.5-coder:7b -> 6144 in MODEL_SAFE_CTX
+        self.assertEqual(effective_context_limit(32768, model="qwen2.5-coder:7b"), 6144)
+
+    def test_unknown_model_not_cut_to_default(self):
+        self.assertEqual(effective_context_limit(8192, model="totally-unknown:1b"), 8192)
+
+    def test_never_increases_requested(self):
+        self.assertEqual(effective_context_limit(2048, monitoring_max_context=8192), 2048)
 
 
 if __name__ == "__main__":

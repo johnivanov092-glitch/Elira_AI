@@ -233,8 +233,7 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
              patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
              patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
              patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"):
+             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer):
             result = agents_service.run_agent(
                 model_name="test-model",
                 profile_name="Universal",
@@ -258,7 +257,6 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
              patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
              patch.object(agents_service, "_maybe_generate_files", return_value=""), \
              patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "pick_model_for_route", return_value="test-model"), \
              patch.object(agents_service, "should_cache", return_value=False):
             events = list(
                 agents_service.run_agent_stream(
