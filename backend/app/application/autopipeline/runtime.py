@@ -269,8 +269,34 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             name = task_data.get("plugin_name", "")
             if not name:
                 return {"ok": False, "error": "Нет имени плагина"}
+            # P9.2-FIXUP: autopipelines no longer execute plugins directly. Route
+            # through the unified kernel so plugin runs get the same policy, approval
+            # and audit as every other tool. A freshly discovered plugin is
+            # forbidden+unclassified, so the kernel returns a controlled blocked
+            # result instead of running untrusted code — the autonomous scheduler
+            # cannot self-authorize. It runs only when an admin has classified the
+            # plugin AND pre-granted an approval bound to this run_id.
+            import uuid as _uuid
             from app.application.plugins import run_plugin
-            return run_plugin(name, task_data.get("args", {}))
+            from app.application.agent_kernel.executor import (
+                ToolExecutionRequest,
+                execute_tool as _kernel_execute,
+            )
+
+            args = task_data.get("args", {})
+            run_id = f"autopipeline-{_uuid.uuid4().hex}"
+            result = _kernel_execute(
+                ToolExecutionRequest(
+                    run_id=run_id,
+                    agent_id="autopipeline",
+                    project_scope_id="",
+                    tool_name=name,
+                    args=args if isinstance(args, dict) else {},
+                    source="autopipeline",
+                ),
+                dispatch_fn=run_plugin,
+            )
+            return {**result.output, "run_id": run_id}
 
         elif task_type == "workflow":
             workflow_id = str(task_data.get("workflow_id", "")).strip()

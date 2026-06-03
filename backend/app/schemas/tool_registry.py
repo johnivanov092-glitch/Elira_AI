@@ -13,9 +13,13 @@ class ToolDefinition(BaseModel):
     description_ru: str = Field("")
     category: str = Field("general")
     parameters_schema: dict[str, Any] = Field(default_factory=dict)
-    source: str = Field("builtin")
-    enabled: bool = True
-    permission: str = Field("auto")
+    source: str = Field("custom")
+    # P9.2-FIXUP: custom tools registered via the API are fail-closed. enabled
+    # defaults False and permission is REQUIRED (no silent "auto") — the caller
+    # must state intent. policy_classified is intentionally absent: a custom tool
+    # is always unclassified at creation and only an admin PATCH can classify it.
+    enabled: bool = False
+    permission: str = Field(..., min_length=1)
     side_effect: bool = False
     scopes: list[str] = Field(default_factory=list)
     timeout_seconds: int = 30
@@ -37,6 +41,8 @@ class ToolUpdate(BaseModel):
     timeout_seconds: int | None = None
     max_output_chars: int | None = None
     idempotent: bool | None = None
+    # Admin classification flag — the PATCH that flips a fail-closed tool live.
+    policy_classified: bool | None = None
 
 
 class ToolExecuteRequest(BaseModel):

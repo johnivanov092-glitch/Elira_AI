@@ -84,9 +84,11 @@ class TestToolExecution(ToolRegistryTestCase):
         self.assertEqual(result["echo"], "hello")
 
     def test_execute_unknown(self) -> None:
+        # P9.2-FIXUP: a tool with no ToolSpec is blocked fail-closed by the kernel
+        # (it never reaches the raw "No handler" path).
         result = reg.execute_tool("nonexistent-tool", {})
         self.assertFalse(result["ok"])
-        self.assertIn("No handler", result.get("error", ""))
+        self.assertEqual(result.get("error"), "unknown_toolspec")
 
     def test_execute_error_handling(self) -> None:
         reg.register_tool(name="test-fail", handler=_fail_handler)
@@ -129,8 +131,10 @@ class TestToolValidation(ToolRegistryTestCase):
 
 class TestRegisterFromDict(ToolRegistryTestCase):
     def test_register_from_dict(self) -> None:
+        # P9.2-FIXUP: permission is required; custom tools land disabled + unclassified.
         reg.register_tool_from_dict(
-            {"name": "test-custom", "display_name": "Custom", "category": "custom", "source": "plugin"},
+            {"name": "test-custom", "display_name": "Custom", "category": "custom",
+             "source": "plugin", "permission": "auto"},
             handler=_dummy_handler,
         )
         tool = reg.get_tool("test-custom")
@@ -138,6 +142,15 @@ class TestRegisterFromDict(ToolRegistryTestCase):
         assert tool is not None
         self.assertEqual(tool["source"], "plugin")
         self.assertTrue(tool["has_handler"])
+        self.assertFalse(tool["enabled"], "custom tools register disabled (fail-closed)")
+        self.assertFalse(tool["policy_classified"], "custom tools register unclassified")
+
+    def test_register_from_dict_requires_permission(self) -> None:
+        with self.assertRaises(ValueError):
+            reg.register_tool_from_dict(
+                {"name": "test-custom", "category": "custom", "source": "plugin"},
+                handler=_dummy_handler,
+            )
 
 
 class TestSeedBuiltinTools(ToolRegistryTestCase):

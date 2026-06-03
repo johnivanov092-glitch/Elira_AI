@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS tools (
     scopes TEXT NOT NULL DEFAULT '[]',
     timeout_seconds INTEGER NOT NULL DEFAULT 30,
     max_output_chars INTEGER NOT NULL DEFAULT 50000,
-    idempotent INTEGER NOT NULL DEFAULT 0
+    idempotent INTEGER NOT NULL DEFAULT 0,
+    policy_classified INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -80,6 +81,8 @@ def register_tool(
     timeout_seconds: int = 30,
     max_output_chars: int = 50000,
     idempotent: bool = False,
+    enabled: bool = True,
+    policy_classified: bool = True,
 ) -> dict:
     return registry_store.register_tool(
         conn_factory=_conn,
@@ -101,6 +104,8 @@ def register_tool(
         timeout_seconds=timeout_seconds,
         max_output_chars=max_output_chars,
         idempotent=idempotent,
+        enabled=enabled,
+        policy_classified=policy_classified,
     )
 
 
@@ -111,6 +116,51 @@ def register_tool_from_dict(tool_def: dict, handler: Callable | None = None) -> 
         noop_handler=_noop_handler,
         tool_def=tool_def,
         handler=handler,
+    )
+
+
+def register_dynamic_tool(
+    name: str,
+    handler: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    display_name: str = "",
+    display_name_ru: str = "",
+    description: str = "",
+    description_ru: str = "",
+    category: str = "general",
+    parameters_schema: dict[str, Any] | None = None,
+    source: str = "plugin",
+    side_effect: bool = True,
+    scopes: list[str] | None = None,
+    timeout_seconds: int = 30,
+    max_output_chars: int = 50000,
+    idempotent: bool = False,
+) -> dict:
+    """Fail-closed registration for untrusted dynamic tools (plugins / MCP).
+
+    New tools land forbidden + disabled + unclassified; re-registration only
+    refreshes metadata and never resets admin policy. See
+    ``registry_store.register_dynamic_tool``.
+    """
+    return registry_store.register_dynamic_tool(
+        conn_factory=_conn,
+        handlers=_handlers,
+        now_func=_now,
+        get_tool_func=get_tool,
+        name=name,
+        handler=handler,
+        display_name=display_name,
+        display_name_ru=display_name_ru,
+        description=description,
+        description_ru=description_ru,
+        category=category,
+        parameters_schema=parameters_schema,
+        source=source,
+        side_effect=side_effect,
+        scopes=scopes,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=max_output_chars,
+        idempotent=idempotent,
     )
 
 

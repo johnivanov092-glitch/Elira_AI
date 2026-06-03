@@ -181,6 +181,73 @@ class McpToolProvider:
         self._populated = True
 
 
+def _mcp_noop_handler(args: dict[str, Any]) -> dict[str, Any]:
+    """Placeholder handler for an MCP ToolSpec row.
+
+    MCP dispatch goes through McpToolProvider, never through the registry handler;
+    this exists only so the registry has a callable bound to the spec.
+    """
+    return {"ok": False, "text": "ERROR: MCP tool — dispatch via MCP provider, not tool_registry"}
+
+
+def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
+    """Mirror running MCP servers' tools into the Tool Registry, fail-closed.
+
+    Each MCP tool gets a DB ToolSpec that is forbidden + disabled +
+    policy_classified=0 on first sight (untrusted remote code) — it cannot run until
+    an admin classifies it via the Tool API. Re-sync preserves admin policy
+    (register_dynamic_tool refreshes metadata only). MCP-source specs whose tool is
+    no longer advertised by any running server are DISABLED (stale → off, never
+    deleted, so classification/audit survives a transient outage).
+
+    Defensive throughout: a registry or network hiccup must never break provider
+    construction or the agent loop.
+    """
+    try:
+        import app.application.tool_registry.runtime as _tr
+    except Exception:
+        return
+
+    live: set[str] = set()
+    for provider in providers:
+        try:
+            schemas = provider.get_schemas()
+        except Exception:
+            continue
+        for schema in schemas:
+            fn = schema.get("function") if isinstance(schema, dict) else None
+            if not isinstance(fn, dict):
+                continue
+            qname = fn.get("name")
+            if not isinstance(qname, str) or not qname:
+                continue
+            params = fn.get("parameters")
+            live.add(qname)
+            try:
+                _tr.register_dynamic_tool(
+                    qname,
+                    _mcp_noop_handler,
+                    display_name=qname,
+                    description=str(fn.get("description") or ""),
+                    category="mcp",
+                    parameters_schema=params if isinstance(params, dict) else {},
+                    source="mcp",
+                    side_effect=True,
+                    scopes=[],
+                    timeout_seconds=60,
+                )
+            except Exception as exc:
+                logger.warning("mcp spec sync for %r failed: %s", qname, exc)
+
+    try:
+        for tool in _tr.list_tools_with_schemas(source="mcp", enabled_only=False):
+            tname = tool.get("name")
+            if tname and tname not in live and tool.get("enabled"):
+                _tr.update_tool(tname, {"enabled": False})
+    except Exception as exc:
+        logger.warning("mcp stale-spec disable sweep failed: %s", exc)
+
+
 def build_mcp_providers() -> list[McpToolProvider]:
     """Construct a provider per **running** MCP server.
 
@@ -192,4 +259,8 @@ def build_mcp_providers() -> list[McpToolProvider]:
         if spec.get("status") != "running":
             continue
         providers.append(McpToolProvider(spec["id"]))
+    # P9.2-FIXUP: mirror discovered MCP tools into the registry fail-closed so the
+    # unified kernel can enforce policy on them (forbidden/disabled/unclassified by
+    # default; admin classification required to run).
+    sync_mcp_tool_specs(providers)
     return providers

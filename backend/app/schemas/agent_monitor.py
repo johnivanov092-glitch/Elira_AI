@@ -29,6 +29,7 @@ class AgentLimit(BaseModel):
     max_execution_seconds: int
     max_context_tokens: int
     allowed_tools: list[str] = Field(default_factory=list)
+    allowed_scopes: list[str] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -38,6 +39,7 @@ class AgentLimitUpdate(BaseModel):
     max_execution_seconds: int | None = None
     max_context_tokens: int | None = None
     allowed_tools: list[str] | None = None
+    allowed_scopes: list[str] | None = None
 
 
 class AgentLimitListResponse(BaseModel):

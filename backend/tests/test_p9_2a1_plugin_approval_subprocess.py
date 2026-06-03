@@ -1,9 +1,10 @@
-"""P9.2A1 debt — real plugin approve-and-retry through the kernel subprocess path.
+"""P9.2-FIXUP — plugin lockdown + admin-authorized approve-and-retry subprocess path.
 
-Plugins are classified require_approval (untrusted subprocess code). This drives
-the full HTTP flow end to end: POST /plugins/run returns waiting_approval WITHOUT
-running the subprocess; the approval is granted; the retry with the same run_id
-actually runs the plugin in a child process and returns its real result.
+A freshly discovered plugin is forbidden + disabled + unclassified: POST /plugins/run
+is blocked by the kernel and the subprocess never runs. Only after an admin classifies
+it via the Tool API (PATCH permission=require_approval, enabled=true,
+policy_classified=true) does the approval flow apply — then approve + retry with the
+same run_id actually runs the plugin in a child process and returns its real result.
 """
 from __future__ import annotations
 
@@ -69,17 +70,39 @@ class PluginApproveRetrySubprocessTest(unittest.TestCase):
         with mock.patch.object(psys, "PLUGINS_DIR", tmp):
             psys.load_plugins()
 
-    def test_plugin_run_requires_approval_then_executes_subprocess(self) -> None:
+    def _classify_for_approval(self) -> None:
+        """Admin action: classify + enable + require_approval via the Tool API."""
+        rp = client.patch(
+            f"/api/agent-os/tools/{self.name}",
+            json={"permission": "require_approval", "enabled": True, "policy_classified": True},
+        )
+        self.assertEqual(rp.status_code, 200, rp.text)
+
+    def test_fresh_plugin_blocked_then_admin_classify_enables_approval_subprocess(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             self._load_plugin(Path(tmpdir))
 
+            # A freshly loaded plugin is fail-closed: forbidden + disabled + unclassified.
             spec = reg.get_tool(self.name)
             self.assertIsNotNone(spec)
             assert spec is not None
-            self.assertEqual(spec["permission"], "require_approval",
-                             "P9.2A1: plugins must be classified require_approval")
+            self.assertEqual(spec["permission"], "forbidden")
+            self.assertFalse(spec["enabled"])
+            self.assertFalse(spec["policy_classified"])
 
-            # 1) first call → waiting_approval, subprocess NOT run
+            # 0) before classification → blocked by the kernel, subprocess NOT run
+            r0 = client.post("/api/extra/plugins/run",
+                             json={"name": self.name, "args": {"value": "hi"}})
+            self.assertEqual(r0.status_code, 200)
+            d0 = r0.json()
+            self.assertFalse(d0.get("ok", True), "unclassified plugin must be blocked")
+            self.assertNotIn("approval_id", d0, "blocked, not an approval gate")
+            self.assertNotIn("via", d0, "subprocess must not have run")
+
+            # 1) admin classifies → require_approval + enabled + classified
+            self._classify_for_approval()
+
+            # 2) now first call → waiting_approval, subprocess NOT run
             r1 = client.post("/api/extra/plugins/run",
                              json={"name": self.name, "args": {"value": "hi"}})
             self.assertEqual(r1.status_code, 200)
@@ -90,11 +113,11 @@ class PluginApproveRetrySubprocessTest(unittest.TestCase):
             self.assertIn("approval_id", d1)
             self.assertNotIn("via", d1, "subprocess must not have run yet")
 
-            # 2) approve
+            # 3) approve
             ra = client.post(f"/api/agent-os/approvals/{d1['approval_id']}/approve")
             self.assertEqual(ra.status_code, 200)
 
-            # 3) retry with the SAME run_id + SAME args → real subprocess executes
+            # 4) retry with the SAME run_id + SAME args → real subprocess executes
             r2 = client.post("/api/extra/plugins/run",
                              json={"name": self.name, "args": {"value": "hi"}, "run_id": run_id})
             self.assertEqual(r2.status_code, 200)
@@ -107,6 +130,7 @@ class PluginApproveRetrySubprocessTest(unittest.TestCase):
     def test_plugin_run_different_args_after_approval_blocks_again(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             self._load_plugin(Path(tmpdir))
+            self._classify_for_approval()
 
             d1 = client.post("/api/extra/plugins/run",
                              json={"name": self.name, "args": {"value": "hi"}}).json()

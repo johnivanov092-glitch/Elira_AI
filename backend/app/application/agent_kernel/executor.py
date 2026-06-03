@@ -1,9 +1,11 @@
 """Unified ToolExecutor — single execution path for all agent sources.
 
 Flow per call:
-  1. Resolve ToolSpec (permission, timeout, max_output_chars).
-  1b. Forbidden tier — permission == "forbidden" is blocked immediately.
-  2. Policy preflight via sandbox (rate-limit + context-budget check).
+  1. Resolve ToolSpec. Fail-closed gates (each emits tool.invalid_spec, blocks
+     before dispatch): no spec (unknown_toolspec), policy_classified=0
+     (unclassified_tool), invalid permission tier, unknown scope in the spec.
+  1e. Forbidden tier — a classified permission == "forbidden" is blocked immediately.
+  2. Policy preflight via sandbox (rate-limit + context-budget + per-call allowed_tools).
   3. Approval gate — permission == "require_approval" requires a valid human
      approval (ApprovalStore in agent_monitor.db); otherwise the call returns
      "waiting_approval" until one is granted.
@@ -54,14 +56,94 @@ def execute_tool(
     from app.application.tool_registry.runtime import get_tool
     from app.application.agent_registry.sandbox import SandboxPolicyError, preflight_or_raise
 
+    from app.application.tool_registry.store import (
+        VALID_PERMISSIONS as _VALID_PERMS,
+        VALID_SCOPES as _VALID_SCOPES,
+    )
+
     tool_name = request.tool_name
 
-    # 1. Resolve ToolSpec for limits (best-effort — fall back to safe defaults)
+    # 1. Resolve ToolSpec. The kernel is fail-closed: a tool with no spec, an
+    # unclassified spec, an invalid permission tier, or an unknown scope in its
+    # persisted spec must NEVER reach dispatch. Each such case emits
+    # tool.invalid_spec so the integrity problem is auditable.
     spec = get_tool(tool_name)
-    max_chars: int = int((spec or {}).get("max_output_chars") or 50000)
 
-    # 1b. Forbidden tier — no approval possible, immediate block.
-    if spec and spec.get("permission") == "forbidden":
+    # 1a. No spec at all → unknown to the policy layer. Block before dispatch.
+    if spec is None:
+        _emit_invalid_spec(request, "unknown_toolspec")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' has no registered ToolSpec — blocked (fail-closed).",
+                "error": "unknown_toolspec",
+            },
+            error="unknown_toolspec",
+        )
+
+    max_chars: int = int(spec.get("max_output_chars") or 50000)
+
+    # 1b. Unclassified spec → never runs until an admin classifies it (Tool API
+    # PATCH sets policy_classified=true). Covers freshly-discovered plugin/MCP
+    # tools and any row migrated in before classification existed.
+    if not spec.get("policy_classified"):
+        _emit_invalid_spec(request, "unclassified_tool")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' is not policy-classified — blocked (fail-closed).",
+                "error": "unclassified_tool",
+            },
+            error="unclassified_tool",
+        )
+
+    # 1b'. Disabled spec → not executable through the unified path either. Defense
+    # in depth so a classified-but-disabled tool (e.g. an admin-classified plugin
+    # left disabled, or a stale/disabled MCP tool) cannot run via the kernel.
+    if not spec.get("enabled", True):
+        _emit_blocked(request, f"tool '{tool_name}' is disabled")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' is disabled and cannot be executed.",
+                "error": "tool_disabled",
+            },
+            error="tool_disabled",
+        )
+
+    # 1c. Invalid permission tier → must never be treated as "auto".
+    if spec.get("permission") not in _VALID_PERMS:
+        _emit_invalid_spec(request, f"invalid_permission:{spec.get('permission')!r}")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' has an invalid permission tier and cannot be executed.",
+                "error": "invalid_permission",
+            },
+            error="invalid_permission",
+        )
+
+    # 1d. Unknown scope in the persisted spec → fail-closed (a corrupted or
+    # forward-dated spec must not slip an unrecognized capability past the gate).
+    _bad_scopes = [s for s in (spec.get("scopes") or []) if s not in _VALID_SCOPES]
+    if _bad_scopes:
+        _emit_invalid_spec(request, f"unknown_scope:{_bad_scopes}")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' declares unknown scope(s) {_bad_scopes} — blocked (fail-closed).",
+                "error": "unknown_scope",
+            },
+            error="unknown_scope",
+        )
+
+    # 1e. Forbidden tier — a classified, deliberate admin block. No approval possible.
+    if spec.get("permission") == "forbidden":
         _emit_blocked(request, f"tool '{tool_name}' is forbidden")
         return ToolExecutionResult(
             status="forbidden",
@@ -73,32 +155,15 @@ def execute_tool(
             error=f"forbidden:{tool_name}",
         )
 
-    # 1c. Fail-closed: a resolved spec whose permission tier is not recognized
-    # is blocked — it must never be treated as "auto".
-    if spec is not None:
-        from app.application.tool_registry.store import VALID_PERMISSIONS as _VALID_PERMS
-        if spec.get("permission") not in _VALID_PERMS:
-            _emit_blocked(request, f"invalid_permission:{spec.get('permission')!r}")
-            return ToolExecutionResult(
-                status="blocked",
-                output={
-                    "ok": False,
-                    "text": f"Tool '{tool_name}' has an invalid permission tier and cannot be executed.",
-                    "error": "invalid_permission",
-                },
-                error="invalid_permission",
-            )
-
-    # 2. Policy preflight — rate-limit and context-budget check.
-    # selected_tools is intentionally omitted: the allowed_tools sandbox list is a
-    # session-level concern, already checked by callers (run_code_agent,
-    # step_executor). Per-tool allowlisting via ToolSpec.permission is enforced
-    # in Шаг 4 (ApprovalStore). Passing selected_tools here would block
-    # native code-agent tools that are not in the tool_registry allowed_tools list.
+    # 2. Policy preflight — rate-limit, context-budget, and per-call allowed_tools.
+    # selected_tools=[tool_name] enforces the agent's allowed_tools list at tool-call
+    # granularity. An empty allowed_tools grant means unrestricted, so default agents
+    # are unaffected; an explicitly tool-restricted agent is blocked per call here.
     try:
         preflight_or_raise(
             agent_id=request.agent_id,
             num_ctx=0,
+            selected_tools=[tool_name],
             run_id=request.run_id,
             workflow_id=request.workflow_id,
             step_id=request.step_id,
@@ -310,6 +375,29 @@ def _emit_timeout(req: ToolExecutionRequest, elapsed: float, budget: int) -> Non
                 "elapsed_seconds": round(elapsed, 3),
                 "budget_seconds": budget,
                 "observed": True,
+            },
+        )
+    except Exception:
+        pass
+
+
+def _emit_invalid_spec(req: ToolExecutionRequest, reason: str) -> None:
+    """Audit a fail-closed block caused by a missing/invalid/unclassified ToolSpec.
+
+    Distinct from sandbox.policy.blocked (a policy decision on a valid spec): this
+    flags an integrity problem with the spec itself — the tool never reaches dispatch.
+    """
+    try:
+        from app.application.event_bus import runtime as _eb
+        _eb.emit_event(
+            event_type="tool.invalid_spec",
+            payload={
+                "tool_name": req.tool_name,
+                "agent_id": req.agent_id,
+                "source": req.source,
+                "project_scope_id": req.project_scope_id,
+                "run_id": req.run_id,
+                "reason": reason,
             },
         )
     except Exception:

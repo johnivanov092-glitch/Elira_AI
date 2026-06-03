@@ -304,6 +304,32 @@ def migrate_agent_limits_columns(db_path: str | Path) -> None:
             )
 
 
+def migrate_normalize_full_tool_allowlists(db_path: str | Path) -> None:
+    """P9.2-FIXUP: collapse legacy "allow every tool" snapshots to [] (unrestricted).
+
+    The old default allowed_tools was an all_known_tools() snapshot, which ALWAYS
+    contained the full planner_tool_aliases() set. With the kernel now enforcing
+    allowed_tools per tool-call (selected_tools=[name]), that frozen snapshot would
+    wrongly block any tool registered after the limit row was created. A row that
+    allows the entire planner-alias set was a legacy default snapshot — collapse it
+    to [] (semantically lossless: "allow all" == unrestricted). Narrow admin
+    restrictions (a strict subset that does not cover every alias) are preserved.
+    Idempotent: an already-empty list is skipped.
+    """
+    alias_set = set(planner_tool_aliases())
+    if not alias_set:
+        return
+    with get_connection(db_path) as con:
+        rows = con.execute("SELECT agent_id, allowed_tools_json FROM agent_limits").fetchall()
+        for agent_id, allowed_json in rows:
+            allowed = set(loads_json(allowed_json, []))
+            if allowed and alias_set.issubset(allowed):
+                con.execute(
+                    "UPDATE agent_limits SET allowed_tools_json = '[]' WHERE agent_id = ?",
+                    (agent_id,),
+                )
+
+
 def default_limit_payload(agent_id: str) -> dict[str, Any]:
     timestamp = now_utc()
     return {
@@ -311,7 +337,12 @@ def default_limit_payload(agent_id: str) -> dict[str, Any]:
         "max_runs_per_hour": DEFAULT_MAX_RUNS_PER_HOUR,
         "max_execution_seconds": DEFAULT_MAX_EXECUTION_SECONDS,
         "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
-        "allowed_tools": all_known_tools(),
+        # P9.2-FIXUP: empty allowed_tools == UNRESTRICTED (mirrors allowed_scopes).
+        # The kernel now enforces allowed_tools per tool-call (selected_tools=[name]),
+        # so a frozen all_known_tools() snapshot would wrongly block any tool
+        # registered after the limit was created (new builtins, classified plugins,
+        # MCP). A tool restriction is an explicit admin opt-in, never the default.
+        "allowed_tools": [],
         "allowed_scopes": [],
         "created_at": timestamp,
         "updated_at": timestamp,

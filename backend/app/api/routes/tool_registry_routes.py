@@ -42,8 +42,11 @@ def get_tool(name: str):
 
 @router.post("/tools", summary="Зарегистрировать custom tool")
 def register_tool(body: ToolDefinition):
-    result = registry.register_tool_from_dict(body.model_dump())
-    return result
+    # Fail-closed validation (invalid permission/scope) raises ValueError → 400.
+    try:
+        return registry.register_tool_from_dict(body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.patch("/tools/{name}", summary="Обновить метаданные инструмента")
@@ -51,7 +54,12 @@ def update_tool(name: str, body: ToolUpdate):
     existing = registry.get_tool(name)
     if not existing:
         raise HTTPException(404, f"Tool '{name}' not found")
-    return registry.update_tool(name, body.model_dump(exclude_none=True))
+    # PATCH validates permission/scopes and can atomically set permission, scopes,
+    # side_effect, idempotent, enabled and policy_classified=true. Invalid input → 400.
+    try:
+        return registry.update_tool(name, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/tools/{name}", summary="Удалить инструмент")

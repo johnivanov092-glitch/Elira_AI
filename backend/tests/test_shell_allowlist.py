@@ -64,7 +64,8 @@ class TestExecutorBypassForSafeCommands(unittest.TestCase):
             ToolExecutionRequest,
             execute_tool,
         )
-        _spec = {"permission": "require_approval", "max_output_chars": 50000}
+        _spec = {"permission": "require_approval", "max_output_chars": 50000,
+                 "policy_classified": True, "enabled": True}
         dispatch_calls = []
 
         def _dispatch(name, args):

@@ -321,26 +321,31 @@ def _build_plugin_record(name: str, py_file: Path, config: dict, manifest: dict)
 
 
 def _register_plugin_in_tool_registry(name: str, info: dict) -> None:
-    """Register a loaded plugin as a tool in the Tool Registry (source='plugin')."""
+    """Register/refresh a plugin's ToolSpec in the Tool Registry (source='plugin').
+
+    P9.2-FIXUP: a newly discovered plugin lands forbidden + disabled +
+    policy_classified=0. Plugin code is untrusted subprocess code, so it cannot run
+    until an admin explicitly classifies it via the Tool API (PATCH permission +
+    enabled + policy_classified). A reload only refreshes metadata — it never resets
+    the admin's policy on an already-registered plugin (register_dynamic_tool).
+    """
     try:
         import app.application.tool_registry.runtime as _tr
 
         def _handler(args: dict, _name: str = name) -> dict:
             return run_plugin(_name, args)
 
-        _tr.register_tool(
-            name=name,
-            handler=_handler,
+        _tr.register_dynamic_tool(
+            name,
+            _handler,
             display_name=info.get("description", name),
             display_name_ru=info.get("description", name),
             description=info.get("description", ""),
             category=info.get("category", "plugin"),
             source="plugin",
-            # P9.2A1: plugin code runs untrusted in a subprocess → gate it behind
-            # the approval policy instead of auto-executing.
-            permission="require_approval",
             side_effect=True,
             scopes=["shell.exec"],
+            timeout_seconds=int(info.get("timeout", PLUGIN_DEFAULT_TIMEOUT) or PLUGIN_DEFAULT_TIMEOUT),
         )
     except Exception as exc:
         logger.warning(f"Plugin '{name}' tool-registry registration failed: {exc}")
@@ -383,14 +388,10 @@ def load_plugins() -> dict:
             loaded.append(name)
             _register_plugin_in_tool_registry(name, _plugins[name])
 
-            if _plugins[name]["enabled"] and "on_start" in _plugins[name]["hooks"]:
-                result = _run_plugin_subprocess(
-                    _plugins[name]["path"],
-                    {"action": "hook", "hook_name": "on_start", "data": None},
-                    timeout=_plugins[name]["timeout"],
-                )
-                if not result.get("ok"):
-                    logger.warning("Plugin '%s' on_start error: %s", name, result.get("error"))
+            # P9.2-FIXUP: on_start auto-execution at load is DISABLED. Running plugin
+            # subprocess code as a side effect of discovery bypasses the kernel policy
+            # + approval gate. Plugin execution now happens only through the unified
+            # kernel (e.g. POST /api/extra/plugins/run) after admin classification.
 
         except Exception as e:
             errors.append({"name": name, "error": str(e)})

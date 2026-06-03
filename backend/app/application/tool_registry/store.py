@@ -10,6 +10,12 @@ _TOOLSPEC_NEW_COLUMNS = [
     ("timeout_seconds",  "INTEGER NOT NULL DEFAULT 30"),
     ("max_output_chars", "INTEGER NOT NULL DEFAULT 50000"),
     ("idempotent",       "INTEGER NOT NULL DEFAULT 0"),
+    # P9.2-FIXUP — fail-closed classification gate. Default 0 (unclassified) so a
+    # tool persisted before classification existed can never silently execute:
+    # the executor blocks policy_classified=0 before dispatch. Trusted server-side
+    # registration (builtins/native/SSH) re-seeds this to 1; plugins/MCP/custom
+    # stay 0 until an admin explicitly classifies them via the Tool API.
+    ("policy_classified", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -24,13 +30,35 @@ VALID_SCOPES: frozenset[str] = frozenset({
 })
 
 
+# Sources whose tools are trusted built-ins shipped with the app. They are always
+# policy-classified; only plugin/mcp/custom tools require explicit admin classification.
+_TRUSTED_SOURCES: tuple[str, ...] = ("builtin", "code_agent", "ssh")
+
+
 def migrate_toolspec_columns(*, conn_factory: Callable[[], Any]) -> None:
-    """Additive migration: add ToolSpec columns introduced in P1."""
+    """Additive migration: add ToolSpec columns introduced in P1 / P9.2-FIXUP.
+
+    After adding policy_classified (default 0), backfill trusted-source rows to 1 so
+    a DB seeded before classification existed does not leave native/SSH/builtin tools
+    blocked as "unclassified" by the fail-closed executor before the next re-seed.
+    Idempotent: safe to run on every import. plugin/mcp/custom rows are never touched.
+    """
     with conn_factory() as con:
         existing = {row[1] for row in con.execute("PRAGMA table_info(tools)").fetchall()}
+        added_policy_classified = False
         for col_name, col_def in _TOOLSPEC_NEW_COLUMNS:
             if col_name not in existing:
                 con.execute(f"ALTER TABLE tools ADD COLUMN {col_name} {col_def}")
+                if col_name == "policy_classified":
+                    added_policy_classified = True
+        # Backfill only needs the column to exist (added now or previously).
+        if added_policy_classified or "policy_classified" in existing:
+            placeholders = ",".join("?" for _ in _TRUSTED_SOURCES)
+            con.execute(
+                f"UPDATE tools SET policy_classified = 1 "
+                f"WHERE source IN ({placeholders}) AND policy_classified = 0",
+                _TRUSTED_SOURCES,
+            )
 
 
 def now_utc_iso(now_func: Callable[[], str]) -> str:
@@ -61,7 +89,7 @@ def row_to_dict(row: Any) -> dict[str, Any]:
             data["scopes"] = json.loads(data["scopes"])
         except (json.JSONDecodeError, TypeError):
             data["scopes"] = []
-    for _bool_col in ("side_effect", "idempotent"):
+    for _bool_col in ("side_effect", "idempotent", "policy_classified"):
         if _bool_col in data:
             data[_bool_col] = bool(data[_bool_col])
     return data
@@ -88,6 +116,8 @@ def register_tool(
     timeout_seconds: int = 30,
     max_output_chars: int = 50000,
     idempotent: bool = False,
+    enabled: bool = True,
+    policy_classified: bool = True,
 ) -> dict[str, Any]:
     # P9.2A1 fail-closed: reject unknown permission/scope at registration so a
     # typo or omission can never silently degrade to an unguarded "auto" tool.
@@ -106,12 +136,17 @@ def register_tool(
     now = now_func()
 
     with conn_factory() as con:
+        # ON CONFLICT updates metadata AND policy_classified (trusted server-side
+        # re-seed re-asserts classification for builtins/native/SSH after the
+        # additive migration set the column to 0). `enabled` is deliberately NOT
+        # overwritten on conflict so an admin's enable/disable survives a re-seed.
         con.execute(
             """INSERT INTO tools
                (name, display_name, display_name_ru, description, description_ru,
                 category, parameters_schema_json, source, enabled, version, created_at, updated_at,
-                permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+                permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent,
+                policy_classified)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                 display_name=excluded.display_name,
                 display_name_ru=excluded.display_name_ru,
@@ -126,6 +161,7 @@ def register_tool(
                 timeout_seconds=excluded.timeout_seconds,
                 max_output_chars=excluded.max_output_chars,
                 idempotent=excluded.idempotent,
+                policy_classified=excluded.policy_classified,
                 updated_at=excluded.updated_at""",
             (
                 name,
@@ -136,6 +172,7 @@ def register_tool(
                 category,
                 json.dumps(parameters_schema or {}, ensure_ascii=False),
                 source,
+                1 if enabled else 0,
                 now,
                 now,
                 permission,
@@ -144,6 +181,7 @@ def register_tool(
                 timeout_seconds,
                 max_output_chars,
                 1 if idempotent else 0,
+                1 if policy_classified else 0,
             ),
         )
     return get_tool_func(name) or {"name": name}
@@ -158,6 +196,11 @@ def register_tool_from_dict(
     handler: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     name = tool_def["name"]
+    # Fail-closed: permission is required, never silently defaulted to "auto".
+    # (ToolDefinition enforces this at the API; direct callers must state it too.)
+    permission = tool_def.get("permission")
+    if not permission:
+        raise ValueError(f"ToolSpec permission is required for tool {name!r}")
     if handler:
         handlers[name] = handler
     return register_tool_func(
@@ -170,13 +213,108 @@ def register_tool_from_dict(
         category=tool_def.get("category", "custom"),
         parameters_schema=tool_def.get("parameters_schema"),
         source=tool_def.get("source", "custom"),
-        permission=tool_def.get("permission", "auto"),
+        permission=permission,
         side_effect=tool_def.get("side_effect", False),
         scopes=tool_def.get("scopes"),
         timeout_seconds=tool_def.get("timeout_seconds", 30),
         max_output_chars=tool_def.get("max_output_chars", 50000),
         idempotent=tool_def.get("idempotent", False),
+        # Custom tools registered through the API are fail-closed: disabled and
+        # unclassified until an admin explicitly enables + classifies them via
+        # PATCH. permission has no default here — it is required by ToolDefinition.
+        enabled=tool_def.get("enabled", False),
+        policy_classified=tool_def.get("policy_classified", False),
     )
+
+
+def register_dynamic_tool(
+    *,
+    conn_factory: Callable[[], Any],
+    handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]],
+    now_func: Callable[[], str],
+    get_tool_func: Callable[[str], dict[str, Any] | None],
+    name: str,
+    handler: Callable[[dict[str, Any]], dict[str, Any]],
+    display_name: str = "",
+    display_name_ru: str = "",
+    description: str = "",
+    description_ru: str = "",
+    category: str = "general",
+    parameters_schema: dict[str, Any] | None = None,
+    source: str = "plugin",
+    side_effect: bool = True,
+    scopes: list[str] | None = None,
+    timeout_seconds: int = 30,
+    max_output_chars: int = 50000,
+    idempotent: bool = False,
+) -> dict[str, Any]:
+    """Register an untrusted, dynamically-discovered tool (plugin / MCP) fail-closed.
+
+    NEW tool   → permission='forbidden', enabled=0, policy_classified=0. It cannot
+                 execute until an admin explicitly classifies it via the Tool API.
+    EXISTING   → only display/description/category/params/source metadata is
+                 refreshed; permission, enabled, scopes, side_effect, idempotent,
+                 policy_classified and resource bounds (admin policy) are preserved,
+                 so a plugin reload / MCP refresh never re-opens a locked tool.
+
+    The in-process handler is always (re)bound so dispatch points at current code.
+    """
+    handlers[name] = handler
+    now = now_func()
+    existing = get_tool_func(name)
+
+    with conn_factory() as con:
+        if existing is None:
+            con.execute(
+                """INSERT INTO tools
+                   (name, display_name, display_name_ru, description, description_ru,
+                    category, parameters_schema_json, source, enabled, version, created_at, updated_at,
+                    permission, side_effect, scopes, timeout_seconds, max_output_chars, idempotent,
+                    policy_classified)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, 'forbidden', ?, ?, ?, ?, ?, 0)""",
+                (
+                    name,
+                    display_name,
+                    display_name_ru,
+                    description,
+                    description_ru,
+                    category,
+                    json.dumps(parameters_schema or {}, ensure_ascii=False),
+                    source,
+                    now,
+                    now,
+                    1 if side_effect else 0,
+                    json.dumps(scopes or [], ensure_ascii=False),
+                    timeout_seconds,
+                    max_output_chars,
+                    1 if idempotent else 0,
+                ),
+            )
+        else:
+            con.execute(
+                """UPDATE tools SET
+                    display_name = ?,
+                    display_name_ru = ?,
+                    description = ?,
+                    description_ru = ?,
+                    category = ?,
+                    parameters_schema_json = ?,
+                    source = ?,
+                    updated_at = ?
+                   WHERE name = ?""",
+                (
+                    display_name,
+                    display_name_ru,
+                    description,
+                    description_ru,
+                    category,
+                    json.dumps(parameters_schema or {}, ensure_ascii=False),
+                    source,
+                    now,
+                    name,
+                ),
+            )
+    return get_tool_func(name) or {"name": name}
 
 
 def get_tool(
@@ -238,11 +376,29 @@ def update_tool(
     name: str,
     updates: dict[str, Any],
 ) -> dict[str, Any]:
+    # PATCH is fail-closed: a bad permission/scope is rejected (ValueError → 400 in
+    # the route) instead of being persisted, where the executor would then have to
+    # block it. This is the admin classification path, so it must validate the same
+    # vocabulary register_tool enforces.
+    if updates.get("permission") is not None and updates["permission"] not in VALID_PERMISSIONS:
+        raise ValueError(
+            f"invalid ToolSpec permission {updates['permission']!r} for tool {name!r}; "
+            f"must be one of {sorted(VALID_PERMISSIONS)}"
+        )
+    if updates.get("scopes") is not None:
+        _bad_scopes = [s for s in (updates["scopes"] or []) if s not in VALID_SCOPES]
+        if _bad_scopes:
+            raise ValueError(
+                f"invalid ToolSpec scopes {_bad_scopes} for tool {name!r}; "
+                f"must be a subset of {sorted(VALID_SCOPES)}"
+            )
+
     allowed = {
         "display_name", "display_name_ru", "description", "description_ru", "category", "enabled",
         "permission", "timeout_seconds", "max_output_chars",
     }
-    bool_cols = {"enabled", "side_effect", "idempotent"}
+    # All policy columns settable atomically in one UPDATE (single statement below).
+    bool_cols = {"enabled", "side_effect", "idempotent", "policy_classified"}
     sets: list[str] = []
     params: list[Any] = []
 

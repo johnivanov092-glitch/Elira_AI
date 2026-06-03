@@ -124,7 +124,8 @@ class TestExecutorForbiddenTier(unittest.TestCase):
             return {"ok": True, "text": "executed"}
 
         with mock.patch("app.application.tool_registry.runtime.get_tool",
-                        return_value={"permission": permission, "max_output_chars": 50000}), \
+                        return_value={"permission": permission, "max_output_chars": 50000,
+                                      "policy_classified": True, "enabled": True}), \
              mock.patch("app.application.agent_registry.sandbox.preflight_or_raise",
                         return_value={"ok": True}):
             result = execute_tool(

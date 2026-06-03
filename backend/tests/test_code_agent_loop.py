@@ -151,9 +151,12 @@ class AgentLoopTest(unittest.TestCase):
         def fake_chat(**kwargs):
             return next(scripted_responses)
 
-        # Patch get_tool to return None so the executor applies no permission check.
-        # This test verifies loop behaviour, not P2 approval policy.
-        with patch("app.application.tool_registry.runtime.get_tool", return_value=None):
+        # Stub a classified auto spec so the executor applies no approval gate (the
+        # fail-closed kernel blocks an absent/unclassified spec). This test verifies
+        # loop behaviour, not P2 approval policy.
+        with patch("app.application.tool_registry.runtime.get_tool",
+                   return_value={"permission": "auto", "max_output_chars": 50000,
+                                 "policy_classified": True, "enabled": True}):
             result = run_code_agent(
                 user_message="Создай out.txt с текстом Hello Elira",
                 project_root=self.root,
@@ -304,9 +307,12 @@ class AgentLoopTest(unittest.TestCase):
         def fake_chat(**kwargs):
             return next(responses)
 
-        # Patch get_tool to return None so the executor applies no permission check.
-        # This test verifies diff metadata propagation, not P2 approval policy.
-        with patch("app.application.tool_registry.runtime.get_tool", return_value=None):
+        # Stub a classified auto spec so the executor applies no approval gate (the
+        # fail-closed kernel blocks an absent/unclassified spec). This test verifies
+        # diff metadata propagation, not P2 approval policy.
+        with patch("app.application.tool_registry.runtime.get_tool",
+                   return_value={"permission": "auto", "max_output_chars": 50000,
+                                 "policy_classified": True, "enabled": True}):
             events = list(stream_code_agent(
                 user_message="bump version",
                 project_root=self.root,

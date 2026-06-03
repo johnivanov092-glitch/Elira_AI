@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS tools (
     scopes TEXT NOT NULL DEFAULT '[]',
     timeout_seconds INTEGER NOT NULL DEFAULT 30,
     max_output_chars INTEGER NOT NULL DEFAULT 50000,
-    idempotent INTEGER NOT NULL DEFAULT 0
+    idempotent INTEGER NOT NULL DEFAULT 0,
+    policy_classified INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -104,8 +105,19 @@ class TestToolSpecMigration(unittest.TestCase):
             finally:
                 con.close()
 
-            for col in ("permission", "side_effect", "scopes", "timeout_seconds", "max_output_chars", "idempotent"):
+            for col in ("permission", "side_effect", "scopes", "timeout_seconds",
+                        "max_output_chars", "idempotent", "policy_classified"):
                 self.assertIn(col, cols, f"Missing column: {col}")
+
+            # P9.2-FIXUP: trusted-source (builtin) rows are backfilled to classified=1
+            # so the fail-closed executor does not block them before the next re-seed.
+            con = _make_conn(db)
+            try:
+                row = dict(con.execute("SELECT * FROM tools WHERE name='legacy_tool'").fetchone())
+            finally:
+                con.close()
+            self.assertEqual(row["policy_classified"], 1,
+                             "builtin-source row must be backfilled to policy_classified=1")
 
     def test_migration_preserves_existing_rows_with_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,6 +152,36 @@ class TestToolSpecMigration(unittest.TestCase):
             self.assertEqual(row["idempotent"], 0)
             self.assertEqual(row["display_name"], "Old")
             self.assertEqual(row["enabled"], 1)
+
+    def test_migration_leaves_untrusted_source_unclassified(self) -> None:
+        """P9.2-FIXUP: plugin/mcp/custom rows are NOT backfilled — they stay 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "untrusted.db"
+            con = _make_conn(db)
+            try:
+                con.executescript(_LEGACY_SCHEMA)
+                for src in ("plugin", "mcp", "custom"):
+                    con.execute(
+                        "INSERT INTO tools (name, display_name, display_name_ru, description, "
+                        "description_ru, category, parameters_schema_json, source, enabled, "
+                        "version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'now', 'now')",
+                        (f"{src}_tool", src, src, "d", "d", "test", "{}", src),
+                    )
+                con.commit()
+            finally:
+                con.close()
+
+            registry_store.migrate_toolspec_columns(conn_factory=_conn_factory(db))
+
+            con = _make_conn(db)
+            try:
+                rows = {r["name"]: r["policy_classified"]
+                        for r in con.execute("SELECT name, policy_classified FROM tools").fetchall()}
+            finally:
+                con.close()
+            for src in ("plugin", "mcp", "custom"):
+                self.assertEqual(rows[f"{src}_tool"], 0,
+                                 f"{src} source must stay unclassified after migration")
 
     def test_migration_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -201,6 +243,8 @@ class TestToolSpecMigration(unittest.TestCase):
             self.assertEqual(tool["timeout_seconds"], 45)
             self.assertEqual(tool["max_output_chars"], 1000)
             self.assertFalse(tool["idempotent"])
+            # register_tool defaults to classified (trusted server-side registration).
+            self.assertTrue(tool["policy_classified"])
 
     def test_row_to_dict_deserialises_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

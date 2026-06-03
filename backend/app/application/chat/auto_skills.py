@@ -375,12 +375,17 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
             parts.append(f"SKILL_ERROR:📡 Webhook: {e}")
 
     # ─── 🔌 Плагины v2 ───
+    # P9.2-FIXUP: chat no longer executes plugins directly. run_plugin /
+    # run_triggered / fire_hook bypassed the unified kernel's policy + approval gate
+    # (plugin code is untrusted subprocess code). Read-only listing is kept; plugin
+    # execution now happens ONLY through the kernel (POST /api/extra/plugins/run)
+    # after an admin has classified the plugin via the Tool API.
     if "plugins" not in disabled:
         try:
-            from app.application.plugins import fire_hook, list_plugins, run_plugin, run_triggered
+            from app.application.plugins import list_plugins
 
-            # 1. Список плагинов
             plugin_list_triggers = ["список плагинов", "покажи плагины", "plugins list", "мои плагины"]
+            run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
             if any(t in ql for t in plugin_list_triggers):
                 result = list_plugins()
                 plugins = result.get("plugins", [])
@@ -392,28 +397,12 @@ def run_auto_skills(user_input: str, disabled: set | None = None) -> str:
                     parts.append("\n".join(lines))
                 else:
                     parts.append("🔌 Плагинов нет. Положи .py файлы в data/plugins/")
-
-            # 2. Запуск плагина вручную
-            run_plugin_triggers = ["запусти плагин", "выполни плагин", "run plugin"]
-            if any(t in ql for t in run_plugin_triggers):
-                name_match = _re.search(r"плагин\s+(\S+)", user_input, _re.IGNORECASE)
-                if not name_match:
-                    name_match = _re.search(r"plugin\s+(\S+)", user_input, _re.IGNORECASE)
-                if name_match:
-                    result = run_plugin(name_match.group(1), {"text": user_input})
-                    parts.append(f"🔌 {name_match.group(1)}: {json.dumps(result, ensure_ascii=False)[:2000]}")
-
-            # 3. Авто-триггеры — плагины сами определяют на что реагировать
-            triggered = run_triggered(user_input)
-            for tr in triggered:
-                parts.append(f"🔌 [{tr['plugin']}]: {json.dumps(tr, ensure_ascii=False)[:2000]}")
-
-            # 4. on_message хук — каждый плагин может добавить контекст
-            hook_results = fire_hook("on_message", user_input)
-            for hr in hook_results:
-                if hr.get("result"):
-                    parts.append(f"🔌 [{hr['plugin']}]: {hr['result']}")
-
+            elif any(t in ql for t in run_plugin_triggers):
+                parts.append(
+                    "SKILL_HINT: Прямой запуск плагина из чата отключён. Плагины "
+                    "выполняются через kernel с подтверждением (POST /api/extra/plugins/run) "
+                    "после классификации плагина администратором."
+                )
         except Exception as e:
             parts.append(f"SKILL_ERROR:🔌 Плагины: {e}")
 

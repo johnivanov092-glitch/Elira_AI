@@ -277,7 +277,8 @@ class TestExecutorRunIdValidation(unittest.TestCase):
         from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool
         from app.application.monitoring import runtime as _mon
 
-        spec = {"permission": "require_approval", "max_output_chars": 50000}
+        spec = {"permission": "require_approval", "max_output_chars": 50000,
+                "policy_classified": True, "enabled": True}
         with mock.patch("app.application.tool_registry.runtime.get_tool", return_value=spec), \
              mock.patch("app.application.agent_registry.sandbox.preflight_or_raise"):
             return execute_tool(

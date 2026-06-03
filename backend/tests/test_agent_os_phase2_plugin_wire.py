@@ -62,8 +62,11 @@ class TestPluginToolRegistryWire(unittest.TestCase):
         return py_file
 
     def test_plugin_registered_after_load(self) -> None:
-        """Loading a plugin auto-registers it in the tool registry."""
-        import importlib as _il
+        """Loading a plugin auto-registers it fail-closed in the tool registry.
+
+        P9.2-FIXUP: a freshly discovered plugin is forbidden + disabled +
+        policy_classified=0 — untrusted code cannot run until an admin classifies it.
+        """
         import app.infrastructure.plugins.plugin_system as psys
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -78,10 +81,17 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             assert tool is not None
             self.assertEqual(tool["source"], "plugin")
             self.assertEqual(tool["category"], "testing")
-            self.assertTrue(tool["enabled"])
+            self.assertFalse(tool["enabled"], "new plugin must be disabled by default")
+            self.assertEqual(tool["permission"], "forbidden", "new plugin must be forbidden")
+            self.assertFalse(tool["policy_classified"], "new plugin must be unclassified")
 
     def test_plugin_execute_via_tool_registry(self) -> None:
-        """Plugins registered as tools can be executed via execute_tool()."""
+        """Plugins registered as tools wire registration -> handler via _execute_raw.
+
+        _execute_raw is the raw dispatch primitive (no kernel policy); it still honours
+        the enabled flag, so we enable the freshly-loaded (disabled) plugin first to
+        exercise the handler wiring.
+        """
         import app.infrastructure.plugins.plugin_system as psys
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -91,8 +101,8 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
                 psys.load_plugins()
 
-            # Plugins are require_approval (P9.2A1); _execute_raw is the raw
-            # wiring primitive this test targets (registration -> handler).
+            # New plugins are disabled fail-closed — enable the spec to reach the handler.
+            reg.update_tool("wire_test_plugin", {"enabled": True})
             result = reg._execute_raw("wire_test_plugin", {"value": "hello"})
             self.assertTrue(result.get("ok"), f"Expected ok=True, got: {result}")
             self.assertEqual(result.get("echoed"), "hello")

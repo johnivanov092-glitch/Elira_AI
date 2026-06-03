@@ -336,8 +336,11 @@ class DefaultLimitPayloadTest(unittest.TestCase):
     def test_allowed_tools_is_list(self) -> None:
         self.assertIsInstance(self._payload()["allowed_tools"], list)
 
-    def test_allowed_tools_nonempty(self) -> None:
-        self.assertGreater(len(self._payload()["allowed_tools"]), 0)
+    def test_allowed_tools_default_unrestricted(self) -> None:
+        # P9.2-FIXUP: default allowed_tools is empty == unrestricted (mirrors
+        # allowed_scopes); a frozen tool snapshot would wrongly block tools
+        # registered after limit creation once the kernel enforces it per-call.
+        self.assertEqual(self._payload()["allowed_tools"], [])
 
     def test_created_at_is_string(self) -> None:
         self.assertIsInstance(self._payload()["created_at"], str)

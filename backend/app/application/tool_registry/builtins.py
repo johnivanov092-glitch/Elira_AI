@@ -435,6 +435,64 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     return result
 
 
+def _build_ssh_tools() -> list[dict[str, Any]]:
+    """Metadata-only ToolSpec records for the SSH provider's tools (P9.2-FIXUP).
+
+    These exist so the unified executor can enforce policy + scopes on SSH calls;
+    actual dispatch runs through SshToolProvider, not the registry handler (the
+    handler is a noop). The SSH provider is itself disabled until the user adds an
+    allowlisted host, so these specs are inert until SSH is in use. They seed as
+    classified + enabled (trusted built-in source), unlike plugins/MCP.
+
+    Scopes (fixed vocabulary):
+      ssh_list_hosts : net.outbound
+      ssh_read       : net.outbound + fs.read
+      ssh_run        : net.outbound + shell.exec
+      ssh_write      : net.outbound + fs.write
+    """
+    def _noop(a: dict) -> dict:
+        return {"ok": False, "error": "ssh tool — execute via code-agent SSH provider, not tool_registry"}
+
+    return [
+        {
+            "name": "ssh_list_hosts", "handler": _noop,
+            "display_name": "SSH List Hosts", "display_name_ru": "SSH хосты",
+            "category": "ssh", "description": "List allowlisted SSH hosts",
+            "source": "ssh",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 15, "max_output_chars": 10000,
+        },
+        {
+            "name": "ssh_read", "handler": _noop,
+            "display_name": "SSH Read", "display_name_ru": "SSH чтение",
+            "category": "ssh", "description": "Read a file from a remote host via SSH",
+            "source": "ssh",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound", "fs.read"],
+            "timeout_seconds": 30, "max_output_chars": 50000,
+        },
+        {
+            "name": "ssh_run", "handler": _noop,
+            "display_name": "SSH Run", "display_name_ru": "SSH команда",
+            "category": "ssh", "description": "Run a shell command on a remote host via SSH",
+            "source": "ssh",
+            "permission": "require_approval", "side_effect": True, "idempotent": False,
+            "scopes": ["net.outbound", "shell.exec"],
+            "timeout_seconds": 120, "max_output_chars": 20000,
+        },
+        {
+            "name": "ssh_write", "handler": _noop,
+            "display_name": "SSH Write", "display_name_ru": "SSH запись",
+            "category": "ssh", "description": "Write content to a remote file via SSH",
+            "source": "ssh",
+            "permission": "require_approval", "side_effect": True, "idempotent": False,
+            "scopes": ["net.outbound", "fs.write"],
+            "timeout_seconds": 60, "max_output_chars": 5000,
+        },
+    ]
+
+
 def build_builtin_tools() -> list[dict[str, Any]]:
     from app.application.git.runtime import git_commit as _git_commit_fn
     from app.application.git.runtime import git_status as _git_status_fn
@@ -473,4 +531,5 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         *_build_library_tools(list_library_files, build_library_context),
         *_build_project_brain_tools(map_service, brain_service),
         *_build_native_code_agent_tools(),
+        *_build_ssh_tools(),
     ]
