@@ -249,6 +249,53 @@ class AgentMonitorRuntimeTest(AgentOsPhase5DbMixin):
         self.assertEqual(dashboard["total_agent_runs"], 1)
         self.assertEqual(dashboard["blocked_runs"], 0)
 
+    def test_final_run_metric_uses_effective_num_ctx(self) -> None:
+        """P9.3: the final agent.run metric + context_tokens resource_usage must
+        record the EFFECTIVE (capped) num_ctx, not the raw requested value."""
+        import json
+        import sqlite3
+
+        with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
+             patch.object(agents_service, "_collect_context", return_value=""), \
+             patch.object(agents_service, "run_chat", return_value={"ok": True, "answer": "hi"}), \
+             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
+             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
+             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
+             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
+             patch.object(agents_service, "_chat_available_models", return_value=None), \
+             patch.object(agents_service, "_get_max_context_tokens", return_value=100):
+            result = agents_service.run_agent(
+                model_name="test-model",  # explicit -> kept, but context still capped
+                profile_name="Universal",
+                user_input="Hello",
+                session_id="effctx-session",
+                use_memory=False,
+                use_library=False,
+                use_web_search=False,
+                num_ctx=99999,
+            )
+
+        self.assertTrue(result["ok"])
+
+        con = sqlite3.connect(str(agent_monitor.DB_PATH))
+        try:
+            run_row = con.execute(
+                "SELECT details_json FROM agent_metrics WHERE metric_type = 'agent.run' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            ctx_row = con.execute(
+                "SELECT amount FROM resource_usage WHERE resource = 'context_tokens' "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            con.close()
+
+        # Effective num_ctx = min(99999 requested, 100 monitoring cap) = 100.
+        self.assertIsNotNone(run_row)
+        self.assertEqual(json.loads(run_row[0])["num_ctx"], 100)
+        self.assertIsNotNone(ctx_row)
+        self.assertEqual(int(ctx_row[0]), 100)
+
     def test_run_agent_stream_records_metric(self) -> None:
         with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
              patch.object(agents_service, "_collect_context", return_value=""), \
