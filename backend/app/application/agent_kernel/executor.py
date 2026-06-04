@@ -155,6 +155,26 @@ def execute_tool(
             error=f"forbidden:{tool_name}",
         )
 
+    # 1f. Deferred tool activation (P10.1). When a run has opted into deferred
+    # tool search, only tools activated for that run may execute — a tool the
+    # model named without activating it (e.g. a guessed name) is blocked here,
+    # before dispatch. Runs that never opted in have no entry and are unaffected
+    # (inert by default). Activation grants visibility only: the policy / scope /
+    # approval gates below still apply.
+    from app.application.agent_kernel.deferred_tools import is_deferred_run, is_tool_active
+
+    if is_deferred_run(request.run_id) and not is_tool_active(request.run_id, tool_name):
+        _emit_blocked(request, f"tool '{tool_name}' not activated for run")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' is not activated for this run — activate it via tool_search first.",
+                "error": "tool_not_activated",
+            },
+            error="tool_not_activated",
+        )
+
     # 2. Policy preflight — rate-limit, context-budget, and per-call allowed_tools.
     # selected_tools=[tool_name] enforces the agent's allowed_tools list at tool-call
     # granularity. An empty allowed_tools grant means unrestricted, so default agents
