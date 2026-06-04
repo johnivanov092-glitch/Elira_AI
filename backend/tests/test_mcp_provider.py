@@ -44,8 +44,18 @@ class McpProviderTestBase(unittest.TestCase):
             self.runtime.stop_all_servers()
         except Exception:
             pass
-        self._tmp.cleanup()
         os.environ.pop("ELIRA_DATA_DIR", None)
+        from app.core import data_files
+        importlib.reload(data_files)
+        for module_name in (
+            "app.application.tool_registry.runtime",
+            "app.application.tool_providers.mcp_runtime",
+            "app.application.tool_providers.mcp_provider",
+        ):
+            module = sys.modules.get(module_name)
+            if module is not None:
+                importlib.reload(module)
+        self._tmp.cleanup()
 
     def _fake_spec(self, server_id: str = "fake", **overrides) -> dict:
         spec = {
@@ -237,6 +247,38 @@ class BuildProvidersTest(McpProviderTestBase):
 
 
 # ── Integration with ToolRegistry ──────────────────────────────
+
+
+class McpContextRoutesTest(McpProviderTestBase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.runtime.save_servers([self._fake_spec("ctx")])
+        self.runtime.start_server("ctx")
+
+    def test_resource_routes_use_running_client(self) -> None:
+        from app.api.routes import code_agent_routes as routes
+
+        listed = routes.mcp_list_resources("ctx")
+        self.assertEqual(listed["resources"][0]["uri"], "file:///fake/readme.md")
+
+        read = routes.mcp_read_resource("ctx", "file:///fake/readme.md", max_chars=128)
+        self.assertIn("UNTRUSTED MCP RESOURCE", read["contents"][0]["text"])
+
+        templates = routes.mcp_list_resource_templates("ctx")
+        self.assertEqual(templates["resourceTemplates"][0]["uriTemplate"], "file:///fake/{name}.md")
+
+    def test_prompt_routes_use_running_client(self) -> None:
+        from app.api.routes import code_agent_routes as routes
+
+        listed = routes.mcp_list_prompts("ctx")
+        self.assertEqual(listed["prompts"][0]["name"], "review")
+
+        got = routes.mcp_get_prompt(routes.McpPromptGetRequest(
+            server_id="ctx",
+            name="review",
+            arguments={"code": "x = 1"},
+        ))
+        self.assertIn("UNTRUSTED MCP PROMPT", got["messages"][0]["content"]["text"])
 
 
 class RegistryIntegrationTest(McpProviderTestBase):

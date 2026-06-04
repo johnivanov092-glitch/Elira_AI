@@ -1,7 +1,9 @@
 """Tiny stdio MCP server used as a fixture in tests.
 
 Speaks just enough of the protocol to satisfy McpClient: handles
-initialize, notifications/initialized, tools/list and tools/call.
+initialize, notifications/initialized, tools/list, tools/call,
+resources/list, resources/read, resources/templates/list, prompts/list,
+and prompts/get.
 Reads one JSON-RPC message per line from stdin and writes one per
 line to stdout.
 
@@ -10,6 +12,10 @@ Behavior can be tweaked via env vars (set by the test before spawn):
   FAKE_MCP_HANG_INIT=1     — never respond to initialize (timeout test)
   FAKE_MCP_TOOLS_FAIL=1    — return error from tools/list
   FAKE_MCP_CALL_FAIL=1     — return isError=True from tools/call
+  FAKE_MCP_NO_RESOURCES=1  — omit resources capability
+  FAKE_MCP_NO_PROMPTS=1    — omit prompts capability
+  FAKE_MCP_BIG_RESOURCE=1  — return oversized resource text
+  FAKE_MCP_PROTOCOL_VERSION=<date> — server-negotiated protocol version
 """
 from __future__ import annotations
 
@@ -45,12 +51,17 @@ def main() -> None:
             if os.environ.get("FAKE_MCP_FAIL_INIT"):
                 write({"jsonrpc": "2.0", "id": rid, "error": {"code": -32000, "message": "init failed (test)"}})
                 continue
+            capabilities = {"tools": {}}
+            if not os.environ.get("FAKE_MCP_NO_RESOURCES"):
+                capabilities["resources"] = {}
+            if not os.environ.get("FAKE_MCP_NO_PROMPTS"):
+                capabilities["prompts"] = {}
             write({
                 "jsonrpc": "2.0",
                 "id": rid,
                 "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
+                    "protocolVersion": os.environ.get("FAKE_MCP_PROTOCOL_VERSION", "2024-11-05"),
+                    "capabilities": capabilities,
                     "serverInfo": {"name": "fake-mcp", "version": "0.1"},
                 },
             })
@@ -129,6 +140,94 @@ def main() -> None:
                 })
             else:
                 write({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": f"unknown tool {tool_name}"}})
+
+        elif method == "resources/list":
+            write({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "resources": [
+                        {
+                            "uri": "file:///fake/readme.md",
+                            "name": "readme.md",
+                            "description": "Fake text resource.",
+                            "mimeType": "text/markdown",
+                        }
+                    ],
+                },
+            })
+
+        elif method == "resources/templates/list":
+            write({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "resourceTemplates": [
+                        {
+                            "uriTemplate": "file:///fake/{name}.md",
+                            "name": "Fake markdown docs",
+                            "description": "Parameterized fake resource.",
+                            "mimeType": "text/markdown",
+                        }
+                    ],
+                },
+            })
+
+        elif method == "resources/read":
+            params = req.get("params", {}) or {}
+            uri = params.get("uri") or "file:///fake/readme.md"
+            text = "R" * 10000 if os.environ.get("FAKE_MCP_BIG_RESOURCE") else "Fake resource text."
+            write({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "contents": [
+                        {
+                            "uri": uri,
+                            "mimeType": "text/plain",
+                            "text": text,
+                        }
+                    ],
+                },
+            })
+
+        elif method == "prompts/list":
+            write({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "prompts": [
+                        {
+                            "name": "review",
+                            "description": "Review code.",
+                            "arguments": [
+                                {"name": "code", "description": "Code to review", "required": True}
+                            ],
+                        }
+                    ],
+                },
+            })
+
+        elif method == "prompts/get":
+            params = req.get("params", {}) or {}
+            args = params.get("arguments", {}) or {}
+            code = args.get("code") or "print('x')"
+            write({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "description": "Review code prompt.",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": {
+                                "type": "text",
+                                "text": f"Please review: {code}",
+                            },
+                        }
+                    ],
+                },
+            })
 
         else:
             write({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "method not found"}})

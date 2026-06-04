@@ -303,6 +303,25 @@ class McpServerActionRequest(BaseModel):
     server_id: str
 
 
+class McpPromptGetRequest(BaseModel):
+    server_id: str
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    max_chars: int = Field(default=50_000, ge=1, le=200_000)
+
+
+def _mcp_context_limit(max_chars: int) -> int:
+    return max(1, min(int(max_chars or 50_000), 200_000))
+
+
+def _live_mcp_client_or_404(server_id: str):
+    from app.application.tool_providers.mcp_runtime import get_live_client
+    client = get_live_client(server_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail=f"server '{server_id}' is not running")
+    return client
+
+
 @router.get("/mcp/servers")
 def mcp_list_servers() -> dict[str, Any]:
     """All configured MCP servers + live status."""
@@ -347,10 +366,7 @@ def mcp_restart(payload: McpServerActionRequest) -> dict[str, Any]:
 def mcp_list_tools(server_id: str) -> dict[str, Any]:
     """Tools exposed by a running MCP server (raw, no namespacing).
     Used by the UI to preview what an MCP install actually offers."""
-    from app.application.tool_providers.mcp_runtime import get_live_client
-    client = get_live_client(server_id)
-    if client is None:
-        raise HTTPException(status_code=404, detail=f"server '{server_id}' is not running")
+    client = _live_mcp_client_or_404(server_id)
     try:
         return {"server_id": server_id, "tools": client.list_tools()}
     except Exception as exc:
@@ -358,6 +374,62 @@ def mcp_list_tools(server_id: str) -> dict[str, Any]:
 
 
 # ── Sessions ────────────────────────────────────────────────────────────
+
+
+@router.get("/mcp/resources")
+def mcp_list_resources(server_id: str) -> dict[str, Any]:
+    client = _live_mcp_client_or_404(server_id)
+    try:
+        return {"server_id": server_id, **client.list_resources()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/mcp/resource-templates")
+def mcp_list_resource_templates(server_id: str) -> dict[str, Any]:
+    client = _live_mcp_client_or_404(server_id)
+    try:
+        return {"server_id": server_id, **client.list_resource_templates()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/mcp/resource")
+def mcp_read_resource(server_id: str, uri: str, max_chars: int = 50_000) -> dict[str, Any]:
+    client = _live_mcp_client_or_404(server_id)
+    try:
+        return {"server_id": server_id, "uri": uri, **client.read_resource(uri, max_chars=_mcp_context_limit(max_chars))}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/mcp/prompts")
+def mcp_list_prompts(server_id: str) -> dict[str, Any]:
+    client = _live_mcp_client_or_404(server_id)
+    try:
+        return {"server_id": server_id, **client.list_prompts()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/mcp/prompt")
+def mcp_get_prompt(payload: McpPromptGetRequest) -> dict[str, Any]:
+    client = _live_mcp_client_or_404(payload.server_id)
+    try:
+        return {
+            "server_id": payload.server_id,
+            "name": payload.name,
+            **client.get_prompt(
+                payload.name,
+                payload.arguments,
+                max_chars=_mcp_context_limit(payload.max_chars),
+            ),
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# -- Sessions --------------------------------------------------------------
 
 
 class SessionCreateRequest(BaseModel):

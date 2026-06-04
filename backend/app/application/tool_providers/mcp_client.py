@@ -8,6 +8,10 @@ Lifecycle:
     client = McpClient(command="npx", args=["-y", "@modelcontextprotocol/server-github"])
     client.start()                     # spawns subprocess + reader thread + handshake
     schemas = client.list_tools()      # tools/list — list of MCP tool descriptors
+    resources = client.list_resources()
+    resource = client.read_resource("file:///...")
+    prompts = client.list_prompts()
+    prompt = client.get_prompt("code_review", {"code": "..."})
     result = client.call_tool(name, args)
     client.stop()                      # closes stdin → server exits → reader thread joins
 
@@ -18,7 +22,6 @@ Thread model:
     are currently logged-and-dropped — we don't subscribe to any.
 
 What we deliberately DON'T implement yet:
-    * resources/prompts (only tools)
     * server-initiated requests (sampling, roots)
     * progress notifications
     * HTTP/SSE transport
@@ -43,12 +46,14 @@ JSONRPC_VERSION = "2.0"
 # the publicly-available reference servers (github, slack, postgres,
 # filesystem) at the time this client was written.
 MCP_PROTOCOL_VERSION = "2024-11-05"
+SUPPORTED_PROTOCOL_VERSIONS = (MCP_PROTOCOL_VERSION, "2024-10-07")
 
 # Time we'll wait for a response to a given request before giving up.
 # Server start-up itself can be slow (npm fetching a package the first
 # time), so the initialize handshake gets a generous timeout.
 DEFAULT_REQUEST_TIMEOUT = 30.0
 INITIALIZE_TIMEOUT = 120.0
+DEFAULT_CONTEXT_RESULT_LIMIT = 50_000
 
 
 class McpError(Exception):
@@ -96,6 +101,7 @@ class McpClient:
         # Cached after initialize so callers can introspect.
         self.server_info: dict[str, Any] = {}
         self.server_capabilities: dict[str, Any] = {}
+        self.protocol_version: str = MCP_PROTOCOL_VERSION
 
     # ── Lifecycle ───────────────────────────────────────────────
 
@@ -174,6 +180,14 @@ class McpClient:
             raise McpError(f"server rejected initialize: {msg}")
 
         result = init_response.get("result", {}) or {}
+        negotiated = str(result.get("protocolVersion") or "")
+        if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
+            self.stop()
+            raise McpError(
+                "unsupported MCP protocol version "
+                f"{negotiated!r}; supported={list(SUPPORTED_PROTOCOL_VERSIONS)!r}"
+            )
+        self.protocol_version = negotiated
         self.server_info = result.get("serverInfo", {}) or {}
         self.server_capabilities = result.get("capabilities", {}) or {}
 
@@ -256,6 +270,89 @@ class McpClient:
         tools = result.get("tools") or []
         return [t for t in tools if isinstance(t, dict)]
 
+    def list_resources(self, *, cursor: str | None = None) -> dict[str, Any]:
+        """Return the MCP resources/list result.
+
+        Raises McpError if the server did not negotiate the resources
+        capability. The return shape is the JSON-RPC result body:
+        {"resources": [...], "nextCursor": "..."}.
+        """
+        self._require_capability("resources")
+        params = {"cursor": cursor} if cursor else {}
+        result = self._request_result("resources/list", params)
+        resources = [r for r in (result.get("resources") or []) if isinstance(r, dict)]
+        out: dict[str, Any] = {"resources": resources}
+        if result.get("nextCursor"):
+            out["nextCursor"] = result.get("nextCursor")
+        self._audit("mcp.resources.list", {"count": len(resources)})
+        return out
+
+    def list_resource_templates(self, *, cursor: str | None = None) -> dict[str, Any]:
+        """Return the MCP resources/templates/list result."""
+        self._require_capability("resources")
+        params = {"cursor": cursor} if cursor else {}
+        result = self._request_result("resources/templates/list", params)
+        templates = [r for r in (result.get("resourceTemplates") or []) if isinstance(r, dict)]
+        out: dict[str, Any] = {"resourceTemplates": templates}
+        if result.get("nextCursor"):
+            out["nextCursor"] = result.get("nextCursor")
+        self._audit("mcp.resources.templates.list", {"count": len(templates)})
+        return out
+
+    def read_resource(self, uri: str, *, max_chars: int = DEFAULT_CONTEXT_RESULT_LIMIT) -> dict[str, Any]:
+        """Read a resource and return bounded, untrusted-marked contents."""
+        self._require_capability("resources")
+        clean_uri = str(uri or "").strip()
+        if not clean_uri:
+            raise McpError("resource uri is required")
+        result = self._request_result("resources/read", {"uri": clean_uri})
+        contents, truncated = _sanitize_resource_contents(
+            result.get("contents") or [],
+            max_chars=max_chars,
+            provenance=f"mcp-resource:{clean_uri}",
+        )
+        self._audit("mcp.resources.read", {"uri": clean_uri, "count": len(contents), "truncated": truncated})
+        return {"contents": contents, "truncated": truncated}
+
+    def list_prompts(self, *, cursor: str | None = None) -> dict[str, Any]:
+        """Return the MCP prompts/list result."""
+        self._require_capability("prompts")
+        params = {"cursor": cursor} if cursor else {}
+        result = self._request_result("prompts/list", params)
+        prompts = [p for p in (result.get("prompts") or []) if isinstance(p, dict)]
+        out: dict[str, Any] = {"prompts": prompts}
+        if result.get("nextCursor"):
+            out["nextCursor"] = result.get("nextCursor")
+        self._audit("mcp.prompts.list", {"count": len(prompts)})
+        return out
+
+    def get_prompt(
+        self,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        max_chars: int = DEFAULT_CONTEXT_RESULT_LIMIT,
+    ) -> dict[str, Any]:
+        """Return a bounded, untrusted-marked prompts/get result."""
+        self._require_capability("prompts")
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            raise McpError("prompt name is required")
+        params: dict[str, Any] = {"name": clean_name}
+        if arguments:
+            params["arguments"] = arguments
+        result = self._request_result("prompts/get", params)
+        messages, truncated = _sanitize_prompt_messages(
+            result.get("messages") or [],
+            max_chars=max_chars,
+            provenance=f"mcp-prompt:{clean_name}",
+        )
+        out: dict[str, Any] = {"messages": messages, "truncated": truncated}
+        if isinstance(result.get("description"), str):
+            out["description"] = result.get("description")
+        self._audit("mcp.prompts.get", {"name": clean_name, "count": len(messages), "truncated": truncated})
+        return out
+
     def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Invoke `tools/call` and return the server's result dict
         (the part inside the JSON-RPC `result` envelope, NOT the
@@ -325,6 +422,41 @@ class McpClient:
             with self._pending_lock:
                 self._pending.pop(rid, None)
 
+    def _request_result(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    ) -> dict[str, Any]:
+        response = self._request(method, params, timeout=timeout)
+        if "error" in response:
+            err = response["error"] or {}
+            message = err.get("message", "?") if isinstance(err, dict) else "?"
+            code = err.get("code", "?") if isinstance(err, dict) else "?"
+            raise McpError(f"server rejected {method!r}: {message} (code {code})")
+        result = response.get("result") or {}
+        return result if isinstance(result, dict) else {}
+
+    def _require_capability(self, capability: str) -> None:
+        if capability not in self.server_capabilities:
+            raise McpError(f"server does not support {capability!r} capability")
+
+    def _audit(self, event_type: str, payload: dict[str, Any]) -> None:
+        try:
+            from app.application.event_bus import runtime as event_bus
+            event_bus.emit_event(
+                event_type=event_type,
+                source_agent_id="mcp",
+                payload={
+                    "protocol_version": self.protocol_version,
+                    "server": self.server_info,
+                    **payload,
+                },
+            )
+        except Exception:
+            pass
+
     def _notify(self, method: str, params: dict[str, Any]) -> None:
         """Fire-and-forget JSON-RPC notification (no `id`)."""
         try:
@@ -378,3 +510,109 @@ class McpClient:
                         "error": {"code": -32000, "message": "server stdout closed"},
                     }
                 p.event.set()
+
+
+def _bounded_text(text: str, *, max_chars: int) -> tuple[str, bool]:
+    limit = max(0, int(max_chars))
+    if len(text) <= limit:
+        return text, False
+    if limit <= 20:
+        return text[:limit], True
+    return text[: limit - 20].rstrip() + "\n[truncated by limit]", True
+
+
+def _mark_untrusted(kind: str, provenance: str, text: str) -> str:
+    return f"[UNTRUSTED MCP {kind}: {provenance}]\n{text}\n[/UNTRUSTED MCP {kind}]"
+
+
+def _sanitize_resource_contents(
+    raw_contents: Any,
+    *,
+    max_chars: int,
+    provenance: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    contents: list[dict[str, Any]] = []
+    any_truncated = False
+    remaining = max(0, int(max_chars))
+    for item in raw_contents if isinstance(raw_contents, list) else []:
+        if not isinstance(item, dict):
+            continue
+        clean = {k: v for k, v in item.items() if k not in {"text", "blob"}}
+        uri = str(item.get("uri") or provenance)
+        if isinstance(item.get("text"), str):
+            text, truncated = _bounded_text(item["text"], max_chars=remaining)
+            any_truncated = any_truncated or truncated
+            remaining = max(0, remaining - len(text))
+            clean["text"] = _mark_untrusted("RESOURCE", f"{provenance}; uri={uri}", text)
+            clean["truncated"] = truncated
+        elif isinstance(item.get("blob"), str):
+            blob, truncated = _bounded_text(item["blob"], max_chars=remaining)
+            any_truncated = any_truncated or truncated
+            remaining = max(0, remaining - len(blob))
+            clean["blob"] = blob
+            clean["truncated"] = truncated
+            clean["untrusted"] = True
+            clean["provenance"] = f"{provenance}; uri={uri}"
+        else:
+            clean["untrusted"] = True
+            clean["provenance"] = f"{provenance}; uri={uri}"
+        contents.append(clean)
+        if remaining <= 0:
+            any_truncated = True
+            break
+    return contents, any_truncated
+
+
+def _sanitize_prompt_messages(
+    raw_messages: Any,
+    *,
+    max_chars: int,
+    provenance: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    messages: list[dict[str, Any]] = []
+    any_truncated = False
+    remaining = max(0, int(max_chars))
+    for message in raw_messages if isinstance(raw_messages, list) else []:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "user")
+        content = message.get("content")
+        clean: dict[str, Any] = {"role": role}
+        if isinstance(content, dict):
+            kind = content.get("type")
+            if kind == "text" and isinstance(content.get("text"), str):
+                text, truncated = _bounded_text(content["text"], max_chars=remaining)
+                any_truncated = any_truncated or truncated
+                remaining = max(0, remaining - len(text))
+                clean["content"] = {
+                    **{k: v for k, v in content.items() if k != "text"},
+                    "text": _mark_untrusted("PROMPT", f"{provenance}; role={role}", text),
+                    "truncated": truncated,
+                }
+            elif kind == "resource" and isinstance(content.get("resource"), dict):
+                resources, truncated = _sanitize_resource_contents(
+                    [content["resource"]],
+                    max_chars=remaining,
+                    provenance=f"{provenance}; role={role}",
+                )
+                any_truncated = any_truncated or truncated
+                clean["content"] = {
+                    **{k: v for k, v in content.items() if k != "resource"},
+                    "resource": resources[0] if resources else {},
+                }
+            else:
+                clean["content"] = {**content, "untrusted": True, "provenance": provenance}
+        else:
+            text, truncated = _bounded_text(str(content or ""), max_chars=remaining)
+            any_truncated = any_truncated or truncated
+            remaining = max(0, remaining - len(text))
+            clean["content"] = {
+                "type": "text",
+                "text": _mark_untrusted("PROMPT", f"{provenance}; role={role}", text),
+                "truncated": truncated,
+            }
+        messages.append(clean)
+        if remaining <= 0:
+            any_truncated = True
+            break
+    return messages, any_truncated
