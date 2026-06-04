@@ -26,6 +26,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.context.compaction import (  # noqa: E402
     _FALLBACK_PLACEHOLDER,
+    _MAX_SUMMARY_CHARS,
     _SUMMARY_PREFIX,
     maybe_compact,
 )
@@ -135,14 +136,14 @@ class TestMaybeCompactFallback(unittest.TestCase):
         result, compacted = self._compact_fallback()
         self.assertTrue(compacted)
         system_turns = [m for m in result if m["role"] == "system"]
-        self.assertTrue(any(_FALLBACK_PLACEHOLDER in m["content"] for m in system_turns))
+        self.assertTrue(any(_SUMMARY_PREFIX in m["content"] for m in system_turns))
 
     def test_fallback_when_summarize_raises(self):
         def _raise(**kw):
             raise RuntimeError("boom")
         result, compacted = self._compact_fallback(fail_fn=_raise)
         self.assertTrue(compacted)
-        self.assertTrue(any(_FALLBACK_PLACEHOLDER in m["content"] for m in result))
+        self.assertTrue(any(_SUMMARY_PREFIX in m["content"] for m in result))
 
     def test_fallback_keeps_last_n_messages(self):
         result, _ = self._compact_fallback(fallback_keep=4)
@@ -192,6 +193,82 @@ class TestMaybeCompactEdgeCases(unittest.TestCase):
         self.assertGreaterEqual(len(system_in_result), 3)
         self.assertTrue(any("Base prompt." in m["content"] for m in system_in_result))
         self.assertTrue(any("Prior summary." in m["content"] for m in system_in_result))
+
+    def test_repeated_compaction_keeps_single_summary_turn(self):
+        messages = [
+            _SYSTEM,
+            {"role": "system", "content": _SUMMARY_PREFIX + "Pending work: finish API.\nImportant files: a.py"},
+        ] + _make_turns(10)
+        result, compacted = maybe_compact(
+            messages, num_ctx=999_999, model="m", chat_fn=None,
+            summarize_fn=_DUMMY_SUMMARIZE_OK,
+            threshold=0.0,
+        )
+        self.assertTrue(compacted)
+        summaries = [m for m in result if m.get("role") == "system" and _SUMMARY_PREFIX in m.get("content", "")]
+        self.assertEqual(len(summaries), 1)
+        self.assertIn("Pending work: finish API.", summaries[0]["content"])
+        self.assertIn("Important files: a.py", summaries[0]["content"])
+        self.assertIn("Bullet summary.", summaries[0]["content"])
+
+    def test_previous_summary_is_passed_to_summarizer(self):
+        seen: dict[str, Any] = {}
+
+        def spy_summary(**kwargs):
+            seen["messages"] = kwargs["messages"]
+            return {"ok": True, "summary": "New summary.", "error": None, "turn_count": len(kwargs["messages"])}
+
+        messages = [
+            _SYSTEM,
+            {"role": "system", "content": _SUMMARY_PREFIX + "Pending work: keep this."},
+        ] + _make_turns(10)
+        result, _ = maybe_compact(
+            messages, num_ctx=999_999, model="m", chat_fn=None,
+            summarize_fn=spy_summary,
+            threshold=0.0,
+        )
+        self.assertIn("Previous compacted summary", seen["messages"][0]["content"])
+        summary = next(m for m in result if _SUMMARY_PREFIX in m.get("content", ""))
+        self.assertIn("Pending work: keep this.", summary["content"])
+
+    def test_summary_size_is_capped(self):
+        huge_summary = "S" * (_MAX_SUMMARY_CHARS + 1_000)
+
+        def huge_summary_fn(**_kwargs):
+            return {"ok": True, "summary": huge_summary, "error": None, "turn_count": 0}
+
+        result, _ = maybe_compact(
+            [_SYSTEM] + _make_turns(10),
+            num_ctx=999_999,
+            model="m",
+            chat_fn=None,
+            summarize_fn=huge_summary_fn,
+            threshold=0.0,
+        )
+        summary = next(m for m in result if _SUMMARY_PREFIX in m.get("content", ""))
+        self.assertLessEqual(len(summary["content"]), len(_SUMMARY_PREFIX) + _MAX_SUMMARY_CHARS)
+        self.assertIn("[summary truncated]", summary["content"])
+
+    def test_deterministic_fallback_summarizes_tool_results(self):
+        messages = [_SYSTEM]
+        for i in range(6):
+            messages.extend([
+                {"role": "user", "content": f"step {i}"},
+                {"role": "assistant", "content": "", "tool_calls": []},
+                {"role": "tool", "name": "run_bash", "content": f"exit=0 output {i}"},
+            ])
+        result, _ = maybe_compact(
+            messages,
+            num_ctx=999_999,
+            model="m",
+            chat_fn=None,
+            summarize_fn=_DUMMY_SUMMARIZE_FAIL,
+            threshold=0.0,
+            keep_pairs=1,
+        )
+        summary = next(m for m in result if _SUMMARY_PREFIX in m.get("content", ""))
+        self.assertIn("Recent tool results:", summary["content"])
+        self.assertIn("run_bash", summary["content"])
 
 
 class TestCompactionInAgentLoop(unittest.TestCase):

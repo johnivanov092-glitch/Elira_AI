@@ -36,6 +36,8 @@ _DEFAULT_FALLBACK_KEEP: int = 8
 _FALLBACK_PLACEHOLDER = "[context compacted — earlier messages removed to fit context window]"
 # Prefix added to the generated summary turn.
 _SUMMARY_PREFIX = "[Compacted context summary]\n"
+_MAX_SUMMARY_CHARS = 4_000
+_MESSAGE_EXCERPT_CHARS = 300
 
 SummarizeFn = Callable[..., dict[str, Any]]
 
@@ -43,6 +45,69 @@ SummarizeFn = Callable[..., dict[str, Any]]
 def _approx_tokens(messages: list[dict[str, Any]]) -> int:
     """Rough token estimate: chars / 4."""
     return len(json.dumps(messages, ensure_ascii=False)) // 4
+
+
+def _is_summary_message(message: dict[str, Any]) -> bool:
+    return message.get("role") == "system" and str(message.get("content") or "").startswith(_SUMMARY_PREFIX)
+
+
+def _summary_body(message: dict[str, Any]) -> str:
+    content = str(message.get("content") or "")
+    if content.startswith(_SUMMARY_PREFIX):
+        return content[len(_SUMMARY_PREFIX):].strip()
+    return content.strip()
+
+
+def _cap_text(text: str, limit: int = _MAX_SUMMARY_CHARS) -> str:
+    clean = (text or "").strip()
+    if len(clean) <= limit:
+        return clean
+    return clean[: max(0, limit - 20)].rstrip() + "\n[summary truncated]"
+
+
+def _make_summary_message(summary: str) -> dict[str, Any]:
+    return {"role": "system", "content": _SUMMARY_PREFIX + _cap_text(summary)}
+
+
+def _excerpt(value: Any, limit: int = _MESSAGE_EXCERPT_CHARS) -> str:
+    text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 16)].rstrip() + " ...[truncated]"
+
+
+def _merge_summary(previous_summaries: list[str], new_summary: str) -> str:
+    parts = [p.strip() for p in previous_summaries if p.strip()]
+    if new_summary.strip():
+        parts.append(new_summary.strip())
+    return _cap_text("\n\n".join(parts))
+
+
+def _deterministic_summary(previous_summaries: list[str], messages: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    if previous_summaries:
+        lines.append("Previous summary:")
+        lines.extend(_cap_text("\n\n".join(previous_summaries), 1_500).splitlines())
+
+    recent_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    if recent_user:
+        lines.append(f"Current goal: {_excerpt(recent_user.get('content'))}")
+
+    tool_lines: list[str] = []
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        name = str(message.get("name") or "tool")
+        tool_lines.append(f"- {name}: {_excerpt(message.get('content'), 220)}")
+        if len(tool_lines) >= 8:
+            break
+    if tool_lines:
+        lines.append("Recent tool results:")
+        lines.extend(tool_lines)
+
+    if not lines:
+        lines.append(_FALLBACK_PLACEHOLDER)
+    return _cap_text("\n".join(lines))
 
 
 def maybe_compact(
@@ -87,7 +152,8 @@ def maybe_compact(
     if _approx_tokens(messages) < int(num_ctx * threshold):
         return messages, False
 
-    system_msgs = [m for m in messages if m.get("role") == "system"]
+    previous_summaries = [_summary_body(m) for m in messages if _is_summary_message(m)]
+    system_msgs = [m for m in messages if m.get("role") == "system" and not _is_summary_message(m)]
     non_system = [m for m in messages if m.get("role") != "system"]
 
     keep_count = keep_pairs * 2  # keep_pairs pairs = keep_count messages
@@ -95,12 +161,21 @@ def maybe_compact(
     to_summarize = non_system[:-keep_count] if len(non_system) > keep_count else []
 
     if not to_summarize:
-        # Nothing old enough to summarize; fall back to simple truncation.
-        return system_msgs + non_system[-fallback_keep:], True
+        # Nothing old enough to summarize; keep any rolling summary as one
+        # capped message and truncate recent turns deterministically.
+        summary = _merge_summary(previous_summaries, "")
+        summary_msgs = [_make_summary_message(summary)] if summary else []
+        return system_msgs + summary_msgs + non_system[-fallback_keep:], True
 
     try:
+        summarize_messages = list(to_summarize)
+        if previous_summaries:
+            summarize_messages = [{
+                "role": "system",
+                "content": "Previous compacted summary:\n" + "\n\n".join(previous_summaries),
+            }] + summarize_messages
         result = summarize_fn(
-            messages=to_summarize,
+            messages=summarize_messages,
             model=model,
             num_ctx=num_ctx,
             chat_fn=chat_fn,
@@ -110,10 +185,7 @@ def maybe_compact(
         result = {"ok": False, "summary": "", "error": str(exc)}
 
     if result.get("ok") and result.get("summary"):
-        summary_msg: dict[str, Any] = {
-            "role": "system",
-            "content": _SUMMARY_PREFIX + result["summary"],
-        }
+        summary_msg = _make_summary_message(_merge_summary(previous_summaries, str(result["summary"])))
         logger.debug(
             "Context compacted: %d → %d messages (summarized %d, kept %d)",
             len(messages),
@@ -123,10 +195,10 @@ def maybe_compact(
         )
         return system_msgs + [summary_msg] + recent, True
 
-    # Deterministic fallback: placeholder + recent
+    # Deterministic fallback: one structured summary + recent messages.
     logger.warning(
         "Context compaction model call failed (%s); using deterministic fallback",
         result.get("error", "unknown"),
     )
-    fallback_msg: dict[str, Any] = {"role": "system", "content": _FALLBACK_PLACEHOLDER}
+    fallback_msg = _make_summary_message(_deterministic_summary(previous_summaries, to_summarize))
     return system_msgs + [fallback_msg] + non_system[-fallback_keep:], True
