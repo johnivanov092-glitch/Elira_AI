@@ -485,6 +485,16 @@ TOOL_SEARCH_RESULT_LIMIT = 20
 TOOL_SEARCH_ACTIVATION_CAP = 5
 
 
+def _clamp_to_max(value: Any, maximum: int) -> int:
+    """Coerce a caller-controlled int and clamp to [0, maximum]; non-int / bad
+    values fall back to `maximum`. Guarantees the model can never exceed the cap."""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = maximum
+    return min(max(0, n), maximum)
+
+
 def _record_tool_search_metrics(
     run_id: str, query: str, match_count: int, activated: list[str], agent_id: str
 ) -> None:
@@ -549,9 +559,10 @@ def tool_search(
     from app.application.tool_registry.runtime import search_tool_specs
     from app.application.agent_kernel.deferred_tools import activate_tools
 
-    matches = search_tool_specs(query, limit=limit)
+    safe_limit = _clamp_to_max(limit, TOOL_SEARCH_RESULT_LIMIT)
+    matches = search_tool_specs(query, limit=safe_limit)
 
-    cap = max(0, int(activation_cap))
+    cap = _clamp_to_max(activation_cap, TOOL_SEARCH_ACTIVATION_CAP)
     eligible: list[str] = []
     for match in matches:
         if len(eligible) >= cap:

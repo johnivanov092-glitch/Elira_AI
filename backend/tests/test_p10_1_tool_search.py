@@ -213,5 +213,53 @@ class ActivatedToolStillEnforcedByExecutorTest(unittest.TestCase):
         self.assertNotEqual(result.error, "tool_not_activated")
 
 
+class FailClosedAndClampTest(unittest.TestCase):
+    """commit-2 fixup: fail-closed search eligibility + caller-cap clamping."""
+
+    def tearDown(self):
+        for rid in ("fc1", "fc2", "fc3", "fc4", "fc5"):
+            deferred_tools.clear_run(rid)
+
+    def test_invalid_permission_not_activatable(self):
+        _patch_registry(self, [_spec("bad_perm", permission="bogus")])
+        (res,) = search_tool_specs("bad_perm")
+        self.assertFalse(res["activatable"])
+        self.assertEqual(res["reason"], "invalid_permission")
+        deferred_tools.enable_deferred_tools("fc1", [])
+        result = tools.tool_search(run_id="fc1", query="bad_perm")
+        self.assertEqual(result["activated"], [])
+        self.assertFalse(deferred_tools.is_tool_active("fc1", "bad_perm"))
+
+    def test_unknown_scope_not_activatable(self):
+        _patch_registry(self, [_spec("bad_scope", scopes=("not.a.real.scope",))])
+        (res,) = search_tool_specs("bad_scope")
+        self.assertFalse(res["activatable"])
+        self.assertEqual(res["reason"], "unknown_scope")
+        deferred_tools.enable_deferred_tools("fc2", [])
+        result = tools.tool_search(run_id="fc2", query="bad_scope")
+        self.assertEqual(result["activated"], [])
+        self.assertFalse(deferred_tools.is_tool_active("fc2", "bad_scope"))
+
+    def test_huge_activation_cap_is_clamped(self):
+        _patch_registry(self, [_spec(f"t{i:02d}") for i in range(10)])
+        deferred_tools.enable_deferred_tools("fc3", [])
+        result = tools.tool_search(run_id="fc3", query="", activation_cap=9999)
+        self.assertEqual(len(result["activated"]), tools.TOOL_SEARCH_ACTIVATION_CAP)
+
+    def test_huge_limit_is_clamped(self):
+        _patch_registry(self, [_spec(f"t{i:02d}") for i in range(30)])
+        deferred_tools.enable_deferred_tools("fc4", [])
+        result = tools.tool_search(run_id="fc4", query="", limit=9999)
+        self.assertLessEqual(len(result["matches"]), tools.TOOL_SEARCH_RESULT_LIMIT)
+
+    def test_bad_string_limit_and_cap_do_not_crash(self):
+        _patch_registry(self, [_spec(f"t{i:02d}") for i in range(8)])
+        deferred_tools.enable_deferred_tools("fc5", [])
+        result = tools.tool_search(run_id="fc5", query="", limit="abc", activation_cap="xyz")
+        self.assertTrue(result["ok"])
+        # bad cap -> falls back to the max, still never exceeding it
+        self.assertLessEqual(len(result["activated"]), tools.TOOL_SEARCH_ACTIVATION_CAP)
+
+
 if __name__ == "__main__":
     unittest.main()

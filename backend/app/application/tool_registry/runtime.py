@@ -211,6 +211,13 @@ def _spec_activatability(spec: dict) -> tuple[bool, str | None]:
         return False, "unclassified"
     if spec.get("permission") == "forbidden":
         return False, "forbidden"
+    # Fail-closed: a corrupted / forward-dated spec with an invalid permission
+    # tier or an unknown scope must never be activatable (mirrors the executor's
+    # fail-closed gates). Reuses the registry's canonical vocabularies.
+    if spec.get("permission") not in registry_store.VALID_PERMISSIONS:
+        return False, "invalid_permission"
+    if any(s not in registry_store.VALID_SCOPES for s in (spec.get("scopes") or [])):
+        return False, "unknown_scope"
     return True, None
 
 
