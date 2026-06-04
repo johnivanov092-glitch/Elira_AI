@@ -4,6 +4,7 @@ from typing import Any
 
 from app.application.chat.entrypoint_models import ChatAgentDeps
 from app.application.chat.freshness_gate import evaluate_freshness_gate
+from app.application.monitoring.inference import record_inference_telemetry
 
 
 def run_agent_impl(
@@ -219,14 +220,63 @@ def run_agent_impl(
                 "meta": meta,
             }
 
-        draft = deps.run_chat_func(
-            model_name=effective_model,
-            profile_name=profile_name,
-            user_input=prompt_bundle.prompt + deps.compose_human_style_rules_func(temporal),
-            history=bootstrap.history,
+        llm_input = prompt_bundle.prompt + deps.compose_human_style_rules_func(temporal)
+        llm_start = _time.monotonic()
+        decision = execution.decision
+        try:
+            draft = deps.run_chat_func(
+                model_name=effective_model,
+                profile_name=profile_name,
+                user_input=llm_input,
+                history=bootstrap.history,
+                num_ctx=execution.effective_num_ctx,
+                task_context=prompt_bundle.task_context,
+                timeout=execution.effective_timeout_seconds,
+            )
+        except Exception:
+            llm_duration_ms = int((_time.monotonic() - llm_start) * 1000)
+            record_inference_telemetry(
+                agent_id=effective_agent_id,
+                run_id=run["run_id"],
+                route=route,
+                model=effective_model,
+                provider=str(getattr(decision, "provider", "") or ""),
+                profile_id=str(getattr(decision, "profile_id", "") or ""),
+                role=str(getattr(decision, "role", "") or ""),
+                routing_source=str(getattr(decision, "source", "") or ""),
+                requested_model=str(getattr(decision, "requested_model", "") or model_name),
+                num_ctx=execution.effective_num_ctx,
+                ok=False,
+                duration_ms=llm_duration_ms,
+                streaming=False,
+                prompt_chars=len(llm_input),
+                tool_round_trips=len(tool_results),
+                fallback_count=1 if getattr(decision, "fallback_reason", None) else 0,
+                error_category="llm_exception",
+            )
+            raise
+        llm_duration_ms = int((_time.monotonic() - llm_start) * 1000)
+        draft_meta = draft.get("meta") if isinstance(draft.get("meta"), dict) else {}
+        record_inference_telemetry(
+            agent_id=effective_agent_id,
+            run_id=run["run_id"],
+            route=route,
+            model=effective_model,
+            provider=str(getattr(decision, "provider", "") or ""),
+            profile_id=str(getattr(decision, "profile_id", "") or ""),
+            role=str(getattr(decision, "role", "") or ""),
+            routing_source=str(getattr(decision, "source", "") or ""),
+            requested_model=str(getattr(decision, "requested_model", "") or model_name),
             num_ctx=execution.effective_num_ctx,
-            task_context=prompt_bundle.task_context,
-            timeout=execution.effective_timeout_seconds,
+            ok=bool(draft.get("ok")),
+            duration_ms=llm_duration_ms,
+            streaming=False,
+            usage=(draft_meta or {}).get("usage") if isinstance(draft_meta, dict) else None,
+            prompt_chars=len(llm_input),
+            completion_chars=len(str(draft.get("answer") or "")),
+            tool_round_trips=len(tool_results),
+            fallback_count=1 if getattr(decision, "fallback_reason", None) else 0,
+            error_category="" if draft.get("ok") else "llm_error",
         )
         if not draft.get("ok"):
             raise RuntimeError("; ".join(draft.get("warnings", [])) or "LLM failed")

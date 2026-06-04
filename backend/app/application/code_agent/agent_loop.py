@@ -30,6 +30,7 @@ from app.application.tool_providers import (
 )
 from app.application.projects.scope import legacy_project_key, project_scope_id
 from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool as _kernel_exec
+from app.application.monitoring.inference import extract_ollama_usage, record_inference_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +290,15 @@ def _truncate_for_llm(text: str, limit: int = TOOL_RESULT_LLM_LIMIT) -> str:
         + f"\n[... truncated {cut} chars from middle to stay under context limit ...]\n"
         + text[-tail_size:]
     )
+
+
+def _messages_char_count(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for item in messages:
+        content = item.get("content")
+        if isinstance(content, str):
+            total += len(content)
+    return total
 
 
 _INLINE_TOOL_NAMES_PATTERN = None  # built lazily once dispatch is known
@@ -737,6 +747,8 @@ def stream_code_agent(
         yield {"type": "run_started", "run_id": rid}
 
         last_text = ""
+        tool_round_trips = 0
+        compaction_count = 0
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -767,6 +779,7 @@ def stream_code_agent(
                 summarize_fn=summarize_history,
             )
             if _compacted:
+                compaction_count += 1
                 yield {"type": "context_compacted", "step": step}
 
             # P10.1: expose only this run's active tools + tool_search. Tools
@@ -774,6 +787,8 @@ def stream_code_agent(
             _active = get_active_tools(rid)
             step_schemas = [s for s in all_schemas if _schema_tool_name(s) in _active]
             step_schemas.append(_TOOL_SEARCH_SCHEMA)
+            llm_prompt_chars = _messages_char_count(messages)
+            llm_start = time.monotonic()
             try:
                 response = chat(
                     model=model,
@@ -782,6 +797,27 @@ def stream_code_agent(
                     options={"num_ctx": safe_num_ctx},
                 )
             except Exception as exc:
+                llm_duration_ms = int((time.monotonic() - llm_start) * 1000)
+                record_inference_telemetry(
+                    agent_id=effective_agent_id,
+                    run_id=rid,
+                    route=str(getattr(_route_decision, "route", "") or "code"),
+                    model=model,
+                    provider=str(getattr(_route_decision, "provider", "") or ""),
+                    profile_id=str(getattr(_route_decision, "profile_id", "") or ""),
+                    role=str(getattr(_route_decision, "role", "") or ""),
+                    routing_source=str(getattr(_route_decision, "source", "") or ""),
+                    requested_model=str(getattr(_route_decision, "requested_model", "") or ""),
+                    num_ctx=safe_num_ctx,
+                    ok=False,
+                    duration_ms=llm_duration_ms,
+                    streaming=False,
+                    prompt_chars=llm_prompt_chars,
+                    tool_round_trips=tool_round_trips,
+                    compaction_count=compaction_count,
+                    fallback_count=1 if getattr(_route_decision, "fallback_reason", None) else 0,
+                    error_category="llm_error",
+                )
                 logger.exception("Ollama chat failed at step %d", step)
                 yield {
                     "type": "done",
@@ -792,6 +828,7 @@ def stream_code_agent(
                 }
                 return
 
+            llm_duration_ms = int((time.monotonic() - llm_start) * 1000)
             if cancel_event.is_set():
                 yield {
                     "type": "done",
@@ -805,6 +842,27 @@ def stream_code_agent(
             message = (response or {}).get("message") or {}
             content = (message.get("content") or "").strip()
             tool_calls = message.get("tool_calls") or []
+            record_inference_telemetry(
+                agent_id=effective_agent_id,
+                run_id=rid,
+                route=str(getattr(_route_decision, "route", "") or "code"),
+                model=model,
+                provider=str(getattr(_route_decision, "provider", "") or ""),
+                profile_id=str(getattr(_route_decision, "profile_id", "") or ""),
+                role=str(getattr(_route_decision, "role", "") or ""),
+                routing_source=str(getattr(_route_decision, "source", "") or ""),
+                requested_model=str(getattr(_route_decision, "requested_model", "") or ""),
+                num_ctx=safe_num_ctx,
+                ok=True,
+                duration_ms=llm_duration_ms,
+                streaming=False,
+                usage=extract_ollama_usage(response),
+                prompt_chars=llm_prompt_chars,
+                completion_chars=len(content),
+                tool_round_trips=tool_round_trips,
+                compaction_count=compaction_count,
+                fallback_count=1 if getattr(_route_decision, "fallback_reason", None) else 0,
+            )
 
             # Some models (qwen2.5-coder etc.) emit tool calls as JSON in
             # content instead of structured tool_calls. Recover them so the
@@ -877,6 +935,7 @@ def stream_code_agent(
                         "content": _truncate_for_llm(_ts_text),
                         "name": name,
                     })
+                    tool_round_trips += 1
                     continue
                 if name == "todo_update":
                     # P12.1: checklist mutations are bound to the current run.
@@ -916,6 +975,7 @@ def stream_code_agent(
                         else:
                             event[opt] = val
                 yield event
+                tool_round_trips += 1
                 # Smart-truncate tool output before feeding it back to the
                 # LLM. Without this, a single huge `run_bash` or `read_file`
                 # could blow out `num_ctx` and start eating the system

@@ -4,6 +4,7 @@ from typing import Any
 
 from app.application.chat.entrypoint_models import ChatAgentDeps
 from app.application.chat.freshness_gate import evaluate_freshness_gate, requires_freshness_check
+from app.application.monitoring.inference import record_inference_telemetry
 
 
 def _needs_file_generation(raw_user_input: str, deps: ChatAgentDeps) -> bool:
@@ -245,17 +246,69 @@ def run_agent_stream_impl(
             return
 
         full_text = ""
-        for token in deps.run_chat_stream_func(
-            model_name=effective_model,
-            profile_name=profile_name,
-            user_input=prompt_bundle.prompt + deps.compose_human_style_rules_func(temporal),
-            history=bootstrap.history,
+        llm_input = prompt_bundle.prompt + deps.compose_human_style_rules_func(temporal)
+        llm_start = _time.monotonic()
+        first_token_ms: int | None = None
+        decision = execution.decision
+        try:
+            for token in deps.run_chat_stream_func(
+                model_name=effective_model,
+                profile_name=profile_name,
+                user_input=llm_input,
+                history=bootstrap.history,
+                num_ctx=execution.effective_num_ctx,
+                task_context=prompt_bundle.task_context,
+                timeout=execution.effective_timeout_seconds,
+            ):
+                if first_token_ms is None and token:
+                    first_token_ms = int((_time.monotonic() - llm_start) * 1000)
+                full_text += token
+                yield {"token": token, "done": False}
+        except Exception:
+            llm_duration_ms = int((_time.monotonic() - llm_start) * 1000)
+            record_inference_telemetry(
+                agent_id=effective_agent_id,
+                run_id=run["run_id"],
+                route=route,
+                model=effective_model,
+                provider=str(getattr(decision, "provider", "") or ""),
+                profile_id=str(getattr(decision, "profile_id", "") or ""),
+                role=str(getattr(decision, "role", "") or ""),
+                routing_source=str(getattr(decision, "source", "") or ""),
+                requested_model=str(getattr(decision, "requested_model", "") or model_name),
+                num_ctx=execution.effective_num_ctx,
+                ok=False,
+                duration_ms=llm_duration_ms,
+                streaming=True,
+                prompt_chars=len(llm_input),
+                completion_chars=len(full_text),
+                tool_round_trips=len(tool_results),
+                fallback_count=1 if getattr(decision, "fallback_reason", None) else 0,
+                ttft_ms=first_token_ms,
+                error_category="llm_exception",
+            )
+            raise
+        llm_duration_ms = int((_time.monotonic() - llm_start) * 1000)
+        record_inference_telemetry(
+            agent_id=effective_agent_id,
+            run_id=run["run_id"],
+            route=route,
+            model=effective_model,
+            provider=str(getattr(decision, "provider", "") or ""),
+            profile_id=str(getattr(decision, "profile_id", "") or ""),
+            role=str(getattr(decision, "role", "") or ""),
+            routing_source=str(getattr(decision, "source", "") or ""),
+            requested_model=str(getattr(decision, "requested_model", "") or model_name),
             num_ctx=execution.effective_num_ctx,
-            task_context=prompt_bundle.task_context,
-            timeout=execution.effective_timeout_seconds,
-        ):
-            full_text += token
-            yield {"token": token, "done": False}
+            ok=True,
+            duration_ms=llm_duration_ms,
+            streaming=True,
+            prompt_chars=len(llm_input),
+            completion_chars=len(full_text),
+            tool_round_trips=len(tool_results),
+            fallback_count=1 if getattr(decision, "fallback_reason", None) else 0,
+            ttft_ms=first_token_ms,
+        )
 
         attachments = deps.get_and_clear_attachments_func()
         if attachments:

@@ -4,6 +4,7 @@ from typing import Any, Generator
 
 import ollama
 
+from app.application.monitoring.inference import extract_ollama_usage
 from app.core.persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
 from app.application.persona.service import build_persona_prompt
 
@@ -12,6 +13,13 @@ def normalize_profile(name: str) -> str:
     if not name or name.lower() == "default":
         return DEFAULT_PROFILE
     return name if name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
+
+
+def _message_content(resp: Any) -> str:
+    message = resp.get("message") if isinstance(resp, dict) else getattr(resp, "message", None)
+    if isinstance(message, dict):
+        return str(message.get("content") or "")
+    return str(getattr(message, "content", "") or "")
 
 
 def run_chat(
@@ -41,8 +49,16 @@ def run_chat(
         # ollama client supports (no fake ThreadPool / no claimed hard cancel).
         client = ollama.Client(timeout=timeout) if timeout else ollama.Client()
         resp = client.chat(model=model_name, messages=messages, options={"num_ctx": num_ctx})
-        text = resp.message.content or ""
-        return {"ok": True, "answer": text, "warnings": [], "meta": {"profile": profile}}
+        text = _message_content(resp)
+        return {
+            "ok": True,
+            "answer": text,
+            "warnings": [],
+            "meta": {
+                "profile": profile,
+                "usage": extract_ollama_usage(resp),
+            },
+        }
     except Exception as e:
         return {"ok": False, "answer": "", "warnings": [str(e)], "meta": {}}
 
