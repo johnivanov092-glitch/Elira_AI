@@ -155,7 +155,9 @@ def process_message(token: str, message: dict[str, Any]) -> None:
         from app.application.chat.runtime import run_agent
 
         result = run_agent(
-            model_name=model or "gemma3:4b",
+            # P9.3: "auto" sentinel lets run_agent's shared profile routing engage;
+            # an explicit configured model is preserved.
+            model_name=model or "auto",
             profile_name=profile,
             user_input=text,
             use_memory=use_memory,

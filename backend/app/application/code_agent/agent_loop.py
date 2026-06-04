@@ -489,11 +489,89 @@ def _try_remember_turn(*, user_message: str, response_text: str, project_root: P
         logger.debug("auto-remember failed: %s", exc)
 
 
+def _resolve_code_route(model: str, num_ctx: int) -> tuple[str, int, Any]:
+    """P9.3: route code-agent through the shared model order (route='code'):
+    explicit model -> enabled 'code' profile (if installed) -> route_model_map
+    -> DEFAULT_MODEL. Effective num_ctx = min(requested, monitoring cap,
+    selected profile context_limit).
+
+    MODEL_SAFE_CTX is deliberately NOT applied for code-agent: it is a
+    conservative chat-safe table (not a confirmed hard provider limit), while
+    code-agent intentionally uses a large tool-context window (DEFAULT_NUM_CTX).
+    Applying it would regress the default coder model 16384 -> 6144. We skip it
+    by NOT passing `model=` to effective_context_limit.
+    """
+    from app.core.config import effective_context_limit, resolve_model_for_route
+
+    available_models = None
+    try:
+        from app.infrastructure.llm.ollama_models import get_models
+
+        result = get_models()
+        if result.get("ok"):
+            names: list[str] = []
+            for item in result.get("models", []):
+                for key in ("name", "model"):
+                    value = item.get(key)
+                    if value:
+                        names.append(str(value))
+            available_models = names
+    except Exception:
+        available_models = None
+
+    decision = resolve_model_for_route("code", model, available_models)
+
+    monitoring_max = None
+    try:
+        from app.application.monitoring.runtime import get_agent_limit
+
+        limit = get_agent_limit("code-agent") or {}
+        cap = int(limit.get("max_context_tokens") or 0)
+        monitoring_max = cap if cap > 0 else None
+    except Exception:
+        monitoring_max = None
+
+    profile_ctx = decision.context_limit if decision.source == "profile" else None
+    effective = effective_context_limit(
+        int(num_ctx),
+        monitoring_max_context=monitoring_max,
+        profile_context_limit=profile_ctx,
+    )
+    return decision.model, int(effective), decision
+
+
+def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int) -> None:
+    """Best-effort routing provenance for code-agent (no schema change)."""
+    try:
+        from app.application.monitoring.runtime import record_metric
+
+        record_metric(
+            metric_type="model.routed",
+            agent_id="code-agent",
+            run_id=run_id,
+            ok=True,
+            details={
+                "model": decision.model,
+                "provider": decision.provider,
+                "profile_id": decision.profile_id,
+                "route": decision.route,
+                "role": decision.role,
+                "routing_source": decision.source,
+                "requested_model": decision.requested_model,
+                "effective_num_ctx": int(effective_num_ctx),
+                "fallback_reason": decision.fallback_reason,
+                "cloud_skipped": decision.cloud_skipped,
+            },
+        )
+    except Exception:
+        pass
+
+
 def stream_code_agent(
     *,
     user_message: str,
     project_root: Path | str,
-    model: str = DEFAULT_MODEL,
+    model: str = "auto",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
@@ -531,7 +609,12 @@ def stream_code_agent(
             return
 
         safe_max_steps = max(1, min(int(max_steps), MAX_CODE_AGENT_STEPS))
-        safe_num_ctx = max(1024, int(num_ctx))
+        # P9.3: shared model routing (route='code') + effective num_ctx cap.
+        # MODEL_SAFE_CTX is intentionally skipped here (see _resolve_code_route)
+        # so code-agent keeps its large DEFAULT_NUM_CTX window.
+        model, _effective_num_ctx, _route_decision = _resolve_code_route(model, num_ctx)
+        safe_num_ctx = max(1024, _effective_num_ctx)
+        _record_code_route_metric(rid, _route_decision, safe_num_ctx)
         try:
             from app.application.agent_registry.sandbox import preflight_or_raise
 
@@ -757,7 +840,7 @@ def run_code_agent(
     *,
     user_message: str,
     project_root: Path | str,
-    model: str = DEFAULT_MODEL,
+    model: str = "auto",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     num_ctx: int = DEFAULT_NUM_CTX,

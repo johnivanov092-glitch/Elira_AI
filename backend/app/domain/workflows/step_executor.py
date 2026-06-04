@@ -125,7 +125,9 @@ def _execute_agent_step(
     config = step.get("config", {}) or {}
     prompt_template = str(config.get("prompt_template", "")).strip()
     prompt = _render_prompt_template(prompt_template, mapped_inputs) if prompt_template else _stringify_template_value(mapped_inputs)
-    model_name = str(config.get("model_name") or run_context.get("model_name") or "gemma3:4b")
+    # P9.3: fall back to the "auto" sentinel (not a hardcoded model) so run_agent's
+    # shared profile routing engages; an explicit step/context model is preserved.
+    model_name = str(config.get("model_name") or run_context.get("model_name") or "auto")
     profile_name = _determine_profile_name(str(step.get("agent_id", "")), config)
     result = run_agent(
         model_name=model_name,

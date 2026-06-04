@@ -221,6 +221,14 @@ class AgentLoopTest(unittest.TestCase):
             "app.application.agent_registry.sandbox.preflight_or_raise",
             return_value={"limit": {"max_execution_seconds": 10}},
         ), patch(
+            # Isolate the wall-clock test from the P9.3 routing probe (its
+            # get_models() HTTP call would otherwise consume the finite
+            # time.monotonic side_effect via urllib3 internals).
+            "app.application.code_agent.agent_loop._resolve_code_route",
+            return_value=("qwen2.5-coder:7b", 8192, None),
+        ), patch(
+            "app.application.code_agent.agent_loop._record_code_route_metric",
+        ), patch(
             "app.application.code_agent.agent_loop.time.monotonic",
             side_effect=[0.0, 11.0],
         ):
