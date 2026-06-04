@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.application.chat.entrypoint_models import ChatAgentDeps
+from app.application.chat.freshness_gate import evaluate_freshness_gate, requires_freshness_check
 
 
 def _needs_file_generation(raw_user_input: str, deps: ChatAgentDeps) -> bool:
@@ -111,7 +112,11 @@ def run_agent_stream_impl(
         selected_tools = execution.selected_tools
         effective_model = execution.effective_model
 
-        if deps.should_cache_func(planner_input, route) and not bootstrap.history:
+        if (
+            not requires_freshness_check(temporal)
+            and deps.should_cache_func(planner_input, route)
+            and not bootstrap.history
+        ):
             cached = deps.get_cached_func(planner_input, effective_model, profile_name)
             if cached:
                 cached_hit = deps.prepare_cached_stream_hit_func(
@@ -169,6 +174,75 @@ def run_agent_stream_impl(
             build_prompt_func=deps.build_prompt_func,
             build_task_context_func=deps.build_task_context_func,
         )
+
+        freshness_gate = evaluate_freshness_gate(
+            temporal=temporal,
+            selected_tools=selected_tools,
+            tool_results=tool_results,
+        )
+        if not freshness_gate.ok:
+            deps.append_timeline_func(
+                timeline,
+                "freshness_gate",
+                "Freshness gate",
+                "blocked",
+                freshness_gate.reason,
+            )
+            try:
+                deps.record_metric_func(
+                    metric_type="freshness.gate",
+                    agent_id=effective_agent_id,
+                    run_id=run["run_id"],
+                    ok=False,
+                    details={
+                        "reason": freshness_gate.reason,
+                        **(freshness_gate.details or {}),
+                    },
+                )
+            except Exception:
+                pass
+            full_text = freshness_gate.answer
+            yield deps.build_stream_phase_event_func(
+                phase="freshness_blocked",
+                message="Fresh web evidence is required but unavailable.",
+            )
+            for token_event in deps.iter_text_stream_events_func(full_text):
+                yield token_event
+            duration_ms = int((_time.monotonic() - agent_start) * 1000)
+            meta = deps.finalize_stream_success_func(
+                history_service=deps.history_service,
+                run_id=run["run_id"],
+                session_id=str(session_id or ""),
+                profile_name=profile_name,
+                model_name=effective_model,
+                route=route,
+                user_input=raw_user_input,
+                full_text=full_text,
+                tools=selected_tools,
+                temporal=temporal,
+                web_plan=web_plan,
+                identity_guard=None,
+                provenance_guard=None,
+                duration_ms=duration_ms,
+                num_ctx=execution.effective_num_ctx,
+                agent_id=effective_agent_id,
+                source_agent_id=effective_agent_id,
+                timeline=timeline,
+                selected_tools=selected_tools,
+            )
+            meta["freshness_gate"] = {
+                "blocked": True,
+                "reason": freshness_gate.reason,
+                **(freshness_gate.details or {}),
+            }
+            yield {
+                "token": "",
+                "done": True,
+                "full_text": full_text,
+                "meta": meta,
+                "timeline": timeline,
+            }
+            return
 
         full_text = ""
         for token in deps.run_chat_stream_func(

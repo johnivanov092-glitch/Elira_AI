@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.application.chat.entrypoint_models import ChatAgentDeps
+from app.application.chat.freshness_gate import evaluate_freshness_gate
 
 
 def run_agent_impl(
@@ -144,6 +145,79 @@ def run_agent_impl(
             build_task_context_func=deps.build_task_context_func,
             append_timeline_func=deps.append_timeline_func,
         )
+
+        freshness_gate = evaluate_freshness_gate(
+            temporal=temporal,
+            selected_tools=selected_tools,
+            tool_results=tool_results,
+        )
+        if not freshness_gate.ok:
+            deps.append_timeline_func(
+                timeline,
+                "freshness_gate",
+                "Freshness gate",
+                "blocked",
+                freshness_gate.reason,
+            )
+            try:
+                deps.record_metric_func(
+                    metric_type="freshness.gate",
+                    agent_id=effective_agent_id,
+                    run_id=run["run_id"],
+                    ok=False,
+                    details={
+                        "reason": freshness_gate.reason,
+                        **(freshness_gate.details or {}),
+                    },
+                )
+            except Exception:
+                pass
+            answer = freshness_gate.answer
+            duration_ms = int((_time.monotonic() - agent_start) * 1000)
+            meta = deps.finalize_chat_success_func(
+                history_service=deps.history_service,
+                run_id=run["run_id"],
+                session_id=str(session_id or ""),
+                profile_name=profile_name,
+                model_name=effective_model,
+                route=route,
+                user_input=raw_user_input,
+                answer_text=answer,
+                tools=selected_tools,
+                temporal=temporal,
+                web_plan=web_plan,
+                identity_guard=None,
+                provenance_guard=None,
+                duration_ms=duration_ms,
+                streaming=False,
+                num_ctx=execution.effective_num_ctx,
+                agent_id=effective_agent_id,
+                source_agent_id=source_agent_id,
+                selected_tools=selected_tools,
+            )
+            meta["freshness_gate"] = {
+                "blocked": True,
+                "reason": freshness_gate.reason,
+                **(freshness_gate.details or {}),
+            }
+            deps.record_registry_agent_run_func(
+                agent_id=agent_id,
+                registry_agent=registry_agent,
+                run_id=run["run_id"],
+                input_summary=raw_user_input,
+                output_summary=answer,
+                ok=True,
+                route=route,
+                model_name=effective_model,
+                duration_ms=duration_ms,
+            )
+            return {
+                "ok": True,
+                "answer": answer,
+                "timeline": timeline,
+                "tool_results": tool_results,
+                "meta": meta,
+            }
 
         draft = deps.run_chat_func(
             model_name=effective_model,
