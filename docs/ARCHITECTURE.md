@@ -136,10 +136,29 @@ verify в песочнице → ручное применение. Измене
 `application/chat` + `domain/agents` (`router`, `planner`, `orchestrator`,
 `reflection`). `planner_v2` классифицирует запрос и выбирает навыки/инструменты
 (его словарь инструментов — источник правды о том, что авто-триггерится).
-`route_model_map` (настройки пользователя) выбирает модель под тип задачи
-(`chat`/`code`/`project`/`research`); сентинелы `""`/`auto`/`авто` означают
-авто-роутинг, иначе уважается явный выбор модели. Флаг `orchestration_enabled`
-включает многошаговую оркестрацию (по умолчанию выключен — на 4B быстрее).
+**Выбор модели (общий порядок для chat, code-agent и workflows, P9.3).**
+Единый resolver — `core/config.resolve_model_for_route` (`pick_model_for_route`
+остаётся back-compat обёрткой, возвращающей только модель). Порядок:
+1) явный выбор пользователя → 2) включённый профиль модели для роли маршрута →
+3) `route_model_map` (настройки пользователя) → 4) `DEFAULT_MODEL`. Маршрут
+(`chat`/`code`/`project`/`research`) детерминированно отображается в роль
+(`fast`/`code`/`strong`) через `route_to_role`. Сентинелы `""`/`auto`/`авто`
+означают авто-роутинг, иначе уважается явный выбор. Включённый профиль
+применяется только если его модель установлена (иначе ограниченный fallback на
+`route_model_map`); cloud-профиль пропускается без явного consent. Эффективный
+`num_ctx = min(запрошенный, monitoring.max_context_tokens, profile.context_limit
+если выбран профиль, MODEL_SAFE_CTX если модель известна)`; sandbox preflight
+получает уже эффективный `num_ctx`, поэтому явный выбор модели не обходит лимиты.
+Code-agent по умолчанию использует `auto` (через `/api/code-agent` и фронтенд),
+**не** применяет `MODEL_SAFE_CTX` (сохраняет большой `DEFAULT_NUM_CTX`,
+ограничивается только monitoring/profile-капами), а summarize-history резолвит
+`auto` до вызова Ollama. Каждый выбор пишет метрику `model.routed`
+(`model`/`provider`/`profile_id`/`route`/`role`/`routing_source`/
+`effective_num_ctx`/`fallback_reason`) в run-метрики (`agent_metrics.details_json`,
+без изменения схемы). Профили модели хранятся в таблице `model_profiles`
+(`agent_monitor.db`) и управляются через `/api/agent-os/models/*`. Флаг
+`orchestration_enabled` включает многошаговую оркестрацию (по умолчанию выключен —
+на 4B быстрее).
 
 ### Инструменты и реестр
 `application/tool_registry` + `application/tool_providers` + `domain/tools`.
