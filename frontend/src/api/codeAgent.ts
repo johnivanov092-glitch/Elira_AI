@@ -1,6 +1,6 @@
 import { API_BASE, request } from "./client";
 
-export const DEFAULT_CODE_AGENT_MODEL = "qwen2.5-coder:7b";
+export const DEFAULT_CODE_AGENT_MODEL = "auto";
 export const DEFAULT_CODE_AGENT_MAX_STEPS = 20;
 export const DEFAULT_CODE_AGENT_NUM_CTX = 16384;
 

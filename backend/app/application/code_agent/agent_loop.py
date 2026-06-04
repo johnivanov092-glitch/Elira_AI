@@ -523,9 +523,13 @@ def _resolve_code_route(model: str, num_ctx: int) -> tuple[str, int, Any]:
 
     monitoring_max = None
     try:
-        from app.application.monitoring.runtime import get_agent_limit
+        from app.application.monitoring.runtime import ensure_agent_limit
 
-        limit = get_agent_limit("code-agent") or {}
+        # ensure_agent_limit (not get_agent_limit): the default max_context_tokens
+        # must participate in effective_num_ctx even before any limit row exists,
+        # otherwise a request above the default cap reaches preflight uncapped and
+        # gets blocked.
+        limit = ensure_agent_limit("code-agent") or {}
         cap = int(limit.get("max_context_tokens") or 0)
         monitoring_max = cap if cap > 0 else None
     except Exception:
@@ -944,6 +948,13 @@ def summarize_history(
     cleaned = _coerce_history(messages)
     if not cleaned:
         return {"ok": True, "summary": "", "error": None, "turn_count": 0}
+
+    # P9.3: never let the "auto" sentinel reach Ollama as a literal model name —
+    # resolve it through the same code route first (concrete callers are a no-op).
+    from app.core.config import is_auto_route
+
+    if is_auto_route(model):
+        model = _resolve_code_route(model, num_ctx)[0]
 
     chat = chat_fn or _ollama_chat
 

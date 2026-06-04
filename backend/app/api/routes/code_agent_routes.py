@@ -44,7 +44,9 @@ class ConversationMessage(BaseModel):
 class CodeAgentRequest(BaseModel):
     message: str = Field(..., description="User task for the code agent")
     project_root: str = Field(..., description="Absolute path to the project directory")
-    model: str = Field(default=DEFAULT_MODEL)
+    # P9.3: "auto" routes through the shared model order (route='code') server-side;
+    # an explicit model is preserved. (CodeAgentStreamRequest inherits this.)
+    model: str = Field(default="auto")
     max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=50)
     num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")

@@ -50,7 +50,7 @@ class CodeAgentRouteResolutionTest(unittest.TestCase):
         with patch("app.infrastructure.llm.ollama_models.get_models", return_value=models_payload), \
              patch("app.core.config._get_route_map", return_value=_ROUTE_MAP), \
              patch("app.core.config._get_profile_for_role", return_value=profile), \
-             patch("app.application.monitoring.runtime.get_agent_limit",
+             patch("app.application.monitoring.runtime.ensure_agent_limit",
                    return_value=({"max_context_tokens": monitoring_max} if monitoring_max else None)):
             return _resolve_code_route(model, num_ctx)
 
@@ -183,6 +183,103 @@ class TelegramModelFallbackTest(unittest.TestCase):
     def test_explicit_model_preserved(self):
         captured = self._process("qwen3:8b")
         self.assertEqual(captured["model_name"], "qwen3:8b")
+
+
+class CodeAgentRouteDefaultsTest(unittest.TestCase):
+    """P9.3 fixup: the real activation path — /api/code-agent request default
+    model is the 'auto' sentinel, and the route forwards it."""
+
+    def test_request_default_model_is_auto(self):
+        from app.api.routes import code_agent_routes as routes
+        self.assertEqual(routes.CodeAgentRequest(message="m", project_root="/p").model, "auto")
+        self.assertEqual(routes.CodeAgentStreamRequest(message="m", project_root="/p").model, "auto")
+
+    def test_run_route_passes_auto_when_model_omitted(self):
+        from app.api.routes import code_agent_routes as routes
+        captured: dict = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "response": "", "steps": 0, "tool_calls": [],
+                    "stop_reason": "done", "error": None}
+
+        with patch.object(routes, "run_code_agent", side_effect=fake_run):
+            routes.run(routes.CodeAgentRequest(message="m", project_root="/p"))
+        self.assertEqual(captured["model"], "auto")
+
+    def test_stream_route_passes_auto_when_model_omitted(self):
+        import asyncio
+        from app.api.routes import code_agent_routes as routes
+        captured: dict = {}
+
+        def fake_stream(**kwargs):
+            captured.update(kwargs)
+            return iter([{"type": "done", "ok": True, "steps": 0, "stop_reason": "done", "error": None}])
+
+        with patch.object(routes, "stream_code_agent", side_effect=fake_stream):
+            response = routes.stream(routes.CodeAgentStreamRequest(message="m", project_root="/p"))
+
+            async def _drain():
+                async for _chunk in response.body_iterator:
+                    pass
+
+            asyncio.run(_drain())
+        self.assertEqual(captured["model"], "auto")
+
+
+class SummarizeHistoryAutoTest(unittest.TestCase):
+    """P9.3 fixup: the 'auto' sentinel must never reach Ollama as a literal
+    model name from summarize-history; it is resolved through the code route."""
+
+    def test_auto_model_resolved_before_chat(self):
+        from app.application.code_agent import agent_loop
+        captured: dict = {}
+
+        def fake_chat(**kwargs):
+            captured.update(kwargs)
+            return {"message": {"content": "summary"}}
+
+        with patch("app.infrastructure.llm.ollama_models.get_models", return_value={"ok": False, "models": []}), \
+             patch("app.core.config._get_profile_for_role", return_value=None), \
+             patch("app.core.config._get_route_map", return_value={"code": ["qwen2.5-coder:7b"]}), \
+             patch("app.application.monitoring.runtime.ensure_agent_limit", return_value={"max_context_tokens": 16384}):
+            result = agent_loop.summarize_history(
+                messages=[{"role": "user", "content": "hello"},
+                          {"role": "assistant", "content": "hi there"}],
+                model="auto",
+                num_ctx=8192,
+                chat_fn=fake_chat,
+            )
+        self.assertTrue(result["ok"])
+        self.assertNotEqual(captured.get("model"), "auto")
+        self.assertEqual(captured.get("model"), "qwen2.5-coder:7b")
+
+
+class CodeAgentEnsureLimitCapTest(unittest.TestCase):
+    """P9.3 fixup: _resolve_code_route uses ensure_agent_limit, so the default
+    max_context_tokens caps a too-large request to 16384 (vs reaching preflight
+    uncapped and being blocked) even on a fresh monitoring DB with no row."""
+
+    def test_request_above_default_cap_becomes_16384(self):
+        import tempfile
+        from app.application.monitoring import runtime as mon
+        from app.application.code_agent.agent_loop import _resolve_code_route
+
+        with tempfile.TemporaryDirectory() as tmp:
+            orig_db = mon.DB_PATH
+            orig_seed = mon._LIMIT_SEED_DONE
+            mon.DB_PATH = Path(tmp) / "agent_monitor.db"
+            mon._LIMIT_SEED_DONE = False
+            mon._init_db()
+            try:
+                with patch("app.infrastructure.llm.ollama_models.get_models",
+                           return_value={"ok": False, "models": []}):
+                    _model, effective, _decision = _resolve_code_route("qwen2.5-coder:7b", 99999)
+            finally:
+                mon.DB_PATH = orig_db
+                mon._LIMIT_SEED_DONE = orig_seed
+
+        self.assertEqual(effective, 16384)
 
 
 if __name__ == "__main__":

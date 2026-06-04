@@ -70,7 +70,7 @@ const DEFAULT_SIDEBAR_WIDTH = 220;
 const MIN_SIDEBAR_WIDTH = 160;
 const MAX_SIDEBAR_WIDTH = 380;
 const DEFAULT_ROOT = "D:/AIWork/Elira_AI";
-const DEFAULT_MODEL = "qwen2.5-coder:7b";
+const DEFAULT_MODEL = "auto";
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_NUM_CTX = 16384;
 const DEFAULT_DRAWER_WIDTH = 420;
@@ -147,6 +147,9 @@ function writeBool(key: string, v: boolean) {
 
 function isToolFriendly(name: string): boolean {
   const low = name.toLowerCase();
+  // "auto" is the routing sentinel — resolved server-side to a tool-capable
+  // model, so it must not trigger the no-tools warning.
+  if (low === "auto" || low === "") return true;
   return TOOL_FRIENDLY.some((prefix) => low.startsWith(prefix));
 }
 function formatSize(bytes?: number): string {
@@ -769,10 +772,12 @@ export default function CodeWorkspaceShell(props: CodeWorkspaceShellProps) {
   // ─── model dropdown items ───────────────────────────────────────────
   const knownModels = useMemo<Model[]>(() => {
     const ms = models || [];
-    if (model && !ms.some((m) => m.name === model)) {
-      return [{ name: model }, ...ms];
+    // Always offer the "auto" routing sentinel first (server resolves it).
+    const withAuto = ms.some((m) => m.name === "auto") ? ms : [{ name: "auto" }, ...ms];
+    if (model && !withAuto.some((m) => m.name === model)) {
+      return [{ name: model }, ...withAuto];
     }
-    return ms;
+    return withAuto;
   }, [models, model]);
 
   const activeDrawerDef = DRAWER_DEFS.find((d) => d.key === activeDrawer) ?? null;
