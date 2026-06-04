@@ -132,3 +132,15 @@ def api_todo_update(run_id: str, req: TodoUpdateRequest):
         items=[_dump_exclude_none(item) for item in (req.items or [])],
         updates=[_dump_exclude_none(item) for item in (req.updates or [])],
     )
+
+
+@router.get("/subagents/{subagent_run_id}")
+def api_get_subagent_run(subagent_run_id: str):
+    from app.application.task_planner.service import get_subagent_run
+    return get_subagent_run(subagent_run_id)
+
+
+@router.get("/subagents/by-parent/{parent_run_id}")
+def api_list_subagent_runs(parent_run_id: str, limit: int = 100):
+    from app.application.task_planner.service import list_subagent_runs
+    return list_subagent_runs(parent_run_id, limit=limit)

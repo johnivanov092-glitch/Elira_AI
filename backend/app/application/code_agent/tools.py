@@ -483,6 +483,11 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
 
 TOOL_SEARCH_RESULT_LIMIT = 20
 TOOL_SEARCH_ACTIVATION_CAP = 5
+DELEGATE_TASK_MAX_STEPS = 6
+DELEGATE_TASK_MAX_CTX = 8192
+DELEGATE_TASK_TIMEOUT_SECONDS = 60
+DELEGATE_TASK_READONLY_TOOLS = ("read_file", "glob", "grep", "recall")
+DELEGATE_TASK_ROLES = {"explore", "plan", "verify"}
 
 
 def _clamp_to_max(value: Any, maximum: int) -> int:
@@ -649,6 +654,139 @@ def tool_todo_update(
     return result
 
 
+def _delegate_prompt(role: str, task: str) -> str:
+    role_guidance = {
+        "explore": "Find relevant files, symbols, facts, and constraints. Do not propose edits unless asked.",
+        "plan": "Produce a concise implementation plan and risks from read-only inspection.",
+        "verify": "Inspect evidence and report whether the requested condition appears satisfied.",
+    }
+    guidance = role_guidance.get(role, role_guidance["explore"])
+    return (
+        f"You are a bounded read-only {role} subagent.\n"
+        f"{guidance}\n"
+        "Hard limits: do not write files, do not run shell, do not delegate further. "
+        "Use only read_file/glob/grep/recall and non-side-effect tools activated by tool_search. "
+        "Return concise findings with file paths when relevant.\n\n"
+        f"Task:\n{task}"
+    )
+
+
+def _safe_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_delegate_text(result: dict[str, Any]) -> str:
+    sub = result.get("subagent") or {}
+    status = sub.get("status") or ("completed" if result.get("ok") else "failed")
+    lines = [
+        f"delegate_task role={result.get('role')} status={status}",
+        f"subagent_run_id={result.get('subagent_run_id')}",
+    ]
+    if result.get("error"):
+        lines.append(f"error={result['error']}")
+    output = str(result.get("result_text") or "").strip()
+    if output:
+        lines.append("\nResult:\n" + output)
+    return "\n".join(lines)
+
+
+def tool_delegate_task(
+    project_root: Path,
+    *,
+    run_id: str,
+    role: str = "explore",
+    task: str,
+    max_steps: int = DELEGATE_TASK_MAX_STEPS,
+    num_ctx: int = DELEGATE_TASK_MAX_CTX,
+) -> dict[str, Any]:
+    """Delegate a bounded read-only subtask to a child code-agent run."""
+    parent_run_id = str(run_id or "").strip()
+    if not parent_run_id:
+        return {"ok": False, "text": "ERROR: delegate_task requires a run_id.", "error": "run_id_required"}
+    normalized_role = str(role or "explore").strip().lower()
+    if normalized_role not in DELEGATE_TASK_ROLES:
+        return {"ok": False, "text": f"ERROR: unsupported delegate role: {normalized_role}", "error": "unsupported_role"}
+    cleaned_task = str(task or "").strip()
+    if not cleaned_task:
+        return {"ok": False, "text": "ERROR: delegate_task requires a task.", "error": "task_required"}
+
+    safe_steps = max(1, min(_safe_int(max_steps, DELEGATE_TASK_MAX_STEPS), DELEGATE_TASK_MAX_STEPS))
+    safe_ctx = max(1024, min(_safe_int(num_ctx, DELEGATE_TASK_MAX_CTX), DELEGATE_TASK_MAX_CTX))
+
+    try:
+        from app.application.task_planner import service as task_service
+
+        started = task_service.start_subagent_run(
+            parent_run_id=parent_run_id,
+            role=normalized_role,
+            task=cleaned_task,
+            depth=1,
+            max_steps=safe_steps,
+            max_context_tokens=safe_ctx,
+            tool_allowlist=list(DELEGATE_TASK_READONLY_TOOLS),
+        )
+    except Exception as exc:
+        return {"ok": False, "text": f"ERROR: failed to create subagent run: {exc}", "error": str(exc)}
+    if not started.get("ok"):
+        return {
+            "ok": False,
+            "text": f"ERROR: failed to create subagent run: {started.get('error')}",
+            "error": str(started.get("error") or "start_failed"),
+        }
+
+    subagent_run_id = str(started.get("subagent_run_id") or "").strip()
+    result_text = ""
+    error = ""
+    ok = False
+    finished: dict[str, Any] = {}
+    try:
+        from app.application.code_agent.agent_loop import run_code_agent
+
+        sub_result = run_code_agent(
+            user_message=_delegate_prompt(normalized_role, cleaned_task),
+            project_root=project_root,
+            model="auto",
+            agent_id=f"subagent-{normalized_role}",
+            max_steps=safe_steps,
+            run_id=subagent_run_id,
+            num_ctx=safe_ctx,
+            base_tools=DELEGATE_TASK_READONLY_TOOLS,
+            execution_timeout_seconds=DELEGATE_TASK_TIMEOUT_SECONDS,
+            auto_remember=False,
+        )
+        ok = bool(sub_result.get("ok"))
+        result_text = str(sub_result.get("response") or "")
+        error = str(sub_result.get("error") or "")
+    except Exception as exc:
+        error = str(exc)
+
+    status = "completed" if ok else "failed"
+    try:
+        finished = task_service.finish_subagent_run(
+            subagent_run_id=subagent_run_id,
+            status=status,
+            result_text=result_text,
+            error=error,
+        )
+    except Exception as exc:
+        error = f"{error}; finish_failed={exc}" if error else f"finish_failed={exc}"
+        finished = {"ok": False, "error": str(exc), "subagent_run_id": subagent_run_id, "status": status}
+
+    output = {
+        "ok": ok,
+        "role": normalized_role,
+        "subagent_run_id": subagent_run_id,
+        "result_text": result_text,
+        "error": error,
+        "subagent": finished if finished.get("ok") else {**started, "status": status},
+    }
+    output["text"] = _format_delegate_text(output)
+    return output
+
+
 def build_tool_schemas() -> list[dict[str, Any]]:
     """Ollama function-calling tool schemas."""
     return [
@@ -781,6 +919,40 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "delegate_task",
+                "description": (
+                    "Delegate a bounded read-only subtask to a child agent. "
+                    "Roles: explore, plan, verify. The child gets its own "
+                    "run_id, max steps/context/time, cannot write files, "
+                    "and cannot delegate again."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "role": {
+                            "type": "string",
+                            "description": "One of: explore, plan, verify.",
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Concrete read-only subtask to perform.",
+                        },
+                        "max_steps": {
+                            "type": "integer",
+                            "description": "Optional child step cap. Max 6.",
+                        },
+                        "num_ctx": {
+                            "type": "integer",
+                            "description": "Optional child context cap. Max 8192.",
+                        },
+                    },
+                    "required": ["task"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "run_bash",
                 "description": "Run a shell command inside the project root. Returns stdout, stderr, and exit code.",
                 "parameters": {
@@ -888,6 +1060,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "grep": lambda **kw: tool_grep(project_root, **kw),
         "recall": lambda **kw: tool_recall(project_root, **kw),
         "todo_update": lambda **kw: tool_todo_update(**kw),
+        "delegate_task": lambda **kw: tool_delegate_task(project_root, **kw),
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "web_search": lambda **kw: tool_web_search(**kw),
         "web_fetch": lambda **kw: tool_web_fetch(**kw),

@@ -337,6 +337,75 @@ class TestRunChecklist(unittest.TestCase):
         self.assertEqual(listed["items"][0]["status"], "pending")
 
 
+class TestSubagentRuns(unittest.TestCase):
+    def setUp(self):
+        self.db = _make_db()
+        _setup(self.db)
+
+    def tearDown(self):
+        self.db.unlink(missing_ok=True)
+
+    def _start(self, **kwargs):
+        events: list[dict] = []
+        result = planner_rt.start_subagent_run(
+            connect_func=lambda: _connect(self.db),
+            id_func=lambda: "sub-run-1",
+            now_func=lambda: "2026-01-01T00:00:00",
+            emit_event_func=lambda **kw: events.append(kw),
+            **kwargs,
+        )
+        return result, events
+
+    def test_subagent_run_persists_across_init(self):
+        result, events = self._start(
+            parent_run_id="parent-1",
+            role="explore",
+            task="inspect files",
+            depth=1,
+            max_steps=3,
+            max_context_tokens=4096,
+            tool_allowlist=["read_file", "grep"],
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "in_progress")
+        self.assertEqual(events[0]["event_type"], "task.subagent.started")
+
+        _setup(self.db)
+        fetched = planner_rt.get_subagent_run(
+            connect_func=lambda: _connect(self.db),
+            subagent_run_id="sub-run-1",
+        )
+        self.assertTrue(fetched["ok"])
+        self.assertEqual(fetched["parent_run_id"], "parent-1")
+        self.assertEqual(fetched["tool_allowlist"], ["read_file", "grep"])
+
+    def test_finish_subagent_run_records_terminal_state_and_event(self):
+        self._start(parent_run_id="parent-2", role="verify", task="check result")
+        events: list[dict] = []
+        finished = planner_rt.finish_subagent_run(
+            connect_func=lambda: _connect(self.db),
+            now_func=lambda: "2026-01-01T00:01:00",
+            subagent_run_id="sub-run-1",
+            status="completed",
+            result_text="verified",
+            emit_event_func=lambda **kw: events.append(kw),
+        )
+        self.assertTrue(finished["ok"])
+        self.assertEqual(finished["status"], "completed")
+        self.assertEqual(finished["result_text"], "verified")
+        self.assertEqual(events[0]["event_type"], "task.subagent.completed")
+
+    def test_depth_above_one_is_blocked(self):
+        result, _events = self._start(
+            parent_run_id="parent-3",
+            role="explore",
+            task="nested",
+            depth=2,
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "subagent_depth_exceeded")
+
+
 class TestTaskDurabilityRoutes(unittest.TestCase):
 
     def setUp(self):
@@ -407,6 +476,25 @@ class TestTaskDurabilityRoutes(unittest.TestCase):
         g = self.client.get("/api/tasks/checklist/route-run")
         self.assertEqual(g.status_code, 200)
         self.assertEqual(g.json()["items"][0]["id"], "a")
+
+    def test_subagent_routes(self):
+        planner_rt.start_subagent_run(
+            connect_func=lambda: _connect(self.db),
+            id_func=lambda: "route-sub",
+            now_func=lambda: "2026-01-01T00:00:00",
+            parent_run_id="route-parent",
+            role="plan",
+            task="make a plan",
+            tool_allowlist=["read_file"],
+        )
+        g = self.client.get("/api/tasks/subagents/route-sub")
+        self.assertEqual(g.status_code, 200)
+        self.assertTrue(g.json()["ok"])
+        self.assertEqual(g.json()["role"], "plan")
+
+        listed = self.client.get("/api/tasks/subagents/by-parent/route-parent")
+        self.assertEqual(listed.status_code, 200)
+        self.assertEqual(listed.json()["items"][0]["subagent_run_id"], "route-sub")
 
 
 if __name__ == "__main__":

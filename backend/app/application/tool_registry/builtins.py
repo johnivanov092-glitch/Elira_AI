@@ -404,6 +404,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
+        ("delegate_task", "Delegate Task", "task", "Run a bounded read-only subagent", 60, 50000, False),
     ]
 
     # P9.2A2: declared scopes (from the fixed vocabulary) for native tools.
@@ -411,6 +412,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"], "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"],
         "todo_update": ["task.write"],
+        "delegate_task": ["task.write", "fs.read"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
         "run_bash": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
     }

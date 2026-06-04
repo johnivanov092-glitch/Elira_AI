@@ -35,6 +35,7 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_grep,
     tool_read_file,
     tool_recall,
+    tool_delegate_task,
     tool_run_bash,
     tool_todo_update,
     tool_write_file,
@@ -470,6 +471,7 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("read_file", names)
         self.assertIn("run_bash", names)
         self.assertIn("todo_update", names)
+        self.assertIn("delegate_task", names)
 
     def test_todo_update_tool_delegates_to_task_planner(self) -> None:
         with patch(
@@ -495,6 +497,53 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(spec["permission"], "auto")
         self.assertTrue(spec["side_effect"])
         self.assertEqual(spec["scopes"], ["task.write"])
+
+    def test_delegate_task_toolspec_is_policy_classified(self) -> None:
+        from app.application.tool_registry.builtins import _build_native_code_agent_tools
+
+        specs = {tool["name"]: tool for tool in _build_native_code_agent_tools()}
+        spec = specs["delegate_task"]
+        self.assertEqual(spec["source"], "code_agent")
+        self.assertEqual(spec["permission"], "auto")
+        self.assertTrue(spec["side_effect"])
+        self.assertEqual(spec["scopes"], ["task.write", "fs.read"])
+
+    def test_delegate_task_runs_bounded_readonly_subagent(self) -> None:
+        started = {
+            "ok": True,
+            "subagent_run_id": "sub-1",
+            "parent_run_id": "parent-1",
+            "role": "explore",
+            "status": "in_progress",
+        }
+        finished = {**started, "status": "completed", "result_text": "found target"}
+        with patch("app.application.task_planner.service.start_subagent_run", return_value=started) as start, \
+             patch("app.application.task_planner.service.finish_subagent_run", return_value={"ok": True, **finished}) as finish, \
+             patch("app.application.code_agent.agent_loop.run_code_agent",
+                   return_value={"ok": True, "response": "found target", "error": None}) as run:
+            result = tool_delegate_task(self.root, run_id="parent-1", role="explore", task="find target")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["subagent_run_id"], "sub-1")
+        self.assertIn("found target", result["text"])
+        self.assertEqual(start.call_args.kwargs["tool_allowlist"], ["read_file", "glob", "grep", "recall"])
+        self.assertEqual(run.call_args.kwargs["run_id"], "sub-1")
+        self.assertEqual(run.call_args.kwargs["agent_id"], "subagent-explore")
+        self.assertEqual(tuple(run.call_args.kwargs["base_tools"]), ("read_file", "glob", "grep", "recall"))
+        self.assertFalse(run.call_args.kwargs["auto_remember"])
+        self.assertEqual(finish.call_args.kwargs["status"], "completed")
+
+    def test_delegate_task_failure_is_terminal_not_exception(self) -> None:
+        started = {"ok": True, "subagent_run_id": "sub-fail", "parent_run_id": "parent-1", "role": "verify"}
+        with patch("app.application.task_planner.service.start_subagent_run", return_value=started), \
+             patch("app.application.task_planner.service.finish_subagent_run",
+                   return_value={"ok": True, **started, "status": "failed"}) as finish, \
+             patch("app.application.code_agent.agent_loop.run_code_agent",
+                   side_effect=RuntimeError("model down")):
+            result = tool_delegate_task(self.root, run_id="parent-1", role="verify", task="check")
+        self.assertFalse(result["ok"])
+        self.assertIn("model down", result["text"])
+        self.assertEqual(finish.call_args.kwargs["status"], "failed")
 
     def test_recall_tool_returns_text(self) -> None:
         # Either "No matches", "Found N items", or "ERROR" (if Ollama offline)

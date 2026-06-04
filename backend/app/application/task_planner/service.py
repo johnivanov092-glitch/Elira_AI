@@ -140,3 +140,65 @@ def todo_update(
         updates=updates,
         emit_event_func=emit_event,
     )
+
+
+def start_subagent_run(
+    *,
+    parent_run_id: str,
+    role: str,
+    task: str,
+    depth: int = 0,
+    max_steps: int = 0,
+    max_context_tokens: int = 0,
+    tool_allowlist: list[str] | tuple[str, ...] | None = None,
+) -> dict:
+    from app.application.event_bus.runtime import emit_event
+
+    return planner_runtime.start_subagent_run(
+        connect_func=_connect,
+        id_func=lambda: f"sub-{uuid.uuid4().hex}",
+        now_func=lambda: datetime.utcnow().isoformat(),
+        parent_run_id=parent_run_id,
+        role=role,
+        task=task,
+        depth=depth,
+        max_steps=max_steps,
+        max_context_tokens=max_context_tokens,
+        tool_allowlist=tool_allowlist,
+        emit_event_func=emit_event,
+    )
+
+
+def finish_subagent_run(
+    *,
+    subagent_run_id: str,
+    status: str,
+    result_text: str = "",
+    error: str = "",
+) -> dict:
+    from app.application.event_bus.runtime import emit_event
+
+    return planner_runtime.finish_subagent_run(
+        connect_func=_connect,
+        now_func=lambda: datetime.utcnow().isoformat(),
+        subagent_run_id=subagent_run_id,
+        status=status,
+        result_text=result_text,
+        error=error,
+        emit_event_func=emit_event,
+    )
+
+
+def get_subagent_run(subagent_run_id: str) -> dict:
+    return planner_runtime.get_subagent_run(
+        connect_func=_connect,
+        subagent_run_id=subagent_run_id,
+    )
+
+
+def list_subagent_runs(parent_run_id: str, limit: int = 100) -> dict:
+    return planner_runtime.list_subagent_runs(
+        connect_func=_connect,
+        parent_run_id=parent_run_id,
+        limit=limit,
+    )

@@ -14,6 +14,8 @@ _DURABILITY_COLUMNS = [
 ]
 
 CHECKLIST_STATUSES = frozenset({"pending", "in_progress", "completed", "blocked"})
+SUBAGENT_ROLES = frozenset({"explore", "plan", "verify"})
+SUBAGENT_STATUSES = frozenset({"in_progress", "completed", "failed", "blocked"})
 
 def init_db(*, connect_func: Callable[[], Any]) -> None:
     conn = connect_func()
@@ -52,6 +54,27 @@ def init_db(*, connect_func: Callable[[], Any]) -> None:
                 ON task_checklist_items(run_id, position, item_id);
             CREATE INDEX IF NOT EXISTS idx_task_checklist_run_status
                 ON task_checklist_items(run_id, status);
+
+            CREATE TABLE IF NOT EXISTS task_subagent_runs (
+                subagent_run_id TEXT PRIMARY KEY,
+                parent_run_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                task TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'in_progress',
+                depth INTEGER NOT NULL DEFAULT 0,
+                max_steps INTEGER NOT NULL DEFAULT 0,
+                max_context_tokens INTEGER NOT NULL DEFAULT 0,
+                tool_allowlist_json TEXT NOT NULL DEFAULT '[]',
+                result_text TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_subagent_parent
+                ON task_subagent_runs(parent_run_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_task_subagent_status
+                ON task_subagent_runs(status);
             """
         )
         conn.commit()
@@ -354,6 +377,240 @@ def update_checklist(
             },
         )
     return {"ok": True, "run_id": rid, "items": result_items, "count": len(result_items), "changed": changed}
+
+
+def _normalize_subagent_role(role: Any) -> str:
+    normalized = str(role or "").strip().lower()
+    if normalized not in SUBAGENT_ROLES:
+        raise ValueError(f"invalid subagent role: {normalized}")
+    return normalized
+
+
+def _normalize_subagent_status(status: Any) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized not in SUBAGENT_STATUSES:
+        raise ValueError(f"invalid subagent status: {normalized}")
+    return normalized
+
+
+def _subagent_row_to_dict(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    try:
+        data["tool_allowlist"] = json.loads(data.pop("tool_allowlist_json", "[]") or "[]")
+    except (TypeError, json.JSONDecodeError):
+        data["tool_allowlist"] = []
+    return data
+
+
+def _emit_subagent_event(
+    emit_event_func: Callable[..., Any] | None,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    if emit_event_func is None:
+        return
+    try:
+        emit_event_func(
+            event_type=event_type,
+            source_agent_id="task_planner",
+            payload=payload,
+        )
+    except Exception:
+        pass
+
+
+def start_subagent_run(
+    *,
+    connect_func: Callable[[], Any],
+    id_func: Callable[[], str],
+    now_func: Callable[[], str],
+    parent_run_id: str,
+    role: str,
+    task: str,
+    depth: int = 0,
+    max_steps: int = 0,
+    max_context_tokens: int = 0,
+    tool_allowlist: list[str] | tuple[str, ...] | None = None,
+    emit_event_func: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    parent = _normalize_run_id(parent_run_id)
+    if not parent:
+        return {"ok": False, "error": "parent_run_id_required"}
+    try:
+        normalized_role = _normalize_subagent_role(role)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    cleaned_task = str(task or "").strip()
+    if not cleaned_task:
+        return {"ok": False, "error": "task_required"}
+    try:
+        safe_depth = max(0, int(depth or 0))
+        safe_steps = max(1, min(int(max_steps or 1), 20))
+        safe_ctx = max(1024, min(int(max_context_tokens or 1024), 32768))
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_subagent_limits"}
+    if safe_depth > 1:
+        return {"ok": False, "error": "subagent_depth_exceeded"}
+    allowlist = [str(name).strip() for name in (tool_allowlist or []) if str(name).strip()]
+    subagent_run_id = str(id_func()).strip()
+    if not subagent_run_id:
+        return {"ok": False, "error": "subagent_run_id_required"}
+    now = now_func()
+
+    conn = connect_func()
+    try:
+        conn.execute(
+            """
+            INSERT INTO task_subagent_runs
+                (subagent_run_id, parent_run_id, role, task, status, depth,
+                 max_steps, max_context_tokens, tool_allowlist_json,
+                 result_text, error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, '', '', ?, ?)
+            """,
+            (
+                subagent_run_id,
+                parent,
+                normalized_role,
+                cleaned_task,
+                safe_depth,
+                safe_steps,
+                safe_ctx,
+                json.dumps(allowlist, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM task_subagent_runs WHERE subagent_run_id = ?",
+            (subagent_run_id,),
+        ).fetchone()
+        data = _subagent_row_to_dict(row)
+    finally:
+        conn.close()
+
+    _emit_subagent_event(
+        emit_event_func,
+        "task.subagent.started",
+        {
+            "subagent_run_id": subagent_run_id,
+            "parent_run_id": parent,
+            "role": normalized_role,
+            "depth": safe_depth,
+            "max_steps": safe_steps,
+            "max_context_tokens": safe_ctx,
+            "tool_allowlist": allowlist,
+        },
+    )
+    return {"ok": True, **data}
+
+
+def finish_subagent_run(
+    *,
+    connect_func: Callable[[], Any],
+    now_func: Callable[[], str],
+    subagent_run_id: str,
+    status: str,
+    result_text: str = "",
+    error: str = "",
+    emit_event_func: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    sid = str(subagent_run_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": "subagent_run_id_required"}
+    try:
+        normalized_status = _normalize_subagent_status(status)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if normalized_status == "in_progress":
+        return {"ok": False, "error": "terminal_status_required"}
+    now = now_func()
+    safe_result = str(result_text or "")
+    safe_error = str(error or "")
+
+    conn = connect_func()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE task_subagent_runs
+            SET status = ?, result_text = ?, error = ?, updated_at = ?, completed_at = ?
+            WHERE subagent_run_id = ?
+            """,
+            (normalized_status, safe_result, safe_error, now, now, sid),
+        )
+        if cursor.rowcount <= 0:
+            conn.commit()
+            return {"ok": False, "error": "subagent_run_not_found"}
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM task_subagent_runs WHERE subagent_run_id = ?",
+            (sid,),
+        ).fetchone()
+        data = _subagent_row_to_dict(row)
+    finally:
+        conn.close()
+
+    event_type = "task.subagent.completed" if normalized_status == "completed" else "task.subagent.failed"
+    _emit_subagent_event(
+        emit_event_func,
+        event_type,
+        {
+            "subagent_run_id": sid,
+            "parent_run_id": data.get("parent_run_id", ""),
+            "role": data.get("role", ""),
+            "status": normalized_status,
+            "error": safe_error,
+        },
+    )
+    return {"ok": True, **data}
+
+
+def get_subagent_run(
+    *,
+    connect_func: Callable[[], Any],
+    subagent_run_id: str,
+) -> dict[str, Any]:
+    sid = str(subagent_run_id or "").strip()
+    if not sid:
+        return {"ok": False, "error": "subagent_run_id_required"}
+    conn = connect_func()
+    try:
+        row = conn.execute(
+            "SELECT * FROM task_subagent_runs WHERE subagent_run_id = ?",
+            (sid,),
+        ).fetchone()
+        if not row:
+            return {"ok": False, "error": "subagent_run_not_found"}
+        return {"ok": True, **_subagent_row_to_dict(row)}
+    finally:
+        conn.close()
+
+
+def list_subagent_runs(
+    *,
+    connect_func: Callable[[], Any],
+    parent_run_id: str,
+    limit: int = 100,
+) -> dict[str, Any]:
+    parent = _normalize_run_id(parent_run_id)
+    if not parent:
+        return {"ok": False, "error": "parent_run_id_required", "items": []}
+    safe_limit = max(1, min(int(limit or 100), 500))
+    conn = connect_func()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM task_subagent_runs
+            WHERE parent_run_id = ?
+            ORDER BY created_at DESC, subagent_run_id DESC
+            LIMIT ?
+            """,
+            (parent, safe_limit),
+        ).fetchall()
+        items = [_subagent_row_to_dict(row) for row in rows]
+        return {"ok": True, "parent_run_id": parent, "items": items, "count": len(items)}
+    finally:
+        conn.close()
 
 
 def get_task(*, connect_func: Callable[[], Any], tid: str) -> dict[str, Any]:

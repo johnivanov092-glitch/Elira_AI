@@ -489,7 +489,7 @@ def _try_remember_turn(*, user_message: str, response_text: str, project_root: P
         logger.debug("auto-remember failed: %s", exc)
 
 
-def _resolve_code_route(model: str, num_ctx: int) -> tuple[str, int, Any]:
+def _resolve_code_route(model: str, num_ctx: int, *, agent_id: str = "code-agent") -> tuple[str, int, Any]:
     """P9.3: route code-agent through the shared model order (route='code'):
     explicit model -> enabled 'code' profile (if installed) -> route_model_map
     -> DEFAULT_MODEL. Effective num_ctx = min(requested, monitoring cap,
@@ -529,7 +529,7 @@ def _resolve_code_route(model: str, num_ctx: int) -> tuple[str, int, Any]:
         # must participate in effective_num_ctx even before any limit row exists,
         # otherwise a request above the default cap reaches preflight uncapped and
         # gets blocked.
-        limit = ensure_agent_limit("code-agent") or {}
+        limit = ensure_agent_limit(agent_id or "code-agent") or {}
         cap = int(limit.get("max_context_tokens") or 0)
         monitoring_max = cap if cap > 0 else None
     except Exception:
@@ -544,14 +544,14 @@ def _resolve_code_route(model: str, num_ctx: int) -> tuple[str, int, Any]:
     return decision.model, int(effective), decision
 
 
-def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int) -> None:
+def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int, *, agent_id: str = "code-agent") -> None:
     """Best-effort routing provenance for code-agent (no schema change)."""
     try:
         from app.application.monitoring.runtime import record_metric
 
         record_metric(
             metric_type="model.routed",
-            agent_id="code-agent",
+            agent_id=agent_id or "code-agent",
             run_id=run_id,
             ok=True,
             details={
@@ -578,8 +578,12 @@ def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int
 # in the base set grants visibility, not a policy bypass.
 _CODE_AGENT_BASE_TOOLS = (
     "read_file", "glob", "grep", "recall",
-    "todo_update",
+    "todo_update", "delegate_task",
     "write_file", "edit_file", "run_bash",
+)
+
+_CODE_AGENT_READONLY_TOOLS = (
+    "read_file", "glob", "grep", "recall",
 )
 
 _TOOL_SEARCH_SCHEMA = {
@@ -616,10 +620,13 @@ def stream_code_agent(
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
+    agent_id: str = "code-agent",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     num_ctx: int = DEFAULT_NUM_CTX,
+    base_tools: tuple[str, ...] | list[str] | None = None,
+    execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> Iterator[dict[str, Any]]:
@@ -638,6 +645,7 @@ def stream_code_agent(
     root = Path(project_root).resolve()
     scope_id = project_scope_id(root)
     rid = run_id or uuid.uuid4().hex
+    effective_agent_id = str(agent_id or "code-agent").strip() or "code-agent"
     cancel_event = _register_run(rid)
 
     try:
@@ -656,17 +664,17 @@ def stream_code_agent(
         # P9.3: shared model routing (route='code') + effective num_ctx cap.
         # MODEL_SAFE_CTX is intentionally skipped here (see _resolve_code_route)
         # so code-agent keeps its large DEFAULT_NUM_CTX window.
-        model, _effective_num_ctx, _route_decision = _resolve_code_route(model, num_ctx)
+        model, _effective_num_ctx, _route_decision = _resolve_code_route(model, num_ctx, agent_id=effective_agent_id)
         safe_num_ctx = max(1024, _effective_num_ctx)
-        _record_code_route_metric(rid, _route_decision, safe_num_ctx)
+        _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
         try:
             from app.application.agent_registry.sandbox import preflight_or_raise
 
             preflight = preflight_or_raise(
-                agent_id="code-agent",
+                agent_id=effective_agent_id,
                 num_ctx=safe_num_ctx,
                 run_id=rid,
-                route="code-agent",
+                route=effective_agent_id,
                 streaming=True,
             )
             execution_seconds = int(
@@ -676,6 +684,11 @@ def stream_code_agent(
                 )
                 or DEFAULT_MAX_EXECUTION_SECONDS
             )
+            if execution_timeout_seconds is not None:
+                execution_seconds = min(
+                    execution_seconds,
+                    max(1, int(execution_timeout_seconds)),
+                )
         except Exception as exc:
             yield {"type": "run_started", "run_id": rid}
             yield {
@@ -710,7 +723,8 @@ def stream_code_agent(
             get_active_tools,
         )
 
-        enable_deferred_tools(rid, _CODE_AGENT_BASE_TOOLS)
+        initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
+        enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _ollama_chat
 
         system_prompt = _build_system_prompt(root, working_dir=working_dir)
@@ -869,10 +883,14 @@ def stream_code_agent(
                     # The model never chooses the run_id; executor policy/audit
                     # still applies below because todo_update is a normal tool.
                     parsed_args["run_id"] = rid
+                if name == "delegate_task":
+                    # P12.2: subagents are children of the current run. The
+                    # model chooses role/task, not parent_run_id.
+                    parsed_args["run_id"] = rid
                 _exec_result = _kernel_exec(
                     ToolExecutionRequest(
                         run_id=rid,
-                        agent_id="code-agent",
+                        agent_id=effective_agent_id,
                         project_scope_id=scope_id,
                         tool_name=name,
                         args=parsed_args,
@@ -930,9 +948,12 @@ def run_code_agent(
     project_root: Path | str,
     working_dir: Path | str | None = None,
     model: str = "auto",
+    agent_id: str = "code-agent",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     num_ctx: int = DEFAULT_NUM_CTX,
+    base_tools: tuple[str, ...] | list[str] | None = None,
+    execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -951,9 +972,12 @@ def run_code_agent(
         project_root=project_root,
         working_dir=working_dir,
         model=model,
+        agent_id=agent_id,
         max_steps=max_steps,
         conversation_history=conversation_history,
         num_ctx=num_ctx,
+        base_tools=base_tools,
+        execution_timeout_seconds=execution_timeout_seconds,
         auto_remember=auto_remember,
         chat_fn=chat_fn,
     ):

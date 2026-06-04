@@ -31,6 +31,9 @@ SUPPORTED_EVENT_TYPES = (
     "task.recovery.blocked",
     "task.recovery.dead_letter",
     "task.checklist.updated",
+    "task.subagent.started",
+    "task.subagent.completed",
+    "task.subagent.failed",
 )
 
 

@@ -93,7 +93,7 @@ def _run(chat, *, run_id, auto_remember=False):
 
 class DeferredLoopTest(unittest.TestCase):
     def tearDown(self):
-        for rid in ("r1", "r2", "rTodo", "r3", "r4", "r5", "rE", "r6a", "r6b", "r6c"):
+        for rid in ("r1", "r2", "rTodo", "rDelegate", "rReadonly", "r3", "r4", "r5", "rE", "r6a", "r6b", "r6c"):
             deferred_tools.clear_run(rid)
 
     def test_initial_schemas_are_expanded_base_only(self):
@@ -128,6 +128,33 @@ class DeferredLoopTest(unittest.TestCase):
         req = spy.call_args.args[0]
         self.assertEqual(req.tool_name, "todo_update")
         self.assertEqual(req.args["run_id"], "rTodo")
+
+    def test_delegate_task_called_with_injected_parent_run_id(self):
+        chat = ScriptedChat([_call("delegate_task", role="explore", task="look"), _final()])
+        with _loop_env(), patch.object(
+            agent_loop,
+            "_kernel_exec",
+            return_value=SimpleNamespace(output={"text": "ok"}),
+        ) as spy:
+            _run(chat, run_id="rDelegate")
+        req = spy.call_args.args[0]
+        self.assertEqual(req.tool_name, "delegate_task")
+        self.assertEqual(req.args["run_id"], "rDelegate")
+
+    def test_base_tools_override_is_readonly_for_subagent(self):
+        chat = ScriptedChat([_final()])
+        with tempfile.TemporaryDirectory() as tmp, _loop_env():
+            list(agent_loop.stream_code_agent(
+                user_message="read only",
+                project_root=tmp,
+                run_id="rReadonly",
+                base_tools=agent_loop._CODE_AGENT_READONLY_TOOLS,
+                chat_fn=chat,
+            ))
+        first = set(chat.tools_per_call[0])
+        self.assertEqual(first, set(agent_loop._CODE_AGENT_READONLY_TOOLS) | {"tool_search"})
+        self.assertNotIn("write_file", first)
+        self.assertNotIn("delegate_task", first)
 
     def test_activated_long_tail_tool_visible_next_step(self):
         chat = ScriptedChat([_call("tool_search", query="web"), _final()])
