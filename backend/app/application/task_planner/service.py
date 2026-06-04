@@ -114,3 +114,29 @@ def recover_stale_tasks(
         backoff_base_seconds=backoff_base_seconds,
         emit_event_func=emit_event,
     )
+
+
+def list_checklist(run_id: str) -> dict:
+    return planner_runtime.list_checklist(
+        connect_func=_connect,
+        run_id=run_id,
+    )
+
+
+def todo_update(
+    *,
+    run_id: str,
+    items: list[dict] | None = None,
+    updates: list[dict] | None = None,
+) -> dict:
+    from app.application.event_bus.runtime import emit_event
+
+    return planner_runtime.update_checklist(
+        connect_func=_connect,
+        id_func=lambda: str(uuid.uuid4())[:8],
+        now_func=lambda: datetime.utcnow().isoformat(),
+        run_id=run_id,
+        items=items,
+        updates=updates,
+        emit_event_func=emit_event,
+    )

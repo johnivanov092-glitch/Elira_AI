@@ -36,6 +36,7 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_read_file,
     tool_recall,
     tool_run_bash,
+    tool_todo_update,
     tool_write_file,
 )
 from app.application.projects.scope import project_scope_id  # noqa: E402
@@ -468,6 +469,32 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("recall", names)
         self.assertIn("read_file", names)
         self.assertIn("run_bash", names)
+        self.assertIn("todo_update", names)
+
+    def test_todo_update_tool_delegates_to_task_planner(self) -> None:
+        with patch(
+            "app.application.task_planner.service.todo_update",
+            return_value={
+                "ok": True,
+                "run_id": "run-x",
+                "items": [{"id": "a", "text": "step", "status": "pending", "position": 0}],
+                "changed": [],
+            },
+        ) as spy:
+            result = tool_todo_update(run_id="run-x")
+        self.assertTrue(result["ok"])
+        self.assertIn("Checklist for run run-x", result["text"])
+        self.assertEqual(spy.call_args.kwargs["run_id"], "run-x")
+
+    def test_todo_update_toolspec_is_policy_classified(self) -> None:
+        from app.application.tool_registry.builtins import _build_native_code_agent_tools
+
+        specs = {tool["name"]: tool for tool in _build_native_code_agent_tools()}
+        spec = specs["todo_update"]
+        self.assertEqual(spec["source"], "code_agent")
+        self.assertEqual(spec["permission"], "auto")
+        self.assertTrue(spec["side_effect"])
+        self.assertEqual(spec["scopes"], ["task.write"])
 
     def test_recall_tool_returns_text(self) -> None:
         # Either "No matches", "Found N items", or "ERROR" (if Ollama offline)

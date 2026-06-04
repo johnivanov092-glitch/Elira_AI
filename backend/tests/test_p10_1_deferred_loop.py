@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -92,7 +93,7 @@ def _run(chat, *, run_id, auto_remember=False):
 
 class DeferredLoopTest(unittest.TestCase):
     def tearDown(self):
-        for rid in ("r1", "r2", "r3", "r4", "r5", "rE", "r6a", "r6b", "r6c"):
+        for rid in ("r1", "r2", "rTodo", "r3", "r4", "r5", "rE", "r6a", "r6b", "r6c"):
             deferred_tools.clear_run(rid)
 
     def test_initial_schemas_are_expanded_base_only(self):
@@ -115,6 +116,18 @@ class DeferredLoopTest(unittest.TestCase):
         self.assertTrue(spy.called)
         self.assertEqual(spy.call_args.kwargs.get("run_id"), "r2")
         self.assertEqual(spy.call_args.kwargs.get("query"), "web")
+
+    def test_todo_update_called_with_injected_run_id(self):
+        chat = ScriptedChat([_call("todo_update", updates=[{"id": "a", "status": "completed"}]), _final()])
+        with _loop_env(), patch.object(
+            agent_loop,
+            "_kernel_exec",
+            return_value=SimpleNamespace(output={"text": "ok"}),
+        ) as spy:
+            _run(chat, run_id="rTodo")
+        req = spy.call_args.args[0]
+        self.assertEqual(req.tool_name, "todo_update")
+        self.assertEqual(req.args["run_id"], "rTodo")
 
     def test_activated_long_tail_tool_visible_next_step(self):
         chat = ScriptedChat([_call("tool_search", query="web"), _final()])

@@ -30,6 +30,25 @@ class RecoverStaleTasksRequest(BaseModel):
     backoff_base_seconds: int = 60
 
 
+class ChecklistItemRequest(BaseModel):
+    id: str | None = None
+    text: str | None = None
+    status: str | None = None
+    position: int | None = None
+    blocker: str | None = None
+
+
+class TodoUpdateRequest(BaseModel):
+    items: list[ChecklistItemRequest] | None = None
+    updates: list[ChecklistItemRequest] | None = None
+
+
+def _dump_exclude_none(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_none=True)
+    return model.dict(exclude_none=True)
+
+
 @router.get("/list")
 def api_list(status: str | None = None, category: str | None = None, limit: int = 100):
     from app.application.task_planner.service import list_tasks
@@ -96,4 +115,20 @@ def api_recover_stale(req: RecoverStaleTasksRequest):
         stale_after_seconds=req.stale_after_seconds,
         limit=req.limit,
         backoff_base_seconds=req.backoff_base_seconds,
+    )
+
+
+@router.get("/checklist/{run_id}")
+def api_list_checklist(run_id: str):
+    from app.application.task_planner.service import list_checklist
+    return list_checklist(run_id)
+
+
+@router.post("/checklist/{run_id}")
+def api_todo_update(run_id: str, req: TodoUpdateRequest):
+    from app.application.task_planner.service import todo_update
+    return todo_update(
+        run_id=run_id,
+        items=[_dump_exclude_none(item) for item in (req.items or [])],
+        updates=[_dump_exclude_none(item) for item in (req.updates or [])],
     )

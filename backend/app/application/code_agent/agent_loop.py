@@ -578,6 +578,7 @@ def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int
 # in the base set grants visibility, not a policy bypass.
 _CODE_AGENT_BASE_TOOLS = (
     "read_file", "glob", "grep", "recall",
+    "todo_update",
     "write_file", "edit_file", "run_bash",
 )
 
@@ -863,6 +864,11 @@ def stream_code_agent(
                         "name": name,
                     })
                     continue
+                if name == "todo_update":
+                    # P12.1: checklist mutations are bound to the current run.
+                    # The model never chooses the run_id; executor policy/audit
+                    # still applies below because todo_update is a normal tool.
+                    parsed_args["run_id"] = rid
                 _exec_result = _kernel_exec(
                     ToolExecutionRequest(
                         run_id=rid,

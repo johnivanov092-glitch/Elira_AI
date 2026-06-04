@@ -600,6 +600,55 @@ def tool_search(
 # ─── tool registry exposed to Ollama ────────────────────────────────────────
 
 
+def _format_checklist_text(result: dict[str, Any]) -> str:
+    if not result.get("ok"):
+        return f"ERROR: {result.get('error', 'todo_update failed')}"
+    items = result.get("items") or []
+    changed = result.get("changed") or []
+    header = f"Checklist for run {result.get('run_id', '')}: {len(items)} item(s)"
+    if changed:
+        header += f", {len(changed)} changed"
+    lines = [header]
+    for item in items[:50]:
+        blocker = str(item.get("blocker") or "").strip()
+        suffix = f" blocker={blocker}" if blocker else ""
+        lines.append(
+            f"- {item.get('id')}: [{item.get('status')}] "
+            f"{item.get('text')} (pos={item.get('position')}){suffix}"
+        )
+    if len(items) > 50:
+        lines.append(f"[... truncated at 50 of {len(items)} items ...]")
+    return "\n".join(lines)
+
+
+def tool_todo_update(
+    *,
+    run_id: str,
+    items: list[dict[str, Any]] | None = None,
+    updates: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Read or update the durable checklist for the current agent run."""
+    rid = str(run_id or "").strip()
+    if not rid:
+        return {"ok": False, "text": "ERROR: todo_update requires a run_id.", "error": "run_id_required"}
+    if items is not None and not isinstance(items, list):
+        return {"ok": False, "text": "ERROR: items must be a list.", "error": "invalid_items"}
+    if updates is not None and not isinstance(updates, list):
+        return {"ok": False, "text": "ERROR: updates must be a list.", "error": "invalid_updates"}
+
+    try:
+        from app.application.task_planner.service import todo_update
+    except Exception as exc:
+        return {"ok": False, "text": f"ERROR: task planner unavailable: {exc}", "error": str(exc)}
+
+    try:
+        result = todo_update(run_id=rid, items=items, updates=updates)
+    except Exception as exc:
+        return {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+    result["text"] = _format_checklist_text(result)
+    return result
+
+
 def build_tool_schemas() -> list[dict[str, Any]]:
     """Ollama function-calling tool schemas."""
     return [
@@ -699,6 +748,33 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                         "min_score": {"type": "number", "description": "Cosine similarity threshold 0..1 (default 0.3)."},
                     },
                     "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "todo_update",
+                "description": (
+                    "Read or update the durable checklist for this run. "
+                    "Use items to create checklist entries and updates to "
+                    "change status/blocker. Valid statuses: pending, "
+                    "in_progress, completed, blocked."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "New or replacement checklist items with text/status/position/blocker.",
+                        },
+                        "updates": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "Updates for existing checklist items; each update needs id.",
+                        },
+                    },
                 },
             },
         },
@@ -811,6 +887,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "glob": lambda **kw: tool_glob(project_root, **kw),
         "grep": lambda **kw: tool_grep(project_root, **kw),
         "recall": lambda **kw: tool_recall(project_root, **kw),
+        "todo_update": lambda **kw: tool_todo_update(**kw),
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "web_search": lambda **kw: tool_web_search(**kw),
         "web_fetch": lambda **kw: tool_web_fetch(**kw),

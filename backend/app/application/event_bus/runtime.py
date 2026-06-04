@@ -30,6 +30,7 @@ SUPPORTED_EVENT_TYPES = (
     "task.recovery.rescheduled",
     "task.recovery.blocked",
     "task.recovery.dead_letter",
+    "task.checklist.updated",
 )
 
 

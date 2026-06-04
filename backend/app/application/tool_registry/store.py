@@ -26,7 +26,7 @@ VALID_PERMISSIONS: frozenset[str] = frozenset({"auto", "require_approval", "forb
 # unknown scope is rejected at registration (never silently accepted).
 VALID_SCOPES: frozenset[str] = frozenset({
     "fs.read", "fs.write", "shell.exec", "net.outbound",
-    "secrets.read", "desktop.control", "home.control",
+    "secrets.read", "desktop.control", "home.control", "task.write",
 })
 
 

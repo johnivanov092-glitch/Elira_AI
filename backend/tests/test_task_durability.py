@@ -279,6 +279,64 @@ class TestStartupRecovery(unittest.TestCase):
         self.assertEqual(list(statuses.values()).count("in_progress"), 1)
 
 
+class TestRunChecklist(unittest.TestCase):
+    def setUp(self):
+        self.db = _make_db()
+        _setup(self.db)
+
+    def tearDown(self):
+        self.db.unlink(missing_ok=True)
+
+    def _update(self, **kwargs):
+        events: list[dict] = []
+        result = planner_rt.update_checklist(
+            connect_func=lambda: _connect(self.db),
+            id_func=lambda: "item-generated",
+            now_func=lambda: "2026-01-01T00:00:00",
+            emit_event_func=lambda **kw: events.append(kw),
+            **kwargs,
+        )
+        return result, events
+
+    def test_checklist_persists_across_init(self):
+        result, events = self._update(
+            run_id="run-1",
+            items=[
+                {"id": "plan", "text": "make plan", "status": "pending", "position": 1},
+                {"id": "verify", "text": "run tests", "status": "pending", "position": 2},
+            ],
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(events[0]["event_type"], "task.checklist.updated")
+
+        _setup(self.db)  # simulates backend restart / idempotent migration
+        listed = planner_rt.list_checklist(connect_func=lambda: _connect(self.db), run_id="run-1")
+        self.assertTrue(listed["ok"])
+        self.assertEqual([item["id"] for item in listed["items"]], ["plan", "verify"])
+
+    def test_updates_status_and_blocker(self):
+        self._update(run_id="run-2", items=[{"id": "a", "text": "step a"}])
+        result, _events = self._update(
+            run_id="run-2",
+            updates=[{"id": "a", "status": "blocked", "blocker": "needs approval"}],
+        )
+        self.assertTrue(result["ok"])
+        item = result["items"][0]
+        self.assertEqual(item["status"], "blocked")
+        self.assertEqual(item["blocker"], "needs approval")
+
+    def test_invalid_status_does_not_partially_write(self):
+        self._update(run_id="run-3", items=[{"id": "a", "text": "step a"}])
+        result, _events = self._update(
+            run_id="run-3",
+            updates=[{"id": "a", "status": "nope"}],
+        )
+        self.assertFalse(result["ok"])
+        listed = planner_rt.list_checklist(connect_func=lambda: _connect(self.db), run_id="run-3")
+        self.assertEqual(listed["items"][0]["status"], "pending")
+
+
 class TestTaskDurabilityRoutes(unittest.TestCase):
 
     def setUp(self):
@@ -337,6 +395,18 @@ class TestTaskDurabilityRoutes(unittest.TestCase):
         r = self.client.post("/api/tasks/recover-stale", json={"stale_after_seconds": 3600, "limit": 10})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["rescheduled"], 1)
+
+    def test_checklist_routes(self):
+        r = self.client.post(
+            "/api/tasks/checklist/route-run",
+            json={"items": [{"id": "a", "text": "route item", "status": "pending"}]},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+
+        g = self.client.get("/api/tasks/checklist/route-run")
+        self.assertEqual(g.status_code, 200)
+        self.assertEqual(g.json()["items"][0]["id"], "a")
 
 
 if __name__ == "__main__":

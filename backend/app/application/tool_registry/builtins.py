@@ -402,11 +402,15 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("sandbox_run",    "Sandbox Run",    "code",    "Run code in the project sandbox",       60, 20000, False),
         ("sandbox_reset",  "Sandbox Reset",  "code",    "Reset the project sandbox",             30,  5000, False),
     ]
+    auto_side_effect_tools = [
+        ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
+    ]
 
     # P9.2A2: declared scopes (from the fixed vocabulary) for native tools.
     _native_scopes = {
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"], "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"],
+        "todo_update": ["task.write"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
         "run_bash": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
     }
@@ -418,6 +422,16 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
             "permission": "auto", "side_effect": False,
+            "scopes": _native_scopes.get(name, []),
+            "idempotent": idempotent,
+            "timeout_seconds": timeout, "max_output_chars": max_chars,
+        })
+    for name, display, cat, desc, timeout, max_chars, idempotent in auto_side_effect_tools:
+        result.append({
+            "name": name, "handler": _noop,
+            "display_name": display, "category": cat, "description": desc,
+            "source": "code_agent",
+            "permission": "auto", "side_effect": True,
             "scopes": _native_scopes.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
