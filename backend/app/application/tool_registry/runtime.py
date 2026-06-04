@@ -188,6 +188,63 @@ def list_tools_with_schemas(
     )
 
 
+# ── P10.1: read-only ToolSpec search (Deferred Tool Search) ──────────────────
+_SEARCH_FIELDS = (
+    "name", "display_name", "display_name_ru",
+    "description", "description_ru", "category", "source",
+)
+
+
+def _spec_search_haystack(spec: dict) -> str:
+    parts = [str(spec.get(field, "") or "") for field in _SEARCH_FIELDS]
+    parts.extend(str(s) for s in (spec.get("scopes") or []))
+    return " ".join(parts).lower()
+
+
+def _spec_activatability(spec: dict) -> tuple[bool, str | None]:
+    """Registry-level eligibility. Disabled / unclassified / forbidden tools are
+    never activatable and are returned with a reason so a caller cannot activate
+    them. (Side-effect is a separate flag the caller may further restrict on.)"""
+    if not spec.get("enabled", True):
+        return False, "disabled"
+    if not spec.get("policy_classified"):
+        return False, "unclassified"
+    if spec.get("permission") == "forbidden":
+        return False, "forbidden"
+    return True, None
+
+
+def search_tool_specs(query: str, *, limit: int = 20) -> list[dict]:
+    """Read-only search over the existing ToolSpec registry — no provider
+    dispatch, no second registry, no DB change. Case-insensitive substring match
+    against name / display / description / category / source / scopes. Every
+    result reports ``activatable`` + ``reason``; disabled, unclassified, and
+    forbidden tools are returned as non-activatable so they cannot be activated.
+    Results are deterministically ordered by name.
+    """
+    q = str(query or "").strip().lower()
+    results: list[dict] = []
+    for spec in list_tools_with_schemas(enabled_only=False):
+        if q and q not in _spec_search_haystack(spec):
+            continue
+        activatable, reason = _spec_activatability(spec)
+        results.append({
+            "name": str(spec.get("name", "")),
+            "description": str(spec.get("description", "") or ""),
+            "category": str(spec.get("category", "") or ""),
+            "source": str(spec.get("source", "") or ""),
+            "scopes": list(spec.get("scopes") or []),
+            "permission": str(spec.get("permission", "") or ""),
+            "side_effect": bool(spec.get("side_effect", False)),
+            "activatable": activatable,
+            "reason": reason,
+        })
+    results.sort(key=lambda r: r["name"])
+    if limit and int(limit) > 0:
+        results = results[: int(limit)]
+    return results
+
+
 def update_tool(name: str, updates: dict) -> dict:
     return registry_store.update_tool(
         conn_factory=_conn,

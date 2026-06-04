@@ -479,6 +479,113 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     return {"text": "\n".join(parts)}
 
 
+# ─── P10.1: deferred tool search meta-tool (foundation) ─────────────────────
+
+TOOL_SEARCH_RESULT_LIMIT = 20
+TOOL_SEARCH_ACTIVATION_CAP = 5
+
+
+def _record_tool_search_metrics(
+    run_id: str, query: str, match_count: int, activated: list[str], agent_id: str
+) -> None:
+    """Best-effort run metrics for tool.search / tool.activated (no schema change)."""
+    try:
+        from app.application.monitoring.runtime import record_metric
+
+        record_metric(
+            metric_type="tool.search",
+            agent_id=agent_id,
+            run_id=run_id,
+            ok=True,
+            details={
+                "query": str(query),
+                "match_count": int(match_count),
+                "activated_count": len(activated),
+            },
+        )
+        if activated:
+            record_metric(
+                metric_type="tool.activated",
+                agent_id=agent_id,
+                run_id=run_id,
+                ok=True,
+                details={"tools": list(activated), "query": str(query)},
+            )
+    except Exception:
+        pass
+
+
+def tool_search(
+    *,
+    run_id: str,
+    query: str,
+    agent_id: str = "code-agent",
+    limit: int = TOOL_SEARCH_RESULT_LIMIT,
+    activation_cap: int = TOOL_SEARCH_ACTIVATION_CAP,
+) -> dict[str, Any]:
+    """Read-only meta-tool (P10.1 foundation): search the ToolSpec registry and
+    activate eligible, non-side-effect tools for THIS run only.
+
+    - Requires a run_id (activation is run-scoped).
+    - Activation grants VISIBILITY only — the unified executor still enforces
+      policy / scope / approval at dispatch. This function executes nothing.
+    - Disabled / unclassified / forbidden tools are surfaced but never activated.
+    - Side-effect tools are surfaced but NOT auto-activated in this slice.
+    - Activates at most ``activation_cap`` tools per call.
+    - Uses the existing run-scoped deferred_tools store; ``activate_tools`` is a
+      no-op unless the run already opted into deferred mode, so a non-deferred
+      run is unchanged. No hidden global state.
+    """
+    rid = str(run_id or "").strip()
+    if not rid:
+        return {
+            "ok": False,
+            "text": "tool_search requires a run_id.",
+            "error": "run_id_required",
+            "matches": [],
+            "activated": [],
+        }
+
+    from app.application.tool_registry.runtime import search_tool_specs
+    from app.application.agent_kernel.deferred_tools import activate_tools
+
+    matches = search_tool_specs(query, limit=limit)
+
+    cap = max(0, int(activation_cap))
+    eligible: list[str] = []
+    for match in matches:
+        if len(eligible) >= cap:
+            break
+        if match["activatable"] and not match["side_effect"]:
+            eligible.append(match["name"])
+
+    activated: list[str] = []
+    if eligible:
+        active_set = activate_tools(rid, eligible)  # no-op unless run is deferred
+        activated = [name for name in eligible if name in active_set]
+
+    _record_tool_search_metrics(rid, query, len(matches), activated, agent_id)
+
+    lines = [f"tool_search({query!r}): {len(matches)} match(es), {len(activated)} activated."]
+    for match in matches:
+        if match["name"] in activated:
+            mark = "[activated]"
+        elif not match["activatable"]:
+            mark = f"[blocked: {match['reason']}]"
+        elif match["side_effect"]:
+            mark = "[side_effect: not auto-activated]"
+        else:
+            mark = "[eligible]"
+        lines.append(f"  {match['name']} ({match['category']}/{match['source']}) {mark}")
+
+    return {
+        "ok": True,
+        "text": "\n".join(lines),
+        "matches": matches,
+        "activated": activated,
+    }
+
+
 # ─── tool registry exposed to Ollama ────────────────────────────────────────
 
 
