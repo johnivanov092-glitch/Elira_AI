@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Callable
 
 
@@ -60,6 +61,115 @@ class ChatPromptPreparation:
     context_bundle: str
     prompt: str
     task_context: str
+
+
+class OrchestrationBlocker(RuntimeError):
+    """Deterministic blocker for malformed orchestration plans."""
+
+    def __init__(self, *, reason: str, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.details = dict(details or {})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"blocked": True, "reason": self.reason, "message": str(self), **self.details}
+
+    def to_model_message(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
+
+
+def _planner_tool_aliases() -> set[str]:
+    try:
+        from app.application.monitoring.store import planner_tool_aliases
+
+        return {str(item).strip() for item in planner_tool_aliases() if str(item).strip()}
+    except Exception:
+        return {
+            "web_search",
+            "memory_search",
+            "library_context",
+            "project_mode",
+            "project_context",
+            "python_executor",
+            "project_patch",
+        }
+
+
+def _raw_plan_tools(plan: dict[str, Any]) -> list[str]:
+    raw = plan.get("tools", [])
+    if isinstance(raw, str):
+        values = [raw]
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        name = str(value or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _block_unknown_planner_tools(*, route: str, selected_tools: list[str]) -> None:
+    known = _planner_tool_aliases()
+    unknown = [tool for tool in selected_tools if tool not in known]
+    if not unknown:
+        return
+    raise OrchestrationBlocker(
+        reason="unknown_planner_tool",
+        message="Planner selected unknown tool(s): " + ", ".join(unknown),
+        details={
+            "route": route,
+            "unknown_tools": unknown,
+            "known_tools": sorted(known),
+        },
+    )
+
+
+def _parse_chat_plan(
+    *,
+    plan: dict[str, Any],
+    planner_input: str,
+    use_memory: bool,
+    use_library: bool,
+    use_web_search: bool,
+    is_memory_command_func: MemoryCommandChecker,
+) -> tuple[str, dict[str, Any], dict[str, Any], list[str]]:
+    route = str(plan.get("route", "chat") or "chat")
+
+    raw_temporal = plan.get("temporal")
+    temporal = dict(raw_temporal) if isinstance(raw_temporal, dict) else {}
+
+    raw_web_plan = plan.get("web_plan")
+    if isinstance(raw_web_plan, dict) and raw_web_plan:
+        web_plan = dict(raw_web_plan)
+    else:
+        web_plan = {"is_multi_intent": False, "subqueries": []}
+
+    selected_tools = [
+        tool_name
+        for tool_name in _raw_plan_tools(plan)
+        if not (tool_name == "memory_search" and not use_memory)
+        and not (tool_name == "library_context" and not use_library)
+        and not (tool_name == "web_search" and not use_web_search)
+    ]
+    if temporal.get("requires_web") and use_web_search and "web_search" not in selected_tools:
+        selected_tools.append("web_search")
+
+    strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
+    if strict_web_only:
+        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
+
+    if is_memory_command_func(planner_input):
+        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
+
+    _block_unknown_planner_tools(route=route, selected_tools=selected_tools)
+    return route, temporal, web_plan, selected_tools
 
 
 def build_disabled_skills(
@@ -189,35 +299,18 @@ def prepare_chat_plan(
     is_memory_command_func: MemoryCommandChecker,
     resolve_model_for_route_func: Callable[..., Any],
     available_models: list[str] | None = None,
+    plan: dict[str, Any] | None = None,
 ) -> ChatPlanPreparation:
-    plan = plan_runner(planner_input) or {}
-    route = str(plan.get("route", "chat") or "chat")
-
-    raw_temporal = plan.get("temporal")
-    temporal = dict(raw_temporal) if isinstance(raw_temporal, dict) else {}
-
-    raw_web_plan = plan.get("web_plan")
-    if isinstance(raw_web_plan, dict) and raw_web_plan:
-        web_plan = dict(raw_web_plan)
-    else:
-        web_plan = {"is_multi_intent": False, "subqueries": []}
-
-    selected_tools = [
-        tool_name
-        for tool_name in list(plan.get("tools", []) or [])
-        if not (tool_name == "memory_search" and not use_memory)
-        and not (tool_name == "library_context" and not use_library)
-        and not (tool_name == "web_search" and not use_web_search)
-    ]
-    if temporal.get("requires_web") and use_web_search and "web_search" not in selected_tools:
-        selected_tools.append("web_search")
-
-    strict_web_only = route == "research" and temporal.get("mode") == "hard" and temporal.get("freshness_sensitive")
-    if strict_web_only:
-        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
-
-    if is_memory_command_func(planner_input):
-        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "memory_search"]
+    raw_plan = plan if plan is not None else (plan_runner(planner_input) or {})
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    route, temporal, web_plan, selected_tools = _parse_chat_plan(
+        plan=plan,
+        planner_input=planner_input,
+        use_memory=use_memory,
+        use_library=use_library,
+        use_web_search=use_web_search,
+        is_memory_command_func=is_memory_command_func,
+    )
 
     decision = resolve_model_for_route_func(route, model_name, available_models)
     return ChatPlanPreparation(
@@ -257,17 +350,28 @@ def prepare_chat_execution(
     log_memory_save: bool = False,
     log_auto_model_switch: bool = False,
 ) -> ChatExecutionPreparation:
+    raw_plan = plan_runner(planner_input) or {}
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    _parse_chat_plan(
+        plan=plan,
+        planner_input=planner_input,
+        use_memory=use_memory,
+        use_library=use_library,
+        use_web_search=use_web_search,
+        is_memory_command_func=is_memory_command_func,
+    )
     available_models = available_models_func()
     chat_plan = prepare_chat_plan(
         planner_input=planner_input,
         model_name=model_name,
-        plan_runner=plan_runner,
+        plan_runner=lambda _text: plan,
         use_memory=use_memory,
         use_library=use_library,
         use_web_search=use_web_search,
         is_memory_command_func=is_memory_command_func,
         resolve_model_for_route_func=resolve_model_for_route_func,
         available_models=available_models,
+        plan=plan,
     )
     history_service.add_event(run_id, "planner", chat_plan.plan)
 

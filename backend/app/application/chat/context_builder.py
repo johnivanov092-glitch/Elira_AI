@@ -120,7 +120,7 @@ def collect_context(
                     parts.append(web_ctx)
                 continue
 
-            if tool_name == "project_mode":
+            if tool_name in {"project_mode", "project_context"}:
                 project_ctx = _build_project_context_from_tools(
                     user_input=user_input,
                     run_tool_func=run_tool_func,

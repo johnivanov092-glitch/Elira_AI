@@ -4,6 +4,7 @@ from typing import Any
 
 from app.application.chat.entrypoint_models import ChatAgentDeps
 from app.application.chat.freshness_gate import evaluate_freshness_gate
+from app.application.chat.service import OrchestrationBlocker
 from app.application.monitoring.inference import record_inference_telemetry
 
 
@@ -351,6 +352,65 @@ def run_agent_impl(
             "tool_results": tool_results,
             "meta": meta,
         }
+    except OrchestrationBlocker as exc:
+        answer = exc.to_model_message()
+        deps.append_timeline_func(
+            timeline,
+            "orchestration_blocker",
+            "Orchestration blocker",
+            "blocked",
+            exc.reason,
+        )
+        try:
+            deps.record_metric_func(
+                metric_type="orchestration.blocked",
+                agent_id=effective_agent_id,
+                run_id=run["run_id"],
+                ok=False,
+                details=exc.to_dict(),
+            )
+        except Exception:
+            pass
+        duration_ms = int((_time.monotonic() - agent_start) * 1000)
+        meta = {
+            "run_id": run["run_id"],
+            "orchestration_blocker": exc.to_dict(),
+        }
+        error_payload = {
+            "ok": False,
+            "answer": answer,
+            "timeline": timeline,
+            "tool_results": tool_results,
+            "meta": meta,
+        }
+        deps.finalize_chat_failure_func(
+            history_service=deps.history_service,
+            run_id=run["run_id"],
+            profile_name=profile_name,
+            model_name=model_name,
+            route=str(exc.details.get("route", "")),
+            error_text=answer,
+            duration_ms=duration_ms,
+            streaming=False,
+            num_ctx=num_ctx,
+            agent_id=effective_agent_id,
+            source_agent_id=source_agent_id,
+            session_id=str(session_id or ""),
+            selected_tools=[],
+            history_payload=error_payload,
+        )
+        deps.record_registry_agent_run_func(
+            agent_id=agent_id,
+            registry_agent=registry_agent,
+            run_id=run["run_id"],
+            input_summary=raw_user_input,
+            output_summary=answer,
+            ok=False,
+            route=str(exc.details.get("route", "")),
+            model_name=model_name,
+            duration_ms=duration_ms,
+        )
+        return error_payload
     except Exception as exc:
         if getattr(exc, "reason", None) is not None and getattr(exc, "details", None) is not None:
             error_step = {"step": "sandbox", "title": "Sandbox", "status": "error", "detail": str(exc)}

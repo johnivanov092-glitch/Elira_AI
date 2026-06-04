@@ -16,8 +16,10 @@ Conversion rules:
     We flatten the content array into one `text` blob the LLM can
     consume, and tag with `mcp_server` for the SSE event.
 
+What this provider exposes to the ToolRegistry:
+  * MCP tools only. Resources/prompts are available through McpClient and API
+    context routes, not as executable tools.
 What we do NOT support yet:
-  * MCP resources or prompts (only tools)
   * Streaming progress notifications during a tool call
   * Server-initiated requests (sampling, roots)
 """
