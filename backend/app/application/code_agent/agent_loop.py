@@ -571,6 +571,44 @@ def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int
         pass
 
 
+# P10.1: code-agent runs start in deferred tool mode exposing only this base set
+# (core read + edit + shell tools); long-tail tools stay hidden until tool_search
+# activates them. The base side-effect tools (write_file / edit_file / run_bash)
+# remain fully subject to the executor's policy / scope / approval gates — being
+# in the base set grants visibility, not a policy bypass.
+_CODE_AGENT_BASE_TOOLS = (
+    "read_file", "glob", "grep", "recall",
+    "write_file", "edit_file", "run_bash",
+)
+
+_TOOL_SEARCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "tool_search",
+        "description": (
+            "Search for more tools by keyword and activate the relevant ones for "
+            "THIS task. Use it whenever you need a capability you don't currently "
+            "have (e.g. web search, http, sql, run a command). Eligible matches "
+            "become callable on your next step."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords describing the capability you need.",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def _schema_tool_name(schema: dict) -> str:
+    return str((schema.get("function") or {}).get("name") or "")
+
+
 def stream_code_agent(
     *,
     user_message: str,
@@ -662,7 +700,15 @@ def stream_code_agent(
             SshToolProvider(),
             *build_mcp_providers(),
         ])
-        tool_schemas = registry.collect_schemas()
+        all_schemas = registry.collect_schemas()
+        # P10.1: enable deferred tool mode for THIS code-agent run — only the
+        # base set is active initially; tool_search activates more (run-scoped).
+        from app.application.agent_kernel.deferred_tools import (
+            enable_deferred_tools,
+            get_active_tools,
+        )
+
+        enable_deferred_tools(rid, _CODE_AGENT_BASE_TOOLS)
         chat = chat_fn or _ollama_chat
 
         system_prompt = _build_system_prompt(root)
@@ -707,11 +753,16 @@ def stream_code_agent(
             if _compacted:
                 yield {"type": "context_compacted", "step": step}
 
+            # P10.1: expose only this run's active tools + tool_search. Tools
+            # activated by tool_search on a prior step become visible here.
+            _active = get_active_tools(rid)
+            step_schemas = [s for s in all_schemas if _schema_tool_name(s) in _active]
+            step_schemas.append(_TOOL_SEARCH_SCHEMA)
             try:
                 response = chat(
                     model=model,
                     messages=messages,
-                    tools=tool_schemas,
+                    tools=step_schemas,
                     options={"num_ctx": safe_num_ctx},
                 )
             except Exception as exc:
@@ -790,6 +841,27 @@ def stream_code_agent(
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
+                if name == "tool_search":
+                    # P10.1 meta-tool: inject the current run_id (the model never
+                    # supplies it), search + activate eligible tools for this run.
+                    # Read-only; not routed through the provider/executor path.
+                    from app.application.code_agent.tools import tool_search as _tool_search
+
+                    _ts = _tool_search(run_id=rid, query=str(parsed_args.get("query", "")))
+                    _ts_text = str(_ts.get("text", ""))
+                    yield {
+                        "type": "tool_call",
+                        "step": step,
+                        "tool": name,
+                        "arguments": parsed_args,
+                        "result": _truncate(_ts_text),
+                    }
+                    messages.append({
+                        "role": "tool",
+                        "content": _truncate_for_llm(_ts_text),
+                        "name": name,
+                    })
+                    continue
                 _exec_result = _kernel_exec(
                     ToolExecutionRequest(
                         run_id=rid,
@@ -837,6 +909,11 @@ def stream_code_agent(
             "error": f"reached max_steps={safe_max_steps} without final answer",
         }
     finally:
+        # P10.1: drop the run's deferred allowlist on EVERY terminal exit
+        # (success, max_steps, timeout, cancel, error).
+        from app.application.agent_kernel.deferred_tools import clear_run
+
+        clear_run(rid)
         _unregister_run(rid)
 
 
