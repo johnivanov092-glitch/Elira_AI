@@ -27,6 +27,9 @@ SUPPORTED_EVENT_TYPES = (
     "workflow.step.started",
     "workflow.step.completed",
     "workflow.step.failed",
+    "task.recovery.rescheduled",
+    "task.recovery.blocked",
+    "task.recovery.dead_letter",
 )
 
 

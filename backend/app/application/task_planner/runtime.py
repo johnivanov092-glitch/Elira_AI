@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 
@@ -236,6 +237,164 @@ def bump_retry(
         return {"ok": True, **dict(row2)}
     finally:
         conn.close()
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _task_updated_at(task: dict[str, Any]) -> datetime | None:
+    return _parse_iso_datetime(task.get("updated_at")) or _parse_iso_datetime(task.get("created_at"))
+
+
+def _emit_recovery_event(
+    emit_event_func: Callable[..., Any] | None,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    if emit_event_func is None:
+        return
+    try:
+        emit_event_func(
+            event_type=event_type,
+            source_agent_id="task_planner",
+            payload=payload,
+        )
+    except Exception:
+        pass
+
+
+def recover_stale_tasks(
+    *,
+    connect_func: Callable[[], Any],
+    now_func: Callable[[], str],
+    stale_after_seconds: int = 3600,
+    limit: int = 50,
+    backoff_base_seconds: int = 60,
+    emit_event_func: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Recover stale in-progress tasks after backend restart.
+
+    Conservative rules:
+    - only bounded ``in_progress`` rows are considered;
+    - ``waiting_approval`` rows are counted but left untouched;
+    - idempotent rows (non-empty idempotency_key) use existing bounded retry;
+    - keyless rows become ``blocked`` for manual resume.
+    """
+    safe_limit = max(1, min(int(limit or 50), 500))
+    safe_stale_after = max(1, int(stale_after_seconds or 3600))
+    now_raw = now_func()
+    now_dt = _parse_iso_datetime(now_raw) or datetime.now(timezone.utc)
+    cutoff = now_dt - timedelta(seconds=safe_stale_after)
+
+    conn = connect_func()
+    try:
+        waiting_approval = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE status='waiting_approval'"
+        ).fetchone()[0]
+        rows = conn.execute(
+            """
+            SELECT * FROM tasks
+            WHERE status='in_progress' AND COALESCE(dead_letter, 0)=0
+            ORDER BY COALESCE(updated_at, created_at) ASC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+        candidates = [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+    items: list[dict[str, Any]] = []
+    skipped_fresh = 0
+    rescheduled = 0
+    blocked = 0
+    failed = 0
+
+    for task in candidates:
+        tid = str(task.get("id") or "")
+        updated_at = _task_updated_at(task)
+        if updated_at is not None and updated_at > cutoff:
+            skipped_fresh += 1
+            continue
+
+        idempotency_key = str(task.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            conn = connect_func()
+            try:
+                conn.execute(
+                    "UPDATE tasks SET status='blocked', updated_at=? WHERE id=?",
+                    (now_raw, tid),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+                recovered = dict(row) if row else {"id": tid, "status": "blocked"}
+            finally:
+                conn.close()
+            blocked += 1
+            item = {
+                "id": tid,
+                "action": "blocked",
+                "status": recovered.get("status"),
+                "reason": "stale_in_progress_without_idempotency_key",
+            }
+            items.append(item)
+            _emit_recovery_event(emit_event_func, "task.recovery.blocked", item)
+            continue
+
+        recovered = bump_retry(
+            connect_func=connect_func,
+            now_func=now_func,
+            tid=tid,
+            backoff_base_seconds=backoff_base_seconds,
+        )
+        status = str(recovered.get("status") or "")
+        if status == "todo":
+            rescheduled += 1
+            action = "rescheduled"
+            event_type = "task.recovery.rescheduled"
+        elif status == "failed" or recovered.get("dead_letter"):
+            failed += 1
+            action = "dead_letter"
+            event_type = "task.recovery.dead_letter"
+        else:
+            blocked += 1
+            action = "blocked"
+            event_type = "task.recovery.blocked"
+
+        item = {
+            "id": tid,
+            "action": action,
+            "status": status,
+            "retry_count": recovered.get("retry_count"),
+            "next_retry_at": recovered.get("next_retry_at"),
+            "dead_letter": recovered.get("dead_letter"),
+        }
+        items.append(item)
+        _emit_recovery_event(emit_event_func, event_type, item)
+
+    return {
+        "ok": True,
+        "checked": len(candidates),
+        "rescheduled": rescheduled,
+        "blocked": blocked,
+        "failed": failed,
+        "skipped_fresh": skipped_fresh,
+        "waiting_approval": int(waiting_approval or 0),
+        "limit": safe_limit,
+        "items": items,
+    }
 
 
 def set_waiting_approval(

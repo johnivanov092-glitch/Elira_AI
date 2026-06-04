@@ -24,6 +24,12 @@ class UpdateTaskRequest(BaseModel):
     tags: list[str] | None = None
 
 
+class RecoverStaleTasksRequest(BaseModel):
+    stale_after_seconds: int = 3600
+    limit: int = 50
+    backoff_base_seconds: int = 60
+
+
 @router.get("/list")
 def api_list(status: str | None = None, category: str | None = None, limit: int = 100):
     from app.application.task_planner.service import list_tasks
@@ -80,3 +86,14 @@ def api_waiting_approval(tid: str):
     """Set task status to waiting_approval to pause automatic execution."""
     from app.application.task_planner.service import set_waiting_approval
     return set_waiting_approval(tid)
+
+
+@router.post("/recover-stale")
+def api_recover_stale(req: RecoverStaleTasksRequest):
+    """Recover stale in-progress tasks with bounded, idempotency-aware rules."""
+    from app.application.task_planner.service import recover_stale_tasks
+    return recover_stale_tasks(
+        stale_after_seconds=req.stale_after_seconds,
+        limit=req.limit,
+        backoff_base_seconds=req.backoff_base_seconds,
+    )

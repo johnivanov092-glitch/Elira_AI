@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 
 # Load .env and .env.local from backend/ directory so API keys (TAVILY_API_KEY etc.)
 # are available whether the server is started via Elira.bat or manually.
@@ -17,6 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes.registry import ALL_ROUTERS
 from app.application.elira_memory.service import init_db
 from app.application.runtime.status import init_runtime_state
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Elira AI API")
 
@@ -54,6 +57,12 @@ seed_default_limits()
 
 from app.application.tool_registry.runtime import seed_builtin_tools
 seed_builtin_tools()
+
+try:
+    from app.application.task_planner.service import recover_stale_tasks
+    recover_stale_tasks()
+except Exception as exc:
+    logger.warning("task planner startup recovery failed: %s", exc)
 
 @app.get("/health")
 def health():

@@ -170,6 +170,115 @@ class TestSetWaitingApproval(unittest.TestCase):
         self.assertEqual(dict(row)["status"], "waiting_approval")
 
 
+class TestStartupRecovery(unittest.TestCase):
+    def setUp(self):
+        self.db = _make_db()
+        _setup(self.db)
+
+    def tearDown(self):
+        self.db.unlink(missing_ok=True)
+
+    def _insert_task(
+        self,
+        tid: str,
+        *,
+        status: str = "in_progress",
+        idempotency_key: str = "",
+        retry_count: int = 0,
+        max_retries: int = 3,
+        updated_at: str = "2026-01-01T00:00:00",
+    ) -> None:
+        con = _connect(self.db)
+        con.execute(
+            """
+            INSERT INTO tasks (
+                id, title, description, category, priority, status, tags,
+                created_at, updated_at, idempotency_key, retry_count, max_retries
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                tid,
+                tid,
+                "",
+                "general",
+                "medium",
+                status,
+                "[]",
+                "2026-01-01T00:00:00",
+                updated_at,
+                idempotency_key,
+                retry_count,
+                max_retries,
+            ),
+        )
+        con.commit()
+        con.close()
+
+    def _recover(self, **kwargs):
+        events: list[dict] = []
+        result = planner_rt.recover_stale_tasks(
+            connect_func=lambda: _connect(self.db),
+            now_func=lambda: "2026-01-01T02:00:00",
+            stale_after_seconds=3600,
+            emit_event_func=lambda **kw: events.append(kw),
+            **kwargs,
+        )
+        return result, events
+
+    def _status(self, tid: str) -> str:
+        con = _connect(self.db)
+        row = con.execute("SELECT status FROM tasks WHERE id=?", (tid,)).fetchone()
+        con.close()
+        return dict(row)["status"]
+
+    def test_keyed_stale_in_progress_is_rescheduled(self):
+        self._insert_task("stale-keyed", idempotency_key="idem-1")
+        result, events = self._recover(backoff_base_seconds=10)
+        self.assertEqual(result["rescheduled"], 1)
+        self.assertEqual(self._status("stale-keyed"), "todo")
+        self.assertEqual(events[0]["event_type"], "task.recovery.rescheduled")
+
+    def test_keyless_stale_in_progress_is_blocked(self):
+        self._insert_task("stale-keyless")
+        result, events = self._recover()
+        self.assertEqual(result["blocked"], 1)
+        self.assertEqual(self._status("stale-keyless"), "blocked")
+        self.assertEqual(events[0]["event_type"], "task.recovery.blocked")
+
+    def test_waiting_approval_is_left_paused(self):
+        self._insert_task("approval", status="waiting_approval", idempotency_key="idem")
+        result, events = self._recover()
+        self.assertEqual(result["waiting_approval"], 1)
+        self.assertEqual(result["rescheduled"], 0)
+        self.assertEqual(events, [])
+        self.assertEqual(self._status("approval"), "waiting_approval")
+
+    def test_fresh_in_progress_is_not_recovered(self):
+        self._insert_task("fresh", idempotency_key="idem", updated_at="2026-01-01T01:30:00")
+        result, events = self._recover()
+        self.assertEqual(result["skipped_fresh"], 1)
+        self.assertEqual(result["rescheduled"], 0)
+        self.assertEqual(events, [])
+        self.assertEqual(self._status("fresh"), "in_progress")
+
+    def test_stale_keyed_over_max_retries_goes_dead_letter(self):
+        self._insert_task("dead", idempotency_key="idem", retry_count=3, max_retries=3)
+        result, events = self._recover()
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(self._status("dead"), "failed")
+        self.assertEqual(events[0]["event_type"], "task.recovery.dead_letter")
+
+    def test_recovery_limit_is_respected(self):
+        self._insert_task("a", idempotency_key="idem-a")
+        self._insert_task("b", idempotency_key="idem-b")
+        result, _events = self._recover(limit=1)
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["rescheduled"], 1)
+        statuses = {tid: self._status(tid) for tid in ("a", "b")}
+        self.assertEqual(list(statuses.values()).count("todo"), 1)
+        self.assertEqual(list(statuses.values()).count("in_progress"), 1)
+
+
 class TestTaskDurabilityRoutes(unittest.TestCase):
 
     def setUp(self):
@@ -216,6 +325,18 @@ class TestTaskDurabilityRoutes(unittest.TestCase):
             r = self.client.post(f"/api/tasks/{self.tid}/retry")
         self.assertEqual(r.json()["dead_letter"], 1)
         self.assertEqual(r.json()["status"], "failed")
+
+    def test_recover_stale_route(self):
+        con = _connect(self.db)
+        con.execute(
+            "UPDATE tasks SET status='in_progress', updated_at='2000-01-01T00:00:00' WHERE id=?",
+            (self.tid,),
+        )
+        con.commit()
+        con.close()
+        r = self.client.post("/api/tasks/recover-stale", json={"stale_after_seconds": 3600, "limit": 10})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["rescheduled"], 1)
 
 
 if __name__ == "__main__":

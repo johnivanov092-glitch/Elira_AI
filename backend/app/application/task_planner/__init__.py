@@ -4,6 +4,7 @@ from .runtime import (
     get_task,
     init_db,
     list_tasks,
+    recover_stale_tasks,
     task_stats,
     update_task,
 )

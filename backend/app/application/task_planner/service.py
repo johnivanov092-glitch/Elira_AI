@@ -96,3 +96,21 @@ def set_waiting_approval(tid: str) -> dict:
         now_func=lambda: datetime.utcnow().isoformat(),
         tid=tid,
     )
+
+
+def recover_stale_tasks(
+    *,
+    stale_after_seconds: int = 3600,
+    limit: int = 50,
+    backoff_base_seconds: int = 60,
+) -> dict:
+    from app.application.event_bus.runtime import emit_event
+
+    return planner_runtime.recover_stale_tasks(
+        connect_func=_connect,
+        now_func=lambda: datetime.utcnow().isoformat(),
+        stale_after_seconds=stale_after_seconds,
+        limit=limit,
+        backoff_base_seconds=backoff_base_seconds,
+        emit_event_func=emit_event,
+    )
