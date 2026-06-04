@@ -122,14 +122,14 @@ def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
     return ollama.chat(**kwargs)
 
 
-def _build_system_prompt(project_root: Path) -> str:
+def _build_system_prompt(project_root: Path, working_dir: Path | str | None = None) -> str:
     from app.application.instructions.loader import load_instructions
     from app.application.projects.scope import project_scope_id as _scope_id
 
     base = _build_base_system_prompt(project_root)
     parts: list[str] = [base]
 
-    instructions = load_instructions(project_root)
+    instructions = load_instructions(project_root, working_dir=working_dir)
     if instructions:
         parts.append("--- Instructions (.elira/agent.md) ---\n" + instructions)
 
@@ -613,6 +613,7 @@ def stream_code_agent(
     *,
     user_message: str,
     project_root: Path | str,
+    working_dir: Path | str | None = None,
     model: str = "auto",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
@@ -711,7 +712,7 @@ def stream_code_agent(
         enable_deferred_tools(rid, _CODE_AGENT_BASE_TOOLS)
         chat = chat_fn or _ollama_chat
 
-        system_prompt = _build_system_prompt(root)
+        system_prompt = _build_system_prompt(root, working_dir=working_dir)
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
         # Anti-refusal nudge: if user clearly asks to execute, remind the model.
@@ -921,6 +922,7 @@ def run_code_agent(
     *,
     user_message: str,
     project_root: Path | str,
+    working_dir: Path | str | None = None,
     model: str = "auto",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
@@ -941,6 +943,7 @@ def run_code_agent(
     for event in stream_code_agent(
         user_message=user_message,
         project_root=project_root,
+        working_dir=working_dir,
         model=model,
         max_steps=max_steps,
         conversation_history=conversation_history,
@@ -989,6 +992,12 @@ def get_project_prompt(project_root: Path | str) -> dict[str, Any]:
         except Exception as exc:
             return {"ok": False, "exists": True, "content": "", "error": str(exc), "path": str(target)}
     return {"ok": True, "exists": exists, "content": content, "path": str(target)}
+
+
+def init_project_prompt(project_root: Path | str, content: str | None = None) -> dict[str, Any]:
+    from app.application.instructions.loader import init_project_instructions
+
+    return init_project_instructions(project_root, content=content)
 
 
 SUMMARIZE_SYSTEM_PROMPT = (

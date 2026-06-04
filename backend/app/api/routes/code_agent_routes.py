@@ -23,6 +23,7 @@ from app.application.code_agent.agent_loop import (
     DEFAULT_MODEL,
     DEFAULT_NUM_CTX,
     get_project_prompt,
+    init_project_prompt,
     index_project,
     recall_from_rag,
     request_cancel,
@@ -44,6 +45,7 @@ class ConversationMessage(BaseModel):
 class CodeAgentRequest(BaseModel):
     message: str = Field(..., description="User task for the code agent")
     project_root: str = Field(..., description="Absolute path to the project directory")
+    working_dir: Optional[str] = Field(default=None, description="Optional subdirectory inside project_root")
     # P9.3: "auto" routes through the shared model order (route='code') server-side;
     # an explicit model is preserved. (CodeAgentStreamRequest inherits this.)
     model: str = Field(default="auto")
@@ -73,6 +75,11 @@ class CodeAgentCancelRequest(BaseModel):
 class ProjectPromptWriteRequest(BaseModel):
     project_root: str
     content: str
+
+
+class ProjectPromptInitRequest(BaseModel):
+    project_root: str
+    content: Optional[str] = None
 
 
 class SummarizeHistoryRequest(BaseModel):
@@ -107,6 +114,7 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
     result = run_code_agent(
         user_message=payload.message,
         project_root=payload.project_root,
+        working_dir=payload.working_dir,
         model=payload.model,
         max_steps=payload.max_steps,
         conversation_history=history,
@@ -130,6 +138,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
             for event in stream_code_agent(
                 user_message=payload.message,
                 project_root=payload.project_root,
+                working_dir=payload.working_dir,
                 model=payload.model,
                 max_steps=payload.max_steps,
                 conversation_history=history,
@@ -177,6 +186,14 @@ def write_project_prompt(payload: ProjectPromptWriteRequest) -> dict[str, Any]:
     result = set_project_prompt(payload.project_root, payload.content)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "failed to write"))
+    return result
+
+
+@router.post("/project-prompt/init")
+def init_project_prompt_endpoint(payload: ProjectPromptInitRequest) -> dict[str, Any]:
+    result = init_project_prompt(payload.project_root, payload.content)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "failed to initialize"))
     return result
 
 

@@ -23,6 +23,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.instructions.loader import (  # noqa: E402
     _FILE_CHAR_LIMIT,
     _TOTAL_CHAR_LIMIT,
+    init_project_instructions,
     load_instructions,
 )
 
@@ -58,7 +59,9 @@ class TestLoadInstructions(unittest.TestCase):
         with mock.patch("app.application.instructions.loader.Path.home",
                         return_value=Path(self._tmp.name) / "no_home"):
             result = load_instructions(self.root)
-        self.assertEqual(result, "Project rules here.")
+        self.assertIn("Project rules here.", result)
+        self.assertIn("[UNTRUSTED INSTRUCTIONS: project;", result)
+        self.assertIn("source=.elira/agent.md", result)
 
     def test_local_file_appended_after_project(self):
         _write(self.root / ".elira" / "agent.md", "Project.")
@@ -87,7 +90,8 @@ class TestLoadInstructions(unittest.TestCase):
         with mock.patch("app.application.instructions.loader.Path.home",
                         return_value=Path(self._tmp.name) / "no_home"):
             result = load_instructions(self.root)
-        self.assertEqual(len(result), _FILE_CHAR_LIMIT)
+        self.assertIn("X" * _FILE_CHAR_LIMIT, result)
+        self.assertNotIn("X" * (_FILE_CHAR_LIMIT + 1), result)
 
     def test_total_capped_at_12000_chars(self):
         fake_home = Path(self._tmp.name) / "home2"
@@ -98,13 +102,10 @@ class TestLoadInstructions(unittest.TestCase):
         with mock.patch("app.application.instructions.loader.Path.home",
                         return_value=fake_home):
             result = load_instructions(self.root)
-        # Separators ("\n\n") add 4 chars, content is 3×4000 = 12000 → total may be
-        # slightly over due to separators, but content chars ≤ _TOTAL_CHAR_LIMIT
-        content_chars = len(result.replace("\n\n", ""))
-        self.assertLessEqual(content_chars, _TOTAL_CHAR_LIMIT)
+        self.assertLessEqual(len(result), _TOTAL_CHAR_LIMIT)
 
     def test_total_limit_stops_loading_extra_files(self):
-        """With a tight total cap, the third file is skipped when budget is full."""
+        """With a tight total cap, later files are skipped when budget is full."""
         fake_home = Path(self._tmp.name) / "home3"
         # Use a small total cap (300) equal to 2 × file cap (150) so that
         # global + project exactly fill the budget and local is skipped.
@@ -118,10 +119,12 @@ class TestLoadInstructions(unittest.TestCase):
              mock.patch("app.application.instructions.loader.Path.home",
                         return_value=fake_home):
             result = load_instructions(self.root)
-        # global (150) + project (150) = 300 ≥ total cap → local skipped
+        # Provenance markers count against the prompt budget. With this tight
+        # cap, the first block fits and later files are skipped.
         self.assertNotIn("LOCAL_MARKER", result)
         self.assertIn("G" * 150, result)
-        self.assertIn("P" * 150, result)
+        self.assertNotIn("P" * 150, result)
+        self.assertLessEqual(len(result), 300)
 
     # ── Deduplication ────────────────────────────────────────────────────────
 
@@ -145,6 +148,50 @@ class TestLoadInstructions(unittest.TestCase):
             result = load_instructions(self.root)
         self.assertIn("Alpha rules.", result)
         self.assertIn("Beta rules.", result)
+
+    def test_working_dir_loads_parent_chain_after_project(self):
+        _write(self.root / ".elira" / "agent.md", "Root rules.")
+        _write(self.root / "packages" / ".elira" / "agent.md", "Package rules.")
+        _write(self.root / "packages" / "api" / ".elira" / "agent.md", "API rules.")
+        with mock.patch("app.application.instructions.loader.Path.home",
+                        return_value=Path(self._tmp.name) / "no_home"):
+            result = load_instructions(self.root, working_dir=self.root / "packages" / "api")
+        self.assertLess(result.index("Root rules."), result.index("Package rules."))
+        self.assertLess(result.index("Package rules."), result.index("API rules."))
+        self.assertIn("source=packages/.elira/agent.md", result)
+        self.assertIn("source=packages/api/.elira/agent.md", result)
+
+    def test_working_dir_outside_project_is_ignored(self):
+        outside = Path(self._tmp.name) / "outside"
+        _write(self.root / ".elira" / "agent.md", "Root rules.")
+        _write(outside / ".elira" / "agent.md", "Outside rules.")
+        with mock.patch("app.application.instructions.loader.Path.home",
+                        return_value=Path(self._tmp.name) / "no_home"):
+            result = load_instructions(self.root, working_dir=outside)
+        self.assertIn("Root rules.", result)
+        self.assertNotIn("Outside rules.", result)
+
+    def test_working_dir_chain_deduplicates_same_text(self):
+        same = "Same rule."
+        _write(self.root / ".elira" / "agent.md", same)
+        _write(self.root / "pkg" / ".elira" / "agent.md", same)
+        with mock.patch("app.application.instructions.loader.Path.home",
+                        return_value=Path(self._tmp.name) / "no_home"):
+            result = load_instructions(self.root, working_dir="pkg")
+        self.assertEqual(result.count(same), 1)
+
+    def test_init_project_instructions_creates_missing_file(self):
+        result = init_project_instructions(self.root, content="Init rules.")
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["created"])
+        self.assertEqual((self.root / ".elira" / "agent.md").read_text(encoding="utf-8"), "Init rules.")
+
+    def test_init_project_instructions_does_not_overwrite_existing_file(self):
+        _write(self.root / ".elira" / "agent.md", "Existing rules.")
+        result = init_project_instructions(self.root, content="New rules.")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["created"])
+        self.assertEqual((self.root / ".elira" / "agent.md").read_text(encoding="utf-8"), "Existing rules.")
 
 
 class TestBuildSystemPromptUsesLoader(unittest.TestCase):
@@ -170,6 +217,23 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
                             return_value=Path(tmp) / "no_home"):
                 prompt = _build_system_prompt(root)
         self.assertIn("TEST_INSTRUCTION_MARKER", prompt)
+        self.assertIn("UNTRUSTED INSTRUCTIONS", prompt)
+
+    def test_build_system_prompt_passes_working_dir(self):
+        from app.application.code_agent.agent_loop import _build_system_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            nested = root / "services" / "api"
+            nested.mkdir(parents=True)
+            (root / ".elira").mkdir()
+            (root / ".elira" / "agent.md").write_text("ROOT_MARKER", encoding="utf-8")
+            (nested / ".elira").mkdir()
+            (nested / ".elira" / "agent.md").write_text("NESTED_MARKER", encoding="utf-8")
+            with mock.patch("app.application.instructions.loader.Path.home",
+                            return_value=Path(tmp) / "no_home"):
+                prompt = _build_system_prompt(root, working_dir=nested)
+        self.assertLess(prompt.index("ROOT_MARKER"), prompt.index("NESTED_MARKER"))
 
     def test_build_system_prompt_no_instructions_returns_base(self):
         from app.application.code_agent.agent_loop import _build_system_prompt
@@ -181,6 +245,38 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
                 prompt = _build_system_prompt(root)
         self.assertIn("Elira", prompt)  # base prompt always present
         self.assertNotIn("Instructions", prompt)
+
+
+class TestCodeAgentInstructionRoutes(unittest.TestCase):
+    def test_run_route_passes_working_dir(self):
+        from app.api.routes import code_agent_routes as routes
+
+        captured: dict = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "response": "", "steps": 0, "tool_calls": [],
+                    "stop_reason": "done", "error": None}
+
+        payload = routes.CodeAgentRequest(message="m", project_root="/p", working_dir="/p/pkg")
+        with mock.patch.object(routes, "run_code_agent", side_effect=fake_run):
+            routes.run(payload)
+        self.assertEqual(captured["working_dir"], "/p/pkg")
+
+    def test_init_project_prompt_endpoint_is_idempotent(self):
+        from app.api.routes import code_agent_routes as routes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = routes.init_project_prompt_endpoint(
+                routes.ProjectPromptInitRequest(project_root=str(root), content="Initial.")
+            )
+            second = routes.init_project_prompt_endpoint(
+                routes.ProjectPromptInitRequest(project_root=str(root), content="Overwrite?")
+            )
+            self.assertTrue(first["created"])
+            self.assertFalse(second["created"])
+            self.assertEqual((root / ".elira" / "agent.md").read_text(encoding="utf-8"), "Initial.")
 
 
 if __name__ == "__main__":
