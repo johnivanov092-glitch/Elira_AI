@@ -308,3 +308,76 @@ PDF + OCR (авто-детект бинаря Tesseract). `application/file_extr
 
 Координация велась без посредника-пользователя через рабочие планы; теперь эти
 планы свёрнуты в эту документацию.
+
+---
+
+## Current Agent Runtime Scope (P9-P12)
+
+Status: implemented and merged to `main` at `db6ae7a` on 2026-06-05.
+
+### Single Tool Execution Path
+
+All tool execution must pass through `backend/app/application/agent_kernel/executor.py`.
+It reuses the existing Agent OS components instead of creating a parallel runtime:
+
+- catalog: `backend/app/application/tool_registry/`
+- dispatch: `backend/app/application/tool_providers/`
+- policy preflight: `backend/app/application/agent_registry/sandbox.py`
+- approvals, limits, runs and metrics: `backend/app/application/monitoring/`
+- audit events: `backend/app/application/event_bus/`
+
+The executor blocks before dispatch when a tool spec is missing, disabled,
+unclassified, forbidden, has an invalid permission, has unknown scopes, violates
+allowed tools/scopes, needs approval, or is not activated for a deferred run.
+
+### Fail-Closed ToolSpec
+
+Persisted ToolSpec metadata is authoritative. Dynamic tool sources such as MCP
+and plugins are registered fail-closed until explicitly classified and enabled.
+Custom tool API validation returns client errors for invalid policy fields
+instead of silently accepting unsafe metadata.
+
+### Model Routing
+
+Chat, code-agent, workflows and Telegram use the same routing order:
+
+`explicit model -> enabled model profile -> route_model_map -> DEFAULT_MODEL`.
+
+Routing goes through `resolve_model_for_route`; the old wrapper remains only for
+backward compatibility. Effective context is capped before preflight. For
+code-agent, `MODEL_SAFE_CTX` is intentionally not applied so the large coding
+window remains available; profile and monitoring caps still apply.
+
+### Deferred Tool Search
+
+Deferred mode is run-scoped in `backend/app/application/agent_kernel/deferred_tools.py`.
+The code-agent starts with a bounded base tool set plus `tool_search`.
+`tool_search` can discover and activate eligible non-side-effect tools for the
+current run, but activation only grants visibility. The executor still enforces
+policy, scopes, approvals and ToolSpec validity.
+
+### MCP Stdio Context
+
+Stdio MCP now supports bounded tools, resources and prompts:
+
+- `tools/list` and `tools/call`
+- `resources/list`, `resources/read`, `resources/templates/list`
+- `prompts/list` and `prompts/get`
+
+Returned MCP content is treated as untrusted external context. HTTP/SSE MCP,
+resource subscriptions and full envelope handling remain deferred work.
+
+### Autonomous Runtime Guard
+
+The P12 runtime scope is intentionally bounded:
+
+- task planner runs have a canonical step checklist and completion checks;
+- subagents are local, read-only, bounded and emit structured metrics;
+- inference telemetry records latency, TTFT, chars, model/provider provenance
+  and route decisions;
+- `OrchestrationBlocker` blocks planner-proposed unknown tools before model
+  calls, provider calls or policy preflight.
+
+Streaming currently records latency, TTFT, output chars and model provenance.
+Exact stream token counts require future raw chunk plumbing in the stream
+wrapper; no token estimates are fabricated.

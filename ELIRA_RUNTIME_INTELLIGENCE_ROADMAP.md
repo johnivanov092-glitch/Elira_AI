@@ -1,5 +1,11 @@
 # Elira Runtime Intelligence Roadmap
 
+> Status 2026-06-05: P9-P12 implementation scope is complete and merged to
+> `main` at `db6ae7a`. This file is now historical planning context. The current
+> architecture summary is maintained in `docs/ARCHITECTURE.md` and
+> `docs/PROJECT_MAP.md`. Deferred work remains in the D-sections below and must
+> not be treated as implemented until code and tests land.
+
 ## 1. Назначение
 
 Это рабочий план следующего этапа развития Elira после завершения P0-P8 Agent Kernel.

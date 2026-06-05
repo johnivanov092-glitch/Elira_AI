@@ -220,3 +220,48 @@ pandas, скриншоты. Грузятся при первом использ�
 - Установка/запуск → корневой `README_Elira_AI.md`.
 - Как устроено и почему → [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Что куда идёт и зависимости → этот файл.
+
+---
+
+## Agent Runtime Map (P9-P12)
+
+Status: current for `main` at `db6ae7a`.
+
+### Canonical Runtime Owners
+
+| Area | Canonical files |
+|------|-----------------|
+| Tool execution | `backend/app/application/agent_kernel/executor.py` |
+| Deferred tool activation | `backend/app/application/agent_kernel/deferred_tools.py` |
+| Tool catalog and ToolSpec policy | `backend/app/application/tool_registry/` |
+| Tool dispatch providers | `backend/app/application/tool_providers/` |
+| Policy preflight | `backend/app/application/agent_registry/sandbox.py` |
+| Approvals, limits, metrics | `backend/app/application/monitoring/` |
+| Audit events | `backend/app/application/event_bus/` |
+| Chat routing and execution | `backend/app/application/chat/service.py`, `entrypoint_sync.py`, `entrypoint_stream.py` |
+| Code-agent loop and meta-tools | `backend/app/application/code_agent/agent_loop.py`, `tools.py` |
+| Task planner runtime | `backend/app/application/task_planner/runtime.py` |
+| MCP stdio client/provider | `backend/app/application/tool_providers/mcp_client.py`, `mcp_provider.py`, `mcp_runtime.py` |
+| Inference telemetry | `backend/app/application/monitoring/inference.py` |
+
+Do not add a second executor, registry, router, scheduler or runtime database
+for this scope. Extend the owners above.
+
+### Current Capability Boundaries
+
+- Tool execution is fail-closed through the single executor.
+- Deferred tool search is active for code-agent runs and remains run-scoped.
+- MCP context support is stdio-only and bounded.
+- Subagents are local, read-only and bounded.
+- Streaming telemetry does not yet include exact token counts unless future raw
+  stream chunks expose token usage.
+
+### Main Regression Tests
+
+| Capability | Test files |
+|------------|------------|
+| ToolSpec fail-closed policy | `backend/tests/test_p9_2_fixup.py`, `backend/tests/test_p9_2a2_scope_enforcement.py` |
+| Model routing | `backend/tests/test_p9_3_chat_routing.py`, `backend/tests/test_p9_3_commit3.py` |
+| Deferred tools | `backend/tests/test_p10_1_deferred_tools.py`, `backend/tests/test_p10_1_deferred_loop.py` |
+| MCP stdio context | `backend/tests/test_p11_mcp_*.py` |
+| Task checklist / subagents / telemetry / guard | `backend/tests/test_p12_*.py` |
