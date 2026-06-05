@@ -757,18 +757,13 @@ export default function CodeAgentChatShell({
 
   const compressHistory = useCallback(async () => {
     if (summarizing || running) return;
-    // Keep last 2 text turns as-is, summarize everything older.
-    const lastTwoIds: string[] = [];
-    for (let i = history.length - 1; i >= 0 && lastTwoIds.length < 2; i--) {
-      const t = history[i];
-      if (t.kind === "user" || t.kind === "agent") lastTwoIds.push(t.id);
-    }
-    const olderText: ConversationMessage[] = [];
+    const compactable: ConversationMessage[] = [];
     let replaced = 0;
+    let hasToolCalls = false;
     for (const t of history) {
-      if (lastTwoIds.includes(t.id)) continue;
       if (t.kind === "user") {
-        olderText.push({ role: "user", content: t.text });
+        if (!t.text.trim()) continue;
+        compactable.push({ role: "user", content: t.text });
         replaced++;
       } else if (t.kind === "agent") {
         // Include tool-call summary alongside the agent text so the
@@ -778,44 +773,50 @@ export default function CodeAgentChatShell({
         // "Готово." in the summary — completely useless for resuming.
         const parts: string[] = [];
         if (t.tool_calls && t.tool_calls.length > 0) {
+          hasToolCalls = true;
           const calls = t.tool_calls.map(summarizeToolCall).join("; ");
           parts.push(`[tools used] ${calls}`);
         }
         if (t.text) parts.push(t.text);
         if (parts.length > 0) {
-          olderText.push({ role: "assistant", content: parts.join("\n\n") });
+          compactable.push({ role: "assistant", content: parts.join("\n\n") });
           replaced++;
         }
       } else if (t.kind === "summary" && t.text) {
-        olderText.push({ role: "assistant", content: "[PRIOR SUMMARY]\n" + t.text });
+        compactable.push({ role: "assistant", content: "[PRIOR SUMMARY]\n" + t.text });
         replaced++;
       }
     }
-    if (olderText.length < 2) {
-      setSummaryError("Слишком мало сообщений для сжатия (нужно ≥ 2 в старой части).");
+    if (compactable.length === 0) {
+      setSummaryError("Нет истории для сжатия.");
+      setTimeout(() => setSummaryError(null), 4000);
+      return;
+    }
+    if (compactable.length < 2 && !hasToolCalls) {
+      setSummaryError("Сжимать нечего: нужен диалог или tool calls.");
       setTimeout(() => setSummaryError(null), 4000);
       return;
     }
     setSummarizing(true);
     setSummaryError(null);
     try {
-      const res = await api.summarizeHistory({ messages: olderText, model, numCtx });
+      const res = await api.summarizeHistory({ messages: compactable, model, numCtx });
       if (!res.ok) {
         setSummaryError(res.error || "Сжатие не удалось");
         return;
       }
-      const newHistory: Turn[] = [];
-      newHistory.push({
+      const summary = res.summary.trim();
+      if (!summary) {
+        setSummaryError("Сжатие вернуло пустое summary");
+        return;
+      }
+      setHistory([{
         kind: "summary",
         id: makeId("s"),
-        text: res.summary,
+        text: summary,
         replaced,
         ts: Date.now(),
-      });
-      for (const t of history) {
-        if (lastTwoIds.includes(t.id)) newHistory.push(t);
-      }
-      setHistory(newHistory);
+      }]);
     } catch (e) {
       setSummaryError(String((e as Error)?.message || e));
     } finally {
@@ -961,10 +962,10 @@ export default function CodeAgentChatShell({
 
         <button
           onClick={compressHistory}
-          disabled={summarizing || running || history.length < 3}
+          disabled={summarizing || running || !history.length}
           className="soft-btn"
-          title="Сжать всю историю кроме последних 2 сообщений в краткое summary, чтобы освободить контекст"
-          style={{ fontSize: 10, padding: "3px 8px", opacity: summarizing || running || history.length < 3 ? 0.4 : 1 }}
+          title="Глубоко сжать всю историю и tool calls в одно summary, чтобы освободить контекст"
+          style={{ fontSize: 10, padding: "3px 8px", opacity: summarizing || running || !history.length ? 0.4 : 1 }}
         >
           {summarizing
             ? <IconText icon={Loader2} size={11} gap={4}>Сжимаю...</IconText>
@@ -1053,7 +1054,7 @@ export default function CodeAgentChatShell({
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, color: "var(--accent, #6366f1)", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.4 }}>
                   <UiIcon icon={Pin} size={11} />
-                  <span>Сжатое summary прошлых {turn.replaced} сообщений</span>
+                  <span>Сжатое summary {turn.replaced} сообщений</span>
                 </div>
                 <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "var(--font-mono)", fontSize: 11 }}>{turn.text}</div>
               </div>
