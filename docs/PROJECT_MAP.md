@@ -21,10 +21,10 @@ Elira_AI/
 ├── src-tauri/              десктоп-оболочка (Rust/Tauri): Cargo.toml, build.rs, main.rs, tauri.conf.json
 ├── data/                   активный runtime-root (SQLite-БД, uploads, generated, ключ, плагины)
 ├── scripts/                вспомогательные скрипты (напр. smoke_contract_check.py)
-├── docs/                   эта документация
+├── docs/                   документация (индекс — docs/README.md; отложенные работы — POST_SERVER_BACKLOG.md; notes/ — датированные заметки-ревью)
 ├── package.json            корневой — оркестрация Tauri CLI
 ├── Elira.bat / Elira_Mobile.bat / run_tauri_dev.bat / build_exe.bat / kill_elira.bat   лаунчеры
-└── README_Elira_AI.md      установка, зависимости, порядок запуска, smoke-проверки
+└── README.md               витрина GitHub: питч, установка, порядок запуска, smoke-проверки
 ```
 
 ---
@@ -217,9 +217,14 @@ pandas, скриншоты. Грузятся при первом использ�
 
 ## 8. Где смотреть что
 
-- Установка/запуск → корневой `README_Elira_AI.md`.
+- Установка/запуск → корневой `README.md`.
 - Как устроено и почему → [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - Что куда идёт и зависимости → этот файл.
+- Отложенные работы (gate: миграция инференса на AI-server) →
+  [`POST_SERVER_BACKLOG.md`](POST_SERVER_BACKLOG.md).
+- Находки ревью agent-loop и детальные решения →
+  [`AGENT_LOOP_FIX_PROPOSALS.md`](AGENT_LOOP_FIX_PROPOSALS.md) ·
+  [`notes/2026-06-10_chat-review-agent-loop.md`](notes/2026-06-10_chat-review-agent-loop.md).
 
 ---
 
@@ -240,6 +245,7 @@ Status: current for `main` at `db6ae7a`.
 | Audit events | `backend/app/application/event_bus/` |
 | Chat routing and execution | `backend/app/application/chat/service.py`, `entrypoint_sync.py`, `entrypoint_stream.py` |
 | Code-agent loop and meta-tools | `backend/app/application/code_agent/agent_loop.py`, `tools.py` |
+| Context compaction | `backend/app/application/context/compaction.py` |
 | Task planner runtime | `backend/app/application/task_planner/runtime.py` |
 | MCP stdio client/provider | `backend/app/application/tool_providers/mcp_client.py`, `mcp_provider.py`, `mcp_runtime.py` |
 | Inference telemetry | `backend/app/application/monitoring/inference.py` |

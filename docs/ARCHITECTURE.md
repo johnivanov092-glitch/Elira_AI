@@ -128,6 +128,20 @@ verify в песочнице → ручное применение. Измене
 4–7B слабы в function-calling, поэтому `agent_loop` восстанавливает инлайновые
 вызовы (JSON и синтаксис `name(args)`).
 
+**Контекст-менеджмент код-агента (два слоя).**
+- *Серверная mid-run компакция* (`application/context/compaction.py`,
+  вызывается только из `agent_loop`): при ~70% эффективного `num_ctx` старые
+  сообщения сворачиваются в rolling-summary (system-сообщение
+  `[Compacted context summary]`, merge с прежними summary, кап 4000 символов),
+  последние 4 пары ходов сохраняются дословно; при недоступности модели —
+  детерминированный fallback с выдержками tool-результатов.
+- *Клиентская кнопка «Сжать историю»* (`CodeAgentChatShell`): сворачивает всю
+  видимую историю — включая tool calls (`[tools used] …`) и прежние summary —
+  в одно summary-сообщение через `/api/code-agent/summarize-history`. На
+  следующий ход оно уходит как assistant с префиксом `[CONTEXT SUMMARY]`,
+  которое `_coerce_history` перетегирует в system-сообщение, чтобы модель не
+  принимала сжатую историю за свой прошлый ответ.
+
 ---
 
 ## 6. Ключевые подсистемы
@@ -381,3 +395,14 @@ The P12 runtime scope is intentionally bounded:
 Streaming currently records latency, TTFT, output chars and model provenance.
 Exact stream token counts require future raw chunk plumbing in the stream
 wrapper; no token estimates are fabricated.
+
+### Deferred Work
+
+Запланированные улучшения agent-loop (approval-петля с паузой цикла, wrap-up
+при обрыве по шагам/времени, глубокая mid-run компакция, промпт из фактически
+активного tool-набора и др.) сведены в [`POST_SERVER_BACKLOG.md`](POST_SERVER_BACKLOG.md)
+и заморожены до миграции инференса на отдельный AI-server (vLLM,
+OpenAI-compatible endpoint). Источник находок —
+[`AGENT_LOOP_FIX_PROPOSALS.md`](AGENT_LOOP_FIX_PROPOSALS.md) и
+[`notes/2026-06-10_chat-review-agent-loop.md`](notes/2026-06-10_chat-review-agent-loop.md).
+Ничего из этого не считается реализованным, пока не появится в коде и тестах.
