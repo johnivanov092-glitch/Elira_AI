@@ -105,6 +105,21 @@ class PlannerSnapshotTest(unittest.TestCase):
         self.assertEqual(plan["route"], "image")
         self.assertIn("image_gen", plan["tools"])
 
+    # ── F8: image guard + «найди баг» keywords ────────────────────────
+
+    def test_image_guard_matplotlib_chart_is_code(self) -> None:
+        """«нарисуй график в matplotlib» — это код, а не SDXL-картинка."""
+        plan = self.planner.plan("нарисуй график функции в matplotlib")
+        self.assertEqual(plan["route"], "code")
+
+    def test_image_without_code_signals_stays_image(self) -> None:
+        plan = self.planner.plan("нарисуй кота")
+        self.assertEqual(plan["route"], "image")
+
+    def test_find_bug_routes_to_code_not_research(self) -> None:
+        plan = self.planner.plan("найди баг в функции")
+        self.assertEqual(plan["route"], "code")
+
     def test_code_agent_route_has_loop_tool(self) -> None:
         plan = self.planner.plan("прочитай foo.py и поправь баг")
         self.assertEqual(plan["route"], "code_agent")

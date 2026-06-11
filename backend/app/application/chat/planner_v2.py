@@ -105,6 +105,7 @@ _CODE_WORDS = _w([
     ("реализуй", 2), ("реализаци*", 2),
     ("добавь функцию", 3), ("добавь метод", 3),
     ("исправь баг", 3), ("исправь ошибку", 3), ("исправь", 2),
+    ("найди баг", 3), ("найди ошибку", 3), ("найди и исправь", 3),
     ("отладь", 2), ("оптимизируй", 2), ("отрефактори*", 2),
     ("патч", 2), "патчинг", ("рефактор*", 2),
     "тест", "тестир*",
@@ -405,8 +406,10 @@ class PlannerV2Service:
         tools: list[str] = []
         route = "chat"
 
-        # 1. Image route — checked first because image triggers are very specific
-        if scores["image"] > 0:
+        # 1. Image route — checked first because image triggers are very
+        # specific. Guarded against code/python context: «нарисуй график в
+        # matplotlib» is a chart-code request, not an SDXL image (F8).
+        if scores["image"] > 0 and scores["python"] == 0 and scores["code"] < 2:
             route = "image"
             tools.append("image_gen")
 
