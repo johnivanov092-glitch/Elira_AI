@@ -29,7 +29,11 @@ from app.application.tool_providers import (
     build_mcp_providers,
 )
 from app.application.projects.scope import legacy_project_key, project_scope_id
-from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool as _kernel_exec
+from app.application.agent_kernel.executor import (
+    ToolExecutionRequest,
+    ToolExecutionResult,
+    execute_tool as _kernel_exec,
+)
 from app.application.monitoring.inference import extract_ollama_usage, record_inference_telemetry
 
 logger = logging.getLogger(__name__)
@@ -373,6 +377,23 @@ def _short_arg_hint(args: dict[str, Any]) -> str:
         if isinstance(val, str) and val:
             return val if len(val) <= 60 else val[:60] + "…"
     return ""
+
+
+# F1: while a tool call waits for human approval the loop pauses and polls
+# the approval status. Module-level so tests can shrink the tick.
+_APPROVAL_POLL_INTERVAL = 1.5
+_APPROVAL_KEEPALIVE_EVERY = 10.0
+
+
+def _approval_status(approval_id: str) -> str:
+    """Current status of an approval row; 'pending' on any lookup problem."""
+    try:
+        from app.application.monitoring import runtime as _mon
+        _mon.expire_old_approvals()
+        row = _mon.get_approval(approval_id) or {}
+        return str(row.get("status") or "pending")
+    except Exception:
+        return "pending"
 
 
 def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -783,6 +804,7 @@ def stream_code_agent(
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
+    approval_wait_seconds: int = 300,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -1105,17 +1127,96 @@ def stream_code_agent(
                     # P12.2: subagents are children of the current run. The
                     # model chooses role/task, not parent_run_id.
                     parsed_args["run_id"] = rid
-                _exec_result = _kernel_exec(
-                    ToolExecutionRequest(
-                        run_id=rid,
-                        agent_id=effective_agent_id,
-                        project_scope_id=scope_id,
-                        tool_name=name,
-                        args=parsed_args,
-                        source="code_agent",
-                    ),
-                    dispatch_fn=registry.dispatch_raw,
+                _request = ToolExecutionRequest(
+                    run_id=rid,
+                    agent_id=effective_agent_id,
+                    project_scope_id=scope_id,
+                    tool_name=name,
+                    args=parsed_args,
+                    source="code_agent",
                 )
+                _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
+                # F1: pause the loop while a human decides, instead of telling
+                # the model "waiting approval" and burning steps. The approval
+                # is consumed in the SAME run (binding incl. run_id intact).
+                _approval_id = str((_exec_result.output or {}).get("approval_id") or "")
+                if (
+                    _exec_result.status == "waiting_approval"
+                    and approval_wait_seconds > 0
+                    and _approval_id
+                ):
+                    yield {
+                        "type": "approval_pending",
+                        "step": step,
+                        "tool": name,
+                        "arguments": parsed_args,
+                        "approval_id": _approval_id,
+                    }
+                    _wait_started = time.monotonic()
+                    _last_keepalive = _wait_started
+                    _decision = "timeout"
+                    while time.monotonic() - _wait_started < approval_wait_seconds:
+                        if cancel_event.is_set():
+                            _decision = "cancelled"
+                            break
+                        _status = _approval_status(_approval_id)
+                        if _status == "approved":
+                            _decision = "approved"
+                            break
+                        if _status in {"rejected", "expired"}:
+                            _decision = _status
+                            break
+                        _now = time.monotonic()
+                        if _now - _last_keepalive >= _APPROVAL_KEEPALIVE_EVERY:
+                            yield {
+                                "type": "approval_wait",
+                                "step": step,
+                                "approval_id": _approval_id,
+                                "waited_s": int(_now - _wait_started),
+                            }
+                            _last_keepalive = _now
+                        time.sleep(_APPROVAL_POLL_INTERVAL)
+                    # Human deliberation must not consume the agent's budget.
+                    deadline += time.monotonic() - _wait_started
+                    if _decision == "cancelled":
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "cancelled",
+                            "error": "Cancelled by user",
+                        }
+                        return
+                    if _decision == "approved":
+                        # Re-execute the same request: the executor finds the
+                        # approved record, marks it used and dispatches.
+                        _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
+                    elif _decision == "rejected":
+                        _exec_result = ToolExecutionResult(
+                            status="blocked",
+                            output={
+                                "ok": False,
+                                "text": (
+                                    "Пользователь отклонил это действие. Не повторяй "
+                                    "вызов; скорректируй подход или заверши ход."
+                                ),
+                                "error": "approval_rejected",
+                            },
+                            error="approval_rejected",
+                        )
+                    else:  # timeout / expired
+                        _exec_result = ToolExecutionResult(
+                            status="blocked",
+                            output={
+                                "ok": False,
+                                "text": (
+                                    "Подтверждение не получено вовремя. Не повторяй "
+                                    "вызов; сообщи пользователю и заверши ход."
+                                ),
+                                "error": "approval_timeout",
+                            },
+                            error="approval_timeout",
+                        )
                 tool_meta = _exec_result.output
                 text_result = str(tool_meta.get("text", ""))
                 event: dict[str, Any] = {
@@ -1184,9 +1285,11 @@ def run_code_agent(
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
+    approval_wait_seconds: int = 0,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.
+    Legacy default: no approval pause (approval_wait_seconds=0).
     """
     tool_calls_log: list[dict[str, Any]] = []
     response_text = ""
@@ -1208,6 +1311,7 @@ def run_code_agent(
         execution_timeout_seconds=execution_timeout_seconds,
         auto_remember=auto_remember,
         chat_fn=chat_fn,
+        approval_wait_seconds=approval_wait_seconds,
     ):
         et = event.get("type")
         if et == "tool_call":

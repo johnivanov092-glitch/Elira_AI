@@ -826,5 +826,167 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(second["content"], "Style: tabs, not spaces.")
 
 
+class ApprovalPauseTest(unittest.TestCase):
+    """F1: the loop pauses on waiting_approval and the approval is consumed
+    in the SAME run; reject/timeout feed a model-oriented message instead."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _chat_two_steps():
+        responses = iter([
+            {"message": {"content": "", "tool_calls": [{
+                "function": {"name": "write_file",
+                             "arguments": {"path": "a.txt", "content": "hi"}},
+            }]}},
+            {"message": {"content": "Готово.", "tool_calls": []}},
+        ])
+        return lambda **kw: next(responses)
+
+    @staticmethod
+    def _waiting(approval_id: str = "ap-1"):
+        from app.application.agent_kernel.executor import ToolExecutionResult
+        return ToolExecutionResult(
+            status="waiting_approval",
+            output={"ok": False, "approval_id": approval_id, "text": "ждёт подтверждения"},
+            error=f"waiting_approval:{approval_id}",
+        )
+
+    @staticmethod
+    def _ok_result():
+        from app.application.agent_kernel.executor import ToolExecutionResult
+        return ToolExecutionResult(status="ok", output={"ok": True, "text": "written"}, error=None)
+
+    def test_approved_executes_in_same_run(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        statuses = iter(["pending", "approved"])
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting(), self._ok_result()]) as ke, \
+             patch.object(loop_mod, "_approval_status",
+                          side_effect=lambda _id: next(statuses)), \
+             patch.object(loop_mod, "_APPROVAL_POLL_INTERVAL", 0.01):
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=5,
+            ))
+
+        types = [e["type"] for e in events]
+        self.assertIn("approval_pending", types)
+        pending = next(e for e in events if e["type"] == "approval_pending")
+        self.assertEqual(pending["tool"], "write_file")
+        self.assertEqual(pending["approval_id"], "ap-1")
+        tool_events = [e for e in events if e["type"] == "tool_call"]
+        self.assertEqual(tool_events[0]["result"], "written")
+        self.assertTrue(events[-1]["ok"])
+        self.assertEqual(events[-1]["stop_reason"], "answer")
+        self.assertEqual(ke.call_count, 2)  # waiting + re-exec after approve
+
+    def test_rejected_feeds_model_and_run_continues(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting()]) as ke, \
+             patch.object(loop_mod, "_approval_status", return_value="rejected"), \
+             patch.object(loop_mod, "_APPROVAL_POLL_INTERVAL", 0.01):
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=5,
+            ))
+
+        tool_events = [e for e in events if e["type"] == "tool_call"]
+        self.assertIn("отклонил", tool_events[0]["result"])
+        self.assertEqual(events[-1]["stop_reason"], "answer")
+        self.assertEqual(ke.call_count, 1)  # no re-exec after reject
+
+    def test_wait_timeout_feeds_model(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting()]), \
+             patch.object(loop_mod, "_approval_status", return_value="pending"), \
+             patch.object(loop_mod, "_APPROVAL_POLL_INTERVAL", 0.01):
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=1,
+            ))
+
+        tool_events = [e for e in events if e["type"] == "tool_call"]
+        self.assertIn("не получено вовремя", tool_events[0]["result"])
+        self.assertEqual(events[-1]["stop_reason"], "answer")
+
+    def test_cancel_during_wait(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        def cancel_then_pending(_id: str) -> str:
+            loop_mod.request_cancel("t-cancel")
+            return "pending"
+
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting()]), \
+             patch.object(loop_mod, "_approval_status",
+                          side_effect=cancel_then_pending), \
+             patch.object(loop_mod, "_APPROVAL_POLL_INTERVAL", 0.01):
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=5,
+                run_id="t-cancel",
+            ))
+
+        self.assertEqual(events[-1]["stop_reason"], "cancelled")
+
+    def test_zero_wait_keeps_legacy_passthrough(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting()]) as ke:
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=0,
+            ))
+
+        types = [e["type"] for e in events]
+        self.assertNotIn("approval_pending", types)
+        tool_events = [e for e in events if e["type"] == "tool_call"]
+        self.assertIn("ждёт подтверждения", tool_events[0]["result"])
+        self.assertEqual(ke.call_count, 1)
+
+    def test_deadline_extended_by_human_wait(self) -> None:
+        """Waiting ~1.4s on a 1s execution budget must NOT kill the run."""
+        import app.application.code_agent.agent_loop as loop_mod
+
+        statuses = iter(["pending"] * 12 + ["approved"])
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting(), self._ok_result()]), \
+             patch.object(loop_mod, "_approval_status",
+                          side_effect=lambda _id: next(statuses)), \
+             patch.object(loop_mod, "_APPROVAL_POLL_INTERVAL", 0.12):
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=10,
+                execution_timeout_seconds=1,
+            ))
+
+        self.assertTrue(events[-1]["ok"], events[-1])
+        self.assertEqual(events[-1]["stop_reason"], "answer")
+
+
 if __name__ == "__main__":
     unittest.main()

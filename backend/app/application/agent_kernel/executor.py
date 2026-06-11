@@ -293,9 +293,13 @@ def execute_tool(
                 output={
                     "ok": False,
                     "approval_id": approval["id"],
+                    # Model-oriented wording: with the F1 pause this text only
+                    # reaches the model on wait-timeout (or when the caller
+                    # opted out of pausing) — it must instruct, not link.
                     "text": (
-                        f"Tool '{tool_name}' requires approval. "
-                        f"Approve at /api/agent-os/approvals/{approval['id']}/approve"
+                        f"Действие '{tool_name}' ожидает подтверждения пользователя. "
+                        "Не повторяй вызов с теми же аргументами; дождись итога "
+                        "или сообщи пользователю."
                     ),
                     "error": f"waiting_approval:{approval['id']}",
                 },

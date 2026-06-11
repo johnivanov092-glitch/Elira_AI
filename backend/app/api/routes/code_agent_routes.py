@@ -66,6 +66,10 @@ class CodeAgentResponse(BaseModel):
 
 class CodeAgentStreamRequest(CodeAgentRequest):
     run_id: Optional[str] = Field(default=None, description="Client-provided ID; needed if you want to /cancel later")
+    approval_wait_seconds: int = Field(
+        default=300, ge=0, le=3600,
+        description="How long the loop pauses waiting for a human approval (0 = legacy no-pause)",
+    )
 
 
 class CodeAgentCancelRequest(BaseModel):
@@ -145,6 +149,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 num_ctx=payload.num_ctx,
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
+                approval_wait_seconds=payload.approval_wait_seconds,
             ):
                 yield _sse_format(event)
         except Exception as exc:
