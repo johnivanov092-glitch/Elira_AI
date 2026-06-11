@@ -1,4 +1,4 @@
-import {
+﻿import {
   addMessage,
   createChat,
   deleteChat,
@@ -116,6 +116,7 @@ import {
   DEFAULT_CODE_AGENT_NUM_CTX,
   addRagItem,
   cancelCodeAgent,
+  resolveApproval,
   clearRagCategory,
   createCodeSession,
   deleteCodeSession,
@@ -264,6 +265,7 @@ export {
   DEFAULT_CODE_AGENT_NUM_CTX,
   addRagItem,
   cancelCodeAgent,
+  resolveApproval,
   clearRagCategory,
   createCodeSession,
   deleteCodeSession,
@@ -400,6 +402,7 @@ export const api = {
   runCodeAgent,
   streamCodeAgent,
   cancelCodeAgent,
+  resolveApproval,
   getProjectPrompt,
   setProjectPromptApi,
   summarizeHistory,

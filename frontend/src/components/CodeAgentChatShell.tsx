@@ -134,6 +134,12 @@ type UserTurn = {
   ts: number;
 };
 
+type TurnApproval = {
+  approval_id: string;
+  tool: string;
+  status: "pending" | "resolved";
+};
+
 type AgentTurn = {
   kind: "agent";
   id: string;
@@ -152,7 +158,15 @@ type AgentTurn = {
   model: string;
   project_root: string;
   in_progress?: boolean;
+  approvals?: TurnApproval[];
 };
+
+/** The backend resumes only after a decision, so the first event following
+ *  approval_pending IS its resolution — pending cards collapse then. */
+function resolveTurnApprovals(list?: TurnApproval[]): TurnApproval[] | undefined {
+  if (!list || list.every((a) => a.status !== "pending")) return list;
+  return list.map((a) => (a.status === "pending" ? { ...a, status: "resolved" as const } : a));
+}
 
 type SummaryTurn = {
   kind: "summary";
@@ -727,14 +741,32 @@ export default function CodeAgentChatShell({
                 new_content: event.new_content,
                 diff_action: event.diff_action,
               };
-              patchAgent((prev) => ({ ...prev, tool_calls: [...prev.tool_calls, tc] }));
+              patchAgent((prev) => ({
+                ...prev,
+                tool_calls: [...prev.tool_calls, tc],
+                approvals: resolveTurnApprovals(prev.approvals),
+              }));
               if (event.touched_path && onAgentTouchedFile) {
                 onAgentTouchedFile(event.touched_path);
               }
               break;
             }
+            case "approval_pending":
+              patchAgent((prev) => ({
+                ...prev,
+                approvals: [...(prev.approvals ?? []), {
+                  approval_id: event.approval_id,
+                  tool: event.tool,
+                  status: "pending" as const,
+                }],
+              }));
+              break;
             case "final_response":
-              patchAgent((prev) => ({ ...prev, text: event.text }));
+              patchAgent((prev) => ({
+                ...prev,
+                text: event.text,
+                approvals: resolveTurnApprovals(prev.approvals),
+              }));
               break;
             case "done":
               patchAgent((prev) => ({
@@ -744,6 +776,7 @@ export default function CodeAgentChatShell({
                 stop_reason: event.stop_reason as never,
                 error: event.error,
                 in_progress: false,
+                approvals: resolveTurnApprovals(prev.approvals),
               }));
               break;
           }
@@ -834,6 +867,31 @@ export default function CodeAgentChatShell({
       setSummarizing(false);
     }
   }, [summarizing, running, history, model, numCtx]);
+
+  // F1: pending tool-call approvals. Click state lives OUTSIDE turn data so
+  // the stream's commit() (authoritative working copy) can't overwrite it.
+  const [approvalClicks, setApprovalClicks] = useState<Record<string, "approved" | "rejected">>({});
+
+  const onApprovalDecision = useCallback(
+    async (approvalId: string, decision: "approve" | "reject") => {
+      setApprovalClicks((prev) => ({
+        ...prev,
+        [approvalId]: decision === "approve" ? "approved" : "rejected",
+      }));
+      try {
+        await api.resolveApproval(approvalId, decision);
+      } catch (e) {
+        // allow retry on failure
+        setApprovalClicks((prev) => {
+          const next = { ...prev };
+          delete next[approvalId];
+          return next;
+        });
+        console.warn("approval resolve failed:", e);
+      }
+    },
+    [],
+  );
 
   const stopRun = useCallback(async () => {
     const rid = runIdRef.current;
@@ -1108,6 +1166,65 @@ export default function CodeAgentChatShell({
                   <span>агент думает...</span>
                 </div>
               )}
+              {turn.approvals?.filter((a) => a.status === "pending").map((a) => {
+                const clicked = approvalClicks[a.approval_id];
+                return (
+                  <div
+                    key={a.approval_id}
+                    style={{
+                      padding: "8px 11px",
+                      borderRadius: 8,
+                      border: "1px solid rgba(240,160,32,0.5)",
+                      background: "rgba(240,160,32,0.08)",
+                      fontSize: 12,
+                      marginBottom: 6,
+                    }}
+                  >
+                    <div style={{ marginBottom: clicked ? 0 : 7, color: "var(--text-primary)" }}>
+                      ⏸ Требуется подтверждение:{" "}
+                      <code style={{ fontFamily: "var(--font-mono)" }}>{a.tool}</code>
+                    </div>
+                    {clicked ? (
+                      <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 5 }}>
+                        {clicked === "approved"
+                          ? "Разрешено — агент выполняет…"
+                          : "Отклонено — агент продолжит без этого действия…"}
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          onClick={() => onApprovalDecision(a.approval_id, "approve")}
+                          style={{
+                            padding: "4px 14px",
+                            borderRadius: 6,
+                            border: "1px solid rgba(74,222,128,0.5)",
+                            background: "rgba(74,222,128,0.12)",
+                            color: "#4ade80",
+                            fontSize: 12,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Разрешить
+                        </button>
+                        <button
+                          onClick={() => onApprovalDecision(a.approval_id, "reject")}
+                          style={{
+                            padding: "4px 14px",
+                            borderRadius: 6,
+                            border: "1px solid rgba(255,107,107,0.5)",
+                            background: "rgba(255,107,107,0.10)",
+                            color: "#ff6b6b",
+                            fontSize: 12,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Отклонить
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
               {turn.error && (
                 <div
                   style={{

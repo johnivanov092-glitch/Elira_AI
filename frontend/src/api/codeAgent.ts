@@ -20,7 +20,7 @@ export type CodeAgentResponse = {
   response: string;
   steps: number;
   tool_calls: CodeAgentToolCall[];
-  stop_reason: "answer" | "max_steps" | "error" | "cancelled";
+  stop_reason: "answer" | "max_steps" | "timeout" | "error" | "cancelled";
   error: string | null;
 };
 
@@ -69,6 +69,15 @@ export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
   | { type: "step_started"; step: number }
   | ({ type: "tool_call" } & CodeAgentToolCall)
+  | {
+      type: "approval_pending";
+      step: number;
+      tool: string;
+      arguments: Record<string, unknown>;
+      approval_id: string;
+    }
+  | { type: "approval_wait"; step: number; approval_id: string; waited_s: number }
+  | { type: "context_compacted"; step: number }
   | { type: "final_response"; step: number; text: string }
   | {
       type: "done";
@@ -77,6 +86,20 @@ export type CodeAgentStreamEvent =
       stop_reason: CodeAgentResponse["stop_reason"];
       error: string | null;
     };
+
+// ── Approvals (Agent OS) ─────────────────────────────────────────────────
+
+/** Resolve a pending tool-call approval. The paused agent run picks the
+ *  decision up on its next poll tick. */
+export async function resolveApproval(
+  approvalId: string,
+  decision: "approve" | "reject",
+): Promise<void> {
+  await request(`/api/agent-os/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
+    method: "POST",
+    body: {},
+  });
+}
 
 export type StreamHandlers = {
   onEvent?: (event: CodeAgentStreamEvent) => void;
