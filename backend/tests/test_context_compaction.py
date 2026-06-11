@@ -271,6 +271,72 @@ class TestMaybeCompactEdgeCases(unittest.TestCase):
         self.assertIn("run_bash", summary["content"])
 
 
+class TestDeepCompaction(unittest.TestCase):
+    """F3: tool work reaches the summarizer; rolling summary evicts oldest."""
+
+    def test_flatten_converts_tool_messages_to_text(self):
+        from app.application.code_agent.agent_loop import _flatten_for_summary
+
+        msgs = [
+            {"role": "user", "content": "поправь баг"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "read_file", "arguments": {"path": "src/a.py"}}},
+            ]},
+            {"role": "tool", "name": "read_file", "content": "X" * 1000},
+        ]
+        flat = _flatten_for_summary(msgs)
+        self.assertEqual(flat[0], msgs[0])  # user passes through
+        self.assertIn("[tools called] read_file(src/a.py)", flat[1]["content"])
+        self.assertTrue(flat[2]["content"].startswith("[tool result read_file] "))
+        # tool excerpt capped at 400 chars (+ prefix)
+        self.assertLessEqual(len(flat[2]["content"]), 400 + len("[tool result read_file] "))
+
+    def test_maybe_compact_passes_tool_work_to_summarizer(self):
+        seen: dict[str, Any] = {}
+
+        def spy_summary(**kwargs):
+            seen["messages"] = kwargs["messages"]
+            return {"ok": True, "summary": "S.", "error": None, "turn_count": 0}
+
+        from app.application.code_agent.agent_loop import _flatten_for_summary
+
+        messages = [_SYSTEM, {"role": "user", "content": "задача"}]
+        for i in range(6):
+            messages.append({"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "run_bash", "arguments": {"command": f"pytest {i}"}}},
+            ]})
+            messages.append({"role": "tool", "name": "run_bash", "content": f"exit=1 step {i}"})
+
+        _result, compacted = maybe_compact(
+            messages, num_ctx=999_999, model="m", chat_fn=None,
+            summarize_fn=spy_summary,
+            threshold=0.0,
+            keep_pairs=1,
+            prepare_messages=_flatten_for_summary,
+        )
+        self.assertTrue(compacted)
+        joined = "\n".join(m["content"] for m in seen["messages"])
+        self.assertIn("[tools called] run_bash(pytest 0)", joined)
+        self.assertIn("[tool result run_bash] exit=1 step 0", joined)
+
+    def test_merge_summary_evicts_oldest_not_newest(self):
+        from app.application.context.compaction import _merge_summary
+
+        old = "OLD " * 1000   # ~4000 chars — fills the cap alone
+        new = "NEW-FACTS " * 30
+        merged = _merge_summary([old], new)
+        self.assertIn("NEW-FACTS", merged)          # newest survives intact
+        self.assertIn("[older summaries dropped]", merged)
+        self.assertNotIn("OLD", merged)             # oldest evicted
+        self.assertLessEqual(len(merged), _MAX_SUMMARY_CHARS)
+
+    def test_merge_summary_keeps_all_when_under_cap(self):
+        from app.application.context.compaction import _merge_summary
+
+        merged = _merge_summary(["first block"], "second block")
+        self.assertEqual(merged, "first block\n\nsecond block")
+
+
 class TestCompactionInAgentLoop(unittest.TestCase):
     """Verifies that stream_code_agent emits context_compacted event when threshold exceeded."""
 

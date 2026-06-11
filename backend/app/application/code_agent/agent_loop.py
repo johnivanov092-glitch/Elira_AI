@@ -317,6 +317,45 @@ def _short_arg_hint(args: dict[str, Any]) -> str:
     return ""
 
 
+def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """F3.1: convert in-loop messages (assistant with tool_calls, role="tool"
+    results) into plain text turns the summarizer keeps. Without this,
+    mid-run compaction summarized almost nothing: tool messages and
+    empty-content assistant turns (typical while tool-calling) were dropped
+    from the summarizer input by `_coerce_history`, so the agent forgot
+    everything it had read in the run.
+    """
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        text = content if isinstance(content, str) else ""
+        if role == "tool":
+            name = str(m.get("name") or "tool")
+            excerpt = text[:400]
+            out.append({"role": "assistant", "content": f"[tool result {name}] {excerpt}"})
+            continue
+        if role == "assistant":
+            parts: list[str] = []
+            if text:
+                parts.append(text)
+            calls = m.get("tool_calls") or []
+            if calls:
+                names: list[str] = []
+                for c in calls[:12]:
+                    fn = (c or {}).get("function") or {}
+                    cname = str(fn.get("name") or "?")
+                    args = fn.get("arguments")
+                    hint = _short_arg_hint(args) if isinstance(args, dict) else ""
+                    names.append(f"{cname}({hint})")
+                parts.append("[tools called] " + "; ".join(names))
+            if parts:
+                out.append({"role": "assistant", "content": "\n".join(parts)})
+            continue
+        out.append(m)
+    return out
+
+
 def _wrap_up_text(
     chat: Callable[..., dict[str, Any]],
     model: str,
@@ -845,6 +884,7 @@ def stream_code_agent(
             messages, _compacted = maybe_compact(
                 messages, safe_num_ctx, model, chat,
                 summarize_fn=summarize_history,
+                prepare_messages=_flatten_for_summary,
             )
             if _compacted:
                 compaction_count += 1
@@ -1180,11 +1220,13 @@ SUMMARIZE_SYSTEM_PROMPT = (
     "- пути к файлам и модули которые обсуждались\n"
     "- архитектурные решения и договорённости\n"
     "- состояние задач (что сделано, что не доделано)\n"
+    "- какие инструменты вызывались и их краткие итоги: созданные/правленные "
+    "файлы, выполненные команды и их ok/exit-статус\n"
     "- конвенции/стиль/правила которые пользователь упоминал\n"
     "- найденные баги и их статус\n"
     "Не пиши:\n"
     "- полное содержимое файлов\n"
-    "- результаты tool calls\n"
+    "- полные выводы инструментов\n"
     "- общие фразы и вежливость\n"
     "Формат: маркированный список 5-15 строк, плотный, без воды. На русском."
 )

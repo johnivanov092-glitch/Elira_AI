@@ -76,11 +76,35 @@ def _excerpt(value: Any, limit: int = _MESSAGE_EXCERPT_CHARS) -> str:
     return text[: max(0, limit - 16)].rstrip() + " ...[truncated]"
 
 
+_OLDER_DROPPED_MARKER = "[older summaries dropped]"
+
+
 def _merge_summary(previous_summaries: list[str], new_summary: str) -> str:
     parts = [p.strip() for p in previous_summaries if p.strip()]
     if new_summary.strip():
         parts.append(new_summary.strip())
-    return _cap_text("\n\n".join(parts))
+    if not parts:
+        return ""
+    # Evict OLDEST blocks when over budget: a rolling summary must prefer the
+    # most recent work. (Previously the merged text was head-capped, so once
+    # saturated the NEWEST summaries were the ones truncated away and the
+    # rolling summary fossilized on the start of the session.)
+    budget = _MAX_SUMMARY_CHARS - len(_OLDER_DROPPED_MARKER) - 2
+    kept: list[str] = []
+    total = 0
+    dropped = False
+    for part in reversed(parts):
+        cost = len(part) + (2 if kept else 0)
+        if kept and total + cost > budget:
+            dropped = True
+            break
+        kept.append(part)
+        total += cost
+    kept.reverse()
+    merged = "\n\n".join(kept)
+    if dropped:
+        merged = _OLDER_DROPPED_MARKER + "\n\n" + merged
+    return _cap_text(merged)
 
 
 def _deterministic_summary(previous_summaries: list[str], messages: list[dict[str, Any]]) -> str:
@@ -120,6 +144,7 @@ def maybe_compact(
     threshold: float = _DEFAULT_THRESHOLD,
     keep_pairs: int = _DEFAULT_KEEP_PAIRS,
     fallback_keep: int = _DEFAULT_FALLBACK_KEEP,
+    prepare_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Compact *messages* if they exceed *threshold* × *num_ctx* tokens.
 
@@ -142,6 +167,12 @@ def maybe_compact(
         Number of recent user/assistant exchange pairs to preserve verbatim.
     fallback_keep:
         Non-system messages to keep in deterministic fallback.
+    prepare_messages:
+        Optional transform applied to the to-summarize slice before it is
+        handed to ``summarize_fn``. The agent loop passes a flattener that
+        converts tool-result messages and assistant tool_calls into plain
+        text turns — otherwise the summarizer input loses all tool work
+        (``_coerce_history`` keeps only non-empty user/assistant content).
 
     Returns
     -------
@@ -169,6 +200,8 @@ def maybe_compact(
 
     try:
         summarize_messages = list(to_summarize)
+        if prepare_messages is not None:
+            summarize_messages = prepare_messages(summarize_messages)
         if previous_summaries:
             summarize_messages = [{
                 "role": "system",
