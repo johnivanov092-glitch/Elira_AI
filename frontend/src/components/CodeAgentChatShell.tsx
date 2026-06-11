@@ -159,6 +159,7 @@ type AgentTurn = {
   project_root: string;
   in_progress?: boolean;
   approvals?: TurnApproval[];
+  compactions?: number;
 };
 
 /** The backend resumes only after a decision, so the first event following
@@ -751,6 +752,9 @@ export default function CodeAgentChatShell({
               }
               break;
             }
+            case "context_compacted":
+              patchAgent((prev) => ({ ...prev, compactions: (prev.compactions ?? 0) + 1 }));
+              break;
             case "approval_pending":
               patchAgent((prev) => ({
                 ...prev,
@@ -1271,6 +1275,7 @@ export default function CodeAgentChatShell({
                 >
                   <span>{turn.ok ? "✓ готово" : `✕ ${String(turn.stop_reason)}`}</span>
                   <span>шаги: {turn.steps}</span>
+                  {turn.compactions ? <span>контекст сжат ×{turn.compactions}</span> : null}
                   <span style={{ fontFamily: "var(--font-mono)" }}>{turn.model}</span>
                 </div>
               )}
