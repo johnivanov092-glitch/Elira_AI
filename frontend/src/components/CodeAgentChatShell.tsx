@@ -194,6 +194,23 @@ function summarizeToolCall(tc: CodeAgentToolCall): string {
   return `${tool}(${Object.keys(args).slice(0, 3).join(",")})`;
 }
 
+function agentTurnHistoryContent(t: AgentTurn): string {
+  // Shared between the raw conversation_history payload and the
+  // compress-history payload: the model must know WHAT THE AGENT DID in
+  // past turns, not only what it said. Without this, a turn that ended
+  // with just "Готово." carries no memory of its tool work into the
+  // next turn. Capped so long sessions don't blow up the payload.
+  const parts: string[] = [];
+  if (t.tool_calls.length > 0) {
+    let calls = t.tool_calls.slice(0, 12).map(summarizeToolCall).join("; ");
+    if (t.tool_calls.length > 12) calls += `; … +${t.tool_calls.length - 12}`;
+    if (calls.length > 600) calls = calls.slice(0, 600) + "…";
+    parts.push(`[tools used] ${calls}`);
+  }
+  if (t.text) parts.push(t.text);
+  return parts.join("\n\n");
+}
+
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -587,8 +604,9 @@ export default function CodeAgentChatShell({
     });
   }, [history, running, sessionId]);
 
-  // Build conversation_history payload from prior text turns (skip tool data —
-  // backend doesn't need our local tool transcript, it re-runs fresh tools).
+  // Build conversation_history payload from prior turns. Agent turns carry a
+  // compact "[tools used] …" digest alongside their text (same builder as the
+  // compress path) so the agent remembers WHAT it did, not only what it said.
   // Summary turns are sent as assistant messages prefixed with "[CONTEXT
   // SUMMARY]" so the LLM knows it's compressed history, not a real reply.
   const buildHistoryPayload = useCallback((): ConversationMessage[] => {
@@ -596,8 +614,9 @@ export default function CodeAgentChatShell({
     for (const t of history) {
       if (t.kind === "user") {
         out.push({ role: "user", content: t.text });
-      } else if (t.kind === "agent" && t.text) {
-        out.push({ role: "assistant", content: t.text });
+      } else if (t.kind === "agent") {
+        const content = agentTurnHistoryContent(t);
+        if (content) out.push({ role: "assistant", content });
       } else if (t.kind === "summary" && t.text) {
         out.push({ role: "assistant", content: "[CONTEXT SUMMARY]\n" + t.text });
       }
@@ -766,20 +785,12 @@ export default function CodeAgentChatShell({
         compactable.push({ role: "user", content: t.text });
         replaced++;
       } else if (t.kind === "agent") {
-        // Include tool-call summary alongside the agent text so the
+        // Same builder as conversation_history: tool digest + text, so the
         // summarizer sees WHAT THE AGENT DID, not just what it said.
-        // Without this an 8-step turn that did write_file + run_bash +
-        // edit_file ... but ended with "Готово." would collapse to just
-        // "Готово." in the summary — completely useless for resuming.
-        const parts: string[] = [];
-        if (t.tool_calls && t.tool_calls.length > 0) {
-          hasToolCalls = true;
-          const calls = t.tool_calls.map(summarizeToolCall).join("; ");
-          parts.push(`[tools used] ${calls}`);
-        }
-        if (t.text) parts.push(t.text);
-        if (parts.length > 0) {
-          compactable.push({ role: "assistant", content: parts.join("\n\n") });
+        if (t.tool_calls.length > 0) hasToolCalls = true;
+        const content = agentTurnHistoryContent(t);
+        if (content) {
+          compactable.push({ role: "assistant", content });
           replaced++;
         }
       } else if (t.kind === "summary" && t.text) {
