@@ -1,4 +1,4 @@
-"""P10.1 commit 3 — code-agent loop wired to deferred tool mode (expanded base).
+﻿"""P10.1 commit 3 вЂ” code-agent loop wired to deferred tool mode (expanded base).
 
 Integration over stream_code_agent: base-only schemas at start (core read/edit/
 shell tools + tool_search), long-tail tools hidden until tool_search activates
@@ -122,7 +122,7 @@ class DeferredLoopTest(unittest.TestCase):
         with _loop_env(), patch.object(
             agent_loop,
             "_kernel_exec",
-            return_value=SimpleNamespace(output={"text": "ok"}),
+            return_value=SimpleNamespace(status="ok", output={"text": "ok"}),
         ) as spy:
             _run(chat, run_id="rTodo")
         req = spy.call_args.args[0]
@@ -134,7 +134,7 @@ class DeferredLoopTest(unittest.TestCase):
         with _loop_env(), patch.object(
             agent_loop,
             "_kernel_exec",
-            return_value=SimpleNamespace(output={"text": "ok"}),
+            return_value=SimpleNamespace(status="ok", output={"text": "ok"}),
         ) as spy:
             _run(chat, run_id="rDelegate")
         req = spy.call_args.args[0]
