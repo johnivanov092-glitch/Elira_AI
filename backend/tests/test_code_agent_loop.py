@@ -733,6 +733,39 @@ class AgentLoopTest(unittest.TestCase):
         out = _extract_inline_tool_calls('  glob(pattern="*");  ', {"glob"})
         self.assertEqual(len(out), 1)
 
+    # ── F4: system prompt generated from the actual active tool set ──────
+
+    def test_default_prompt_lists_base_tools_and_tool_search(self) -> None:
+        from app.application.code_agent.agent_loop import _build_base_system_prompt
+
+        prompt = _build_base_system_prompt(Path("/fake/project"))
+        self.assertIn("- read_file(path)", prompt)
+        self.assertIn("- todo_update(", prompt)
+        self.assertIn("- delegate_task(", prompt)
+        self.assertIn("tool_search(query)", prompt)
+        # Long-tail tools are not advertised as directly available — the
+        # executor would block them as not-activated (P10.1 deferred mode).
+        self.assertNotIn("- web_search(query", prompt)
+        self.assertNotIn("- sandbox_run(code", prompt)
+
+    def test_custom_base_tools_reflected_in_prompt(self) -> None:
+        from app.application.code_agent.agent_loop import _build_base_system_prompt
+
+        prompt = _build_base_system_prompt(
+            Path("/fake/project"), active_tools=("read_file", "web_search"),
+        )
+        self.assertIn("- read_file(path)", prompt)
+        self.assertIn("- web_search(query", prompt)
+        self.assertNotIn("- write_file(path", prompt)
+
+    def test_unknown_active_tool_gets_generic_line(self) -> None:
+        from app.application.code_agent.agent_loop import _build_base_system_prompt
+
+        prompt = _build_base_system_prompt(
+            Path("/fake/project"), active_tools=("read_file", "mcp_db_query"),
+        )
+        self.assertIn("- mcp_db_query(…)", prompt)
+
     def test_stream_uses_inline_tool_call_fallback(self) -> None:
         """End-to-end: a model that emits JSON-in-content should still trigger
         tool execution via the fallback parser."""

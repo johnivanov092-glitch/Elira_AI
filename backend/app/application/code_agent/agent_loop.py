@@ -58,17 +58,7 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ 
 {project_root}
 
 ## Твои инструменты (используй их, а не объясняй пользователю как делать руками)
-- read_file(path) — читать файл
-- write_file(path, content) — создать или перезаписать файл
-- edit_file(path, old_string, new_string) — точечная правка существующего файла
-- glob(pattern) — найти файлы по маске (например `**/*.py`)
-- grep(pattern, path) — искать текст в файлах
-- run_bash(command, timeout=60) — выполнить shell-команду в директории проекта
-- recall(query) — семантический поиск в RAG-памяти проекта
-- web_search(query, top_k=5) — поиск в интернете → список URL+snippet
-- web_fetch(url) — прочитать полный текст веб-страницы (после web_search)
-- sandbox_run(code, install=[...]) — выполнить Python-код в изолированном venv (для экспериментов с pip-пакетами, прототипов)
-- sandbox_reset() — обнулить sandbox если он сломался
+{tools_section}
 
 ## ЖЕЛЕЗНЫЕ ПРАВИЛА
 
@@ -88,9 +78,9 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ 
 
 8. Используй `recall(query)` когда нужно найти «где у меня реализовано X» или «что я делал по теме Y» — RAG помнит прошлые задачи и проиндексированный код.
 
-9. Для свежих фактов из интернета: сначала `web_search(query)` → выбери релевантные URL → `web_fetch(url)` чтобы прочитать страницу целиком. **НЕ выдумывай** факты по теме, в которой не уверен — иди в веб.
+9. Для свежих фактов из интернета: `web_search(query)` → выбери релевантные URL → `web_fetch(url)` чтобы прочитать страницу целиком. Если веб-инструментов нет в списке выше — сначала активируй их через `tool_search("web search")`. **НЕ выдумывай** факты по теме, в которой не уверен — иди в веб.
 
-10. Когда нужно «попробовать» Python-код или библиотеку — используй `sandbox_run`, а НЕ `run_bash`. Sandbox изолирован: `pip install requests` в нём не загрязнит основной Python пользователя. Работает между вызовами — установил библиотеку в одном шаге, используешь её в следующем. Используй `run_bash` только для команд в реальном проекте пользователя (git, pytest над их кодом, и т.п.).
+10. Когда нужно «попробовать» Python-код или библиотеку — используй `sandbox_run` (если его нет в списке выше — активируй через `tool_search("sandbox")`), а НЕ `run_bash`. Sandbox изолирован: `pip install requests` в нём не загрязнит основной Python пользователя и переживает шаги. `run_bash` — только для команд в реальном проекте пользователя (git, pytest над их кодом, и т.п.).
 
 11. Когда задача РЕАЛЬНО выполнена (файлы созданы, тесты прошли) — только тогда отвечай обычным текстом без вызова инструментов. Текст — это финал, не план.
 
@@ -109,12 +99,76 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ 
 ХОРОШО: ты её знаешь, она указана выше в этом промпте."""
 
 
-def _build_base_system_prompt(project_root: Path) -> str:
-    return BASE_SYSTEM_PROMPT_TEMPLATE.format(project_root=str(project_root))
+# P10.1: code-agent runs start in deferred tool mode exposing only this base set
+# (core read + edit + shell tools); long-tail tools stay hidden until tool_search
+# activates them. The base side-effect tools (write_file / edit_file / run_bash)
+# remain fully subject to the executor's policy / scope / approval gates — being
+# in the base set grants visibility, not a policy bypass.
+_CODE_AGENT_BASE_TOOLS = (
+    "read_file", "glob", "grep", "recall",
+    "todo_update", "delegate_task",
+    "write_file", "edit_file", "run_bash",
+)
+
+_CODE_AGENT_READONLY_TOOLS = (
+    "read_file", "glob", "grep", "recall",
+)
+
+# F4: per-tool prompt lines. The "Твои инструменты" section is generated from
+# the run's ACTUAL initial tool set, so the prompt never advertises a tool the
+# executor would block as not-activated and never hides an active one.
+TOOL_PROMPT_LINES: dict[str, str] = {
+    "read_file":     "- read_file(path) — читать файл",
+    "write_file":    "- write_file(path, content) — создать или перезаписать файл",
+    "edit_file":     "- edit_file(path, old_string, new_string) — точечная правка существующего файла",
+    "glob":          "- glob(pattern) — найти файлы по маске (например `**/*.py`)",
+    "grep":          "- grep(pattern, path) — искать текст в файлах",
+    "run_bash":      "- run_bash(command, timeout=60) — выполнить shell-команду в директории проекта",
+    "recall":        "- recall(query) — семантический поиск в RAG-памяти проекта",
+    "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
+    "delegate_task": "- delegate_task(role, task) — запустить ограниченного read-only субагента (исследование/анализ)",
+    "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",
+    "web_fetch":     "- web_fetch(url) — прочитать полный текст веб-страницы (после web_search)",
+    "sandbox_run":   "- sandbox_run(code, install=[...]) — выполнить Python-код в изолированном venv (для экспериментов с pip-пакетами, прототипов)",
+    "sandbox_reset": "- sandbox_reset() — обнулить sandbox если он сломался",
+}
+
+_TOOL_SEARCH_PROMPT_LINE = (
+    "- tool_search(query) — найти и АКТИВИРОВАТЬ дополнительные инструменты "
+    "(веб-поиск, sandbox, http, sql, ssh и др.); активированные становятся "
+    "доступны со следующего шага"
+)
+
+
+def _tools_section(active_tools: tuple[str, ...] | list[str]) -> str:
+    lines = [TOOL_PROMPT_LINES[t] for t in active_tools if t in TOOL_PROMPT_LINES]
+    # Custom runs may activate tools we have no curated line for (SSH/MCP/
+    # plugins) — they are still listed so the prompt matches reality; the
+    # model sees their full JSON schema anyway.
+    lines += [
+        f"- {t}(…) — активный инструмент (параметры смотри в схеме)"
+        for t in active_tools if t not in TOOL_PROMPT_LINES
+    ]
+    lines.append(_TOOL_SEARCH_PROMPT_LINE)
+    return "\n".join(lines)
+
+
+def _build_base_system_prompt(
+    project_root: Path,
+    active_tools: tuple[str, ...] | list[str] | None = None,
+) -> str:
+    tools = tuple(active_tools) if active_tools is not None else _CODE_AGENT_BASE_TOOLS
+    return BASE_SYSTEM_PROMPT_TEMPLATE.format(
+        project_root=str(project_root),
+        tools_section=_tools_section(tools),
+    )
 
 
 # Kept for backwards-compat (tests / external imports). Generic, no project root.
-BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(project_root="<укажет runtime>")
+BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(
+    project_root="<укажет runtime>",
+    tools_section=_tools_section(_CODE_AGENT_BASE_TOOLS),
+)
 
 
 def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
@@ -123,11 +177,15 @@ def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
     return ollama.chat(**kwargs)
 
 
-def _build_system_prompt(project_root: Path, working_dir: Path | str | None = None) -> str:
+def _build_system_prompt(
+    project_root: Path,
+    working_dir: Path | str | None = None,
+    active_tools: tuple[str, ...] | list[str] | None = None,
+) -> str:
     from app.application.instructions.loader import load_instructions
     from app.application.projects.scope import project_scope_id as _scope_id
 
-    base = _build_base_system_prompt(project_root)
+    base = _build_base_system_prompt(project_root, active_tools=active_tools)
     parts: list[str] = [base]
 
     instructions = load_instructions(project_root, working_dir=working_dir)
@@ -682,21 +740,6 @@ def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int
         pass
 
 
-# P10.1: code-agent runs start in deferred tool mode exposing only this base set
-# (core read + edit + shell tools); long-tail tools stay hidden until tool_search
-# activates them. The base side-effect tools (write_file / edit_file / run_bash)
-# remain fully subject to the executor's policy / scope / approval gates — being
-# in the base set grants visibility, not a policy bypass.
-_CODE_AGENT_BASE_TOOLS = (
-    "read_file", "glob", "grep", "recall",
-    "todo_update", "delegate_task",
-    "write_file", "edit_file", "run_bash",
-)
-
-_CODE_AGENT_READONLY_TOOLS = (
-    "read_file", "glob", "grep", "recall",
-)
-
 _TOOL_SEARCH_SCHEMA = {
     "type": "function",
     "function": {
@@ -838,7 +881,9 @@ def stream_code_agent(
         enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _ollama_chat
 
-        system_prompt = _build_system_prompt(root, working_dir=working_dir)
+        system_prompt = _build_system_prompt(
+            root, working_dir=working_dir, active_tools=initial_tools,
+        )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
         # Anti-refusal nudge: if user clearly asks to execute, remind the model.
