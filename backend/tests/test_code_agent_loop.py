@@ -662,6 +662,41 @@ class AgentLoopTest(unittest.TestCase):
         out = _extract_inline_tool_calls("This is a regular answer.", {"glob"})
         self.assertEqual(out, [])
 
+    # ── F5: call-expression fallback fires only for pure call lines ──────
+
+    def test_call_expr_pure_line_is_parsed(self) -> None:
+        out = _extract_inline_tool_calls('read_file(path="src/foo.py")', {"read_file"})
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["function"]["name"], "read_file")
+        self.assertEqual(out[0]["function"]["arguments"]["path"], "src/foo.py")
+
+    def test_call_expr_inside_prose_is_not_executed(self) -> None:
+        """A final answer MENTIONING a call must not re-execute it."""
+        out = _extract_inline_tool_calls(
+            'я запустил run_bash(command="pytest") и всё зелёное',
+            {"run_bash"},
+        )
+        self.assertEqual(out, [])
+
+    def test_call_expr_in_code_fence_is_parsed(self) -> None:
+        out = _extract_inline_tool_calls(
+            '```bash\nrun_bash(command="pytest -q")\n```',
+            {"run_bash"},
+        )
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["function"]["arguments"]["command"], "pytest -q")
+
+    def test_call_expr_multiple_pure_lines_all_parsed(self) -> None:
+        out = _extract_inline_tool_calls(
+            'Сейчас посмотрю файлы:\nglob(pattern="**/*.py")\ngrep(pattern="TODO")',
+            {"glob", "grep"},
+        )
+        self.assertEqual([c["function"]["name"] for c in out], ["glob", "grep"])
+
+    def test_call_expr_trailing_semicolon_ok(self) -> None:
+        out = _extract_inline_tool_calls('  glob(pattern="*");  ', {"glob"})
+        self.assertEqual(len(out), 1)
+
     def test_stream_uses_inline_tool_call_fallback(self) -> None:
         """End-to-end: a model that emits JSON-in-content should still trigger
         tool execution via the fallback parser."""

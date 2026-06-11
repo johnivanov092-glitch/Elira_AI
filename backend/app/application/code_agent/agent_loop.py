@@ -430,14 +430,22 @@ def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict
 
     # Fallback: call-expression syntax `tool_name(key="value", ...)`. Some
     # models (qwen2.5-coder) write the call as pseudo-code inside a ```bash/code
-    # fence instead of JSON. Only for known tools and only if no JSON-format
-    # call was recovered, to avoid misreading prose examples.
+    # fence instead of JSON. Only for known tools, only if no JSON-format call
+    # was recovered, and only for lines that ARE the call — nothing but the
+    # call expression on the line (fences stripped). A tool name mentioned
+    # inside prose (e.g. a final answer saying «я запустил run_bash(...) и всё
+    # зелёное») must NOT be re-executed as a new call.
     if not out and known_tools:
         name_alt = "|".join(re.escape(t) for t in sorted(known_tools, key=len, reverse=True))
-        for m in re.finditer(rf"\b({name_alt})\s*\(([^()]*)\)", content):
-            args = _parse_call_expr_args(m.group(2))
-            if isinstance(args, dict):
-                out.append({"function": {"name": m.group(1), "arguments": args}})
+        pure_call = re.compile(rf"^\s*({name_alt})\s*\(([^()]*)\)\s*;?\s*$")
+        for line in content.splitlines():
+            if line.strip().startswith("```"):
+                continue  # fence marker lines
+            m = pure_call.match(line)
+            if m:
+                args = _parse_call_expr_args(m.group(2))
+                if isinstance(args, dict):
+                    out.append({"function": {"name": m.group(1), "arguments": args}})
 
     return out
 
