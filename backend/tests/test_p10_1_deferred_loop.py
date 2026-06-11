@@ -1,4 +1,4 @@
-﻿"""P10.1 commit 3 вЂ” code-agent loop wired to deferred tool mode (expanded base).
+"""P10.1 commit 3 — code-agent loop wired to deferred tool mode (expanded base).
 
 Integration over stream_code_agent: base-only schemas at start (core read/edit/
 shell tools + tool_search), long-tail tools hidden until tool_search activates

@@ -1,4 +1,4 @@
-﻿import {
+import {
   addMessage,
   createChat,
   deleteChat,
