@@ -203,6 +203,35 @@ class AgentLoopTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertEqual(result["steps"], 3)
+        # F2: wrap-up fallback (model kept tool-calling, no summary text) —
+        # the user still gets a deterministic «что сделано» response.
+        self.assertIn("Прогон остановлен", result["response"])
+        self.assertIn("glob", result["response"])
+
+    def test_max_steps_wrap_up_uses_model_summary_when_available(self) -> None:
+        """F2: if the wrap-up call returns text, it becomes final_response."""
+        responses = iter([
+            {"message": {"content": "", "tool_calls": [{
+                "function": {"name": "glob", "arguments": {"pattern": "*"}},
+            }]}},
+            {"message": {"content": "", "tool_calls": [{
+                "function": {"name": "glob", "arguments": {"pattern": "*"}},
+            }]}},
+            # wrap-up (no-tools) call:
+            {"message": {"content": "Итог: посмотрел файлы, не успел правки.", "tool_calls": []}},
+        ])
+
+        result = run_code_agent(
+            user_message="спин",
+            project_root=self.root,
+            model="test-model",
+            max_steps=2,
+            chat_fn=lambda **kw: next(responses),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stop_reason"], "max_steps")
+        self.assertEqual(result["response"], "Итог: посмотрел файлы, не успел правки.")
 
     def test_stream_reports_preflight_block(self) -> None:
         with patch(
@@ -239,9 +268,16 @@ class AgentLoopTest(unittest.TestCase):
                 project_root=self.root,
                 chat_fn=lambda **kw: {"message": {"content": "unused", "tool_calls": []}},
             ))
-        self.assertEqual([event["type"] for event in events], ["run_started", "done"])
+        # F2: deadline now emits a wrap-up final_response before done, and the
+        # stop_reason is the honest "timeout" instead of generic "error".
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["run_started", "final_response", "done"],
+        )
         self.assertFalse(events[-1]["ok"])
+        self.assertEqual(events[-1]["stop_reason"], "timeout")
         self.assertIn("timed out", events[-1]["error"])
+        self.assertEqual(events[1]["text"], "unused")  # wrap-up call answer
 
     def test_loop_rejects_invalid_project_root(self) -> None:
         result = run_code_agent(

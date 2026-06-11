@@ -301,6 +301,60 @@ def _messages_char_count(messages: list[dict[str, Any]]) -> int:
     return total
 
 
+WRAP_UP_PROMPT = (
+    "[Лимит исчерпан: {reason}.] Больше НЕ вызывай инструменты. Кратко подведи "
+    "итог для пользователя: что уже сделано (файлы, команды, результаты), что "
+    "не доделано, какой следующий шаг."
+)
+
+
+def _short_arg_hint(args: dict[str, Any]) -> str:
+    """Most identifying argument of a tool call, for the run's call log."""
+    for key in ("path", "command", "pattern", "query"):
+        val = args.get(key)
+        if isinstance(val, str) and val:
+            return val if len(val) <= 60 else val[:60] + "…"
+    return ""
+
+
+def _wrap_up_text(
+    chat: Callable[..., dict[str, Any]],
+    model: str,
+    num_ctx: int,
+    messages: list[dict[str, Any]],
+    call_log: list[str],
+    reason: str,
+) -> str:
+    """F2: one best-effort no-tools LLM call to summarize an interrupted run
+    (max_steps / deadline) — files on disk are already changed, the user must
+    get «что сделано / что осталось». Falls back to a deterministic summary
+    built from the run's call log. Deliberately outside inference telemetry:
+    it is a single bounded closing call, not part of the tool loop.
+    """
+    try:
+        response = chat(
+            model=model,
+            messages=messages + [{
+                "role": "user",
+                "content": WRAP_UP_PROMPT.format(reason=reason),
+            }],
+            options={"num_ctx": int(num_ctx)},
+        )
+        text = (((response or {}).get("message") or {}).get("content") or "").strip()
+        if text:
+            return text
+    except Exception as exc:
+        logger.warning("wrap-up summary call failed: %s", exc)
+    if call_log:
+        shown = "; ".join(call_log[:20])
+        more = f" (+{len(call_log) - 20})" if len(call_log) > 20 else ""
+        return (
+            f"Прогон остановлен: {reason}. Выполнено вызовов: {len(call_log)} — "
+            f"{shown}{more}. Изменения уже на диске; продолжи следующим сообщением."
+        )
+    return f"Прогон остановлен: {reason} — до первого вызова инструмента."
+
+
 _INLINE_TOOL_NAMES_PATTERN = None  # built lazily once dispatch is known
 
 
@@ -757,6 +811,7 @@ def stream_code_agent(
         last_text = ""
         tool_round_trips = 0
         compaction_count = 0
+        call_log: list[str] = []
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -769,11 +824,16 @@ def stream_code_agent(
                 return
 
             if time.monotonic() >= deadline:
+                final_text = _wrap_up_text(
+                    chat, model, safe_num_ctx, messages, call_log,
+                    f"таймаут {execution_seconds}s",
+                )
+                yield {"type": "final_response", "step": step, "text": final_text}
                 yield {
                     "type": "done",
                     "ok": False,
                     "steps": step - 1,
-                    "stop_reason": "error",
+                    "stop_reason": "timeout",
                     "error": f"code-agent execution timed out after {execution_seconds}s",
                 }
                 return
@@ -911,11 +971,16 @@ def stream_code_agent(
 
             for call in tool_calls:
                 if time.monotonic() >= deadline:
+                    final_text = _wrap_up_text(
+                        chat, model, safe_num_ctx, messages, call_log,
+                        f"таймаут {execution_seconds}s",
+                    )
+                    yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
                         "type": "done",
                         "ok": False,
                         "steps": step,
-                        "stop_reason": "error",
+                        "stop_reason": "timeout",
                         "error": f"code-agent execution timed out after {execution_seconds}s",
                     }
                     return
@@ -944,6 +1009,7 @@ def stream_code_agent(
                         "name": name,
                     })
                     tool_round_trips += 1
+                    call_log.append(f"tool_search({_short_arg_hint(parsed_args)})")
                     continue
                 if name == "todo_update":
                     # P12.1: checklist mutations are bound to the current run.
@@ -984,6 +1050,10 @@ def stream_code_agent(
                             event[opt] = val
                 yield event
                 tool_round_trips += 1
+                _hint = _short_arg_hint(parsed_args)
+                call_log.append(
+                    f"{name}({_hint}) {'ok' if tool_meta.get('ok', True) else 'error'}"
+                )
                 # Smart-truncate tool output before feeding it back to the
                 # LLM. Without this, a single huge `run_bash` or `read_file`
                 # could blow out `num_ctx` and start eating the system
@@ -994,6 +1064,11 @@ def stream_code_agent(
                     "name": name,
                 })
 
+        final_text = _wrap_up_text(
+            chat, model, safe_num_ctx, messages, call_log,
+            f"достигнут max_steps={safe_max_steps}",
+        )
+        yield {"type": "final_response", "step": safe_max_steps, "text": final_text}
         yield {
             "type": "done",
             "ok": False,
