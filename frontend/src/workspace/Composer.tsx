@@ -59,8 +59,17 @@ export function Composer({
           <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Код</Chip>
           <Chip active={mode === "chat"} icon={<MessageSquare size={13} />} onClick={() => setMode("chat")}>Чат</Chip>
           <Chip active={mode === "search"} icon={<Search size={13} />} onClick={() => setMode("search")}>Поиск</Chip>
+          <button
+            type="button"
+            onClick={onPlugins}
+            title="Скиллы, плагины, инструменты (⌘K)"
+            aria-label="Скиллы и плагины"
+            className="ml-auto flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx"
+          >
+            <Blocks size={13} /> Плагины
+          </button>
           {usage && (
-            <span className={cn("ml-auto rounded-full border px-2 py-1 font-mono text-[10.5px]", contextTone)} title={`Контекст: ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} · свободно ${usage.free_tokens.toLocaleString()}`}>
+            <span className={cn("rounded-full border px-2 py-1 font-mono text-[10.5px]", contextTone)} title={`Контекст: ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} · свободно ${usage.free_tokens.toLocaleString()}`}>
               {Math.round(usage.percent)}% · {Math.round(usage.current_tokens / 1000)}K/{Math.round(usage.ctx_size / 1024)}K
             </span>
           )}
@@ -83,15 +92,6 @@ export function Composer({
             placeholder="Опиши задачу или перетащи файл…  Enter — отправить"
             className="max-h-[120px] flex-1 resize-none bg-transparent text-sm text-tx outline-none placeholder:text-mut"
           />
-          <button
-            type="button"
-            onClick={onPlugins}
-            title="Скиллы, плагины, инструменты (⌘K)"
-            aria-label="Скиллы и плагины"
-            className="grid h-[31px] w-[31px] shrink-0 place-items-center rounded-lg border border-line text-t2 transition-colors hover:bg-hover hover:text-tx"
-          >
-            <Blocks size={16} />
-          </button>
           {running ? (
             <button
               type="button"

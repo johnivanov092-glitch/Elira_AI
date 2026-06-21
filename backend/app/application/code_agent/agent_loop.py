@@ -72,10 +72,14 @@ from app.application.code_agent.prompts import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "local-model"
-DEFAULT_MAX_STEPS = 20
+# A long-thinking local model must not be cut off mid-task. The hard ceiling is
+# a runaway-loop guard, not a "stop the agent" budget — real stopping is the
+# user's Stop button plus the execution-time deadline, and hitting the ceiling
+# yields a resumable partial ("Продолжить"), never an error.
+DEFAULT_MAX_STEPS = 100
 DEFAULT_NUM_CTX = 131072
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
-MAX_CODE_AGENT_STEPS = 50
+MAX_CODE_AGENT_STEPS = 200
 PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 4
