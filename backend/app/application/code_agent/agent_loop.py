@@ -410,6 +410,84 @@ def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+class ContextBudgetError(RuntimeError):
+    """Protected/recent context cannot fit the active server window."""
+
+
+def _prepare_messages_for_llm(
+    messages: list[dict[str, Any]],
+    *,
+    num_ctx: int,
+    model: str,
+    chat_fn: Callable[..., dict[str, Any]],
+    context_profile: dict[str, Any],
+    audit_sink: Callable[[dict[str, Any]], None] | None = None,
+) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
+    """Compact at policy thresholds and enforce the effective request budget."""
+    from app.application.context.compaction import maybe_compact
+    from app.application.context.usage import get_context_usage
+
+    usage_kwargs = {
+        "ctx_size": num_ctx,
+        "reserved_output_tokens": int(context_profile["reserved_output_tokens"]),
+        "reserved_system_tokens": int(context_profile.get("reserved_system_tokens") or 4096),
+        "safety_margin_tokens": int(context_profile.get("safety_margin_tokens") or 2048),
+    }
+    usage = get_context_usage(messages, **usage_kwargs)
+    compacted = False
+    compact_threshold = 60.0 if num_ctx < 16_384 else 75.0
+    strong_threshold = 80.0 if num_ctx < 16_384 else 90.0
+    should_compact = float(usage["percent"]) >= compact_threshold
+    if not should_compact and num_ctx < 16_384 and len(messages) > 2:
+        should_compact = True
+
+    if should_compact:
+        strong = float(usage["percent"]) >= strong_threshold
+        messages, changed = maybe_compact(
+            messages,
+            num_ctx,
+            model,
+            chat_fn,
+            summarize_fn=summarize_history,
+            threshold=0.0,
+            keep_pairs=1 if strong else 4,
+            fallback_keep=2 if strong else 8,
+            prepare_messages=_flatten_for_summary,
+            audit_sink=audit_sink,
+            trigger_reason="strong_compression" if strong else "auto_compression",
+        )
+        compacted = compacted or changed
+        usage = get_context_usage(messages, **usage_kwargs)
+
+    if float(usage["percent"]) >= strong_threshold:
+        messages, changed = maybe_compact(
+            messages,
+            num_ctx,
+            model,
+            chat_fn,
+            summarize_fn=summarize_history,
+            threshold=0.0,
+            keep_pairs=1,
+            fallback_keep=2,
+            prepare_messages=_flatten_for_summary,
+            audit_sink=audit_sink,
+            trigger_reason="strong_compression",
+        )
+        compacted = compacted or changed
+        usage = get_context_usage(messages, **usage_kwargs)
+
+    safe_input_budget = int(context_profile.get("safe_input_budget") or 0)
+    if float(usage["percent"]) >= 95.0 or (
+        safe_input_budget > 0 and int(usage["current_tokens"]) > safe_input_budget
+    ):
+        raise ContextBudgetError(
+            "Контекст остаётся критически заполненным после сжатия: "
+            f"{usage['current_tokens']} входных токенов, окно {usage['ctx_size']}. "
+            "Начните новый чат или оставьте только необходимые материалы."
+        )
+    return messages, compacted, usage
+
+
 def _wrap_up_text(
     chat: Callable[..., dict[str, Any]],
     model: str,
@@ -557,8 +635,8 @@ def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int
                 "cloud_skipped": decision.cloud_skipped,
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("model route metric recording failed", exc_info=exc)
 
 
 _TOOL_SEARCH_SCHEMA = {
@@ -589,7 +667,7 @@ def _schema_tool_name(schema: dict) -> str:
     return str((schema.get("function") or {}).get("name") or "")
 
 
-def stream_code_agent(
+def _stream_code_agent_core(
     *,
     user_message: str,
     project_root: Path | str,
@@ -606,6 +684,7 @@ def stream_code_agent(
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 300,
+    compaction_audit_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -694,6 +773,12 @@ def stream_code_agent(
         #     MCP server; servers that aren't started are skipped
         #     entirely (the user manages them through the MCP API
         #     routes / dialog).
+        # The HTTP app seeds these at startup, but the runtime is also called
+        # directly by tests and CLI integrations. Reuse the same idempotent
+        # seeder so ToolExecutor never sees an unregistered built-in spec.
+        from app.application.tool_registry.runtime import seed_builtin_tools
+
+        seed_builtin_tools()
         registry = ToolRegistry([
             BuiltinToolProvider(root),
             SshToolProvider(),
@@ -758,23 +843,32 @@ def stream_code_agent(
 
             yield {"type": "step_started", "step": step}
 
-            # Compact context before calling the model if we're above 70% budget.
-            from app.application.context.compaction import maybe_compact
-            messages, _compacted = maybe_compact(
-                messages, safe_num_ctx, model, chat,
-                summarize_fn=summarize_history,
-                prepare_messages=_flatten_for_summary,
-            )
+            try:
+                messages, _compacted, context_usage = _prepare_messages_for_llm(
+                    messages,
+                    num_ctx=safe_num_ctx,
+                    model=model,
+                    chat_fn=chat,
+                    context_profile=context_profile,
+                    audit_sink=compaction_audit_sink,
+                )
+            except ContextBudgetError as exc:
+                yield {"type": "final_response", "step": step, "text": str(exc)}
+                yield {
+                    "type": "done",
+                    "ok": False,
+                    "steps": step - 1,
+                    "stop_reason": "context_limit",
+                    "error": str(exc),
+                }
+                return
             if _compacted:
                 compaction_count += 1
-                yield {"type": "context_compacted", "step": step}
-
-            from app.application.context.usage import get_context_usage
-            context_usage = get_context_usage(
-                messages,
-                ctx_size=safe_num_ctx,
-                reserved_output_tokens=int(context_profile["reserved_output_tokens"]),
-            )
+                yield {
+                    "type": "context_compacted",
+                    "step": step,
+                    "context": context_usage,
+                }
 
             # P10.1: expose only this run's active tools + tool_search. Tools
             # activated by tool_search on a prior step become visible here.
@@ -1145,6 +1239,7 @@ def stream_code_agent(
                     "tool": name,
                     "arguments": parsed_args,
                     "result": _truncate(text_result),
+                    "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                 }
                 for opt in ("touched_path", "old_content", "new_content", "diff_action"):
                     if opt in tool_meta:
@@ -1177,10 +1272,11 @@ def stream_code_agent(
         yield {"type": "final_response", "step": safe_max_steps, "text": final_text}
         yield {
             "type": "done",
-            "ok": False,
+            "ok": True,
+            "partial": True,
             "steps": safe_max_steps,
             "stop_reason": "max_steps",
-            "error": f"reached max_steps={safe_max_steps} without final answer",
+            "error": None,
         }
     finally:
         # P10.1: drop the run's deferred allowlist on EVERY terminal exit
@@ -1189,6 +1285,183 @@ def stream_code_agent(
 
         clear_run(rid)
         _unregister_run(rid)
+
+
+def stream_code_agent(
+    *,
+    user_message: str,
+    project_root: Path | str,
+    working_dir: Path | str | None = None,
+    model: str = "auto",
+    agent_id: str = "code-agent",
+    max_steps: int = DEFAULT_MAX_STEPS,
+    conversation_history: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    base_tools: tuple[str, ...] | list[str] | None = None,
+    execution_timeout_seconds: int | None = None,
+    auto_remember: bool = True,
+    chat_fn: Callable[..., dict[str, Any]] | None = None,
+    chat_stream_fn: Callable[..., Any] | None = None,
+    approval_wait_seconds: int = 300,
+    resume: bool = False,
+    access_mode: str = "project-workspace",
+) -> Iterator[dict[str, Any]]:
+    """Journalled public stream around the existing model/tool runtime."""
+    from app.application.code_agent.run_journal import RunJournal, discover_capabilities
+
+    rid = run_id or uuid.uuid4().hex
+    initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
+    journal = RunJournal.load(rid) if resume else RunJournal(rid)
+    request = {
+        "user_message": user_message,
+        "project_root": str(project_root),
+        "working_dir": str(working_dir) if working_dir is not None else None,
+        "model": model,
+        "agent_id": agent_id,
+        "max_steps": int(max_steps),
+        "conversation_history": conversation_history or [],
+        "num_ctx": int(num_ctx),
+        "base_tools": list(initial_tools),
+        "execution_timeout_seconds": execution_timeout_seconds,
+        "auto_remember": bool(auto_remember),
+        "access_mode": access_mode,
+    }
+    terminal = False
+    try:
+        if resume:
+            journal.resume()
+            resume_event = {
+                "type": "run_resumed",
+                "run_id": rid,
+                "from_step": int(journal.state.get("last_successful_step") or 0),
+            }
+            journal.append_event(resume_event)
+            yield resume_event
+        else:
+            capabilities = discover_capabilities(model=model, tools=list(initial_tools))
+            journal.start(request, capabilities)
+            for missing in capabilities.get("missing", []):
+                journal.append_event({
+                    "type": "missing_capability",
+                    "capability": missing,
+                })
+
+        def audit_sink(payload: dict[str, Any]) -> None:
+            journal.append_event({"type": "compaction_audit", **payload})
+
+        for raw_event in _stream_code_agent_core(
+            user_message=user_message,
+            project_root=project_root,
+            working_dir=working_dir,
+            model=model,
+            agent_id=agent_id,
+            max_steps=max_steps,
+            conversation_history=conversation_history,
+            run_id=rid,
+            num_ctx=num_ctx,
+            base_tools=base_tools,
+            execution_timeout_seconds=execution_timeout_seconds,
+            auto_remember=auto_remember,
+            chat_fn=chat_fn,
+            chat_stream_fn=chat_stream_fn,
+            approval_wait_seconds=approval_wait_seconds,
+            compaction_audit_sink=audit_sink,
+        ):
+            event = dict(raw_event)
+            event.setdefault("run_id", rid)
+            if resume and event.get("type") == "run_started":
+                continue
+            if event.get("type") == "done":
+                event["resumable"] = bool(
+                    event.get("partial")
+                    or event.get("stop_reason") in {"timeout", "error", "context_limit"}
+                )
+                terminal = True
+            if event.get("type") == "tool_started":
+                journal.append_event({
+                    "type": "tool_decision",
+                    "step": event.get("step"),
+                    "tool": event.get("tool"),
+                    "reason": "selected by routed code model",
+                })
+                if event.get("tool") == "run_bash":
+                    journal.append_event({
+                        "type": "command_started",
+                        "step": event.get("step"),
+                        "command": (event.get("arguments") or {}).get("command"),
+                    })
+            if event.get("type") in {"tool_started", "tool_call"}:
+                journal.append_command(event)
+            journal.append_event(event)
+            if event.get("type") == "tool_call":
+                result_text = str(event.get("result") or "")
+                tool_ok = bool(event.get("ok", not result_text.lower().startswith("error")))
+                journal.append_event({
+                    "type": "tool_completed" if tool_ok else "tool_failed",
+                    "step": event.get("step"),
+                    "tool": event.get("tool"),
+                    "ok": tool_ok,
+                })
+                if event.get("tool") == "run_bash":
+                    journal.append_event({
+                        "type": "command_output_tail",
+                        "step": event.get("step"),
+                        "output": result_text[-4000:],
+                        "ok": tool_ok,
+                    })
+                if event.get("touched_path"):
+                    journal.append_event({
+                        "type": "file_changed",
+                        "step": event.get("step"),
+                        "path": event.get("touched_path"),
+                        "action": event.get("diff_action"),
+                    })
+                if event.get("tool") in {"web_search", "web_fetch"}:
+                    journal.append_event({
+                        "type": "web_source",
+                        "step": event.get("step"),
+                        "tool": event.get("tool"),
+                        "query": (event.get("arguments") or {}).get("query"),
+                        "url": (event.get("arguments") or {}).get("url"),
+                        "checked_at": time.time(),
+                    })
+            elif event.get("type") == "usage":
+                journal.append_event({
+                    "type": "model_call",
+                    "step": event.get("step"),
+                    "model": model,
+                    "prompt_tokens": event.get("prompt_tokens"),
+                    "completion_tokens": event.get("completion_tokens"),
+                    "tokens_per_second": event.get("tokens_per_second"),
+                })
+            elif event.get("type") == "done":
+                journal.append_event({
+                    "type": "run_completed" if event.get("ok") else "run_failed",
+                    "steps": event.get("steps"),
+                    "stop_reason": event.get("stop_reason"),
+                    "resumable": event.get("resumable"),
+                })
+            yield event
+    except Exception as exc:
+        logger.exception("code-agent run journal failed for %s", rid)
+        event = {
+            "type": "done",
+            "run_id": rid,
+            "ok": False,
+            "steps": int(journal.state.get("last_successful_step") or 0),
+            "stop_reason": "error",
+            "error": str(exc),
+            "resumable": True,
+        }
+        try:
+            journal.append_event(event)
+        except Exception:
+            logger.exception("failed to persist terminal event for %s", rid)
+        terminal = True
+        yield event
+    finally:
+        journal.finish(interrupted=not terminal)
 
 
 def run_code_agent(
@@ -1200,6 +1473,7 @@ def run_code_agent(
     agent_id: str = "code-agent",
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
+    run_id: str | None = None,
     num_ctx: int = DEFAULT_NUM_CTX,
     base_tools: tuple[str, ...] | list[str] | None = None,
     execution_timeout_seconds: int | None = None,
@@ -1207,6 +1481,7 @@ def run_code_agent(
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 0,
+    access_mode: str = "project-workspace",
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.
@@ -1217,6 +1492,7 @@ def run_code_agent(
     ok = False
     stop_reason = "error"
     error: str | None = None
+    partial = False
     steps = 0
 
     for event in stream_code_agent(
@@ -1227,6 +1503,7 @@ def run_code_agent(
         agent_id=agent_id,
         max_steps=max_steps,
         conversation_history=conversation_history,
+        run_id=run_id,
         num_ctx=num_ctx,
         base_tools=base_tools,
         execution_timeout_seconds=execution_timeout_seconds,
@@ -1234,6 +1511,7 @@ def run_code_agent(
         chat_fn=chat_fn,
         chat_stream_fn=chat_stream_fn,
         approval_wait_seconds=approval_wait_seconds,
+        access_mode=access_mode,
     ):
         et = event.get("type")
         if et == "tool_call":
@@ -1248,6 +1526,7 @@ def run_code_agent(
             response_text = event.get("text", "")
         elif et == "done":
             ok = bool(event.get("ok"))
+            partial = bool(event.get("partial"))
             stop_reason = str(event.get("stop_reason", "error"))
             error = event.get("error")
             steps = int(event.get("steps", 0))
@@ -1259,6 +1538,7 @@ def run_code_agent(
         "tool_calls": tool_calls_log,
         "stop_reason": stop_reason,
         "error": error,
+        "partial": partial,
     }
 
 
