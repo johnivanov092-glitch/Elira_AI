@@ -37,6 +37,18 @@ then repaired in one bounded pass. This section supersedes stale evidence below.
   live server limit; local/example configuration was corrected to 32768.
 - Runtime scratch (`.agent`, `Task_Agent.txt`, `data/agent_workspace`, local SSH
   ACL) is excluded from Git. `start-claude-full.ps1` remains local and ignored.
+- Screenshot regressions are covered: `max_steps` is a controlled partial
+  result rather than a false trailing error; critical context is compacted or
+  blocked before the provider call; Windows command semantics are explicit.
+- Code-agent runs now journal through the existing runtime to
+  `.agent/runs/<run_id>` (`state.json`, `events.jsonl`, command log and health).
+  Writes are atomic/bounded/redacted; configured capabilities are recorded and
+  missing capabilities are explicit.
+- Timeout/error/context-limit/partial runs expose a real resume protocol at
+  `POST /api/code-agent/runs/{run_id}/resume`. The existing transcript renders a
+  compact inline `Продолжить` action without changing workspace geometry.
+- Test DBs and agent journals are isolated from live workstation data for the
+  complete suite. Small explicit context windows use proportional reserves.
 - Recovery bundle before history cleanup:
   `D:\AIWork\Elira_AI-pre-cleanup-2026-06-21.bundle`.
 
@@ -211,6 +223,11 @@ Append results; do not rewrite history.
 | 2026-06-21 | Closeout | `backend\.venv\Scripts\python.exe -m pytest -q` | PASS: 2975 tests, 11 subtests |
 | 2026-06-21 | Closeout | live main/embed/OCR/chat/code-agent probes | PASS; effective main context `32768` |
 | 2026-06-21 | Closeout | in-app browser, `1442 × 992` | PASS: approved layout preserved, no overflow or console errors |
+| 2026-06-21 | Runtime recovery | `backend\.venv\Scripts\python.exe backend\scripts\smoke_code_agent_runtime.py ...` | PASS: state/events/commands/health, ToolExecutor `git status`, usage and completion recorded |
+| 2026-06-21 | Runtime recovery | `npm --prefix frontend run typecheck` | PASS |
+| 2026-06-21 | Runtime recovery | `npm --prefix frontend run build` | PASS, 1791 modules |
+| 2026-06-21 | Runtime recovery | `backend\.venv\Scripts\python.exe -m pytest -q` | PASS: 2982 tests, 11 subtests |
+| 2026-06-21 | Runtime recovery | in-app browser, `1442 × 992`, persisted partial turn | PASS: one inline resume action, no overflow; malformed saved usage no longer crashes Composer |
 
 ## Handoff protocol
 

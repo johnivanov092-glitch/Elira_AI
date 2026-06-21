@@ -11,11 +11,16 @@ ROOT = Path(__file__).resolve().parents[3]
 BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
+# The endpoint smoke lives at the repo root (scripts/smoke_agent_endpoints.py),
+# not under backend/. Put the repo root on sys.path so `scripts.*` resolves.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from app.application.code_agent.agent_loop import _truncate_for_llm, run_code_agent, stream_code_agent
 from app.application.code_agent.inline_tool_calls import _contains_tool_trace, _extract_inline_tool_calls
 from app.application.code_agent.tools import tool_recall
 from app.application.context.timeouts import timeout_for_task
+from app.application.context.usage import get_context_usage
 from app.application.tool_providers import ToolRegistry
 from app.infrastructure.llm.openai_compatible import _http_error_message, _normalize_messages_for_request, chat_completion
 from scripts.smoke_agent_endpoints import Check, _run as run_endpoint_check
@@ -59,6 +64,40 @@ class AgentFailureRegressionTest(unittest.TestCase):
                 chat_completion(model="local-model", messages=[{"role": "user", "content": "X" * 5000}], options={"num_ctx": 1024})
             post.assert_not_called()
 
+    def test_agent_reduces_critical_recent_history_before_model_request(self) -> None:
+        captured: dict[str, object] = {}
+
+        def bounded_chat(**kwargs):
+            if kwargs.get("tools"):
+                captured["messages"] = kwargs["messages"]
+                return {"message": {"content": "done", "tool_calls": []}}
+            return {"message": {"content": "summary", "tool_calls": []}}
+
+        history = [
+            {"role": "user" if index % 2 == 0 else "assistant", "content": str(index) + "X" * 12_000}
+            for index in range(8)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_code_agent(
+                user_message="finish safely",
+                project_root=tmp,
+                model="test-model",
+                num_ctx=32_768,
+                conversation_history=history,
+                chat_fn=bounded_chat,
+            )
+
+        self.assertTrue(result["ok"], result.get("error"))
+        usage = get_context_usage(
+            captured["messages"],  # type: ignore[arg-type]
+            ctx_size=32_768,
+            reserved_output_tokens=4096,
+            reserved_system_tokens=4096,
+            safety_margin_tokens=2048,
+        )
+        self.assertLessEqual(usage["current_tokens"], 22_528)
+        self.assertLess(usage["percent"], 95.0)
+
     def test_404_error_names_service_endpoint_and_path(self) -> None:
         response = Mock(status_code=404, text="File Not Found", reason="Not Found")
         exc = __import__("requests").HTTPError(response=response)
@@ -83,6 +122,46 @@ class AgentFailureRegressionTest(unittest.TestCase):
             result = run_code_agent(user_message="inspect", project_root=tmp, model="test-model", max_steps=10, chat_fn=looping_chat)
         self.assertEqual(result["stop_reason"], "loop_guard")
         self.assertTrue(result["response"])
+
+    def test_max_steps_wrap_up_is_a_controlled_partial_result(self) -> None:
+        calls = 0
+
+        def bounded_chat(**kwargs):
+            nonlocal calls
+            if not kwargs.get("tools"):
+                return {
+                    "message": {
+                        "content": "PARTIAL RESULT\nСделано: анализ.\nНе сделано: правка.",
+                        "tool_calls": [],
+                    }
+                }
+            calls += 1
+            return {
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "glob",
+                            "arguments": {"pattern": f"step-{calls}-*"},
+                        }
+                    }],
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_code_agent(
+                user_message="inspect",
+                project_root=tmp,
+                model="test-model",
+                max_steps=2,
+                chat_fn=bounded_chat,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stop_reason"], "max_steps")
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["partial"])
+        self.assertIn("PARTIAL RESULT", result["response"])
 
     def test_long_llm_call_emits_heartbeat(self) -> None:
         def slow_chat(**kwargs):

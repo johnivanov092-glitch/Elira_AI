@@ -202,7 +202,9 @@ class AgentLoopTest(unittest.TestCase):
             chat_fn=looping_chat,
         )
 
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["partial"])
+        self.assertIsNone(result["error"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertEqual(result["steps"], 3)
         # F2: wrap-up fallback (model kept tool-calling, no summary text) —
@@ -231,7 +233,8 @@ class AgentLoopTest(unittest.TestCase):
             chat_fn=lambda **kw: next(responses),
         )
 
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["partial"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertEqual(result["response"], "Итог: посмотрел файлы, не успел правки.")
 
