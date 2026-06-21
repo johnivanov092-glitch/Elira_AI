@@ -25,15 +25,22 @@ def get_active_context_profile(model: str = "local-model", *, ctx_size: int | No
     source = "effective_limit" if _positive_int(ctx_size) else "config"
     if ctx_size is None:
         try:
-            for item in list_models():
-                name = str(item.get("name") or item.get("model") or "").strip()
-                if name != model:
-                    continue
-                discovered = _positive_int(item.get("context_window") or item.get("n_ctx"))
+            models = list_models()
+            # Prefer an exact name match; fall back to the first served model when
+            # the caller passes an alias the server doesn't echo back (e.g. "auto",
+            # the frontend default). llama.cpp serves a single model, so the first
+            # entry's real n_ctx is authoritative — this is how the live 32k window
+            # is adopted instead of the 128k config default.
+            exact = next(
+                (m for m in models if str(m.get("name") or m.get("model") or "").strip() == model),
+                None,
+            )
+            chosen = exact or (models[0] if models else None)
+            if chosen is not None:
+                discovered = _positive_int(chosen.get("context_window") or chosen.get("n_ctx"))
                 if discovered:
                     context_window = discovered
                     source = "server"
-                break
         except Exception:
             source = "config_fallback"
 

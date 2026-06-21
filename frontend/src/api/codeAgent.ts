@@ -673,6 +673,26 @@ export async function getMcpServerTools(serverId: string): Promise<{ server_id: 
   return request(`/api/code-agent/mcp/tools?${qs}`);
 }
 
+/** Empty-history context usage seeded with the live ctx_size — lets the
+ *  composer show the window meter (0%) before the first model turn. */
+export async function fetchContextProfile(
+  model?: string,
+  numCtx?: number,
+): Promise<ContextUsage | null> {
+  const params = new URLSearchParams();
+  if (model) params.set("model", model);
+  if (numCtx && numCtx > 0) params.set("num_ctx", String(numCtx));
+  const qs = params.toString();
+  try {
+    const res = await request<{ ok: boolean; context?: ContextUsage }>(
+      `/api/code-agent/context-profile${qs ? `?${qs}` : ""}`,
+    );
+    return res.context ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Coarse token estimate. Russian/Cyrillic is ~3 chars/token; ASCII/code
  *  is closer to 4. We compute per-character class to be reasonable. */
 export function estimateTokens(text: string): number {

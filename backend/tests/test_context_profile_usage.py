@@ -26,6 +26,19 @@ class ContextProfileTest(unittest.TestCase):
         self.assertEqual(profile["ctx_size"], 131072)
         self.assertEqual(profile["source"], "server")
 
+    def test_auto_alias_adopts_served_window(self) -> None:
+        # The frontend default model is "auto", which the server never echoes
+        # back. The profile must still adopt the single served model's real
+        # n_ctx instead of falling through to the (larger) config default.
+        cfg = SimpleNamespace(context_window=131072, model="local-model", base_url="http://server/v1")
+        with patch("app.infrastructure.llm.openai_compatible.local_llm_config", return_value=cfg), patch(
+            "app.infrastructure.llm.openai_compatible.list_models",
+            return_value=[{"name": "local-model", "n_ctx": 32768}],
+        ):
+            profile = get_active_context_profile("auto")
+        self.assertEqual(profile["ctx_size"], 32768)
+        self.assertEqual(profile["source"], "server")
+
     def test_effective_limit_avoids_second_server_lookup(self) -> None:
         cfg = SimpleNamespace(context_window=131072, model="local-model", base_url="http://server/v1")
         with patch("app.infrastructure.llm.openai_compatible.local_llm_config", return_value=cfg), patch(

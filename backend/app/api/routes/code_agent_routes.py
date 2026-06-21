@@ -321,6 +321,26 @@ def cancel(payload: CodeAgentCancelRequest) -> dict[str, Any]:
     return {"ok": True, "found": found, "run_id": payload.run_id}
 
 
+@router.get("/context-profile")
+def read_context_profile(model: str = DEFAULT_MODEL, num_ctx: Optional[int] = None) -> dict[str, Any]:
+    """Initial (empty-history) context usage so the composer can show the
+    window meter before the first model turn. The same get_context_usage path
+    the agent loop emits per-step, seeded with the live ctx_size profile."""
+    from app.application.context.profile import get_active_context_profile
+    from app.application.context.usage import get_context_usage
+
+    ctx_size = num_ctx if (num_ctx and num_ctx > 0) else None
+    profile = get_active_context_profile(model, ctx_size=ctx_size)
+    usage = get_context_usage(
+        [],
+        ctx_size=int(profile["ctx_size"]),
+        reserved_output_tokens=int(profile["reserved_output_tokens"]),
+        reserved_system_tokens=int(profile["reserved_system_tokens"]),
+        safety_margin_tokens=int(profile["safety_margin_tokens"]),
+    )
+    return {"ok": True, "context": usage, "source": profile.get("source")}
+
+
 @router.get("/favicon")
 def favicon(url: str) -> Response:
     favicon_url = _favicon_url_for_source(url)

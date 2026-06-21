@@ -1,6 +1,7 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelCodeAgent,
+  fetchContextProfile,
   resumeCodeAgent,
   resolveApproval,
   streamCodeAgent,
@@ -27,6 +28,20 @@ export function useAgentRun(projectRoot: string, model: string) {
   const abortRef = useRef<AbortController | null>(null);
   const autoApproveRef = useRef(false);
   const runIdRef = useRef<string | null>(null);
+  // Tracks whether a live usage/compaction event has set the real meter, so the
+  // initial empty-history seed never clobbers it (events are always authoritative).
+  const usageSeededRef = useRef(false);
+
+  // Seed the composer's context meter at 0% before the first turn, using the live
+  // ctx_size from the backend. Re-seeds on model change while still unseeded.
+  useEffect(() => {
+    let cancelled = false;
+    void fetchContextProfile(model).then((seed) => {
+      if (cancelled || !seed || usageSeededRef.current) return;
+      setContextUsage(seed);
+    });
+    return () => { cancelled = true; };
+  }, [model]);
 
   const wireStream = useCallback((
     agentId: string,
@@ -67,10 +82,10 @@ export function useAgentRun(projectRoot: string, model: string) {
           } else patch((a) => ({ ...a, pendingApproval: { approvalId: e.approval_id, tool: e.tool, arguments: e.arguments } }));
         } else if (e.type === "approval_wait") patch((a) => (a.pendingApproval ? { ...a, pendingApproval: { ...a.pendingApproval, waitedS: e.waited_s } } : a));
         else if (e.type === "context_compacted") {
-          if (e.context) setContextUsage(e.context);
+          if (e.context) { usageSeededRef.current = true; setContextUsage(e.context); }
           const entry: TaskLedgerEntry = { timestamp: Date.now(), type: "compression", action: `step ${e.step}`, result: "completed" };
           setTaskLedger((items) => [...items, entry].slice(-200));
-        } else if (e.type === "usage" && e.context) setContextUsage(e.context);
+        } else if (e.type === "usage" && e.context) { usageSeededRef.current = true; setContextUsage(e.context); }
         else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text }));
         else if (e.type === "done") {
           const entry: TaskLedgerEntry = { timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" };
@@ -135,11 +150,17 @@ export function useAgentRun(projectRoot: string, model: string) {
     abortRef.current = null;
     autoApproveRef.current = false;
     setAutoApprove(false);
+    // A restored session's persisted usage is authoritative; a fresh chat (null)
+    // clears the flag so the seed effect refills the 0% meter from the backend.
+    usageSeededRef.current = usage != null;
     setContextUsage(usage);
     setTaskLedger(ledger);
     setRunning(false);
     setTurns(next);
-  }, []);
+    if (usage == null) void fetchContextProfile(model).then((seed) => {
+      if (seed && !usageSeededRef.current) setContextUsage(seed);
+    });
+  }, [model]);
 
   const addFiles = useCallback((files: File[]) => {
     if (files.length === 0) return;
