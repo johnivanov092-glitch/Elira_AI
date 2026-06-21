@@ -38,9 +38,17 @@ def get_active_context_profile(model: str = "local-model", *, ctx_size: int | No
             source = "config_fallback"
 
     context_window = min(MAX_CONTEXT_WINDOW, max(1024, context_window))
-    reserved_output = 8192 if context_window > DEFAULT_CONTEXT_WINDOW else 4096
-    reserved_system = 4096
-    safety_margin = max(2048, context_window // 64)
+    if context_window < 16_384:
+        # Small explicit windows still need room for prompt tokens; using the
+        # large-window reserves would make the request fail before the chat
+        # function is even called.
+        reserved_output = max(512, context_window // 8)
+        reserved_system = max(512, context_window // 8)
+        safety_margin = max(256, context_window // 16)
+    else:
+        reserved_output = 8192 if context_window > DEFAULT_CONTEXT_WINDOW else 4096
+        reserved_system = 4096
+        safety_margin = max(2048, context_window // 64)
     if context_window >= MAX_CONTEXT_WINDOW:
         mode = "256k-stress"
     elif context_window >= 196_608:
