@@ -45,8 +45,8 @@ def _create_root_elira_state(path: Path) -> None:
             """
             CREATE TABLE settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                ollama_context INTEGER NOT NULL DEFAULT 8192,
-                default_model TEXT NOT NULL DEFAULT 'gemma3:4b',
+                context_window INTEGER NOT NULL DEFAULT 8192,
+                default_model TEXT NOT NULL DEFAULT 'local-model',
                 agent_profile TEXT NOT NULL DEFAULT 'Универсальный'
             )
             """
@@ -59,8 +59,8 @@ def _create_root_elira_state(path: Path) -> None:
         )
         conn.execute(
             """
-            INSERT INTO settings (id, ollama_context, default_model, agent_profile)
-            VALUES (1, 8192, 'gemma3:4b', 'Универсальный')
+            INSERT INTO settings (id, context_window, default_model, agent_profile)
+            VALUES (1, 8192, 'local-model', 'Универсальный')
             """
         )
         conn.commit()

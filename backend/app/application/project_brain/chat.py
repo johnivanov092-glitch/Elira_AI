@@ -15,9 +15,9 @@ from app.application.project_brain.files import (
     read_text_file,
     resolve_project_file,
 )
-from app.application.project_brain.ollama import (
-    call_ollama_json,
-    fetch_ollama_tags,
+from app.application.project_brain.llm import (
+    call_local_model_json,
+    fetch_local_model_tags,
     pick_model,
 )
 from app.application.project_brain.state import ATTACHMENT_INDEX, CHAT_SESSIONS
@@ -186,7 +186,7 @@ def send_chat_message(
     attachment_ids: list[str],
     selected_project_paths: list[str],
 ) -> dict[str, Any]:
-    tags = fetch_ollama_tags()
+    tags = fetch_local_model_tags()
     model = pick_model(model_name, tags)
 
     attachments = resolve_attachments(attachment_ids)
@@ -234,7 +234,7 @@ def send_chat_message(
                 "updated_content must contain the full replacement file content for target_path. "
                 "Do not return markdown."
             )
-            result = call_ollama_json(
+            result = call_local_model_json(
                 model,
                 system_prompt,
                 build_code_prompt(
@@ -291,7 +291,7 @@ def send_chat_message(
         "You are Elira chat-first local agent. Return JSON only with keys: answer, plan, sources_note, suggested_agent, image_prompt. "
         "For plan mode, plan should be a list of short steps. For image requests, answer briefly and fill image_prompt."
     )
-    result = call_ollama_json(
+    result = call_local_model_json(
         model,
         system_prompt,
         build_chat_prompt(message, route["mode"], attachments, project_refs, web_results),
@@ -346,16 +346,16 @@ def run_local_agent_plan(
     selected_content: str,
     model_name: str | None,
 ) -> dict[str, Any]:
-    tags = fetch_ollama_tags()
+    tags = fetch_local_model_tags()
     model = pick_model(model_name, tags)
     system_prompt = "Return JSON only with keys: summary, steps, risks, selected_path. steps must be a list of short strings."
     user_prompt = (
         f"TASK:\n{goal}\n\nFILE:\n{selected_path}\n\nCONTENT:\n{selected_content[:30000]}"
     )
-    result = call_ollama_json(model, system_prompt, user_prompt)
+    result = call_local_model_json(model, system_prompt, user_prompt)
     return {
         "status": "ok",
-        "provider": "ollama",
+        "provider": "llama_server",
         "model": model,
         "summary": str(result.get("summary") or ""),
         "steps": result.get("steps") if isinstance(result.get("steps"), list) else [],
@@ -373,21 +373,21 @@ def run_local_agent(
     project_files: list[str],
     mode: str,
 ) -> dict[str, Any]:
-    tags = fetch_ollama_tags()
+    tags = fetch_local_model_tags()
     model = pick_model(model_name, tags)
     refs = read_reference_context(project_files, selected_path=selected_path)
     system_prompt = (
         "You are Elira local coder agent. Return JSON only with keys: answer, plan, target_path, updated_content, notes. "
         "updated_content must be the full file content."
     )
-    result = call_ollama_json(
+    result = call_local_model_json(
         model,
         system_prompt,
         build_code_prompt(goal, selected_path, selected_content, refs),
     )
     return {
         "status": "ok",
-        "provider": "ollama",
+        "provider": "llama_server",
         "model": model,
         "mode": mode,
         "answer": str(result.get("answer") or ""),

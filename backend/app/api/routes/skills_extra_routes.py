@@ -86,7 +86,7 @@ def api_regex(p: RegexRequest):
 class TranslateRequest(BaseModel):
     text: str
     target_lang: str = "english"
-    model: str = "qwen3:8b"
+    model: str = "local-model"
 
 @router.post("/translate")
 def api_translate(p: TranslateRequest):

@@ -228,7 +228,7 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
                 return {"ok": False, "error": "Нет промпта"}
             from app.application.chat.runtime import run_agent
             result = run_agent(
-                model_name=model or "gemma3:4b",
+                model_name=model or "local-model",
                 profile_name=task_data.get("profile", "Универсальный"),
                 user_input=prompt,
                 use_memory=False,

@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+/* Explicit source glob so utilities are generated from the app's .tsx files
+   (auto-detection skips paths matched by the repo .gitignore). Relative to
+   this file (src/). */
+@source "./**/*.{ts,tsx}";
+
+/* Elira unified-workspace design tokens (v4 mockup palette: one calm accent,
+   neutral surfaces). Exposed as Tailwind color/font utilities, e.g. bg-bg,
+   bg-side, text-tx, text-t2, border-line, bg-ac, text-ac, font-mono. */
+@theme {
+  --color-bg: #16181d;
+  --color-side: #101216;
+  --color-card: #1e1e23;
+  --color-surface: rgba(255, 255, 255, 0.04);
+  --color-hover: rgba(255, 255, 255, 0.07);
+  --color-line: rgba(255, 255, 255, 0.08);
+  --color-tx: #e7e7ec;
+  --color-t2: #9a9aa6;
+  --color-mut: #6a6a76;
+  --color-ac: #8b93f8;
+  --color-acs: rgba(139, 147, 248, 0.15);
+  --color-acl: rgba(139, 147, 248, 0.5);
+
+  --font-sans: Inter, ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+/* Cursor theme (opt-in via data-theme="cursor"); a flat, neutral near-black
+   dark styled after the Cursor editor — #1e1e1e editor / #181818 chrome with a
+   Cursor-blue accent. Overrides the default (indigo) dark @theme tokens. */
+:root[data-theme="cursor"] {
+  color-scheme: dark;
+  --color-bg: #1e1e1e;
+  --color-side: #181818;
+  --color-card: #202020;
+  --color-surface: rgba(255, 255, 255, 0.035);
+  --color-hover: rgba(255, 255, 255, 0.065);
+  --color-line: rgba(255, 255, 255, 0.09);
+  --color-tx: #d6d6d6;
+  --color-t2: #8c8c94;
+  --color-mut: #6a6a72;
+  --color-ac: #4a9eff;
+  --color-acs: rgba(74, 158, 255, 0.14);
+  --color-acl: rgba(74, 158, 255, 0.45);
+}

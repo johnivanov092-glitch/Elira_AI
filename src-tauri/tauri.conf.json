@@ -1,47 +1,18 @@
 {
-  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
-  "package": {
-    "productName": "Elira AI",
-    "version": "0.2.0"
-  },
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Elira AI",
+  "version": "0.2.0",
+  "identifier": "com.elira.ai",
   "build": {
     "beforeDevCommand": "npm --prefix frontend run dev",
     "beforeBuildCommand": "npm --prefix frontend run build",
-    "devPath": "http://127.0.0.1:5173",
-    "distDir": "../frontend/dist"
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../frontend/dist"
   },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "http": {
-        "all": true,
-        "request": true,
-        "scope": ["http://127.0.0.1:8000/**", "http://localhost:8000/**"]
-      },
-      "shell": {
-        "all": false,
-        "open": true
-      },
-      "dialog": {
-        "all": false,
-        "open": true,
-        "save": false
-      }
-    },
-    "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:8000 ws://localhost:8000; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:"
-    },
-    "bundle": {
-      "active": true,
-      "targets": ["nsis"],
-      "identifier": "com.elira.ai",
-      "icon": ["icons/icon.ico"],
-      "windows": {
-        "digestAlgorithm": "sha256"
-      }
-    },
+  "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Elira AI",
         "width": 1440,
         "height": 960,
@@ -49,9 +20,20 @@
         "center": true,
         "decorations": true,
         "theme": "Dark",
-        "fileDropEnabled": false
+        "dragDropEnabled": false
       }
-    ]
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' http://127.0.0.1:8000 http://localhost:8000 ws://127.0.0.1:8000 ws://localhost:8000; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:8000 http://localhost:8000",
+      "dangerousDisableAssetCspModification": ["style-src"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "digestAlgorithm": "sha256"
+    }
   }
 }
-

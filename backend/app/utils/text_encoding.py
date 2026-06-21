@@ -26,6 +26,16 @@ MOJIBAKE_MARKERS = (
         "\u0432" + tail
         for tail in CP1251_E2_TAILS
     ),
+    # 4-byte UTF-8 (lead 0xF0) decodes to cp1251 "\u0440" + tail. Most
+    # "\u0440"+tail bigrams occur in legitimate Russian text ("\u0440\u0451"
+    # in "\u0442\u0440\u0451\u0445", "\u0440\u00bb" before a closing quote),
+    # so only tails impossible after "\u0440" are listed.
+    "\u0440\u045f",  # 0xF0 0x9F: U+1F000-U+1FFFF (emoji)
+    "\u0440\u045c",  # 0xF0 0x9D: U+1D000-U+1D7FF (math/musical symbols)
+    # Byte 0x98 has no cp1251 mapping; Windows best-fit decoding emits the
+    # invisible control char U+0098 instead of raising (seen when corrupting
+    # any char whose UTF-8 bytes contain 0x98, e.g. "\u2605" = E2 98 85).
+    "\u0098",
     "\u00d0",
     "\u00d1",
     "\u00e2\u20ac",

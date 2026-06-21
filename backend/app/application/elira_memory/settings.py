@@ -12,12 +12,12 @@ from app.infrastructure.db.connection import connect_sqlite
 DB_PATH = sqlite_data_file("elira_state.db", key_tables=("chats", "messages"))
 
 DEFAULT_ROUTE_MAP = {
-    "code": ["qwen2.5-coder:7b", "qwen3:8b", "gemma3:4b"],
-    "project": ["qwen2.5-coder:7b", "qwen3:8b", "gemma3:4b"],
-    "research": ["qwen3:8b", "mistral-nemo:latest", "gemma3:4b"],
-    "chat": ["gemma3:4b", "qwen3:8b"],
-    "code_agent": ["qwen2.5-coder:7b", "qwen3:8b"],
-    "multi_agent": ["qwen3:8b", "qwen2.5-coder:7b"],
+    "code": ["local-model"],
+    "project": ["local-model"],
+    "research": ["local-model"],
+    "chat": ["local-model"],
+    "code_agent": ["local-model"],
+    "multi_agent": ["local-model"],
     "image": ["__skill_image_gen"],  # special: handled by image skill, not LLM model
 }
 
@@ -92,6 +92,9 @@ def _ensure_settings_columns():
                 (json.dumps(DEFAULT_ROUTE_MAP),),
             )
             conn.commit()
+        if "context_window" not in columns:
+            conn.execute("ALTER TABLE settings ADD COLUMN context_window INTEGER NOT NULL DEFAULT 131072")
+            conn.commit()
         if "orchestration_enabled" not in columns:
             conn.execute("ALTER TABLE settings ADD COLUMN orchestration_enabled INTEGER NOT NULL DEFAULT 0")
             conn.commit()
@@ -109,7 +112,7 @@ def get_settings():
     try:
         row = conn.execute(
             """
-            SELECT ollama_context, default_model, agent_profile, route_model_map, orchestration_enabled
+            SELECT context_window, default_model, agent_profile, route_model_map, orchestration_enabled
             FROM settings
             WHERE id = 1
             """
@@ -119,8 +122,8 @@ def get_settings():
 
     if not row:
         return {
-            "ollama_context": 8192,
-            "default_model": "gemma3:4b",
+            "context_window": 131072,
+            "default_model": "local-model",
             "agent_profile": DEFAULT_PROFILE,
             "route_model_map": DEFAULT_ROUTE_MAP,
             "orchestration_enabled": False,
@@ -138,7 +141,7 @@ def get_settings():
     return result
 
 
-def save_settings(ollama_context, default_model, agent_profile, route_model_map=None, orchestration_enabled=False):
+def save_settings(context_window, default_model, agent_profile, route_model_map=None, orchestration_enabled=False):
     _ensure_settings_columns()
     payload = json.dumps(route_model_map if route_model_map else DEFAULT_ROUTE_MAP)
     conn = _connect()
@@ -146,15 +149,15 @@ def save_settings(ollama_context, default_model, agent_profile, route_model_map=
         conn.execute(
             """
             UPDATE settings
-            SET ollama_context = ?, default_model = ?, agent_profile = ?, route_model_map = ?, orchestration_enabled = ?
+            SET context_window = ?, default_model = ?, agent_profile = ?, route_model_map = ?, orchestration_enabled = ?
             WHERE id = 1
             """,
-            (int(ollama_context), default_model, agent_profile, payload, int(bool(orchestration_enabled))),
+            (int(context_window), default_model, agent_profile, payload, int(bool(orchestration_enabled))),
         )
         conn.commit()
         row = conn.execute(
             """
-            SELECT ollama_context, default_model, agent_profile, route_model_map, orchestration_enabled
+            SELECT context_window, default_model, agent_profile, route_model_map, orchestration_enabled
             FROM settings
             WHERE id = 1
             """

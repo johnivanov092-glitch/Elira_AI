@@ -24,6 +24,7 @@ def _init_db() -> None:
     monitoring_store.migrate_model_profiles_table(DB_PATH)
     monitoring_store.migrate_approval_args_sha256(DB_PATH)
     monitoring_store.migrate_agent_limits_columns(DB_PATH)
+    monitoring_store.migrate_default_runtime_limits(DB_PATH)
     monitoring_store.migrate_normalize_full_tool_allowlists(DB_PATH)
 
 

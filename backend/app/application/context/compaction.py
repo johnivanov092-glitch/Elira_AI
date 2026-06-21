@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import time
+import uuid
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,39 @@ SummarizeFn = Callable[..., dict[str, Any]]
 def _approx_tokens(messages: list[dict[str, Any]]) -> int:
     """Rough token estimate: chars / 4."""
     return len(json.dumps(messages, ensure_ascii=False)) // 4
+
+
+def _summary_hash(messages: list[dict[str, Any]]) -> str:
+    summaries = [_summary_body(message) for message in messages if _is_summary_message(message)]
+    raw = "\n\n".join(summaries).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _emit_audit(
+    sink: Callable[[dict[str, Any]], None] | None,
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
+    *,
+    protected_count: int,
+    trigger_reason: str,
+) -> None:
+    if sink is None:
+        return
+    tokens_before = _approx_tokens(before)
+    tokens_after = _approx_tokens(after)
+    sink({
+        "compression_id": uuid.uuid4().hex,
+        "timestamp": int(time.time() * 1000),
+        "tokens_before": tokens_before,
+        "tokens_after": tokens_after,
+        "compression_ratio": round(tokens_after / max(tokens_before, 1), 4),
+        "messages_before": len(before),
+        "messages_after": len(after),
+        "protected_count": protected_count,
+        "rolling_summary_before_hash": _summary_hash(before),
+        "rolling_summary_after_hash": _summary_hash(after),
+        "trigger_reason": trigger_reason,
+    })
 
 
 def _is_summary_message(message: dict[str, Any]) -> bool:
@@ -145,6 +181,9 @@ def maybe_compact(
     keep_pairs: int = _DEFAULT_KEEP_PAIRS,
     fallback_keep: int = _DEFAULT_FALLBACK_KEEP,
     prepare_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+    pinned_message_ids: set[str] | None = None,
+    audit_sink: Callable[[dict[str, Any]], None] | None = None,
+    trigger_reason: str = "threshold",
 ) -> tuple[list[dict[str, Any]], bool]:
     """Compact *messages* if they exceed *threshold* × *num_ctx* tokens.
 
@@ -186,17 +225,28 @@ def maybe_compact(
     previous_summaries = [_summary_body(m) for m in messages if _is_summary_message(m)]
     system_msgs = [m for m in messages if m.get("role") == "system" and not _is_summary_message(m)]
     non_system = [m for m in messages if m.get("role") != "system"]
+    pinned_ids = {str(value) for value in (pinned_message_ids or set())}
+    pinned = [
+        message for message in non_system
+        if str(message.get("_msg_id") or "") in pinned_ids
+    ]
+    compactable = [message for message in non_system if message not in pinned]
 
     keep_count = keep_pairs * 2  # keep_pairs pairs = keep_count messages
-    recent = non_system[-keep_count:] if len(non_system) > keep_count else non_system
-    to_summarize = non_system[:-keep_count] if len(non_system) > keep_count else []
+    recent = compactable[-keep_count:] if len(compactable) > keep_count else compactable
+    to_summarize = compactable[:-keep_count] if len(compactable) > keep_count else []
 
     if not to_summarize:
         # Nothing old enough to summarize; keep any rolling summary as one
         # capped message and truncate recent turns deterministically.
         summary = _merge_summary(previous_summaries, "")
         summary_msgs = [_make_summary_message(summary)] if summary else []
-        return system_msgs + summary_msgs + non_system[-fallback_keep:], True
+        result_messages = system_msgs + summary_msgs + pinned + compactable[-fallback_keep:]
+        _emit_audit(
+            audit_sink, messages, result_messages,
+            protected_count=len(pinned), trigger_reason=trigger_reason,
+        )
+        return result_messages, True
 
     try:
         summarize_messages = list(to_summarize)
@@ -226,7 +276,12 @@ def maybe_compact(
             len(to_summarize),
             len(recent),
         )
-        return system_msgs + [summary_msg] + recent, True
+        result_messages = system_msgs + [summary_msg] + pinned + recent
+        _emit_audit(
+            audit_sink, messages, result_messages,
+            protected_count=len(pinned), trigger_reason=trigger_reason,
+        )
+        return result_messages, True
 
     # Deterministic fallback: one structured summary + recent messages.
     logger.warning(
@@ -234,4 +289,9 @@ def maybe_compact(
         result.get("error", "unknown"),
     )
     fallback_msg = _make_summary_message(_deterministic_summary(previous_summaries, to_summarize))
-    return system_msgs + [fallback_msg] + non_system[-fallback_keep:], True
+    result_messages = system_msgs + [fallback_msg] + pinned + compactable[-fallback_keep:]
+    _emit_audit(
+        audit_sink, messages, result_messages,
+        protected_count=len(pinned), trigger_reason=trigger_reason,
+    )
+    return result_messages, True

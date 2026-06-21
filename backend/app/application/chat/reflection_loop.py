@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.application.chat.ollama_chat import run_chat
+from app.application.chat.local_chat import run_chat
 
 
 def run_reflection_loop(

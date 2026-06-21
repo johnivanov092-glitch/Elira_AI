@@ -18,7 +18,7 @@ from app.api.routes import chat as chat_routes  # noqa: E402
 class DirectLlmChatRouteTest(unittest.TestCase):
     def test_send_direct_llm_bypasses_orchestrated_agent(self) -> None:
         payload = chat_routes.ChatRequest(
-            model_name="gemma3:4b",
+            model_name="chat-model",
             profile_name="Универсальный",
             user_input="hello",
             history=[{"role": "user", "content": "hello"}],

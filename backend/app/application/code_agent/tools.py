@@ -1,5 +1,5 @@
 """Code-agent tools — sandboxed file & shell operations exposed to the LLM
-via Ollama function-calling.
+via OpenAI-compatible function-calling.
 
 Every tool receives a `project_root` (resolved Path) and refuses to touch any
 path that escapes it. This is the minimal viable tool set for a Claude
@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.application.projects.scope import project_scope_id
+# Static tool schemas extracted to .tool_schemas; re-exported so existing
+# importers (tool_providers.builtin, tests) keep importing build_tool_schemas
+# from tools unchanged.
+from app.application.code_agent.tool_schemas import build_tool_schemas  # noqa: F401
 
 
 _SHELL_TIMEOUT_MAX = 120
@@ -450,6 +454,56 @@ def tool_web_fetch(*, url: str, max_chars: int = 8000) -> dict[str, Any]:
     return {"text": f"[fetched: {cleaned_url}]\n\n{body}"}
 
 
+def _browser_render(url: str, wait_selector: str | None, limit: int) -> tuple[str, str, str]:
+    """Render a page with Playwright. Runs in a worker thread (see tool_browser):
+    the Playwright sync API must not be called from inside an asyncio loop."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        try:
+            page = browser.new_page()
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            if wait_selector:
+                try:
+                    page.wait_for_selector(wait_selector, timeout=8000)
+                except Exception:
+                    pass
+            return page.title(), page.url, (page.inner_text("body") or "")[:limit]
+        finally:
+            browser.close()
+
+
+def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000) -> dict[str, Any]:
+    """Open a URL in a real headless browser (Playwright/Chromium), render
+    JavaScript, and return the visible page text. Use when `web_fetch` is not
+    enough — pages that need JS to render, SPAs, or to verify how a page
+    actually looks/behaves.
+    """
+    cleaned_url = (url or "").strip()
+    if not cleaned_url:
+        return {"text": "ERROR: url is empty"}
+    if not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
+        return {"text": f"ERROR: url must start with http:// or https:// — got '{cleaned_url[:80]}'"}
+
+    from app.application.web.ssrf_guard import check_ssrf
+    reason = check_ssrf(cleaned_url)
+    if reason:
+        return {"text": f"ERROR: SSRF blocked — {reason}"}
+
+    limit = max(500, min(int(max_chars), 50000))
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            title, final_url, text = ex.submit(_browser_render, cleaned_url, wait_selector, limit).result(timeout=50)
+    except Exception as exc:
+        return {"text": f"ERROR: browser failed: {str(exc)[:300]}"}
+
+    text = (text or "").strip()
+    if not text:
+        return {"text": f"[browser: {final_url}] страница отрендерилась, но видимого текста нет"}
+    return {"text": f"[browser: {final_url}]\nTITLE: {title}\n\n{text}"}
+
+
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
     cleaned_command = (command or "").strip()
     if not cleaned_command:
@@ -466,6 +520,10 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             text=True,
             timeout=safe_timeout,
             cwd=str(project_root.resolve()),
+            # Close stdin: a shell tool must never block on input. Interactive
+            # prompts (ssh host-key/password, apt, etc.) get EOF and fail fast
+            # instead of hanging until the timeout. For real SSH use the ssh tool.
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return {"text": f"ERROR: command timed out after {safe_timeout}s"}
@@ -602,7 +660,7 @@ def tool_search(
     }
 
 
-# ─── tool registry exposed to Ollama ────────────────────────────────────────
+# ─── tool registry exposed to the local LLM provider ───────────────────────
 
 
 def _format_checklist_text(result: dict[str, Any]) -> str:
@@ -787,270 +845,6 @@ def tool_delegate_task(
     return output
 
 
-def build_tool_schemas() -> list[dict[str, Any]]:
-    """Ollama function-calling tool schemas."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Read a file from the project. Returns lines with line numbers.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Path relative to project root, or absolute inside it."},
-                        "offset": {"type": "integer", "description": "Starting line (0-based). Default 0."},
-                        "limit": {"type": "integer", "description": "Max lines to read. Default 2000."},
-                    },
-                    "required": ["path"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": "Create a new file or overwrite an existing one with the given content.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                    },
-                    "required": ["path", "content"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": "Replace the single occurrence of `old_string` with `new_string` in `path`. Errors if old_string is not unique.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "old_string": {"type": "string"},
-                        "new_string": {"type": "string"},
-                    },
-                    "required": ["path", "old_string", "new_string"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "glob",
-                "description": "Find files matching a glob pattern (e.g. '**/*.py').",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "grep",
-                "description": "Search file contents for a regex pattern. Returns 'file:line:match' lines.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": {"type": "string"},
-                        "path": {"type": "string", "description": "Directory or file to search. Default: project root."},
-                        "glob": {"type": "string", "description": "Glob filter for files. Default: '*'"},
-                    },
-                    "required": ["pattern"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "recall",
-                "description": (
-                    "Semantic search over the agent's RAG memory. Returns "
-                    "relevant code chunks (if the project was indexed) and "
-                    "summaries of prior agent runs. Use this before grep when "
-                    "looking for 'where is X implemented' or 'what did I do "
-                    "last time about Y'."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Natural-language search query."},
-                        "top_k": {"type": "integer", "description": "Max results (default 5)."},
-                        "min_score": {"type": "number", "description": "Cosine similarity threshold 0..1 (default 0.3)."},
-                    },
-                    "required": ["query"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "todo_update",
-                "description": (
-                    "Read or update the durable checklist for this run. "
-                    "Use items to create checklist entries and updates to "
-                    "change status/blocker. Valid statuses: pending, "
-                    "in_progress, completed, blocked."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "items": {
-                            "type": "array",
-                            "items": {"type": "object"},
-                            "description": "New or replacement checklist items with text/status/position/blocker.",
-                        },
-                        "updates": {
-                            "type": "array",
-                            "items": {"type": "object"},
-                            "description": "Updates for existing checklist items; each update needs id.",
-                        },
-                    },
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "delegate_task",
-                "description": (
-                    "Delegate a bounded read-only subtask to a child agent. "
-                    "Roles: explore, plan, verify. The child gets its own "
-                    "run_id, max steps/context/time, cannot write files, "
-                    "and cannot delegate again."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "role": {
-                            "type": "string",
-                            "description": "One of: explore, plan, verify.",
-                        },
-                        "task": {
-                            "type": "string",
-                            "description": "Concrete read-only subtask to perform.",
-                        },
-                        "max_steps": {
-                            "type": "integer",
-                            "description": "Optional child step cap. Max 6.",
-                        },
-                        "num_ctx": {
-                            "type": "integer",
-                            "description": "Optional child context cap. Max 8192.",
-                        },
-                    },
-                    "required": ["task"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "run_bash",
-                "description": "Run a shell command inside the project root. Returns stdout, stderr, and exit code.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string"},
-                        "timeout": {"type": "integer", "description": "Seconds. Default 60."},
-                    },
-                    "required": ["command"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": (
-                    "Search the web for current information. Returns ranked "
-                    "list of {title, url, snippet}. Use this BEFORE answering "
-                    "any question that depends on facts you don't already "
-                    "know — current events, library versions, niche docs. "
-                    "Call `web_fetch` after on URLs that look relevant."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Search query."},
-                        "top_k": {"type": "integer", "description": "Max results (default 5, max 10)."},
-                    },
-                    "required": ["query"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "web_fetch",
-                "description": (
-                    "Fetch one URL and extract the main readable text "
-                    "(navigation, ads, scripts stripped). Use AFTER "
-                    "`web_search` to actually read a page, not just see "
-                    "its snippet. Output is plain text up to max_chars."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "Full http(s) URL."},
-                        "max_chars": {"type": "integer", "description": "Truncate body to this many chars (default 8000, max 50000)."},
-                    },
-                    "required": ["url"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "sandbox_run",
-                "description": (
-                    "Execute Python code in an isolated per-project venv. "
-                    "Use this (NOT run_bash) for: experimenting with a "
-                    "library, prototyping a snippet, anything that needs "
-                    "`pip install` of packages you don't want in the user's "
-                    "main environment. The sandbox PERSISTS between calls — "
-                    "installed packages and files in ./work/ stay. cwd is "
-                    "the work/ directory; the user's project tree is NOT "
-                    "touched."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "code": {"type": "string", "description": "Python source to execute."},
-                        "install": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional list of pip package specs to install before running (e.g. ['requests', 'rich>=13']).",
-                        },
-                        "timeout": {"type": "integer", "description": "Seconds. Default 60."},
-                    },
-                    "required": ["code"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "sandbox_reset",
-                "description": (
-                    "Wipe the project's sandbox: removes the venv AND "
-                    "everything in work/. Use when the sandbox has gotten "
-                    "into a broken state or you want a clean slate. Next "
-                    "sandbox_run rebuilds from scratch (~3-5s for the venv)."
-                ),
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
-    ]
-
-
 def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str, Any]]]:
     return {
         "read_file": lambda **kw: tool_read_file(project_root, **kw),
@@ -1064,6 +858,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "web_search": lambda **kw: tool_web_search(**kw),
         "web_fetch": lambda **kw: tool_web_fetch(**kw),
+        "browser": lambda **kw: tool_browser(**kw),
         "sandbox_run": lambda **kw: tool_sandbox_run(project_root, **kw),
         "sandbox_reset": lambda **kw: tool_sandbox_reset(project_root, **kw),
     }

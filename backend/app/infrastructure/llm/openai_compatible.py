@@ -1,0 +1,641 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+from dataclasses import dataclass
+from typing import Any, Generator
+
+import requests
+
+
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleConfig:
+    enabled: bool
+    provider: str
+    base_url: str
+    model: str
+    api_key: str
+    timeout_seconds: float
+    max_tokens: int | None
+    context_window: int | None
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in _TRUE_VALUES
+
+
+def _env_value(name: str, default: str = "") -> str:
+    raw = os.getenv(name)
+    return default if raw is None else raw
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_optional_int(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def local_llm_config() -> OpenAICompatibleConfig:
+    return OpenAICompatibleConfig(
+        enabled=_env_bool("LLAMA_SERVER_ENABLED"),
+        provider="llama_server",
+        base_url=_env_value("LLAMA_SERVER_BASE_URL", "http://192.168.88.15:8000/v1").rstrip("/"),
+        model=_env_value("LLAMA_SERVER_MODEL", "local-model").strip() or "local-model",
+        api_key=_env_value("LLAMA_SERVER_API_KEY", "local").strip() or "local",
+        timeout_seconds=_env_float("LLAMA_SERVER_TIMEOUT_SECONDS", 600.0),
+        max_tokens=_env_optional_int("LLAMA_SERVER_MAX_TOKENS"),
+        context_window=_env_optional_int("LLAMA_SERVER_CONTEXT_WINDOW") or 131072,
+    )
+
+
+def is_local_llm_enabled() -> bool:
+    return local_llm_config().enabled
+
+
+@dataclass(frozen=True)
+class LocalEmbedConfig:
+    enabled: bool
+    base_url: str
+    model: str
+    api_key: str
+    timeout_seconds: float
+
+
+def local_embed_config() -> LocalEmbedConfig:
+    return LocalEmbedConfig(
+        enabled=_env_bool("LOCAL_EMBED_ENABLED"),
+        base_url=os.getenv("LOCAL_EMBED_BASE_URL", "http://192.168.88.15:8001/v1").rstrip("/"),
+        model=os.getenv("LOCAL_EMBED_MODEL", "local-embed").strip() or "local-embed",
+        api_key=os.getenv("LOCAL_EMBED_API_KEY", "local").strip() or "local",
+        timeout_seconds=_env_float("LOCAL_EMBED_TIMEOUT_SECONDS", 30.0),
+    )
+
+
+def is_local_embed_enabled() -> bool:
+    return local_embed_config().enabled
+
+
+def embed_text(text: str) -> list[float] | None:
+    """Embed one string via the OpenAI-compatible /v1/embeddings endpoint.
+
+    Returns the vector, or None on any failure. Callers must NOT silently fall
+    back to a different embedding backend on None: mixed vector spaces would
+    corrupt cosine search.
+    """
+    cfg = local_embed_config()
+    if not cfg.enabled:
+        return None
+    try:
+        response = requests.post(
+            f"{cfg.base_url}/embeddings",
+            headers=_headers(OpenAICompatibleConfig(
+                enabled=True, provider="local_embed", base_url=cfg.base_url,
+                model=cfg.model, api_key=cfg.api_key,
+                timeout_seconds=cfg.timeout_seconds, max_tokens=None, context_window=None,
+            )),
+            json={"model": cfg.model, "input": text},
+            timeout=cfg.timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    rows = data.get("data") if isinstance(data.get("data"), list) else []
+    if rows and isinstance(rows[0], dict):
+        vec = rows[0].get("embedding")
+        if isinstance(vec, list) and vec:
+            return [float(x) for x in vec]
+    return None
+
+
+def is_local_llm_model(model_name: str | None) -> bool:
+    cfg = local_llm_config()
+    return cfg.enabled and str(model_name or "").strip() == cfg.model
+
+
+def _headers(cfg: OpenAICompatibleConfig) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {cfg.api_key}",
+        "Content-Type": "application/json",
+    }
+
+
+def _decode_sse_line(raw_line: Any) -> str:
+    if isinstance(raw_line, bytes):
+        return raw_line.decode("utf-8", errors="replace")
+    return str(raw_line)
+
+
+def _http_error_message(
+    exc: requests.HTTPError,
+    *,
+    service: str = "OpenAI-compatible provider",
+    endpoint: str = "",
+    path: str = "",
+) -> str:
+    response = exc.response
+    if response is None:
+        return str(exc)
+    body = (response.text or "").strip()
+    if len(body) > 500:
+        body = body[:500] + "..."
+    target = "/".join(
+        part.strip("/") for part in (endpoint, path) if part.strip("/")
+    )
+    location = f" at {target}" if target else ""
+    hint = " Verify the configured endpoint and service route." if response.status_code == 404 else ""
+    return (
+        f"{service} HTTP {response.status_code}{location}: "
+        f"{body or response.reason}.{hint}"
+    )
+
+
+def _coerce_tool_arguments(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    return value if value is not None else {}
+
+
+def _stringify_tool_arguments(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value if value is not None else {}, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_calls, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in raw_calls:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function") if isinstance(item.get("function"), dict) else {}
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        call: dict[str, Any] = {
+            "function": {
+                "name": name,
+                "arguments": _coerce_tool_arguments(function.get("arguments")),
+            }
+        }
+        call_id = str(item.get("id") or "").strip()
+        if call_id:
+            call["id"] = call_id
+        call["type"] = str(item.get("type") or "function").strip() or "function"
+        normalized.append(call)
+    return normalized
+
+
+def _request_tool_call(raw_call: Any, *, message_index: int, call_index: int) -> dict[str, Any] | None:
+    if not isinstance(raw_call, dict):
+        return None
+    function = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+    name = str(function.get("name") or raw_call.get("name") or "").strip()
+    if not name:
+        return None
+    call_id = str(raw_call.get("id") or "").strip() or f"call_{message_index}_{call_index}"
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": _stringify_tool_arguments(function.get("arguments", raw_call.get("arguments", {}))),
+        },
+    }
+
+
+def _normalize_messages_for_request(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    pending_tool_call_ids: list[str] = []
+    for message_index, raw_message in enumerate(messages or []):
+        if not isinstance(raw_message, dict):
+            continue
+        role = str(raw_message.get("role") or "").strip()
+        if role not in {"system", "user", "assistant", "tool"}:
+            continue
+        content = raw_message.get("content")
+        content_text = "" if content is None else str(content)
+
+        if role == "assistant":
+            item: dict[str, Any] = {"role": "assistant", "content": content_text}
+            raw_calls = raw_message.get("tool_calls")
+            if isinstance(raw_calls, list) and raw_calls:
+                calls = [
+                    call for idx, raw_call in enumerate(raw_calls)
+                    if (call := _request_tool_call(raw_call, message_index=message_index, call_index=idx)) is not None
+                ]
+                if calls:
+                    item["tool_calls"] = calls
+                    pending_tool_call_ids.extend(str(call["id"]) for call in calls)
+            if content_text.strip() or item.get("tool_calls"):
+                normalized.append(item)
+            continue
+
+        if role == "tool":
+            tool_call_id = str(raw_message.get("tool_call_id") or "").strip()
+            if not tool_call_id and pending_tool_call_ids:
+                tool_call_id = pending_tool_call_ids.pop(0)
+            if not tool_call_id:
+                name = str(raw_message.get("name") or "tool").strip() or "tool"
+                normalized.append({"role": "assistant", "content": f"[tool result {name}] {content_text}"})
+                continue
+            normalized.append({"role": "tool", "tool_call_id": tool_call_id, "content": content_text})
+            continue
+
+        if role in {"system", "user"} and content_text.strip():
+            normalized.append({"role": role, "content": content_text})
+            continue
+
+    # llama.cpp rejects two or more assistant messages at the tail. Merge only
+    # plain-text turns; tool-call turns retain their pairing semantics.
+    while (
+        len(normalized) >= 2
+        and normalized[-1].get("role") == "assistant"
+        and normalized[-2].get("role") == "assistant"
+        and not normalized[-1].get("tool_calls")
+        and not normalized[-2].get("tool_calls")
+    ):
+        latter = normalized.pop()
+        former = normalized.pop()
+        merged = "\n\n".join(
+            part for part in (str(former.get("content") or "").strip(), str(latter.get("content") or "").strip())
+            if part
+        )
+        if merged:
+            normalized.append({"role": "assistant", "content": merged})
+    return normalized
+
+
+def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, Any]:
+    choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+    first = choices[0] if choices and isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    return {
+        "model": str(data.get("model") or ""),
+        "message": {
+            "role": str(message.get("role") or "assistant"),
+            "content": str(message.get("content") or ""),
+            "tool_calls": _normalize_tool_calls(message.get("tool_calls")),
+        },
+        "done": True,
+        "prompt_eval_count": prompt_tokens,
+        "eval_count": completion_tokens,
+        "total_duration": elapsed_ns,
+        "provider": local_llm_config().provider,
+        "raw_openai": data,
+    }
+
+
+def _guard_context_request(
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: Any,
+    requested_ctx: Any,
+) -> None:
+    context_limit = _positive_int(requested_ctx)
+    if context_limit is None:
+        return
+    prompt_chars = len(json.dumps(messages, ensure_ascii=False))
+    prompt_tokens = (prompt_chars + 3) // 4
+    output_tokens = _positive_int(max_tokens) or 0
+    safety_margin = max(128, context_limit // 64)
+    required = prompt_tokens + output_tokens + safety_margin
+    if required > context_limit:
+        raise RuntimeError(
+            "Context request blocked before send: estimated prompt and output "
+            f"require {required} tokens, but the active limit is {context_limit}."
+        )
+
+
+def chat_completion(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    options: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    cfg = local_llm_config()
+    if not cfg.enabled:
+        raise RuntimeError("local llama-server provider is disabled")
+
+    normalized_messages = _normalize_messages_for_request(messages)
+    payload: dict[str, Any] = {
+        "model": model or cfg.model,
+        "messages": normalized_messages,
+    }
+    if tools:
+        payload["tools"] = tools
+    if cfg.max_tokens:
+        payload["max_tokens"] = cfg.max_tokens
+
+    opts = options or {}
+    if "temperature" in opts:
+        payload["temperature"] = opts["temperature"]
+
+    requested_context = _positive_int(opts.get("num_ctx"))
+    configured_context = _positive_int(cfg.context_window)
+    _guard_context_request(
+        normalized_messages,
+        max_tokens=payload.get("max_tokens"),
+        requested_ctx=min(requested_context, configured_context)
+        if requested_context and configured_context
+        else requested_context or configured_context,
+    )
+
+    started = time.monotonic_ns()
+    try:
+        response = requests.post(
+            f"{cfg.base_url}/chat/completions",
+            headers=_headers(cfg),
+            json=payload,
+            timeout=timeout or cfg.timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.HTTPError as exc:
+        raise RuntimeError(_http_error_message(exc)) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError("OpenAI-compatible provider returned invalid JSON") from exc
+
+    return _local_llm_response(data, elapsed_ns=time.monotonic_ns() - started)
+
+
+def chat_completion_stream(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    options: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> Generator[str, None, None]:
+    cfg = local_llm_config()
+    if not cfg.enabled:
+        raise RuntimeError("local llama-server provider is disabled")
+
+    normalized_messages = _normalize_messages_for_request(messages)
+    payload: dict[str, Any] = {
+        "model": model or cfg.model,
+        "messages": normalized_messages,
+        "stream": True,
+    }
+    if cfg.max_tokens:
+        payload["max_tokens"] = cfg.max_tokens
+    opts = options or {}
+    if "temperature" in opts:
+        payload["temperature"] = opts["temperature"]
+    requested_context = _positive_int(opts.get("num_ctx"))
+    configured_context = _positive_int(cfg.context_window)
+    _guard_context_request(
+        normalized_messages,
+        max_tokens=payload.get("max_tokens"),
+        requested_ctx=min(requested_context, configured_context)
+        if requested_context and configured_context
+        else requested_context or configured_context,
+    )
+
+    response: requests.Response | None = None
+    try:
+        response = requests.post(
+            f"{cfg.base_url}/chat/completions",
+            headers=_headers(cfg),
+            json=payload,
+            timeout=timeout or cfg.timeout_seconds,
+            stream=True,
+        )
+        response.raise_for_status()
+        for raw_line in response.iter_lines(decode_unicode=False):
+            if not raw_line:
+                continue
+            line = _decode_sse_line(raw_line).strip()
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if line == "[DONE]":
+                break
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+            first = choices[0] if choices and isinstance(choices[0], dict) else {}
+            delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+            token = str(delta.get("content") or "")
+            if token:
+                yield token
+    except requests.HTTPError as exc:
+        raise RuntimeError(_http_error_message(exc)) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"OpenAI-compatible stream failed: {exc}") from exc
+    finally:
+        if response is not None:
+            response.close()
+
+
+def chat_completion_event_stream(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    options: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> Generator[dict[str, Any], None, None]:
+    """Stream visible deltas and assemble OpenAI tool-call fragments."""
+    cfg = local_llm_config()
+    if not cfg.enabled:
+        raise RuntimeError("local llama-server provider is disabled")
+
+    normalized_messages = _normalize_messages_for_request(messages)
+    payload: dict[str, Any] = {
+        "model": model or cfg.model,
+        "messages": normalized_messages,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if tools:
+        payload["tools"] = tools
+    if cfg.max_tokens:
+        payload["max_tokens"] = cfg.max_tokens
+    opts = options or {}
+    if "temperature" in opts:
+        payload["temperature"] = opts["temperature"]
+    requested_context = _positive_int(opts.get("num_ctx"))
+    configured_context = _positive_int(cfg.context_window)
+    _guard_context_request(
+        normalized_messages,
+        max_tokens=payload.get("max_tokens"),
+        requested_ctx=min(requested_context, configured_context)
+        if requested_context and configured_context
+        else requested_context or configured_context,
+    )
+
+    response: requests.Response | None = None
+    started = time.monotonic_ns()
+    content_parts: list[str] = []
+    calls: dict[int, dict[str, Any]] = {}
+    usage: dict[str, Any] = {}
+    try:
+        response = requests.post(
+            f"{cfg.base_url}/chat/completions",
+            headers=_headers(cfg),
+            json=payload,
+            timeout=timeout or cfg.timeout_seconds,
+            stream=True,
+        )
+        response.raise_for_status()
+        for raw_line in response.iter_lines(decode_unicode=False):
+            if not raw_line:
+                continue
+            line = _decode_sse_line(raw_line).strip()
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if line == "[DONE]":
+                break
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data.get("usage"), dict):
+                usage = dict(data["usage"])
+            choices = data.get("choices") if isinstance(data.get("choices"), list) else []
+            first = choices[0] if choices and isinstance(choices[0], dict) else {}
+            delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+            token = str(delta.get("content") or "")
+            if token:
+                content_parts.append(token)
+                yield {"type": "delta", "content": token}
+            for fragment in delta.get("tool_calls") or []:
+                if not isinstance(fragment, dict):
+                    continue
+                index = int(fragment.get("index") or 0)
+                call = calls.setdefault(index, {
+                    "id": "",
+                    "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                })
+                if fragment.get("id"):
+                    call["id"] += str(fragment["id"])
+                if fragment.get("type"):
+                    call["type"] = str(fragment["type"])
+                function = fragment.get("function") if isinstance(fragment.get("function"), dict) else {}
+                call["function"]["name"] += str(function.get("name") or "")
+                call["function"]["arguments"] += str(function.get("arguments") or "")
+    except requests.HTTPError as exc:
+        raise RuntimeError(_http_error_message(
+            exc,
+            service="main LLM",
+            endpoint=cfg.base_url,
+            path="chat/completions",
+        )) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"OpenAI-compatible stream failed: {exc}") from exc
+    finally:
+        if response is not None:
+            response.close()
+
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    yield {
+        "type": "message",
+        "response": {
+            "model": model or cfg.model,
+            "message": {
+                "role": "assistant",
+                "content": "".join(content_parts),
+                "tool_calls": [calls[index] for index in sorted(calls)],
+            },
+            "done": True,
+            "prompt_eval_count": prompt_tokens,
+            "eval_count": completion_tokens,
+            "total_duration": time.monotonic_ns() - started,
+            "provider": cfg.provider,
+        },
+    }
+
+
+def list_models() -> list[dict[str, Any]]:
+    cfg = local_llm_config()
+    if not cfg.enabled:
+        return []
+    try:
+        response = requests.get(
+            f"{cfg.base_url}/models",
+            headers=_headers(cfg),
+            timeout=cfg.timeout_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.HTTPError as exc:
+        raise RuntimeError(_http_error_message(exc)) from exc
+    except requests.RequestException as exc:
+        raise RuntimeError(f"OpenAI-compatible models request failed: {exc}") from exc
+    except ValueError as exc:
+        raise RuntimeError("OpenAI-compatible provider returned invalid JSON") from exc
+
+    models = data.get("data") if isinstance(data.get("data"), list) else []
+    result: list[dict[str, Any]] = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            continue
+        context_window = (
+            _positive_int(item.get("n_ctx"))
+            or _positive_int(item.get("context_window"))
+            or _positive_int(item.get("context_length"))
+            or _positive_int(item.get("max_context_length"))
+            or _positive_int(meta.get("n_ctx"))
+            or cfg.context_window
+        )
+        result.append(
+            {
+                "name": model_id,
+                "model": model_id,
+                "size": 0,
+                "modified_at": "",
+                "digest": str(item.get("root") or ""),
+                "provider": cfg.provider,
+                "context_window": context_window,
+                "n_ctx": context_window,
+            }
+        )
+    return result

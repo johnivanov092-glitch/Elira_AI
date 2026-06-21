@@ -22,8 +22,8 @@ from app.application.chat.identity_guard import guard_identity_response  # noqa:
 class PersonaServiceTest(unittest.TestCase):
     def test_identity_guard_blocks_model_self_identification(self) -> None:
         guarded = guard_identity_response(
-            "Как тебя зовут? кто ты?",
-            "Меня зовут Gemma. Я большая языковая модель, разработанная компанией Google DeepMind.",
+            "Who are you? What is your name?",
+            "My name is Gemma. I am a large language model developed by Google DeepMind.",
         )
 
         self.assertTrue(guarded["changed"])
@@ -53,7 +53,7 @@ class PersonaServiceTest(unittest.TestCase):
                         dialog_id=dialog_id,
                         session_id=session_id,
                         profile_name="Универсальный",
-                        model_name="gemma3:4b",
+                        model_name="chat-model",
                         user_input="Помоги мне и скажи прямо, если данных мало",
                         answer_text="Давай помогу. Следующие шаги: 1. Проверим данные. 2. Скажу прямо, если данных недостаточно. " + ("x" * 2300),
                         route="chat",
@@ -61,7 +61,7 @@ class PersonaServiceTest(unittest.TestCase):
                     )
 
                 after = get_persona_status()
-                calibration = get_model_calibration("gemma3:4b", version_id=after["active_version"])
+                calibration = get_model_calibration("chat-model", version_id=after["active_version"])
                 rolled = rollback_persona(1)
 
                 print(json.dumps({{

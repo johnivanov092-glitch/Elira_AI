@@ -68,7 +68,6 @@ class TestModelProfilesMigration(unittest.TestCase):
         finally:
             db.unlink(missing_ok=True)
 
-
 class TestModelProfilesCrud(unittest.TestCase):
 
     def setUp(self):
@@ -93,13 +92,13 @@ class TestModelProfilesCrud(unittest.TestCase):
                              f"{p['id']} is a cloud profile and should be disabled by default")
 
     def test_local_fast_enabled_by_default(self):
-        p = mon_store.get_model_profile(self.db, "local-fast")
+        p = mon_store.get_model_profile(self.db, "00-local-llama-fast")
         self.assertIsNotNone(p)
         self.assertTrue(p["enabled"])
         self.assertFalse(p["cloud_consent_required"])
 
     def test_get_profile(self):
-        p = mon_store.get_model_profile(self.db, "local-code")
+        p = mon_store.get_model_profile(self.db, "00-local-llama-code")
         self.assertIsNotNone(p)
         self.assertEqual(p["role"], "code")
 
@@ -107,14 +106,13 @@ class TestModelProfilesCrud(unittest.TestCase):
         self.assertIsNone(mon_store.get_model_profile(self.db, "nonexistent"))
 
     def test_enable_profile(self):
-        # local-strong is disabled by default
-        mon_store.set_model_profile_enabled(self.db, "local-strong", enabled=True)
-        p = mon_store.get_model_profile(self.db, "local-strong")
+        mon_store.set_model_profile_enabled(self.db, "00-local-llama-strong", enabled=True)
+        p = mon_store.get_model_profile(self.db, "00-local-llama-strong")
         self.assertTrue(p["enabled"])
 
     def test_disable_profile(self):
-        mon_store.set_model_profile_enabled(self.db, "local-code", enabled=False)
-        p = mon_store.get_model_profile(self.db, "local-code")
+        mon_store.set_model_profile_enabled(self.db, "00-local-llama-code", enabled=False)
+        p = mon_store.get_model_profile(self.db, "00-local-llama-code")
         self.assertFalse(p["enabled"])
 
     def test_get_profile_for_role(self):
@@ -167,7 +165,7 @@ class TestModelProfilesApi(unittest.TestCase):
         self.assertGreater(len(data["profiles"]), 0)
 
     def test_get_profile(self):
-        r = self.client.get("/api/agent-os/models/profiles/local-fast")
+        r = self.client.get("/api/agent-os/models/profiles/00-local-llama-fast")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["role"], "fast")
 
@@ -176,12 +174,12 @@ class TestModelProfilesApi(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_enable_profile(self):
-        r = self.client.post("/api/agent-os/models/profiles/local-strong/enable")
+        r = self.client.post("/api/agent-os/models/profiles/00-local-llama-strong/enable")
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json()["enabled"])
 
     def test_disable_profile(self):
-        r = self.client.post("/api/agent-os/models/profiles/local-code/disable")
+        r = self.client.post("/api/agent-os/models/profiles/00-local-llama-code/disable")
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.json()["enabled"])
 

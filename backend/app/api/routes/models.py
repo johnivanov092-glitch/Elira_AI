@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.application.ollama_models import get_models
+from app.application.local_models import get_models
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 

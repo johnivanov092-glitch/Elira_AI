@@ -7,7 +7,7 @@ as `<server_id>__<original_name>` so two servers can both expose
 
 Conversion rules:
 
-  * MCP inputSchema → Ollama function.parameters: pass through
+  * MCP inputSchema -> function.parameters: pass through
     unchanged (both use JSON-Schema dialect, both have type/
     properties/required at the top level).
   * MCP tools/call result → tool_meta: MCP returns
@@ -81,7 +81,7 @@ class McpToolProvider:
     Cached state:
       * The qualified-name → original-name map (built once on
         construction by calling tools/list).
-      * The pre-converted Ollama-style schema list.
+      * The pre-converted function schema list.
 
     If the server isn't currently running, `is_enabled()` returns
     False and the provider contributes nothing to the registry —

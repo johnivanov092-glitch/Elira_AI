@@ -1,4 +1,4 @@
-"""RAG memory service wiring backed by SQLite and Ollama embeddings."""
+"""RAG memory service wiring backed by SQLite and the local embedding endpoint."""
 
 from __future__ import annotations
 
@@ -11,8 +11,16 @@ from app.infrastructure.db.connection import connect_sqlite
 
 DB_PATH = sqlite_data_file("rag_memory.db", key_tables=("rag_items",))
 SEED_RAG_TEXT = "rag alpha memory"
-EMBED_MODEL = "nomic-embed-text"
+EMBED_MODEL = "local-embed"
 EMBED_DIM = 768
+
+
+def _effective_embed_model() -> str:
+    """The embedding model actually in use by the local embedding endpoint."""
+    from app.infrastructure.llm.openai_compatible import local_embed_config
+
+    cfg = local_embed_config()
+    return cfg.model if cfg.enabled else EMBED_MODEL
 
 
 def _conn() -> sqlite3.Connection:
@@ -95,4 +103,4 @@ def delete_rag(item_id: int) -> dict:
 
 
 def rag_stats() -> dict:
-    return rag_runtime.rag_stats(conn_factory=_conn, embed_model=EMBED_MODEL)
+    return rag_runtime.rag_stats(conn_factory=_conn, embed_model=_effective_embed_model())

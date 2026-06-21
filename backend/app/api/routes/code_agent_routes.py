@@ -12,16 +12,18 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.application.code_agent.agent_loop import (
     DEFAULT_MAX_STEPS,
     DEFAULT_MODEL,
     DEFAULT_NUM_CTX,
+    _CODE_AGENT_BASE_TOOLS,
     get_project_prompt,
     init_project_prompt,
     index_project,
@@ -33,8 +35,52 @@ from app.application.code_agent.agent_loop import (
     summarize_history,
 )
 from app.application.code_agent import sessions as session_store
+from app.core.data_files import data_subdir
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
+
+CodeAgentMode = Literal["code", "search"]
+_FAVICON_MAX_BYTES = 128 * 1024
+
+
+def _base_tools_for_mode(mode: CodeAgentMode) -> tuple[str, ...] | None:
+    if mode == "search":
+        return tuple(dict.fromkeys((*_CODE_AGENT_BASE_TOOLS, "web_search", "web_fetch")))
+    return None
+
+
+def _resolve_project_root(raw: str | None) -> str:
+    """Default an empty/blank project_root to a writable scratch workspace.
+
+    Lets chat work without first picking a folder, and avoids silently falling
+    back to the backend's own cwd (which would let the agent touch app files).
+    """
+    p = (raw or "").strip()
+    if p:
+        return p
+    return str(data_subdir("agent_workspace"))
+
+
+def _favicon_url_for_source(raw_url: str) -> str:
+    parsed = urlparse((raw_url or "").strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="url must be an absolute http(s) URL")
+    return urlunparse((parsed.scheme, parsed.netloc, "/favicon.ico", "", "", ""))
+
+
+def _favicon_media_type(content_type: str, content: bytes) -> str:
+    media_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if media_type.startswith("image/"):
+        return media_type
+    if content.startswith(b"\x00\x00\x01\x00"):
+        return "image/x-icon"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    return ""
 
 
 class ConversationMessage(BaseModel):
@@ -51,6 +97,7 @@ class CodeAgentRequest(BaseModel):
     model: str = Field(default="auto")
     max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=50)
     num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
+    mode: CodeAgentMode = Field(default="code", description="Composer mode: code or search")
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")
     conversation_history: list[ConversationMessage] | None = None
 
@@ -117,12 +164,13 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
     history = [m.model_dump() for m in (payload.conversation_history or [])]
     result = run_code_agent(
         user_message=payload.message,
-        project_root=payload.project_root,
+        project_root=_resolve_project_root(payload.project_root),
         working_dir=payload.working_dir,
         model=payload.model,
         max_steps=payload.max_steps,
         conversation_history=history,
         num_ctx=payload.num_ctx,
+        base_tools=_base_tools_for_mode(payload.mode),
         auto_remember=payload.auto_remember,
     )
     return CodeAgentResponse(**result)
@@ -141,12 +189,13 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
         try:
             for event in stream_code_agent(
                 user_message=payload.message,
-                project_root=payload.project_root,
+                project_root=_resolve_project_root(payload.project_root),
                 working_dir=payload.working_dir,
                 model=payload.model,
                 max_steps=payload.max_steps,
                 conversation_history=history,
                 num_ctx=payload.num_ctx,
+                base_tools=_base_tools_for_mode(payload.mode),
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
                 approval_wait_seconds=payload.approval_wait_seconds,
@@ -177,6 +226,47 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
 def cancel(payload: CodeAgentCancelRequest) -> dict[str, Any]:
     found = request_cancel(payload.run_id)
     return {"ok": True, "found": found, "run_id": payload.run_id}
+
+
+@router.get("/favicon")
+def favicon(url: str) -> Response:
+    favicon_url = _favicon_url_for_source(url)
+    from app.application.web.ssrf_guard import check_ssrf
+    ssrf_reason = check_ssrf(favicon_url)
+    if ssrf_reason:
+        raise HTTPException(status_code=400, detail=f"SSRF blocked: {ssrf_reason}")
+
+    try:
+        import requests
+        with requests.get(
+            favicon_url,
+            headers={"User-Agent": "EliraAI/1.0"},
+            timeout=3,
+            allow_redirects=False,
+            stream=True,
+        ) as resp:
+            if resp.status_code != 200:
+                return Response(status_code=204)
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in resp.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > _FAVICON_MAX_BYTES:
+                    return Response(status_code=204)
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            media_type = _favicon_media_type(resp.headers.get("content-type", ""), content)
+            if not content or not media_type:
+                return Response(status_code=204)
+            return Response(
+                content=content,
+                media_type=media_type,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+    except Exception:
+        return Response(status_code=204)
 
 
 @router.get("/project-prompt")
@@ -451,6 +541,10 @@ class SessionPatchRequest(BaseModel):
     num_ctx: Optional[int] = None
     pinned: Optional[bool] = None
     turns: Optional[list[Any]] = None
+    context_state: Optional[dict[str, Any]] = None
+    task_ledger: Optional[list[dict[str, Any]]] = None
+    pinned_items: Optional[list[dict[str, Any]]] = None
+    compression_events: Optional[list[dict[str, Any]]] = None
 
 
 @router.get("/sessions")
@@ -464,6 +558,49 @@ def read_code_session(session_id: str) -> dict[str, Any]:
     if not sess:
         raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
     return {"ok": True, "session": sess}
+
+
+@router.get("/sessions/{session_id}/context")
+def read_code_session_context(session_id: str) -> dict[str, Any]:
+    from app.application.context.task_state import get_task_context_state
+
+    state = get_task_context_state(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    return {"ok": True, "state": state}
+
+
+@router.post("/sessions/{session_id}/context/compact")
+def compact_code_session_context(session_id: str) -> dict[str, Any]:
+    from app.application.context.task_state import compress_now
+
+    try:
+        result = compress_now(session_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"session not found: {session_id}",
+        ) from None
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("reason") or "compression rejected")
+    return result
+
+
+@router.delete("/sessions/{session_id}/context/pins/{item_id}")
+def delete_code_session_pin(session_id: str, item_id: str) -> dict[str, Any]:
+    from app.application.context.memory import unpin_item
+    from app.application.context.task_state import load_task_context, save_task_context
+
+    state = load_task_context(session_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"session not found: {session_id}")
+    before = list(state.get("pinned_items") or [])
+    after = unpin_item(before, item_id)
+    if len(after) == len(before):
+        raise HTTPException(status_code=404, detail=f"pin not found: {item_id}")
+    state["pinned_items"] = after
+    save_task_context(session_id, state)
+    return {"ok": True, "removed": item_id, "state": state}
 
 
 @router.post("/sessions")

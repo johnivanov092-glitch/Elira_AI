@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -41,10 +40,6 @@ TEXT_NAMES = {"Dockerfile", "Makefile", ".gitignore"}
 MAX_READ_BYTES = 512 * 1024
 MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024
 MAX_AGENT_FILE_BYTES = 256 * 1024
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
-DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "")
-OLLAMA_TIMEOUT_SECONDS = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
 
 CHAT_SESSIONS: dict[str, dict[str, Any]] = {}
 ATTACHMENT_INDEX: dict[str, dict[str, Any]] = {}

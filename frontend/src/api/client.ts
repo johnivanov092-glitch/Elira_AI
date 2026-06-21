@@ -15,6 +15,20 @@ export type FallbackValue<T> = T | ((error: unknown) => T | Promise<T>);
 export const API_BASE: string =
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
+// Optional bearer token for non-local (LAN / mobile) access. The backend trusts
+// loopback callers without a token, so for the desktop/dev flow this stays empty
+// and no Authorization header is sent. Set VITE_ELIRA_API_TOKEN for mobile mode.
+export const API_TOKEN: string = import.meta.env.VITE_ELIRA_API_TOKEN || "";
+
+/** Attach the bearer token to a header set when one is configured. */
+export function withAuth(init?: HeadersInit): Headers {
+  const headers = new Headers(init);
+  if (API_TOKEN && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${API_TOKEN}`);
+  }
+  return headers;
+}
+
 /** Poll /health until the backend answers or we give up.
  *  Returns true if backend is reachable, false on timeout.
  *  Uses manual AbortController instead of AbortSignal.timeout()
@@ -108,7 +122,7 @@ export async function request<T = unknown>(
     ...rest
   } = options;
 
-  const finalHeaders = new Headers(headers);
+  const finalHeaders = withAuth(headers);
   let finalBody: BodyInit | null | undefined;
 
   if (body !== undefined && body !== null) {

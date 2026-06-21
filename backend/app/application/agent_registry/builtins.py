@@ -11,6 +11,14 @@ _ROLE_DEFS = [
     ("ократ", "teacher", "Socrat", "builtin-socrat"),
 ]
 
+_ORDERED_ROLE_FALLBACKS = [
+    ("general", "Universal", "builtin-universal"),
+    ("researcher", "Researcher", "builtin-researcher"),
+    ("programmer", "Programmer", "builtin-programmer"),
+    ("analyst", "Analyst", "builtin-analyst"),
+    ("teacher", "Socrat", "builtin-socrat"),
+]
+
 
 def _match_role(name_ru: str) -> tuple[str, str, str]:
     lower = name_ru.lower()
@@ -24,8 +32,10 @@ def iter_builtin_agent_defs() -> list[dict[str, Any]]:
     from app.core.config import AGENT_PROFILES, AGENT_PROFILE_UI
 
     builtins: list[dict[str, Any]] = []
-    for name_ru, prompt in AGENT_PROFILES.items():
+    for index, (name_ru, prompt) in enumerate(AGENT_PROFILES.items()):
         role, name_en, agent_id = _match_role(name_ru)
+        if role == "custom" and index < len(_ORDERED_ROLE_FALLBACKS):
+            role, name_en, agent_id = _ORDERED_ROLE_FALLBACKS[index]
         ui = AGENT_PROFILE_UI.get(name_ru, {})
         builtins.append(
             {

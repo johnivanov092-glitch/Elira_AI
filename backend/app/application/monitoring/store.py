@@ -11,8 +11,8 @@ from app.infrastructure.db.connection import connect_sqlite
 
 
 DEFAULT_MAX_RUNS_PER_HOUR = 120
-DEFAULT_MAX_EXECUTION_SECONDS = 180
-DEFAULT_MAX_CONTEXT_TOKENS = 16384
+DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
+DEFAULT_MAX_CONTEXT_TOKENS = 131072
 DEFAULT_WORKFLOW_ENGINE_AGENT_ID = "workflow-engine"
 
 CREATE_SQL = """
@@ -85,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_approvals_tool ON approvals(tool_name);
 _MODEL_PROFILES_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS model_profiles (
     id TEXT PRIMARY KEY,
-    provider TEXT NOT NULL DEFAULT 'ollama',
+    provider TEXT NOT NULL DEFAULT 'llama_server',
     model TEXT NOT NULL,
     role TEXT NOT NULL,
     context_limit INTEGER NOT NULL DEFAULT 16384,
@@ -99,44 +99,50 @@ CREATE INDEX IF NOT EXISTS idx_model_profiles_role ON model_profiles(role);
 CREATE INDEX IF NOT EXISTS idx_model_profiles_enabled ON model_profiles(enabled);
 """
 
+_LOCAL_LLAMA_PROFILE_IDS = (
+    "00-local-llama-fast",
+    "00-local-llama-code",
+    "00-local-llama-strong",
+)
+
 # Default profiles — cloud profiles are disabled by default (Section 11 of roadmap)
 _DEFAULT_MODEL_PROFILES = [
     {
-        "id": "local-fast",
-        "provider": "ollama",
-        "model": "qwen2.5:4b",
+        "id": "00-local-llama-fast",
+        "provider": "llama_server",
+        "model": "local-model",
         "role": "fast",
-        "context_limit": 16384,
-        "timeout_seconds": 30,
-        "enabled": True,
-        "cloud_consent_required": False,
-    },
-    {
-        "id": "local-code",
-        "provider": "ollama",
-        "model": "qwen2.5-coder:7b",
-        "role": "code",
-        "context_limit": 32768,
-        "timeout_seconds": 120,
-        "enabled": True,
-        "cloud_consent_required": False,
-    },
-    {
-        "id": "local-strong",
-        "provider": "ollama",
-        "model": "qwen2.5:32b",
-        "role": "strong",
-        "context_limit": 32768,
+        "context_limit": 131072,
         "timeout_seconds": 300,
-        "enabled": False,   # Disabled until 24GB VRAM available
+        "enabled": True,
+        "cloud_consent_required": False,
+    },
+    {
+        "id": "00-local-llama-code",
+        "provider": "llama_server",
+        "model": "local-model",
+        "role": "code",
+        "context_limit": 131072,
+        "timeout_seconds": 600,
+        "enabled": True,
+        "cloud_consent_required": False,
+    },
+    {
+        "id": "00-local-llama-strong",
+        "provider": "llama_server",
+        "model": "local-model",
+        "role": "strong",
+        "context_limit": 131072,
+        "timeout_seconds": 600,
+        "enabled": True,
         "cloud_consent_required": False,
     },
     {
         "id": "local-embedding",
-        "provider": "ollama",
-        "model": "nomic-embed-text",
+        "provider": "local_embed_server",
+        "model": "local-embed",
         "role": "embedding",
-        "context_limit": 8192,
+        "context_limit": 4096,
         "timeout_seconds": 30,
         "enabled": True,
         "cloud_consent_required": False,
@@ -185,6 +191,36 @@ def migrate_model_profiles_table(db_path: str | Path) -> None:
                  1 if p["cloud_consent_required"] else 0,
                  now, now),
             )
+        con.execute(
+            f"""UPDATE model_profiles
+                SET context_limit = 131072, updated_at = ?
+                WHERE id IN ({",".join("?" for _ in _LOCAL_LLAMA_PROFILE_IDS)})
+                  AND provider = 'llama_server'
+                  AND model = 'local-model'
+                  AND context_limit IN (8192, 16384)""",
+            (now, *_LOCAL_LLAMA_PROFILE_IDS),
+        )
+        con.execute(
+            """UPDATE model_profiles
+               SET timeout_seconds = CASE role WHEN 'fast' THEN 300 ELSE 600 END,
+                   updated_at = ?
+               WHERE id IN (?,?,?) AND provider = 'llama_server'
+                 AND model = 'local-model' AND timeout_seconds IN (120, 180)""",
+            (now, *_LOCAL_LLAMA_PROFILE_IDS),
+        )
+
+
+def migrate_default_runtime_limits(db_path: str | Path) -> None:
+    """Raise only known built-in runtime rows still carrying the old defaults."""
+    with get_connection(db_path) as con:
+        con.execute(
+            """UPDATE agent_limits
+               SET max_context_tokens = ?, max_execution_seconds = ?, updated_at = ?
+               WHERE agent_id IN ('chat', 'code-agent')
+                 AND max_context_tokens = 16384
+                 AND max_execution_seconds = 180""",
+            (DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_EXECUTION_SECONDS, now_utc()),
+        )
 
 
 def canonical_args_digest(args: dict[str, Any] | None) -> str:

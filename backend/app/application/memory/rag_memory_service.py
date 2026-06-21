@@ -1,4 +1,4 @@
-"""RAG memory backed by SQLite and Ollama embeddings.
+"""RAG memory backed by SQLite and local embedding endpoint.
 
 Extracted from services/rag_memory_service.py.
 """
@@ -10,19 +10,18 @@ import math
 import sqlite3
 
 from app.core.data_files import sqlite_data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = sqlite_data_file("rag_memory.db", key_tables=("rag_items",))
 SEED_RAG_TEXT = "rag alpha memory"
-EMBED_MODEL = "nomic-embed-text"
-EMBED_DIM = 768
+EMBED_MODEL = "local-embed"
+EMBED_DIM = 1024
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_sqlite(DB_PATH)
 
 
 def _init() -> None:
@@ -63,20 +62,13 @@ _cleanup_seed_data()
 
 
 def _get_embedding(text: str) -> list[float] | None:
-    """Fetch an embedding from Ollama when available."""
-    try:
-        import ollama
+    """Fetch an embedding from the configured local embedding endpoint."""
+    from app.infrastructure.llm.openai_compatible import embed_text, is_local_embed_enabled
 
-        response = ollama.embed(model=EMBED_MODEL, input=text)
-        embeddings = response.get("embeddings") or response.get("embedding")
-        if embeddings:
-            if isinstance(embeddings[0], list):
-                return embeddings[0]
-            return embeddings
+    if not is_local_embed_enabled():
+        logger.warning("Embedding endpoint is disabled; storing keyword-only memory")
         return None
-    except Exception as exc:  # pragma: no cover - runtime dependency path
-        logger.warning("Embedding failed: %s", exc)
-        return None
+    return embed_text(text)
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:

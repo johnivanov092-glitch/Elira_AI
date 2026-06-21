@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.application.project_brain import chat as project_brain_chat
 from app.application.project_brain import files as project_brain_files
-from app.application.project_brain import ollama as project_brain_ollama
+from app.application.project_brain import llm as project_brain_llm
 from app.application.project_brain import state as project_brain_state
 from app.application.project_brain import uploads as project_brain_uploads
 from app.infrastructure.db.memory import vector_memory_capability_status
@@ -68,9 +68,9 @@ def read_project_file(path: str = Query(..., min_length=1)):
     return project_brain_files.read_project_file_payload(path)
 
 
-@router.get("/agent/ollama/status")
-def ollama_status():
-    return project_brain_ollama.ollama_status_payload()
+@router.get("/agent/local/status")
+def local_model_status():
+    return project_brain_llm.local_model_status_payload()
 
 
 @router.post("/chat/attachment")
@@ -117,8 +117,8 @@ def chat_send(payload: ChatRequest):
     )
 
 
-@router.post("/agent/ollama/plan")
-def ollama_agent_plan(payload: LocalAgentPlanRequest):
+@router.post("/agent/local/plan")
+def local_agent_plan(payload: LocalAgentPlanRequest):
     return project_brain_chat.run_local_agent_plan(
         goal=payload.goal,
         selected_path=payload.selected_path,
@@ -127,8 +127,8 @@ def ollama_agent_plan(payload: LocalAgentPlanRequest):
     )
 
 
-@router.post("/agent/ollama/run")
-def ollama_agent_run(payload: LocalAgentRunRequest):
+@router.post("/agent/local/run")
+def local_agent_run(payload: LocalAgentRunRequest):
     return project_brain_chat.run_local_agent(
         goal=payload.goal,
         selected_path=payload.selected_path,

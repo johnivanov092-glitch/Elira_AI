@@ -47,23 +47,23 @@ function normalizeItems(payload: SmartMemoryListResponse | SmartMemoryItem[]): S
 
 export async function listSmartMemory(limit = 100): Promise<SmartMemoryItem[]> {
   const payload = await request<SmartMemoryListResponse | SmartMemoryItem[]>(
-    withParams("/api/smart-memory/list", { limit }),
+    withParams("/api/chat-agent/memory", { limit }),
   );
   return normalizeItems(payload);
 }
 
 export async function getSmartMemoryStats(): Promise<SmartMemoryStats> {
-  return request<SmartMemoryStats>("/api/smart-memory/stats");
+  return request<SmartMemoryStats>("/api/chat-agent/memory/stats");
 }
 
 export async function addSmartMemory(
   body: SmartMemoryWriteRequest = {},
 ): Promise<unknown> {
-  return request("/api/smart-memory/add", { method: "POST", body });
+  return request("/api/chat-agent/memory", { method: "POST", body });
 }
 
 export async function deleteSmartMemory(id: SmartMemoryId): Promise<unknown> {
-  return request(`/api/smart-memory/${encodeURIComponent(String(id))}`, {
+  return request(`/api/chat-agent/memory/${encodeURIComponent(String(id))}`, {
     method: "DELETE",
   });
 }
@@ -73,7 +73,7 @@ export async function searchSmartMemory(
   limit = 20,
 ): Promise<SmartMemoryItem[]> {
   const payload = await request<SmartMemoryListResponse | SmartMemoryItem[]>(
-    "/api/smart-memory/search",
+    "/api/chat-agent/memory/search",
     {
       method: "POST",
       body: { query, limit },

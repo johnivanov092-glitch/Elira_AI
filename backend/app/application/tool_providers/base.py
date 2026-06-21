@@ -48,7 +48,7 @@ class ToolProvider(Protocol):
         ...
 
     def get_schemas(self) -> list[dict[str, Any]]:
-        """Ollama-style tool schemas:
+        """OpenAI-compatible tool schemas:
             [{"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}]
 
         Tool names must be unique within the provider; the registry

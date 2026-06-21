@@ -1,6 +1,0 @@
-# Добавь в backend/app/main.py
-
-from app.api.routes.agent_runtime import router as agent_runtime_router
-
-# И рядом с другими include_router(...)
-app.include_router(agent_runtime_router)

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class MultiAgentRequest(BaseModel):
     query: str
-    model_name: str = "qwen3:8b"
+    model_name: str = "local-model"
     context: str = ""
     agents: list[str] = ["researcher", "programmer", "analyst"]
     use_reflection: bool = False

@@ -49,7 +49,7 @@ class BlobRoundTripTest(unittest.TestCase):
         original = [0.1, 0.5, -0.3, 0.7, -0.2, 0.123456]
         blob = runtime._embedding_to_blob(original)
         self.assertIsNotNone(blob)
-        # 6 floats × 4 bytes = 24 bytes
+        # 6 floats Г— 4 bytes = 24 bytes
         self.assertEqual(len(blob), 24)
         restored = runtime._blob_to_array(blob)
         for orig, got in zip(original, restored):
@@ -94,7 +94,7 @@ class NewWriteUsesBlobTest(unittest.TestCase):
         self.assertEqual(row["embedding"], "")
         # BLOB column must have data
         self.assertIsNotNone(row["embedding_blob"])
-        self.assertEqual(len(row["embedding_blob"]), 4 * 4)  # 4 floats × 4 bytes
+        self.assertEqual(len(row["embedding_blob"]), 4 * 4)  # 4 floats Г— 4 bytes
 
 
 class SearchReadsBlobTest(unittest.TestCase):
@@ -238,7 +238,7 @@ class StatsCountsBothFormatsTest(unittest.TestCase):
             ("legacy style", runtime._text_hash("legacy style"), json.dumps([0.5, 0.6, 0.7])),
         )
         holder.commit()
-        stats = runtime.rag_stats(conn_factory=factory, embed_model="nomic-embed-text")
+        stats = runtime.rag_stats(conn_factory=factory, embed_model="local-embed")
         self.assertEqual(stats["total"], 2)
         self.assertEqual(stats["with_embeddings"], 2)
 

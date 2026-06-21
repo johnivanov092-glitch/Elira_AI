@@ -22,9 +22,49 @@ from app.utils.text_encoding import (  # noqa: E402
     repair_mojibake_text,
 )
 
+_UTF8_BOM = b"\xef\xbb\xbf"
+_SOURCE_ROOTS = (
+    (ROOT / "backend" / "app", {".py"}),
+    (ROOT / "frontend" / "src", {".css", ".js", ".jsx", ".ts", ".tsx"}),
+    (ROOT / "src-tauri" / "src", {".py", ".rs"}),
+)
+_EXTRA_FILES = (
+    ROOT / "src-tauri" / "Cargo.toml",
+    ROOT / "src-tauri" / "tauri.conf.json",
+)
+
+
+def _iter_text_files():
+    for root, suffixes in _SOURCE_ROOTS:
+        if root.exists():
+            for path in root.rglob("*"):
+                if path.is_file() and path.suffix in suffixes:
+                    yield path
+    for path in _EXTRA_FILES:
+        if path.is_file():
+            yield path
+    for path in sorted((ROOT / "docs").rglob("*.md")):
+        yield path
+    for path in sorted(ROOT.glob("*.md")):
+        yield path
+    for path in sorted(ROOT.glob("*.bat")):
+        yield path
+
 
 def cp1251_mojibake(value: str) -> str:
     return value.encode("utf-8").decode("cp1251")
+
+
+def cp1251_best_fit_mojibake(value: str) -> str:
+    # Mirrors Windows/.NET best-fit decoding: bytes with no cp1251 mapping
+    # (e.g. 0x98) surface as the same-numbered codepoint instead of raising.
+    chars: list[str] = []
+    for byte in value.encode("utf-8"):
+        try:
+            chars.append(bytes([byte]).decode("cp1251"))
+        except UnicodeDecodeError:
+            chars.append(chr(byte))
+    return "".join(chars)
 
 
 class TextEncodingPersonaMojibakeTest(unittest.TestCase):
@@ -63,6 +103,34 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
             "\u042d\u043b\u0438\u0440\u0430 "
             "\u044d\u0432\u043e\u043b\u044e\u0446"
             "\u0438\u043e\u043d\u0438\u0440\u043e\u0432\u0430\u043b\u0430."
+        )
+
+        self.assertFalse(looks_like_mojibake(readable))
+        self.assertEqual(repair_mojibake_text(readable), readable)
+
+    def test_repairs_best_fit_star_glyph_mojibake(self) -> None:
+        readable = "\u2605 Featured"
+        broken = cp1251_best_fit_mojibake(readable)
+
+        self.assertIn("\u0098", broken)
+        self.assertTrue(looks_like_mojibake(broken))
+        self.assertGreater(mojibake_score(broken), 0)
+        self.assertEqual(repair_mojibake_text(broken), readable)
+
+    def test_repairs_emoji_only_mojibake(self) -> None:
+        readable = "\U0001f4e6\U0001f680"
+        broken = cp1251_mojibake(readable)
+
+        self.assertIn("\u0440\u045f", broken)
+        self.assertTrue(looks_like_mojibake(broken))
+        self.assertGreater(mojibake_score(broken), 0)
+        self.assertEqual(repair_mojibake_text(broken), readable)
+
+    def test_preserves_russian_bigrams_overlapping_marker_tails(self) -> None:
+        readable = (
+            "\u0442\u0440\u0451\u0445 "
+            "\u00ab\u043a\u0430\u0434\u0440\u00bb "
+            "\u043e\u0440\u0451\u043b"
         )
 
         self.assertFalse(looks_like_mojibake(readable))
@@ -182,6 +250,23 @@ class TextEncodingPersonaMojibakeTest(unittest.TestCase):
             if score:
                 bad_files.append(f"{path.relative_to(ROOT)}:{score}")
 
+        self.assertEqual(bad_files, [])
+
+    def test_no_utf8_bom_in_tracked_text_files(self) -> None:
+        with_bom = [
+            str(path.relative_to(ROOT))
+            for path in _iter_text_files()
+            if path.read_bytes().startswith(_UTF8_BOM)
+        ]
+        self.assertEqual(with_bom, [], f"UTF-8 BOM found (write UTF-8 without BOM): {with_bom}")
+
+    def test_root_markdown_does_not_contain_mojibake(self) -> None:
+        bad_files = []
+        for path in sorted(ROOT.glob("*.md")):
+            text = path.read_text(encoding="utf-8")
+            score = mojibake_score(text)
+            if score:
+                bad_files.append(f"{path.relative_to(ROOT)}:{score}")
         self.assertEqual(bad_files, [])
 
 

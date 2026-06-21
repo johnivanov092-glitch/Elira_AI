@@ -12,16 +12,39 @@ try:
 except ImportError:
     pass  # python-dotenv not installed — fall back to OS env only
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
 from app.api.routes.registry import ALL_ROUTERS
 from app.application.elira_memory.service import init_db
 from app.application.runtime.status import init_runtime_state
+from app.core.auth import is_authorized
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Elira AI API")
+
+# ── Auth gate ───────────────────────────────────────────────────────────────
+# Loopback (Tauri shell + dev browser) is trusted and needs no token. Any
+# non-local caller (LAN / mobile) must present a bearer token. Registered
+# BEFORE CORS so CORS stays the OUTERMOST layer and still attaches headers to
+# 401 responses (the last-added middleware is outermost in Starlette).
+_AUTH_OPEN_PATHS = frozenset({"/health"})
+
+
+@app.middleware("http")
+async def _auth_guard(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in _AUTH_OPEN_PATHS:
+        return await call_next(request)
+    client_host = request.client.host if request.client else None
+    if not is_authorized(client_host, request.headers.get("authorization")):
+        return JSONResponse(
+            {"detail": "Unauthorized: API token required for non-local access"},
+            status_code=401,
+        )
+    return await call_next(request)
+
 
 # CORS: localhost + LAN (для mobile mode).
 # Regex покрывает: 127.0.0.1, localhost, и любой LAN IP (192.168.x.x, 10.x.x.x, 172.16-31.x.x)

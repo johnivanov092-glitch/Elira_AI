@@ -1,6 +1,6 @@
 """memory.py — vector-memory capability probe.
 
-Elira's vector memory is rag_memory.db (Ollama nomic-embed-text embeddings
+Elira's vector memory is rag_memory.db (local embedding endpoint vectors
 compared as numpy buffers) and is part of core. numpy is the only hard
 requirement; when present, semantic recall is active, otherwise it degrades to
 keyword search. (The old FAISS/sentence-transformers stack was removed — no

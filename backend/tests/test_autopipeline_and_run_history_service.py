@@ -50,7 +50,7 @@ class AutopipelineCRUDTest(unittest.TestCase):
         result = ap_rt.create_pipeline(
             "Prompt Task",
             task_type="prompt",
-            task_data={"prompt": "Summarize today", "model": "gemma3:4b"},
+            task_data={"prompt": "Summarize today", "model": "chat-model"},
         )
         self.assertTrue(result["ok"])
 

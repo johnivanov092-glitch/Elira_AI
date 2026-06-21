@@ -5,7 +5,7 @@ skills_extra.py — дополнительные скиллы Elira.
 2. 📦 Архиватор (ZIP создание/распаковка)
 3. 🔄 Конвертер файлов (MD→DOCX, CSV→XLSX, JSON→CSV)
 4. 📐 Regex помощник
-5. 🌍 Переводчик (Ollama)
+5. 🌍 Переводчик (local LLM)
 6. 📈 CSV/данные анализ
 7. 📡 Webhook (хранилище входящих)
 """
@@ -246,27 +246,23 @@ def test_regex(pattern: str, text: str, flags: str = "") -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 5. ПЕРЕВОДЧИК (через Ollama)
+# 5. ПЕРЕВОДЧИК (через local LLM)
 # ═══════════════════════════════════════════════════════════════
 
-def translate_text(text: str, target_lang: str = "english", model: str = "qwen3:8b") -> dict:
+def translate_text(text: str, target_lang: str = "english", model: str = "local-model") -> dict:
     """Перевод через LLM."""
     try:
-        import ollama
-        resp = ollama.chat(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": f"Translate the following text to {target_lang}. Output ONLY the translation, nothing else.\n\n{text}"
-            }],
-            options={"temperature": 0.3, "num_predict": 2048},
+        from app.core.llm import ask_model
+
+        translated = ask_model(
+            model_name=model,
+            profile_name="default",
+            user_input=f"Translate the following text to {target_lang}. Output ONLY the translation, nothing else.\n\n{text}",
+            temp=0.3,
         )
-        translated = resp.get("message", {}).get("content", "").strip()
-        return {"ok": True, "original": text, "translated": translated, "target_lang": target_lang, "model": model}
+        return {"ok": True, "original": text, "translated": translated.strip(), "target_lang": target_lang, "model": model}
     except Exception as e:
         return {"ok": False, "error": str(e)}
-
-
 # ═══════════════════════════════════════════════════════════════
 # 6. CSV / ДАННЫЕ АНАЛИЗ
 # ═══════════════════════════════════════════════════════════════

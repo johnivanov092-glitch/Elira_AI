@@ -13,7 +13,7 @@ from app.application.elira_memory.service import (
     add_message,
 )
 from app.application.elira_memory.settings import get_settings, save_settings
-from app.application.ollama_models import list_ollama_models
+from app.application.local_models import list_local_models
 
 router = APIRouter(prefix="/api/elira", tags=["elira-state"])
 
@@ -35,8 +35,8 @@ class ChatMessageRequest(BaseModel):
 
 
 class SettingsRequest(BaseModel):
-    ollama_context: int = 8192
-    default_model: str = "gemma3:4b"
+    context_window: int = 131072
+    default_model: str = "local-model"
     agent_profile: str = "Универсальный"
     route_model_map: dict | None = None
     orchestration_enabled: bool = False
@@ -44,7 +44,7 @@ class SettingsRequest(BaseModel):
 
 @router.get("/models")
 async def models():
-    return await list_ollama_models()
+    return await list_local_models()
 
 
 @router.get("/settings")
@@ -57,7 +57,7 @@ def settings_get():
 def settings_put(payload: SettingsRequest):
     init_db()
     return save_settings(
-        payload.ollama_context,
+        payload.context_window,
         payload.default_model,
         payload.agent_profile,
         payload.route_model_map,

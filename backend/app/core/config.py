@@ -20,22 +20,15 @@ for _d in [UPLOAD_DIR, CHAT_DIR, OUTPUT_DIR, BROWSER_DIR, GENERATED_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 STATIC_MODEL_DESCRIPTIONS = {
-    "gemma3:4b":                 "Gemma 3 4B — быстрый чат (по умолчанию)",
-    "qwen3:8b":                  "Qwen 3 8B — универсальная",
-    "qwen2.5-coder:7b":         "Qwen 2.5 Coder 7B — специалист по коду",
-    "mistral-nemo:latest":      "Mistral Nemo 12B — тяжёлая универсальная",
-    "yandex/YandexGPT-5-Lite-8B-instruct-GGUF:latest": "YandexGPT 5 Lite 8B — русскоязычная",
+    "local-model":                "Local llama-server - OpenAI-compatible endpoint",
     "qwen3-coder:480b-cloud":   "Qwen3 Coder 480B — облачный кодер",
     "deepseek-v3.1:671b-cloud": "DeepSeek V3.1 671B — облачный флагман",
     "qwen3-coder-next:latest":  "Qwen3 Coder Next 51B — для мощного железа",
 }
-DEFAULT_MODEL = "gemma3:4b"
+DEFAULT_MODEL = "local-model"
 
 MODEL_SAFE_CTX: dict[str, int] = {
-    "qwen3:8b":                  4096,
-    "qwen2.5-coder:7b":         6144,
-    "deepseek-r1:8b":           4096,
-    "mistral-nemo:latest":      4096,
+    "local-model":              131072,
     "qwen3-coder:480b-cloud":  32768,
     "deepseek-v3.1:671b-cloud":32768,
     "qwen3-coder-next:latest": 16384,
@@ -51,10 +44,10 @@ DEFAULT_PROFILE = "Универсальный"
 
 # Фоллбэк если БД недоступна
 _FALLBACK_ROUTE_MAP: dict[str, list[str]] = {
-    "code":     ["qwen2.5-coder:7b", "qwen3:8b", "gemma3:4b"],
-    "project":  ["qwen2.5-coder:7b", "qwen3:8b", "gemma3:4b"],
-    "research": ["qwen3:8b", "mistral-nemo:latest", "gemma3:4b"],
-    "chat":     ["gemma3:4b", "qwen3:8b"],
+    "code":     ["local-model"],
+    "project":  ["local-model"],
+    "research": ["local-model"],
+    "chat":     ["local-model"],
 }
 
 
@@ -70,7 +63,7 @@ def _get_route_map() -> dict[str, list[str]]:
 # Sentinel values that mean "route via orchestration table, don't trust
 # user_model verbatim". Anything matching is auto-routed; everything else
 # is treated as an explicit choice the user wants honoured.
-AUTO_ROUTE_TOKENS = frozenset({"", "auto", "авто"})
+AUTO_ROUTE_TOKENS = frozenset({"", "auto", "\u0430\u0432\u0442\u043e"})
 
 
 def is_auto_route(user_model: str | None) -> bool:
@@ -350,8 +343,13 @@ AGENT_PROFILE_UI = {
     "Сократ": {"icon": "◌", "short": "Обучение через вопросы.", "tags": ["обучение", "вопросы", "мышление"]},
 }
 
+# Single source of truth for blocked terminal commands. Used by both the
+# /api/terminal/exec runtime and domain/tools/terminal_tool.py. This is a
+# best-effort guard against *accidental* destructive commands by the local
+# user — it is NOT the security boundary (substring matching is bypassable).
+# The real boundary is app.core.auth: non-local callers need a token.
 TERMINAL_BLOCKED = [
-    "rm -rf /", "mkfs", "dd if=", ":(){:|:&};:",
+    "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){:|:&};:",
     "shutdown", "reboot", "format c:", "deltree", ":(){ :|:& };:",
     "remove-item -recurse", "del /s", "rd /s", "rmdir /s",
     "git reset --hard", "git clean -fd", "git checkout --",
@@ -373,4 +371,3 @@ SESSION_DEFAULTS: dict = {
     "ctx_override": None, "active_chat_folder": "Общее",
     "active_chat_file": "", "active_chat_title": "",
 }
-

@@ -1,278 +1,156 @@
 # Elira AI
 
-**Self-hosted AI agent platform** — a fully local, private AI workspace: Tauri
-desktop shell · FastAPI backend · React/TypeScript UI · local LLMs via Ollama.
-Everything — chats, memory, keys, generated files — stays on your machine.
+Self-hosted AI workspace with a Tauri desktop shell, FastAPI backend,
+React/TypeScript frontend, local project tools, memory, approvals, and local
+inference through OpenAI-compatible endpoints.
 
-**Language / Язык: [English](#english) · [Русский](#русский)**
+Core state stays on the main PC. The AI server is used as an inference backend
+only.
 
----
+## Current Runtime
 
-## English
+- Desktop shell: `src-tauri/` (Tauri 2.x).
+- Backend API: `backend/app` (FastAPI, layered `application` / `domain` /
+  `infrastructure`).
+- Frontend: `frontend/` (React 18, Vite, TypeScript).
+- Local model provider: OpenAI-compatible llama-server endpoint.
+- Embeddings provider: OpenAI-compatible embeddings endpoint.
+- Runtime data: root `data/` SQLite DBs and generated/user files.
 
-### Highlights
+Only the OpenAI-compatible local provider path is active in the current
+architecture.
 
-- **Policy-gated agent kernel.** Every tool call passes through a single
-  fail-closed executor: permission tiers (`auto` / `require_approval` /
-  `forbidden`), human-approval gates with TTL and argument-digest binding,
-  scope enforcement, full audit trail. A tool without a classified spec never
-  reaches dispatch.
-- **Engineered for local 7–30B models.** The runtime compensates for
-  small-model weaknesses: inline tool-call recovery, context compaction,
-  run-scoped deferred tool activation (`tool_search`), model routing profiles,
-  per-call inference telemetry.
-- **2,800+ backend tests** (pytest) and a strict-mode TypeScript frontend
-  (`noUnusedLocals`) — gates run before every commit.
-- **Two independent environments:** a chat assistant (skill routing, memory,
-  web search, document/image generation, pipelines, Telegram) and a code agent
-  (file tools, git, terminal, SSH, MCP).
-- **MCP integration** (stdio: tools, resources, prompts — bounded, fail-closed
-  registration) plus a plugin system and workflow engine.
-- **Built with a multi-agent AI workflow:** executor/reviewer roles with an
-  enforced review gate — a commit cannot land without a reviewer `PASS`.
+## Local Provider Environment
 
-No cloud dependency for the core loop; web search is the only optional
-outbound network use. Keys stay in local env files, data stays on disk.
+Put local machine secrets and provider settings in
+`backend/.env.local` only. Do not commit that file.
 
-### Stack
+```env
+LLAMA_SERVER_ENABLED=true
+LLAMA_SERVER_BASE_URL=http://192.168.88.15:8000/v1
+LLAMA_SERVER_MODEL=local-model
+LLAMA_SERVER_API_KEY=local
+LLAMA_SERVER_TIMEOUT_SECONDS=600
+LLAMA_SERVER_CONTEXT_WINDOW=32768
 
-FastAPI + Pydantic v2 · React 18 + Vite + TypeScript (strict) · Tauri 1.x
-(Rust) · Ollama · SQLite · Playwright · SDXL/FLUX image generation (optional)
+LOCAL_EMBED_ENABLED=true
+LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
+LOCAL_EMBED_MODEL=local-embed
+LOCAL_EMBED_API_KEY=local
+LOCAL_EMBED_TIMEOUT_SECONDS=30
+```
 
-### Quick start
+Defaults are defined in
+`backend/app/infrastructure/llm/openai_compatible.py`.
 
-**Core** — enough to run backend, frontend, dashboard, tasks, pipelines,
-Telegram panel, and the desktop shell.
+## API Access (auth)
 
-```bash
+Loopback callers (the Tauri shell and the dev browser on `127.0.0.1`) are
+trusted and need no token. Any non-local caller (LAN / mobile) must send a
+bearer token, which closes the unauthenticated-command-execution path when the
+backend is bound to `0.0.0.0` in mobile mode.
+
+- The token is read from `ELIRA_API_TOKEN`; if unset it is auto-generated once
+  into `data/elira_api_token` (untracked). Read that file to get the token.
+- Mobile/LAN frontend: set `VITE_ELIRA_API_TOKEN` to the same value so the UI
+  sends `Authorization: Bearer <token>`.
+- Set `ELIRA_API_AUTH=off` to disable enforcement (trusted networks only).
+
+## Setup
+
+```powershell
 # Backend
-cd backend
+cd D:\AIWork\Elira_AI\backend
 python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\pip install -r requirements.txt
 
 # Frontend
-cd frontend
+cd D:\AIWork\Elira_AI\frontend
 npm install
 ```
 
-**Optional** — heavy capabilities, loaded lazily on first use. The app starts
-without them; the dashboard and `/api/project-brain/status` report any missing
-capability (`available`, `reason`, `missing_packages`, `hint`).
+`requirements.txt` is the human-edited core dependency list (bounded ranges).
+`requirements.lock` is the fully pinned, resolved core set for reproducible
+installs (`pip install -r requirements.lock`). Regenerate after editing
+`requirements.txt`:
 
-```bash
-cd backend
-.venv\Scripts\pip install -r requirements-optional.txt
-playwright install chromium   # only for the screenshot skill
+```powershell
+cd D:\AIWork\Elira_AI\backend
+.\.venv\Scripts\pip install pip-tools
+.\.venv\Scripts\python.exe -m piptools compile requirements.txt -o requirements.lock --strip-extras
 ```
 
-| Section | Enables |
-|---------|---------|
-| Image generation | SDXL Turbo / FLUX.1-schnell (`torch`, `diffusers`, `transformers`, …) |
-| Document parsing | Excel, PDF tables, OCR (`pdfplumber`, `pandas`, `openpyxl`, `pytesseract`, `pdf2image`) |
-| Browser screenshots | `playwright` |
+Optional heavy capabilities are installed separately:
 
-### Startup order
+```powershell
+cd D:\AIWork\Elira_AI\backend
+.\.venv\Scripts\pip install -r requirements-optional.txt
+playwright install chromium
+```
 
-```bash
-# Backend (127.0.0.1:8000)
-cd backend
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+## Run
 
-# Frontend dev server (browser UI, 5173)
-cd frontend
+```powershell
+# Backend
+cd D:\AIWork\Elira_AI\backend
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+
+# Frontend browser UI
+cd D:\AIWork\Elira_AI\frontend
 npm run dev
 
-# Tauri desktop (from repo root)
+# Desktop shell, from repo root
+cd D:\AIWork\Elira_AI
 npm run tauri dev
 ```
 
-The frontend expects the backend at `http://127.0.0.1:8000` (or
-`VITE_API_BASE_URL` if set). Recommended order: backend → frontend (if testing
-browser UI) → Tauri.
+Windows launchers:
 
-> Deploy note: the desktop app serves the built bundle `frontend/dist`. After
-> any frontend change run `npm --prefix frontend run build` and restart the
-> app. Changes to `src-tauri/tauri.conf.json` need a full Tauri rebuild.
+- `Elira.bat` - main local launcher.
+- `run_tauri_dev.bat` - dev launcher.
+- `Elira_Mobile.bat` - LAN/mobile launcher.
+- `kill_elira.bat` - stops Elira processes.
 
-### Windows launchers
+## Verification
 
-- `Elira.bat` — starts the backend, prints capability notes, opens Tauri.
-- `run_tauri_dev.bat` — installs frontend packages if needed, starts backend, runs Tauri dev.
-- `Elira_Mobile.bat` — LAN / mobile launcher.
-- `kill_elira.bat` — stops all Elira processes.
+Use focused checks for small changes and the full backend suite for cross-cutting
+runtime work.
 
-### Smoke checks
-
-```bash
-# Backend imports + compile
-cd backend
-.venv\Scripts\python.exe -c "from app.main import app; print(len(app.routes), len(app.openapi().get('paths', {})))"
-.venv\Scripts\python.exe -m compileall app
-
-# Contract + tests
-backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py
+```powershell
+cd D:\AIWork\Elira_AI
 backend\.venv\Scripts\python.exe -m pytest -q
-
-# Frontend build + typecheck
+npm --prefix frontend run typecheck
 npm --prefix frontend run build
-cd frontend && npx tsc --noEmit
+git diff --check
 ```
 
-### Documentation
+Backend import smoke:
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — technical documentation (how it works, why).
-- [`docs/PROJECT_MAP.md`](docs/PROJECT_MAP.md) — project tree, data flow, and all dependencies.
-- [`docs/README.md`](docs/README.md) — docs index.
-
-### Project layout
-
-- `backend/` — FastAPI API with layered `application` / `domain` / `infrastructure`.
-- `frontend/` — React + Vite + TypeScript UI.
-- `src-tauri/` — Rust/Tauri desktop shell.
-- `scripts/` — smoke and utility scripts.
-- `data/` — local runtime root (SQLite DBs, uploads, generated, secret key).
-- `docs/` — project documentation.
-
-### Status
-
-Personal research project in active development, used daily as a working
-tool. Agent runtime phases P0–P12 (kernel, policy, approvals, deferred tools,
-MCP context, telemetry) are implemented and tested; deferred work is tracked
-honestly in [`docs/POST_SERVER_BACKLOG.md`](docs/POST_SERVER_BACKLOG.md).
-
----
-
-## Русский
-
-**Self-hosted платформа AI-агентов** — полностью локальный приватный
-AI-воркспейс: десктоп на Tauri · FastAPI-бэкенд · React/TypeScript UI ·
-локальные модели через Ollama. Всё — чаты, память, ключи, файлы — на машине
-пользователя.
-
-### Ключевые особенности
-
-- **Policy-ядро исполнения инструментов.** Каждый tool call проходит через
-  единый fail-closed executor: тиры разрешений (`auto` / `require_approval` /
-  `forbidden`), human-approval гейты с TTL и привязкой к digest аргументов,
-  scope-контроль, полный аудит. Инструмент без классифицированной спецификации
-  не доходит до выполнения.
-- **Инженерия под локальные модели 7–30B.** Runtime компенсирует слабости
-  малых моделей: восстановление inline tool-calls, компакция контекста,
-  отложенная активация инструментов (`tool_search`), профили маршрутизации
-  моделей, телеметрия инференса на каждый вызов.
-- **2 800+ автотестов бэкенда** (pytest) и strict-режим TypeScript на фронте
-  (`noUnusedLocals`) — гейты прогоняются перед каждым коммитом.
-- **Два независимых окружения:** чат-ассистент (маршрутизация навыков, память,
-  веб-поиск, генерация документов/картинок, автопайплайны, Telegram) и
-  код-агент (файловые инструменты, git, терминал, SSH, MCP).
-- **Интеграция MCP** (stdio: tools, resources, prompts — ограниченная,
-  fail-closed регистрация), система плагинов и workflow-движок.
-- **Разработка через мультиагентный AI-пайплайн:** роли executor/reviewer с
-  принудительным ревью-гейтом — коммит не проходит без `PASS` ревьюера.
-
-Для основного цикла внешняя сеть не нужна; единственный опциональный выход в
-сеть — веб-поиск. Ключи — в локальных env-файлах, данные — на диске.
-
-### Зависимости
-
-**Базовые** — их достаточно для бэкенда, фронтенда, дашборда, задач,
-пайплайнов, Telegram-панели и десктоп-оболочки.
-
-```bash
-# Бэкенд
-cd backend
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-
-# Фронтенд
-cd frontend
-npm install
+```powershell
+cd D:\AIWork\Elira_AI\backend
+.\.venv\Scripts\python.exe -c "from app.main import app; print(len(app.routes), len(app.openapi().get('paths', {})))"
 ```
 
-**Опциональные** — тяжёлые возможности, грузятся лениво при первом
-использовании. Приложение запускается и без них; дашборд и
-`/api/project-brain/status` сообщают о недостающей возможности (`available`,
-`reason`, `missing_packages`, `hint`).
+## Documentation
 
-```bash
-cd backend
-.venv\Scripts\pip install -r requirements-optional.txt
-playwright install chromium   # только для навыка скриншотов
-```
+- `docs/README.md` - documentation index.
+- `docs/ARCHITECTURE.md` - current architecture and contracts.
+- `docs/PROJECT_MAP.md` - repository map and ownership.
+- `docs/SERVER.md` - AI inference server summary (host, endpoints, models).
+- `docs/POST_SERVER_BACKLOG.md` - current post-server status.
 
-| Раздел | Что включает |
-|--------|--------------|
-| Генерация изображений | SDXL Turbo / FLUX.1-schnell (`torch`, `diffusers`, `transformers`, …) |
-| Разбор документов | Excel, таблицы PDF, OCR (`pdfplumber`, `pandas`, `openpyxl`, `pytesseract`, `pdf2image`) |
-| Скриншоты браузера | `playwright` |
+The dedicated inference server has its own repo, `Elira_AI_Server`, in the same
+parent folder; its full operational docs live at
+`../Elira_AI_Server/Server/ACCESS.md`.
 
-### Порядок запуска
+## Repository Rules
 
-```bash
-# Бэкенд (127.0.0.1:8000)
-cd backend
-.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-
-# Dev-сервер фронтенда (браузерный UI, 5173)
-cd frontend
-npm run dev
-
-# Десктоп Tauri (из корня репозитория)
-npm run tauri dev
-```
-
-Фронтенд ожидает бэкенд на `http://127.0.0.1:8000` (или `VITE_API_BASE_URL`,
-если задан). Рекомендуемый порядок: бэкенд → фронтенд (если тестируешь
-браузерный UI) → Tauri.
-
-> Про деплой: десктоп отдаёт собранный бандл `frontend/dist`. После любой
-> правки фронта выполни `npm --prefix frontend run build` и перезапусти
-> приложение. Изменения `src-tauri/tauri.conf.json` требуют полной пересборки
-> Tauri.
-
-### Лаунчеры (Windows)
-
-- `Elira.bat` — запускает бэкенд, печатает заметки о возможностях, открывает Tauri.
-- `run_tauri_dev.bat` — ставит пакеты фронта при необходимости, запускает бэкенд, поднимает Tauri dev.
-- `Elira_Mobile.bat` — лаунчер для локальной сети / мобильного.
-- `kill_elira.bat` — останавливает все процессы Elira.
-
-### Smoke-проверки
-
-```bash
-# Импорты + компиляция бэкенда
-cd backend
-.venv\Scripts\python.exe -c "from app.main import app; print(len(app.routes), len(app.openapi().get('paths', {})))"
-.venv\Scripts\python.exe -m compileall app
-
-# Контракт + тесты
-backend\.venv\Scripts\python.exe scripts\smoke_contract_check.py
-backend\.venv\Scripts\python.exe -m pytest -q
-
-# Сборка + типизация фронта
-npm --prefix frontend run build
-cd frontend && npx tsc --noEmit
-```
-
-### Документация
-
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — техническая документация (как устроено и почему).
-- [`docs/PROJECT_MAP.md`](docs/PROJECT_MAP.md) — дерево проекта, потоки данных и все зависимости.
-- [`docs/README.md`](docs/README.md) — индекс документации.
-
-### Структура проекта
-
-- `backend/` — FastAPI API со слоями `application` / `domain` / `infrastructure`.
-- `frontend/` — UI на React + Vite + TypeScript.
-- `src-tauri/` — десктоп-оболочка на Rust/Tauri.
-- `scripts/` — smoke- и вспомогательные скрипты.
-- `data/` — локальный runtime-root (SQLite-БД, uploads, generated, ключ).
-- `docs/` — документация проекта.
-
-### Статус
-
-Личный исследовательский проект в активной разработке, используется ежедневно
-как рабочий инструмент. Фазы агентного runtime P0–P12 (kernel, policy,
-approvals, deferred tools, MCP-контекст, телеметрия) реализованы и покрыты
-тестами; отложенные работы честно зафиксированы в
-[`docs/POST_SERVER_BACKLOG.md`](docs/POST_SERVER_BACKLOG.md).
+- Keep runtime DBs, uploads, generated files, logs, models, caches, env
+  files, and secrets out of git.
+- `data/elira_secret.key` and `data/elira_api_token` are per-machine secrets:
+  they auto-generate at runtime and must stay untracked (committing the Fernet
+  key would let anyone with the repo decrypt stored data).
+- Keep `data/plugins/` and `data/plugins_config.json` tracked intentionally.
+- Extend the existing agent executor, tool registry, model provider, and DB
+  modules instead of adding parallel runtimes.
+- Prefer small, verified patches and commit only clean working trees.

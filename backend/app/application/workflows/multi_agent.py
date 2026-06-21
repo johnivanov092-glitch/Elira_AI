@@ -304,7 +304,7 @@ def _build_multi_agent_timeline(template: dict[str, Any], step_results: dict[str
 def run_multi_agent_workflow(
     *,
     query: str,
-    model_name: str = "qwen3:8b",
+    model_name: str = "local-model",
     context: str = "",
     agents: list[str] | None = None,
     use_reflection: bool = False,

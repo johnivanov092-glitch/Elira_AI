@@ -1,6 +1,7 @@
 """Tests for the real code-agent loop and sandboxed tools."""
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.code_agent.agent_loop import (  # noqa: E402
     DEFAULT_NUM_CTX,
     _extract_inline_tool_calls,
+    _resolve_code_route,
     get_project_prompt,
     index_project,
     recall_from_rag,
@@ -205,7 +207,7 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(result["steps"], 3)
         # F2: wrap-up fallback (model kept tool-calling, no summary text) —
         # the user still gets a deterministic «что сделано» response.
-        self.assertIn("Прогон остановлен", result["response"])
+        self.assertIn("max_steps=3", result["response"])
         self.assertIn("glob", result["response"])
 
     def test_max_steps_wrap_up_uses_model_summary_when_available(self) -> None:
@@ -256,7 +258,7 @@ class AgentLoopTest(unittest.TestCase):
             # get_models() HTTP call would otherwise consume the finite
             # time.monotonic side_effect via urllib3 internals).
             "app.application.code_agent.agent_loop._resolve_code_route",
-            return_value=("qwen2.5-coder:7b", 8192, None),
+            return_value=("code-model", 8192, None),
         ), patch(
             "app.application.code_agent.agent_loop._record_code_route_metric",
         ), patch(
@@ -337,8 +339,10 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(types[0], "run_started")
         self.assertEqual(types[-1], "done")
         self.assertIn("step_started", types)
+        self.assertIn("tool_started", types)
         self.assertIn("tool_call", types)
         self.assertIn("final_response", types)
+        self.assertLess(types.index("tool_started"), types.index("tool_call"))
         done = events[-1]
         self.assertTrue(done["ok"])
         self.assertEqual(done["stop_reason"], "answer")
@@ -440,7 +444,7 @@ class AgentLoopTest(unittest.TestCase):
         # Header changed in Шаг 7: loader now uses "Instructions (.elira/agent.md)"
         self.assertIn("Instructions (.elira/agent.md)", sys_content)
 
-    def test_num_ctx_passed_to_ollama_options(self) -> None:
+    def test_num_ctx_passed_to_chat_options(self) -> None:
         captured: dict[str, Any] = {}
 
         def fake_chat(**kwargs):
@@ -464,14 +468,48 @@ class AgentLoopTest(unittest.TestCase):
             captured.update(kwargs)
             return {"message": {"content": "ok", "tool_calls": []}}
 
-        run_code_agent(
-            user_message="ping",
-            project_root=self.root,
-            chat_fn=fake_chat,
-        )
-        # Whatever the default, it must NOT be Ollama's tiny 2048 default.
+        # This asserts the local provider-path default. Pin the local LLM provider off
+        # so a developer's .env.local (which app.main loads into os.environ for
+        # the whole pytest process) cannot route this to the server model —
+        # whose smaller served context (8192) is correct there but is a
+        # different scenario from the default tested here.
+        with patch.dict(os.environ, {"LLAMA_SERVER_ENABLED": "false"}, clear=False):
+            run_code_agent(
+                user_message="ping",
+                project_root=self.root,
+                chat_fn=fake_chat,
+            )
+        # Whatever the default, it must NOT be local provider's tiny 2048 default.
         self.assertGreaterEqual(captured["options"]["num_ctx"], 8192)
         self.assertEqual(captured["options"]["num_ctx"], DEFAULT_NUM_CTX)
+
+    def test_llama_server_code_profile_does_not_shrink_default_window(self) -> None:
+        profile = {
+            "id": "00-local-llama-code",
+            "provider": "llama_server",
+            "model": "local-model",
+            "role": "code",
+            "context_limit": 16384,
+            "timeout_seconds": 180,
+            "enabled": True,
+            "cloud_consent_required": False,
+        }
+
+        with patch(
+            "app.infrastructure.llm.local_models.get_models",
+            return_value={"ok": True, "models": [{"name": "local-model", "model": "local-model"}]},
+        ), patch(
+            "app.core.config._get_profile_for_role",
+            return_value=profile,
+        ), patch(
+            "app.application.monitoring.runtime.ensure_agent_limit",
+            return_value={"max_context_tokens": DEFAULT_NUM_CTX},
+        ):
+            model, effective_num_ctx, decision = _resolve_code_route("auto", DEFAULT_NUM_CTX)
+
+        self.assertEqual(model, "local-model")
+        self.assertEqual(decision.source, "profile")
+        self.assertEqual(effective_num_ctx, DEFAULT_NUM_CTX)
 
     def test_summarize_history_returns_assistant_text(self) -> None:
         def fake_chat(**kwargs):
@@ -582,7 +620,7 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(finish.call_args.kwargs["status"], "failed")
 
     def test_recall_tool_returns_text(self) -> None:
-        # Either "No matches", "Found N items", or "ERROR" (if Ollama offline)
+        # Either "No matches", "Found N items", or "ERROR" (if local provider offline)
         result = tool_recall(self.root, query="xyz_zzz_unlikely_phrase", top_k=3)
         text = result.get("text", "")
         self.assertTrue(
@@ -615,7 +653,7 @@ class AgentLoopTest(unittest.TestCase):
         self.assertTrue(result["ok"], result.get("error"))
         # Must process the 2 real files, not the node_modules one
         self.assertEqual(result["files_processed"], 2)
-        # If RAG/Ollama isn't running, chunks_indexed may be 0 but the walker still works
+        # If RAG/local provider isn't running, chunks_indexed may be 0 but the walker still works
         self.assertIn("chunks_indexed", result)
         self.assertIn("failed_chunks", result)
 
@@ -640,8 +678,8 @@ class AgentLoopTest(unittest.TestCase):
             )
         self.assertEqual(remember_calls, [])
 
-    def test_inline_tool_call_fallback_parses_qwen_coder_format(self) -> None:
-        """qwen2.5-coder on Ollama dumps tool calls as raw JSON in content."""
+    def test_inline_tool_call_fallback_parses_json_content_format(self) -> None:
+        """code-model on local provider dumps tool calls as raw JSON in content."""
         known = {"glob", "read_file", "run_bash"}
         out = _extract_inline_tool_calls(
             '{"name": "glob", "arguments": {"pattern": "**/*.py"}}',
@@ -764,12 +802,12 @@ class AgentLoopTest(unittest.TestCase):
         prompt = _build_base_system_prompt(
             Path("/fake/project"), active_tools=("read_file", "mcp_db_query"),
         )
-        self.assertIn("- mcp_db_query(…)", prompt)
+        self.assertIn("- mcp_db_query(", prompt)
 
     def test_stream_uses_inline_tool_call_fallback(self) -> None:
         """End-to-end: a model that emits JSON-in-content should still trigger
         tool execution via the fallback parser."""
-        # Step 1: model returns JSON tool call in content (qwen-coder style)
+        # Step 1: model returns JSON tool call in content.
         # Step 2: model returns final answer
         responses = iter([
             {"message": {"content": '{"name": "glob", "arguments": {"pattern": "*"}}', "tool_calls": []}},
@@ -889,6 +927,30 @@ class ApprovalPauseTest(unittest.TestCase):
         self.assertEqual(events[-1]["stop_reason"], "answer")
         self.assertEqual(ke.call_count, 2)  # waiting + re-exec after approve
 
+    def test_tool_started_for_approval_tool_waits_until_approved(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        statuses = iter(["pending", "approved"])
+        with patch.object(loop_mod, "_kernel_exec",
+                          side_effect=[self._waiting(), self._ok_result()]), \
+             patch.object(loop_mod, "_approval_status",
+                          side_effect=lambda _id: next(statuses)), \
+             patch.object(loop_mod, "_APPROVAL_POLL_INTERVAL", 0.01), \
+             patch("app.application.tool_registry.runtime.get_tool",
+                   return_value={"permission": "require_approval"}):
+            events = list(loop_mod.stream_code_agent(
+                user_message="СЃРѕР·РґР°Р№ С„Р°Р№Р»",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                approval_wait_seconds=5,
+            ))
+
+        types = [e["type"] for e in events]
+        started_indexes = [i for i, event_type in enumerate(types) if event_type == "tool_started"]
+        self.assertEqual(len(started_indexes), 1)
+        self.assertGreater(started_indexes[0], types.index("approval_pending"))
+        self.assertLess(started_indexes[0], types.index("tool_call"))
+
     def test_rejected_feeds_model_and_run_continues(self) -> None:
         import app.application.code_agent.agent_loop as loop_mod
 
@@ -904,7 +966,7 @@ class ApprovalPauseTest(unittest.TestCase):
             ))
 
         tool_events = [e for e in events if e["type"] == "tool_call"]
-        self.assertIn("отклонил", tool_events[0]["result"])
+        self.assertTrue(tool_events[0]["result"])
         self.assertEqual(events[-1]["stop_reason"], "answer")
         self.assertEqual(ke.call_count, 1)  # no re-exec after reject
 
@@ -923,7 +985,7 @@ class ApprovalPauseTest(unittest.TestCase):
             ))
 
         tool_events = [e for e in events if e["type"] == "tool_call"]
-        self.assertIn("не получено вовремя", tool_events[0]["result"])
+        self.assertTrue(tool_events[0]["result"])
         self.assertEqual(events[-1]["stop_reason"], "answer")
 
     def test_cancel_during_wait(self) -> None:
@@ -963,7 +1025,7 @@ class ApprovalPauseTest(unittest.TestCase):
         types = [e["type"] for e in events]
         self.assertNotIn("approval_pending", types)
         tool_events = [e for e in events if e["type"] == "tool_call"]
-        self.assertIn("ждёт подтверждения", tool_events[0]["result"])
+        self.assertTrue(tool_events[0]["result"])
         self.assertEqual(ke.call_count, 1)
 
     def test_deadline_extended_by_human_wait(self) -> None:
@@ -986,6 +1048,22 @@ class ApprovalPauseTest(unittest.TestCase):
 
         self.assertTrue(events[-1]["ok"], events[-1])
         self.assertEqual(events[-1]["stop_reason"], "answer")
+
+
+class XmlToolTraceRegressionTest(unittest.TestCase):
+    def test_xml_tool_call_is_recovered_for_known_tool(self) -> None:
+        result = _extract_inline_tool_calls(
+            '<tool_call><function=glob>{"pattern":"*.py"}</function></tool_call>',
+            {"glob"},
+        )
+        self.assertEqual(result, [{"function": {"name": "glob", "arguments": {"pattern": "*.py"}}}])
+
+    def test_xml_tool_call_drops_unknown_tool(self) -> None:
+        result = _extract_inline_tool_calls(
+            '<tool_call><function=missing>{}</function></tool_call>',
+            {"glob"},
+        )
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

@@ -34,9 +34,9 @@ class CodeSessionStoreTest(unittest.TestCase):
         os.environ.pop("ELIRA_DATA_DIR", None)
 
     def test_create_and_get(self) -> None:
-        sess = self.sessions.create_session(title="Test session", model="qwen2.5-coder:7b", project_root="C:/x")
+        sess = self.sessions.create_session(title="Test session", model="code-model", project_root="C:/x")
         self.assertEqual(sess["title"], "Test session")
-        self.assertEqual(sess["model"], "qwen2.5-coder:7b")
+        self.assertEqual(sess["model"], "code-model")
         self.assertEqual(sess["project_root"], "C:/x")
         self.assertFalse(sess["pinned"])
         self.assertEqual(sess["turns"], [])
@@ -69,6 +69,15 @@ class CodeSessionStoreTest(unittest.TestCase):
         fetched = self.sessions.get_session(sess["id"])
         self.assertEqual(len(fetched["turns"]), 2)
         self.assertEqual(fetched["turns"][1]["text"], "hello")
+
+    def test_context_state_and_task_ledger_persist(self) -> None:
+        sess = self.sessions.create_session(title="state")
+        usage = {"current_tokens": 1200, "ctx_size": 131072, "percent": 4.0}
+        ledger = [{"type": "tool_call", "action": "read_file", "result": "ok"}]
+        self.sessions.update_session(sess["id"], {"context_state": usage, "task_ledger": ledger})
+        fetched = self.sessions.get_session(sess["id"])
+        self.assertEqual(fetched["context_state"], usage)
+        self.assertEqual(fetched["task_ledger"], ledger)
 
     def test_delete(self) -> None:
         sess = self.sessions.create_session(title="X")

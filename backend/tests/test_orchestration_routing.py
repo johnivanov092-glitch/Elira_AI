@@ -24,10 +24,10 @@ from app.core.config import (  # noqa: E402
 
 
 _FAKE_ROUTE_MAP = {
-    "code":     ["qwen2.5-coder:7b", "qwen3:8b", "gemma3:4b"],
-    "research": ["mistral-nemo:latest", "qwen3:8b"],
-    "chat":     ["gemma4:e2b", "qwen3:8b"],
-    "project":  ["qwen2.5-coder:7b", "gemma3:4b"],
+    "code":     ["code-model", "backup-model", "chat-model"],
+    "research": ["research-model", "backup-model"],
+    "chat":     ["chat-model", "backup-model"],
+    "project":  ["code-model", "chat-model"],
 }
 
 
@@ -44,8 +44,8 @@ class AutoRouteSentinelTest(unittest.TestCase):
         self.assertTrue(is_auto_route("Auto"))
 
     def test_russian_auto_is_auto(self):
-        self.assertTrue(is_auto_route("авто"))
-        self.assertTrue(is_auto_route("АВТО"))
+        self.assertTrue(is_auto_route("\u0430\u0432\u0442\u043e"))
+        self.assertTrue(is_auto_route("\u0410\u0412\u0422\u041e"))
 
     def test_whitespace_only_is_auto(self):
         self.assertTrue(is_auto_route("   "))
@@ -54,9 +54,9 @@ class AutoRouteSentinelTest(unittest.TestCase):
         self.assertFalse(is_auto_route(DEFAULT_MODEL))
 
     def test_explicit_model_is_not_auto(self):
-        self.assertFalse(is_auto_route("qwen2.5-coder:7b"))
-        self.assertFalse(is_auto_route("gemma4:e2b"))
-        self.assertFalse(is_auto_route("llama3.2:3b"))
+        self.assertFalse(is_auto_route("code-model"))
+        self.assertFalse(is_auto_route("chat-model"))
+        self.assertFalse(is_auto_route("explicit-model"))
 
 
 class PickModelForRouteTest(unittest.TestCase):
@@ -73,43 +73,43 @@ class PickModelForRouteTest(unittest.TestCase):
         self.profile_patcher.stop()
 
     def test_explicit_model_bypasses_orchestration(self):
-        """User picks qwen2.5-coder explicitly — they get qwen2.5-coder, route ignored."""
-        result = pick_model_for_route("code", "qwen2.5-coder:7b", available_models=["qwen2.5-coder:7b"])
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        """User picks code-model explicitly — they get code-model, route ignored."""
+        result = pick_model_for_route("code", "code-model", available_models=["code-model"])
+        self.assertEqual(result, "code-model")
 
     def test_explicit_model_kept_even_when_route_map_disagrees(self):
         """Explicit user_model wins even if it's not in route_map[route] candidates."""
-        # User asks gemma4:e2b for code task — we don't override
-        result = pick_model_for_route("code", "gemma4:e2b", available_models=["gemma4:e2b"])
-        self.assertEqual(result, "gemma4:e2b")
+        # User asks chat-model for code task — we don't override
+        result = pick_model_for_route("code", "chat-model", available_models=["chat-model"])
+        self.assertEqual(result, "chat-model")
 
     def test_auto_empty_string_triggers_orchestration(self):
-        result = pick_model_for_route("code", "", available_models=["qwen2.5-coder:7b", "gemma3:4b"])
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        result = pick_model_for_route("code", "", available_models=["code-model", "chat-model"])
+        self.assertEqual(result, "code-model")
 
     def test_auto_literal_triggers_orchestration(self):
-        result = pick_model_for_route("code", "auto", available_models=["qwen2.5-coder:7b"])
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        result = pick_model_for_route("code", "auto", available_models=["code-model"])
+        self.assertEqual(result, "code-model")
 
     def test_auto_russian_triggers_orchestration(self):
-        result = pick_model_for_route("research", "авто", available_models=["mistral-nemo:latest", "qwen3:8b"])
-        self.assertEqual(result, "mistral-nemo:latest")
+        result = pick_model_for_route("research", "\u0430\u0432\u0442\u043e", available_models=["research-model", "backup-model"])
+        self.assertEqual(result, "research-model")
 
     def test_auto_cascade_to_second_candidate_when_first_missing(self):
-        # qwen2.5-coder NOT in available — fall through to qwen3:8b
-        result = pick_model_for_route("code", "auto", available_models=["qwen3:8b", "gemma3:4b"])
-        self.assertEqual(result, "qwen3:8b")
+        # code-model NOT in available — fall through to backup-model
+        result = pick_model_for_route("code", "auto", available_models=["backup-model", "chat-model"])
+        self.assertEqual(result, "backup-model")
 
     def test_auto_returns_first_candidate_when_no_available_list(self):
         result = pick_model_for_route("research", "auto")
-        self.assertEqual(result, "mistral-nemo:latest")
+        self.assertEqual(result, "research-model")
 
     def test_auto_unknown_route_falls_back_to_chat(self):
-        result = pick_model_for_route("nonexistent_route", "auto", available_models=["gemma4:e2b"])
-        self.assertEqual(result, "gemma4:e2b")
+        result = pick_model_for_route("nonexistent_route", "auto", available_models=["chat-model"])
+        self.assertEqual(result, "chat-model")
 
     def test_default_model_does_not_route_via_orchestration(self):
-        result = pick_model_for_route("code", DEFAULT_MODEL, available_models=["qwen2.5-coder:7b"])
+        result = pick_model_for_route("code", DEFAULT_MODEL, available_models=["code-model"])
         self.assertEqual(result, DEFAULT_MODEL)
 
 
@@ -117,7 +117,7 @@ def _profile(model: str, role: str = "fast", *, cloud: bool = False) -> dict:
     """Build a model_profiles row dict for patching _get_profile_for_role."""
     return {
         "id": f"p-{model}",
-        "provider": "anthropic" if cloud else "ollama",
+        "provider": "anthropic" if cloud else "llama_server",
         "model": model,
         "role": role,
         "context_limit": 16384,
@@ -162,53 +162,53 @@ class ModelProfileRoutingTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_enabled_profile_used_when_model_available(self):
-        self._patch_profile(_profile("qwen2.5-coder:7b", role="code"))
+        self._patch_profile(_profile("code-model", role="code"))
         result = pick_model_for_route(
-            "code", "auto", available_models=["gemma3:4b", "qwen2.5-coder:7b"]
+            "code", "auto", available_models=["chat-model", "code-model"]
         )
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        self.assertEqual(result, "code-model")
 
     def test_profile_overrides_route_map_first_candidate(self):
-        # route 'research' route_map first = mistral-nemo, but profile says qwen3:8b.
-        self._patch_profile(_profile("qwen3:8b", role="strong"))
+        # route 'research' route_map first = mistral-nemo, but profile says backup-model.
+        self._patch_profile(_profile("backup-model", role="strong"))
         result = pick_model_for_route(
-            "research", "auto", available_models=["mistral-nemo:latest", "qwen3:8b"]
+            "research", "auto", available_models=["research-model", "backup-model"]
         )
-        self.assertEqual(result, "qwen3:8b")
+        self.assertEqual(result, "backup-model")
 
     def test_unavailable_profile_model_falls_back_to_route_map(self):
         # profile model not installed -> bounded fallback to a route_map candidate.
-        self._patch_profile(_profile("qwen2.5:4b", role="code"))
+        self._patch_profile(_profile("profile-model", role="code"))
         result = pick_model_for_route(
-            "code", "auto", available_models=["qwen2.5-coder:7b", "gemma3:4b"]
+            "code", "auto", available_models=["code-model", "chat-model"]
         )
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        self.assertEqual(result, "code-model")
 
     def test_profile_skipped_when_availability_unknown(self):
         # available_models=None -> cannot confirm availability -> route_map (back-compat).
-        self._patch_profile(_profile("qwen2.5:4b", role="research"))
+        self._patch_profile(_profile("profile-model", role="research"))
         result = pick_model_for_route("research", "auto")
-        self.assertEqual(result, "mistral-nemo:latest")
+        self.assertEqual(result, "research-model")
 
     def test_cloud_profile_skipped_without_consent(self):
         # cloud_consent_required profile is skipped by the string API -> route_map.
         self._patch_profile(_profile("claude-sonnet-4-5", role="strong", cloud=True))
         result = pick_model_for_route(
-            "research", "auto", available_models=["claude-sonnet-4-5", "mistral-nemo:latest"]
+            "research", "auto", available_models=["claude-sonnet-4-5", "research-model"]
         )
-        self.assertEqual(result, "mistral-nemo:latest")
+        self.assertEqual(result, "research-model")
 
     def test_explicit_choice_beats_profile(self):
-        self._patch_profile(_profile("qwen2.5-coder:7b", role="code"))
+        self._patch_profile(_profile("code-model", role="code"))
         result = pick_model_for_route(
-            "code", "gemma3:4b", available_models=["qwen2.5-coder:7b", "gemma3:4b"]
+            "code", "chat-model", available_models=["code-model", "chat-model"]
         )
-        self.assertEqual(result, "gemma3:4b")
+        self.assertEqual(result, "chat-model")
 
     def test_no_profile_uses_route_map(self):
         self._patch_profile(None)
-        result = pick_model_for_route("code", "auto", available_models=["qwen2.5-coder:7b"])
-        self.assertEqual(result, "qwen2.5-coder:7b")
+        result = pick_model_for_route("code", "auto", available_models=["code-model"])
+        self.assertEqual(result, "code-model")
 
 
 class ResolveModelForRouteTest(unittest.TestCase):
@@ -228,45 +228,45 @@ class ResolveModelForRouteTest(unittest.TestCase):
 
     def test_explicit_source(self):
         self._patch_profile(None)
-        decision = resolve_model_for_route("code", "gemma3:4b", ["gemma3:4b"])
+        decision = resolve_model_for_route("code", "chat-model", ["chat-model"])
         self.assertIsInstance(decision, ModelRouteDecision)
         self.assertEqual(decision.source, "explicit")
-        self.assertEqual(decision.model, "gemma3:4b")
-        self.assertEqual(decision.requested_model, "gemma3:4b")
+        self.assertEqual(decision.model, "chat-model")
+        self.assertEqual(decision.requested_model, "chat-model")
         self.assertEqual(decision.role, "code")
 
     def test_profile_source_populates_metadata(self):
-        self._patch_profile(_profile("qwen2.5-coder:7b", role="code"))
-        decision = resolve_model_for_route("code", "auto", ["qwen2.5-coder:7b"])
+        self._patch_profile(_profile("code-model", role="code"))
+        decision = resolve_model_for_route("code", "auto", ["code-model"])
         self.assertEqual(decision.source, "profile")
-        self.assertEqual(decision.model, "qwen2.5-coder:7b")
-        self.assertEqual(decision.profile_id, "p-qwen2.5-coder:7b")
-        self.assertEqual(decision.provider, "ollama")
+        self.assertEqual(decision.model, "code-model")
+        self.assertEqual(decision.profile_id, "p-code-model")
+        self.assertEqual(decision.provider, "llama_server")
         self.assertEqual(decision.context_limit, 16384)
         self.assertEqual(decision.timeout_seconds, 30)
 
     def test_route_map_source_with_fallback_reason(self):
-        self._patch_profile(_profile("qwen2.5:4b", role="code"))  # not installed
-        decision = resolve_model_for_route("code", "auto", ["qwen2.5-coder:7b"])
+        self._patch_profile(_profile("profile-model", role="code"))  # not installed
+        decision = resolve_model_for_route("code", "auto", ["code-model"])
         self.assertEqual(decision.source, "route_map")
-        self.assertEqual(decision.model, "qwen2.5-coder:7b")
+        self.assertEqual(decision.model, "code-model")
         self.assertEqual(decision.fallback_reason, "profile_model_unavailable")
 
     def test_no_profile_fallback_reason(self):
         self._patch_profile(None)
-        decision = resolve_model_for_route("code", "auto", ["qwen2.5-coder:7b"])
+        decision = resolve_model_for_route("code", "auto", ["code-model"])
         self.assertEqual(decision.source, "route_map")
         self.assertEqual(decision.fallback_reason, "no_profile_for_role")
 
     def test_availability_unknown_fallback_reason(self):
-        self._patch_profile(_profile("qwen2.5:4b", role="research"))
+        self._patch_profile(_profile("profile-model", role="research"))
         decision = resolve_model_for_route("research", "auto")
         self.assertEqual(decision.source, "route_map")
         self.assertEqual(decision.fallback_reason, "available_models_unknown")
 
     def test_cloud_skipped_flag(self):
         self._patch_profile(_profile("claude", role="strong", cloud=True))
-        decision = resolve_model_for_route("research", "auto", ["claude", "mistral-nemo:latest"])
+        decision = resolve_model_for_route("research", "auto", ["claude", "research-model"])
         self.assertEqual(decision.source, "route_map")
         self.assertTrue(decision.cloud_skipped)
         self.assertEqual(decision.fallback_reason, "cloud_consent_required")
@@ -280,8 +280,8 @@ class ResolveModelForRouteTest(unittest.TestCase):
     def test_pick_model_matches_resolve_model(self):
         self._patch_profile(None)
         self.assertEqual(
-            pick_model_for_route("research", "auto", ["mistral-nemo:latest"]),
-            resolve_model_for_route("research", "auto", ["mistral-nemo:latest"]).model,
+            pick_model_for_route("research", "auto", ["research-model"]),
+            resolve_model_for_route("research", "auto", ["research-model"]).model,
         )
 
 
@@ -299,8 +299,7 @@ class EffectiveContextLimitTest(unittest.TestCase):
         )
 
     def test_capped_by_known_model_safe_ctx(self):
-        # qwen2.5-coder:7b -> 6144 in MODEL_SAFE_CTX
-        self.assertEqual(effective_context_limit(32768, model="qwen2.5-coder:7b"), 6144)
+        self.assertEqual(effective_context_limit(32768, model="local-model"), 32768)
 
     def test_unknown_model_not_cut_to_default(self):
         self.assertEqual(effective_context_limit(8192, model="totally-unknown:1b"), 8192)

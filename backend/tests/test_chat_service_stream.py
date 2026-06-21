@@ -129,10 +129,10 @@ class ChatDataclassesTest(unittest.TestCase):
     def test_chat_plan_preparation_fields(self) -> None:
         obj = ChatPlanPreparation(
             plan={}, route="chat", temporal={}, web_plan={},
-            selected_tools=[], effective_model="gemma3:4b",
+            selected_tools=[], effective_model="chat-model",
         )
         self.assertEqual(obj.route, "chat")
-        self.assertEqual(obj.effective_model, "gemma3:4b")
+        self.assertEqual(obj.effective_model, "chat-model")
 
     def test_chat_run_bootstrap_fields(self) -> None:
         obj = ChatRunBootstrap(

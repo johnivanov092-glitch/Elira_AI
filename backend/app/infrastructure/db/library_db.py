@@ -4,6 +4,7 @@ from __future__ import annotations
 import sqlite3
 
 from app.core.data_files import sqlite_data_file
+from app.infrastructure.db.connection import connect_sqlite
 
 DB_PATH = sqlite_data_file("library.db", key_tables=("files",))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -23,9 +24,7 @@ CREATE TABLE IF NOT EXISTS files (
 
 
 def _conn() -> sqlite3.Connection:
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    return c
+    return connect_sqlite(DB_PATH)
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:

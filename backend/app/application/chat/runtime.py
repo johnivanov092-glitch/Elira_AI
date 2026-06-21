@@ -60,10 +60,10 @@ from app.application.chat.agent_os import (
 )
 from app.core.config import effective_context_limit, resolve_model_for_route
 from app.infrastructure.search.web_search import do_temporal_web_search as _infra_do_temporal_web_search
-from app.infrastructure.llm.ollama_models import get_models
+from app.infrastructure.llm.local_models import get_models
 from app.application.agent_registry.sandbox import preflight_or_raise, resolve_effective_agent_id
 from app.application.monitoring.runtime import ensure_agent_limit, record_metric
-from app.application.chat.ollama_chat import run_chat, run_chat_stream
+from app.application.chat.local_chat import run_chat, run_chat_stream
 from app.application.persona.service import observe_dialogue
 from app.application.chat.planner_v2 import PlannerV2Service
 from app.application.chat.reflection_loop import run_reflection_loop
@@ -208,9 +208,11 @@ def _resolve_agent(**kwargs: Any) -> Any:
 
 
 def _chat_available_models() -> list[str] | None:
-    """Installed Ollama model identifiers (name + model tags), or None when
-    Ollama is unreachable so the P9.3 profile step stays inert and routing
-    falls back to the route map exactly as before."""
+    """Installed local model identifiers, or None when local discovery fails.
+
+    Returning None keeps the P9.3 profile step inert and preserves the route-map
+    fallback path.
+    """
     try:
         result = get_models()
     except Exception:
@@ -308,7 +310,7 @@ def run_agent(
     use_library=True,
     use_reflection=False,
     history=None,
-    num_ctx=8192,
+    num_ctx=131_072,
     use_web_search=True,
     use_python_exec=True,
     use_image_gen=True,
@@ -365,7 +367,7 @@ def run_agent_stream(
     use_library=True,
     use_reflection=False,
     history=None,
-    num_ctx=8192,
+    num_ctx=131_072,
     use_web_search=True,
     use_python_exec=True,
     use_image_gen=True,

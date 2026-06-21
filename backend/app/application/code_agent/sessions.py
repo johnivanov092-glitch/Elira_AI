@@ -44,10 +44,23 @@ def init_db() -> None:
                 model TEXT,
                 num_ctx INTEGER,
                 pinned INTEGER NOT NULL DEFAULT 0,
-                turns_json TEXT NOT NULL DEFAULT '[]'
+                turns_json TEXT NOT NULL DEFAULT '[]',
+                context_state_json TEXT NOT NULL DEFAULT '{}',
+                task_ledger_json TEXT NOT NULL DEFAULT '[]',
+                pinned_items_json TEXT NOT NULL DEFAULT '[]',
+                compression_events_json TEXT NOT NULL DEFAULT '[]'
             )
             """
         )
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+        for name, ddl in (
+            ("context_state_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("task_ledger_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("pinned_items_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("compression_events_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {ddl}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_pinned ON sessions(pinned DESC, updated_at DESC)")
         conn.commit()
@@ -115,6 +128,16 @@ def get_session(session_id: str) -> dict[str, Any] | None:
             meta["turns"] = json.loads(row["turns_json"] or "[]")
         except (json.JSONDecodeError, TypeError):
             meta["turns"] = []
+        for field, column, fallback in (
+            ("context_state", "context_state_json", {}),
+            ("task_ledger", "task_ledger_json", []),
+            ("pinned_items", "pinned_items_json", []),
+            ("compression_events", "compression_events_json", []),
+        ):
+            try:
+                meta[field] = json.loads(row[column] or json.dumps(fallback))
+            except (json.JSONDecodeError, TypeError):
+                meta[field] = fallback
         return meta
     finally:
         conn.close()
@@ -150,6 +173,10 @@ def create_session(
         "num_ctx": num_ctx,
         "pinned": False,
         "turns": [],
+        "context_state": {},
+        "task_ledger": [],
+        "pinned_items": [],
+        "compression_events": [],
     }
 
 
@@ -157,14 +184,14 @@ def update_session(session_id: str, patch: dict[str, Any]) -> dict[str, Any] | N
     """Update mutable fields. Allowed keys: title, project_root, model,
     num_ctx, pinned, turns. updated_at is bumped automatically.
     """
-    allowed = {"title", "project_root", "model", "num_ctx", "pinned", "turns"}
+    allowed = {"title", "project_root", "model", "num_ctx", "pinned", "turns", "context_state", "task_ledger", "pinned_items", "compression_events"}
     sets: list[str] = []
     values: list[Any] = []
     for key, value in patch.items():
         if key not in allowed:
             continue
-        if key == "turns":
-            sets.append("turns_json = ?")
+        if key in {"turns", "context_state", "task_ledger", "pinned_items", "compression_events"}:
+            sets.append(f"{key}_json = ?")
             values.append(json.dumps(value, ensure_ascii=False))
         elif key == "pinned":
             sets.append("pinned = ?")

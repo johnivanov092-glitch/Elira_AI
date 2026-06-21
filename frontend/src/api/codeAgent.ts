@@ -1,8 +1,14 @@
-import { API_BASE, request } from "./client";
+import { API_BASE, buildApiUrl, request, withAuth } from "./client";
 
 export const DEFAULT_CODE_AGENT_MODEL = "auto";
+
+/** Proxied favicon URL for a source origin. The endpoint literal lives here in
+ *  the api layer (not in components) per the smoke-contract guard. */
+export function codeAgentFaviconUrl(url: string): string {
+  return buildApiUrl(`/api/code-agent/favicon?url=${encodeURIComponent(url)}`);
+}
 export const DEFAULT_CODE_AGENT_MAX_STEPS = 20;
-export const DEFAULT_CODE_AGENT_NUM_CTX = 16384;
+export const DEFAULT_CODE_AGENT_NUM_CTX = 131072;
 
 export type CodeAgentToolCall = {
   step: number;
@@ -29,12 +35,15 @@ export type ConversationMessage = {
   content: string;
 };
 
+export type CodeAgentMode = "code" | "search";
+
 export type CodeAgentRunArgs = {
   message: string;
   projectRoot: string;
   model?: string;
   maxSteps?: number;
   numCtx?: number;
+  mode?: CodeAgentMode;
   autoRemember?: boolean;
   conversationHistory?: ConversationMessage[];
 };
@@ -46,6 +55,7 @@ export async function runCodeAgent({
   model = DEFAULT_CODE_AGENT_MODEL,
   maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
   numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
+  mode = "code",
   autoRemember = true,
   conversationHistory,
 }: CodeAgentRunArgs): Promise<CodeAgentResponse> {
@@ -57,6 +67,7 @@ export async function runCodeAgent({
       model,
       max_steps: maxSteps,
       num_ctx: numCtx,
+      mode,
       auto_remember: autoRemember,
       conversation_history: conversationHistory,
     },
@@ -68,6 +79,14 @@ export async function runCodeAgent({
 export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
   | { type: "step_started"; step: number }
+  | { type: "heartbeat"; step: number }
+  | { type: "delta"; step: number; text: string }
+  | {
+      type: "tool_started";
+      step: number;
+      tool: string;
+      arguments: Record<string, unknown>;
+    }
   | ({ type: "tool_call" } & CodeAgentToolCall)
   | {
       type: "approval_pending";
@@ -78,6 +97,16 @@ export type CodeAgentStreamEvent =
     }
   | { type: "approval_wait"; step: number; approval_id: string; waited_s: number }
   | { type: "context_compacted"; step: number }
+  | {
+      type: "usage";
+      step: number;
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+      tokens_per_second: number;
+      context?: ContextUsage;
+      profile?: ContextProfile;
+    }
   | { type: "final_response"; step: number; text: string }
   | {
       type: "done";
@@ -86,6 +115,22 @@ export type CodeAgentStreamEvent =
       stop_reason: CodeAgentResponse["stop_reason"];
       error: string | null;
     };
+
+export type ContextUsage = {
+  current_tokens: number;
+  reserved_output_tokens: number;
+  ctx_size: number;
+  percent: number;
+  free_tokens: number;
+  breakdown: Record<string, number>;
+};
+
+export type ContextProfile = {
+  active_model: string;
+  ctx_size: number;
+  safe_input_budget: number;
+  source: string;
+};
 
 // ── Approvals (Agent OS) ─────────────────────────────────────────────────
 
@@ -121,6 +166,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     model = DEFAULT_CODE_AGENT_MODEL,
     maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
     numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
+    mode = "code",
     autoRemember = true,
     conversationHistory,
     runId,
@@ -135,13 +181,14 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: withAuth({ "Content-Type": "application/json", Accept: "text/event-stream" }),
       body: JSON.stringify({
         message,
         project_root: projectRoot,
         model,
         max_steps: maxSteps,
         num_ctx: numCtx,
+        mode,
         auto_remember: autoRemember,
         conversation_history: conversationHistory,
         run_id: runId,
@@ -283,6 +330,17 @@ export type CodeSessionFull = CodeSessionMeta & {
   // Turns shape mirrors the frontend's local Turn[] — typed as unknown
   // because parser lives in CodeAgentChatShell.
   turns: unknown[];
+  context_state?: ContextUsage | null;
+  task_ledger?: TaskLedgerEntry[];
+  pinned_items?: unknown[];
+  compression_events?: unknown[];
+};
+
+export type TaskLedgerEntry = {
+  timestamp: number;
+  type: "tool_call" | "final" | "error" | "compression";
+  action: string;
+  result: string;
 };
 
 export async function listCodeSessions(query?: string): Promise<CodeSessionMeta[]> {
@@ -327,6 +385,8 @@ export type CodeSessionPatch = {
   numCtx?: number;
   pinned?: boolean;
   turns?: unknown[];
+  contextState?: ContextUsage | null;
+  taskLedger?: TaskLedgerEntry[];
 };
 
 export async function patchCodeSession(sessionId: string, patch: CodeSessionPatch): Promise<CodeSessionFull> {
@@ -339,6 +399,8 @@ export async function patchCodeSession(sessionId: string, patch: CodeSessionPatc
       num_ctx: patch.numCtx,
       pinned: patch.pinned,
       turns: patch.turns,
+      context_state: patch.contextState,
+      task_ledger: patch.taskLedger,
     },
   });
   return res.session;

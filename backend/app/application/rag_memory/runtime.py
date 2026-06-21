@@ -145,19 +145,19 @@ def cleanup_seed_data(*, conn_factory: Callable[[], Any], seed_rag_text: str) ->
 
 
 def get_embedding(*, embed_model: str, text: str) -> list[float] | None:
-    try:
-        import ollama
+    # Prefer the configured OpenAI-compatible embedding endpoint (server CPU).
+    # Do not fall back to a different vector space on failure; that would
+    # corrupt cosine search. A None leaves the row without a vector, and keyword
+    # fallback still finds it.
+    from app.infrastructure.llm.openai_compatible import (
+        embed_text,
+        is_local_embed_enabled,
+    )
 
-        response = ollama.embed(model=embed_model, input=text)
-        embeddings = response.get("embeddings") or response.get("embedding")
-        if embeddings:
-            if isinstance(embeddings[0], list):
-                return embeddings[0]
-            return embeddings
-        return None
-    except Exception as exc:  # pragma: no cover - runtime dependency path
-        logger.warning("Embedding failed: %s", exc)
-        return None
+    if is_local_embed_enabled():
+        return embed_text(text)
+    logger.warning("Embedding endpoint is disabled; storing keyword-only memory")
+    return None
 
 
 def cosine_sim(a: list[float], b: list[float]) -> float:

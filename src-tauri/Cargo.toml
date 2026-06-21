@@ -6,11 +6,9 @@ authors = ["OpenAI"]
 edition = "2021"
 
 [build-dependencies]
-tauri-build = { version = "1", features = [] }
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 serde_json = "1"
-tauri = { version = "1", features = [ "dialog-open", "shell-open", "http-all"] }
-
-[features]
-custom-protocol = ["tauri/custom-protocol"]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

@@ -25,9 +25,9 @@ from app.application.chat.service import prepare_chat_execution  # noqa: E402
 
 
 _ROUTE_MAP = {
-    "chat":     ["gemma3:4b", "qwen3:8b"],
-    "research": ["mistral-nemo:latest", "qwen3:8b"],
-    "code":     ["qwen2.5-coder:7b", "gemma3:4b"],
+    "chat":     ["chat-model", "backup-model"],
+    "research": ["research-model", "backup-model"],
+    "code":     ["code-model", "chat-model"],
 }
 
 
@@ -35,7 +35,7 @@ def _profile(model: str, role: str = "fast", *, cloud: bool = False,
              context_limit: int = 16384, timeout: int = 30) -> dict:
     return {
         "id": f"prof-{model}",
-        "provider": "anthropic" if cloud else "ollama",
+        "provider": "anthropic" if cloud else "llama_server",
         "model": model,
         "role": role,
         "context_limit": context_limit,
@@ -92,19 +92,19 @@ class ChatRoutingActivationTest(unittest.TestCase):
     def test_auto_uses_enabled_local_profile_when_installed(self):
         execution = self._run(
             model_name="auto", route="chat",
-            profile=_profile("qwen2.5:4b", role="fast"),
-            available_models=["gemma3:4b", "qwen2.5:4b"],
+            profile=_profile("profile-model", role="fast"),
+            available_models=["chat-model", "profile-model"],
         )
-        self.assertEqual(execution.effective_model, "qwen2.5:4b")
+        self.assertEqual(execution.effective_model, "profile-model")
         self.assertEqual(execution.decision.source, "profile")
 
     def test_unavailable_profile_falls_back_to_route_map(self):
         execution = self._run(
             model_name="auto", route="chat",
-            profile=_profile("qwen2.5:4b", role="fast"),
-            available_models=["gemma3:4b"],  # profile model not installed
+            profile=_profile("profile-model", role="fast"),
+            available_models=["chat-model"],  # profile model not installed
         )
-        self.assertEqual(execution.effective_model, "gemma3:4b")
+        self.assertEqual(execution.effective_model, "chat-model")
         self.assertEqual(execution.decision.source, "route_map")
         self.assertEqual(execution.decision.fallback_reason, "profile_model_unavailable")
 
@@ -112,9 +112,9 @@ class ChatRoutingActivationTest(unittest.TestCase):
         execution = self._run(
             model_name="auto", route="research",
             profile=_profile("claude-sonnet-4-5", role="strong", cloud=True),
-            available_models=["claude-sonnet-4-5", "mistral-nemo:latest"],
+            available_models=["claude-sonnet-4-5", "research-model"],
         )
-        self.assertEqual(execution.effective_model, "mistral-nemo:latest")
+        self.assertEqual(execution.effective_model, "research-model")
         self.assertEqual(execution.decision.source, "route_map")
         self.assertTrue(execution.decision.cloud_skipped)
 
@@ -123,7 +123,7 @@ class ChatRoutingActivationTest(unittest.TestCase):
             model_name="my-explicit-model", route="chat",
             available_models=["my-explicit-model"],
             num_ctx=99999, monitoring_max=8192,
-            profile=_profile("qwen2.5:4b"),  # ignored: explicit wins
+            profile=_profile("profile-model"),  # ignored: explicit wins
         )
         self.assertEqual(execution.effective_model, "my-explicit-model")
         self.assertEqual(execution.decision.source, "explicit")
@@ -133,7 +133,7 @@ class ChatRoutingActivationTest(unittest.TestCase):
     def test_sandbox_preflight_receives_effective_num_ctx(self):
         execution = self._run(
             model_name="auto", route="chat",
-            available_models=["gemma3:4b"],
+            available_models=["chat-model"],
             num_ctx=99999, monitoring_max=4096,
             profile=None,
         )
@@ -142,14 +142,13 @@ class ChatRoutingActivationTest(unittest.TestCase):
         self.assertEqual(self.preflight_calls[0]["num_ctx"], 4096)
 
     def test_known_model_capped_by_model_safe_ctx(self):
-        # qwen2.5-coder:7b has MODEL_SAFE_CTX 6144; a larger request is capped.
         execution = self._run(
-            model_name="qwen2.5-coder:7b", route="code",
-            available_models=["qwen2.5-coder:7b"],
+            model_name="local-model", route="code",
+            available_models=["local-model"],
             num_ctx=32768, monitoring_max=None, profile=None,
         )
-        self.assertEqual(execution.effective_model, "qwen2.5-coder:7b")
-        self.assertEqual(execution.effective_num_ctx, 6144)
+        self.assertEqual(execution.effective_model, "local-model")
+        self.assertEqual(execution.effective_num_ctx, 32768)
 
     def test_unknown_model_not_cut_to_default(self):
         # unknown model + no monitoring cap -> num_ctx unchanged (no auto-cut).
@@ -160,37 +159,37 @@ class ChatRoutingActivationTest(unittest.TestCase):
         )
         self.assertEqual(execution.effective_num_ctx, 8192)
 
-    def test_ollama_unavailable_keeps_profile_inert(self):
-        # available_models None (Ollama down) -> profile inert -> route_map.
+    def test_local_models_unavailable_keeps_profile_inert(self):
+        # available_models None -> profile inert -> route_map.
         execution = self._run(
             model_name="auto", route="chat",
-            profile=_profile("qwen2.5:4b", role="fast"),
+            profile=_profile("profile-model", role="fast"),
             available_models=None,
         )
-        self.assertEqual(execution.effective_model, "gemma3:4b")
+        self.assertEqual(execution.effective_model, "chat-model")
         self.assertEqual(execution.decision.source, "route_map")
         self.assertEqual(execution.decision.fallback_reason, "available_models_unknown")
 
     def test_profile_timeout_surfaced(self):
         execution = self._run(
             model_name="auto", route="chat",
-            profile=_profile("qwen2.5:4b", role="fast", timeout=45),
-            available_models=["qwen2.5:4b"],
+            profile=_profile("profile-model", role="fast", timeout=45),
+            available_models=["profile-model"],
         )
         self.assertEqual(execution.effective_timeout_seconds, 45)
 
     def test_routing_metric_records_provenance(self):
         self._run(
             model_name="auto", route="chat",
-            profile=_profile("qwen2.5:4b", role="fast"),
-            available_models=["qwen2.5:4b"],
+            profile=_profile("profile-model", role="fast"),
+            available_models=["profile-model"],
         )
         routed = [m for m in self.metrics if m.get("metric_type") == "model.routed"]
         self.assertEqual(len(routed), 1)
         details = routed[0]["details"]
-        self.assertEqual(details["model"], "qwen2.5:4b")
-        self.assertEqual(details["provider"], "ollama")
-        self.assertEqual(details["profile_id"], "prof-qwen2.5:4b")
+        self.assertEqual(details["model"], "profile-model")
+        self.assertEqual(details["provider"], "llama_server")
+        self.assertEqual(details["profile_id"], "prof-profile-model")
         self.assertEqual(details["routing_source"], "profile")
         self.assertEqual(details["route"], "chat")
         self.assertEqual(details["role"], "fast")

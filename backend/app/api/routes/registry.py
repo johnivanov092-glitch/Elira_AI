@@ -6,6 +6,7 @@ from app.api.routes.agent_registry_routes import router as agent_registry_router
 from app.api.routes.agents import router as agents_router
 from app.api.routes.autopipeline_routes import router as autopipeline_router
 from app.api.routes.chat import router as chat_router
+from app.api.routes.chat_agent import router as chat_agent_router
 from app.api.routes.code_agent_routes import router as code_agent_router
 from app.api.routes.dashboard_routes import router as dashboard_router
 from app.api.routes.elira_patch import router as elira_patch_router
@@ -40,6 +41,7 @@ ALL_ROUTERS = (
     elira_state_router,
     project_brain_router,
     elira_patch_router,
+    chat_agent_router,
     chat_router,
     models_router,
     memory_router,

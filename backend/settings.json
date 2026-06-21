@@ -1,4 +1,4 @@
-{
-  "model_name": "qwen3:8b",
-  "profile_name": "Сократ"
+﻿{
+  "model_name": "local-model",
+  "profile_name": "Универсальный"
 }

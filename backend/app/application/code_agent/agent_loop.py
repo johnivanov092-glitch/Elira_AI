@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
 import threading
 import time
@@ -34,182 +35,136 @@ from app.application.agent_kernel.executor import (
     ToolExecutionResult,
     execute_tool as _kernel_exec,
 )
-from app.application.monitoring.inference import extract_ollama_usage, record_inference_telemetry
+from app.application.monitoring.inference import extract_llm_usage, record_inference_telemetry
+from app.infrastructure.llm.openai_compatible import (
+    chat_completion,
+    chat_completion_event_stream,
+    is_local_llm_model,
+    local_llm_config,
+)
+# Project indexing/RAG was extracted to .indexing; re-exported here so existing
+# importers (file_watcher, code_agent_routes, tests) keep importing these names
+# from agent_loop unchanged.
+from app.application.code_agent.indexing import (  # noqa: F401
+    DEFAULT_INDEX_PATTERNS,
+    INDEX_CHUNK_LINES,
+    INDEX_CHUNK_OVERLAP,
+    INDEX_MAX_FILE_BYTES,
+    INDEX_MAX_TOTAL_CHUNKS,
+    INDEX_SKIP_DIRS,
+    index_project,
+    recall_from_rag,
+    reindex_file,
+    unindex_file,
+)
+# Inline tool-call recovery extracted to .inline_tool_calls (used by the loop).
+from app.application.code_agent.inline_tool_calls import _contains_tool_trace, _extract_inline_tool_calls
+# System-prompt construction extracted to .prompts; re-exported so the loop and
+# tests keep importing these from agent_loop unchanged.
+from app.application.code_agent.prompts import (  # noqa: F401
+    BASE_SYSTEM_PROMPT,
+    _CODE_AGENT_BASE_TOOLS,
+    _CODE_AGENT_READONLY_TOOLS,
+    _build_base_system_prompt,
+    _build_system_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
-# NOTE on model choice: not every Ollama-installed model emits the
-# structured `tool_calls` field — some (qwen2.5-coder:7b, granite-code:8b,
-# codegeex4) dump tool calls as plain JSON in `content` instead. The
-# agent loop tolerates that via _extract_inline_tool_calls, but a model
-# that natively supports tools is faster and more reliable. Models
-# verified to emit native tool_calls on Ollama 0.24:
-#   - sorc/qwen3.5-instruct-uncensored:4b (fast, ~12s/call)
-#   - sorc/qwen3.5-instruct:4b
-#   - gemma4:e2b
-#   - llama3.2, llama3.1, mistral-nemo (not installed here)
-# qwen2.5-coder:7b also works thanks to the fallback but is slower.
-DEFAULT_MODEL = "qwen2.5-coder:7b"
+DEFAULT_MODEL = "local-model"
 DEFAULT_MAX_STEPS = 20
-DEFAULT_NUM_CTX = 16384  # Ollama's default is 2048 — way too small for tool-using agents.
-DEFAULT_MAX_EXECUTION_SECONDS = 180
+DEFAULT_NUM_CTX = 131072
+DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
 MAX_CODE_AGENT_STEPS = 50
 PROJECT_PROMPT_FILENAME = ".elira/agent.md"
-
-BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ ДОСТУПОМ к файловой системе и shell.
-
-## Текущая директория проекта
-{project_root}
-
-## Твои инструменты (используй их, а не объясняй пользователю как делать руками)
-{tools_section}
-
-## ЖЕЛЕЗНЫЕ ПРАВИЛА
-
-1. У тебя ЕСТЬ доступ к файловой системе. Никогда не говори «я не могу запустить», «не имею доступа», «склонируйте проект», «установите зависимости». Это ложь. Ты можешь запускать `run_bash` прямо сейчас.
-
-2. Когда пользователь просит ЗАПУСТИТЬ / ПРОВЕРИТЬ / ВЫПОЛНИТЬ что-то — ты вызываешь `run_bash`. Не выводишь команду в чат с просьбой её выполнить. ТЫ её выполняешь сам.
-
-3. Когда пользователь просит СОЗДАТЬ / НАПИСАТЬ файл — ты вызываешь `write_file`. Не выводишь содержимое в чат с просьбой сохранить. ТЫ его сохраняешь сам.
-
-4. Когда пользователь спрашивает «что в файле X» / «как устроено Y» — ты вызываешь `read_file` или `grep`. Не отговариваешься «нужно посмотреть».
-
-5. Выполняй доступные инструменты самостоятельно. Если runtime блокирует опасное действие или требует подтверждение пользователя — честно сообщи об этом и не пытайся обходить ограничение.
-
-6. Все пути относительно корня проекта (см. выше). `src/calc.py` — это {project_root}/src/calc.py. Не нужно полных путей.
-
-7. Действуй пошагово: посмотрел → правишь → проверил через `run_bash`. После каждого write_file проверь что код реально работает.
-
-8. Используй `recall(query)` когда нужно найти «где у меня реализовано X» или «что я делал по теме Y» — RAG помнит прошлые задачи и проиндексированный код.
-
-9. Для свежих фактов из интернета: `web_search(query)` → выбери релевантные URL → `web_fetch(url)` чтобы прочитать страницу целиком. Если веб-инструментов нет в списке выше — сначала активируй их через `tool_search("web search")`. **НЕ выдумывай** факты по теме, в которой не уверен — иди в веб.
-
-10. Когда нужно «попробовать» Python-код или библиотеку — используй `sandbox_run` (если его нет в списке выше — активируй через `tool_search("sandbox")`), а НЕ `run_bash`. Sandbox изолирован: `pip install requests` в нём не загрязнит основной Python пользователя и переживает шаги. `run_bash` — только для команд в реальном проекте пользователя (git, pytest над их кодом, и т.п.).
-
-11. Когда задача РЕАЛЬНО выполнена (файлы созданы, тесты прошли) — только тогда отвечай обычным текстом без вызова инструментов. Текст — это финал, не план.
-
-## Антипаттерны (НИКОГДА так не делай)
-
-ПЛОХО: «Извините, я не могу взаимодействовать с вашей локальной файловой системой».
-ХОРОШО: вызвать `read_file` / `run_bash` / `write_file`.
-
-ПЛОХО: «Вот команда, запустите её сами: `pytest test_foo.py`».
-ХОРОШО: вызвать `run_bash(command="pytest test_foo.py")`.
-
-ПЛОХО: «Создайте файл foo.py с таким содержимым: ...».
-ХОРОШО: вызвать `write_file(path="foo.py", content="...")`.
-
-ПЛОХО: «Какая у вас локальная директория?».
-ХОРОШО: ты её знаешь, она указана выше в этом промпте."""
+_LLM_HEARTBEAT_EVERY = 10.0
+_REPEATED_TOOL_CALL_LIMIT = 4
 
 
-# P10.1: code-agent runs start in deferred tool mode exposing only this base set
-# (core read + edit + shell tools); long-tail tools stay hidden until tool_search
-# activates them. The base side-effect tools (write_file / edit_file / run_bash)
-# remain fully subject to the executor's policy / scope / approval gates — being
-# in the base set grants visibility, not a policy bypass.
-_CODE_AGENT_BASE_TOOLS = (
-    "read_file", "glob", "grep", "recall",
-    "todo_update", "delegate_task",
-    "write_file", "edit_file", "run_bash",
-)
+def _chat_events(
+    *,
+    chat_fn: Callable[..., dict[str, Any]],
+    chat_stream_fn: Callable[..., Any] | None,
+    kwargs: dict[str, Any],
+) -> Iterator[dict[str, Any]]:
+    """Run a blocking provider call without leaving the SSE stream silent."""
+    events: queue.Queue[tuple[str, Any]] = queue.Queue()
 
-_CODE_AGENT_READONLY_TOOLS = (
-    "read_file", "glob", "grep", "recall",
-)
+    def worker() -> None:
+        try:
+            if chat_stream_fn is None:
+                events.put(("response", chat_fn(**kwargs)))
+                return
+            final_response: dict[str, Any] | None = None
+            collected: list[str] = []
+            for item in chat_stream_fn(**kwargs):
+                if isinstance(item, str):
+                    collected.append(item)
+                    events.put(("delta", item))
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("type") or "")
+                if item_type == "delta":
+                    text = str(item.get("content") or item.get("text") or "")
+                    if text:
+                        collected.append(text)
+                        events.put(("delta", text))
+                elif item_type == "message":
+                    response = item.get("response")
+                    if isinstance(response, dict):
+                        final_response = response
+            if final_response is None:
+                final_response = {
+                    "message": {"content": "".join(collected), "tool_calls": []},
+                }
+            events.put(("response", final_response))
+        except Exception as exc:  # propagated in the caller thread
+            events.put(("error", exc))
+        finally:
+            events.put(("done", None))
 
-# F4: per-tool prompt lines. The "Твои инструменты" section is generated from
-# the run's ACTUAL initial tool set, so the prompt never advertises a tool the
-# executor would block as not-activated and never hides an active one.
-TOOL_PROMPT_LINES: dict[str, str] = {
-    "read_file":     "- read_file(path) — читать файл",
-    "write_file":    "- write_file(path, content) — создать или перезаписать файл",
-    "edit_file":     "- edit_file(path, old_string, new_string) — точечная правка существующего файла",
-    "glob":          "- glob(pattern) — найти файлы по маске (например `**/*.py`)",
-    "grep":          "- grep(pattern, path) — искать текст в файлах",
-    "run_bash":      "- run_bash(command, timeout=60) — выполнить shell-команду в директории проекта",
-    "recall":        "- recall(query) — семантический поиск в RAG-памяти проекта",
-    "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
-    "delegate_task": "- delegate_task(role, task) — запустить ограниченного read-only субагента (исследование/анализ)",
-    "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",
-    "web_fetch":     "- web_fetch(url) — прочитать полный текст веб-страницы (после web_search)",
-    "sandbox_run":   "- sandbox_run(code, install=[...]) — выполнить Python-код в изолированном venv (для экспериментов с pip-пакетами, прототипов)",
-    "sandbox_reset": "- sandbox_reset() — обнулить sandbox если он сломался",
-}
-
-_TOOL_SEARCH_PROMPT_LINE = (
-    "- tool_search(query) — найти и АКТИВИРОВАТЬ дополнительные инструменты "
-    "(веб-поиск, sandbox, http, sql, ssh и др.); активированные становятся "
-    "доступны со следующего шага"
-)
-
-
-def _tools_section(active_tools: tuple[str, ...] | list[str]) -> str:
-    lines = [TOOL_PROMPT_LINES[t] for t in active_tools if t in TOOL_PROMPT_LINES]
-    # Custom runs may activate tools we have no curated line for (SSH/MCP/
-    # plugins) — they are still listed so the prompt matches reality; the
-    # model sees their full JSON schema anyway.
-    lines += [
-        f"- {t}(…) — активный инструмент (параметры смотри в схеме)"
-        for t in active_tools if t not in TOOL_PROMPT_LINES
-    ]
-    lines.append(_TOOL_SEARCH_PROMPT_LINE)
-    return "\n".join(lines)
-
-
-def _build_base_system_prompt(
-    project_root: Path,
-    active_tools: tuple[str, ...] | list[str] | None = None,
-) -> str:
-    tools = tuple(active_tools) if active_tools is not None else _CODE_AGENT_BASE_TOOLS
-    return BASE_SYSTEM_PROMPT_TEMPLATE.format(
-        project_root=str(project_root),
-        tools_section=_tools_section(tools),
-    )
+    threading.Thread(target=worker, name="elira-code-agent-llm", daemon=True).start()
+    done = False
+    while not done:
+        try:
+            kind, value = events.get(timeout=max(0.001, _LLM_HEARTBEAT_EVERY))
+        except queue.Empty:
+            yield {"type": "heartbeat"}
+            continue
+        if kind == "done":
+            done = True
+        elif kind == "error":
+            raise value
+        else:
+            yield {"type": kind, "value": value}
 
 
-# Kept for backwards-compat (tests / external imports). Generic, no project root.
-BASE_SYSTEM_PROMPT = BASE_SYSTEM_PROMPT_TEMPLATE.format(
-    project_root="<укажет runtime>",
-    tools_section=_tools_section(_CODE_AGENT_BASE_TOOLS),
-)
-
-
-def _ollama_chat(**kwargs: Any) -> dict[str, Any]:
+def _local_chat(**kwargs: Any) -> dict[str, Any]:
     """Wrapper so tests can monkeypatch one symbol."""
-    import ollama  # lazy — keeps import cheap when this module is loaded
-    return ollama.chat(**kwargs)
-
-
-def _build_system_prompt(
-    project_root: Path,
-    working_dir: Path | str | None = None,
-    active_tools: tuple[str, ...] | list[str] | None = None,
-) -> str:
-    from app.application.instructions.loader import load_instructions
-    from app.application.projects.scope import project_scope_id as _scope_id
-
-    base = _build_base_system_prompt(project_root, active_tools=active_tools)
-    parts: list[str] = [base]
-
-    instructions = load_instructions(project_root, working_dir=working_dir)
-    if instructions:
-        parts.append("--- Instructions (.elira/agent.md) ---\n" + instructions)
-
-    # Inject accepted MemoryCandidate entries for this project into the prompt.
-    try:
-        from app.application.monitoring import runtime as _mon
-        scope = _scope_id(project_root)
-        candidates = _mon.list_accepted_candidates(
-            namespace="project", project_scope_id=scope, limit=20
+    model = str(kwargs.get("model") or "")
+    if is_local_llm_model(model):
+        return chat_completion(
+            model=model,
+            messages=list(kwargs.get("messages") or []),
+            tools=kwargs.get("tools"),
+            options=kwargs.get("options"),
         )
-        if candidates:
-            mem_lines = "\n".join(f"- {c['content']}" for c in candidates)
-            parts.append("--- Remembered facts ---\n" + mem_lines)
-    except Exception:
-        pass  # Memory is best-effort; never block the agent
+    expected = local_llm_config().model
+    raise RuntimeError(f"Local llama-server provider expects model '{expected}', got '{model}'.")
 
-    return "\n\n".join(parts)
+
+def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
+    model = str(kwargs.get("model") or "")
+    if not is_local_llm_model(model):
+        expected = local_llm_config().model
+        raise RuntimeError(f"Local llama-server provider expects model '{expected}', got '{model}'.")
+    yield from chat_completion_event_stream(
+        model=model,
+        messages=list(kwargs.get("messages") or []),
+        tools=kwargs.get("tools"),
+        options=kwargs.get("options"),
+    )
 
 
 # Global registry of active cancel events so an external HTTP route can flip
@@ -256,7 +211,7 @@ _EXECUTION_INTENT = re.compile(
 def _maybe_inject_execution_reminder(user_message: str) -> str:
     """If the user's wording clearly demands execution, append a short
     reminder telling the model 'this is a tool-use turn, not a
-    text-answer turn'. Models like qwen2.5-coder occasionally drift
+    text-answer turn'. Some local tool-calling models occasionally drift
     into 'helpful explanation' mode otherwise.
     """
     if _EXECUTION_INTENT.search(user_message or ""):
@@ -379,6 +334,26 @@ def _short_arg_hint(args: dict[str, Any]) -> str:
     return ""
 
 
+def _tool_started_requires_approval_delay(tool_name: str, args: dict[str, Any]) -> bool:
+    """Delay live "started" UI until human approval has been granted."""
+    try:
+        from app.application.tool_registry.runtime import get_tool
+        spec = get_tool(tool_name)
+    except Exception:
+        return False
+    if not spec or spec.get("permission") != "require_approval":
+        return False
+    if tool_name == "run_bash":
+        command = str(args.get("command", "")).strip()
+        if command:
+            try:
+                from app.application.code_agent.tools import is_shell_safe
+                return not is_shell_safe(command)
+            except Exception:
+                return True
+    return True
+
+
 # F1: while a tool call waits for human approval the loop pauses and polls
 # the approval status. Module-level so tests can shrink the tick.
 _APPROVAL_POLL_INTERVAL = 1.5
@@ -473,184 +448,6 @@ def _wrap_up_text(
     return f"Прогон остановлен: {reason} — до первого вызова инструмента."
 
 
-_INLINE_TOOL_NAMES_PATTERN = None  # built lazily once dispatch is known
-
-
-def _iter_json_object_substrings(text: str) -> Iterator[str]:
-    """Yield every balanced top-level JSON-object substring inside `text`.
-    Used to recover from models that emit multiple ```json blocks back to
-    back, or just multiple JSON objects with prose around them.
-    """
-    n = len(text)
-    i = 0
-    while i < n:
-        if text[i] != "{":
-            i += 1
-            continue
-        depth = 0
-        in_str = False
-        esc = False
-        for j in range(i, n):
-            ch = text[j]
-            if esc:
-                esc = False
-                continue
-            if ch == "\\":
-                esc = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    yield text[i : j + 1]
-                    i = j + 1
-                    break
-        else:
-            # Unbalanced; stop scanning
-            break
-
-
-def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict[str, Any]]:
-    """Some Ollama models (notably qwen2.5-coder, granite-code, codegeex)
-    emit tool calls as plain JSON in `message.content` instead of populating
-    the structured `message.tool_calls` field. This helper recovers those
-    so the agent loop still progresses.
-
-    Recognized formats (any may appear in code fences, multiple times,
-    with prose around them):
-      {"name": "tool", "arguments": {...}}
-      {"name": "tool", "parameters": {...}}
-      [{"name": ...}, ...]
-      {"tool_calls": [{...}]}
-      {"function": {"name": ..., "arguments": {...}}}
-
-    Tool names not present in `known_tools` are dropped (the model
-    hallucinated). Returns a list shaped like Ollama's native
-    `tool_calls`: [{"function": {"name": ..., "arguments": {...}}}].
-
-    Multiple JSON objects in one content string are all returned — the
-    agent loop will execute them in order.
-    """
-    if not content:
-        return []
-
-    def _normalize(item: Any) -> dict[str, Any] | None:
-        if not isinstance(item, dict):
-            return None
-        # Unwrap {"function": {...}}
-        if "function" in item and isinstance(item["function"], dict):
-            fn = item["function"]
-            name = fn.get("name")
-            args = fn.get("arguments") or fn.get("parameters") or {}
-        else:
-            name = item.get("name")
-            args = item.get("arguments") or item.get("parameters") or {}
-        if not isinstance(name, str) or name not in known_tools:
-            return None
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except json.JSONDecodeError:
-                args = {}
-        if not isinstance(args, dict):
-            args = {}
-        return {"function": {"name": name, "arguments": args}}
-
-    out: list[dict[str, Any]] = []
-    # Scan ALL JSON-object substrings (handles multiple ```json blocks,
-    # arrays of tool calls embedded in prose, etc.)
-    for raw in _iter_json_object_substrings(content):
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            if "tool_calls" in parsed and isinstance(parsed["tool_calls"], list):
-                for it in parsed["tool_calls"]:
-                    norm = _normalize(it)
-                    if norm:
-                        out.append(norm)
-            else:
-                norm = _normalize(parsed)
-                if norm:
-                    out.append(norm)
-
-    # Also try top-level array (rare but seen): "[{...},{...}]"
-    if not out:
-        stripped = content.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.split("\n", 1)[1] if "\n" in stripped else stripped[3:]
-            if stripped.endswith("```"):
-                stripped = stripped[:-3]
-            stripped = stripped.strip()
-        if stripped.startswith("["):
-            try:
-                arr = json.loads(stripped)
-                if isinstance(arr, list):
-                    for it in arr:
-                        norm = _normalize(it)
-                        if norm:
-                            out.append(norm)
-            except json.JSONDecodeError:
-                pass
-
-    # Fallback: call-expression syntax `tool_name(key="value", ...)`. Some
-    # models (qwen2.5-coder) write the call as pseudo-code inside a ```bash/code
-    # fence instead of JSON. Only for known tools, only if no JSON-format call
-    # was recovered, and only for lines that ARE the call — nothing but the
-    # call expression on the line (fences stripped). A tool name mentioned
-    # inside prose (e.g. a final answer saying «я запустил run_bash(...) и всё
-    # зелёное») must NOT be re-executed as a new call.
-    if not out and known_tools:
-        name_alt = "|".join(re.escape(t) for t in sorted(known_tools, key=len, reverse=True))
-        pure_call = re.compile(rf"^\s*({name_alt})\s*\(([^()]*)\)\s*;?\s*$")
-        for line in content.splitlines():
-            if line.strip().startswith("```"):
-                continue  # fence marker lines
-            m = pure_call.match(line)
-            if m:
-                args = _parse_call_expr_args(m.group(2))
-                if isinstance(args, dict):
-                    out.append({"function": {"name": m.group(1), "arguments": args}})
-
-    return out
-
-
-def _parse_call_expr_args(arg_str: str) -> dict[str, Any]:
-    """Parse `key="value", key2='v2', key3=123, key4=true` from a call
-    expression. Best-effort: respects quotes, falls back to bare tokens."""
-    args: dict[str, Any] = {}
-    pair = re.compile(
-        r"""(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^,]+)"""
-    )
-    for m in pair.finditer(arg_str or ""):
-        key = m.group(1)
-        raw = m.group(2).strip()
-        if (raw[:1], raw[-1:]) in (('"', '"'), ("'", "'")):
-            inner = raw[1:-1]
-            value: Any = inner.encode().decode("unicode_escape") if "\\" in inner else inner
-        else:
-            low = raw.lower()
-            if low in ("true", "false"):
-                value = low == "true"
-            else:
-                try:
-                    value = int(raw)
-                except ValueError:
-                    try:
-                        value = float(raw)
-                    except ValueError:
-                        value = raw
-        args[key] = value
-    return args
-
-
 def _try_remember_turn(*, user_message: str, response_text: str, project_root: Path) -> None:
     """Fire-and-forget: write a short summary of a successful agent turn
     to RAG so future `recall(query)` can surface it. Failures are logged
@@ -683,19 +480,20 @@ def _resolve_code_route(model: str, num_ctx: int, *, agent_id: str = "code-agent
     """P9.3: route code-agent through the shared model order (route='code'):
     explicit model -> enabled 'code' profile (if installed) -> route_model_map
     -> DEFAULT_MODEL. Effective num_ctx = min(requested, monitoring cap,
-    selected profile context_limit).
+    selected profile context_limit), except a profile is not allowed to shrink
+    the default code-agent tool window below DEFAULT_NUM_CTX.
 
     MODEL_SAFE_CTX is deliberately NOT applied for code-agent: it is a
     conservative chat-safe table (not a confirmed hard provider limit), while
     code-agent intentionally uses a large tool-context window (DEFAULT_NUM_CTX).
-    Applying it would regress the default coder model 16384 -> 6144. We skip it
+    Applying it can regress the default code-agent tool window. We skip it
     by NOT passing `model=` to effective_context_limit.
     """
     from app.core.config import effective_context_limit, resolve_model_for_route
 
     available_models = None
     try:
-        from app.infrastructure.llm.ollama_models import get_models
+        from app.infrastructure.llm.local_models import get_models
 
         result = get_models()
         if result.get("ok"):
@@ -726,6 +524,8 @@ def _resolve_code_route(model: str, num_ctx: int, *, agent_id: str = "code-agent
         monitoring_max = None
 
     profile_ctx = decision.context_limit if decision.source == "profile" else None
+    if profile_ctx is not None:
+        profile_ctx = max(int(profile_ctx), DEFAULT_NUM_CTX)
     effective = effective_context_limit(
         int(num_ctx),
         monitoring_max_context=monitoring_max,
@@ -804,6 +604,7 @@ def stream_code_agent(
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
+    chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 300,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
@@ -811,6 +612,7 @@ def stream_code_agent(
     Yields dicts with a `type` discriminator:
       - {"type": "run_started", "run_id": ...}
       - {"type": "step_started", "step": N}
+      - {"type": "tool_started", "step": N, "tool": str, "arguments": dict}
       - {"type": "tool_call", "step": N, "tool": str, "arguments": dict,
          "result": str, "touched_path"?: str,
          "old_content"?: str, "new_content"?: str, "diff_action"?: str}
@@ -842,6 +644,12 @@ def stream_code_agent(
         # so code-agent keeps its large DEFAULT_NUM_CTX window.
         model, _effective_num_ctx, _route_decision = _resolve_code_route(model, num_ctx, agent_id=effective_agent_id)
         safe_num_ctx = max(1024, _effective_num_ctx)
+        from app.application.context.profile import get_active_context_profile
+
+        if chat_fn is None:
+            discovered_profile = get_active_context_profile(model)
+            safe_num_ctx = min(safe_num_ctx, int(discovered_profile["ctx_size"]))
+        context_profile = get_active_context_profile(model, ctx_size=safe_num_ctx)
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
         try:
             from app.application.agent_registry.sandbox import preflight_or_raise
@@ -901,7 +709,10 @@ def stream_code_agent(
 
         initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
         enable_deferred_tools(rid, initial_tools)
-        chat = chat_fn or _ollama_chat
+        chat = chat_fn or _local_chat
+        stream_chat = chat_stream_fn
+        if chat_fn is None and stream_chat is None:
+            stream_chat = _local_chat_stream
 
         system_prompt = _build_system_prompt(
             root, working_dir=working_dir, active_tools=initial_tools,
@@ -918,6 +729,7 @@ def stream_code_agent(
         tool_round_trips = 0
         compaction_count = 0
         call_log: list[str] = []
+        repeated_tool_calls: dict[str, int] = {}
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -957,6 +769,13 @@ def stream_code_agent(
                 compaction_count += 1
                 yield {"type": "context_compacted", "step": step}
 
+            from app.application.context.usage import get_context_usage
+            context_usage = get_context_usage(
+                messages,
+                ctx_size=safe_num_ctx,
+                reserved_output_tokens=int(context_profile["reserved_output_tokens"]),
+            )
+
             # P10.1: expose only this run's active tools + tool_search. Tools
             # activated by tool_search on a prior step become visible here.
             _active = get_active_tools(rid)
@@ -965,12 +784,42 @@ def stream_code_agent(
             llm_prompt_chars = _messages_char_count(messages)
             llm_start = time.monotonic()
             try:
-                response = chat(
-                    model=model,
-                    messages=messages,
-                    tools=step_schemas,
-                    options={"num_ctx": safe_num_ctx},
-                )
+                response: dict[str, Any] = {}
+                pending_delta = ""
+                suppress_deltas = False
+                llm_kwargs = {
+                    "model": model,
+                    "messages": messages,
+                    "tools": step_schemas,
+                    "options": {"num_ctx": safe_num_ctx},
+                }
+                for llm_event in _chat_events(
+                    chat_fn=chat,
+                    chat_stream_fn=stream_chat,
+                    kwargs=llm_kwargs,
+                ):
+                    if llm_event["type"] == "heartbeat":
+                        yield {"type": "heartbeat", "step": step}
+                        continue
+                    if llm_event["type"] == "response":
+                        response = dict(llm_event["value"] or {})
+                        continue
+                    if llm_event["type"] != "delta":
+                        continue
+                    pending_delta += str(llm_event["value"] or "")
+                    marker_text = pending_delta.lower()
+                    if "<tool" in marker_text or "<function=" in marker_text:
+                        suppress_deltas = True
+                        pending_delta = ""
+                        continue
+                    if not suppress_deltas and len(pending_delta) > 32:
+                        visible = pending_delta[:-32]
+                        pending_delta = pending_delta[-32:]
+                        if visible:
+                            yield {"type": "delta", "step": step, "text": visible}
+                response_content = str(((response.get("message") or {}).get("content") or ""))
+                if not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
+                    yield {"type": "delta", "step": step, "text": pending_delta}
             except Exception as exc:
                 llm_duration_ms = int((time.monotonic() - llm_start) * 1000)
                 record_inference_telemetry(
@@ -993,7 +842,7 @@ def stream_code_agent(
                     fallback_count=1 if getattr(_route_decision, "fallback_reason", None) else 0,
                     error_category="llm_error",
                 )
-                logger.exception("Ollama chat failed at step %d", step)
+                logger.exception("LLM chat failed at step %d", step)
                 yield {
                     "type": "done",
                     "ok": False,
@@ -1017,6 +866,7 @@ def stream_code_agent(
             message = (response or {}).get("message") or {}
             content = (message.get("content") or "").strip()
             tool_calls = message.get("tool_calls") or []
+            step_usage = extract_llm_usage(response)
             record_inference_telemetry(
                 agent_id=effective_agent_id,
                 run_id=rid,
@@ -1031,15 +881,27 @@ def stream_code_agent(
                 ok=True,
                 duration_ms=llm_duration_ms,
                 streaming=False,
-                usage=extract_ollama_usage(response),
+                usage=step_usage,
                 prompt_chars=llm_prompt_chars,
                 completion_chars=len(content),
                 tool_round_trips=tool_round_trips,
                 compaction_count=compaction_count,
                 fallback_count=1 if getattr(_route_decision, "fallback_reason", None) else 0,
             )
+            # Live token usage for the frontend context meter / tok-s readout.
+            # Reuses extract_llm_usage (the telemetry source); not a second path.
+            yield {
+                "type": "usage",
+                "step": step,
+                "prompt_tokens": int(step_usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(step_usage.get("completion_tokens") or 0),
+                "total_tokens": int(step_usage.get("total_tokens") or 0),
+                "tokens_per_second": round(float(step_usage.get("tokens_per_second") or 0.0), 1),
+                "context": context_usage,
+                "profile": context_profile,
+            }
 
-            # Some models (qwen2.5-coder etc.) emit tool calls as JSON in
+            # Some local tool-calling models emit tool calls as JSON in
             # content instead of structured tool_calls. Recover them so the
             # loop still works.
             inline_calls: list[dict[str, Any]] = []
@@ -1048,6 +910,18 @@ def stream_code_agent(
                 if inline_calls:
                     tool_calls = inline_calls
                     content = ""  # JSON was the tool call, not a text reply
+
+            if not tool_calls and _contains_tool_trace(content):
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "[internal correction] Tool trace was malformed or unavailable. "
+                        "Do not expose internal tool markup. Use a currently available "
+                        "structured tool call or answer plainly."
+                    ),
+                })
+                call_log.append("blocked malformed internal tool trace")
+                continue
 
             if content:
                 last_text = content
@@ -1095,12 +969,43 @@ def stream_code_agent(
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
+                fingerprint = json.dumps(
+                    {"tool": name, "arguments": parsed_args},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                repeated_tool_calls[fingerprint] = repeated_tool_calls.get(fingerprint, 0) + 1
+                if repeated_tool_calls[fingerprint] >= _REPEATED_TOOL_CALL_LIMIT:
+                    final_text = _wrap_up_text(
+                        chat,
+                        model,
+                        safe_num_ctx,
+                        messages,
+                        call_log,
+                        f"repeated tool call: {name}",
+                    )
+                    yield {"type": "final_response", "step": step, "text": final_text}
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "loop_guard",
+                        "error": f"repeated identical tool call: {name}",
+                    }
+                    return
                 if name == "tool_search":
                     # P10.1 meta-tool: inject the current run_id (the model never
                     # supplies it), search + activate eligible tools for this run.
                     # Read-only; not routed through the provider/executor path.
                     from app.application.code_agent.tools import tool_search as _tool_search
 
+                    yield {
+                        "type": "tool_started",
+                        "step": step,
+                        "tool": name,
+                        "arguments": parsed_args,
+                    }
                     _ts = _tool_search(run_id=rid, query=str(parsed_args.get("query", "")))
                     _ts_text = str(_ts.get("text", ""))
                     yield {
@@ -1135,6 +1040,14 @@ def stream_code_agent(
                     args=parsed_args,
                     source="code_agent",
                 )
+                _delay_tool_started = _tool_started_requires_approval_delay(name, parsed_args)
+                if not _delay_tool_started:
+                    yield {
+                        "type": "tool_started",
+                        "step": step,
+                        "tool": name,
+                        "arguments": parsed_args,
+                    }
                 _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
                 # F1: pause the loop while a human decides, instead of telling
                 # the model "waiting approval" and burning steps. The approval
@@ -1190,6 +1103,13 @@ def stream_code_agent(
                     if _decision == "approved":
                         # Re-execute the same request: the executor finds the
                         # approved record, marks it used and dispatches.
+                        if _delay_tool_started:
+                            yield {
+                                "type": "tool_started",
+                                "step": step,
+                                "tool": name,
+                                "arguments": parsed_args,
+                            }
                         _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
                     elif _decision == "rejected":
                         _exec_result = ToolExecutionResult(
@@ -1285,6 +1205,7 @@ def run_code_agent(
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
+    chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 0,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
@@ -1311,6 +1232,7 @@ def run_code_agent(
         execution_timeout_seconds=execution_timeout_seconds,
         auto_remember=auto_remember,
         chat_fn=chat_fn,
+        chat_stream_fn=chat_stream_fn,
         approval_wait_seconds=approval_wait_seconds,
     ):
         et = event.get("type")
@@ -1401,14 +1323,14 @@ def summarize_history(
     if not cleaned:
         return {"ok": True, "summary": "", "error": None, "turn_count": 0}
 
-    # P9.3: never let the "auto" sentinel reach Ollama as a literal model name —
+    # P9.3: never let the "auto" sentinel reach the provider as a literal model name —
     # resolve it through the same code route first (concrete callers are a no-op).
     from app.core.config import is_auto_route
 
     if is_auto_route(model):
         model = _resolve_code_route(model, num_ctx)[0]
 
-    chat = chat_fn or _ollama_chat
+    chat = chat_fn or _local_chat
 
     # Build a compact transcript to summarize. Two layers of protection:
     #
@@ -1418,7 +1340,7 @@ def summarize_history(
     #      tokens) so the whole prompt + SUMMARIZE_SYSTEM_PROMPT fits
     #      inside `num_ctx` with room to spare. Without this, a long
     #      session (50+ turns) would silently produce a garbage summary
-    #      because Ollama would truncate our instructions off the front.
+    #      because small provider defaults can truncate instructions off the front.
     #
     # When the cap kicks in we keep the MOST RECENT turns (oldest are
     # least relevant) and emit a marker so the LLM knows context is
@@ -1477,254 +1399,6 @@ def summarize_history(
     msg = (response or {}).get("message") or {}
     text = (msg.get("content") or "").strip()
     return {"ok": True, "summary": text, "error": None, "turn_count": len(cleaned)}
-
-
-DEFAULT_INDEX_PATTERNS = [
-    "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx",
-    "**/*.md", "**/*.rs", "**/*.go", "**/*.java", "**/*.cpp", "**/*.c", "**/*.h",
-]
-INDEX_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".pytest_cache", ".mypy_cache", "data"}
-INDEX_CHUNK_LINES = 80
-INDEX_CHUNK_OVERLAP = 10
-INDEX_MAX_FILE_BYTES = 200_000  # skip files larger than 200 KB
-INDEX_MAX_TOTAL_CHUNKS = 5000
-
-
-def _chunk_file(file_path: Path, project_root: Path) -> Iterator[tuple[str, int, int]]:
-    """Yield (text, start_line, end_line) chunks for one file. start_line is 1-based."""
-    try:
-        size = file_path.stat().st_size
-    except OSError:
-        return
-    if size > INDEX_MAX_FILE_BYTES:
-        return
-    try:
-        with file_path.open("r", encoding="utf-8", errors="replace") as fh:
-            lines = fh.readlines()
-    except Exception:
-        return
-    if not lines:
-        return
-    rel = str(file_path.relative_to(project_root)).replace("\\", "/")
-    step = max(1, INDEX_CHUNK_LINES - INDEX_CHUNK_OVERLAP)
-    for start in range(0, len(lines), step):
-        end = min(start + INDEX_CHUNK_LINES, len(lines))
-        if end <= start:
-            break
-        chunk_text = "".join(lines[start:end])
-        if not chunk_text.strip():
-            continue
-        header = f"[file:{rel}:{start + 1}-{end}]\n"
-        yield header + chunk_text, start + 1, end
-        if end >= len(lines):
-            break
-
-
-def _iter_project_files(project_root: Path, patterns: list[str]) -> Iterator[Path]:
-    root = project_root.resolve()
-    for pattern in patterns:
-        for match in root.glob(pattern):
-            if not match.is_file():
-                continue
-            if any(part in INDEX_SKIP_DIRS for part in match.parts):
-                continue
-            yield match
-
-
-def index_project(
-    project_root: Path | str,
-    *,
-    patterns: list[str] | None = None,
-    replace: bool = True,
-) -> dict[str, Any]:
-    """Walk the project, chunk source files, write each chunk into RAG.
-    If replace=True, prior code_index entries are nuked first.
-
-    Returns counts of files / chunks processed and any per-file errors.
-    """
-    root = Path(project_root).resolve()
-    if not root.exists() or not root.is_dir():
-        return {"ok": False, "error": f"project_root does not exist: {root}"}
-
-    try:
-        from app.application.rag_memory.service import add_to_rag, _conn
-    except Exception as exc:
-        return {"ok": False, "error": f"RAG service unavailable: {exc}"}
-
-    scope_id = project_scope_id(root)
-    legacy_key = legacy_project_key(root)
-
-    if replace:
-        try:
-            conn = _conn()
-            try:
-                # Only clear THIS project's code_index entries, not all
-                # projects globally. Older rows without a project tag
-                # are also cleared so a fresh re-index gets a clean slate.
-                conn.execute(
-                    """
-                    DELETE FROM rag_items
-                    WHERE category = ?
-                      AND (project = ? OR project = ? OR COALESCE(project, '') = '')
-                    """,
-                    ("code_index", scope_id, legacy_key),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception as exc:
-            logger.warning("Failed to nuke prior code_index entries: %s", exc)
-
-    pats = patterns or DEFAULT_INDEX_PATTERNS
-    seen_files: set[Path] = set()
-    files_processed = 0
-    chunks_indexed = 0
-    failed_chunks = 0
-    errors: list[str] = []
-
-    for file_path in _iter_project_files(root, pats):
-        if file_path in seen_files:
-            continue
-        seen_files.add(file_path)
-        files_processed += 1
-        for chunk_text, _start, _end in _chunk_file(file_path, root):
-            if chunks_indexed >= INDEX_MAX_TOTAL_CHUNKS:
-                errors.append(f"Stopped at INDEX_MAX_TOTAL_CHUNKS={INDEX_MAX_TOTAL_CHUNKS}")
-                break
-            try:
-                result = add_to_rag(
-                    text=chunk_text,
-                    category="code_index",
-                    importance=4,
-                    project=scope_id,
-                )
-                if result.get("ok"):
-                    chunks_indexed += 1
-                else:
-                    failed_chunks += 1
-            except Exception as exc:
-                failed_chunks += 1
-                logger.debug("indexing chunk failed for %s: %s", file_path, exc)
-        if chunks_indexed >= INDEX_MAX_TOTAL_CHUNKS:
-            break
-
-    return {
-        "ok": True,
-        "files_processed": files_processed,
-        "chunks_indexed": chunks_indexed,
-        "failed_chunks": failed_chunks,
-        "patterns": pats,
-        "errors": errors,
-    }
-
-
-def recall_from_rag(
-    query: str,
-    top_k: int = 10,
-    min_score: float = 0.3,
-    project_root: Path | str | None = None,
-) -> dict[str, Any]:
-    """Thin wrapper for the UI to query RAG without going through the agent."""
-    try:
-        from app.application.rag_memory.service import search_rag
-    except Exception as exc:
-        return {"ok": False, "items": [], "error": f"RAG service unavailable: {exc}"}
-    scope_id = project_scope_id(project_root) if project_root else None
-    return search_rag(
-        query=query,
-        limit=max(1, int(top_k)),
-        min_score=float(min_score),
-        project=scope_id,
-    )
-
-
-def unindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, Any]:
-    """Remove RAG chunks belonging to a single file.
-
-    Chunks emitted by `index_project` carry a `[file:<rel-path>:<a>-<b>]\\n`
-    header — we LIKE-match that header so we delete only this file's
-    chunks, scoped to the project they belong to.
-    """
-    root = Path(project_root).resolve()
-    target = Path(file_path).resolve()
-    scope_id = project_scope_id(root)
-    legacy_key = legacy_project_key(root)
-    try:
-        rel = str(target.relative_to(root)).replace("\\", "/")
-    except ValueError:
-        return {"ok": False, "error": "file is outside project_root"}
-
-    try:
-        from app.application.rag_memory.service import _conn
-    except Exception as exc:
-        return {"ok": False, "error": f"RAG service unavailable: {exc}"}
-
-    pattern = f"[file:{rel}:%"
-    conn = _conn()
-    try:
-        cur = conn.execute(
-            """
-            DELETE FROM rag_items
-            WHERE category = ?
-              AND (project = ? OR project = ? OR COALESCE(project, '') = '')
-              AND text LIKE ?
-            """,
-            ("code_index", scope_id, legacy_key, pattern),
-        )
-        deleted = cur.rowcount or 0
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True, "deleted_chunks": deleted, "file": rel}
-
-
-def reindex_file(project_root: Path | str, file_path: Path | str) -> dict[str, Any]:
-    """Replace a single file's chunks in RAG.
-
-    Used by the realtime file watcher. Equivalent to calling
-    `unindex_file` then re-chunking + adding only this file. Cheaper
-    than rebuilding the full project index when one source file
-    changes during a coding session.
-    """
-    root = Path(project_root).resolve()
-    target = Path(file_path).resolve()
-    if not target.is_file():
-        # Treat as removal — caller may not have intended this but
-        # honoring delete-after-rename semantics is the right default.
-        return unindex_file(root, target)
-    if not target.exists():
-        return {"ok": False, "error": f"file does not exist: {target}"}
-    try:
-        target.relative_to(root)
-    except ValueError:
-        return {"ok": False, "error": "file is outside project_root"}
-    if any(part in INDEX_SKIP_DIRS for part in target.parts):
-        return {"ok": True, "skipped": True, "reason": "path under skip dir"}
-
-    try:
-        from app.application.rag_memory.service import add_to_rag
-    except Exception as exc:
-        return {"ok": False, "error": f"RAG service unavailable: {exc}"}
-
-    unindex_file(root, target)  # blow away the old chunks first
-    scope_id = project_scope_id(root)
-    added = 0
-    failed = 0
-    for chunk_text, _start, _end in _chunk_file(target, root):
-        try:
-            result = add_to_rag(
-                text=chunk_text,
-                category="code_index",
-                importance=4,
-                project=scope_id,
-            )
-            if result.get("ok"):
-                added += 1
-            else:
-                failed += 1
-        except Exception:
-            failed += 1
-    return {"ok": True, "chunks_added": added, "failed": failed, "file": str(target.relative_to(root)).replace("\\", "/")}
 
 
 def set_project_prompt(project_root: Path | str, content: str) -> dict[str, Any]:

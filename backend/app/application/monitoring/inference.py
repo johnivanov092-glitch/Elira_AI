@@ -30,8 +30,8 @@ def _duration_ns_to_ms(value: Any) -> int:
     return max(1, int(raw / 1_000_000))
 
 
-def extract_ollama_usage(response: Any) -> dict[str, Any]:
-    """Extract Ollama usage fields from dict or ollama response objects."""
+def extract_llm_usage(response: Any) -> dict[str, Any]:
+    """Extract token and latency usage fields from a local LLM response."""
     prompt_tokens = _as_int(_get_field(response, "prompt_eval_count"))
     completion_tokens = _as_int(_get_field(response, "eval_count"))
     total_tokens = prompt_tokens + completion_tokens

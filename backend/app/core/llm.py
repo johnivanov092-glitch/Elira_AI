@@ -1,28 +1,22 @@
 """
-llm.py — вся работа с Ollama.
+llm.py — local LLM helpers.
 
 Ключевые фичи:
-  • get_safe_ctx()     — безопасный num_ctx под RTX 4060 Ti 8 GB
+  • get_safe_ctx()     — безопасный num_ctx под текущий local provider
   • budget_contexts()  — жёсткая обрезка контекстов под реальный лимит (ГЛАВНЫЙ ФИХ)
   • ask_model()        — обычный вызов с авто-retry при ошибке контекста
   • ask_model_stream() — стриминг с тем же retry
 """
 import re
-import warnings
 from typing import Generator, List, Dict, Optional
-
-# Ollama SDK использует httpx внутри и иногда не закрывает сокеты при стриминге.
-# Это безопасный варнинг (GC подберёт), подавляем чтобы не засорять лог.
-warnings.filterwarnings("ignore", category=ResourceWarning, module="httpx")
-warnings.filterwarnings("ignore", category=ResourceWarning, module="bs4")
-
-import ollama
 
 from functools import lru_cache
 
 from .config import MODEL_SAFE_CTX, DEFAULT_SAFE_CTX
 from .persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
 from app.application.persona.service import build_persona_prompt
+from app.infrastructure.llm.openai_compatible import chat_completion, chat_completion_stream
+from app.infrastructure.llm.local_models import get_models as get_local_models
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -241,7 +235,7 @@ def ask_model(
         msgs = [{"role": "system", "content": system}]
         msgs.extend(hist)
         msgs.append({"role": "user", "content": user_input})
-        resp = ollama.chat(
+        resp = chat_completion(
             model=model_name,
             messages=msgs,
             options={"temperature": temp, "num_ctx": ctx, "num_thread": 8},
@@ -278,7 +272,7 @@ def ask_model(
             {"role": "system", "content": build_persona_prompt(profile_name, model_name=model_name)},
             {"role": "user",   "content": user_input},
         ]
-        resp = ollama.chat(
+        resp = chat_completion(
             model=model_name,
             messages=msgs_min,
             options={"temperature": temp, "num_ctx": 512, "num_thread": 8},
@@ -343,12 +337,11 @@ def ask_model_stream(
     msgs.append({"role": "user", "content": user_input})
 
     try:
-        stream = ollama.chat(
-            model=model_name, messages=msgs, stream=True,
+        stream = chat_completion_stream(
+            model=model_name, messages=msgs,
             options={"temperature": temp, "num_ctx": safe_ctx, "num_thread": 8},
         )
-        for chunk in stream:
-            token = chunk["message"]["content"]
+        for token in stream:
             if token:
                 yield token
     except Exception as e:
@@ -396,30 +389,18 @@ def safe_json_parse(text: str):
 
 @lru_cache(maxsize=1)
 def get_available_models() -> Dict[str, str]:
-    """Получает ВСЕ модели: static + ollama. Никогда не теряет модели из конфига."""
+    """Return configured static models plus active local provider models."""
     from .config import STATIC_MODEL_DESCRIPTIONS
 
     # Начинаем со статических — они ВСЕГДА в списке
     models = dict(STATIC_MODEL_DESCRIPTIONS)
 
-    # Добавляем из ollama те, которых нет в статике
+    # Add active local provider models that are not already in the static list.
     try:
-        result = ollama.list()
-        raw_models = []
-        if hasattr(result, "models"):
-            raw_models = result.models or []
-        elif isinstance(result, dict):
-            raw_models = result.get("models", [])
-
+        result = get_local_models()
+        raw_models = result.get("models", [])
         for m in raw_models:
-            name = ""
-            if hasattr(m, "model"):
-                name = m.model
-            elif hasattr(m, "name"):
-                name = m.name
-            elif isinstance(m, dict):
-                name = m.get("model", "") or m.get("name", "")
-            name = (name or "").strip()
+            name = str(m.get("model") or m.get("name") or "").strip()
             if name and name not in models:
                 models[name] = f"◌ {name}"
     except Exception:

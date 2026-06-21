@@ -4,7 +4,7 @@ import platform
 import subprocess
 from pathlib import Path
 
-from app.core.config import DATA_DIR
+from app.core.config import DATA_DIR, TERMINAL_BLOCKED
 
 WORKSPACE = (DATA_DIR / "workspace").resolve()
 WORKSPACE.mkdir(parents=True, exist_ok=True)
@@ -12,24 +12,9 @@ WORKSPACE.mkdir(parents=True, exist_ok=True)
 _cwd = str(WORKSPACE)
 _IS_WINDOWS = platform.system() == "Windows"
 
-BLOCKED = [
-    "rm -rf /",
-    "rm -rf /*",
-    "mkfs",
-    "dd if=",
-    "format c:",
-    "shutdown",
-    "reboot",
-    ":(){:|:&};:",
-    "deltree",
-    "remove-item -recurse",
-    "del /s",
-    "rd /s",
-    "rmdir /s",
-    "git reset --hard",
-    "git clean -fd",
-    "git checkout --",
-]
+# Blocked-command list is centralised in app.core.config (single source of
+# truth shared with domain/tools/terminal_tool.py).
+BLOCKED = TERMINAL_BLOCKED
 TIMEOUT = 15
 STDOUT_LIMIT = 16000
 STDERR_LIMIT = 6000

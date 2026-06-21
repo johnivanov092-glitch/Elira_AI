@@ -68,7 +68,7 @@ class ToolRegistry:
     # ── Public API ──────────────────────────────────────────────
 
     def collect_schemas(self) -> list[dict[str, Any]]:
-        """Flat list of tool schemas ready to pass to ollama.chat(tools=...)."""
+        """Flat list of OpenAI-compatible tool schemas."""
         return list(self._schemas)
 
     def known_tools(self) -> set[str]:
@@ -82,7 +82,7 @@ class ToolRegistry:
         """Execute one tool call. Returns (tool_meta, parsed_args).
 
         `raw_args` may be a dict (typical native tool_calls path) or
-        a JSON-encoded string (some Ollama models on inline-JSON
+        a JSON-encoded string (some local models on inline-JSON
         path). Either way, we hand the underlying provider a dict.
         Providers never raise — failures come back as
         tool_meta["text"].
@@ -134,7 +134,7 @@ class ToolRegistry:
     def _coerce_args(raw_args: Any) -> dict[str, Any]:
         """Normalize whatever the LLM emitted to a flat dict.
 
-        Native Ollama tool_calls deliver `args` as a dict already.
+        Native tool_calls deliver `args` as a dict already.
         Some inline-JSON paths deliver it as a JSON string. Bad JSON
         or unsupported shapes yield {}.
         """

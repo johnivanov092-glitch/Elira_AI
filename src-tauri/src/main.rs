@@ -137,6 +137,7 @@ fn backend_status(state: tauri::State<BackendState>) -> Result<serde_json::Value
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(BackendState {
             child: Mutex::new(None),
         })
@@ -168,10 +169,10 @@ fn main() {
             }
             Ok(())
         })
-        .on_window_event(|event| {
+        .on_window_event(|window, event| {
             // Graceful shutdown: останавливаем backend при закрытии окна
-            if let tauri::WindowEvent::Destroyed = event.event() {
-                let state: tauri::State<BackendState> = event.window().state();
+            if let tauri::WindowEvent::Destroyed = event {
+                let state: tauri::State<BackendState> = window.state();
                 if let Ok(mut guard) = state.child.lock() {
                     if let Some(mut child) = guard.take() {
                         eprintln!("[Elira] Stopping backend (pid {})...", child.id());

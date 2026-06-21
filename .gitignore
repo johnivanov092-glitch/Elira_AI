@@ -83,6 +83,7 @@ screenshots/
 *.7z
 *.rar
 *.bak
+*.bak_*
 
 # ------------------------------
 # AI / Data / Models
@@ -126,15 +127,23 @@ backend/data/response_cache.db
 backend/data/rag_memory.db
 
 # root-level data/ runtime — DBs, generated artifacts, history, system state.
-# Mirror of the backend/data ignores above. data/elira_secret.key and
-# data/plugins/ stay tracked (intentional, not runtime/personal).
+# Mirror of the backend/data ignores above. data/plugins/ stays tracked
+# (intentional, not runtime/personal).
 data/*.db
 data/generated/
 data/system/
 data/run_history.json
 
+# Secrets / per-machine tokens — auto-generated at runtime, never commit.
+# The Fernet key self-generates when absent; committing it defeats encryption.
+data/elira_secret.key
+data/elira_api_token
+
 # user-uploaded runtime files — personal data, never commit
 data/uploads/
+data/chat_agent_workspace/
+.elira_chat_uploads/
+/Chat/
 
 # local env / secrets
 .env
@@ -148,3 +157,10 @@ backend/.env.local
 # Claude worktrees
 .claude/
 .claire/
+
+# Local agent runs and launchers
+/.agent/
+/Task_Agent.txt
+/start-claude-full.ps1
+/data/agent_workspace/
+/data/ssh_acl.json

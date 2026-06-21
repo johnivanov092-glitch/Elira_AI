@@ -21,6 +21,8 @@ import json
 import sqlite3
 from typing import Any
 
+from app.infrastructure.db.connection import connect_sqlite
+
 
 _PER_SOURCE_LIMIT = 5
 
@@ -58,10 +60,9 @@ def _search_chats(query: str) -> list[dict[str, Any]]:
 
     pattern = f"%{query.lower()}%"
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = connect_sqlite(DB_PATH)
     except sqlite3.Error:
         return []
-    conn.row_factory = sqlite3.Row
     try:
         # Title hits
         title_hits = conn.execute(
@@ -132,10 +133,9 @@ def _search_sessions(query: str) -> list[dict[str, Any]]:
 
     pattern = f"%{query.lower()}%"
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = connect_sqlite(DB_PATH)
     except sqlite3.Error:
         return []
-    conn.row_factory = sqlite3.Row
     try:
         # Title hits
         title_hits = conn.execute(
@@ -243,10 +243,9 @@ def _search_library(query: str) -> list[dict[str, Any]]:
 
     pattern = f"%{query.lower()}%"
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = connect_sqlite(DB_PATH)
     except sqlite3.Error:
         return []
-    conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute(
             """

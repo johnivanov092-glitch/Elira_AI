@@ -38,7 +38,7 @@ class TelegramStoreCRUDTest(unittest.TestCase):
         self.assertEqual(result, "12345:ABCDEF")
 
     def test_set_config_overrides_previous(self) -> None:
-        tg_store.set_config_value("model", "gemma3:4b")
+        tg_store.set_config_value("model", "chat-model")
         tg_store.set_config_value("model", "llama3:8b")
         result = tg_store.get_config_value("model")
         self.assertEqual(result, "llama3:8b")
@@ -47,7 +47,7 @@ class TelegramStoreCRUDTest(unittest.TestCase):
         result = tg_store.update_telegram_config(
             {
                 "bot_token": "999:TOKEN",
-                "model": "gemma3:4b",
+                "model": "chat-model",
             }
         )
         self.assertTrue(result["ok"])
@@ -56,7 +56,7 @@ class TelegramStoreCRUDTest(unittest.TestCase):
         result = tg_store.update_telegram_config(
             {
                 "unknown_key": "should be ignored",
-                "model": "gemma3:4b",
+                "model": "chat-model",
             }
         )
         self.assertTrue(result["ok"])

@@ -181,7 +181,7 @@ class DispatchRoutingTest(unittest.TestCase):
         )
 
     def test_args_json_string_coerced_to_dict(self) -> None:
-        """Some Ollama models return tool args as a JSON-encoded string
+        """Some local tool-calling models return tool args as a JSON-encoded string
         instead of a dict — registry must parse it before handing to
         the provider."""
         p = _FakeProvider("p", tool_names=["call"])

@@ -6,12 +6,11 @@
  * the Code-agent toolbar and the chat Projects panel.
  */
 export async function pickFolder(defaultPath?: string): Promise<string | null> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const w = window as any;
-  if (!w.__TAURI__) return null;
+  const { isTauri } = await import("@tauri-apps/api/core");
+  if (!isTauri()) return null;
   try {
-    const mod = await import("@tauri-apps/api/dialog");
-    const selected = await mod.open({
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({
       directory: true,
       multiple: false,
       defaultPath: defaultPath || undefined,

@@ -423,7 +423,7 @@ class RagStatsTest(unittest.TestCase):
         self._db, self._conn_func = _bootstrapped()
 
     def _stats(self) -> dict:
-        return rag_stats(conn_factory=self._conn_func, embed_model="nomic-embed-text")
+        return rag_stats(conn_factory=self._conn_func, embed_model="local-embed")
 
     def test_returns_dict(self) -> None:
         self.assertIsInstance(self._stats(), dict)
@@ -438,7 +438,7 @@ class RagStatsTest(unittest.TestCase):
         self.assertEqual(self._stats()["with_embeddings"], 0)
 
     def test_model_reflected(self) -> None:
-        self.assertEqual(self._stats()["model"], "nomic-embed-text")
+        self.assertEqual(self._stats()["model"], "local-embed")
 
     def test_total_increments_after_add(self) -> None:
         add_to_rag(

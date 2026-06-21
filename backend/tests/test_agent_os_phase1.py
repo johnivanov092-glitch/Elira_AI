@@ -123,7 +123,7 @@ class TestAgentRuns(AgentRegistryTestCase):
                 "output_summary": "Python — язык программирования.",
                 "ok": True,
                 "route": "chat",
-                "model_used": "gemma3:4b",
+                "model_used": "chat-model",
                 "duration_ms": 1500,
             }
         )

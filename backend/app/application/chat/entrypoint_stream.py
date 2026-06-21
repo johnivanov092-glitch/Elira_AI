@@ -24,7 +24,7 @@ def run_agent_stream_impl(
     use_library: bool = True,
     use_reflection: bool = False,
     history: list[Any] | None = None,
-    num_ctx: int = 8192,
+    num_ctx: int = 131_072,
     use_web_search: bool = True,
     use_python_exec: bool = True,
     use_image_gen: bool = True,

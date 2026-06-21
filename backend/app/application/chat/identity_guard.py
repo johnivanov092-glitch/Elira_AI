@@ -18,6 +18,10 @@ MODEL_IDENTITY_RE = re.compile(
 
 FIRST_PERSON_RE = re.compile(r"(?i)\b(я|меня|мне|мой|моя|моё|мои)\b")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+ENGLISH_IDENTITY_QUESTION_RE = re.compile(
+    r"(?i)\b(who\s+are\s+you|what\s+are\s+you|what'?s\s+your\s+name|your\s+name)\b"
+)
+ENGLISH_FIRST_PERSON_RE = re.compile(r"(?i)\b(i|me|my|mine)\b")
 
 
 def _safe_identity_reply(persona_name: str) -> str:
@@ -28,14 +32,15 @@ def _safe_identity_reply(persona_name: str) -> str:
 
 
 def is_identity_question(user_input: str) -> bool:
-    return bool(IDENTITY_QUESTION_RE.search(user_input or ""))
+    text = user_input or ""
+    return bool(IDENTITY_QUESTION_RE.search(text) or ENGLISH_IDENTITY_QUESTION_RE.search(text))
 
 
 def _contains_model_identity(sentence: str) -> bool:
     text = (sentence or "").strip()
     if not text:
         return False
-    return bool(MODEL_IDENTITY_RE.search(text) and FIRST_PERSON_RE.search(text))
+    return bool(MODEL_IDENTITY_RE.search(text) and (FIRST_PERSON_RE.search(text) or ENGLISH_FIRST_PERSON_RE.search(text)))
 
 
 def _rewrite_identity_drift(answer_text: str, persona_name: str) -> str:

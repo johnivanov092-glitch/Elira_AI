@@ -5,7 +5,11 @@
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* NOTE: no global margin/padding reset here — it would be *unlayered* and thus
+   override Tailwind's layered utilities (mx-auto, my-*, px-*, …), breaking
+   centering and spacing across the workspace. Tailwind preflight (in @layer
+   base) already resets margins/padding correctly so utilities still win. */
+*, *::before, *::after { box-sizing: border-box; }
 
 /* ─── Тёмная тема (по умолчанию) ─── */
 :root, [data-theme="dark"] {

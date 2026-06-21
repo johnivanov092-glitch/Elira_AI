@@ -64,14 +64,17 @@ def init_db(
         cur.execute(
             "CREATE TABLE IF NOT EXISTS settings ("
             "id INTEGER PRIMARY KEY CHECK (id = 1), "
-            "ollama_context INTEGER NOT NULL DEFAULT 8192, "
-            "default_model TEXT NOT NULL DEFAULT 'gemma3:4b', "
+            "context_window INTEGER NOT NULL DEFAULT 131072, "
+            "default_model TEXT NOT NULL DEFAULT 'local-model', "
             f"agent_profile TEXT NOT NULL DEFAULT '{default_profile}'"
             ")"
         )
+        ensure_column_func(conn, "settings", "context_window", "context_window INTEGER NOT NULL DEFAULT 131072")
+        ensure_column_func(conn, "settings", "default_model", "default_model TEXT NOT NULL DEFAULT 'local-model'")
+        ensure_column_func(conn, "settings", "agent_profile", f"agent_profile TEXT NOT NULL DEFAULT '{default_profile}'")
         cur.execute(
-            "INSERT OR IGNORE INTO settings(id, ollama_context, default_model, agent_profile) "
-            f"VALUES(1, 8192, 'gemma3:4b', '{default_profile}')"
+            "INSERT OR IGNORE INTO settings(id, context_window, default_model, agent_profile) "
+            f"VALUES(1, 16384, 'local-model', '{default_profile}')"
         )
         conn.commit()
     finally:

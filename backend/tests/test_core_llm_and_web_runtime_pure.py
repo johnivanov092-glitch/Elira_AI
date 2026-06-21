@@ -1,6 +1,6 @@
 """Tests for pure helpers in app.core.llm and app.core.web_runtime.
 
-All functions under test are pure (no Ollama calls, no HTTP, no FS):
+All functions under test are pure (no local provider calls, no HTTP, no FS):
   core/llm.py:
     _is_ctx_error, estimate_tokens, get_safe_ctx, _trim_history,
     budget_contexts, context_size_warning, clean_code_fence,
@@ -105,7 +105,7 @@ class EstimateTokensTest(unittest.TestCase):
 
 class GetSafeCtxTest(unittest.TestCase):
     def test_returns_int(self) -> None:
-        self.assertIsInstance(get_safe_ctx("gemma3:4b"), int)
+        self.assertIsInstance(get_safe_ctx("chat-model"), int)
 
     def test_unknown_model_returns_default(self) -> None:
         from app.core.config import DEFAULT_SAFE_CTX
@@ -113,9 +113,9 @@ class GetSafeCtxTest(unittest.TestCase):
 
     def test_known_model_returns_its_limit(self) -> None:
         from app.core.config import MODEL_SAFE_CTX
-        if "qwen3:8b" in MODEL_SAFE_CTX:
-            result = get_safe_ctx("qwen3:8b")
-            self.assertEqual(result, MODEL_SAFE_CTX["qwen3:8b"])
+        if "backup-model" in MODEL_SAFE_CTX:
+            result = get_safe_ctx("backup-model")
+            self.assertEqual(result, MODEL_SAFE_CTX["backup-model"])
 
     def test_requested_above_limit_is_capped(self) -> None:
         # Unknown model has DEFAULT_SAFE_CTX=4096; requesting 99999 gets capped
@@ -133,7 +133,7 @@ class GetSafeCtxTest(unittest.TestCase):
         self.assertEqual(result, DEFAULT_SAFE_CTX)
 
     def test_result_positive(self) -> None:
-        self.assertGreater(get_safe_ctx("gemma3:4b"), 0)
+        self.assertGreater(get_safe_ctx("chat-model"), 0)
 
 
 # ---
@@ -158,7 +158,7 @@ class TrimHistoryTest(unittest.TestCase):
     def test_long_history_trimmed(self) -> None:
         msgs = self._msgs(20)
         result = _trim_history(msgs, keep=4)
-        # keep=4 Р Р†РІР‚В РІР‚в„ў keep last 8 messages
+        # keep=4 → keep last 8 messages
         self.assertEqual(len(result), 8)
 
     def test_trimmed_keeps_latest_messages(self) -> None:
@@ -322,14 +322,14 @@ class SafeJsonParseTest(unittest.TestCase):
 
 class SplitModelsByTypeTest(unittest.TestCase):
     def test_returns_two_dicts(self) -> None:
-        local, cloud = split_models_by_type({"gemma3:4b": "Local model"})
+        local, cloud = split_models_by_type({"chat-model": "Local model"})
         self.assertIsInstance(local, dict)
         self.assertIsInstance(cloud, dict)
 
     def test_local_model_in_local(self) -> None:
-        local, cloud = split_models_by_type({"gemma3:4b": "Local LLM"})
-        self.assertIn("gemma3:4b", local)
-        self.assertNotIn("gemma3:4b", cloud)
+        local, cloud = split_models_by_type({"chat-model": "Local LLM"})
+        self.assertIn("chat-model", local)
+        self.assertNotIn("chat-model", cloud)
 
     def test_cloud_model_by_name_in_cloud(self) -> None:
         local, cloud = split_models_by_type({"gpt-cloud:latest": "Cloud LLM"})

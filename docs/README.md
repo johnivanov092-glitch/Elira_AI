@@ -1,36 +1,54 @@
-# Elira AI — Документация
+# Elira AI Documentation
 
-Elira AI — **полностью локальный приватный AI-воркспейс**: Tauri-десктоп поверх
-FastAPI-бэкенда и локальных моделей Ollama. Всё — чаты, память, ключи, файлы —
-на машине пользователя.
+This folder is the navigation layer for the project. Keep it current and small.
+Historical plans belong here only when they still explain shipped behavior or a
+known decision.
 
-Ядро документации — три файла (ниже). Рядом живут отложенный бэклог
-[`POST_SERVER_BACKLOG.md`](POST_SERVER_BACKLOG.md) (активируется после миграции
-инференса на AI-server), его источники ([`AGENT_LOOP_FIX_PROPOSALS.md`](AGENT_LOOP_FIX_PROPOSALS.md),
-[`notes/`](notes/)) и процессные файлы рабочих планов. Устаревшие архивы по-прежнему
-не хранятся.
+## Current Docs
 
-## Документы
+- `ARCHITECTURE.md` - current backend/frontend/runtime architecture.
+- `PROJECT_MAP.md` - repo structure, owners, and where to change things.
+- `SERVER.md` - AI inference server summary (host, endpoints, models, access).
+- `AGENT_BOUNDARY_REVIEW.md` - the Chat-Agent vs Code-Agent runtime boundary.
+- `WORKPLAN_CODEX_CLAUDE.md` - single live coordination and handoff document for
+  agent-core/context stabilization.
+- `UI_BASELINE.md` - user-approved unified-workspace visual baseline and change
+  constraints.
+- `AGENT_CORE_AUDIT.md` - code-backed status of the supplied stabilization
+  requirements.
+- `CONTEXT_SYSTEM_AUDIT.md` - current context/compression/memory map and gaps.
+- `POST_SERVER_BACKLOG.md` - current server migration status and remaining
+  follow-up work.
+- `AGENT_UX_PLAN.md` - active plan: Code Agent transcript UX (tool icons, token
+  counter, live status). Branch `claude/agent-ux-toolcalls`.
+- `CODE_AGENT_REWRITE_PLAN.md` - active plan: Claude Code/Codex-style runtime
+  (token streaming, reliability, prompt trim). Fixes agent *behaviour*.
+- `FRONTEND_REBUILD_PLAN.md` - active plan: rebuild the frontend (same stack:
+  React+Vite+TS+Tailwind/shadcn, Tauri 2) on the v3 mockup, reusing the backend.
+  The main rebuild is shipped; token streaming and final polish remain.
+- `UNIFIED_WORKSPACE_REFACTOR.md` - superseded for the frontend by
+  FRONTEND_REBUILD_PLAN (in-place refactor approach kept for reference).
+- `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
+- `../ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` - deferred track (D1-D3) and the
+  runtime guardrails (P0-P12 are shipped; see code + ARCHITECTURE for current
+  behaviour).
 
-- **[`ARCHITECTURE.md`](ARCHITECTURE.md)** — техническая документация: стек,
-  модель процессов, слои бэкенда, два окружения (чат / код-агент), подсистемы
-  (планировщик, инструменты, память, веб-поиск, Agent OS, автоматизация),
-  хранение данных, сборка/деплой, конвенции. **Начни отсюда — «как устроено и почему».**
-- **[`PROJECT_MAP.md`](PROJECT_MAP.md)** — карта-конструктор: дерево
-  репозитория, поток запроса, связь роутеров с логикой, фронтенд и **все
-  зависимости** с пояснением «зачем». **«Что куда идёт».**
-- **`README.md`** (корень репозитория) — питч проекта, установка, зависимости,
-  порядок запуска, лаунчеры, smoke-проверки. **«Как поставить и запустить».**
+The completed P9-P12 plan and per-step preflight/proposal notes were removed in
+the 2026-06-14 docs cleanup; their history remains in git.
 
-## Куда идти
+## External Project Docs
 
-| Нужно | Файл |
-|-------|------|
-| Поставить / запустить | корневой `README.md` |
-| Понять архитектуру и решения | `docs/ARCHITECTURE.md` |
-| Найти, что где лежит и какие зависимости | `docs/PROJECT_MAP.md` |
-| Отложенные работы (после миграции на AI-server) | `docs/POST_SERVER_BACKLOG.md` |
+The dedicated inference server lives in the sibling repo `Elira_AI_Server`
+(same parent folder). `SERVER.md` summarizes it for in-repo work; the full
+operational docs are:
 
-> Документация описывает текущую архитектуру (результат совместного рефакторинга
-> Codex + Claude). Прежние рабочие планы, журналы и архивы удалены как
-> неактуальные — их суть перенесена в эти документы.
+- `../Elira_AI_Server/README.md`
+- `../Elira_AI_Server/Server/ACCESS.md`
+- `../Elira_AI_Server/docs/README.md`
+
+## Maintenance Rules
+
+- Use ASCII unless a file explicitly requires another encoding.
+- Do not document removed runtimes as active options.
+- Do not store secrets, private keys, API keys, or local `.env` values here.
+- For runtime behavior, cite the current code path rather than a stale plan.

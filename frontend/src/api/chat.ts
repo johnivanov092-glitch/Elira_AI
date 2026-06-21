@@ -1,4 +1,4 @@
-import { buildApiUrl, request, safeRequest } from "./client";
+import { buildApiUrl, request, safeRequest, withAuth } from "./client";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -105,17 +105,17 @@ export function isLocalApiAssetUrl(url = ""): boolean {
 }
 
 export async function listChats(): Promise<Chat[]> {
-  const payload = await safeRequest<unknown>("/api/elira/chats", {}, []);
+  const payload = await safeRequest<unknown>("/api/chat-agent/chats", {}, []);
   return normalizeArray(payload).map(normalizeChat);
 }
 
 export async function createChat(body: UnknownRecord = {}): Promise<Chat> {
-  return normalizeChat(unwrapItem(await request("/api/elira/chats", { method: "POST", body })));
+  return normalizeChat(unwrapItem(await request("/api/chat-agent/chats", { method: "POST", body })));
 }
 
 export async function renameChat(arg1: ChatMutationArg, arg2?: unknown): Promise<Chat> {
   const payload = argPayload(arg1, arg2, "title");
-  return normalizeChat(unwrapItem(await request(`/api/elira/chats/${encodeURIComponent(String(payload.id))}`, {
+  return normalizeChat(unwrapItem(await request(`/api/chat-agent/chats/${encodeURIComponent(String(payload.id))}`, {
     method: "PATCH",
     body: { title: payload.title },
   })));
@@ -123,7 +123,7 @@ export async function renameChat(arg1: ChatMutationArg, arg2?: unknown): Promise
 
 export async function pinChat(arg1: ChatMutationArg, arg2?: unknown): Promise<Chat> {
   const payload = argPayload(arg1, arg2, "pinned");
-  return normalizeChat(unwrapItem(await request(`/api/elira/chats/${encodeURIComponent(String(payload.id))}/pin`, {
+  return normalizeChat(unwrapItem(await request(`/api/chat-agent/chats/${encodeURIComponent(String(payload.id))}/pin`, {
     method: "PATCH",
     body: { pinned: Boolean(payload.pinned) },
   })));
@@ -131,7 +131,7 @@ export async function pinChat(arg1: ChatMutationArg, arg2?: unknown): Promise<Ch
 
 export async function saveChatToMemory(arg1: ChatMutationArg, arg2?: unknown): Promise<Chat> {
   const payload = argPayload(arg1, arg2, "saved");
-  return normalizeChat(unwrapItem(await request(`/api/elira/chats/${encodeURIComponent(String(payload.id))}/memory`, {
+  return normalizeChat(unwrapItem(await request(`/api/chat-agent/chats/${encodeURIComponent(String(payload.id))}/memory`, {
     method: "PATCH",
     body: { memory_saved: Boolean(payload.saved) },
   })));
@@ -139,17 +139,17 @@ export async function saveChatToMemory(arg1: ChatMutationArg, arg2?: unknown): P
 
 export async function deleteChat(arg: ChatMutationArg): Promise<unknown> {
   const id = isRecord(arg) ? arg.id : arg;
-  return request(`/api/elira/chats/${encodeURIComponent(String(id))}`, { method: "DELETE" });
+  return request(`/api/chat-agent/chats/${encodeURIComponent(String(id))}`, { method: "DELETE" });
 }
 
 export async function getMessages(arg: ChatMutationArg): Promise<ChatMessage[]> {
   const chatId = isRecord(arg) ? arg.chatId : arg;
-  const payload = await safeRequest<unknown>(`/api/elira/chats/${encodeURIComponent(String(chatId))}/messages`, {}, []);
+  const payload = await safeRequest<unknown>(`/api/chat-agent/chats/${encodeURIComponent(String(chatId))}/messages`, {}, []);
   return normalizeArray(payload).map(normalizeMessage);
 }
 
 export async function addMessage(body: UnknownRecord = {}): Promise<UnknownRecord & { chat_id: unknown; message: ChatMessage }> {
-  const payload = await request<unknown>("/api/elira/messages", {
+  const payload = await request<unknown>("/api/chat-agent/messages", {
     method: "POST",
     body: {
       chat_id: body.chatId ?? body.chat_id ?? null,
@@ -173,26 +173,24 @@ export async function sendMessage(body: UnknownRecord = {}): Promise<ChatMessage
 }
 
 export async function execute(body: UnknownRecord = {}): Promise<UnknownRecord & { content: string }> {
-  const response = await request<unknown>("/api/chat/send", {
+  const payload: UnknownRecord = {
+    model_name: body.model_name ?? body.model ?? "local-model",
+    profile_name: body.profile_name ?? body.profile ?? "default",
+    user_input: String(body.user_input ?? body.message ?? body.prompt ?? body.text ?? body.query ?? "").trim(),
+    session_id: normalizeSessionId(body.session_id ?? body.chat_id ?? body.chatId ?? null),
+    history: Array.isArray(body.history) ? body.history : [],
+    num_ctx: body.num_ctx ?? 131072,
+  };
+  const response = await request<unknown>("/api/chat-agent/send", {
     method: "POST",
-    body: {
-      model_name: body.model_name ?? body.model ?? "gemma3:4b",
-      profile_name: body.profile_name ?? body.profile ?? "default",
-      user_input: String(body.user_input ?? body.message ?? body.prompt ?? body.text ?? body.query ?? "").trim(),
-      session_id: normalizeSessionId(body.session_id ?? body.chat_id ?? body.chatId ?? null),
-      history: Array.isArray(body.history) ? body.history : [],
-      use_memory: body.use_memory ?? true,
-      use_library: body.use_library ?? true,
-      use_reflection: body.use_reflection ?? false,
-      direct_llm: body.direct_llm ?? false,
-    },
+    body: payload,
   });
   const routeError = extractAgentError(response);
   if (routeError) throw new Error(routeError);
 
   const responseRecord = isRecord(response) ? response : {};
   const content = responseRecord.content ?? responseRecord.answer ?? responseRecord.response ?? responseRecord.message ?? "";
-  if (!String(content).trim()) throw new Error("Empty response from /api/chat/send");
+  if (!String(content).trim()) throw new Error("Empty response from /api/chat-agent/send");
   return { ...responseRecord, content: String(content) };
 }
 
@@ -202,37 +200,18 @@ export function executeStream(
 ): AbortController {
   const controller = new AbortController();
 
-  const payload = {
-    model_name: body.model_name ?? body.model ?? "gemma3:4b",
+  const payload: UnknownRecord = {
+    model_name: body.model_name ?? body.model ?? "local-model",
     profile_name: body.profile_name ?? body.profile ?? "default",
     user_input: String(body.user_input ?? body.message ?? "").trim(),
     session_id: normalizeSessionId(body.session_id ?? body.chat_id ?? body.chatId ?? null),
     history: Array.isArray(body.history) ? body.history : [],
-    num_ctx: body.num_ctx ?? 8192,
-    use_memory: body.use_memory ?? true,
-    use_library: body.use_library ?? true,
-    use_reflection: body.use_reflection ?? false,
-    use_web_search: body.use_web_search ?? true,
-    use_python_exec: body.use_python_exec ?? true,
-    use_image_gen: body.use_image_gen ?? true,
-    use_file_gen: body.use_file_gen ?? true,
-    use_http_api: body.use_http_api ?? true,
-    use_sql: body.use_sql ?? true,
-    use_screenshot: body.use_screenshot ?? true,
-    use_encrypt: body.use_encrypt ?? true,
-    use_archiver: body.use_archiver ?? true,
-    use_converter: body.use_converter ?? true,
-    use_regex: body.use_regex ?? true,
-    use_translator: body.use_translator ?? true,
-    use_csv: body.use_csv ?? true,
-    use_webhook: body.use_webhook ?? true,
-    use_plugins: body.use_plugins ?? true,
-    direct_llm: body.direct_llm ?? false,
+    num_ctx: body.num_ctx ?? 131072,
   };
 
-  fetch(buildApiUrl("/api/chat/stream"), {
+  fetch(buildApiUrl("/api/chat-agent/stream"), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: withAuth({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
     signal: controller.signal,
   })
@@ -309,8 +288,8 @@ export function executeStream(
   return controller;
 }
 
-export async function listOllamaModels(): Promise<{ models: unknown[] }> {
-  const payload = await safeRequest<unknown>("/api/elira/models", {}, []);
+export async function listLocalModels(): Promise<{ models: unknown[] }> {
+  const payload = await safeRequest<unknown>("/api/chat-agent/models", {}, []);
   if (isRecord(payload) && Array.isArray(payload.models)) return { models: payload.models };
   if (isRecord(payload) && Array.isArray(payload.items)) return { models: payload.items };
   if (Array.isArray(payload)) return { models: payload };
@@ -318,9 +297,9 @@ export async function listOllamaModels(): Promise<{ models: unknown[] }> {
 }
 
 export async function getSettings(): Promise<UnknownRecord> {
-  return safeRequest<UnknownRecord>("/api/elira/settings", {}, {});
+  return safeRequest<UnknownRecord>("/api/chat-agent/settings", {}, {});
 }
 
 export async function updateSettings(body: UnknownRecord = {}): Promise<unknown> {
-  return request("/api/elira/settings", { method: "PUT", body });
+  return request("/api/chat-agent/settings", { method: "PUT", body });
 }

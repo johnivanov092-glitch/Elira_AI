@@ -15,7 +15,7 @@ from app.application.chat.planner_v2 import (
     refresh_planner,
 )
 from app.application.chat.runtime import run_agent, run_agent_stream
-from app.application.chat.ollama_chat import run_chat, run_chat_stream
+from app.application.chat.local_chat import run_chat, run_chat_stream
 from app.application.elira_memory.settings import (
     get_planner_keywords,
     save_planner_keywords,
@@ -79,7 +79,7 @@ class ChatRequest(BaseModel):
     user_input: str
     session_id: str | None = None
     history: list[dict[str, Any]] = Field(default_factory=list)
-    num_ctx: int = 8192
+    num_ctx: int = 131072
     use_memory: bool = True
     use_library: bool = True
     use_reflection: bool = False

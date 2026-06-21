@@ -15,7 +15,7 @@ Design choices:
     We coalesce within DEBOUNCE_SECS before kicking off the
     `reindex_file` call.
   * The reindex happens on a worker thread, NOT on the watchdog
-    observer thread, because reindex_file talks to SQLite + Ollama
+    observer thread, because reindex_file talks to SQLite + embeddings
     and could block long enough to make watchdog drop subsequent
     events.
   * SKIP rules match `index_project`'s: dirs in INDEX_SKIP_DIRS plus

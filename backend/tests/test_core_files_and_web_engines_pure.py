@@ -144,15 +144,15 @@ class ShouldAutoSaveMemoryTest(unittest.TestCase):
         self.assertIsInstance(should_auto_save_memory(""), bool)
 
     def test_short_text_false(self) -> None:
-        self.assertFalse(should_auto_save_memory("РёС‚РѕРі - РІСЃС‘ РіРѕС‚РѕРІРѕ"))
+        self.assertFalse(should_auto_save_memory("итог - всё готово"))
 
     def test_long_text_with_trigger_true(self) -> None:
         text = "summary " + "A" * 200
         self.assertTrue(should_auto_save_memory(text))
 
     def test_long_text_without_trigger_false(self) -> None:
-        # no trigger words: triggers = ["РёС‚РѕРі","РІС‹РІРѕРґ","РІР°Р¶РЅРѕ","СЂРµРєРѕРјРµРЅРґ","РїР»Р°РЅ","С€Р°Рі","СЂРµС€РµРЅРёРµ","РєР»СЋС‡РµРІ","summary"]
-        text = "РѕР±С‹С‡РЅС‹Р№ СЂР°Р·РіРѕРІРѕСЂ Рѕ РїРѕРіРѕРґРµ Рё РїСЂРёСЂРѕРґРµ Р±РµР· СЃРїРµС†РёР°Р»СЊРЅС‹С… С‚РµСЂРјРёРЅРѕРІ " + "A" * 180
+        # no trigger words: triggers = ["итог","вывод","важно","рекоменд","план","шаг","решение","ключев","summary"]
+        text = "обычный разговор о погоде и природе без специальных терминов " + "A" * 180
         self.assertFalse(should_auto_save_memory(text))
 
     def test_summary_trigger_word_true(self) -> None:
@@ -272,11 +272,11 @@ class ExportChatAsMarkdownTest(unittest.TestCase):
         ]
 
     def test_returns_string(self) -> None:
-        self.assertIsInstance(export_chat_as_markdown(self._messages(), "gemma3:4b"), str)
+        self.assertIsInstance(export_chat_as_markdown(self._messages(), "chat-model"), str)
 
     def test_contains_model_name(self) -> None:
-        result = export_chat_as_markdown(self._messages(), "gemma3:4b")
-        self.assertIn("gemma3:4b", result)
+        result = export_chat_as_markdown(self._messages(), "chat-model")
+        self.assertIn("chat-model", result)
 
     def test_contains_user_content(self) -> None:
         result = export_chat_as_markdown(self._messages(), "model")

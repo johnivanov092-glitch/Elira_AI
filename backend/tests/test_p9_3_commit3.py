@@ -22,8 +22,8 @@ from app.application.code_agent.agent_loop import _resolve_code_route  # noqa: E
 
 
 _ROUTE_MAP = {
-    "code": ["qwen2.5-coder:7b", "qwen3:8b", "gemma3:4b"],
-    "chat": ["gemma3:4b"],
+    "code": ["local-model"],
+    "chat": ["local-model"],
 }
 
 
@@ -31,7 +31,7 @@ def _profile(model: str, role: str = "code", *, cloud: bool = False,
              context_limit: int = 16384, timeout: int = 120) -> dict:
     return {
         "id": f"prof-{model}",
-        "provider": "anthropic" if cloud else "ollama",
+        "provider": "anthropic" if cloud else "llama_server",
         "model": model,
         "role": role,
         "context_limit": context_limit,
@@ -47,7 +47,7 @@ class CodeAgentRouteResolutionTest(unittest.TestCase):
             "ok": available is not None,
             "models": [{"name": m} for m in (available or [])],
         }
-        with patch("app.infrastructure.llm.ollama_models.get_models", return_value=models_payload), \
+        with patch("app.infrastructure.llm.local_models.get_models", return_value=models_payload), \
              patch("app.core.config._get_route_map", return_value=_ROUTE_MAP), \
              patch("app.core.config._get_profile_for_role", return_value=profile), \
              patch("app.application.monitoring.runtime.ensure_agent_limit",
@@ -56,7 +56,7 @@ class CodeAgentRouteResolutionTest(unittest.TestCase):
 
     def test_auto_selects_code_profile_when_installed(self):
         model, _effective, decision = self._run(
-            "auto", 16384, available=["code-pro:7b", "gemma3:4b"],
+            "auto", 16384, available=["code-pro:7b", "local-model"],
             profile=_profile("code-pro:7b"), monitoring_max=16384,
         )
         self.assertEqual(model, "code-pro:7b")
@@ -74,48 +74,47 @@ class CodeAgentRouteResolutionTest(unittest.TestCase):
 
     def test_monitoring_cap_applies(self):
         _model, effective, _decision = self._run(
-            "qwen2.5-coder:7b", 16384, available=["qwen2.5-coder:7b"],
+            "local-model", 16384, available=["local-model"],
             profile=None, monitoring_max=4096,
         )
         self.assertEqual(effective, 4096)
 
-    def test_profile_context_limit_applies(self):
+    def test_profile_context_limit_does_not_shrink_code_agent_default(self):
         _model, effective, decision = self._run(
             "auto", 16384, available=["code-pro:7b"],
             profile=_profile("code-pro:7b", context_limit=2048), monitoring_max=16384,
         )
         self.assertEqual(decision.source, "profile")
-        self.assertEqual(effective, 2048)
+        self.assertEqual(effective, 16384)
 
     def test_model_safe_ctx_does_not_cap_code_agent(self):
-        # qwen2.5-coder:7b has MODEL_SAFE_CTX 6144, but code-agent must NOT apply it.
         _model, effective, _decision = self._run(
-            "qwen2.5-coder:7b", 16384, available=["qwen2.5-coder:7b"],
+            "local-model", 16384, available=["local-model"],
             profile=None, monitoring_max=16384,
         )
         self.assertEqual(effective, 16384)
 
     def test_default_num_ctx_preserved_without_caps(self):
         _model, effective, _decision = self._run(
-            "qwen2.5-coder:7b", 16384, available=["qwen2.5-coder:7b"],
+            "local-model", 16384, available=["local-model"],
             profile=None, monitoring_max=None,
         )
         self.assertEqual(effective, 16384)
 
     def test_unavailable_profile_falls_back_to_route_map(self):
         model, _effective, decision = self._run(
-            "auto", 16384, available=["gemma3:4b"],  # profile model not installed
+            "auto", 16384, available=["local-model"],
             profile=_profile("code-pro:7b"), monitoring_max=16384,
         )
-        self.assertEqual(model, "gemma3:4b")
+        self.assertEqual(model, "local-model")
         self.assertEqual(decision.source, "route_map")
 
     def test_cloud_profile_skipped_without_consent(self):
         model, _effective, decision = self._run(
-            "auto", 16384, available=["cloud-x", "qwen2.5-coder:7b"],
+            "auto", 16384, available=["cloud-x", "local-model"],
             profile=_profile("cloud-x", cloud=True), monitoring_max=16384,
         )
-        self.assertEqual(model, "qwen2.5-coder:7b")
+        self.assertEqual(model, "local-model")
         self.assertEqual(decision.source, "route_map")
         self.assertTrue(decision.cloud_skipped)
 
@@ -142,12 +141,12 @@ class WorkflowStepModelFallbackTest(unittest.TestCase):
         self.assertEqual(captured["model_name"], "auto")
 
     def test_explicit_step_model_preserved(self):
-        captured = self._run_step({"model_name": "qwen3:8b"}, {})
-        self.assertEqual(captured["model_name"], "qwen3:8b")
+        captured = self._run_step({"model_name": "explicit-model"}, {})
+        self.assertEqual(captured["model_name"], "explicit-model")
 
     def test_run_context_model_preserved(self):
-        captured = self._run_step({}, {"model_name": "mistral-nemo:latest"})
-        self.assertEqual(captured["model_name"], "mistral-nemo:latest")
+        captured = self._run_step({}, {"model_name": "research-model"})
+        self.assertEqual(captured["model_name"], "research-model")
 
 
 class TelegramModelFallbackTest(unittest.TestCase):
@@ -181,8 +180,8 @@ class TelegramModelFallbackTest(unittest.TestCase):
         self.assertEqual(captured["model_name"], "auto")
 
     def test_explicit_model_preserved(self):
-        captured = self._process("qwen3:8b")
-        self.assertEqual(captured["model_name"], "qwen3:8b")
+        captured = self._process("explicit-model")
+        self.assertEqual(captured["model_name"], "explicit-model")
 
 
 class CodeAgentRouteDefaultsTest(unittest.TestCase):
@@ -193,6 +192,7 @@ class CodeAgentRouteDefaultsTest(unittest.TestCase):
         from app.api.routes import code_agent_routes as routes
         self.assertEqual(routes.CodeAgentRequest(message="m", project_root="/p").model, "auto")
         self.assertEqual(routes.CodeAgentStreamRequest(message="m", project_root="/p").model, "auto")
+        self.assertEqual(routes.CodeAgentRequest(message="m", project_root="/p").mode, "code")
 
     def test_run_route_passes_auto_when_model_omitted(self):
         from app.api.routes import code_agent_routes as routes
@@ -206,6 +206,22 @@ class CodeAgentRouteDefaultsTest(unittest.TestCase):
         with patch.object(routes, "run_code_agent", side_effect=fake_run):
             routes.run(routes.CodeAgentRequest(message="m", project_root="/p"))
         self.assertEqual(captured["model"], "auto")
+        self.assertIsNone(captured["base_tools"])
+
+    def test_run_route_search_mode_enables_web_tools_initially(self):
+        from app.api.routes import code_agent_routes as routes
+        captured: dict = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True, "response": "", "steps": 0, "tool_calls": [],
+                    "stop_reason": "done", "error": None}
+
+        with patch.object(routes, "run_code_agent", side_effect=fake_run):
+            routes.run(routes.CodeAgentRequest(message="m", project_root="/p", mode="search"))
+
+        self.assertIn("web_search", captured["base_tools"])
+        self.assertIn("web_fetch", captured["base_tools"])
 
     def test_stream_route_passes_auto_when_model_omitted(self):
         import asyncio
@@ -225,10 +241,44 @@ class CodeAgentRouteDefaultsTest(unittest.TestCase):
 
             asyncio.run(_drain())
         self.assertEqual(captured["model"], "auto")
+        self.assertIsNone(captured["base_tools"])
+
+    def test_favicon_proxy_fetches_origin_favicon(self):
+        from app.api.routes import code_agent_routes as routes
+
+        class FakeResponse:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def iter_content(self, chunk_size=8192):
+                yield b"\x89PNG\r\n\x1a\nicon"
+
+        with patch("requests.get", return_value=FakeResponse()) as get:
+            response = routes.favicon("https://example.com/docs/page")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.media_type, "image/png")
+        self.assertEqual(response.body, b"\x89PNG\r\n\x1a\nicon")
+        self.assertEqual(get.call_args.args[0], "https://example.com/favicon.ico")
+        self.assertFalse(get.call_args.kwargs["allow_redirects"])
+        self.assertTrue(get.call_args.kwargs["stream"])
+
+    def test_favicon_proxy_blocks_local_targets(self):
+        from fastapi import HTTPException
+        from app.api.routes import code_agent_routes as routes
+
+        with self.assertRaises(HTTPException):
+            routes.favicon("http://127.0.0.1/private")
 
 
 class SummarizeHistoryAutoTest(unittest.TestCase):
-    """P9.3 fixup: the 'auto' sentinel must never reach Ollama as a literal
+    """P9.3 fixup: the 'auto' sentinel must never reach the local provider as a literal
     model name from summarize-history; it is resolved through the code route."""
 
     def test_auto_model_resolved_before_chat(self):
@@ -239,9 +289,9 @@ class SummarizeHistoryAutoTest(unittest.TestCase):
             captured.update(kwargs)
             return {"message": {"content": "summary"}}
 
-        with patch("app.infrastructure.llm.ollama_models.get_models", return_value={"ok": False, "models": []}), \
+        with patch("app.infrastructure.llm.local_models.get_models", return_value={"ok": False, "models": []}), \
              patch("app.core.config._get_profile_for_role", return_value=None), \
-             patch("app.core.config._get_route_map", return_value={"code": ["qwen2.5-coder:7b"]}), \
+             patch("app.core.config._get_route_map", return_value={"code": ["local-model"]}), \
              patch("app.application.monitoring.runtime.ensure_agent_limit", return_value={"max_context_tokens": 16384}):
             result = agent_loop.summarize_history(
                 messages=[{"role": "user", "content": "hello"},
@@ -252,7 +302,7 @@ class SummarizeHistoryAutoTest(unittest.TestCase):
             )
         self.assertTrue(result["ok"])
         self.assertNotEqual(captured.get("model"), "auto")
-        self.assertEqual(captured.get("model"), "qwen2.5-coder:7b")
+        self.assertEqual(captured.get("model"), "local-model")
 
 
 class CodeAgentEnsureLimitCapTest(unittest.TestCase):
@@ -260,7 +310,7 @@ class CodeAgentEnsureLimitCapTest(unittest.TestCase):
     max_context_tokens caps a too-large request to 16384 (vs reaching preflight
     uncapped and being blocked) even on a fresh monitoring DB with no row."""
 
-    def test_request_above_default_cap_becomes_16384(self):
+    def test_request_above_default_cap_becomes_131072(self):
         import tempfile
         from app.application.monitoring import runtime as mon
         from app.application.code_agent.agent_loop import _resolve_code_route
@@ -272,14 +322,14 @@ class CodeAgentEnsureLimitCapTest(unittest.TestCase):
             mon._LIMIT_SEED_DONE = False
             mon._init_db()
             try:
-                with patch("app.infrastructure.llm.ollama_models.get_models",
+                with patch("app.infrastructure.llm.local_models.get_models",
                            return_value={"ok": False, "models": []}):
-                    _model, effective, _decision = _resolve_code_route("qwen2.5-coder:7b", 99999)
+                    _model, effective, _decision = _resolve_code_route("local-model", 200000)
             finally:
                 mon.DB_PATH = orig_db
                 mon._LIMIT_SEED_DONE = orig_seed
 
-        self.assertEqual(effective, 16384)
+        self.assertEqual(effective, 131072)
 
 
 if __name__ == "__main__":
