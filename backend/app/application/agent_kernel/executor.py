@@ -20,6 +20,7 @@ Design: dispatch_fn is injected by callers so that:
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -27,6 +28,7 @@ from typing import Any, Callable
 DispatchFn = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 _TRUNCATION_SUFFIX = "\n[output truncated]"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -206,7 +208,8 @@ def execute_tool(
         try:
             from app.application.monitoring import runtime as _mon
             _granted = {str(s) for s in ((_mon.get_agent_limit(request.agent_id) or {}).get("allowed_scopes") or [])}
-        except Exception:
+        except Exception as exc:
+            logger.debug("failed to read agent scopes", exc_info=exc)
             _granted = set()
         if _granted:  # empty grant = unrestricted
             _missing = [s for s in _tool_scopes if s not in _granted]
@@ -236,8 +239,9 @@ def execute_tool(
                 from app.application.code_agent.tools import is_shell_safe
                 if is_shell_safe(_cmd):
                     _needs_approval = False
-            except Exception:
-                pass  # conservative: keep approval requirement on import error
+            except Exception as exc:
+                # Conservative: keep approval requirement on import error.
+                logger.debug("shell safety classification failed", exc_info=exc)
 
     if _needs_approval:
         # A stable run_id is required so the approval can be matched on retry.
@@ -286,8 +290,8 @@ def execute_tool(
             try:
                 from app.application.telegram.runtime import send_approval_notification
                 send_approval_notification(approval)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Telegram approval notification failed", exc_info=exc)
             return ToolExecutionResult(
                 status="waiting_approval",
                 output={
@@ -364,8 +368,8 @@ def _emit_executed(req: ToolExecutionRequest, result: dict, status: str) -> None
                 "error": result.get("error"),
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("tool.executed event emission failed", exc_info=exc)
 
 
 def _emit_approval_pending(req: ToolExecutionRequest, approval_id: str) -> None:
@@ -382,8 +386,8 @@ def _emit_approval_pending(req: ToolExecutionRequest, approval_id: str) -> None:
                 "approval_id": approval_id,
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("tool.approval_pending event emission failed", exc_info=exc)
 
 
 def _emit_timeout(req: ToolExecutionRequest, elapsed: float, budget: int) -> None:
@@ -401,8 +405,8 @@ def _emit_timeout(req: ToolExecutionRequest, elapsed: float, budget: int) -> Non
                 "observed": True,
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("tool.timeout event emission failed", exc_info=exc)
 
 
 def _emit_invalid_spec(req: ToolExecutionRequest, reason: str) -> None:
@@ -424,8 +428,8 @@ def _emit_invalid_spec(req: ToolExecutionRequest, reason: str) -> None:
                 "reason": reason,
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("tool.invalid_spec event emission failed", exc_info=exc)
 
 
 def _emit_blocked(req: ToolExecutionRequest, reason: str) -> None:
@@ -442,5 +446,5 @@ def _emit_blocked(req: ToolExecutionRequest, reason: str) -> None:
                 "reason": reason,
             },
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("sandbox.policy.blocked event emission failed", exc_info=exc)

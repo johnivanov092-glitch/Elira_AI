@@ -176,7 +176,11 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "run_bash",
-                "description": "Run a shell command inside the project root. Returns stdout, stderr, and exit code.",
+                "description": (
+                    "Run a platform-native shell command inside the project root. "
+                    "On Windows this is cmd.exe (use dir/type/where or explicitly invoke "
+                    "powershell.exe); on POSIX it is /bin/sh. Returns stdout, stderr, and exit code."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
