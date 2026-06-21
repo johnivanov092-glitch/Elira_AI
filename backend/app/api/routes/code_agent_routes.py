@@ -35,6 +35,7 @@ from app.application.code_agent.agent_loop import (
     summarize_history,
 )
 from app.application.code_agent import sessions as session_store
+from app.application.library.runtime import build_library_context
 from app.core.data_files import data_subdir
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
@@ -47,6 +48,31 @@ def _base_tools_for_mode(mode: CodeAgentMode) -> tuple[str, ...] | None:
     if mode == "search":
         return tuple(dict.fromkeys((*_CODE_AGENT_BASE_TOOLS, "web_search", "web_fetch")))
     return None
+
+
+def _inject_library_context(message: str) -> str:
+    """Prepend active library-file previews to the user's message.
+
+    Documents/images dropped into the workspace are stored with
+    use_in_context=1 (see uploadLibraryFile). The code agent's tool loop is
+    unaware of the library, so the dropped file is invisible unless we surface
+    it here — mirroring how the chat path injects library context. The block is
+    bounded (build_library_context caps files/chars) so it cannot blow the
+    context window.
+    """
+    try:
+        ctx = build_library_context()
+    except Exception:
+        return message
+    block = (ctx.get("context") or "").strip()
+    if not block:
+        return message
+    used = ", ".join(ctx.get("used_files") or []) or "вложения"
+    header = (
+        "Контекст из прикреплённых файлов "
+        f"({used}). Используй его, если он относится к запросу:"
+    )
+    return f"{header}\n\n{block}\n\n----- ЗАПРОС ПОЛЬЗОВАТЕЛЯ -----\n{message}"
 
 
 def _resolve_project_root(raw: str | None) -> str:
@@ -95,7 +121,7 @@ class CodeAgentRequest(BaseModel):
     # P9.3: "auto" routes through the shared model order (route='code') server-side;
     # an explicit model is preserved. (CodeAgentStreamRequest inherits this.)
     model: str = Field(default="auto")
-    max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=50)
+    max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=100)
     num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
     mode: CodeAgentMode = Field(default="code", description="Composer mode: code or search")
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")
@@ -168,7 +194,7 @@ class RecallRequest(BaseModel):
 def run(payload: CodeAgentRequest) -> CodeAgentResponse:
     history = [m.model_dump() for m in (payload.conversation_history or [])]
     result = run_code_agent(
-        user_message=payload.message,
+        user_message=_inject_library_context(payload.message),
         project_root=_resolve_project_root(payload.project_root),
         working_dir=payload.working_dir,
         model=payload.model,
@@ -190,11 +216,12 @@ def _sse_format(event: dict[str, Any]) -> str:
 def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
     run_id = payload.run_id or uuid.uuid4().hex
     history = [m.model_dump() for m in (payload.conversation_history or [])]
+    user_message = _inject_library_context(payload.message)
 
     def gen():
         try:
             for event in stream_code_agent(
-                user_message=payload.message,
+                user_message=user_message,
                 project_root=_resolve_project_root(payload.project_root),
                 working_dir=payload.working_dir,
                 model=payload.model,
