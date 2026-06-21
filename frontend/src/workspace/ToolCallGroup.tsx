@@ -4,10 +4,11 @@ import type { CodeAgentToolCall } from "../api/codeAgent";
 import { toolIcon } from "./toolIcon";
 
 function shortArg(args: Record<string, unknown>): string {
-  for (const key of ["path", "command", "query", "pattern", "url"]) {
+  for (const key of ["path", "command", "query", "pattern", "url", "task", "code", "host"]) {
     const value = args[key];
     if (typeof value === "string" && value) {
-      return value.length > 60 ? value.slice(0, 60) + "…" : value;
+      const flat = value.replace(/\s+/g, " ").trim();
+      return flat.length > 60 ? flat.slice(0, 60) + "…" : flat;
     }
   }
   return "";
