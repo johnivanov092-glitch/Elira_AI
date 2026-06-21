@@ -15,6 +15,7 @@ export type CodeAgentToolCall = {
   tool: string;
   arguments: Record<string, unknown>;
   result: string;
+  ok?: boolean;
   touched_path?: string;
   old_content?: string;
   new_content?: string;
@@ -26,8 +27,9 @@ export type CodeAgentResponse = {
   response: string;
   steps: number;
   tool_calls: CodeAgentToolCall[];
-  stop_reason: "answer" | "max_steps" | "timeout" | "error" | "cancelled";
+  stop_reason: "answer" | "max_steps" | "timeout" | "context_limit" | "loop_guard" | "error" | "cancelled";
   error: string | null;
+  partial: boolean;
 };
 
 export type ConversationMessage = {
@@ -78,6 +80,7 @@ export async function runCodeAgent({
 
 export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
+  | { type: "run_resumed"; run_id: string; from_step: number }
   | { type: "step_started"; step: number }
   | { type: "heartbeat"; step: number }
   | { type: "delta"; step: number; text: string }
@@ -96,7 +99,7 @@ export type CodeAgentStreamEvent =
       approval_id: string;
     }
   | { type: "approval_wait"; step: number; approval_id: string; waited_s: number }
-  | { type: "context_compacted"; step: number }
+  | { type: "context_compacted"; step: number; context?: ContextUsage }
   | {
       type: "usage";
       step: number;
@@ -114,6 +117,9 @@ export type CodeAgentStreamEvent =
       steps: number;
       stop_reason: CodeAgentResponse["stop_reason"];
       error: string | null;
+      partial?: boolean;
+      resumable?: boolean;
+      run_id?: string;
     };
 
 export type ContextUsage = {
@@ -201,6 +207,30 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     return;
   }
 
+  await consumeCodeAgentStream(response, { onEvent, onRunId, onError });
+}
+
+export async function resumeCodeAgent(
+  runId: string,
+  handlers: StreamHandlers & { signal?: AbortSignal },
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/code-agent/runs/${encodeURIComponent(runId)}/resume`, {
+      method: "POST",
+      headers: withAuth({ Accept: "text/event-stream" }),
+      signal: handlers.signal,
+    });
+  } catch (err) {
+    if ((err as DOMException)?.name === "AbortError") return;
+    handlers.onError?.(err as Error);
+    return;
+  }
+  await consumeCodeAgentStream(response, handlers);
+}
+
+async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers): Promise<void> {
+  const { onEvent, onRunId, onError } = handlers;
   const headerRunId = response.headers.get("X-Run-Id");
   if (headerRunId && onRunId) onRunId(headerRunId);
 

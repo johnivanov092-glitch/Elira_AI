@@ -19,6 +19,8 @@ export type AgentTurnData = {
   activeTool?: string;
   error?: string | null;
   stopReason?: string;
+  runId?: string;
+  resumable?: boolean;
   pendingApproval?: PendingApproval;
 };
 

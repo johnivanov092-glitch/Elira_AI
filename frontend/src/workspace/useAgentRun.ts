@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import {
   cancelCodeAgent,
+  resumeCodeAgent,
   resolveApproval,
   streamCodeAgent,
   type CodeAgentMode,
@@ -8,6 +9,7 @@ import {
   type ContextUsage,
   type ConversationMessage,
   type TaskLedgerEntry,
+  type StreamHandlers,
 } from "../api/codeAgent";
 import { uploadLibraryFile } from "../api/library";
 import type { AgentTurnData, FileEntry, Turn } from "./types";
@@ -26,6 +28,73 @@ export function useAgentRun(projectRoot: string, model: string) {
   const autoApproveRef = useRef(false);
   const runIdRef = useRef<string | null>(null);
 
+  const wireStream = useCallback((
+    agentId: string,
+    invoke: (handlers: StreamHandlers & { signal: AbortSignal }) => Promise<void>,
+  ) => {
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const patch = (fn: (a: AgentTurnData) => AgentTurnData) =>
+      setTurns((p) => p.map((t) => (t.kind === "agent" && t.id === agentId ? fn(t) : t)));
+
+    void invoke({
+      signal: ctrl.signal,
+      onRunId: (id) => {
+        runIdRef.current = id;
+        patch((a) => ({ ...a, runId: id }));
+      },
+      onEvent: (e: CodeAgentStreamEvent) => {
+        if (e.type === "run_started" || e.type === "run_resumed") {
+          runIdRef.current = e.run_id;
+          patch((a) => ({ ...a, runId: e.run_id }));
+        }
+        if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined }));
+        else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
+        else if (e.type === "tool_call") {
+          patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, pendingApproval: undefined }));
+          const result = e.result.trim();
+          const entry: TaskLedgerEntry = {
+            timestamp: Date.now(),
+            type: "tool_call",
+            action: e.tool,
+            result: e.ok === false || /^error\b/i.test(result) ? result.slice(0, 500) : `completed (${result.length} chars)`,
+          };
+          setTaskLedger((items) => [...items, entry].slice(-200));
+        } else if (e.type === "approval_pending") {
+          if (autoApproveRef.current) {
+            void resolveApproval(e.approval_id, "approve").catch(() => {});
+            patch((a) => ({ ...a, pendingApproval: undefined }));
+          } else patch((a) => ({ ...a, pendingApproval: { approvalId: e.approval_id, tool: e.tool, arguments: e.arguments } }));
+        } else if (e.type === "approval_wait") patch((a) => (a.pendingApproval ? { ...a, pendingApproval: { ...a.pendingApproval, waitedS: e.waited_s } } : a));
+        else if (e.type === "context_compacted") {
+          if (e.context) setContextUsage(e.context);
+          const entry: TaskLedgerEntry = { timestamp: Date.now(), type: "compression", action: `step ${e.step}`, result: "completed" };
+          setTaskLedger((items) => [...items, entry].slice(-200));
+        } else if (e.type === "usage" && e.context) setContextUsage(e.context);
+        else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text }));
+        else if (e.type === "done") {
+          const entry: TaskLedgerEntry = { timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" };
+          setTaskLedger((items) => [...items, entry].slice(-200));
+          patch((a) => ({
+            ...a,
+            running: false,
+            activeTool: undefined,
+            pendingApproval: undefined,
+            stopReason: e.stop_reason,
+            error: e.error,
+            resumable: Boolean(e.resumable),
+            runId: e.run_id || a.runId,
+          }));
+          setRunning(false);
+        }
+      },
+      onError: (err) => {
+        patch((a) => ({ ...a, running: false, activeTool: undefined, error: err.message }));
+        setRunning(false);
+      },
+    });
+  }, []);
+
   const send = useCallback((text: string, mode: CodeAgentMode) => {
     const msg = text.trim();
     if (!msg || running) return;
@@ -37,57 +106,21 @@ export function useAgentRun(projectRoot: string, model: string) {
     const agentId = nid();
     setTurns((p) => [...p, { kind: "user", id: nid(), text: msg }, { kind: "agent", id: agentId, toolCalls: [], text: "", running: true }]);
     setRunning(true);
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
     runIdRef.current = null;
-    const patch = (fn: (a: AgentTurnData) => AgentTurnData) =>
-      setTurns((p) => p.map((t) => (t.kind === "agent" && t.id === agentId ? fn(t) : t)));
+    wireStream(agentId, (handlers) => streamCodeAgent({
+      message: msg, projectRoot, model, mode, conversationHistory: history, ...handlers,
+    }));
+  }, [projectRoot, model, running, turns, wireStream]);
 
-    void streamCodeAgent({
-      message: msg, projectRoot, model, mode, conversationHistory: history, signal: ctrl.signal,
-      onRunId: (id) => { runIdRef.current = id; },
-      onEvent: (e: CodeAgentStreamEvent) => {
-        if (e.type === "run_started") runIdRef.current = e.run_id;
-        if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined }));
-        else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
-        else if (e.type === "tool_call") {
-          patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, pendingApproval: undefined }));
-          const result = e.result.trim();
-          const entry: TaskLedgerEntry = {
-            timestamp: Date.now(),
-            type: "tool_call",
-            action: e.tool,
-            result: /^error\b/i.test(result)
-              ? result.slice(0, 500)
-              : `completed (${result.length} chars)`,
-          };
-          setTaskLedger((items) => [...items, entry].slice(-200));
-        }
-        else if (e.type === "approval_pending") {
-          if (autoApproveRef.current) {
-            void resolveApproval(e.approval_id, "approve").catch(() => {});
-            patch((a) => ({ ...a, pendingApproval: undefined }));
-          } else patch((a) => ({ ...a, pendingApproval: { approvalId: e.approval_id, tool: e.tool, arguments: e.arguments } }));
-        } else if (e.type === "approval_wait") patch((a) => (a.pendingApproval ? { ...a, pendingApproval: { ...a.pendingApproval, waitedS: e.waited_s } } : a));
-        else if (e.type === "context_compacted") {
-          const entry: TaskLedgerEntry = { timestamp: Date.now(), type: "compression", action: `step ${e.step}`, result: "completed" };
-          setTaskLedger((items) => [...items, entry].slice(-200));
-        }
-        else if (e.type === "usage" && e.context) setContextUsage(e.context);
-        else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text }));
-        else if (e.type === "done") {
-          const entry: TaskLedgerEntry = { timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" };
-          setTaskLedger((items) => [...items, entry].slice(-200));
-          patch((a) => ({ ...a, running: false, activeTool: undefined, pendingApproval: undefined, stopReason: e.stop_reason, error: e.error }));
-          setRunning(false);
-        }
-      },
-      onError: (err) => {
-        patch((a) => ({ ...a, running: false, activeTool: undefined, error: err.message }));
-        setRunning(false);
-      },
-    });
-  }, [projectRoot, model, running, turns]);
+  const resume = useCallback((agentId: string, runId: string) => {
+    if (running) return;
+    runIdRef.current = runId;
+    setRunning(true);
+    setTurns((items) => items.map((turn) => turn.kind === "agent" && turn.id === agentId
+      ? { ...turn, running: true, error: undefined, resumable: false }
+      : turn));
+    wireStream(agentId, (handlers) => resumeCodeAgent(runId, handlers));
+  }, [running, wireStream]);
 
   const stop = useCallback(() => {
     const rid = runIdRef.current;
@@ -129,5 +162,5 @@ export function useAgentRun(projectRoot: string, model: string) {
       ? (void resolveApproval(t.pendingApproval.approvalId, "approve").catch(() => {}), { ...t, pendingApproval: { ...t.pendingApproval, resolving: true } }) : t));
   }, []);
 
-  return { turns, running, send, stop, addFiles, reset, approve, approveAll, autoApprove, contextUsage, taskLedger };
+  return { turns, running, send, resume, stop, addFiles, reset, approve, approveAll, autoApprove, contextUsage, taskLedger };
 }

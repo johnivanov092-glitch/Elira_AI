@@ -1,11 +1,11 @@
-import { Loader2, ShieldQuestion } from "lucide-react";
+import { Loader2, RotateCcw, ShieldQuestion } from "lucide-react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { ToolCallGroup } from "./ToolCallGroup";
 import type { AgentTurnData, PendingApproval } from "./types";
 
 type ApproveFn = (approvalId: string, decision: "approve" | "reject") => void;
 
-export function AgentTurnView({ turn, onApprove, onApproveAll }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void }) {
+export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
   const idle = turn.running && !turn.text && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval;
   return (
     <div className="my-2 mb-6">
@@ -33,6 +33,16 @@ export function AgentTurnView({ turn, onApprove, onApproveAll }: { turn: AgentTu
 
       {!turn.running && !turn.text && !turn.error && turn.stopReason && turn.stopReason !== "answer" && (
         <div className="mt-2 text-[12px] text-mut">Остановлено: {turn.stopReason}</div>
+      )}
+
+      {!turn.running && turn.resumable && turn.runId && (
+        <button
+          type="button"
+          onClick={() => onResume?.(turn.id, turn.runId!)}
+          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-acl px-2.5 py-1.5 text-[12px] text-ac transition-colors hover:bg-acs"
+        >
+          <RotateCcw size={12} /> Продолжить
+        </button>
       )}
     </div>
   );

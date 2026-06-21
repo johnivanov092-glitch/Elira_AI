@@ -195,7 +195,7 @@ export default function WorkspaceShell() {
           {tab === "pipe" ? (
             <PipelinesShell />
           ) : run.turns.length > 0 ? (
-            <Transcript turns={run.turns} onApprove={run.approve} onApproveAll={run.approveAll} />
+            <Transcript turns={run.turns} onApprove={run.approve} onApproveAll={run.approveAll} onResume={run.resume} />
           ) : (
             <ChatEmptyState hasProject={!!project} onPick={pick} onSuggest={(p) => setInput(p)} />
           )}

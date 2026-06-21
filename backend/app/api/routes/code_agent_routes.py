@@ -100,6 +100,10 @@ class CodeAgentRequest(BaseModel):
     mode: CodeAgentMode = Field(default="code", description="Composer mode: code or search")
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")
     conversation_history: list[ConversationMessage] | None = None
+    access_mode: Literal["project-workspace"] = Field(
+        default="project-workspace",
+        description="Enforced code-agent access profile; broader profiles are not enabled.",
+    )
 
 
 class CodeAgentResponse(BaseModel):
@@ -109,6 +113,7 @@ class CodeAgentResponse(BaseModel):
     tool_calls: list
     stop_reason: str
     error: Optional[str] = None
+    partial: bool = False
 
 
 class CodeAgentStreamRequest(CodeAgentRequest):
@@ -172,6 +177,7 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
         num_ctx=payload.num_ctx,
         base_tools=_base_tools_for_mode(payload.mode),
         auto_remember=payload.auto_remember,
+        access_mode=payload.access_mode,
     )
     return CodeAgentResponse(**result)
 
@@ -199,6 +205,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
                 approval_wait_seconds=payload.approval_wait_seconds,
+                access_mode=payload.access_mode,
             ):
                 yield _sse_format(event)
         except Exception as exc:
@@ -209,6 +216,65 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 "stop_reason": "error",
                 "error": str(exc),
             })
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "X-Run-Id": run_id,
+        },
+    )
+
+
+@router.post("/runs/{run_id}/resume")
+def resume_run(run_id: str) -> StreamingResponse:
+    """Continue a persisted interrupted/partial run with the same run id."""
+    from app.application.code_agent.run_journal import RunJournal
+
+    try:
+        journal = RunJournal.load(run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    state = journal.state
+    if not state.get("resumable"):
+        raise HTTPException(status_code=409, detail=f"run is not resumable: {run_id}")
+    request_data = state.get("request") or {}
+    if not isinstance(request_data, dict):
+        raise HTTPException(status_code=409, detail=f"run request is invalid: {run_id}")
+
+    history = list(request_data.get("conversation_history") or [])
+    original_message = str(request_data.get("user_message") or "").strip()
+    if original_message:
+        history.append({"role": "user", "content": original_message})
+    last_response = str(state.get("last_response") or "").strip()
+    if last_response:
+        history.append({"role": "assistant", "content": last_response})
+
+    def gen():
+        for event in stream_code_agent(
+            user_message=(
+                "Продолжи незавершённую задачу с последнего подтверждённого результата. "
+                "Сначала проверь фактическое состояние файлов и не повторяй уже выполненные изменения."
+            ),
+            project_root=_resolve_project_root(str(request_data.get("project_root") or "")),
+            working_dir=request_data.get("working_dir"),
+            model=str(request_data.get("model") or "auto"),
+            agent_id=str(request_data.get("agent_id") or "code-agent"),
+            max_steps=int(request_data.get("max_steps") or DEFAULT_MAX_STEPS),
+            conversation_history=history,
+            run_id=run_id,
+            num_ctx=int(request_data.get("num_ctx") or DEFAULT_NUM_CTX),
+            base_tools=tuple(request_data.get("base_tools") or _CODE_AGENT_BASE_TOOLS),
+            execution_timeout_seconds=request_data.get("execution_timeout_seconds"),
+            auto_remember=bool(request_data.get("auto_remember", True)),
+            approval_wait_seconds=300,
+            resume=True,
+            access_mode=str(request_data.get("access_mode") or "project-workspace"),
+        ):
+            yield _sse_format(event)
 
     return StreamingResponse(
         gen(),

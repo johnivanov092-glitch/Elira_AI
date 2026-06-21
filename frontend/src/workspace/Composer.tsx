@@ -21,13 +21,20 @@ export function Composer({
   contextUsage?: ContextUsage | null;
 }) {
   const [mode, setMode] = useState<Mode>("code");
-  const contextTone = !contextUsage ? "" : contextUsage.percent >= 95
+  const usage = contextUsage
+    && Number.isFinite(contextUsage.current_tokens)
+    && Number.isFinite(contextUsage.ctx_size)
+    && Number.isFinite(contextUsage.free_tokens)
+    && Number.isFinite(contextUsage.percent)
+    ? contextUsage
+    : null;
+  const contextTone = !usage ? "" : usage.percent >= 95
     ? "border-red-500/60 text-red-400"
-    : contextUsage.percent >= 90
+    : usage.percent >= 90
       ? "border-red-400/50 text-red-300"
-      : contextUsage.percent >= 80
+      : usage.percent >= 80
         ? "border-orange-400/50 text-orange-300"
-        : contextUsage.percent >= 60
+        : usage.percent >= 60
           ? "border-yellow-400/50 text-yellow-300"
           : "border-line text-mut";
 
@@ -52,9 +59,9 @@ export function Composer({
           <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Код</Chip>
           <Chip active={mode === "chat"} icon={<MessageSquare size={13} />} onClick={() => setMode("chat")}>Чат</Chip>
           <Chip active={mode === "search"} icon={<Search size={13} />} onClick={() => setMode("search")}>Поиск</Chip>
-          {contextUsage && (
-            <span className={cn("ml-auto rounded-full border px-2 py-1 font-mono text-[10.5px]", contextTone)} title={`Контекст: ${contextUsage.current_tokens.toLocaleString()} / ${contextUsage.ctx_size.toLocaleString()} · свободно ${contextUsage.free_tokens.toLocaleString()}`}>
-              {Math.round(contextUsage.percent)}% · {Math.round(contextUsage.current_tokens / 1000)}K/{Math.round(contextUsage.ctx_size / 1024)}K
+          {usage && (
+            <span className={cn("ml-auto rounded-full border px-2 py-1 font-mono text-[10.5px]", contextTone)} title={`Контекст: ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} · свободно ${usage.free_tokens.toLocaleString()}`}>
+              {Math.round(usage.percent)}% · {Math.round(usage.current_tokens / 1000)}K/{Math.round(usage.ctx_size / 1024)}K
             </span>
           )}
         </div>
