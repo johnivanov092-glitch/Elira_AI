@@ -127,6 +127,11 @@ export default function WorkspaceShell() {
   function newChat() {
     run.reset([]);
     setSessionId(null);
+    // A new chat starts fresh (scratch): clear the inherited project path and
+    // model so the topbar resets and the agent isn't pinned to the previous
+    // chat's folder. selectSession() restores both from a saved session.
+    setProject("");
+    setModel("auto");
     setTab("chat");
   }
 
