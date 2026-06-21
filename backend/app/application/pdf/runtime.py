@@ -83,15 +83,38 @@ def extract_pdf_smart(data: bytes, max_chars: int = 50000) -> dict:
         results["tables"] = tables
     results["pages"] = pages or _count_pages(data)
 
-    # Метод 3: OCR (если текста мало — вероятно скан)
+    # Метод 3: OCR (если текста мало — вероятно скан).
+    # Сначала серверный OCR (:8002, PaddleOCR), затем локальный pytesseract.
     if len(results["text"].strip()) < 100:
-        ocr_text = _try_ocr(data, max_chars)
-        if ocr_text and len(ocr_text.strip()) > 50:
-            results["text"] = ocr_text
-            results["method"] = "ocr"
+        server_text = _try_server_ocr(data, max_chars)
+        if server_text and len(server_text.strip()) > 50:
+            results["text"] = server_text
+            results["method"] = "ocr-server"
             results["ocr_used"] = True
+        else:
+            ocr_text = _try_ocr(data, max_chars)
+            if ocr_text and len(ocr_text.strip()) > 50:
+                results["text"] = ocr_text
+                results["method"] = "ocr"
+                results["ocr_used"] = True
 
     return results
+
+
+def _try_server_ocr(data: bytes, max_chars: int) -> str:
+    """OCR через серверный сервис (:8002, PaddleOCR). Возвращает текст или ""
+    при отключённом/недоступном сервисе — тогда вызывающий падает на
+    локальный pytesseract."""
+    try:
+        from app.infrastructure.llm.vision_ocr import ocr_document
+
+        text = ocr_document("document.pdf", data)
+    except Exception as exc:
+        logger.warning("server OCR failed: %s", exc)
+        return ""
+    if text and text.strip():
+        return text[:max_chars]
+    return ""
 
 
 def _count_pages(data: bytes) -> int:

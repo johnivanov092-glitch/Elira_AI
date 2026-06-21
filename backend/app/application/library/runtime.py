@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -9,8 +10,16 @@ from typing import Any
 from app.core.config import DATA_DIR, UPLOAD_DIR
 from app.infrastructure.db.connection import connect_sqlite
 
+logger = logging.getLogger(__name__)
+
 SQLITE_DB = DATA_DIR / "library.db"
 UPLOADS_DIR = UPLOAD_DIR
+
+# Routing per user decision: images always go to the vision model (:8004),
+# which returns a text description we store as the preview. Document OCR
+# (scanned PDFs) goes to the server OCR service (:8002) with local pytesseract
+# as a fallback. See app.infrastructure.llm.vision_ocr.
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
 
 TEXT_EXTS = {
     ".txt",
@@ -100,11 +109,48 @@ def safe_disk_name(filename: str, data: bytes) -> str:
     return f"{safe_stem}_{digest}{suffix}"
 
 
+def _describe_image_preview(filename: str, contents: bytes) -> str:
+    """Images route to the vision model (:8004); the returned text description
+    becomes the preview. Empty string if vision is disabled/unreachable."""
+    try:
+        from app.infrastructure.llm.vision_ocr import describe_image
+
+        description = describe_image(filename, contents)
+    except Exception as exc:
+        logger.warning("vision preview failed for %s: %s", filename, exc)
+        return ""
+    return (description or "")[:12000]
+
+
+def _ocr_pdf_preview(filename: str, contents: bytes) -> str:
+    """Scanned-PDF text: server OCR (:8002) first, local pytesseract fallback.
+    Empty string if neither produces text."""
+    try:
+        from app.infrastructure.llm.vision_ocr import ocr_document
+
+        text = ocr_document(filename, contents)
+        if text and text.strip():
+            return text[:12000]
+    except Exception as exc:
+        logger.warning("server OCR failed for %s: %s", filename, exc)
+    try:
+        from app.application.pdf.runtime import _try_ocr
+
+        local = _try_ocr(contents, 12000)
+        if local and local.strip():
+            return local[:12000]
+    except Exception as exc:
+        logger.warning("local OCR fallback failed for %s: %s", filename, exc)
+    return ""
+
+
 def extract_preview(filename: str, contents: bytes) -> str:
     ext = Path(filename).suffix.lower()
     preview = ""
     if ext in TEXT_EXTS:
         return contents.decode("utf-8", errors="replace")[:12000]
+    if ext in IMAGE_EXTS:
+        return _describe_image_preview(filename, contents)
     if ext == ".pdf":
         try:
             from pypdf import PdfReader
@@ -114,6 +160,11 @@ def extract_preview(filename: str, contents: bytes) -> str:
             preview = "\n".join(parts)[:12000]
         except Exception:
             preview = ""
+        # Scanned PDF: little/no embedded text → route to OCR.
+        if len(preview.strip()) < 100:
+            ocr_preview = _ocr_pdf_preview(filename, contents)
+            if ocr_preview.strip():
+                preview = ocr_preview
     elif ext in (".docx", ".doc"):
         try:
             from docx import Document
