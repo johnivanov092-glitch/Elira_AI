@@ -14,6 +14,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.chat.local_chat import run_chat  # noqa: E402
 from app.application.code_agent import agent_loop  # noqa: E402
+from app.application.code_agent import history as agent_history  # noqa: E402
 from app.infrastructure.llm import local_models, openai_compatible  # noqa: E402
 
 
@@ -288,8 +289,10 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         chat_completion.assert_called_once()
 
     def test_code_agent_chat_wrapper_routes_local_model_to_llama_server(self) -> None:
+        # _local_chat was moved to code_agent.history (re-exported on agent_loop);
+        # it resolves `chat_completion` from its own module, so patch it there.
         with patch.dict(os.environ, _llama_env(), clear=False), patch.object(
-            agent_loop,
+            agent_history,
             "chat_completion",
             return_value={"message": {"content": "OK", "tool_calls": []}},
         ) as chat_completion:
