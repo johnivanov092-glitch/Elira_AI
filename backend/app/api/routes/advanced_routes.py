@@ -3,7 +3,7 @@ advanced_routes.py — роуты для Multi-agent, RAG, Project mode.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import logging
@@ -41,12 +41,12 @@ def run_multi(payload: MultiAgentRequest):
             use_orchestrator=payload.use_orchestrator,
         )
         if not isinstance(result, dict):
-            return JSONResponse(status_code=200, content={"ok": False, "error": "Multi-agent вернул некорректный результат."})
+            return JSONResponse(status_code=502, content={"ok": False, "error": "Multi-agent вернул некорректный результат."})
         result.setdefault("ok", True)
         return JSONResponse(status_code=200, content=result)
     except Exception as e:
         logger.exception("/api/advanced/multi-agent failed")
-        return JSONResponse(status_code=200, content={"ok": False, "error": f"Multi-agent error: {e}"})
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"Multi-agent error: {e}"})
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -190,7 +190,7 @@ def open_named_project(payload: OpenNamedProjectRequest):
     if proj is None:
         proj = projects_registry.resolve_project(payload.name)
     if proj is None:
-        return {"ok": False, "error": "Проект не найден в списке"}
+        raise HTTPException(status_code=404, detail="Проект не найден в списке")
     opened = project_runtime.open_project(proj["path"])
     if opened.get("ok"):
         opened["id"] = proj["id"]

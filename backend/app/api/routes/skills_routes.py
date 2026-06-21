@@ -4,7 +4,7 @@ skills_routes.py — API скиллов: генерация файлов, SQL, H
 from __future__ import annotations
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -44,14 +44,14 @@ def api_excel(payload: ExcelRequest):
 def download_file(filename: str):
     path = OUTPUT_DIR / filename
     if not path.exists():
-        return {"ok": False, "error": f"Не найден: {filename}"}
+        raise HTTPException(status_code=404, detail=f"Не найден: {filename}")
     return FileResponse(path, filename=filename, media_type="application/octet-stream")
 
 @router.get("/view/{filename}")
 def view_file(filename: str):
     path = OUTPUT_DIR / filename
     if not path.exists():
-        return {"ok": False, "error": f"Не найден: {filename}"}
+        raise HTTPException(status_code=404, detail=f"Не найден: {filename}")
     mt = "image/png" if filename.endswith(".png") else "application/octet-stream"
     return FileResponse(path, media_type=mt)
 
