@@ -1069,5 +1069,91 @@ class XmlToolTraceRegressionTest(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class LoopHelpersSplitContractTest(unittest.TestCase):
+    """Pin the agent_loop <-> loop_helpers split so a future refactor cannot
+    silently break it. The split is behaviour-preserving ONLY because of two
+    invariants the green test suite does NOT otherwise enforce:
+
+    1. The heartbeat constant, chat-event generators and the cancellation
+       registry MUST stay defined in ``agent_loop`` itself. ``_chat_events``
+       reads ``_LLM_HEARTBEAT_EVERY`` from its own module globals, and tests
+       patch ``agent_loop._LLM_HEARTBEAT_EVERY`` / ``agent_loop._chat_events``.
+       If a future split moved any of these into the leaf, those patches would
+       target a dead name and silently stop taking effect — no existing test
+       would go red. This one does.
+
+    2. ``loop_helpers`` must remain a leaf: importing nothing from
+       ``agent_loop``. A back-import would create a cycle (agent_loop imports
+       the leaf at module load) and is the classic way a "clean split" rots.
+    """
+
+    # Names that must be DEFINED in agent_loop (this module owns them), not
+    # merely re-exported from the leaf.
+    _OWNED_BY_AGENT_LOOP = (
+        "_LLM_HEARTBEAT_EVERY",
+        "_chat_events",
+        "_local_chat_stream",
+        "_CANCEL_REGISTRY",
+        "request_cancel",
+        "_register_run",
+        "_unregister_run",
+    )
+
+    def test_kept_items_are_defined_in_agent_loop_not_the_leaf(self) -> None:
+        from app.application.code_agent import agent_loop, loop_helpers
+
+        for name in self._OWNED_BY_AGENT_LOOP:
+            self.assertTrue(
+                hasattr(agent_loop, name),
+                f"agent_loop lost ownership of {name!r}",
+            )
+            # Defined here, not leaked into the leaf. If a refactor moves it to
+            # loop_helpers and re-exports, this is the line that fails.
+            self.assertFalse(
+                hasattr(loop_helpers, name),
+                f"{name!r} leaked into loop_helpers — patch('agent_loop.{name}') "
+                f"would silently stop working",
+            )
+
+    def test_heartbeat_constant_is_read_from_agent_loop_namespace(self) -> None:
+        # The whole reason _LLM_HEARTBEAT_EVERY stayed put: _chat_events must
+        # resolve it from agent_loop's globals at call time so the patch below
+        # actually changes behaviour. We assert the function's module globals
+        # are agent_loop's — i.e. the patch target and the reader agree.
+        from app.application.code_agent import agent_loop
+
+        self.assertIs(
+            agent_loop._chat_events.__globals__,
+            vars(agent_loop),
+            "_chat_events no longer closes over agent_loop's globals; "
+            "patch('agent_loop._LLM_HEARTBEAT_EVERY') would be a no-op",
+        )
+
+    def test_loop_helpers_is_a_leaf_no_back_import(self) -> None:
+        import sys
+        import app.application.code_agent.loop_helpers as leaf
+
+        # The leaf module must not pull agent_loop into its own namespace, and
+        # must not have triggered agent_loop's import as a side effect of being
+        # imported in isolation. We check its module globals directly rather
+        # than the import graph, which is enough to catch a `from ...agent_loop
+        # import X` regression.
+        self.assertNotIn(
+            "agent_loop",
+            vars(leaf),
+            "loop_helpers imported a name from agent_loop — that is a cycle",
+        )
+        for attr in vars(leaf).values():
+            mod = getattr(attr, "__module__", "")
+            self.assertNotEqual(
+                mod,
+                "app.application.code_agent.agent_loop",
+                "loop_helpers re-exports a symbol owned by agent_loop — cycle risk",
+            )
+        # Sanity: the leaf is actually importable on its own and carries the
+        # helpers it is supposed to own.
+        self.assertTrue(hasattr(sys.modules[leaf.__name__], "_truncate_for_llm"))
+
+
 if __name__ == "__main__":
     unittest.main()
