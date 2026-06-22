@@ -1,13 +1,26 @@
 """
-chat.py — чат-роуты: обычный /send + SSE-стриминг /stream
+chat.py — чат-роуты: обычный /send + SSE-стриминг /stream + /attach (вложения)
 """
 import json
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+
+from app.application.file_extract.runtime import extract_file
+from app.infrastructure.llm.vision_ocr import (
+    describe_image,
+    is_vision_enabled,
+)
+
+# Расширения, которые отправляем в локальную vision-модель (:8004),
+# остальное идёт через extract_file (текст / OCR сканов через :8002).
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+# Лимит на один файл — крупные сканы режем заранее, чтобы не упереться в RAM.
+_MAX_ATTACH_BYTES = 25 * 1024 * 1024
 
 from app.application.chat.planner_v2 import (
     PlannerV2Service,
@@ -100,6 +113,9 @@ class ChatRequest(BaseModel):
     use_webhook: bool = True
     use_plugins: bool = True
     direct_llm: bool = False
+    # Вложения: извлечённый текст / описания картинок, подмешиваются в user_input
+    # на стороне фронта; поле зарезервировано для совместимости и будущей логики.
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def _direct_meta(payload: ChatRequest) -> dict[str, Any]:
@@ -301,4 +317,132 @@ def chat_stream(payload: ChatRequest):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+# ── вложения: картинка → vision (:8004), документ → extract_file (+OCR :8002) ──
+def _attach_result(
+    *, filename: str, kind: str, text: str, note: str = "", ok: bool = True
+) -> dict[str, Any]:
+    """Единая форма ответа /attach: фронт подмешивает `text` в user_input."""
+    return {
+        "ok": ok,
+        "filename": filename,
+        "kind": kind,          # "image" | "document"
+        "text": text,          # извлечённый текст / описание картинки
+        "chars": len(text),
+        "note": note,          # необязательная пометка (для UI/диагностики)
+    }
+
+
+@router.post("/attach")
+async def chat_attach(file: UploadFile):
+    """Принять одно вложение и вернуть извлечённый текст.
+
+    Картинки уходят в локальную vision-модель (:8004), всё остальное — в
+    extract_file (текст напрямую, сканы PDF — через локальный OCR :8002).
+    Внешние сервисы не используются. Сам файл нигде не сохраняется —
+    возвращаем только текст, который фронт подмешает в сообщение.
+    """
+    filename = file.filename or "файл"
+    ext = Path(filename).suffix.lower()
+    try:
+        contents = await file.read()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=400,
+            content=jsonable_encoder(
+                _attach_result(
+                    filename=filename, kind="document", text="", ok=False,
+                    note=f"Не удалось прочитать файл: {exc}",
+                )
+            ),
+            media_type="application/json; charset=utf-8",
+        )
+
+    if not contents:
+        return JSONResponse(
+            status_code=400,
+            content=jsonable_encoder(
+                _attach_result(
+                    filename=filename, kind="document", text="", ok=False,
+                    note="Пустой файл",
+                )
+            ),
+            media_type="application/json; charset=utf-8",
+        )
+
+    if len(contents) > _MAX_ATTACH_BYTES:
+        return JSONResponse(
+            status_code=413,
+            content=jsonable_encoder(
+                _attach_result(
+                    filename=filename, kind="document", text="", ok=False,
+                    note=f"Файл больше {_MAX_ATTACH_BYTES // (1024 * 1024)} МБ",
+                )
+            ),
+            media_type="application/json; charset=utf-8",
+        )
+
+    # ── картинка → vision ────────────────────────────────────────
+    if ext in _IMAGE_EXTS:
+        if not is_vision_enabled():
+            return JSONResponse(
+                content=jsonable_encoder(
+                    _attach_result(
+                        filename=filename, kind="image", text="", ok=False,
+                        note="Распознавание картинок отключено на сервере (VISION_ENABLED).",
+                    )
+                ),
+                media_type="application/json; charset=utf-8",
+            )
+        description = describe_image(filename, contents)
+        if not description:
+            return JSONResponse(
+                content=jsonable_encoder(
+                    _attach_result(
+                        filename=filename, kind="image", text="", ok=False,
+                        note="Не удалось распознать изображение.",
+                    )
+                ),
+                media_type="application/json; charset=utf-8",
+            )
+        return JSONResponse(
+            content=jsonable_encoder(
+                _attach_result(filename=filename, kind="image", text=description)
+            ),
+            media_type="application/json; charset=utf-8",
+        )
+
+    # ── документ → extract_file (текст / OCR сканов через :8002) ──
+    # extract_file всегда отдаёт ok=True, а сбои кладёт в text как "[... ошибка: ...]".
+    extracted = extract_file(filename, contents)
+    text = str(extracted.get("text") or "")
+    stripped = text.strip()
+    if not stripped:
+        return JSONResponse(
+            content=jsonable_encoder(
+                _attach_result(
+                    filename=filename, kind="document", text="", ok=False,
+                    note="В файле не найдено текста.",
+                )
+            ),
+            media_type="application/json; charset=utf-8",
+        )
+    # маркеры ошибок экстракторов: "[PDF ошибка: ...]", "[DOCX не установлен: ...]" и т.п.
+    if stripped.startswith("[") and ("ошибка" in stripped.lower() or "не установлен" in stripped.lower()):
+        return JSONResponse(
+            content=jsonable_encoder(
+                _attach_result(
+                    filename=filename, kind="document", text="", ok=False,
+                    note=stripped.strip("[]"),
+                )
+            ),
+            media_type="application/json; charset=utf-8",
+        )
+    return JSONResponse(
+        content=jsonable_encoder(
+            _attach_result(filename=filename, kind="document", text=text)
+        ),
+        media_type="application/json; charset=utf-8",
     )

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
-  Brain, Check, Cpu, FolderSearch, LayoutDashboard, Loader2, Palette, Play, Plus, RefreshCw,
-  Send, Server, Square, Trash2, UserCog, X, type LucideIcon,
+  BookMarked, Brain, Check, Cpu, FolderSearch, LayoutDashboard, Loader2, MessageSquare,
+  Palette, Play, Plus, RefreshCw, Route, Save, Send, Server, Square, Trash2, UserCog, X,
+  type LucideIcon,
 } from "lucide-react";
 import { listLocalModels } from "../api/chat";
 import { request } from "../api/client";
@@ -12,7 +13,16 @@ import {
   type McpServerSpec, type RagListItem, type RagStats, type SshConfig,
 } from "../api/codeAgent";
 import { getDashboardOverview } from "../api/dashboard";
+import {
+  deleteLibraryFile, listLibraryFilesTyped, toggleLibraryFile, type LibraryFile,
+} from "../api/library";
+import {
+  getPlannerKeywords, savePlannerKeywords, type PlannerKeywords,
+} from "../api/plannerKeywords";
 import { listPlugins, reloadPlugins, setPluginEnabled, type PluginItem } from "../api/plugins";
+import {
+  addSmartMemory, deleteSmartMemory, listSmartMemory, type SmartMemoryItem,
+} from "../api/smartMemory";
 import {
   getTelegramConfig, listTelegramUsers, startTelegramBot, stopTelegramBot,
   testTelegramBot, toggleTelegramUser, updateTelegramConfig, type TelegramUser,
@@ -20,12 +30,17 @@ import {
 import { cn } from "../ui/cn";
 import { getTheme, setTheme, type Theme } from "../ui/theme";
 
-type Section = "model" | "profiles" | "memory" | "dashboard" | "telegram" | "sshmcp" | "theme";
+type Section =
+  | "model" | "profiles" | "memory" | "library" | "chatmemory" | "keywords"
+  | "dashboard" | "telegram" | "sshmcp" | "theme";
 
 const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
   { id: "profiles", label: "Профили", icon: UserCog },
   { id: "memory", label: "Память", icon: Brain },
+  { id: "library", label: "Библиотека", icon: BookMarked },
+  { id: "chatmemory", label: "Память чата", icon: MessageSquare },
+  { id: "keywords", label: "Маршрутизация", icon: Route },
   { id: "dashboard", label: "Дашборд", icon: LayoutDashboard },
   { id: "telegram", label: "Telegram", icon: Send },
   { id: "sshmcp", label: "Интеграции", icon: Server },
@@ -71,6 +86,9 @@ export function Settings({ model, onModel, onClose, project }: { model: string; 
           {section === "model" && <ModelSection model={model} onModel={onModel} />}
           {section === "profiles" && <ProfilesSection />}
           {section === "memory" && <MemorySection project={project} />}
+          {section === "library" && <LibrarySection />}
+          {section === "chatmemory" && <ChatMemorySection />}
+          {section === "keywords" && <KeywordsSection />}
           {section === "dashboard" && <Lazy load={getDashboardOverview} title="Дашборд" />}
           {section === "telegram" && <TelegramSection />}
           {section === "sshmcp" && <SshMcpSection />}
@@ -190,6 +208,226 @@ function MemorySection({ project }: { project: string }) {
               <button type="button" onClick={() => remove(it.id)} aria-label="Удалить" className="grid h-5 w-5 shrink-0 place-items-center rounded text-mut opacity-0 transition-opacity hover:text-tx group-hover:opacity-100">
                 <Trash2 size={13} />
               </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Wrap>
+  );
+}
+
+// Number of freshest active files build_library_context() actually injects.
+// Keep in sync with backend build_library_context(max_files=...).
+const LIB_CONTEXT_LIMIT = 3;
+
+function fmtSize(bytes: number): string {
+  if (!bytes) return "";
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
+function LibrarySection() {
+  const [items, setItems] = useState<LibraryFile[] | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
+
+  const reload = useCallback(() => {
+    listLibraryFilesTyped().then(setItems).catch(() => setItems([]));
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  async function toggle(f: LibraryFile) {
+    setBusy(f.id);
+    try { await toggleLibraryFile(f.id, !f.active); reload(); } catch { /* ignore */ } finally { setBusy(null); }
+  }
+  async function remove(id: number) {
+    setBusy(id);
+    try { await deleteLibraryFile(id); reload(); } catch { /* ignore */ } finally { setBusy(null); }
+  }
+
+  // The first LIB_CONTEXT_LIMIT *active* files (in freshest-first order) are the
+  // ones the backend actually injects; older active files stay bookmarked but
+  // fall out of the window. Mark exactly those.
+  let injected = 0;
+  const inContext = new Set<number>();
+  for (const f of items ?? []) {
+    if (f.active && injected < LIB_CONTEXT_LIMIT) { inContext.add(f.id); injected += 1; }
+  }
+
+  return (
+    <Wrap title={`Библиотека${items ? ` · ${items.length}` : ""}`}>
+      <Note>Набукмаренные файлы. Активные подмешиваются в контекст код-агента — реально попадают только {LIB_CONTEXT_LIMIT} самых свежих (бейдж «в контексте»), остальные ждут очереди. Файлы добавляются из чата (скрепка).</Note>
+      {items === null ? (
+        <Loading />
+      ) : items.length === 0 ? (
+        <Note>Пусто. Прикрепи файл в чате код-агента — он сохранится сюда.</Note>
+      ) : (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {items.map((f) => (
+            <div key={f.id} className="group flex items-center gap-2.5 rounded-lg border border-line px-3 py-2 text-[12.5px]">
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", f.active ? "bg-ac" : "bg-mut")} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-tx">{f.name}</span>
+                <span className="text-[10.5px] text-mut">{[f.type, fmtSize(f.size)].filter(Boolean).join(" · ")}</span>
+              </span>
+              {inContext.has(f.id) && <span className="shrink-0 rounded border border-acl bg-acs px-1.5 py-0.5 text-[10px] text-ac">в контексте</span>}
+              <McpBtn onClick={() => toggle(f)} busy={busy === f.id} label={f.active ? "Убрать из контекста" : "Добавить в контекст"}>
+                {f.active ? <Square size={13} /> : <Play size={13} />}
+              </McpBtn>
+              <button type="button" onClick={() => remove(f.id)} disabled={busy === f.id} aria-label="Удалить" className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-mut opacity-0 transition-opacity hover:text-tx group-hover:opacity-100 disabled:opacity-50">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Wrap>
+  );
+}
+
+function ChatMemorySection() {
+  const [items, setItems] = useState<SmartMemoryItem[] | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const reload = useCallback(() => {
+    listSmartMemory(100).then(setItems).catch(() => setItems([]));
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  async function add() {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    try { await addSmartMemory({ text: t }); setText(""); reload(); } catch { /* ignore */ } finally { setBusy(false); }
+  }
+  async function remove(id: SmartMemoryItem["id"]) {
+    if (id === undefined) return;
+    try { await deleteSmartMemory(id); reload(); } catch { /* ignore */ }
+  }
+
+  return (
+    <Wrap title={`Память чата${items ? ` · ${items.length}` : ""}`}>
+      <Note>Факты код-чата (chat-agent): что-то агент запоминает сам из разговора, что-то можно добавить вручную. Используются как краткосрочная память диалога — отдельно от RAG.</Note>
+      <div className="my-3 flex gap-2">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void add(); }}
+          placeholder="Добавить факт в память чата…"
+          className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+        />
+        <button type="button" onClick={add} disabled={busy || !text.trim()} aria-label="Добавить" className={cn("grid h-[34px] w-[34px] shrink-0 place-items-center rounded-lg text-[#14151b]", text.trim() && !busy ? "bg-ac" : "cursor-not-allowed bg-ac/40")}>
+          <Plus size={16} />
+        </button>
+      </div>
+      {items === null ? (
+        <Loading />
+      ) : items.length === 0 ? (
+        <Note>Пока пусто. Память наполняется по ходу диалога с код-агентом.</Note>
+      ) : (
+        <div className="mt-2 flex flex-col gap-1.5">
+          {items.map((it, i) => (
+            <div key={it.id ?? i} className="group flex items-start gap-2 rounded-lg border border-line px-3 py-2 text-[12.5px] text-t2">
+              {it.category && <span className="mt-0.5 shrink-0 rounded border border-line px-1.5 text-[10px] text-mut">{it.category}</span>}
+              <span className="flex-1 break-words">{String(it.text ?? "").slice(0, 240)}</span>
+              {it.source && <span className="mt-0.5 shrink-0 text-[10px] text-mut">{it.source}</span>}
+              <button type="button" onClick={() => remove(it.id)} aria-label="Удалить" className="grid h-5 w-5 shrink-0 place-items-center rounded text-mut opacity-0 transition-opacity hover:text-tx group-hover:opacity-100">
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Wrap>
+  );
+}
+
+function KeywordsSection() {
+  const [kw, setKw] = useState<PlannerKeywords | null>(null);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const reload = useCallback(() => {
+    getPlannerKeywords()
+      .then((r) => setKw(r.effective ?? {}))
+      .catch(() => setKw({}));
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  function removeWord(cat: string, word: string) {
+    if (!kw) return;
+    setKw({ ...kw, [cat]: (kw[cat] ?? []).filter((w) => w !== word) });
+  }
+  function addWord(cat: string) {
+    const raw = (draft[cat] ?? "").trim();
+    if (!raw || !kw) return;
+    // Accept comma/space-separated bulk input; skip dups.
+    const existing = new Set(kw[cat] ?? []);
+    const next = [...(kw[cat] ?? [])];
+    for (const w of raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
+      if (!existing.has(w)) { existing.add(w); next.push(w); }
+    }
+    setKw({ ...kw, [cat]: next });
+    setDraft({ ...draft, [cat]: "" });
+  }
+  async function save() {
+    if (!kw || busy) return;
+    setBusy(true); setMsg("");
+    try {
+      const r = await savePlannerKeywords(kw);
+      setMsg(r.ok ? "Сохранено." : "Не удалось сохранить.");
+    } catch { setMsg("Ошибка сохранения."); } finally { setBusy(false); }
+  }
+
+  const cats = kw ? Object.keys(kw).sort() : [];
+
+  return (
+    <Wrap title="Маршрутизация (planner keywords)">
+      <Note>Слова-маркеры, по которым планировщик чата выбирает маршрут (поиск, код, погода и т.д.). Правки сохраняются как пользовательские overrides поверх дефолтов.</Note>
+      <div className="my-2.5 flex items-center gap-2">
+        <button type="button" onClick={reload} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50">
+          <RefreshCw size={13} /> Сбросить правки
+        </button>
+        <button type="button" onClick={save} disabled={busy || !kw} className="ml-auto flex items-center gap-1.5 rounded-lg bg-ac px-3 py-1.5 text-[12.5px] font-medium text-[#14151b] disabled:opacity-50">
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Сохранить
+        </button>
+      </div>
+      {msg && <Note>{msg}</Note>}
+      {kw === null ? (
+        <Loading />
+      ) : cats.length === 0 ? (
+        <Note>Категории недоступны (сервер не отвечает).</Note>
+      ) : (
+        <div className="mt-2 flex flex-col gap-3">
+          {cats.map((cat) => (
+            <div key={cat} className="rounded-lg border border-line p-2.5">
+              <div className="mb-2 text-[11.5px] font-medium uppercase tracking-wide text-mut">{cat}</div>
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {(kw[cat] ?? []).length === 0 ? (
+                  <span className="text-[11px] text-mut">пусто</span>
+                ) : (kw[cat] ?? []).map((w) => (
+                  <span key={w} className="group flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-0.5 text-[11.5px] text-t2">
+                    {w}
+                    <button type="button" onClick={() => removeWord(cat, w)} aria-label={`Удалить ${w}`} className="grid h-3.5 w-3.5 place-items-center rounded text-mut hover:text-tx">
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  value={draft[cat] ?? ""}
+                  onChange={(e) => setDraft({ ...draft, [cat]: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === "Enter") addWord(cat); }}
+                  placeholder="добавить слово…"
+                  className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] text-tx outline-none placeholder:text-mut focus:border-acl"
+                />
+                <button type="button" onClick={() => addWord(cat)} disabled={!(draft[cat] ?? "").trim()} aria-label="Добавить" className={cn("grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg text-[#14151b]", (draft[cat] ?? "").trim() ? "bg-ac" : "cursor-not-allowed bg-ac/40")}>
+                  <Plus size={15} />
+                </button>
+              </div>
             </div>
           ))}
         </div>

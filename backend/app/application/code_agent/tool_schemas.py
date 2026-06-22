@@ -295,4 +295,65 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {"type": "object", "properties": {}},
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "image_gen",
+                "description": (
+                    "Generate an image from a text prompt using a local "
+                    "text-to-image model (FLUX.1-schnell). Returns a view/download "
+                    "URL and saves the PNG into the project's generated/ folder. "
+                    "Use when the user asks for an illustration, icon, mockup, or "
+                    "any raster image. Keep the prompt under ~77 tokens; default "
+                    "size 768x768. Requires a local GPU — may fail with an error "
+                    "if torch/VRAM is unavailable."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "What to draw, in English for best results."},
+                        "width": {"type": "integer", "description": "Pixels, multiple of 8. Default 768, max 1024."},
+                        "height": {"type": "integer", "description": "Pixels, multiple of 8. Default 768, max 1024."},
+                        "steps": {"type": "integer", "description": "Inference steps. Default 4 (schnell is tuned for 4)."},
+                        "seed": {"type": "integer", "description": "Seed for reproducibility. Default -1 (random)."},
+                        "filename": {"type": "string", "description": "Optional output filename (.png appended if missing)."},
+                    },
+                    "required": ["prompt"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_gen",
+                "description": (
+                    "Generate a Word (.docx) or Excel (.xlsx) document. Returns a "
+                    "download URL and saves the file into the project's generated/ "
+                    "folder. For Word, pass `content` as plain text; lines starting "
+                    "with '## '/'### ' become headings, '- '/'* ' bullets, 'N. ' "
+                    "numbered list items. For Excel, pass `headers` (column names) "
+                    "and `data` (a list of row arrays)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "format": {"type": "string", "description": "Output format: 'word' or 'excel'."},
+                        "title": {"type": "string", "description": "Document title (Word heading / Excel sheet name)."},
+                        "content": {"type": "string", "description": "Word body text (markdown-lite). Required for format=word."},
+                        "headers": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Excel column headers. Used when format=excel.",
+                        },
+                        "data": {
+                            "type": "array",
+                            "items": {"type": "array"},
+                            "description": "Excel rows, each a list of cell values. Used when format=excel.",
+                        },
+                        "filename": {"type": "string", "description": "Optional output filename (extension appended if missing)."},
+                    },
+                    "required": ["format"],
+                },
+            },
+        },
     ]

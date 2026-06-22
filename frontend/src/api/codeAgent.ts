@@ -37,7 +37,7 @@ export type ConversationMessage = {
   content: string;
 };
 
-export type CodeAgentMode = "code" | "search";
+export type CodeAgentMode = "code" | "search" | "chat";
 
 export type CodeAgentRunArgs = {
   message: string;
@@ -224,6 +224,24 @@ export async function resumeCodeAgent(
   } catch (err) {
     if ((err as DOMException)?.name === "AbortError") return;
     handlers.onError?.(err as Error);
+    return;
+  }
+  // 409 = the run is no longer resumable (already resumed/consumed, or the
+  // journal moved on). The "Продолжить" button was stale. Recover gracefully:
+  // synthesize a terminal `done` that clears the resumable flag and leaves a
+  // friendly note, instead of surfacing a hard "Stream failed: HTTP 409".
+  if (response.status === 409) {
+    const headerRunId = response.headers.get("X-Run-Id") || runId;
+    if (headerRunId) handlers.onRunId?.(headerRunId);
+    handlers.onEvent?.({
+      type: "done",
+      ok: false,
+      steps: 0,
+      stop_reason: "cancelled",
+      error: "Этот запуск уже нельзя продолжить — начните новое сообщение.",
+      resumable: false,
+      run_id: headerRunId,
+    });
     return;
   }
   await consumeCodeAgentStream(response, handlers);

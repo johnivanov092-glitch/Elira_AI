@@ -1,4 +1,5 @@
 import { buildApiUrl, request, safeRequest, withAuth } from "./client";
+import type { ConversationMessage, StreamHandlers } from "./codeAgent";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -286,6 +287,244 @@ export function executeStream(
     });
 
   return controller;
+}
+
+// ── "Чат" planner mode → CodeAgentStreamEvent adapter ───────────────────────
+//
+// The "Чат" composer chip is an ordinary conversational agent backed by the
+// PlannerV2 route (/api/chat/stream), NOT the code-agent. That endpoint emits a
+// different SSE shape ({token, done, full_text, error}). To reuse the entire
+// background-run machinery (backgroundRuns.wire) unchanged, this invoker
+// TRANSLATES the chat SSE into the CodeAgentStreamEvent shape that wire()
+// already consumes:
+//   {token}            -> { type: "delta", step, text: token }
+//   {done, full_text}  -> { type: "final_response", ... } then { type: "done", ok }
+//   {error}            -> { type: "done", ok: false, ... }
+// So wire() needs zero changes; only backgroundRuns.send() routes "chat" here.
+
+export type ChatAttachment = {
+  ok: boolean;
+  filename: string;
+  kind: "image" | "document";
+  text: string;
+  chars: number;
+  note?: string;
+  // Frontend-only fields, never serialized to the backend:
+  //  - `file` keeps the original File so the chip can optionally be saved to the
+  //    Library (/api/lib/add) on send, reusing the existing upload channel.
+  //  - `toLibrary` is the per-chip "save to Library" toggle (off by default).
+  file?: File;
+  toLibrary?: boolean;
+};
+
+/**
+ * Fixed skill-flag policy for ordinary "Чат" mode: a narrow, hardcoded set
+ * suited to office routine (conversation, reading projects/docs, images, web).
+ * Heavy/code skills stay OFF — those belong to code-chat. There is no skill
+ * toggle UI for this mode by design.
+ */
+const CHAT_SKILL_FLAGS: Readonly<UnknownRecord> = {
+  // ON — ordinary office routine
+  use_web_search: true,
+  use_memory: true,
+  use_library: true,
+  use_translator: true,
+  use_regex: true,
+  use_csv: true,
+  use_converter: true,
+  use_file_gen: true,
+  // image_gen runs FLUX.1-schnell LOCALLY on this machine's GPU (diffusers/torch,
+  // RTX 4060 Ti / 8GB) — not the AI-server, no external API. On per user choice.
+  use_image_gen: true,
+  // OFF — heavy / code / external-side-effect skills
+  use_python_exec: false,
+  use_sql: false,
+  use_http_api: false,
+  use_webhook: false,
+  use_screenshot: false,
+  use_encrypt: false,
+  use_archiver: false,
+  use_plugins: false,
+  // reflection adds latency without value for plain chat
+  use_reflection: false,
+};
+
+export type StreamChatPlannerArgs = StreamHandlers & {
+  message: string;
+  sessionId?: string | null;
+  model?: string;
+  conversationHistory?: ConversationMessage[];
+  attachments?: ChatAttachment[];
+  numCtx?: number;
+  signal?: AbortSignal;
+};
+
+/**
+ * Stream the "Чат" planner over SSE, emitting CodeAgentStreamEvents so the
+ * existing background-run wiring can consume it untouched. Matches the
+ * `(handlers: StreamHandlers & { signal }) => Promise<void>` invoker contract.
+ */
+export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<void> {
+  const {
+    message,
+    sessionId = null,
+    model = "local-model",
+    conversationHistory = [],
+    attachments = [],
+    numCtx = 131072,
+    signal,
+    onEvent,
+    onError,
+  } = args;
+
+  // Attachment text folds into the user input — the backend has no separate
+  // context-injection param. Images/docs were already parsed (vision/OCR) on
+  // the server by /api/chat/attach, so `text` here is plain extracted text.
+  const attachmentBlock = attachments
+    .filter((a) => a.text?.trim())
+    .map((a) => `\n\n[${a.kind}: ${a.filename}]\n${a.text.trim()}`)
+    .join("");
+  const userInput = `${message.trim()}${attachmentBlock}`;
+
+  // Strip frontend-only fields (the raw File, the toLibrary toggle) before the
+  // attachments cross the wire — the backend only consumes the parsed metadata.
+  const wireAttachments = attachments.map(({ file: _file, toLibrary: _toLibrary, ...rest }) => rest);
+
+  const payload: UnknownRecord = {
+    model_name: model,
+    profile_name: "default",
+    user_input: userInput,
+    session_id: normalizeSessionId(sessionId),
+    history: conversationHistory,
+    num_ctx: numCtx,
+    attachments: wireAttachments,
+    ...CHAT_SKILL_FLAGS,
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl("/api/chat/stream"), {
+      method: "POST",
+      headers: withAuth({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+      body: JSON.stringify(payload),
+      signal,
+    });
+  } catch (err) {
+    if ((err as DOMException)?.name === "AbortError") return;
+    onError?.(err as Error);
+    return;
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    onError?.(new Error(text || `HTTP ${response.status}`));
+    return;
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    onError?.(new Error("Streaming response body is not available"));
+    return;
+  }
+
+  // WebView2/Chromium does not reliably reject an in-flight reader.read() when
+  // the fetch signal aborts, so cancel the reader explicitly on abort.
+  const onAbort = () => { reader.cancel().catch(() => {}); };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort);
+
+  const emitFinal = (fullText: string): void => {
+    onEvent?.({ type: "final_response", step: 0, text: fullText });
+    onEvent?.({ type: "done", ok: true, steps: 0, stop_reason: "answer", error: null });
+  };
+  const emitError = (errText: string): void => {
+    onEvent?.({ type: "done", ok: false, steps: 0, stop_reason: "error", error: errText });
+  };
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let accumulated = "";
+  let finished = false;
+
+  try {
+    while (true) {
+      if (signal?.aborted) break;
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+        let event: StreamEvent;
+        try {
+          event = JSON.parse(trimmed.slice(6)) as StreamEvent;
+        } catch (parseError) {
+          console.warn("Chat SSE parse error:", trimmed.slice(0, 100), parseError);
+          continue;
+        }
+
+        if (event.error) {
+          emitError(String(event.error));
+          finished = true;
+          return;
+        }
+
+        if (event.token) {
+          const tok = String(event.token);
+          accumulated += tok;
+          onEvent?.({ type: "delta", step: 0, text: tok });
+        }
+
+        if (event.done) {
+          const fullText = (event.full_text as string) || accumulated;
+          emitFinal(fullText);
+          finished = true;
+          return;
+        }
+      }
+    }
+
+    if (!signal?.aborted && !finished) emitFinal(accumulated);
+  } catch (err) {
+    if (!((err as DOMException)?.name === "AbortError")) {
+      onError?.(err as Error);
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Upload a single file to the "Чат" attach endpoint. The backend parses it
+ * locally (vision for images, extract/OCR for documents) and returns the
+ * extracted text. Multipart FormData is passed through `request` untouched.
+ */
+export async function attachToChat(file: File): Promise<ChatAttachment> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const result = await request<UnknownRecord>("/api/chat/attach", {
+    method: "POST",
+    body: form,
+  });
+  const rec = isRecord(result) ? result : {};
+  const kind = rec.kind === "image" ? "image" : "document";
+  return {
+    ok: rec.ok !== false,
+    filename: String(rec.filename ?? file.name),
+    kind,
+    text: String(rec.text ?? ""),
+    chars: typeof rec.chars === "number" ? rec.chars : 0,
+    note: rec.note ? String(rec.note) : undefined,
+    // Keep the source File so the chip can optionally be saved to the Library.
+    file,
+    toLibrary: false,
+  };
 }
 
 export async function listLocalModels(): Promise<{ models: unknown[] }> {

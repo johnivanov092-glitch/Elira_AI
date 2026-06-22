@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Code, FileSearch, FolderOpen, Globe, Sparkles, UploadCloud, Wand2 } from "lucide-react";
 import { waitForBackend } from "../api/client";
+import type { ChatAttachment } from "../api/chat";
 import {
   type CodeAgentMode,
   type CodeSessionMeta,
@@ -24,6 +25,10 @@ import { Settings } from "./Settings";
 import { PipelinesShell } from "./PipelinesShell";
 import { TerminalDock } from "./TerminalDock";
 import { useAgentRun } from "./useAgentRun";
+import * as bg from "./backgroundRuns";
+
+let _draftSeq = 0;
+const newDraftKey = () => `draft-${Date.now()}-${++_draftSeq}`;
 
 /** Unified workspace (v4). Phase 1: real transcript wired to the code-agent
  *  stream. Settings/preview/palette content + token streaming land in later
@@ -42,8 +47,13 @@ export default function WorkspaceShell() {
   const [model, setModel] = useState("auto");
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // The stable key the run/snapshot is filed under. Always non-null: a generated
+  // draft id for a fresh chat (so the run keeps a stable home before the server
+  // session id exists), or the server id once a saved chat is opened. The manager
+  // is rekeyed from draft -> server id when createCodeSession resolves.
+  const [activeKey, setActiveKey] = useState<string>(() => newDraftKey());
 
-  const run = useAgentRun(project, model);
+  const run = useAgentRun(activeKey, project, model);
   const scrollRef = useRef<HTMLDivElement>(null);
   const artifacts = useMemo(() => deriveArtifacts(run.turns), [run.turns]);
   const lastFileKey = useRef("");
@@ -53,28 +63,60 @@ export default function WorkspaceShell() {
   }, []);
   useEffect(() => { refreshSessions(); }, [refreshSessions]);
 
-  // Persist the conversation when a run finishes (lazy-create the session).
-  const wasRunning = useRef(false);
-  useEffect(() => {
-    if (wasRunning.current && !run.running) {
-      const turns = run.turns;
-      if (turns.some((t) => t.kind === "user")) {
-        (async () => {
-          try {
-            let id = sessionId;
-            if (!id) {
-              const s = await createCodeSession({ title: deriveTitle(turns), projectRoot: project, model });
-              id = s.id;
-              setSessionId(id);
-            }
-            await patchCodeSession(id, { title: deriveTitle(turns), turns: serializeTurns(turns), projectRoot: project, model, contextState: run.contextUsage, taskLedger: run.taskLedger });
-            refreshSessions();
-          } catch { /* offline; keep local */ }
-        })();
-      }
-    }
-    wasRunning.current = run.running;
-  }, [run.running, run.turns, run.contextUsage, run.taskLedger, sessionId, project, model, refreshSessions]);
+  // Map from a run key (draft id or server id) to its server session id, for
+  // sessions whose run finished while off-screen. Lets background persistence
+  // resolve the right server id without React state churn.
+  const keyToServerId = useRef(new Map<string, string>());
+  // In-flight createCodeSession calls, keyed by run key. Both onSend's eager
+  // create and makePersist's lazy create funnel through this so a run that
+  // finishes before the eager create resolves does NOT spawn a second session.
+  const creatingByKey = useRef(new Map<string, Promise<string>>());
+
+  // Create (or reuse) the server session for a run key exactly once. Rekeys the
+  // live background run onto the server id and adopts it on screen if that run
+  // is still the one displayed. Returns the resolved server id.
+  const ensureServerId = useCallback((runKey: string, title: string, proj: string, mdl: string): Promise<string> => {
+    const known = keyToServerId.current.get(runKey);
+    if (known) return Promise.resolve(known);
+    const pending = creatingByKey.current.get(runKey);
+    if (pending) return pending;
+    const p = createCodeSession({ title, projectRoot: proj, model: mdl })
+      .then((s) => {
+        keyToServerId.current.set(runKey, s.id);
+        keyToServerId.current.set(s.id, s.id);
+        // Move the live run from the draft key onto the server id, keeping its
+        // persist binding. Adopt the new key on screen only if we haven't
+        // navigated away in the meantime.
+        bg.rekey(runKey, s.id);
+        bg.setPersist(s.id, makePersist(s.id, proj, mdl));
+        setActiveKey((cur) => (cur === runKey ? s.id : cur));
+        setSessionId((cur) => (cur === runKey || cur === null ? s.id : cur));
+        refreshSessions();
+        return s.id;
+      })
+      .finally(() => { creatingByKey.current.delete(runKey); });
+    creatingByKey.current.set(runKey, p);
+    return p;
+  // makePersist is defined below; it is stable across renders (same deps).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSessions]);
+
+  // Build a persist closure bound to a specific run key + its project/model.
+  // Registered with the manager at send/restore time, so a finished run saves
+  // itself even when its chat is not the one on screen (background completion).
+  const makePersist = useCallback((runKey: string, proj: string, mdl: string): bg.PersistFn => {
+    return (snap) => {
+      const turns = snap.turns;
+      if (!turns.some((t) => t.kind === "user")) return;
+      (async () => {
+        try {
+          const id = await ensureServerId(runKey, deriveTitle(turns), proj, mdl);
+          await patchCodeSession(id, { title: deriveTitle(turns), turns: serializeTurns(turns), projectRoot: proj, model: mdl, contextState: snap.contextUsage, taskLedger: snap.taskLedger });
+          refreshSessions();
+        } catch { /* offline; keep local */ }
+      })();
+    };
+  }, [refreshSessions, ensureServerId]);
 
   useEffect(() => {
     let alive = true;
@@ -118,14 +160,31 @@ export default function WorkspaceShell() {
     if (p) setProject(p);
   }
 
-  function onSend(text: string, mode: CodeAgentMode) {
+  function onSend(text: string, mode: CodeAgentMode, attachments?: ChatAttachment[]) {
     // No project required: the backend defaults to a scratch workspace, so chat
     // works out of the box. Picking a folder targets a specific project.
-    run.send(text, mode);
+    const msg = text.trim();
+    if (!msg) return;
+    // Bind persistence to THIS run's key before it starts, so the run saves
+    // itself when it finishes — even if you've switched to another chat by then
+    // (background completion). The closure captures the run's own project/model.
+    bg.setPersist(activeKey, makePersist(activeKey, project, model));
+    run.send(text, mode, attachments);
+    // Create the session eagerly so it appears in the sidebar as soon as you
+    // send — not only when the run finishes. ensureServerId dedupes against the
+    // persist closure's own lazy create, so the run is saved exactly once.
+    if (!sessionId && !keyToServerId.current.has(activeKey)) {
+      void ensureServerId(activeKey, msg.slice(0, 48) || "Новый чат", project, model)
+        .catch(() => { /* offline; the persist closure retries the create */ });
+    }
   }
 
   function newChat() {
-    run.reset([]);
+    // A new chat gets a fresh draft key. The previous chat's run (if any) keeps
+    // streaming in the background under its own key — switching never cancels it.
+    const key = newDraftKey();
+    setActiveKey(key);
+    bg.seed(key, []);
     setSessionId(null);
     // A new chat starts fresh (scratch): clear the inherited project path and
     // model so the topbar resets and the agent isn't pinned to the previous
@@ -138,19 +197,33 @@ export default function WorkspaceShell() {
   async function selectSession(id: string) {
     setTab("chat");
     setSessionId(id);
+    keyToServerId.current.set(id, id);
+    // Switch the displayed run to this session's key. If it already has a live
+    // background run, seed() is a no-op and we re-attach to the running snapshot.
+    setActiveKey(id);
     try {
       const s = await getCodeSession(id);
-      run.reset(s ? deserializeTurns(s.turns) : [], s?.task_ledger || [], s?.context_state || null);
+      if (!bg.isRunning(id)) {
+        bg.seed(id, s ? deserializeTurns(s.turns) : [], s?.task_ledger || [], s?.context_state || null);
+      }
+      bg.setPersist(id, makePersist(id, s?.project_root || project, s?.model || model));
       if (s?.project_root) setProject(s.project_root);
       if (s?.model) setModel(s.model);
     } catch {
-      run.reset([]);
+      if (!bg.isRunning(id)) bg.seed(id, []);
     }
   }
 
   async function deleteSession(id: string) {
+    bg.stop(id);
     try { await deleteCodeSession(id); } catch { /* ignore */ }
-    if (id === sessionId) { setSessionId(null); run.reset([]); }
+    keyToServerId.current.delete(id);
+    if (id === sessionId || id === activeKey) {
+      const key = newDraftKey();
+      setActiveKey(key);
+      bg.seed(key, []);
+      setSessionId(null);
+    }
     refreshSessions();
   }
 
