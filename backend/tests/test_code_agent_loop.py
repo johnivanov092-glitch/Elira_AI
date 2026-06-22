@@ -807,6 +807,24 @@ class AgentLoopTest(unittest.TestCase):
         )
         self.assertIn("- mcp_db_query(", prompt)
 
+    def test_connected_project_prompt_says_glob_and_ask(self) -> None:
+        # A real project root must get the "project connected" guidance: on a
+        # path-less file request, glob & ask which file — not "attach a file".
+        from app.application.code_agent.agent_loop import _build_base_system_prompt
+
+        prompt = _build_base_system_prompt(Path("/fake/project"))
+        self.assertIn("Проект подключён", prompt)
+        self.assertNotIn("Проект не подключён", prompt)
+
+    def test_scratch_workspace_prompt_says_no_project(self) -> None:
+        # The scratch workspace (empty project_root default) must get the
+        # "no project — attach a file" fallback instead.
+        from app.application.code_agent import prompts as _p
+
+        prompt = _p._build_base_system_prompt(_p._scratch_workspace_root())
+        self.assertIn("Проект не подключён", prompt)
+        self.assertNotIn("Проект подключён", prompt)
+
     def test_stream_uses_inline_tool_call_fallback(self) -> None:
         """End-to-end: a model that emits JSON-in-content should still trigger
         tool execution via the fallback parser."""

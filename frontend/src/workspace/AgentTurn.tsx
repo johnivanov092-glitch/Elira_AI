@@ -25,6 +25,17 @@ export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { tur
         </div>
       )}
 
+      {(turn.genTokens ?? 0) > 0 && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-mut">
+          {turn.running && <Loader2 size={11} className="animate-spin" />}
+          <span className="font-mono tabular-nums">{turn.genTokens!.toLocaleString("ru-RU")}</span>
+          <span>токенов</span>
+          {turn.tokensPerSecond ? (
+            <span className="text-[10.5px]">· {turn.tokensPerSecond.toFixed(1)} т/с</span>
+          ) : null}
+        </div>
+      )}
+
       {turn.error && (
         <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-t2">
           Ошибка: {turn.error}

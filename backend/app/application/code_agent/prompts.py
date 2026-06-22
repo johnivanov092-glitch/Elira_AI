@@ -65,6 +65,52 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira code-агент с ПРЯМЫМ 
 ХОРОШО: ты её знаешь, она указана выше в этом промпте."""
 
 
+# Injected when a REAL project is connected (project_root is not the scratch
+# workspace). On a path-less file request the agent must enumerate the project
+# and ask which file — never claim the user "didn't attach a file".
+_PROJECT_CONNECTED_BLOCK = """\
+
+## Проект подключён
+К чату подключён реальный проект (его корень указан выше). Ты видишь те же файлы, что и пользователь в дереве проекта.
+
+- Когда пользователь просит разобрать / объяснить / проанализировать ФАЙЛ, но НЕ указал какой именно (например «Объясни, что делает и как устроен файл:») — НЕ говори «вы не прикрепили файл». Вместо этого вызови `glob("**/*")` (или с подходящей маской), покажи список файлов проекта и спроси, какой именно разобрать. Если по контексту очевиден один файл — сразу прочитай его через `read_file`.
+- Никогда не проси пользователя «прикрепить» или «загрузить» файл, который уже есть в подключённом проекте — просто открой его сам через `read_file`."""
+
+# Injected when NO project is connected (running in the scratch workspace).
+# Here the "attach a file / give me a path" fallback is the correct answer.
+_NO_PROJECT_BLOCK = """\
+
+## Проект не подключён
+Сейчас проект НЕ подключён — ты работаешь во временной рабочей директории (scratch), в ней нет файлов пользователя.
+
+- Если пользователь просит разобрать конкретный файл, но проект не подключён и файл не приложен — честно скажи, что для анализа нужно либо подключить проект (открыть папку), либо приложить файл / дать путь."""
+
+
+def _scratch_workspace_root() -> Path | None:
+    """Resolved path of the scratch workspace used as the no-project fallback.
+
+    Mirrors `_resolve_project_root` in code_agent_routes: an empty project_root
+    defaults to `data_subdir("agent_workspace")`. Returns None if the data layer
+    is unavailable (keeps prompt building dependency-light and non-fatal)."""
+    try:
+        from app.core.data_files import data_subdir
+
+        return data_subdir("agent_workspace").resolve()
+    except Exception:
+        return None
+
+
+def _is_scratch_workspace(project_root: Path) -> bool:
+    """True when project_root IS the scratch workspace (i.e. no real project)."""
+    scratch = _scratch_workspace_root()
+    if scratch is None:
+        return False
+    try:
+        return project_root.resolve() == scratch
+    except Exception:
+        return False
+
+
 def _shell_guidance(platform: str | None = None) -> str:
     current = platform or sys.platform
     if current == "win32":
@@ -140,11 +186,14 @@ def _build_base_system_prompt(
     active_tools: tuple[str, ...] | list[str] | None = None,
 ) -> str:
     tools = tuple(active_tools) if active_tools is not None else _CODE_AGENT_BASE_TOOLS
-    return BASE_SYSTEM_PROMPT_TEMPLATE.format(
+    base = BASE_SYSTEM_PROMPT_TEMPLATE.format(
         project_root=str(project_root),
         tools_section=_tools_section(tools),
         shell_guidance=_shell_guidance(),
     )
+    # Adapt the file-request behaviour to whether a real project is connected:
+    # connected → glob & ask which file; scratch → "no project / attach a file".
+    return base + (_NO_PROJECT_BLOCK if _is_scratch_workspace(project_root) else _PROJECT_CONNECTED_BLOCK)
 
 
 # Kept for backwards-compat (tests / external imports). Generic, no project root.

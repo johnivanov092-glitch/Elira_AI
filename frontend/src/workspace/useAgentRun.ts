@@ -85,7 +85,14 @@ export function useAgentRun(projectRoot: string, model: string) {
           if (e.context) { usageSeededRef.current = true; setContextUsage(e.context); }
           const entry: TaskLedgerEntry = { timestamp: Date.now(), type: "compression", action: `step ${e.step}`, result: "completed" };
           setTaskLedger((items) => [...items, entry].slice(-200));
-        } else if (e.type === "usage" && e.context) { usageSeededRef.current = true; setContextUsage(e.context); }
+        } else if (e.type === "usage") {
+          if (e.context) { usageSeededRef.current = true; setContextUsage(e.context); }
+          patch((a) => ({
+            ...a,
+            genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
+            tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
+          }));
+        }
         else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text }));
         else if (e.type === "done") {
           const entry: TaskLedgerEntry = { timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" };

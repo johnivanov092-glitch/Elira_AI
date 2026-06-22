@@ -52,6 +52,22 @@ TEXT_EXTS = {
 
 _project_path: str = ""
 
+# Legacy Windows files (Russian VBA .bas/.cls, older configs) are often saved in
+# cp1251, not UTF-8. Decoding them strictly as UTF-8 turns every Cyrillic byte
+# into U+FFFD (mojibake in the tree preview). Try the common encodings in order
+# and only fall back to lossy replacement if none decode cleanly.
+_DECODE_ENCODINGS = ("utf-8-sig", "utf-8", "cp1251", "cp1252")
+
+
+def _decode_text(data: bytes) -> str:
+    """Best-effort text decode for project files of unknown encoding."""
+    for enc in _DECODE_ENCODINGS:
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
 
 def _project_root() -> Path | None:
     return Path(_project_path) if _project_path else None
@@ -196,7 +212,7 @@ def read_project_file(path: str, max_chars: int = 20_000, project_root: str | No
 
     try:
         limit = max(0, int(max_chars))
-        content = full_path.read_text(encoding="utf-8", errors="replace")[:limit]
+        content = _decode_text(full_path.read_bytes())[:limit]
         return {"ok": True, "path": path, "content": content, "size": full_path.stat().st_size}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

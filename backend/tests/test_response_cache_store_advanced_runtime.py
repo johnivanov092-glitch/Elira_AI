@@ -454,6 +454,25 @@ class ReadProjectFileTest(unittest.TestCase):
         result = adv.read_project_file("../../etc/passwd")
         self.assertFalse(result["ok"])
 
+    def test_cp1251_file_decoded_not_mojibake(self) -> None:
+        # Legacy Russian VBA files are often saved as cp1251, not UTF-8.
+        # The reader must decode them as readable Cyrillic, not U+FFFD soup.
+        cyrillic = "Привет мир"
+        (self._root / "Module1.bas").write_bytes(cyrillic.encode("cp1251"))
+        adv.open_project(self._tmpdir.name)
+        result = adv.read_project_file("Module1.bas")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], cyrillic)
+        self.assertNotIn("�", result["content"])
+
+    def test_utf8_bom_stripped(self) -> None:
+        # A UTF-8 BOM must not leak into the content as a stray U+FEFF char.
+        (self._root / "bom.txt").write_bytes(b"\xef\xbb\xbfhello")
+        adv.open_project(self._tmpdir.name)
+        result = adv.read_project_file("bom.txt")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["content"], "hello")
+
 
 # ---
 # advanced/runtime - search_in_project

@@ -224,7 +224,7 @@ export default function WorkspaceShell() {
         {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} />}
       </section>
 
-      {showPreview && <PreviewPanel artifacts={artifacts} onClose={() => setPreviewOpen(false)} />}
+      {showPreview && <PreviewPanel artifacts={artifacts} project={project} onClose={() => setPreviewOpen(false)} />}
 
       {settingsOpen && <Settings model={model} onModel={setModel} onClose={() => setSettingsOpen(false)} project={project} />}
       {paletteOpen && <CommandPalette onAction={onPaletteAction} onClose={() => setPaletteOpen(false)} />}
