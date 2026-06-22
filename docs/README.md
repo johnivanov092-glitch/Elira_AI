@@ -1,37 +1,46 @@
 # Elira AI Documentation
 
 This folder is the navigation layer for the project. Keep it current and small.
-Historical plans belong here only when they still explain shipped behavior or a
-known decision.
+Historical plans belong in `archive/` once the work they describe has shipped or
+been superseded; they stay only for the decisions/history they record.
 
 ## Current Docs
 
 - `ARCHITECTURE.md` - current backend/frontend/runtime architecture.
 - `PROJECT_MAP.md` - repo structure, owners, and where to change things.
 - `SERVER.md` - AI inference server summary (host, endpoints, models, access).
+  The agent runs as a client; the model runs on the separate `Elira_AI_Server`.
 - `AGENT_BOUNDARY_REVIEW.md` - the Chat-Agent vs Code-Agent runtime boundary.
-- `WORKPLAN_CODEX_CLAUDE.md` - single live coordination and handoff document for
-  agent-core/context stabilization.
 - `UI_BASELINE.md` - user-approved unified-workspace visual baseline and change
-  constraints.
-- `AGENT_CORE_AUDIT.md` - code-backed status of the supplied stabilization
-  requirements.
-- `CONTEXT_SYSTEM_AUDIT.md` - current context/compression/memory map and gaps.
+  constraints (locked baseline - do not regress without sign-off).
 - `POST_SERVER_BACKLOG.md` - current server migration status and remaining
   follow-up work.
-- `AGENT_UX_PLAN.md` - active plan: Code Agent transcript UX (tool icons, token
-  counter, live status). Branch `claude/agent-ux-toolcalls`.
-- `CODE_AGENT_REWRITE_PLAN.md` - active plan: Claude Code/Codex-style runtime
-  (token streaming, reliability, prompt trim). Fixes agent *behaviour*.
-- `FRONTEND_REBUILD_PLAN.md` - active plan: rebuild the frontend (same stack:
-  React+Vite+TS+Tailwind/shadcn, Tauri 2) on the v3 mockup, reusing the backend.
-  The main rebuild is shipped; token streaming and final polish remain.
-- `UNIFIED_WORKSPACE_REFACTOR.md` - superseded for the frontend by
-  FRONTEND_REBUILD_PLAN (in-place refactor approach kept for reference).
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
+- `agents/` - skill definitions (domain, issue-tracker, triage-labels).
 - `../ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` - deferred track (D1-D3) and the
   runtime guardrails (P0-P12 are shipped; see code + ARCHITECTURE for current
   behaviour).
+
+## Archive
+
+`archive/` holds plans/audits whose work has shipped or been superseded. They are
+kept for historical context only; for current behaviour cite the code or the
+Current Docs above, not these.
+
+- `archive/FRONTEND_REBUILD_PLAN.md` - frontend rebuild plan (shipped).
+- `archive/AGENT_UX_PLAN.md` - Code Agent transcript UX plan (shipped; UI
+  approved).
+- `archive/CODE_AGENT_REWRITE_PLAN.md` - code-agent runtime rewrite plan
+  (token streaming / reliability shipped).
+- `archive/UNIFIED_WORKSPACE_REFACTOR.md` - in-place refactor approach,
+  superseded by the frontend rebuild.
+- `archive/WORKPLAN_CODEX_CLAUDE.md` - past agent-core/context coordination
+  handoff (work stabilized).
+- `archive/UI_WIRING_PLAN.md` - tools/skills UI wiring plan (wiring complete).
+- `archive/AGENT_CORE_AUDIT.md` - point-in-time stabilization audit (2026-06-20).
+- `archive/CONTEXT_SYSTEM_AUDIT.md` - point-in-time context/memory audit
+  (2026-06-20).
+- `archive/UI_AFTER_CONTEXT_2026-06-20.png` - dated UI screenshot artifact.
 
 The completed P9-P12 plan and per-step preflight/proposal notes were removed in
 the 2026-06-14 docs cleanup; their history remains in git.
@@ -52,3 +61,4 @@ operational docs are:
 - Do not document removed runtimes as active options.
 - Do not store secrets, private keys, API keys, or local `.env` values here.
 - For runtime behavior, cite the current code path rather than a stale plan.
+- When a plan ships or is superseded, move it to `archive/` and update this index.

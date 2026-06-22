@@ -158,6 +158,9 @@ backend/.env.local
 .claude/
 .claire/
 
+# Dead Codex hooks tree (superseded by .claude/hooks; kept local only)
+.codex/
+
 # Local agent runs and launchers
 /.agent/
 /.tmp_pytest/

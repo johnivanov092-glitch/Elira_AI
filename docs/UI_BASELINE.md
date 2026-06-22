@@ -54,6 +54,6 @@ reference if the screenshot is moved.
 1. Run frontend typecheck and build.
 2. Open the Tauri/web UI at the baseline viewport.
 3. Compare against the screenshot for geometry and hierarchy.
-4. Capture an after screenshot and record its path in
-   `WORKPLAN_CODEX_CLAUDE.md`.
+4. Capture an after screenshot and record its path in the active
+   coordination note (archived plans live under `docs/archive/`).
 5. Stop and ask if required functionality has no approved location.
