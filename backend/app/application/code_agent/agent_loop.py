@@ -101,18 +101,29 @@ def _chat_events(
     chat_fn: Callable[..., dict[str, Any]],
     chat_stream_fn: Callable[..., Any] | None,
     kwargs: dict[str, Any],
+    cancel_event: "threading.Event | None" = None,
 ) -> Iterator[dict[str, Any]]:
-    """Run a blocking provider call without leaving the SSE stream silent."""
+    """Run a blocking provider call without leaving the SSE stream silent.
+
+    When ``cancel_event`` is set mid-stream the worker stops pulling tokens
+    and closes the underlying generator (which closes the upstream HTTP
+    response), so pressing Stop actually frees the server instead of letting
+    it generate the full answer into a queue nobody reads.
+    """
     events: queue.Queue[tuple[str, Any]] = queue.Queue()
 
     def worker() -> None:
+        stream = None
         try:
             if chat_stream_fn is None:
                 events.put(("response", chat_fn(**kwargs)))
                 return
             final_response: dict[str, Any] | None = None
             collected: list[str] = []
-            for item in chat_stream_fn(**kwargs):
+            stream = chat_stream_fn(**kwargs)
+            for item in stream:
+                if cancel_event is not None and cancel_event.is_set():
+                    break
                 if isinstance(item, str):
                     collected.append(item)
                     events.put(("delta", item))
@@ -137,6 +148,14 @@ def _chat_events(
         except Exception as exc:  # propagated in the caller thread
             events.put(("error", exc))
         finally:
+            # Closing the generator triggers its `finally`, which calls
+            # response.close() and frees the upstream llama.cpp connection.
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
             events.put(("done", None))
 
     threading.Thread(target=worker, name="elira-code-agent-llm", daemon=True).start()
@@ -145,6 +164,10 @@ def _chat_events(
         try:
             kind, value = events.get(timeout=max(0.001, _LLM_HEARTBEAT_EVERY))
         except queue.Empty:
+            if cancel_event is not None and cancel_event.is_set():
+                # Stop pumping the SSE stream immediately; the worker will
+                # observe the same flag and close the upstream connection.
+                return
             yield {"type": "heartbeat"}
             continue
         if kind == "done":
@@ -452,7 +475,10 @@ def _stream_code_agent_core(
                     chat_fn=chat,
                     chat_stream_fn=stream_chat,
                     kwargs=llm_kwargs,
+                    cancel_event=cancel_event,
                 ):
+                    if cancel_event.is_set():
+                        break
                     if llm_event["type"] == "heartbeat":
                         yield {"type": "heartbeat", "step": step}
                         continue

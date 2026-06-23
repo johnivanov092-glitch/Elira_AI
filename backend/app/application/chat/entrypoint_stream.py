@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.application.chat.cancellation import register_run, unregister_run
 from app.application.chat.entrypoint_models import ChatAgentDeps
 from app.application.chat.freshness_gate import evaluate_freshness_gate, requires_freshness_check
 from app.application.chat.service import OrchestrationBlocker
+from app.application.context.usage import get_context_usage
 from app.application.monitoring.inference import record_inference_telemetry
+from app.application.persona.service import build_persona_prompt
 
 
 def _needs_file_generation(raw_user_input: str, deps: ChatAgentDeps) -> bool:
@@ -82,6 +85,10 @@ def run_agent_stream_impl(
     run = bootstrap.run
 
     try:
+        # Surface the run_id into the SSE stream so a Stop button can target
+        # this run via POST /api/chat/cancel (#2). The agent-os event bus also
+        # gets it via emit_run_started_func, but that doesn't reach the client.
+        yield {"run_id": str(run["run_id"]), "done": False}
         yield deps.build_stream_phase_event_func(phase="planning", message="Planning...")
 
         execution = deps.prepare_chat_execution_func(
@@ -251,6 +258,14 @@ def run_agent_stream_impl(
         llm_start = _time.monotonic()
         first_token_ms: int | None = None
         decision = execution.decision
+        # #1 live tokens/sec + #2 cooperative cancel for regular chat.
+        # The local provider only reports final usage, so estimate a live
+        # rate from wall-clock and a running token count, then replace it
+        # with the authoritative figure once the final usage arrives.
+        usage_sink: dict[str, Any] = {}
+        cancel_event = register_run(str(run["run_id"]))
+        approx_tokens = 0
+        last_usage_emit = llm_start
         try:
             for token in deps.run_chat_stream_func(
                 model_name=effective_model,
@@ -260,11 +275,30 @@ def run_agent_stream_impl(
                 num_ctx=execution.effective_num_ctx,
                 task_context=prompt_bundle.task_context,
                 timeout=execution.effective_timeout_seconds,
+                usage_sink=usage_sink,
+                cancel_event=cancel_event,
             ):
+                if cancel_event.is_set():
+                    break
+                now = _time.monotonic()
                 if first_token_ms is None and token:
-                    first_token_ms = int((_time.monotonic() - llm_start) * 1000)
+                    first_token_ms = int((now - llm_start) * 1000)
                 full_text += token
                 yield {"token": token, "done": False}
+                # ~4 chars/token heuristic; only used until final usage lands.
+                approx_tokens += max(1, len(token) // 4)
+                if now - last_usage_emit >= 0.5:
+                    elapsed = now - llm_start
+                    rate = round(approx_tokens / elapsed, 1) if elapsed > 0 else 0.0
+                    yield {
+                        "usage": {
+                            "completion_tokens": approx_tokens,
+                            "tokens_per_second": rate,
+                            "estimated": True,
+                        },
+                        "done": False,
+                    }
+                    last_usage_emit = now
         except Exception:
             llm_duration_ms = int((_time.monotonic() - llm_start) * 1000)
             record_inference_telemetry(
@@ -289,6 +323,8 @@ def run_agent_stream_impl(
                 error_category="llm_exception",
             )
             raise
+        finally:
+            unregister_run(str(run["run_id"]))
         llm_duration_ms = int((_time.monotonic() - llm_start) * 1000)
         record_inference_telemetry(
             agent_id=effective_agent_id,
@@ -309,7 +345,56 @@ def run_agent_stream_impl(
             tool_round_trips=len(tool_results),
             fallback_count=1 if getattr(decision, "fallback_reason", None) else 0,
             ttft_ms=first_token_ms,
+            usage=usage_sink or None,
         )
+
+        # Context-window meter: the planner usage events lacked a `context`
+        # field, so the live pill never filled in regular chat (only code-chat
+        # did). Reconstruct the exact message list run_chat_stream sends — the
+        # persona system prompt, the bootstrap history, and the user input —
+        # and attach the same ContextUsage shape the code-agent emits.
+        context_usage = get_context_usage(
+            [
+                {
+                    "role": "system",
+                    "content": build_persona_prompt(
+                        profile_name,
+                        model_name=effective_model,
+                        task_context=prompt_bundle.task_context,
+                    ),
+                },
+                *[
+                    {"role": item.get("role", ""), "content": item.get("content", "")}
+                    for item in (bootstrap.history or [])
+                    if item.get("role") in ("user", "assistant")
+                    and str(item.get("content") or "").strip()
+                ],
+                {"role": "user", "content": llm_input},
+            ],
+            ctx_size=execution.effective_num_ctx,
+        )
+
+        # Authoritative final usage from the provider (overrides the live
+        # estimate). The local server only sets wall-clock total_duration, so
+        # extract_llm_usage already falls back to it for tokens/sec.
+        if usage_sink:
+            yield {
+                "usage": {
+                    "prompt_tokens": usage_sink.get("prompt_tokens", 0),
+                    "completion_tokens": usage_sink.get("completion_tokens", 0),
+                    "total_tokens": usage_sink.get("total_tokens", 0),
+                    "tokens_per_second": round(
+                        float(usage_sink.get("tokens_per_second") or 0.0), 1
+                    ),
+                    "estimated": False,
+                },
+                "context": context_usage,
+                "done": False,
+            }
+        else:
+            # No provider usage (e.g. very short / cancelled stream) — still
+            # emit context so the meter fills from the prompt alone.
+            yield {"usage": {"estimated": False}, "context": context_usage, "done": False}
 
         attachments = deps.get_and_clear_attachments_func()
         if attachments:

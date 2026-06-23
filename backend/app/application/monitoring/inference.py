@@ -39,10 +39,19 @@ def extract_llm_usage(response: Any) -> dict[str, Any]:
     prompt_duration_ms = _duration_ns_to_ms(_get_field(response, "prompt_eval_duration"))
     completion_duration_ms = _duration_ns_to_ms(_get_field(response, "eval_duration"))
 
+    # Prefer the model's generation-only timing (`eval_duration`) when present.
+    # The llama.cpp OpenAI-compatible provider does not report it — it only sets
+    # wall-clock `total_duration` — so fall back to that, otherwise tokens/sec
+    # would always read 0 for the local server.
     tokens_per_second = 0.0
     eval_duration_ns = _as_float(_get_field(response, "eval_duration"))
-    if completion_tokens > 0 and eval_duration_ns > 0:
-        tokens_per_second = completion_tokens / (eval_duration_ns / 1_000_000_000)
+    if completion_tokens > 0:
+        if eval_duration_ns > 0:
+            tokens_per_second = completion_tokens / (eval_duration_ns / 1_000_000_000)
+        else:
+            total_duration_ns = _as_float(_get_field(response, "total_duration"))
+            if total_duration_ns > 0:
+                tokens_per_second = completion_tokens / (total_duration_ns / 1_000_000_000)
 
     return {
         "prompt_tokens": prompt_tokens,

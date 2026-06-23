@@ -226,10 +226,13 @@ def _execute_task(task_type: str, task_data: dict) -> dict:
             model = task_data.get("model", "")
             if not prompt:
                 return {"ok": False, "error": "Нет промпта"}
+            from app.application.chat.local_chat import resolve_profile_name
             from app.application.chat.runtime import run_agent
+            # Empty/absent profile -> fall back to the saved agent_profile so
+            # background runs honor the persona picked in Settings (Variant Б).
             result = run_agent(
                 model_name=model or "local-model",
-                profile_name=task_data.get("profile", "Универсальный"),
+                profile_name=resolve_profile_name(task_data.get("profile")),
                 user_input=prompt,
                 use_memory=False,
                 use_web_search=task_data.get("web_search", False),

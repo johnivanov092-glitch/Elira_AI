@@ -1,5 +1,5 @@
 import { buildApiUrl, request, safeRequest, withAuth } from "./client";
-import type { ConversationMessage, StreamHandlers } from "./codeAgent";
+import type { ContextUsage, ConversationMessage, StreamHandlers } from "./codeAgent";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -374,6 +374,7 @@ export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<vo
     numCtx = 131072,
     signal,
     onEvent,
+    onRunId,
     onError,
   } = args;
 
@@ -474,6 +475,40 @@ export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<vo
           return;
         }
 
+        // run_id arrives first so the Stop button can address this run via
+        // /api/chat/cancel (#2). Mirrors the code-agent's run_started event.
+        if (typeof event.run_id === "string" && event.run_id) {
+          onRunId?.(event.run_id);
+        }
+
+        // Live tokens/sec for "Чат" (#1): the backend emits estimated usage
+        // every ~0.5s during generation, then one authoritative packet at the
+        // end. wire() ADDS completion_tokens (each code-agent step is a distinct
+        // increment), but our estimated packets carry a *cumulative* running
+        // count — so we suppress their completion_tokens (emit 0) to avoid
+        // double-counting and let only the final, non-estimated packet set the
+        // real total. tokens_per_second flows through on every packet so the
+        // live rate updates during generation.
+        if (isRecord(event.usage)) {
+          const u = event.usage;
+          const estimated = u.estimated === true;
+          // Forward the context-window snapshot so the "Чат" meter fills like
+          // "Код" does. The backend attaches it to the authoritative (final)
+          // usage packet; estimated packets carry no context.
+          const context = isRecord(event.context)
+            ? (event.context as unknown as ContextUsage)
+            : undefined;
+          onEvent?.({
+            type: "usage",
+            step: 0,
+            prompt_tokens: Number(u.prompt_tokens ?? 0),
+            completion_tokens: estimated ? 0 : Number(u.completion_tokens ?? 0),
+            total_tokens: Number(u.total_tokens ?? 0),
+            tokens_per_second: Number(u.tokens_per_second ?? 0),
+            ...(context ? { context } : {}),
+          });
+        }
+
         if (event.token) {
           const tok = String(event.token);
           accumulated += tok;
@@ -498,6 +533,20 @@ export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<vo
     signal?.removeEventListener("abort", onAbort);
     reader.cancel().catch(() => {});
   }
+}
+
+/**
+ * Cancel a live "Чат" planner run (#2). The backend sets the run's cancel
+ * event so the stream loop stops pulling tokens and closes the upstream
+ * llama-server connection — the server stops generating instead of staying
+ * busy after the client disconnects.
+ */
+export async function cancelChat(runId: string): Promise<void> {
+  if (!runId) return;
+  await request("/api/chat/cancel", {
+    method: "POST",
+    body: { run_id: runId },
+  });
 }
 
 /**

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 from app.application.file_extract.runtime import extract_file
 from app.infrastructure.llm.vision_ocr import (
@@ -27,8 +27,17 @@ from app.application.chat.planner_v2 import (
     get_defaults_as_strings as planner_get_defaults,
     refresh_planner,
 )
+from app.application.chat.cancellation import (
+    register_run,
+    request_cancel,
+    unregister_run,
+)
 from app.application.chat.runtime import run_agent, run_agent_stream
-from app.application.chat.local_chat import run_chat, run_chat_stream
+from app.application.chat.local_chat import (
+    resolve_profile_name,
+    run_chat,
+    run_chat_stream,
+)
 from app.application.elira_memory.settings import (
     get_planner_keywords,
     save_planner_keywords,
@@ -113,15 +122,32 @@ class ChatRequest(BaseModel):
     use_webhook: bool = True
     use_plugins: bool = True
     direct_llm: bool = False
+    # Идентификатор прогона для отмены (#2). В planner-режиме сервер генерит свой
+    # run_id и шлёт его первым SSE-событием; в direct_llm фронт задаёт его здесь,
+    # чтобы кнопка Стоп могла адресовать конкретный запрос через /api/chat/cancel.
+    run_id: str | None = None
     # Вложения: извлечённый текст / описания картинок, подмешиваются в user_input
     # на стороне фронта; поле зарезервировано для совместимости и будущей логики.
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+
+    _resolved_profile: str | None = PrivateAttr(default=None)
+
+    def effective_profile(self) -> str:
+        """Persona the request should actually run with.
+
+        The frontend hardcodes profile_name="default"; resolving here makes the
+        profile saved in Settings take effect in both chat paths (direct +
+        planner) and /send. Cached so the settings file is read once per request.
+        """
+        if self._resolved_profile is None:
+            self._resolved_profile = resolve_profile_name(self.profile_name)
+        return self._resolved_profile
 
 
 def _direct_meta(payload: ChatRequest) -> dict[str, Any]:
     return {
         "model_name": payload.model_name,
-        "profile_name": payload.profile_name,
+        "profile_name": payload.effective_profile(),
         "route": "direct_llm",
         "tools": [],
         "direct_llm": True,
@@ -156,7 +182,7 @@ def _direct_history(payload: ChatRequest) -> list[dict[str, Any]]:
 def _run_direct_chat(payload: ChatRequest) -> dict[str, Any]:
     result = run_chat(
         model_name=payload.model_name,
-        profile_name=payload.profile_name,
+        profile_name=payload.effective_profile(),
         user_input=payload.user_input,
         history=_direct_history(payload),
         num_ctx=payload.num_ctx,
@@ -190,7 +216,7 @@ def chat_send(payload: ChatRequest):
 
         result = run_agent(
             model_name=payload.model_name,
-            profile_name=payload.profile_name,
+            profile_name=payload.effective_profile(),
             user_input=payload.user_input,
             session_id=payload.session_id,
             use_memory=payload.use_memory,
@@ -254,15 +280,44 @@ def chat_stream(payload: ChatRequest):
         try:
             if payload.direct_llm:
                 full_text = ""
-                for token in run_chat_stream(
-                    model_name=payload.model_name,
-                    profile_name=payload.profile_name,
-                    user_input=payload.user_input,
-                    history=_direct_history(payload),
-                    num_ctx=payload.num_ctx,
-                ):
-                    full_text += token
-                    yield f"data: {json.dumps({'token': token, 'done': False}, ensure_ascii=False)}\n\n"
+                # Direct path: register the client-supplied run_id so Stop can
+                # cancel it (#2); usage_sink carries final tokens/sec (#1).
+                direct_run_id = str(payload.run_id or "")
+                cancel_event = register_run(direct_run_id) if direct_run_id else None
+                if direct_run_id:
+                    yield f"data: {json.dumps({'run_id': direct_run_id, 'done': False}, ensure_ascii=False)}\n\n"
+                usage_sink: dict[str, Any] = {}
+                try:
+                    for token in run_chat_stream(
+                        model_name=payload.model_name,
+                        profile_name=payload.effective_profile(),
+                        user_input=payload.user_input,
+                        history=_direct_history(payload),
+                        num_ctx=payload.num_ctx,
+                        usage_sink=usage_sink,
+                        cancel_event=cancel_event,
+                    ):
+                        if cancel_event is not None and cancel_event.is_set():
+                            break
+                        full_text += token
+                        yield f"data: {json.dumps({'token': token, 'done': False}, ensure_ascii=False)}\n\n"
+                finally:
+                    if direct_run_id:
+                        unregister_run(direct_run_id)
+                if usage_sink:
+                    usage_event = {
+                        "usage": {
+                            "prompt_tokens": usage_sink.get("prompt_tokens", 0),
+                            "completion_tokens": usage_sink.get("completion_tokens", 0),
+                            "total_tokens": usage_sink.get("total_tokens", 0),
+                            "tokens_per_second": round(
+                                float(usage_sink.get("tokens_per_second") or 0.0), 1
+                            ),
+                            "estimated": False,
+                        },
+                        "done": False,
+                    }
+                    yield f"data: {json.dumps(usage_event, ensure_ascii=False)}\n\n"
                 done_event = {
                     "token": "",
                     "done": True,
@@ -275,7 +330,7 @@ def chat_stream(payload: ChatRequest):
 
             for event in run_agent_stream(
                 model_name=payload.model_name,
-                profile_name=payload.profile_name,
+                profile_name=payload.effective_profile(),
                 user_input=payload.user_input,
                 session_id=payload.session_id,
                 use_memory=payload.use_memory,
@@ -318,6 +373,23 @@ def chat_stream(payload: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+class CancelRequest(BaseModel):
+    run_id: str
+
+
+@router.post("/cancel")
+def chat_cancel(payload: CancelRequest) -> dict[str, Any]:
+    """Остановить живую генерацию (#2).
+
+    Фронт шлёт run_id, полученный первым SSE-событием стрима. Мы выставляем
+    cancel_event в реестре — стрим-цикл видит его между токенами, выходит и
+    закрывает upstream-соединение к llama-server, чтобы тот не продолжал
+    генерировать «в пустоту» после нажатия Стоп.
+    """
+    cancelled = request_cancel(payload.run_id)
+    return {"ok": cancelled, "run_id": payload.run_id}
 
 
 # ── вложения: картинка → vision (:8004), документ → extract_file (+OCR :8002) ──

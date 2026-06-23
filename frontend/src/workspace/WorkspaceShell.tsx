@@ -214,6 +214,13 @@ export default function WorkspaceShell() {
     }
   }
 
+  async function renameSession(id: string, title: string) {
+    const next = title.trim();
+    if (!next) return;
+    try { await patchCodeSession(id, { title: next }); } catch { /* ignore */ }
+    refreshSessions();
+  }
+
   async function deleteSession(id: string) {
     bg.stop(id);
     try { await deleteCodeSession(id); } catch { /* ignore */ }
@@ -243,6 +250,7 @@ export default function WorkspaceShell() {
         onNew={newChat}
         onSelect={selectSession}
         onDelete={deleteSession}
+        onRename={renameSession}
       />
 
       <section className="relative flex min-h-0 min-w-0 flex-col">

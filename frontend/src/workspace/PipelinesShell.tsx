@@ -1,15 +1,40 @@
 import { useCallback, useEffect, useState } from "react";
-import { GitBranch, Loader2, Play, Plus, Power, RefreshCw } from "lucide-react";
-import { createPipeline, listPipelines, runPipeline, updatePipeline, type PipelineItem } from "../api/pipelines";
+import { ChevronDown, GitBranch, Loader2, Play, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
+import {
+  createPipeline,
+  deletePipeline,
+  getPipelineLogs,
+  listPipelines,
+  runPipeline,
+  updatePipeline,
+  type PipelineItem,
+  type PipelineLogEntry,
+} from "../api/pipelines";
 import { cn } from "../ui/cn";
 
-function field(p: PipelineItem, ...keys: string[]): string {
+function field(p: Record<string, unknown>, ...keys: string[]): string {
   for (const k of keys) {
     const v = p[k];
     if (typeof v === "string" && v) return v;
     if (typeof v === "number") return String(v);
   }
   return "";
+}
+
+/** A pipeline run stores its result as a JSON string in `last_result` / log
+ *  `result`. Pull out the human-facing answer (prompt tasks) or fall back to the
+ *  raw JSON so the user can always see *where the response arrived*. */
+function readableResult(raw: unknown): string {
+  if (typeof raw !== "string" || !raw) return "";
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    const answer = obj.answer ?? obj.body ?? obj.summary;
+    if (typeof answer === "string" && answer.trim()) return answer.trim();
+    if (obj.error && typeof obj.error === "string" && obj.error.trim()) return `Ошибка: ${obj.error}`;
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return raw;
+  }
 }
 
 /** Pipelines as a separate shell behind the top «Пайплайны» tab (v4). */
@@ -19,6 +44,8 @@ export function PipelinesShell() {
   const [err, setErr] = useState("");
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: "", prompt: "", interval: 60 });
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<Record<string, PipelineLogEntry[]>>({});
 
   const load = useCallback(() => {
     listPipelines()
@@ -44,7 +71,7 @@ export function PipelinesShell() {
 
   async function run(id: string) {
     setBusy(id);
-    try { await runPipeline(id); setErr(""); load(); }
+    try { await runPipeline(id); setErr(""); load(); if (openId === id) void loadLogs(id); }
     catch { setErr("Запуск не удался."); }
     finally { setBusy(null); }
   }
@@ -55,6 +82,29 @@ export function PipelinesShell() {
     try { await updatePipeline(id, { enabled: !p.enabled }); setErr(""); load(); }
     catch { setErr("Не удалось переключить."); }
     finally { setBusy(null); }
+  }
+
+  async function remove(id: string, name: string) {
+    if (!window.confirm(`Удалить пайплайн «${name}»? Это действие нельзя отменить.`)) return;
+    setBusy(id);
+    try { await deletePipeline(id); setErr(""); if (openId === id) setOpenId(null); load(); }
+    catch { setErr("Не удалось удалить."); }
+    finally { setBusy(null); }
+  }
+
+  const loadLogs = useCallback(async (id: string) => {
+    try {
+      const rows = await getPipelineLogs(id, 10);
+      setLogs((m) => ({ ...m, [id]: rows }));
+    } catch { /* logs are best-effort */ }
+  }, []);
+
+  function toggleOpen(id: string) {
+    setOpenId((cur) => {
+      const next = cur === id ? null : id;
+      if (next && !logs[id]) void loadLogs(id);
+      return next;
+    });
   }
 
   return (
@@ -121,33 +171,98 @@ export function PipelinesShell() {
             const schedule = field(p, "schedule", "cron");
             const last = field(p, "last_run", "updated_at");
             const enabled = !!p.enabled;
+            const lastResult = readableResult(p.last_result ?? p.last_result_preview);
+            const lastError = field(p, "last_error");
+            const open = openId === id;
+            const rowLogs = logs[id] ?? [];
             return (
-              <div key={id} className="flex items-center gap-3 rounded-xl border border-line bg-surface px-3.5 py-3">
-                <span className={cn("h-2 w-2 shrink-0 rounded-full", enabled ? "bg-ac" : "bg-mut")} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px]">{name}</div>
-                  <div className="truncate text-[11px] text-mut">
-                    {schedule ? `по расписанию: ${schedule}` : "ручной запуск"}{last ? ` · посл.: ${last}` : ""}
-                  </div>
+              <div key={id} className="rounded-xl border border-line bg-surface">
+                <div className="flex items-center gap-3 px-3.5 py-3">
+                  <span className={cn("h-2 w-2 shrink-0 rounded-full", enabled ? "bg-ac" : "bg-mut")} />
+                  <button type="button" onClick={() => toggleOpen(id)} className="min-w-0 flex-1 text-left">
+                    <div className="truncate text-[13px]">{name}</div>
+                    <div className="truncate text-[11px] text-mut">
+                      {schedule ? `по расписанию: ${schedule}` : "ручной запуск"}{last ? ` · посл.: ${last}` : ""}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleOpen(id)}
+                    title="Показать ответ и историю"
+                    aria-label="Показать ответ и историю"
+                    className="grid h-8 w-8 place-items-center rounded-lg border border-line text-t2 hover:bg-hover hover:text-tx"
+                  >
+                    <ChevronDown size={15} className={cn("transition-transform", open && "rotate-180")} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggle(p)}
+                    disabled={busy === id}
+                    title={enabled ? "Выключить" : "Включить"}
+                    aria-label={enabled ? "Выключить" : "Включить"}
+                    className={cn("grid h-8 w-8 place-items-center rounded-lg border transition-colors", enabled ? "border-acl bg-acs text-ac" : "border-line text-t2 hover:bg-hover hover:text-tx")}
+                  >
+                    <Power size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => run(id)}
+                    disabled={busy === id}
+                    className="flex items-center gap-1.5 rounded-lg bg-ac px-3 py-1.5 text-[12px] font-medium text-[#14151b] disabled:opacity-50"
+                  >
+                    {busy === id ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Запуск
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => remove(id, name)}
+                    disabled={busy === id}
+                    title="Удалить"
+                    aria-label="Удалить"
+                    className="grid h-8 w-8 place-items-center rounded-lg border border-line text-t2 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-400 disabled:opacity-50"
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => toggle(p)}
-                  disabled={busy === id}
-                  title={enabled ? "Выключить" : "Включить"}
-                  aria-label={enabled ? "Выключить" : "Включить"}
-                  className={cn("grid h-8 w-8 place-items-center rounded-lg border transition-colors", enabled ? "border-acl bg-acs text-ac" : "border-line text-t2 hover:bg-hover hover:text-tx")}
-                >
-                  <Power size={15} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => run(id)}
-                  disabled={busy === id}
-                  className="flex items-center gap-1.5 rounded-lg bg-ac px-3 py-1.5 text-[12px] font-medium text-[#14151b] disabled:opacity-50"
-                >
-                  {busy === id ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Запуск
-                </button>
+
+                {open && (
+                  <div className="border-t border-line px-3.5 py-3">
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-mut">Последний ответ</div>
+                    {lastError ? (
+                      <div className="mb-3 whitespace-pre-wrap rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-[12px] text-red-300">{lastError}</div>
+                    ) : lastResult ? (
+                      <div className="mb-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-bg px-3 py-2 text-[12px] text-tx">{lastResult}</div>
+                    ) : (
+                      <div className="mb-3 text-[12px] text-mut">Пайплайн ещё не запускался. Нажмите «Запуск», чтобы получить ответ.</div>
+                    )}
+
+                    <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-mut">
+                      История запусков
+                      <button type="button" onClick={() => void loadLogs(id)} aria-label="Обновить историю" className="grid h-5 w-5 place-items-center rounded text-mut hover:text-tx">
+                        <RefreshCw size={11} />
+                      </button>
+                    </div>
+                    {rowLogs.length === 0 ? (
+                      <div className="text-[12px] text-mut">Записей пока нет.</div>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {rowLogs.map((log, li) => {
+                          const ok = Number(log.ok) === 1 || log.ok === true;
+                          const when = field(log, "started_at", "finished_at");
+                          const text = field(log, "error") || readableResult(log.result);
+                          return (
+                            <div key={li} className="rounded-lg border border-line bg-bg px-3 py-2">
+                              <div className="flex items-center gap-2 text-[11px] text-mut">
+                                <span className={cn("h-1.5 w-1.5 rounded-full", ok ? "bg-ac" : "bg-red-400")} />
+                                {ok ? "успешно" : "ошибка"}{when ? ` · ${when}` : ""}
+                              </div>
+                              {text && <div className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-[12px] text-t2">{text}</div>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

@@ -10,7 +10,7 @@ import {
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
-import { streamChatPlanner, type ChatAttachment } from "../api/chat";
+import { cancelChat, streamChatPlanner, type ChatAttachment } from "../api/chat";
 import type { AgentTurnData, Turn } from "./types";
 
 /**
@@ -66,6 +66,9 @@ type RunEntry = {
   persist: PersistFn | null;
   /** Guards a duplicate persist when `done` fires and the view also reacts. */
   persistedAtDone: boolean;
+  /** Mode of the in-flight run, so stop() picks the right cancel endpoint
+   *  ("chat" → /api/chat/cancel, otherwise → /api/code-agent/cancel). */
+  lastMode: CodeAgentMode | null;
 };
 
 const _runs = new Map<string, RunEntry>();
@@ -81,6 +84,7 @@ function ensureEntry(sessionId: string): RunEntry {
       snapshot: emptySnapshot(),
       abort: null,
       runId: null,
+      lastMode: null,
       autoApprove: false,
       activeAgentId: null,
       listeners: new Set(),
@@ -281,6 +285,7 @@ export function send(args: SendArgs): void {
   }
   const agentId = nid();
   entry.runId = null;
+  entry.lastMode = mode;
   update(entry, (s) => ({
     ...s,
     running: true,
@@ -322,7 +327,12 @@ export function stop(sessionId: string): void {
   const entry = _runs.get(sessionId);
   if (!entry) return;
   const rid = entry.runId;
-  if (rid) void cancelCodeAgent(rid).catch(() => {});
+  if (rid) {
+    // Regular chat and the code-agent have separate cancel endpoints; pick the
+    // one that matches the in-flight run so the local server is actually freed.
+    if (entry.lastMode === "chat") void cancelChat(rid).catch(() => {});
+    else void cancelCodeAgent(rid).catch(() => {});
+  }
   entry.abort?.abort();
   entry.abort = null;
   entry.runId = null;
