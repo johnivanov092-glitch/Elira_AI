@@ -1,9 +1,21 @@
-# Elira Runtime Intelligence Roadmap
+# Elira Runtime Intelligence Roadmap (archived)
+
+> **Archived 2026-06-24.** This file is kept for history only. Its live content
+> was split out:
+>
+> - Deferred track (D1–D3) → [`../DEFERRED_TRACK.md`](../DEFERRED_TRACK.md)
+> - Runtime guardrails + quality bar → [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+>   (→ Runtime Guardrails)
+>
+> P0–P12 shipped long ago; verify shipped behaviour from code and tests, not
+> from this snapshot. The text below is the pre-split copy, frozen.
+
+---
 
 > Status: P0–P12 implementation is **complete and merged**. This file is now a
 > lean forward-looking doc: the deferred track and the runtime guardrails. The
-> current architecture is maintained in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-> and [`docs/PROJECT_MAP.md`](docs/PROJECT_MAP.md); shipped behaviour should be
+> current architecture is maintained in [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md)
+> and [`docs/PROJECT_MAP.md`](../PROJECT_MAP.md); shipped behaviour should be
 > verified from code and tests, not from historical planning. The completed
 > P9–P12 plan was removed in the 2026-06-14 docs cleanup (history in git).
 

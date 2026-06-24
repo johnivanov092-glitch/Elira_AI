@@ -34,7 +34,7 @@ encoding — fix it, don't suppress the test.
 
 ## Working rules
 - Reuse existing runtimes/modules — do NOT add a second executor, tool registry,
-  provider, or DB layer (see `ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md`).
+  provider, or DB layer (see `docs/ARCHITECTURE.md` → Runtime Guardrails).
 - Reuse the project's existing `lucide-react` icons in the frontend; don't add a
   new icon set.
 - Prefer minimal, focused changes; match surrounding style.

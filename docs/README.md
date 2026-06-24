@@ -17,9 +17,8 @@ been superseded; they stay only for the decisions/history they record.
   follow-up work.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
 - `agents/` - skill definitions (domain, issue-tracker, triage-labels).
-- `../ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` - deferred track (D1-D3) and the
-  runtime guardrails (P0-P12 are shipped; see code + ARCHITECTURE for current
-  behaviour).
+- `DEFERRED_TRACK.md` - forward-looking deferred track (D1-D3, not yet
+  implemented). The runtime guardrails now live in `ARCHITECTURE.md`.
 
 ## Archive
 
@@ -41,6 +40,8 @@ Current Docs above, not these.
 - `archive/CONTEXT_SYSTEM_AUDIT.md` - point-in-time context/memory audit
   (2026-06-20).
 - `archive/UI_AFTER_CONTEXT_2026-06-20.png` - dated UI screenshot artifact.
+- `archive/ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` - pre-split roadmap snapshot
+  (deferred track moved to `DEFERRED_TRACK.md`, guardrails to `ARCHITECTURE.md`).
 
 The completed P9-P12 plan and per-step preflight/proposal notes were removed in
 the 2026-06-14 docs cleanup; their history remains in git.

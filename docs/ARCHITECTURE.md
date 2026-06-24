@@ -185,3 +185,33 @@ npm --prefix frontend run typecheck
 - Tauri/config changes: rebuild or run Tauri dev.
 - Docs-only changes: `git diff --check` plus targeted grep for stale terms is
   enough.
+
+## Runtime Guardrails
+
+Binding invariants for the agent runtime. New work must hold all of these; the
+condensed statements elsewhere in this doc (no second executor/provider stack;
+fail-closed tool dispatch) are specific instances of these rules.
+
+- No second executor, kernel DB, or general tool registry.
+- No full OS access by default; no plugin code imported into the backend
+  process.
+- A Python thread timeout is not a real cancellation of a side effect.
+- No infinite retries.
+- No cloud profile without explicit consent.
+- No recursive subagents.
+- Durable state is not enough without startup recovery.
+- Untrusted content must never change policy, scopes, approvals, or tool
+  activation.
+- Do not add remote MCP transport / LSP child processes to the main path before
+  the relevant stage; do not overload the local model's prompt with dozens of
+  schemas. (Both are tracked in [`DEFERRED_TRACK.md`](DEFERRED_TRACK.md).)
+
+### Quality Bar (every new capability)
+
+1. The model sees the minimum necessary context.
+2. An unknown or unactivated tool is blocked before dispatch.
+3. Every side effect passes policy and approval.
+4. Untrusted content cannot escalate privileges.
+5. Errors are bounded and observable.
+6. A durable run can be safely recovered after restart.
+7. A weak model gets a deterministic fallback.

@@ -15,7 +15,8 @@ This repo has no `CONTEXT.md` yet — its domain language and architecture live 
 
 If a `CONTEXT.md` / `docs/adr/` is later added, read those too. This project
 does not currently use ADRs; architectural decisions live as the `docs/*.md`
-files above and in `ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` (guardrails).
+files above — the runtime guardrails in `docs/ARCHITECTURE.md` and the
+forward-looking deferred track in `docs/DEFERRED_TRACK.md`.
 
 If any referenced file doesn't exist, **proceed silently** — don't flag its
 absence or suggest creating it upfront.
@@ -25,9 +26,9 @@ absence or suggest creating it upfront.
 ```
 /
 ├── AGENTS.md
-├── ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md   ← deferred track + runtime guardrails
 ├── docs/
-│   ├── ARCHITECTURE.md
+│   ├── ARCHITECTURE.md                      ← architecture + runtime guardrails
+│   ├── DEFERRED_TRACK.md                    ← deferred track (D1-D3, not yet built)
 │   ├── PROJECT_MAP.md
 │   ├── AGENT_BOUNDARY_REVIEW.md
 │   ├── SERVER.md
@@ -48,5 +49,5 @@ yet, that's a signal — either you're inventing language the project doesn't us
 ## Flag decision conflicts
 
 If your output contradicts a documented decision (e.g. a guardrail in
-`ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` or the agent boundary), surface it
+`docs/ARCHITECTURE.md` or the agent boundary), surface it
 explicitly rather than silently overriding.
