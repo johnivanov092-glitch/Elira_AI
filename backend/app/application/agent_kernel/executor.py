@@ -310,20 +310,56 @@ def execute_tool(
                 error=f"waiting_approval:{approval['id']}",
             )
 
-    # 4. Dispatch. In-process handlers get an OBSERVED deadline only — we time the
-    # call and emit tool.timeout if it overran, but we do NOT pretend to cancel a
-    # synchronous call. Hard timeouts live where they can be enforced: subprocess
-    # (subprocess.run timeout) and MCP (per-request deadline).
+    # 4. Dispatch with a HARD per-class deadline. A synchronous in-process tool
+    # (e.g. a pure-Python grep over a huge tree) cannot be interrupted — a Python
+    # thread does not respond to a kill — so we run dispatch_fn in a daemon worker
+    # and join with the tool's budget. On overrun the kernel STOPS WAITING and
+    # returns a timeout error: the abandoned worker keeps running (daemon, dies
+    # with the process), but the caller's run lifecycle proceeds to its `finally`,
+    # which releases the global write-lock. Without this an unbounded tool froze
+    # every future run by holding .agent/agent.lock forever.
+    import threading as _threading
     import time as _time
+
+    _budget = _resolve_tool_timeout(spec, tool_name)
+    _result_box: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            _result_box["raw"] = dispatch_fn(tool_name, request.args)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the model as tool error
+            _result_box["raw"] = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+
     _t0 = _time.monotonic()
-    try:
-        raw = dispatch_fn(tool_name, request.args)
-    except Exception as exc:
-        raw = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+    _worker = _threading.Thread(
+        target=_runner, name=f"tool-exec:{tool_name}", daemon=True
+    )
+    _worker.start()
+    _worker.join(_budget)
     _elapsed = _time.monotonic() - _t0
-    _budget = int((spec or {}).get("timeout_seconds") or 0)
-    if _budget > 0 and _elapsed > _budget:
+
+    if _worker.is_alive():
+        # Hard timeout: abandon the worker, fail the call, let the run release
+        # its lock. The daemon thread is intentionally not joined further.
         _emit_timeout(request, _elapsed, _budget)
+        logger.warning(
+            "tool %s exceeded hard timeout %ss (run=%s) — abandoning worker, failing call",
+            tool_name, _budget, request.run_id,
+        )
+        _err = f"tool_timeout:{tool_name} exceeded {_budget}s"
+        _to_text = (
+            f"Инструмент '{tool_name}' превысил жёсткий лимит {_budget}s и был прерван. "
+            "Выполнение помечено как ошибка; попробуй сузить запрос (например, путь/паттерн) "
+            "или вызвать инструмент иначе."
+        )
+        _emit_executed(request, {"ok": False, "error": _err}, "error")
+        return ToolExecutionResult(
+            status="error",
+            output={"ok": False, "text": _to_text, "error": _err},
+            error=_err,
+        )
+
+    raw = _result_box.get("raw", {"ok": False, "text": "ERROR: tool returned no result", "error": "no_result"})
 
     if not isinstance(raw, dict):
         raw = {"text": str(raw)}
@@ -388,6 +424,40 @@ def _emit_approval_pending(req: ToolExecutionRequest, approval_id: str) -> None:
         )
     except Exception as exc:
         logger.debug("tool.approval_pending event emission failed", exc_info=exc)
+
+
+# Per-class hard-timeout floors (seconds). A tool's effective budget is the
+# MAX of its class floor and any explicit, larger spec.timeout_seconds — so the
+# stock spec default (30, a model-request hint, never the execution budget)
+# never wrongly kills a legitimately slow shell/network tool, while an admin can
+# still RAISE a specific tool's budget via the ToolSpec.
+_TIMEOUT_CLASS_LOCAL = 120     # fs.read/fs.write/recall and other in-process tools
+_TIMEOUT_CLASS_SHELL = 600     # shell.exec — commands/builds
+_TIMEOUT_CLASS_NETWORK = 900   # net.outbound — web_fetch / ssh / remote monitoring
+
+
+def _resolve_tool_timeout(spec: dict[str, Any] | None, tool_name: str) -> int:
+    """Hard execution budget for one tool call, by declared scope class.
+
+    Classification is by the tool's *declared scopes* (authoritative, set at
+    seed time), not a guessed name list: net.outbound → network class (longest,
+    covers remote machines that legitimately take 10-15 min), shell.exec → shell
+    class, everything else → local class. spec.timeout_seconds only raises the
+    floor, never lowers it.
+    """
+    spec = spec or {}
+    scopes = set(spec.get("scopes") or [])
+    if "net.outbound" in scopes:
+        floor = _TIMEOUT_CLASS_NETWORK
+    elif "shell.exec" in scopes:
+        floor = _TIMEOUT_CLASS_SHELL
+    else:
+        floor = _TIMEOUT_CLASS_LOCAL
+    try:
+        explicit = int(spec.get("timeout_seconds") or 0)
+    except (TypeError, ValueError):
+        explicit = 0
+    return max(floor, explicit)
 
 
 def _emit_timeout(req: ToolExecutionRequest, elapsed: float, budget: int) -> None:

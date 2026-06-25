@@ -257,6 +257,34 @@ def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
     return {"text": "\n".join(matches[:200])}
 
 
+# Directories the internal grep never descends into. These are dependency,
+# build, VCS and agent-runtime trees: scanning them is never what the model
+# wants and they hold the huge/binary files that previously made grep hang for
+# minutes while holding the global write-lock. Matched against path parts so an
+# excluded dir at any depth prunes the whole subtree.
+_GREP_EXCLUDE_DIRS: frozenset[str] = frozenset({
+    ".git", "node_modules", ".venv", "venv", ".agent", "target",
+    "dist", "build", "__pycache__", ".mypy_cache", ".pytest_cache",
+    ".ruff_cache", ".tox", ".next", ".cache", "site-packages",
+})
+# Skip files larger than this — a multi-MB single file is almost always a
+# bundle, lockfile, log or asset, not source the model meant to grep.
+_GREP_MAX_FILE_BYTES = 2_000_000
+# Hard ceiling on files actually opened, so even a pathological tree that slips
+# past the dir-exclusions cannot turn grep into an unbounded scan.
+_GREP_MAX_FILES = 5_000
+_GREP_MAX_MATCHES = 200
+
+
+def _grep_is_binary(path: Path) -> bool:
+    """Cheap binary sniff: a NUL byte in the first 2 KB → treat as binary."""
+    try:
+        with path.open("rb") as fh:
+            return b"\x00" in fh.read(2048)
+    except Exception:
+        return True  # unreadable → skip, don't let it stall the scan
+
+
 def tool_grep(
     project_root: Path,
     *,
@@ -272,24 +300,34 @@ def tool_grep(
     if base.is_file():
         files = [base]
     else:
-        files = [
-            f for f in base.rglob(glob)
-            if f.is_file() and ".git" not in f.parts and "node_modules" not in f.parts
-        ]
+        files = []
+        for f in base.rglob(glob):
+            if not f.is_file():
+                continue
+            if _GREP_EXCLUDE_DIRS.intersection(f.parts):
+                continue
+            files.append(f)
+            if len(files) >= _GREP_MAX_FILES:
+                break
     out: list[str] = []
+    root = project_root.resolve()
     for f in files:
         try:
+            if f.stat().st_size > _GREP_MAX_FILE_BYTES:
+                continue
+            if _grep_is_binary(f):
+                continue
             with f.open("r", encoding="utf-8", errors="replace") as fh:
                 for lineno, line in enumerate(fh, start=1):
                     if regex.search(line):
-                        rel = str(f.relative_to(project_root.resolve())).replace("\\", "/")
+                        rel = str(f.relative_to(root)).replace("\\", "/")
                         out.append(f"{rel}:{lineno}:{line.rstrip()}")
-                        if len(out) >= 200:
+                        if len(out) >= _GREP_MAX_MATCHES:
                             break
         except Exception:
             continue
-        if len(out) >= 200:
-            out.append("[... truncated at 200 matches]")
+        if len(out) >= _GREP_MAX_MATCHES:
+            out.append(f"[... truncated at {_GREP_MAX_MATCHES} matches]")
             break
     return {"text": "\n".join(out) if out else f"No matches for '{pattern}' in {path}"}
 
