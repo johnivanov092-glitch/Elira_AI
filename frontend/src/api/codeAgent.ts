@@ -1,4 +1,5 @@
 import { API_BASE, buildApiUrl, request, withAuth } from "./client";
+import type { ChatAttachment } from "./chat";
 
 export const DEFAULT_CODE_AGENT_MODEL = "auto";
 
@@ -37,7 +38,7 @@ export type ConversationMessage = {
   content: string;
 };
 
-export type CodeAgentMode = "code" | "search" | "chat";
+export type CodeAgentMode = "code" | "search";
 
 export type CodeAgentRunArgs = {
   message: string;
@@ -48,6 +49,10 @@ export type CodeAgentRunArgs = {
   mode?: CodeAgentMode;
   autoRemember?: boolean;
   conversationHistory?: ConversationMessage[];
+  /** Composer attachments (images / documents) already parsed to text by
+   *  `/api/chat/attach`. Carried alongside the project so the unified "Чат\Код"
+   *  chip can do both at once. Frontend-only fields are stripped before send. */
+  attachments?: ChatAttachment[];
   /** UI persona profile (Универсальный/Исследователь/Программист/Аналитик/Сократ)
    *  overlaid onto Elira's personality. Mirrors chat's profile_name field. */
   profileName?: string;
@@ -188,6 +193,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     mode = "code",
     autoRemember = true,
     conversationHistory,
+    attachments,
     profileName,
     runId,
     signal,
@@ -195,6 +201,12 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     onRunId,
     onError,
   } = args;
+
+  // Strip frontend-only fields (the raw File, the toLibrary toggle) before the
+  // attachments cross the wire — the backend only consumes the parsed metadata.
+  const wireAttachments = (attachments ?? []).map(
+    ({ file: _file, toLibrary: _toLibrary, ...rest }) => rest,
+  );
 
   const url = `${API_BASE}/api/code-agent/stream`;
   let response: Response;
@@ -213,6 +225,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         conversation_history: conversationHistory,
         run_id: runId,
         ...(profileName ? { profile_name: profileName } : {}),
+        ...(wireAttachments.length ? { attachments: wireAttachments } : {}),
       }),
       signal,
     });

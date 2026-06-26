@@ -11,7 +11,7 @@ import {
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
-import { streamChatPlanner, type ChatAttachment } from "../api/chat";
+import type { ChatAttachment } from "../api/chat";
 import type { AgentTurnData, Turn } from "./types";
 
 /**
@@ -366,15 +366,11 @@ export function send(args: SendArgs): void {
       { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
     ],
   }));
-  // "Чат" mode uses the same code-agent stream core, but keeps a separate
-  // frontend invoker so the workspace can preserve chat-specific attachments.
-  if (mode === "chat") {
-    wire(entry, agentId, (handlers) =>
-      streamChatPlanner({ message: msg, sessionId, projectRoot, model, conversationHistory: history, attachments, ...handlers }));
-  } else {
-    wire(entry, agentId, (handlers) =>
-      streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, profileName, ...handlers }));
-  }
+  // One stream invoker for every mode: `/api/code-agent/stream` already accepts
+  // a project root and parsed attachments together, so the unified "Чат\Код"
+  // chip carries both at once.
+  wire(entry, agentId, (handlers) =>
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, ...handlers }));
 }
 
 /** Resume a persisted interrupted/partial run for a session's agent turn. */

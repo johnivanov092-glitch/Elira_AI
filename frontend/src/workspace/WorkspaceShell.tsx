@@ -38,6 +38,9 @@ export default function WorkspaceShell() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Trigger for the Composer's hidden file input, registered via onAttachReady.
+  // Lets the "+" menu's "Прикрепить файл" open the picker that lives in Composer.
+  const openFilePicker = useRef<(() => void) | null>(null);
   const [project, setProject] = useState("");
   const [connected, setConnected] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -300,9 +303,9 @@ export default function WorkspaceShell() {
           </div>
         )}
 
-        <Composer value={input} onChange={setInput} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} />
+        <Composer value={input} onChange={setInput} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(open) => { openFilePicker.current = open; }} />
 
-        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} />}
+        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => openFilePicker.current?.()} />}
       </section>
 
       {showPreview && <PreviewPanel artifacts={artifacts} project={project} onClose={() => setPreviewOpen(false)} />}
@@ -365,7 +368,7 @@ function ChatEmptyState({ hasProject, onPick, onSuggest }: { hasProject: boolean
   );
 }
 
-function PlusMenu({ onClose, onPickProject }: { onClose: () => void; onPickProject: () => void }) {
+function PlusMenu({ onClose, onPickProject, onPickFile }: { onClose: () => void; onPickProject: () => void; onPickFile: () => void }) {
   return (
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
@@ -373,7 +376,7 @@ function PlusMenu({ onClose, onPickProject }: { onClose: () => void; onPickProje
         <button type="button" onClick={() => { onClose(); void onPickProject(); }} className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">
           Выбрать папку проекта
         </button>
-        <button type="button" onClick={onClose} className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">
+        <button type="button" onClick={() => { onClose(); onPickFile(); }} className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">
           Прикрепить файл
         </button>
       </div>

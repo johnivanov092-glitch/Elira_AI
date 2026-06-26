@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, MessageSquare, Paperclip, Plus, Search, Send, Square, X } from "lucide-react";
+import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Plus, Search, Send, Square, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage } from "../api/codeAgent";
 import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
@@ -7,12 +7,14 @@ import { getActiveProfile, listProfiles, setActiveProfile, type ProfileInfo } fr
 import { Chip } from "../ui/Chip";
 import { cn } from "../ui/cn";
 
-type Mode = "code" | "chat" | "search";
+type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agent mode.
 
 /** Composer per v4: mode chips + "+" (project / files / skills) + plugins + send.
- *  The UI mode maps 1:1 to the agent mode ("code" | "chat" | "search"). */
+ *  The merged "Чат\Код" chip is the "code" mode; "Поиск" is "search". Both modes
+ *  carry attachments, so file picking lives inside the "+" menu (opened in the
+ *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
 export function Composer({
-  value, onChange, onPlus, onPlugins, onSend, running, onStop, contextUsage,
+  value, onChange, onPlus, onPlugins, onSend, running, onStop, contextUsage, onAttachReady,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -22,10 +24,14 @@ export function Composer({
   running: boolean;
   onStop: () => void;
   contextUsage?: ContextUsage | null;
+  /** Receives a function that opens the hidden file picker, so the "+" menu in
+   *  the Shell can trigger "Прикрепить файл". Called once on mount. */
+  onAttachReady?: (openFilePicker: () => void) => void;
 }) {
   const [mode, setMode] = useState<Mode>("code");
-  // Chat-mode attachments (images + documents), parsed to text by the backend on
-  // pick. Only surfaced in chat mode; cleared after each send and when leaving chat.
+  // Attachments (images + documents) parsed to text by the backend on pick. Kept
+  // across both modes; cleared after each send. The project root and these files
+  // travel together to the same code-agent stream.
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -46,15 +52,16 @@ export function Composer({
           ? "border-yellow-400/50 text-yellow-300"
           : "border-line text-mut";
 
-  // Drop staged attachments whenever we leave chat mode — they only apply there.
+  // Hand the Shell a trigger for the hidden file input so the "+" menu's
+  // "Прикрепить файл" can open it. Registered once on mount.
   useEffect(() => {
-    if (mode !== "chat" && attachments.length) setAttachments([]);
-  }, [mode, attachments.length]);
+    onAttachReady?.(() => fileRef.current?.click());
+  }, [onAttachReady]);
 
   function submit() {
     const text = value.trim();
     if (!text || running) return;
-    const staged = mode === "chat" && attachments.length ? attachments : undefined;
+    const staged = attachments.length ? attachments : undefined;
     // Fire-and-forget: persist any chips the user marked for the Library to
     // data/uploads (/api/lib/add) so the document is reusable across chats. The
     // chat send itself is unaffected — it still carries the parsed text inline.
@@ -103,8 +110,7 @@ export function Composer({
     <div className="border-t border-line px-4 pb-4 pt-3">
       <div className="mx-auto max-w-[760px]">
         <div className="mb-2 flex items-center gap-1.5">
-          <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Код</Chip>
-          <Chip active={mode === "chat"} icon={<MessageSquare size={13} />} onClick={() => setMode("chat")}>Чат</Chip>
+          <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Чат\Код</Chip>
           <Chip active={mode === "search"} icon={<Search size={13} />} onClick={() => setMode("search")}>Поиск</Chip>
           <ProfilePicker />
           <button
@@ -122,7 +128,7 @@ export function Composer({
             </span>
           )}
         </div>
-        {mode === "chat" && attachments.length > 0 && (
+        {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
             {attachments.map((a, i) => (
               <span
@@ -171,28 +177,16 @@ export function Composer({
             className="hidden"
             onChange={(e) => onPickFiles(e.target.files)}
           />
-          {mode === "chat" ? (
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              disabled={attaching}
-              title="Прикрепить изображение или документ"
-              aria-label="Прикрепить файл"
-              className="grid h-[31px] w-[31px] shrink-0 place-items-center rounded-lg border border-line text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
-            >
-              <Paperclip size={16} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={onPlus}
-              title="Проект, файлы, скиллы"
-              aria-label="Проект, файлы, скиллы"
-              className="grid h-[31px] w-[31px] shrink-0 place-items-center rounded-lg border border-line text-t2 transition-colors hover:bg-hover hover:text-tx"
-            >
-              <Plus size={16} />
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onPlus}
+            disabled={attaching}
+            title="Проект, файлы, скиллы"
+            aria-label="Проект, файлы, скиллы"
+            className="grid h-[31px] w-[31px] shrink-0 place-items-center rounded-lg border border-line text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
+          >
+            <Plus size={16} />
+          </button>
           <textarea
             rows={1}
             value={value}
