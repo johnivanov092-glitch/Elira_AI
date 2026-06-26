@@ -36,6 +36,14 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from app.application.tool_providers.mcp_sanitize import (
+    DEFAULT_CONTEXT_RESULT_LIMIT,
+    bounded_text as _bounded_text,
+    mark_untrusted as _mark_untrusted,
+    sanitize_prompt_messages as _sanitize_prompt_messages,
+    sanitize_resource_contents as _sanitize_resource_contents,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +61,9 @@ SUPPORTED_PROTOCOL_VERSIONS = (MCP_PROTOCOL_VERSION, "2024-10-07")
 # time), so the initialize handshake gets a generous timeout.
 DEFAULT_REQUEST_TIMEOUT = 30.0
 INITIALIZE_TIMEOUT = 120.0
-DEFAULT_CONTEXT_RESULT_LIMIT = 50_000
+# DEFAULT_CONTEXT_RESULT_LIMIT is imported from mcp_sanitize (shared with the
+# HTTP transport); re-exported above so existing `from mcp_client import ...`
+# call sites keep working.
 
 
 class McpError(Exception):
@@ -510,109 +520,3 @@ class McpClient:
                         "error": {"code": -32000, "message": "server stdout closed"},
                     }
                 p.event.set()
-
-
-def _bounded_text(text: str, *, max_chars: int) -> tuple[str, bool]:
-    limit = max(0, int(max_chars))
-    if len(text) <= limit:
-        return text, False
-    if limit <= 20:
-        return text[:limit], True
-    return text[: limit - 20].rstrip() + "\n[truncated by limit]", True
-
-
-def _mark_untrusted(kind: str, provenance: str, text: str) -> str:
-    return f"[UNTRUSTED MCP {kind}: {provenance}]\n{text}\n[/UNTRUSTED MCP {kind}]"
-
-
-def _sanitize_resource_contents(
-    raw_contents: Any,
-    *,
-    max_chars: int,
-    provenance: str,
-) -> tuple[list[dict[str, Any]], bool]:
-    contents: list[dict[str, Any]] = []
-    any_truncated = False
-    remaining = max(0, int(max_chars))
-    for item in raw_contents if isinstance(raw_contents, list) else []:
-        if not isinstance(item, dict):
-            continue
-        clean = {k: v for k, v in item.items() if k not in {"text", "blob"}}
-        uri = str(item.get("uri") or provenance)
-        if isinstance(item.get("text"), str):
-            text, truncated = _bounded_text(item["text"], max_chars=remaining)
-            any_truncated = any_truncated or truncated
-            remaining = max(0, remaining - len(text))
-            clean["text"] = _mark_untrusted("RESOURCE", f"{provenance}; uri={uri}", text)
-            clean["truncated"] = truncated
-        elif isinstance(item.get("blob"), str):
-            blob, truncated = _bounded_text(item["blob"], max_chars=remaining)
-            any_truncated = any_truncated or truncated
-            remaining = max(0, remaining - len(blob))
-            clean["blob"] = blob
-            clean["truncated"] = truncated
-            clean["untrusted"] = True
-            clean["provenance"] = f"{provenance}; uri={uri}"
-        else:
-            clean["untrusted"] = True
-            clean["provenance"] = f"{provenance}; uri={uri}"
-        contents.append(clean)
-        if remaining <= 0:
-            any_truncated = True
-            break
-    return contents, any_truncated
-
-
-def _sanitize_prompt_messages(
-    raw_messages: Any,
-    *,
-    max_chars: int,
-    provenance: str,
-) -> tuple[list[dict[str, Any]], bool]:
-    messages: list[dict[str, Any]] = []
-    any_truncated = False
-    remaining = max(0, int(max_chars))
-    for message in raw_messages if isinstance(raw_messages, list) else []:
-        if not isinstance(message, dict):
-            continue
-        role = str(message.get("role") or "user")
-        content = message.get("content")
-        clean: dict[str, Any] = {"role": role}
-        if isinstance(content, dict):
-            kind = content.get("type")
-            if kind == "text" and isinstance(content.get("text"), str):
-                text, truncated = _bounded_text(content["text"], max_chars=remaining)
-                any_truncated = any_truncated or truncated
-                remaining = max(0, remaining - len(text))
-                clean["content"] = {
-                    **{k: v for k, v in content.items() if k != "text"},
-                    "text": _mark_untrusted("PROMPT", f"{provenance}; role={role}", text),
-                    "truncated": truncated,
-                }
-            elif kind == "resource" and isinstance(content.get("resource"), dict):
-                resources, truncated = _sanitize_resource_contents(
-                    [content["resource"]],
-                    max_chars=remaining,
-                    provenance=f"{provenance}; role={role}",
-                )
-                any_truncated = any_truncated or truncated
-                clean["content"] = {
-                    **{k: v for k, v in content.items() if k != "resource"},
-                    "resource": resources[0] if resources else {},
-                }
-            else:
-                clean["content"] = {**content, "untrusted": True, "provenance": provenance}
-        else:
-            text, truncated = _bounded_text(str(content or ""), max_chars=remaining)
-            any_truncated = any_truncated or truncated
-            remaining = max(0, remaining - len(text))
-            clean["content"] = {
-                "type": "text",
-                "text": _mark_untrusted("PROMPT", f"{provenance}; role={role}", text),
-                "truncated": truncated,
-            }
-        messages.append(clean)
-        if remaining <= 0:
-            any_truncated = True
-            break
-    return messages, any_truncated

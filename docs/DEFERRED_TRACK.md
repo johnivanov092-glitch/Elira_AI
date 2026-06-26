@@ -7,11 +7,17 @@ after its own spec and review. Keep stdio MCP as the default transport.
 The runtime guardrails and quality bar that bound any new work live in
 [`ARCHITECTURE.md`](ARCHITECTURE.md) (→ Runtime Guardrails).
 
-## D1 — Remote MCP (streamable HTTP)
+## D1 — Remote MCP (streamable HTTP) — ✅ done
 
 Only when remote MCP servers are actually needed. Requires: SSRF guard; block
 private/metadata endpoints; HTTPS by default; separate secret storage;
 timeouts + bounded retry; health status; disabled by default.
+
+Implemented as a sibling `McpHttpClient` (`mcp_http_client.py`) with the same
+public API as the stdio `McpClient`; sanitizing helpers shared via
+`mcp_sanitize.py`. The HTTP transport is gated behind `ELIRA_REMOTE_MCP`
+(off by default) — a configured `http` server refuses to start until the
+operator opts in, and stdio remains the default transport, unaffected.
 
 ## D2 — LSP context provider
 

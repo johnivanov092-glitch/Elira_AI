@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,17 @@ from app.core.data_files import data_file
 
 
 logger = logging.getLogger(__name__)
+
+
+# Remote (HTTP) MCP transport is gated behind this env flag and OFF by
+# default — exactly like the D2 LSP provider. A configured http server
+# refuses to start until the operator opts in. stdio remains the default
+# and is never affected by this flag.
+_REMOTE_MCP_TRUTHY = frozenset({"1", "on", "true", "yes"})
+
+
+def _remote_mcp_enabled() -> bool:
+    return os.getenv("ELIRA_REMOTE_MCP", "").strip().lower() in _REMOTE_MCP_TRUTHY
 
 
 CONFIG_PATH: Path = data_file("mcp_servers.json")
@@ -69,34 +81,71 @@ def _write_config(payload: dict[str, Any]) -> None:
     )
 
 
+def _str_str_map(value: Any) -> dict[str, str] | None:
+    """Validate a {str: str} mapping. Returns None if malformed."""
+    if not isinstance(value, dict):
+        return None
+    if any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()):
+        return None
+    return dict(value)
+
+
 def _validate_server(spec: Any) -> dict[str, Any] | None:
     """Return a normalized server dict or None if `spec` is malformed.
 
-    We're strict about what we accept here because these specs end up
-    spawning subprocesses with whatever args the user provided.
+    Two transports:
+      * "stdio" (default) — spawns a subprocess from command/args/env. We're
+        strict here because these specs end up running whatever the user gave.
+      * "http" — connects to a remote MCP server at `url`. Carries optional
+        non-secret `headers`, secret `secret_headers` (kept separate so they
+        never get logged/audited), and `allow_insecure_http` to permit plain
+        http. The actual SSRF/scheme enforcement lives in McpHttpClient; here
+        we only validate shape.
     """
     if not isinstance(spec, dict):
         return None
     sid = spec.get("id")
-    command = spec.get("command")
     if not isinstance(sid, str) or not sid.strip():
         return None
+    enabled = bool(spec.get("enabled", True))
+    transport = spec.get("transport", "stdio")
+    if transport not in ("stdio", "http"):
+        return None
+
+    if transport == "http":
+        url = spec.get("url")
+        if not isinstance(url, str) or not url.strip():
+            return None
+        headers = _str_str_map(spec.get("headers", {}))
+        secret_headers = _str_str_map(spec.get("secret_headers", {}))
+        if headers is None or secret_headers is None:
+            return None
+        return {
+            "id": sid.strip(),
+            "transport": "http",
+            "url": url.strip(),
+            "headers": headers,
+            "secret_headers": secret_headers,
+            "allow_insecure_http": bool(spec.get("allow_insecure_http", False)),
+            "enabled": enabled,
+        }
+
+    # transport == "stdio"
+    command = spec.get("command")
     if not isinstance(command, str) or not command.strip():
         return None
     args = spec.get("args", [])
     if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
         return None
-    env = spec.get("env", {})
-    if not isinstance(env, dict) or any(
-        not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()
-    ):
+    env = _str_str_map(spec.get("env", {}))
+    if env is None:
         return None
-    enabled = bool(spec.get("enabled", True))
     return {
         "id": sid.strip(),
+        "transport": "stdio",
         "command": command.strip(),
         "args": [a for a in args],
-        "env": dict(env),
+        "env": env,
         "enabled": enabled,
     }
 
@@ -169,10 +218,26 @@ def save_servers(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _spec_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
+    """True if a settings change must propagate to the live process.
+
+    Compares against the *normalized* new spec but the *raw* old one (that's
+    what save_servers passes), so we normalize old here too. Covers both
+    transports' connection-relevant fields.
+    """
     if old is None:
         return True
-    for key in ("command", "args", "env", "enabled"):
-        if old.get(key) != new.get(key):
+    old_n = _validate_server(old)
+    if old_n is None:
+        return True
+    keys = (
+        "transport", "enabled",
+        # stdio
+        "command", "args", "env",
+        # http
+        "url", "headers", "secret_headers", "allow_insecure_http",
+    )
+    for key in keys:
+        if old_n.get(key) != new.get(key):
             return True
     return False
 
@@ -197,14 +262,39 @@ def start_server(server_id: str) -> dict[str, Any]:
         if existing is not None:
             _stop_locked(server_id)
 
-        client = McpClient(
-            command=spec["command"],
-            args=spec["args"],
-            env=spec["env"] or None,
-        )
+        transport = spec.get("transport", "stdio")
+        if transport == "http":
+            if not _remote_mcp_enabled():
+                msg = (
+                    "remote MCP disabled: set ELIRA_REMOTE_MCP=1 to enable the "
+                    "HTTP transport for server '" + server_id + "'"
+                )
+                _LAST_ERROR[server_id] = msg
+                return {"ok": False, "error": msg}
+            # Lazy import so the httpx-backed transport (and httpx itself) is
+            # only loaded when a remote server is actually started.
+            from app.application.tool_providers.mcp_http_client import (
+                McpHttpClient,
+                McpError as _HttpMcpError,
+            )
+            client: Any = McpHttpClient(
+                url=spec["url"],
+                headers=spec.get("headers") or None,
+                secret_headers=spec.get("secret_headers") or None,
+                allow_insecure_http=bool(spec.get("allow_insecure_http", False)),
+            )
+            start_error: type[Exception] = _HttpMcpError
+        else:
+            client = McpClient(
+                command=spec["command"],
+                args=spec["args"],
+                env=spec["env"] or None,
+            )
+            start_error = McpError
+
         try:
             client.start()
-        except McpError as exc:
+        except start_error as exc:
             _LAST_ERROR[server_id] = str(exc)
             return {"ok": False, "error": str(exc)}
 
