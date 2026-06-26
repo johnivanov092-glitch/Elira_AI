@@ -58,6 +58,12 @@ from app.application.code_agent.indexing import (  # noqa: F401
 )
 # Inline tool-call recovery extracted to .inline_tool_calls (used by the loop).
 from app.application.code_agent.inline_tool_calls import _contains_tool_trace, _extract_inline_tool_calls
+# D3 — structured action envelopes (opt-in, gated behind ELIRA_ACTION_ENVELOPES).
+from app.application.code_agent.action_envelopes import (
+    REPAIR_INSTRUCTION,
+    envelopes_enabled,
+    validate_tool_request,
+)
 # System-prompt construction extracted to .prompts; re-exported so the loop and
 # tests keep importing these from agent_loop unchanged.
 from app.application.code_agent.prompts import (  # noqa: F401
@@ -441,6 +447,10 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
+        # D3 — at most ONE envelope repair-retry per run, then deterministic
+        # fallback to the existing inline-recovery behaviour. Only consulted
+        # when ELIRA_ACTION_ENVELOPES is on.
+        envelope_repair_fired = False
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -643,6 +653,26 @@ def _stream_code_agent_core(
                 if inline_calls:
                     tool_calls = inline_calls
                     content = ""  # JSON was the tool call, not a text reply
+
+            # D3 — opt-in strict tool-request validation on top of recovery.
+            # OFF by default: when the flag is unset this block is skipped
+            # entirely and the loop runs exactly as before. When on, every
+            # tool call (structured or recovered) must validate as a clean
+            # tool-request envelope (known tool + dict args). On the first
+            # malformed turn we ask the model to re-send once; after that we
+            # fall back to the existing behaviour rather than loop forever.
+            if tool_calls and envelopes_enabled():
+                known = registry.known_tools()
+                all_valid = all(
+                    validate_tool_request(c, known) is not None for c in tool_calls
+                )
+                if not all_valid and not envelope_repair_fired:
+                    envelope_repair_fired = True
+                    messages.append({"role": "user", "content": REPAIR_INSTRUCTION})
+                    call_log.append("envelope repair: malformed tool_request")
+                    continue
+                # If still malformed after the one retry, fall through with the
+                # recovered calls as-is (deterministic fallback to today's path).
 
             if not tool_calls and _contains_tool_trace(content):
                 messages.append({
