@@ -26,6 +26,7 @@ from app.application.tool_providers import (
     BuiltinToolProvider,
     SshToolProvider,
     ToolRegistry,
+    build_lsp_providers,
     build_mcp_providers,
 )
 from app.application.projects.scope import project_scope_id
@@ -398,6 +399,7 @@ def _stream_code_agent_core(
         registry = ToolRegistry([
             BuiltinToolProvider(root),
             SshToolProvider(),
+            *build_lsp_providers(),
             *build_mcp_providers(),
         ])
         all_schemas = registry.collect_schemas()

@@ -618,6 +618,70 @@ def mcp_list_tools(server_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+# ── LSP servers (D2) ────────────────────────────────────────────────────
+#
+# Mirrors the MCP routes above: config lives in data/lsp_servers.json, and
+# servers are started lazily by an explicit POST /lsp/start — never in
+# main.py — so LSP is disabled-by-default. POST /lsp/stop is the explicit
+# shutdown the deferred-track spec requires.
+
+class LspServerSpec(BaseModel):
+    id: str
+    language: str
+    command: str
+    args: list[str] = Field(default_factory=list)
+    enabled: bool = False
+
+
+class LspServersRequest(BaseModel):
+    servers: list[LspServerSpec]
+
+
+class LspServerActionRequest(BaseModel):
+    server_id: str
+    project_root: Optional[str] = None
+
+
+@router.get("/lsp/servers")
+def lsp_list_servers() -> dict[str, Any]:
+    """All configured LSP servers + live status."""
+    from app.application.tool_providers.lsp_runtime import list_servers
+    return {"servers": list_servers()}
+
+
+@router.post("/lsp/servers")
+def lsp_save_servers(payload: LspServersRequest) -> dict[str, Any]:
+    """Replace the LSP server list atomically. Any server whose
+    spec changed (or that was removed) is stopped automatically."""
+    from app.application.tool_providers.lsp_runtime import save_servers
+    persisted = save_servers([s.model_dump() for s in payload.servers])
+    return {"ok": True, "servers": persisted}
+
+
+@router.post("/lsp/start")
+def lsp_start(payload: LspServerActionRequest) -> dict[str, Any]:
+    from app.application.tool_providers.lsp_runtime import start_server
+    result = start_server(payload.server_id, payload.project_root)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "start failed"))
+    return result
+
+
+@router.post("/lsp/stop")
+def lsp_stop(payload: LspServerActionRequest) -> dict[str, Any]:
+    from app.application.tool_providers.lsp_runtime import stop_server
+    return stop_server(payload.server_id)
+
+
+@router.post("/lsp/restart")
+def lsp_restart(payload: LspServerActionRequest) -> dict[str, Any]:
+    from app.application.tool_providers.lsp_runtime import restart_server
+    result = restart_server(payload.server_id, payload.project_root)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "restart failed"))
+    return result
+
+
 # ── Sessions ────────────────────────────────────────────────────────────
 
 
