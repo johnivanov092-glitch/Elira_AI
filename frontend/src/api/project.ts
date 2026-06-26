@@ -86,11 +86,6 @@ export async function openAdvancedProject(
 }
 
 export type SavedProject = { id: string; name: string; path: string; created_at?: number };
-export type ChatAgentProject = Omit<SavedProject, "created_at"> & {
-  active?: boolean | number;
-  created_at?: string | number;
-  updated_at?: string;
-};
 
 export async function listSavedProjects(): Promise<SavedProject[]> {
   const res = await request<{ ok: boolean; projects: SavedProject[] }>("/api/advanced/projects");
@@ -159,71 +154,5 @@ export async function runAdvancedMultiAgent(
   return request<ProjectResponse>("/api/advanced/multi-agent", {
     method: "POST",
     body,
-  });
-}
-
-export async function listChatAgentProjects(): Promise<ChatAgentProject[]> {
-  const res = await request<{ ok: boolean; items: ChatAgentProject[] }>("/api/chat-agent/projects");
-  return Array.isArray(res?.items) ? res.items : [];
-}
-
-export async function getActiveChatAgentProject(): Promise<ProjectResponse & { project?: ChatAgentProject }> {
-  return request<ProjectResponse & { project?: ChatAgentProject }>("/api/chat-agent/projects/active");
-}
-
-export async function openChatAgentProject(path: string, name = ""): Promise<ProjectResponse & { project?: ChatAgentProject }> {
-  return request<ProjectResponse & { project?: ChatAgentProject }>("/api/chat-agent/projects", {
-    method: "POST",
-    body: { path, name },
-  });
-}
-
-export async function setActiveChatAgentProject(id: string): Promise<ProjectResponse & { project?: ChatAgentProject }> {
-  return request<ProjectResponse & { project?: ChatAgentProject }>("/api/chat-agent/projects/active", {
-    method: "POST",
-    body: { id },
-  });
-}
-
-export async function clearActiveChatAgentProject(): Promise<ProjectResponse & { project?: ChatAgentProject | null }> {
-  return request<ProjectResponse & { project?: ChatAgentProject | null }>("/api/chat-agent/projects/active", {
-    method: "DELETE",
-  });
-}
-
-export async function removeChatAgentProject(id: string): Promise<ProjectResponse> {
-  return request<ProjectResponse>(`/api/chat-agent/projects/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-export async function getChatAgentProjectTree({
-  maxDepth = 3,
-  maxItems = 300,
-}: ProjectTreeOptions = {}): Promise<ProjectResponse> {
-  return request<ProjectResponse>(
-    withParams("/api/chat-agent/projects/tree", {
-      max_depth: maxDepth,
-      max_items: maxItems,
-    }),
-  );
-}
-
-export async function readChatAgentProjectFile(
-  path: string,
-  maxChars?: number,
-): Promise<ProjectResponse> {
-  const body: ReadProjectFileRequest = { path };
-  if (maxChars) body.max_chars = maxChars;
-  return request<ProjectResponse>("/api/chat-agent/projects/read", {
-    method: "POST",
-    body,
-  });
-}
-
-export async function searchChatAgentProject(
-  query: string,
-): Promise<ProjectResponse> {
-  return request<ProjectResponse>("/api/chat-agent/projects/search", {
-    method: "POST",
-    body: { query },
   });
 }

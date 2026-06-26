@@ -12,7 +12,6 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.chat.local_chat import run_chat  # noqa: E402
 from app.application.code_agent import agent_loop  # noqa: E402
 from app.application.code_agent import history as agent_history  # noqa: E402
 from app.infrastructure.llm import local_models, openai_compatible  # noqa: E402
@@ -291,23 +290,6 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["models"][0]["name"], "local-model")
-
-    def test_direct_chat_routes_local_model_to_llama_server(self) -> None:
-        fake = {
-            "message": {"content": "direct", "tool_calls": []},
-            "prompt_eval_count": 1,
-            "eval_count": 1,
-        }
-        with patch.dict(os.environ, _llama_env(), clear=False), patch(
-            "app.application.chat.local_chat.chat_completion",
-            return_value=fake,
-        ) as chat_completion:
-            result = run_chat("local-model", "default", "hello")
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["answer"], "direct")
-        self.assertEqual(result["meta"]["provider"], "llama_server")
-        chat_completion.assert_called_once()
 
     def test_code_agent_chat_wrapper_routes_local_model_to_llama_server(self) -> None:
         # _local_chat was moved to code_agent.history (re-exported on agent_loop);

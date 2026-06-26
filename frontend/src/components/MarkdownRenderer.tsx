@@ -8,7 +8,7 @@
  */
 import React, { useState, useCallback, type ReactNode } from "react";
 import { buildApiUrl, request } from "../api/client";
-import { isLocalApiAssetUrl } from "../api/ide";
+import { isLocalApiAssetUrl } from "../api/apiUtils";
 
 type InlinePattern = {
   re: RegExp;
