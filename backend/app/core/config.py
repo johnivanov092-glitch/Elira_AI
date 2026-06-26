@@ -13,8 +13,6 @@ DB_PATH       = DATA_DIR / "memory.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 BROWSER_DIR   = DATA_DIR / "browser_downloads"
 GENERATED_DIR = DATA_DIR / "generated"
-IMAGE_MODEL_ID = "stabilityai/sdxl-turbo"
-FLUX_MODEL_ID  = "black-forest-labs/FLUX.1-schnell"
 
 for _d in [UPLOAD_DIR, CHAT_DIR, OUTPUT_DIR, BROWSER_DIR, GENERATED_DIR]:
     _d.mkdir(parents=True, exist_ok=True)

@@ -26,7 +26,6 @@ STAGE1_TOOLS = {
     "archiver": ("require_approval", True, ["fs.read", "fs.write"]),
     "webhook": ("require_approval", True, []),
     "screenshot": ("require_approval", True, ["net.outbound", "fs.write"]),
-    "image_gen": ("require_approval", True, ["fs.write"]),
     "file_gen": ("require_approval", True, ["fs.write"]),
 }
 
@@ -83,21 +82,6 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
         return_value={"ok": True, "filename": "shot.png", "view_url": "/view"},
     ):
         checks.append(("screenshot", provider.dispatch("screenshot", {"url": "https://example.com"})))
-    with patch(
-        "app.application.media.flux_schnell_runtime.generate_image",
-        return_value={
-            "ok": True,
-            "filename": "fake.png",
-            "path": str(tmp_path / "fake.png"),
-            "width": 1,
-            "height": 1,
-            "steps": 1,
-            "elapsed_sec": 0,
-            "view_url": "/view",
-            "download_url": "/download",
-        },
-    ):
-        checks.append(("image_gen", provider.dispatch("image_gen", {"prompt": "test"})))
     with patch(
         "app.application.skills.generate_word",
         return_value={

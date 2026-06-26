@@ -34,7 +34,7 @@ def route_task(
         return {"mode": mode, "reason": "manual"}
 
     low = (text or "").lower()
-    if any(x in low for x in ["нарисуй", "изображ", "image", "картин", "png", "sdxl", "flux"]):
+    if any(x in low for x in ["нарисуй", "изображ", "image", "картин", "png"]):
         return {"mode": "image", "reason": "image markers"}
     if selected_project_paths or any(
         item.get("suffix") in {".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".css", ".html"}

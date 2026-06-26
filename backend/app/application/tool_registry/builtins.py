@@ -415,7 +415,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("archiver",       "Archiver",       "media",   "Create or extract ZIP archives",        60, 20000, False),
         ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
         ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
-        ("image_gen",      "Image Gen",      "media",   "Generate an image from a text prompt", 120,  5000, False),
         ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel file",            60,  5000, False),
     ]
     auto_side_effect_tools = [
@@ -435,7 +434,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "run_bash": ["shell.exec"], "run_server": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
         "http_api": ["net.outbound"], "sql": ["fs.read", "fs.write"],
         "archiver": ["fs.read", "fs.write"], "screenshot": ["net.outbound", "fs.write"],
-        "image_gen": ["fs.write"], "file_gen": ["fs.write"],
+        "file_gen": ["fs.write"],
         "read_image": ["fs.read", "net.outbound"], "ocr_file": ["fs.read", "net.outbound"],
     }
 

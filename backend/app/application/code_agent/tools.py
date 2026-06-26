@@ -1755,45 +1755,6 @@ def tool_screenshot(
     )
 
 
-def tool_image_gen(
-    project_root: Path,
-    *,
-    prompt: str,
-    width: int = 768,
-    height: int = 768,
-    steps: int = 4,
-    seed: int = -1,
-    filename: str = "",
-) -> dict[str, Any]:
-    from app.application.media.flux_schnell_runtime import generate_image
-
-    result = generate_image(
-        prompt=prompt,
-        width=int(width),
-        height=int(height),
-        steps=int(steps),
-        seed=int(seed),
-        filename=filename or "",
-    )
-    if not result.get("ok"):
-        return {"text": f"ERROR: image generation failed: {result.get('error') or 'unknown error'}"}
-
-    fname = str(result.get("filename") or "")
-    rel = _mirror_into_project(project_root, str(result.get("path") or ""), fname)
-    summary = (
-        f"Generated image {fname} ({result.get('width')}x{result.get('height')}, "
-        f"{result.get('steps')} steps, {result.get('elapsed_sec')}s).\n"
-        f"View: {result.get('view_url')}\nDownload: {result.get('download_url')}"
-    )
-    if rel:
-        summary += f"\nSaved into project: {rel}"
-    out: dict[str, Any] = {"text": summary}
-    if rel:
-        out["touched_path"] = rel
-        out["diff_action"] = "create"
-    return out
-
-
 def tool_file_gen(
     project_root: Path,
     *,
@@ -1930,7 +1891,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "archiver": lambda **kw: tool_archiver(project_root, **kw),
         "webhook": lambda **kw: tool_webhook(project_root, **kw),
         "screenshot": lambda **kw: tool_screenshot(project_root, **kw),
-        "image_gen": lambda **kw: tool_image_gen(project_root, **kw),
         "file_gen": lambda **kw: tool_file_gen(project_root, **kw),
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
         "ocr_file": lambda **kw: tool_ocr_file(project_root, **kw),

@@ -15,7 +15,6 @@ from app.api.routes.event_bus_routes import router as event_bus_router
 from app.api.routes.file_ops import router as file_ops_router
 from app.api.routes.files import router as files_router
 from app.api.routes.git_routes import router as git_router
-from app.api.routes.image_routes import router as image_router
 from app.api.routes.library import router as library_router
 from app.api.routes.library_sqlite import router as library_sqlite_router
 from app.api.routes.memory import router as memory_router
@@ -61,7 +60,6 @@ ALL_ROUTERS = (
     advanced_router,
     skills_router,
     skills_extra_router,
-    image_router,
     git_router,
     web_search_router,
     dashboard_router,

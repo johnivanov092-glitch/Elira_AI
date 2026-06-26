@@ -40,11 +40,10 @@
 **Реестр (ToolSpec):** `backend/app/application/tool_registry/builtins.py:388-451` — табличные блоки `auto_tools`/`auto_side_effect_tools`/`approval_tools`, словарь `_native_scopes`, хендлер `_noop` (реальное исполнение — в провайдере). ToolSpec нужен, чтобы тулза была **видна `tool_search`**.
 **tool_search:** `tools.py:622` зовёт `search_tool_specs`; `tools.py:633` авто-активирует только `activatable and not side_effect`; `activate_tools` — no-op, если run не в deferred-режиме ⇒ **болтовня НЕ форсит поиск тулзов** (модель сразу даёт `final_response`).
 
-**Состояние 12 light-тулз (ВАЖНО — не все одинаковы):**
+**Состояние 11 light-тулз (ВАЖНО — не все одинаковы):**
 
 | Тулза | dispatch (`tools.py`) | schema (`tool_schemas.py`) | ToolSpec (`builtins.py`) | Реализация |
 |-------|:---:|:---:|:---:|------------|
-| `image_gen` | ✅ `tool_image_gen:880` | ✅ `:301` | ❌ | `media/flux_schnell_runtime.py:generate_image` |
 | `file_gen` | ✅ `tool_file_gen:919` | ✅ `:328` | ❌ | `skills` → `generate_word`/`generate_excel` |
 | `translator` | ❌ | ❌ | ❌ | `skills_extra/runtime.py:translate_text:252` |
 | `regex` | ❌ | ❌ | ❌ | `skills_extra/runtime.py:test_regex:216` |
@@ -108,10 +107,10 @@ def tool_translator(project_root: Path, *, text: str, target_lang: str = "englis
 
 **2.3. Зависимость.** По умолчанию runtime-функции реюзаются как есть (импорты чистые). Если при реализации обнаружится импорт из `app.application.chat.*` — вынести функцию в нейтральный модуль (`skills_extra`), НЕ тащить chat в ядро.
 
-**Файлы:** `code_agent/tools.py`, `code_agent/tool_schemas.py`, `tool_registry/builtins.py`. Реюз: `media/flux_schnell_runtime.py`, `skills/runtime.py`, `skills_extra/runtime.py`, `skills/__init__.py`.
+**Файлы:** `code_agent/tools.py`, `code_agent/tool_schemas.py`, `tool_registry/builtins.py`. Реюз: `skills/runtime.py`, `skills_extra/runtime.py`, `skills/__init__.py`.
 
 ### Gate 1 (Опус проверяет)
-- [ ] Все 12 тулз: `tool_search("<имя>")` находит и помечает `[eligible]`/`[side_effect]` (не `[blocked]`).
+- [ ] Все 11 тулз: `tool_search("<имя>")` находит и помечает `[eligible]`/`[side_effect]` (не `[blocked]`).
 - [ ] `execute_tool(name, args, run_id=...)` возвращает осмысленный dict на безопасном входе (translator/regex/csv/converter — детерминированы; image/file — temp; http/webhook — локальный/моковый URL).
 - [ ] `backend\.venv\Scripts\python.exe -m pytest` — зелёный (505+).
 - [ ] Импорт-смоук: `python -c "import app.application.code_agent.agent_loop"` без ошибок.
