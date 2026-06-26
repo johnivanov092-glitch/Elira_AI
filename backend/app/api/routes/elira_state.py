@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -13,6 +15,7 @@ from app.application.elira_memory.service import (
     add_message,
 )
 from app.application.elira_memory.settings import get_settings, save_settings
+from app.application.feature_flags import get_flags, set_flag
 from app.application.local_models import list_local_models
 
 router = APIRouter(prefix="/api/elira", tags=["elira-state"])
@@ -42,6 +45,14 @@ class SettingsRequest(BaseModel):
     orchestration_enabled: bool = False
 
 
+class FeatureFlagRequest(BaseModel):
+    """Toggle one deferred-track feature flag (D1 remote MCP / D3 envelopes)."""
+
+    model_config = {"extra": "forbid"}
+    name: Literal["remote_mcp", "action_envelopes"]
+    value: bool
+
+
 @router.get("/models")
 async def models():
     return await list_local_models()
@@ -63,6 +74,19 @@ def settings_put(payload: SettingsRequest):
         payload.route_model_map,
         payload.orchestration_enabled,
     )
+
+
+@router.get("/feature-flags")
+def feature_flags_get():
+    # Effective state (env override applied) of the deferred-track flags.
+    return get_flags()
+
+
+@router.put("/feature-flags")
+def feature_flags_put(payload: FeatureFlagRequest):
+    # Persists to data/feature_flags.json; returns the new effective state.
+    # An ELIRA_* env override, if set, keeps winning and is reflected here.
+    return set_flag(payload.name, payload.value)
 
 
 @router.get("/chats")

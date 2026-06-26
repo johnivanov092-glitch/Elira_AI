@@ -27,22 +27,24 @@ unit-testable in isolation and introduces no import cycle).
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.application.code_agent.inline_tool_calls import _iter_json_object_substrings
+from app.application.feature_flags import flag_enabled
 
 
 # ── Gate ────────────────────────────────────────────────────────────────
 # OFF by default. The envelope layer only engages when the operator opts in;
-# the conversational/chat hot path is unaffected otherwise.
-_ENVELOPES_TRUTHY = frozenset({"1", "on", "true", "yes"})
+# the conversational/chat hot path is unaffected otherwise. The flag is
+# resolved through the shared feature-flags layer: an explicit
+# ``ELIRA_ACTION_ENVELOPES`` env override still wins, otherwise the persisted
+# (UI-toggleable) ``data/feature_flags.json`` value is used.
 
 
 def envelopes_enabled() -> bool:
-    return os.getenv("ELIRA_ACTION_ENVELOPES", "").strip().lower() in _ENVELOPES_TRUTHY
+    return flag_enabled("action_envelopes")
 
 
 # ── Envelope schemas ────────────────────────────────────────────────────

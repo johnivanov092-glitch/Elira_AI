@@ -46,3 +46,18 @@ turns never pay for JSON validation (this is the "fast chat path"). When
 on, a malformed tool-request triggers exactly one repair retry
 (`REPAIR_INSTRUCTION`), then falls back deterministically to the existing
 inline-recovery behaviour rather than looping.
+
+## Flag plumbing — env-first, UI-toggleable
+
+D1 and D3 share one resolution layer (`app.application.feature_flags`):
+`flag_enabled(name)` reads the matching `ELIRA_*` env var first (an explicit
+non-blank value, truthy *or* falsy, is an operator override that wins), else
+the persisted `data/feature_flags.json` value, else `False`. The Settings →
+**Экспериментальное** tab reads/writes that file via `GET`/`PUT
+/api/elira/feature-flags`, so both flags can be toggled at runtime (no
+restart: D3 re-reads each loop turn, D1 on next server start). An `ELIRA_*`
+env override still wins and is reflected in the reported state.
+
+D2 (LSP) is **not** an env flag — it has its own per-server `enabled` field in
+`lsp_servers.json` and a start endpoint, so it is enabled from Settings →
+Интеграции instead and has no toggle in Экспериментальное.

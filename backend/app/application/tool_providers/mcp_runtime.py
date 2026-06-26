@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
 
+from app.application.feature_flags import flag_enabled
 from app.application.tool_providers.mcp_client import McpClient, McpError
 from app.core.data_files import data_file
 
@@ -38,15 +38,16 @@ from app.core.data_files import data_file
 logger = logging.getLogger(__name__)
 
 
-# Remote (HTTP) MCP transport is gated behind this env flag and OFF by
-# default — exactly like the D2 LSP provider. A configured http server
-# refuses to start until the operator opts in. stdio remains the default
-# and is never affected by this flag.
-_REMOTE_MCP_TRUTHY = frozenset({"1", "on", "true", "yes"})
+# Remote (HTTP) MCP transport is gated and OFF by default. A configured http
+# server refuses to start until the operator opts in; stdio remains the
+# default and is never affected by this flag. The flag is resolved through
+# the shared feature-flags layer: an explicit ``ELIRA_REMOTE_MCP`` env
+# override still wins, otherwise the persisted (UI-toggleable)
+# ``data/feature_flags.json`` value is used.
 
 
 def _remote_mcp_enabled() -> bool:
-    return os.getenv("ELIRA_REMOTE_MCP", "").strip().lower() in _REMOTE_MCP_TRUTHY
+    return flag_enabled("remote_mcp")
 
 
 CONFIG_PATH: Path = data_file("mcp_servers.json")
