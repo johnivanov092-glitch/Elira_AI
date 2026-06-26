@@ -231,17 +231,6 @@ class DirectExecutionDisabledTest(unittest.TestCase):
             finally:
                 reg.delete_tool(name)
 
-    def test_chat_auto_skills_does_not_execute_plugins(self) -> None:
-        from app.application.chat.auto_skills import run_auto_skills
-        with mock.patch.object(psys, "run_plugin") as rp, \
-             mock.patch.object(psys, "run_triggered") as rt, \
-             mock.patch.object(psys, "fire_hook") as fh:
-            # Trigger phrases that previously launched plugins from chat.
-            run_auto_skills("запусти плагин demo и проверь триггер")
-            self.assertEqual(rp.call_count, 0, "chat must not call run_plugin")
-            self.assertEqual(rt.call_count, 0, "chat must not call run_triggered")
-            self.assertEqual(fh.call_count, 0, "chat must not call fire_hook")
-
     def test_autopipeline_plugin_task_does_not_execute_directly(self) -> None:
         from app.application.autopipeline import runtime as autopipeline
         name = f"p92fix_autop_{uuid.uuid4().hex[:8]}"

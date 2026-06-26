@@ -38,6 +38,19 @@ def _calibration_pragma(payload: dict) -> str:
     )
 
 
+def _honesty_boundary(payload: dict) -> str:
+    """The 'don't fabricate facts/links/results' boundary, if present.
+
+    It lives in `boundaries`, which `_top_behavior_rules` never reaches, so we
+    pull it out explicitly and always keep it in the compact prompt.
+    """
+    boundaries = payload.get("boundaries") or ELIRA_PERSONA_BASE_PAYLOAD["boundaries"]
+    for item in boundaries:
+        if "выдумыв" in str(item).lower():
+            return str(item)
+    return ""
+
+
 def _top_behavior_rules(payload: dict, limit: int = 3) -> list[str]:
     """Pick the most actionable behaviour rules.
 
@@ -79,11 +92,17 @@ def build_persona_prompt(
     )
 
     rules = _top_behavior_rules(payload, limit=3)
+    # Always surface the honesty boundary: it lives in `boundaries` (not
+    # behavior_rules), so the limit=3 cut above would otherwise drop it. For an
+    # agent that acts on the real filesystem this is the most load-bearing rule.
+    honesty = _honesty_boundary(payload)
+    if honesty:
+        rules = [*rules, honesty]
     rules_block = "\n".join(f"- {item}" for item in rules)
 
     lines = [
         "Ты — Elira, AI-ассистентка пользователя в Elira AI.",
-        "Миссия: помогать честно, ясно и практически. Не выдумывать факты.",
+        "Миссия: помогать честно, ясно и практически. Не выдумывать факты и не выдавать намерение за результат.",
         _short_profile_line(profile_key) + ".",
         f"Правила:\n{rules_block}",
         f"Идентичность: ты Elira, никогда не называй себя именем модели или языковой моделью.",

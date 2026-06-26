@@ -325,10 +325,28 @@ def execute_tool(
     _result_box: dict[str, Any] = {}
 
     def _runner() -> None:
+        # Bind run_id on THIS worker thread so a cancellable tool (run_bash)
+        # can register its live OS process against the run. The Stop route then
+        # reaches in and kills it directly — a daemon worker thread cannot be
+        # interrupted otherwise. Best-effort: tools that don't use it are
+        # unaffected, and a missing helper must never break dispatch.
+        _run_token = None
+        try:
+            from app.application.code_agent.tools import set_current_run_id
+            _run_token = set_current_run_id(request.run_id)
+        except Exception:
+            _run_token = None
         try:
             _result_box["raw"] = dispatch_fn(tool_name, request.args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model as tool error
             _result_box["raw"] = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
+        finally:
+            if _run_token is not None:
+                try:
+                    from app.application.code_agent.tools import reset_current_run_id
+                    reset_current_run_id(_run_token)
+                except Exception:
+                    pass
 
     _t0 = _time.monotonic()
     _worker = _threading.Thread(

@@ -1,413 +1,151 @@
-"""Chat agent runtime entry points.
+"""Compatibility entry point backed by the code-agent core.
 
-This module wires chat orchestration dependencies for HTTP routes and legacy
-compatibility callers.
+The old keyword-planner chat runtime was removed during UNIFY_CORE_PLAN Stage 4.
+Internal callers that still invoke ``run_agent`` now drain the same universal
+code-agent loop used by ``/api/code-agent/*``.
 """
 from __future__ import annotations
 
-from functools import partial
+from pathlib import Path
 from typing import Any
 
-from app.application.chat.auto_skills import (
-    _FILE_TRIGGERS_EXCEL,
-    _FILE_TRIGGERS_WORD,
-    maybe_generate_files,
-    run_auto_skills,
-)
-from app.application.chat.context_builder import (
-    collect_context as build_chat_context,
-    strip_frontend_project_context as build_strip_frontend_project_context,
-)
-from app.application.chat.entrypoints import ChatAgentDeps, run_agent_impl, run_agent_stream_impl
-from app.application.chat.finalization import (
-    finalize_chat_failure as _app_finalize_chat_failure,
-    finalize_chat_success as _app_finalize_chat_success,
-    finalize_stream_success as _app_finalize_stream_success,
-)
-from app.application.chat.memory_policy import (
-    enrich_context_with_memory as _app_enrich_context_with_memory,
-    trim_history as _app_trim_history,
-)
-from app.application.chat.post_processing import (
-    apply_identity_guard as _app_apply_identity_guard,
-    apply_provenance_guard as _app_apply_provenance_guard,
-    apply_response_guards,
-    maybe_auto_exec_python as _app_maybe_auto_exec_python,
-)
-from app.application.chat.prompting import (
-    build_prompt as _app_build_prompt,
-    compose_human_style_rules as _app_compose_human_style_rules,
-    get_and_clear_attachments as _app_get_and_clear_attachments,
-    has_generated_file_attachments as _app_has_generated_file_attachments,
-)
-from app.application.chat.service import (
-    bootstrap_chat_run,
-    build_task_context,
-    prepare_chat_execution,
-    prepare_chat_prompt,
-)
-from app.application.chat.stream_service import (
-    build_selected_tools_phase_event,
-    build_stream_phase_event,
-    finalize_stream_response,
-    iter_text_stream_events,
-    prepare_cached_stream_hit,
-)
-from app.application.chat.timeline import append_timeline as _app_append_timeline
-from app.application.chat.agent_os import (
-    emit_agent_os_event as _app_emit_agent_os_event,
-    record_registry_agent_run as _app_record_registry_agent_run,
-)
-from app.core.config import effective_context_limit, resolve_model_for_route
-from app.infrastructure.search.web_search import do_temporal_web_search as _infra_do_temporal_web_search
-from app.infrastructure.llm.local_models import get_models
-from app.application.agent_registry.sandbox import preflight_or_raise, resolve_effective_agent_id
-from app.application.monitoring.runtime import ensure_agent_limit, record_metric
-from app.application.chat.local_chat import run_chat, run_chat_stream
-from app.application.persona.service import observe_dialogue
-from app.application.chat.planner_v2 import PlannerV2Service
-from app.application.chat.reflection_loop import run_reflection_loop
-from app.application.response_cache.runtime import get_cached, set_cached, should_cache
-from app.application.run_history.service import RunHistoryService
-from app.application.smart_memory import extract_and_save, get_relevant_context, is_memory_command
-from app.application.tool_registry.service import run_tool
-
-try:
-    from app.application.rag_memory.service import get_rag_context
-
-    _HAS_RAG = True
-except ImportError:
-    _HAS_RAG = False
-
-    def get_rag_context(*args: Any, **kwargs: Any) -> str:
-        return ""
+from app.application.code_agent.agent_loop import DEFAULT_MAX_STEPS, DEFAULT_NUM_CTX, run_code_agent
+from app.application.library.runtime import build_library_context
+from app.core.data_files import data_subdir
 
 
-_HISTORY = RunHistoryService()
-_REFLECTION_ROUTES = {"code", "project"}
-_MAX_HISTORY_PAIRS = 10
-
-_TEMPORAL_WEB_SEARCH = partial(_infra_do_temporal_web_search, tl=_app_append_timeline)
-_COLLECT_CONTEXT = partial(
-    build_chat_context,
-    run_tool_func=run_tool,
-    append_timeline=_app_append_timeline,
-    temporal_web_search_func=_TEMPORAL_WEB_SEARCH,
-)
-_BUILD_PROMPT = partial(_app_build_prompt, run_auto_skills_func=run_auto_skills)
+def _default_project_root() -> str:
+    return str(data_subdir("agent_workspace"))
 
 
-def _trim_history(history: list[Any], max_history_pairs: int) -> list[Any]:
-    return _app_trim_history(history, max_history_pairs)
+def _normalise_history(history: list[Any] | None) -> list[dict[str, str]]:
+    normalised: list[dict[str, str]] = []
+    for item in history or []:
+        if isinstance(item, dict):
+            role = str(item.get("role") or "")
+            content = str(item.get("content") or "")
+        else:
+            role = str(getattr(item, "role", "") or "")
+            content = str(getattr(item, "content", "") or "")
+        if role in {"user", "assistant"} and content:
+            normalised.append({"role": role, "content": content})
+    return normalised
 
 
-def _strip_frontend_project_context(user_input: str) -> str:
-    return build_strip_frontend_project_context(user_input)
-
-
-def _collect_context(**kwargs: Any) -> str:
-    return _COLLECT_CONTEXT(**kwargs)
-
-
-def _build_prompt(
-    user_input: str,
-    context_bundle: str,
-    *,
-    disabled_skills: set[str] | None = None,
-) -> str:
-    return _BUILD_PROMPT(
-        user_input=user_input,
-        context_bundle=context_bundle,
-        disabled_skills=disabled_skills,
-    )
-
-
-def _compose_human_style_rules(temporal: dict[str, Any] | None) -> str:
-    return _app_compose_human_style_rules(temporal)
-
-
-def _get_and_clear_attachments() -> str:
-    return _app_get_and_clear_attachments()
-
-
-def _has_generated_file_attachments() -> bool:
-    return _app_has_generated_file_attachments()
-
-
-def _emit_agent_os_event(**kwargs: Any) -> None:
-    _app_emit_agent_os_event(**kwargs)
-
-
-def _record_registry_agent_run(**kwargs: Any) -> None:
-    _app_record_registry_agent_run(**kwargs)
-
-
-def _maybe_generate_files(user_input: str, answer: str, enabled: bool = True) -> str:
-    return maybe_generate_files(user_input, answer, enabled=enabled)
-
-
-def _maybe_auto_exec_python(
-    user_input: str,
-    answer: str,
-    timeline: list[dict[str, Any]],
-    enabled: bool = True,
-) -> str:
-    return _app_maybe_auto_exec_python(
-        user_input=user_input,
-        answer=answer,
-        enabled=enabled,
-        append_timeline_func=_app_append_timeline,
-        timeline=timeline,
-    )
-
-
-def _apply_identity_guard(
-    user_input: str,
-    answer_text: str,
-    timeline: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return _app_apply_identity_guard(
-        user_input=user_input,
-        answer_text=answer_text,
-        append_timeline_func=_app_append_timeline,
-        timeline=timeline,
-    )
-
-
-def _apply_provenance_guard(
-    user_input: str,
-    answer_text: str,
-    timeline: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return _app_apply_provenance_guard(
-        user_input=user_input,
-        answer_text=answer_text,
-        append_timeline_func=_app_append_timeline,
-        timeline=timeline,
-    )
-
-
-def _finalize_chat_success(**kwargs: Any) -> dict[str, Any]:
-    return _app_finalize_chat_success(
-        **kwargs,
-        observe_dialogue_func=observe_dialogue,
-    )
-
-
-def _finalize_stream_success(**kwargs: Any) -> dict[str, Any]:
-    return _app_finalize_stream_success(
-        **kwargs,
-        observe_dialogue_func=observe_dialogue,
-    )
-
-
-def _resolve_agent(**kwargs: Any) -> Any:
-    from app.application.agent_registry.runtime import resolve_agent
-
-    return resolve_agent(**kwargs)
-
-
-def _chat_available_models() -> list[str] | None:
-    """Installed local model identifiers, or None when local discovery fails.
-
-    Returning None keeps the P9.3 profile step inert and preserves the route-map
-    fallback path.
-    """
+def _with_library_context(message: str, enabled: bool) -> str:
+    if not enabled:
+        return message
     try:
-        result = get_models()
+        ctx = build_library_context()
     except Exception:
-        return None
-    if not result.get("ok"):
-        return None
-    names: list[str] = []
-    for item in result.get("models", []):
-        for key in ("name", "model"):
-            value = item.get(key)
-            if value:
-                names.append(str(value))
-    return names
-
-
-def _get_max_context_tokens(agent_id: str) -> int | None:
-    """Per-agent monitoring context cap (max_context_tokens), or None."""
-    try:
-        limit = ensure_agent_limit(agent_id)
-    except Exception:
-        return None
-    try:
-        value = int((limit or {}).get("max_context_tokens"))
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
-
-
-def _build_chat_agent_deps() -> ChatAgentDeps:
-    return ChatAgentDeps(
-        history_service=_HISTORY,
-        planner_factory=PlannerV2Service,
-        resolve_effective_agent_id_func=resolve_effective_agent_id,
-        resolve_agent_func=_resolve_agent,
-        bootstrap_chat_run_func=bootstrap_chat_run,
-        prepare_chat_execution_func=prepare_chat_execution,
-        prepare_chat_prompt_func=prepare_chat_prompt,
-        trim_history_func=_trim_history,
-        strip_frontend_project_context_func=_strip_frontend_project_context,
-        emit_agent_os_event_func=_emit_agent_os_event,
-        collect_context_func=_collect_context,
-        build_prompt_func=_build_prompt,
-        compose_human_style_rules_func=_compose_human_style_rules,
-        get_and_clear_attachments_func=_get_and_clear_attachments,
-        has_generated_file_attachments_func=_has_generated_file_attachments,
-        build_task_context_func=build_task_context,
-        append_timeline_func=_app_append_timeline,
-        enrich_context_with_memory_func=_app_enrich_context_with_memory,
-        run_chat_func=run_chat,
-        run_chat_stream_func=run_chat_stream,
-        run_reflection_loop_func=run_reflection_loop,
-        apply_response_guards_func=apply_response_guards,
-        apply_identity_guard_func=_apply_identity_guard,
-        apply_provenance_guard_func=_apply_provenance_guard,
-        maybe_generate_files_func=_maybe_generate_files,
-        maybe_auto_exec_python_func=_maybe_auto_exec_python,
-        finalize_chat_success_func=_finalize_chat_success,
-        finalize_chat_failure_func=_app_finalize_chat_failure,
-        finalize_stream_success_func=_finalize_stream_success,
-        finalize_stream_response_func=finalize_stream_response,
-        build_stream_phase_event_func=build_stream_phase_event,
-        build_selected_tools_phase_event_func=build_selected_tools_phase_event,
-        iter_text_stream_events_func=iter_text_stream_events,
-        prepare_cached_stream_hit_func=prepare_cached_stream_hit,
-        record_registry_agent_run_func=_record_registry_agent_run,
-        is_memory_command_func=is_memory_command,
-        resolve_model_for_route_func=resolve_model_for_route,
-        effective_context_limit_func=effective_context_limit,
-        available_models_func=_chat_available_models,
-        get_max_context_tokens_func=_get_max_context_tokens,
-        record_metric_func=record_metric,
-        extract_and_save_func=extract_and_save,
-        preflight_or_raise_func=preflight_or_raise,
-        should_cache_func=should_cache,
-        get_cached_func=get_cached,
-        set_cached_func=set_cached,
-        get_relevant_context_func=get_relevant_context,
-        get_rag_context_func=get_rag_context,
-        has_rag=_HAS_RAG,
-        reflection_routes=_REFLECTION_ROUTES,
-        max_history_pairs=_MAX_HISTORY_PAIRS,
-        file_trigger_words=tuple(_FILE_TRIGGERS_WORD),
-        file_trigger_excel=tuple(_FILE_TRIGGERS_EXCEL),
+        return message
+    block = str(ctx.get("context") or "").strip()
+    if not block:
+        return message
+    used = ", ".join(str(name) for name in (ctx.get("used_files") or [])) or "attachments"
+    return (
+        f"Context from attached library files ({used}). Use it only if relevant:\n\n"
+        f"{block}\n\n----- USER REQUEST -----\n{message}"
     )
+
+
+def _timeline_from_code_agent(result: dict[str, Any]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for call in result.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        tool = str(call.get("tool") or "tool")
+        result_text = str(call.get("result") or "")
+        ok = call.get("ok")
+        if ok is None:
+            ok = not result_text.lower().startswith("error")
+        timeline.append({
+            "step": tool,
+            "title": tool,
+            "status": "done" if ok else "error",
+            "detail": result_text[:500],
+        })
+    timeline.append({
+        "step": "code_agent",
+        "title": "Code Agent",
+        "status": "done" if result.get("ok") else "error",
+        "detail": str(result.get("error") or result.get("stop_reason") or ""),
+    })
+    return timeline
+
+
+def _tool_results_from_code_agent(result: dict[str, Any]) -> list[dict[str, Any]]:
+    tool_results: list[dict[str, Any]] = []
+    for call in result.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        result_text = str(call.get("result") or "")
+        ok = call.get("ok")
+        if ok is None:
+            ok = not result_text.lower().startswith("error")
+        tool_results.append({
+            "tool": str(call.get("tool") or "tool"),
+            "ok": bool(ok),
+            "result": result_text,
+            "arguments": call.get("arguments") or {},
+        })
+    return tool_results
 
 
 def run_agent(
     *,
-    model_name,
-    profile_name,
-    user_input,
-    session_id=None,
-    agent_id=None,
-    use_memory=True,
-    use_library=True,
-    use_reflection=False,
-    history=None,
-    num_ctx=131_072,
-    use_web_search=True,
-    use_python_exec=True,
-    use_image_gen=True,
-    use_file_gen=True,
-    use_http_api=True,
-    use_sql=True,
-    use_screenshot=True,
-    use_encrypt=True,
-    use_archiver=True,
-    use_converter=True,
-    use_regex=True,
-    use_translator=True,
-    use_csv=True,
-    use_webhook=True,
-    use_plugins=True,
-):
-    return run_agent_impl(
-        deps=_build_chat_agent_deps(),
-        model_name=model_name,
-        profile_name=profile_name,
-        user_input=user_input,
-        session_id=session_id,
-        agent_id=agent_id,
-        use_memory=use_memory,
-        use_library=use_library,
-        use_reflection=use_reflection,
-        history=history,
-        num_ctx=num_ctx,
-        use_web_search=use_web_search,
-        use_python_exec=use_python_exec,
-        use_image_gen=use_image_gen,
-        use_file_gen=use_file_gen,
-        use_http_api=use_http_api,
-        use_sql=use_sql,
-        use_screenshot=use_screenshot,
-        use_encrypt=use_encrypt,
-        use_archiver=use_archiver,
-        use_converter=use_converter,
-        use_regex=use_regex,
-        use_translator=use_translator,
-        use_csv=use_csv,
-        use_webhook=use_webhook,
-        use_plugins=use_plugins,
-    )
+    model_name: str,
+    profile_name: str,
+    user_input: str,
+    session_id: str | None = None,
+    agent_id: str | None = None,
+    use_memory: bool = True,
+    use_library: bool = True,
+    history: list[Any] | None = None,
+    num_ctx: int = DEFAULT_NUM_CTX,
+    project_root: str | Path | None = None,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    **_ignored_legacy_options: Any,
+) -> dict[str, Any]:
+    """Run the universal code-agent core and return the historical dict shape.
 
-
-def run_agent_stream(
-    *,
-    model_name,
-    profile_name,
-    user_input,
-    session_id=None,
-    use_memory=True,
-    use_library=True,
-    use_reflection=False,
-    history=None,
-    num_ctx=131_072,
-    use_web_search=True,
-    use_python_exec=True,
-    use_image_gen=True,
-    use_file_gen=True,
-    use_http_api=True,
-    use_sql=True,
-    use_screenshot=True,
-    use_encrypt=True,
-    use_archiver=True,
-    use_converter=True,
-    use_regex=True,
-    use_translator=True,
-    use_csv=True,
-    use_webhook=True,
-    use_plugins=True,
-):
-    yield from run_agent_stream_impl(
-        deps=_build_chat_agent_deps(),
-        model_name=model_name,
-        profile_name=profile_name,
-        user_input=user_input,
-        session_id=session_id,
-        use_memory=use_memory,
-        use_library=use_library,
-        use_reflection=use_reflection,
-        history=history,
-        num_ctx=num_ctx,
-        use_web_search=use_web_search,
-        use_python_exec=use_python_exec,
-        use_image_gen=use_image_gen,
-        use_file_gen=use_file_gen,
-        use_http_api=use_http_api,
-        use_sql=use_sql,
-        use_screenshot=use_screenshot,
-        use_encrypt=use_encrypt,
-        use_archiver=use_archiver,
-        use_converter=use_converter,
-        use_regex=use_regex,
-        use_translator=use_translator,
-        use_csv=use_csv,
-        use_webhook=use_webhook,
-        use_plugins=use_plugins,
+    ``session_id``, ``profile_name`` and legacy tool-selection booleans are kept
+    as accepted inputs for older internal callers, but routing/tool selection is
+    now entirely handled by the code-agent prompt, tool registry and deferred
+    tool search.
+    """
+    root = str(project_root or _default_project_root())
+    message = _with_library_context(str(user_input or ""), bool(use_library))
+    result = run_code_agent(
+        user_message=message,
+        project_root=root,
+        model=str(model_name or "auto"),
+        agent_id=str(agent_id or "code-agent"),
+        max_steps=max_steps,
+        conversation_history=_normalise_history(history),
+        num_ctx=int(num_ctx or DEFAULT_NUM_CTX),
+        auto_remember=bool(use_memory),
+        approval_wait_seconds=0,
     )
+    answer = str(result.get("response") or "")
+    error = str(result.get("error") or "")
+    meta = {
+        "route": "code_agent",
+        "model_name": str(model_name or "auto"),
+        "profile_name": profile_name,
+        "session_id": session_id,
+        "project_root": root,
+        "steps": int(result.get("steps") or 0),
+        "stop_reason": str(result.get("stop_reason") or ""),
+        "partial": bool(result.get("partial")),
+    }
+    if error:
+        meta["error"] = error
+    return {
+        "ok": bool(result.get("ok")),
+        "answer": answer,
+        "content": answer,
+        "timeline": _timeline_from_code_agent(result),
+        "tool_results": _tool_results_from_code_agent(result),
+        "meta": meta,
+    }

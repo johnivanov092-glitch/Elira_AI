@@ -105,6 +105,11 @@ def _make_summary_message(summary: str) -> dict[str, Any]:
     return {"role": "system", "content": _SUMMARY_PREFIX + _cap_text(summary)}
 
 
+def extract_rolling_summary(messages: list[dict[str, Any]]) -> str:
+    summaries = [_summary_body(message) for message in messages if _is_summary_message(message)]
+    return "\n\n".join(summary for summary in summaries if summary).strip()
+
+
 def _excerpt(value: Any, limit: int = _MESSAGE_EXCERPT_CHARS) -> str:
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
     if len(text) <= limit:

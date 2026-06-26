@@ -1,7 +1,7 @@
 """Plugin runtime facade — delegates to the hardened infrastructure layer.
 
-All production callers (auto_skills, autopipeline, routes) import from
-app.application.plugins which re-exports from here.  Redirecting to
+Production callers import from app.application.plugins which re-exports from
+here. Redirecting to
 app.infrastructure.plugins.plugin_system ensures that:
 
   - manifest.json is required for every plugin

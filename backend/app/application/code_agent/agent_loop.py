@@ -95,6 +95,24 @@ PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 4
 
+# Role-based sampling for a single served model (one large LLM plays every
+# role — see resolve_model_for_route/route_to_role). The role does not switch
+# the model (single-GPU server, one text LLM loaded at a time); it only tunes
+# how deterministic the sampling is. Strict profile: code edits should be as
+# reproducible as possible ("don't break the project"), planning/review may
+# vary a little, casual replies a little more.
+_ROLE_TEMPERATURE = {
+    "code": 0.1,
+    "strong": 0.3,
+    "fast": 0.4,
+}
+_DEFAULT_TEMPERATURE = 0.2
+
+
+def _temperature_for_role(role: str | None) -> float:
+    """Sampling temperature for a routing role (strict profile, default 0.2)."""
+    return _ROLE_TEMPERATURE.get((role or "").strip().lower(), _DEFAULT_TEMPERATURE)
+
 
 def _chat_events(
     *,
@@ -200,7 +218,20 @@ _REGISTRY_LOCK = threading.Lock()
 def request_cancel(run_id: str) -> bool:
     """Flip the cancel event for `run_id`. Returns True if the run was
     known, False otherwise.
+
+    Beyond setting the flag (read between steps), this also KILLS any live
+    shell process the run launched. A blocking tool runs in a daemon worker
+    thread that never reads the event until it returns, so killing the OS
+    process is what makes Stop abort a hung command immediately instead of
+    waiting out the shell timeout.
     """
+    # Kill live shell processes regardless of whether the event is registered,
+    # so Stop works even on a run whose event was already cleaned up.
+    try:
+        from app.application.code_agent.tools import kill_run_processes
+        kill_run_processes(run_id)
+    except Exception:
+        pass
     with _REGISTRY_LOCK:
         ev = _CANCEL_REGISTRY.get(run_id)
     if ev is None:
@@ -269,6 +300,7 @@ def _stream_code_agent_core(
     chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 300,
     compaction_audit_sink: Callable[[dict[str, Any]], None] | None = None,
+    profile_name: str = "Универсальный",
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -384,7 +416,8 @@ def _stream_code_agent_core(
             stream_chat = _local_chat_stream
 
         system_prompt = _build_system_prompt(
-            root, working_dir=working_dir, active_tools=initial_tools,
+            root, working_dir=working_dir, active_tools=initial_tools, model_name=model,
+            profile_name=profile_name,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
@@ -399,6 +432,13 @@ def _stream_code_agent_core(
         compaction_count = 0
         call_log: list[str] = []
         repeated_tool_calls: dict[str, int] = {}
+        # Soft verification gate (Variant 2): if the run edited files but never
+        # ran tests/lint or started the app, nudge the model to verify once
+        # before it closes. Reminder-injection, not a hard block — and it fires
+        # at most once, never on a no-edit (conversational/read-only) run.
+        edited_in_run = False
+        ran_verification = False
+        verify_gate_fired = False
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -448,10 +488,14 @@ def _stream_code_agent_core(
                 return
             if _compacted:
                 compaction_count += 1
+                from app.application.context.compaction import extract_rolling_summary
+
+                rolling_summary = extract_rolling_summary(messages)
                 yield {
                     "type": "context_compacted",
                     "step": step,
                     "context": context_usage,
+                    "rolling_summary": rolling_summary or None,
                 }
 
             # P10.1: expose only this run's active tools + tool_search. Tools
@@ -469,7 +513,13 @@ def _stream_code_agent_core(
                     "model": model,
                     "messages": messages,
                     "tools": step_schemas,
-                    "options": {"num_ctx": safe_num_ctx},
+                    "options": {
+                        "num_ctx": safe_num_ctx,
+                        "active_context_limit": safe_num_ctx,
+                        "temperature": _temperature_for_role(
+                            getattr(_route_decision, "role", None)
+                        ),
+                    },
                 }
                 for llm_event in _chat_events(
                     chat_fn=chat,
@@ -608,6 +658,28 @@ def _stream_code_agent_core(
                 last_text = content
 
             if not tool_calls:
+                # Soft verification gate (Variant 2): the model edited files this
+                # run but never ran tests/lint or started the app, and is now
+                # trying to close. Nudge it once to verify before finishing —
+                # reminder-injection, not a hard block, fires at most once, and
+                # never on a no-edit (conversational/read-only) run.
+                if edited_in_run and not ran_verification and not verify_gate_fired:
+                    verify_gate_fired = True
+                    if content:
+                        messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Стоп: ты правил файлы, но ещё не проверил результат. "
+                            "Прежде чем закрывать задачу — прогони тесты и линтер "
+                            "проекта через `run_bash` (обязательно), а приложение "
+                            "по возможности подними через `run_server` и убедись, "
+                            "что оно стартует. Если проверять реально нечего "
+                            "(тестов/линтера в проекте нет) — так и скажи. Не "
+                            "заявляй «готово» по факту записи файла."
+                        ),
+                    })
+                    continue
                 final_text = content or last_text
                 yield {"type": "final_response", "step": step, "text": final_text}
                 if auto_remember:
@@ -648,6 +720,12 @@ def _stream_code_agent_core(
                     return
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
+                # Track verification-gate signals from the tool stream itself,
+                # before any dispatch branch, so it sees every call uniformly.
+                if name in ("write_file", "edit_file"):
+                    edited_in_run = True
+                elif name in ("run_bash", "run_server"):
+                    ran_verification = True
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
                 fingerprint = json.dumps(
@@ -874,6 +952,57 @@ def _stream_code_agent_core(
         _unregister_run(rid)
 
 
+# Layer C — machine cross-check of the model's final claim against the runtime's
+# own record of file changes. A local model reports by memory-of-intent, not by
+# observed result: when an edit_file/write_file fails it has no post-write state
+# and tends to fabricate a tidy "nothing changed" narrative. The journal,
+# however, records every touched path on the actual tool_call event, so we can
+# catch the contradiction and correct it deterministically — no model in the loop.
+_NO_CHANGE_CLAIM_MARKERS = (
+    "никаких изменений",
+    "изменений нет",
+    "изменения не вносил",
+    "изменения не внесены",
+    "ничего не изменил",
+    "ничего не менял",
+    "не вносил изменени",
+    "не внёс изменени",
+    "не внес изменени",
+    "no changes were made",
+    "no changes have been made",
+    "i did not make any changes",
+    "i have not made any changes",
+    "nothing was changed",
+    "no files were changed",
+    "no files were modified",
+)
+
+
+def _claims_no_changes(text: str) -> bool:
+    """True if the final text asserts that nothing in the project was changed."""
+    low = (text or "").lower()
+    return any(marker in low for marker in _NO_CHANGE_CLAIM_MARKERS)
+
+
+def _layer_c_correction(final_text: str, changed_files: list[str]) -> str:
+    """A correction note when the model claims 'no changes' but files were touched.
+
+    Returns "" when the claim is consistent with the record (no correction needed).
+    """
+    if not changed_files:
+        return ""
+    if not _claims_no_changes(final_text):
+        return ""
+    listed = "\n".join(f"- {p}" for p in changed_files[:50])
+    extra = "" if len(changed_files) <= 50 else f"\n…и ещё {len(changed_files) - 50}"
+    return (
+        "\n\n⚠️ Проверка по журналу выполнения: в ходе этого запуска изменения в "
+        f"файлах всё-таки были ({len(changed_files)} шт.), хотя в ответе сказано "
+        "обратное. Фактически затронутые файлы:\n"
+        f"{listed}{extra}"
+    )
+
+
 def stream_code_agent(
     *,
     user_message: str,
@@ -893,6 +1022,7 @@ def stream_code_agent(
     approval_wait_seconds: int = 300,
     resume: bool = False,
     access_mode: str = "project-workspace",
+    profile_name: str = "Универсальный",
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -913,6 +1043,7 @@ def stream_code_agent(
         "execution_timeout_seconds": execution_timeout_seconds,
         "auto_remember": bool(auto_remember),
         "access_mode": access_mode,
+        "profile_name": profile_name,
     }
     terminal = False
     try:
@@ -954,6 +1085,7 @@ def stream_code_agent(
             chat_stream_fn=chat_stream_fn,
             approval_wait_seconds=approval_wait_seconds,
             compaction_audit_sink=audit_sink,
+            profile_name=profile_name,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)
@@ -965,6 +1097,19 @@ def stream_code_agent(
                     or event.get("stop_reason") in {"timeout", "error", "context_limit"}
                 )
                 terminal = True
+            if event.get("type") == "final_response":
+                # Layer C: every preceding tool_call has already updated the
+                # journal's changed_files (append_event runs before this yield),
+                # so the list is authoritative at this point. Correct a false
+                # "nothing changed" claim before it reaches the user or the
+                # journalled last_response.
+                correction = _layer_c_correction(
+                    str(event.get("text") or ""),
+                    list(journal.state.get("changed_files") or []),
+                )
+                if correction:
+                    event["text"] = str(event.get("text") or "") + correction
+                    event["consistency_corrected"] = True
             if event.get("type") == "tool_started":
                 journal.append_event({
                     "type": "tool_decision",
@@ -1069,6 +1214,7 @@ def run_code_agent(
     chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 0,
     access_mode: str = "project-workspace",
+    profile_name: str = "Универсальный",
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.
@@ -1099,6 +1245,7 @@ def run_code_agent(
         chat_stream_fn=chat_stream_fn,
         approval_wait_seconds=approval_wait_seconds,
         access_mode=access_mode,
+        profile_name=profile_name,
     ):
         et = event.get("type")
         if et == "tool_call":

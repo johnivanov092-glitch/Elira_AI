@@ -37,12 +37,11 @@ from app.application.context.usage import calculate_budget, check_context_limit,
 
 
 class ContextProfileAndBudgetTest(unittest.TestCase):
-    def test_chat_entrypoint_defaults_are_128k(self) -> None:
-        from app.application.chat.entrypoint_stream import run_agent_stream_impl
-        from app.application.chat.entrypoint_sync import run_agent_impl
-        from app.application.chat.runtime import run_agent, run_agent_stream
+    def test_agent_entrypoint_defaults_are_128k(self) -> None:
+        from app.application.chat.runtime import run_agent
+        from app.application.code_agent.agent_loop import run_code_agent, stream_code_agent
 
-        for function in (run_agent_impl, run_agent_stream_impl, run_agent, run_agent_stream):
+        for function in (run_agent, run_code_agent, stream_code_agent):
             self.assertEqual(inspect.signature(function).parameters["num_ctx"].default, 131_072)
 
     def test_256k_server_profile_is_not_reduced_to_16k(self) -> None:

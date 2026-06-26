@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import sqlite3
 import sys
 import tempfile
 import unittest
@@ -15,11 +13,8 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.chat import runtime as agents_service  # noqa: E402
 from app.application.code_agent import agent_loop  # noqa: E402
-from app.application.monitoring import runtime as agent_monitor  # noqa: E402
 from app.application.monitoring.inference import extract_llm_usage  # noqa: E402
-from test_agent_os_phase5 import AgentOsPhase5DbMixin  # noqa: E402
 
 
 class InferenceTelemetryHelperTest(unittest.TestCase):
@@ -36,68 +31,6 @@ class InferenceTelemetryHelperTest(unittest.TestCase):
         self.assertEqual(usage["total_tokens"], 10)
         self.assertEqual(usage["latency_ms"], 1000)
         self.assertAlmostEqual(usage["tokens_per_second"], 14.0)
-
-
-class ChatInferenceTelemetryTest(AgentOsPhase5DbMixin):
-    def test_run_agent_records_model_inference_metric_and_resources(self) -> None:
-        usage = {
-            "prompt_tokens": 5,
-            "completion_tokens": 7,
-            "total_tokens": 12,
-            "latency_ms": 123,
-            "tokens_per_second": 56.0,
-        }
-        with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(
-                 agents_service,
-                 "run_chat",
-                 return_value={"ok": True, "answer": "hello from agent", "meta": {"usage": usage}},
-             ), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(
-                 agents_service,
-                 "_maybe_auto_exec_python",
-                 side_effect=lambda user_input, answer, timeline, enabled=True: answer,
-             ), \
-             patch.object(agents_service, "_chat_available_models", return_value=None):
-            result = agents_service.run_agent(
-                model_name="test-model",
-                profile_name="Universal",
-                user_input="Hello",
-                session_id="p12-3-session",
-                use_memory=False,
-                use_library=False,
-                use_web_search=False,
-                num_ctx=1000,
-            )
-
-        self.assertTrue(result["ok"])
-        con = sqlite3.connect(str(agent_monitor.DB_PATH))
-        try:
-            row = con.execute(
-                "SELECT details_json FROM agent_metrics WHERE metric_type = 'model.inference' "
-                "ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-            resources = dict(con.execute(
-                "SELECT resource, amount FROM resource_usage WHERE resource LIKE 'llm_%'"
-            ).fetchall())
-        finally:
-            con.close()
-
-        self.assertIsNotNone(row)
-        details = json.loads(row[0])
-        self.assertEqual(details["provider"], "")
-        self.assertEqual(details["model"], "test-model")
-        self.assertEqual(details["prompt_tokens"], 5)
-        self.assertEqual(details["completion_tokens"], 7)
-        self.assertEqual(details["total_tokens"], 12)
-        self.assertEqual(details["tool_round_trips"], 0)
-        self.assertTrue(details["usage_available"])
-        self.assertEqual(resources["llm_total_tokens"], 12)
-        self.assertEqual(resources["llm_latency"], 123)
 
 
 class CodeAgentInferenceTelemetryTest(unittest.TestCase):

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { fetchContextProfile, type CodeAgentMode } from "../api/codeAgent";
 import type { ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
+import { getActiveProfile } from "../api/profiles";
 import * as bg from "./backgroundRuns";
 import type { Turn } from "./types";
 
@@ -25,6 +26,23 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
   );
   const { turns, running, taskLedger, contextUsage, autoApprove } = snapshot;
 
+  // Active UI persona profile (the `agent_profile` global setting), held in a
+  // ref so `send` can read it synchronously. Refreshed on mount and whenever the
+  // window regains focus, so a switch made in the Composer's ProfilePicker is
+  // picked up before the next send. Empty string → backend persona default.
+  const profileRef = useRef<string>("");
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      void getActiveProfile().then(({ active }) => {
+        if (!cancelled) profileRef.current = active;
+      }).catch(() => {});
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => { cancelled = true; window.removeEventListener("focus", refresh); };
+  }, []);
+
   // Seed the composer's context meter at 0% before the first turn, using the
   // live ctx_size from the backend. Re-seeds on model change while still unseeded
   // and not running. Applied only to the currently-displayed session.
@@ -38,7 +56,8 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
   }, [model, sessionId]);
 
   const send = useCallback((text: string, mode: CodeAgentMode, attachments?: ChatAttachment[]) => {
-    bg.send({ sessionId, text, mode, projectRoot, model, attachments });
+    const profileName = profileRef.current || undefined;
+    bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName });
   }, [sessionId, projectRoot, model]);
 
   const resume = useCallback((agentId: string, runId: string) => {
@@ -49,13 +68,13 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     bg.stop(sessionId);
   }, [sessionId]);
 
-  const reset = useCallback((next: Turn[], ledger: bg.RunSnapshot["taskLedger"] = [], usage: bg.RunSnapshot["contextUsage"] = null) => {
+  const reset = useCallback((next: Turn[], ledger: bg.RunSnapshot["taskLedger"] = [], contextState: bg.RunSnapshot["contextState"] = null) => {
     // Switch the displayed session's snapshot. This NEVER cancels a run: a
     // background run owning the snapshot is left untouched (seed() is a no-op
     // while running). Only the explicit Stop button cancels. A fresh chat (usage
     // null) refills the 0% meter from the backend via the seed effect above.
-    bg.seed(sessionId, next, ledger, usage);
-    if (usage == null) void fetchContextProfile(model).then((seed) => {
+    bg.seed(sessionId, next, ledger, contextState);
+    if (contextState == null) void fetchContextProfile(model).then((seed) => {
       if (seed) bg.applyContextSeed(sessionId, seed);
     });
   }, [sessionId, model]);

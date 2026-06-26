@@ -344,6 +344,22 @@ def _guard_context_request(
         )
 
 
+def _request_context_limit(options: dict[str, Any], *, configured_context: Any) -> int | None:
+    requested_context = _positive_int(options.get("num_ctx"))
+    active_context = _positive_int(
+        options.get("active_context_limit") or options.get("server_context_window")
+    )
+    configured = _positive_int(configured_context)
+    limits: list[int] = []
+    if requested_context:
+        limits.append(requested_context)
+    if active_context:
+        limits.append(active_context)
+    elif configured:
+        limits.append(configured)
+    return min(limits) if limits else None
+
+
 def chat_completion(
     *,
     model: str,
@@ -370,14 +386,10 @@ def chat_completion(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
 
-    requested_context = _positive_int(opts.get("num_ctx"))
-    configured_context = _positive_int(cfg.context_window)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
-        requested_ctx=min(requested_context, configured_context)
-        if requested_context and configured_context
-        else requested_context or configured_context,
+        requested_ctx=_request_context_limit(opts, configured_context=cfg.context_window),
     )
 
     started = time.monotonic_ns()
@@ -422,14 +434,10 @@ def chat_completion_stream(
     opts = options or {}
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
-    requested_context = _positive_int(opts.get("num_ctx"))
-    configured_context = _positive_int(cfg.context_window)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
-        requested_ctx=min(requested_context, configured_context)
-        if requested_context and configured_context
-        else requested_context or configured_context,
+        requested_ctx=_request_context_limit(opts, configured_context=cfg.context_window),
     )
 
     response: requests.Response | None = None
@@ -496,14 +504,10 @@ def chat_completion_event_stream(
     opts = options or {}
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
-    requested_context = _positive_int(opts.get("num_ctx"))
-    configured_context = _positive_int(cfg.context_window)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
-        requested_ctx=min(requested_context, configured_context)
-        if requested_context and configured_context
-        else requested_context or configured_context,
+        requested_ctx=_request_context_limit(opts, configured_context=cfg.context_window),
     )
 
     response: requests.Response | None = None

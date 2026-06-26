@@ -1,9 +1,7 @@
 """Skills extra compatibility facade.
 
-Public surface re-exported from ``app.application.skills_extra.runtime`` so existing
-callers in ``api/routes/skills_extra_routes.py`` and
-``application/chat/auto_skills.py`` keep working unchanged after the
-runtime move into the application layer.
+Public surface re-exported from ``app.application.skills_extra.runtime`` for
+API routes and the code-agent tool wrappers.
 """
 from __future__ import annotations
 

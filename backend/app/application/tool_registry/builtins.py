@@ -390,17 +390,33 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("read_file",   "Read File",    "project", "Read a file in the project root",         15, 50000, True),
         ("glob",        "Glob",         "project", "List files matching a glob pattern",       15, 20000, True),
         ("grep",        "Grep",         "project", "Search files by content pattern",          15, 20000, True),
+        ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
         ("recall",      "Recall",       "memory",  "Recall from project RAG memory",           15, 20000, True),
         ("web_search",  "Web Search",   "web",     "Search the web",                          30, 50000, True),
         ("web_fetch",   "Web Fetch",    "web",     "Fetch and parse a web page",              30, 50000, True),
+        ("translator",  "Translator",   "text",    "Translate text with the local LLM",        60, 10000, True),
+        ("regex",       "Regex",        "text",    "Test a regular expression against text",   15, 20000, True),
+        ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
+        ("converter",   "Converter",    "media",   "Convert files between supported formats",  60, 10000, True),
+        ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
+        ("ocr_file",    "OCR File",     "vision",  "Extract text from a scanned document/image",   120, 50000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
     approval_tools = [
         ("write_file",     "Write File",     "project", "Write content to a project file",       15,  5000, False),
         ("edit_file",      "Edit File",      "project", "Apply text replacement in a file",      15,  5000, False),
         ("run_bash",       "Run Bash",       "system",  "Execute a shell command in project",   120, 20000, False),
+        ("run_server",     "Run Server",     "system",  "Start/manage a long-lived background server", 30, 20000, False),
         ("sandbox_run",    "Sandbox Run",    "code",    "Run code in the project sandbox",       60, 20000, False),
         ("sandbox_reset",  "Sandbox Reset",  "code",    "Reset the project sandbox",             30,  5000, False),
+        ("http_api",       "HTTP API",       "web",     "Send an outbound HTTP API request",      30, 30000, False),
+        ("sql",            "SQL",            "data",    "Query allowed local SQLite databases",   30, 50000, False),
+        ("encrypt",        "Encrypt",        "security", "Encrypt or decrypt local text",         30, 10000, False),
+        ("archiver",       "Archiver",       "media",   "Create or extract ZIP archives",        60, 20000, False),
+        ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
+        ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
+        ("image_gen",      "Image Gen",      "media",   "Generate an image from a text prompt", 120,  5000, False),
+        ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel file",            60,  5000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
@@ -409,12 +425,18 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
 
     # P9.2A2: declared scopes (from the fixed vocabulary) for native tools.
     _native_scopes = {
-        "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"], "recall": ["fs.read"],
+        "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
+        "project_map": ["fs.read"], "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"],
+        "csv": ["fs.read"], "converter": ["fs.read", "fs.write"],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
-        "run_bash": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
+        "run_bash": ["shell.exec"], "run_server": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
+        "http_api": ["net.outbound"], "sql": ["fs.read", "fs.write"],
+        "archiver": ["fs.read", "fs.write"], "screenshot": ["net.outbound", "fs.write"],
+        "image_gen": ["fs.write"], "file_gen": ["fs.write"],
+        "read_image": ["fs.read", "net.outbound"], "ocr_file": ["fs.read", "net.outbound"],
     }
 
     result: list[dict[str, Any]] = []

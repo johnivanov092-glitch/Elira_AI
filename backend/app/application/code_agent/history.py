@@ -255,7 +255,7 @@ def summarize_history(
                 {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
                 {"role": "user", "content": "Диалог для сжатия:\n\n" + transcript},
             ],
-            options={"num_ctx": int(num_ctx)},
+            options={"num_ctx": int(num_ctx), "active_context_limit": int(num_ctx)},
         )
     except Exception as exc:
         logger.exception("Summarize history failed")

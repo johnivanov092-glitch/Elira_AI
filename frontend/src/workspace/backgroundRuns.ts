@@ -5,12 +5,13 @@ import {
   streamCodeAgent,
   type CodeAgentMode,
   type CodeAgentStreamEvent,
+  type ContextState,
   type ContextUsage,
   type ConversationMessage,
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
-import { cancelChat, streamChatPlanner, type ChatAttachment } from "../api/chat";
+import { streamChatPlanner, type ChatAttachment } from "../api/chat";
 import type { AgentTurnData, Turn } from "./types";
 
 /**
@@ -40,6 +41,7 @@ export type RunSnapshot = {
   running: boolean;
   taskLedger: TaskLedgerEntry[];
   contextUsage: ContextUsage | null;
+  contextState: ContextState | null;
   /** Per-session auto-approve. In the snapshot so the banner re-renders when it
    *  flips; `entry.autoApprove` mirrors it for synchronous reads inside the
    *  reader (which runs outside React). */
@@ -66,15 +68,44 @@ type RunEntry = {
   persist: PersistFn | null;
   /** Guards a duplicate persist when `done` fires and the view also reacts. */
   persistedAtDone: boolean;
-  /** Mode of the in-flight run, so stop() picks the right cancel endpoint
-   *  ("chat" → /api/chat/cancel, otherwise → /api/code-agent/cancel). */
+  /** Mode of the in-flight run. */
   lastMode: CodeAgentMode | null;
 };
 
 const _runs = new Map<string, RunEntry>();
 
-function emptySnapshot(usage: ContextUsage | null = null): RunSnapshot {
-  return { turns: [], running: false, taskLedger: [], contextUsage: usage, autoApprove: false, usageSeeded: usage != null };
+function contextUsageFromState(state: ContextState | null): ContextUsage | null {
+  if (!state) return null;
+  const direct = state as Partial<ContextUsage>;
+  if (
+    typeof direct.current_tokens === "number" &&
+    typeof direct.reserved_output_tokens === "number" &&
+    typeof direct.ctx_size === "number" &&
+    typeof direct.percent === "number" &&
+    typeof direct.free_tokens === "number" &&
+    direct.breakdown &&
+    typeof direct.breakdown === "object"
+  ) {
+    return direct as ContextUsage;
+  }
+  return state.last_context_usage || null;
+}
+
+function withUsageState(state: ContextState | null, usage: ContextUsage): ContextState {
+  return { ...(state || {}), ...usage, last_context_usage: usage };
+}
+
+function emptySnapshot(state: ContextState | null = null): RunSnapshot {
+  const contextUsage = contextUsageFromState(state);
+  return {
+    turns: [],
+    running: false,
+    taskLedger: [],
+    contextUsage,
+    contextState: state,
+    autoApprove: false,
+    usageSeeded: contextUsage != null,
+  };
 }
 
 function ensureEntry(sessionId: string): RunEntry {
@@ -155,12 +186,21 @@ export function seed(
   sessionId: string,
   turns: Turn[],
   ledger: TaskLedgerEntry[] = [],
-  usage: ContextUsage | null = null,
+  state: ContextState | null = null,
 ): void {
   const entry = ensureEntry(sessionId);
   if (entry.snapshot.running) return; // background run owns the snapshot
   entry.autoApprove = false;
-  entry.snapshot = { turns, running: false, taskLedger: ledger, contextUsage: usage, autoApprove: false, usageSeeded: usage != null };
+  const contextUsage = contextUsageFromState(state);
+  entry.snapshot = {
+    turns,
+    running: false,
+    taskLedger: ledger,
+    contextUsage,
+    contextState: state,
+    autoApprove: false,
+    usageSeeded: contextUsage != null,
+  };
   entry.runId = null;
   entry.activeAgentId = null;
   notify(entry);
@@ -171,7 +211,7 @@ export function seed(
 export function applyContextSeed(sessionId: string, usage: ContextUsage): void {
   const entry = _runs.get(sessionId);
   if (!entry || entry.snapshot.usageSeeded || entry.snapshot.contextUsage) return;
-  update(entry, (s) => ({ ...s, contextUsage: usage }));
+  update(entry, (s) => ({ ...s, contextUsage: usage, contextState: withUsageState(s.contextState, usage) }));
 }
 
 // ── Wiring the SSE reader (shared by send + resume) ─────────────────────────
@@ -218,10 +258,31 @@ function wire(
         } else patch((a) => ({ ...a, pendingApproval: { approvalId: e.approval_id, tool: e.tool, arguments: e.arguments } }));
       } else if (e.type === "approval_wait") patch((a) => (a.pendingApproval ? { ...a, pendingApproval: { ...a.pendingApproval, waitedS: e.waited_s } } : a));
       else if (e.type === "context_compacted") {
-        if (e.context) update(entry, (s) => ({ ...s, usageSeeded: true, contextUsage: e.context! }));
+        update(entry, (s) => {
+          const contextState = e.context ? withUsageState(s.contextState, e.context) : { ...(s.contextState || {}) };
+          const summary = (e.rolling_summary || "").trim();
+          if (summary) {
+            contextState.rolling_summary_text = summary;
+            contextState.rolling_summary_updated_at = Date.now();
+            contextState.rolling_summary_source = "code-agent-compaction";
+          }
+          return {
+            ...s,
+            usageSeeded: true,
+            contextUsage: e.context || s.contextUsage,
+            contextState,
+          };
+        });
         pushLedger({ timestamp: Date.now(), type: "compression", action: `step ${e.step}`, result: "completed" });
       } else if (e.type === "usage") {
-        if (e.context) update(entry, (s) => ({ ...s, usageSeeded: true, contextUsage: e.context! }));
+        if (e.context) {
+          update(entry, (s) => ({
+            ...s,
+            usageSeeded: true,
+            contextUsage: e.context!,
+            contextState: withUsageState(s.contextState, e.context!),
+          }));
+        }
         patch((a) => ({
           ...a,
           genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
@@ -267,18 +328,28 @@ export type SendArgs = {
   projectRoot: string;
   model: string;
   attachments?: ChatAttachment[];
+  /** Active UI persona profile (the `agent_profile` global setting). Threaded
+   *  into the code-agent stream so the user's selected mode reaches Elira's
+   *  persona prompt; undefined falls back to the backend default. */
+  profileName?: string;
 };
 
 /** Start a run for a session. Appends the user + agent turns to that session's
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, attachments } = args;
+  const { sessionId, text, mode, projectRoot, model, attachments, profileName } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
 
   const history: ConversationMessage[] = [];
+  const rollingSummary = typeof entry.snapshot.contextState?.rolling_summary_text === "string"
+    ? entry.snapshot.contextState.rolling_summary_text.trim()
+    : "";
+  if (rollingSummary) {
+    history.push({ role: "assistant", content: `[CONTEXT SUMMARY]\n${rollingSummary}` });
+  }
   for (const t of entry.snapshot.turns) {
     if (t.kind === "user") history.push({ role: "user", content: t.text });
     else if (t.kind === "agent" && t.text) history.push({ role: "assistant", content: t.text });
@@ -295,15 +366,14 @@ export function send(args: SendArgs): void {
       { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
     ],
   }));
-  // "Чат" mode is an ordinary conversational planner (/api/chat/stream), not the
-  // code-agent. The chat invoker translates its SSE into CodeAgentStreamEvents,
-  // so wire() consumes it identically.
+  // "Чат" mode uses the same code-agent stream core, but keeps a separate
+  // frontend invoker so the workspace can preserve chat-specific attachments.
   if (mode === "chat") {
     wire(entry, agentId, (handlers) =>
-      streamChatPlanner({ message: msg, sessionId, model, conversationHistory: history, attachments, ...handlers }));
+      streamChatPlanner({ message: msg, sessionId, projectRoot, model, conversationHistory: history, attachments, ...handlers }));
   } else {
     wire(entry, agentId, (handlers) =>
-      streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, ...handlers }));
+      streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, profileName, ...handlers }));
   }
 }
 
@@ -328,10 +398,7 @@ export function stop(sessionId: string): void {
   if (!entry) return;
   const rid = entry.runId;
   if (rid) {
-    // Regular chat and the code-agent have separate cancel endpoints; pick the
-    // one that matches the in-flight run so the local server is actually freed.
-    if (entry.lastMode === "chat") void cancelChat(rid).catch(() => {});
-    else void cancelCodeAgent(rid).catch(() => {});
+    void cancelCodeAgent(rid).catch(() => {});
   }
   entry.abort?.abort();
   entry.abort = null;

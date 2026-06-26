@@ -1,5 +1,6 @@
 import { buildApiUrl, request, safeRequest, withAuth } from "./client";
-import type { ContextUsage, ConversationMessage, StreamHandlers } from "./codeAgent";
+import { consumeCodeAgentStream } from "./codeAgent";
+import type { ConversationMessage, StreamHandlers } from "./codeAgent";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -289,18 +290,10 @@ export function executeStream(
   return controller;
 }
 
-// ── "Чат" planner mode → CodeAgentStreamEvent adapter ───────────────────────
+// ── "Чат" mode → code-agent stream ──────────────────────────────────────────
 //
-// The "Чат" composer chip is an ordinary conversational agent backed by the
-// PlannerV2 route (/api/chat/stream), NOT the code-agent. That endpoint emits a
-// different SSE shape ({token, done, full_text, error}). To reuse the entire
-// background-run machinery (backgroundRuns.wire) unchanged, this invoker
-// TRANSLATES the chat SSE into the CodeAgentStreamEvent shape that wire()
-// already consumes:
-//   {token}            -> { type: "delta", step, text: token }
-//   {done, full_text}  -> { type: "final_response", ... } then { type: "done", ok }
-//   {error}            -> { type: "done", ok: false, ... }
-// So wire() needs zero changes; only backgroundRuns.send() routes "chat" here.
+// The "Чат" composer chip uses the same /api/code-agent/stream core as code
+// mode, but keeps the chat UI entrypoint and attachment upload flow.
 
 export type ChatAttachment = {
   ok: boolean;
@@ -317,41 +310,10 @@ export type ChatAttachment = {
   toLibrary?: boolean;
 };
 
-/**
- * Fixed skill-flag policy for ordinary "Чат" mode: a narrow, hardcoded set
- * suited to office routine (conversation, reading projects/docs, images, web).
- * Heavy/code skills stay OFF — those belong to code-chat. There is no skill
- * toggle UI for this mode by design.
- */
-const CHAT_SKILL_FLAGS: Readonly<UnknownRecord> = {
-  // ON — ordinary office routine
-  use_web_search: true,
-  use_memory: true,
-  use_library: true,
-  use_translator: true,
-  use_regex: true,
-  use_csv: true,
-  use_converter: true,
-  use_file_gen: true,
-  // image_gen runs FLUX.1-schnell LOCALLY on this machine's GPU (diffusers/torch,
-  // RTX 4060 Ti / 8GB) — not the AI-server, no external API. On per user choice.
-  use_image_gen: true,
-  // OFF — heavy / code / external-side-effect skills
-  use_python_exec: false,
-  use_sql: false,
-  use_http_api: false,
-  use_webhook: false,
-  use_screenshot: false,
-  use_encrypt: false,
-  use_archiver: false,
-  use_plugins: false,
-  // reflection adds latency without value for plain chat
-  use_reflection: false,
-};
-
 export type StreamChatPlannerArgs = StreamHandlers & {
   message: string;
   sessionId?: string | null;
+  projectRoot?: string;
   model?: string;
   conversationHistory?: ConversationMessage[];
   attachments?: ChatAttachment[];
@@ -360,7 +322,7 @@ export type StreamChatPlannerArgs = StreamHandlers & {
 };
 
 /**
- * Stream the "Чат" planner over SSE, emitting CodeAgentStreamEvents so the
+ * Stream the "Чат" mode over SSE, emitting CodeAgentStreamEvents so the
  * existing background-run wiring can consume it untouched. Matches the
  * `(handlers: StreamHandlers & { signal }) => Promise<void>` invoker contract.
  */
@@ -368,6 +330,7 @@ export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<vo
   const {
     message,
     sessionId = null,
+    projectRoot = "",
     model = "local-model",
     conversationHistory = [],
     attachments = [],
@@ -378,33 +341,25 @@ export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<vo
     onError,
   } = args;
 
-  // Attachment text folds into the user input — the backend has no separate
-  // context-injection param. Images/docs were already parsed (vision/OCR) on
-  // the server by /api/chat/attach, so `text` here is plain extracted text.
-  const attachmentBlock = attachments
-    .filter((a) => a.text?.trim())
-    .map((a) => `\n\n[${a.kind}: ${a.filename}]\n${a.text.trim()}`)
-    .join("");
-  const userInput = `${message.trim()}${attachmentBlock}`;
-
   // Strip frontend-only fields (the raw File, the toLibrary toggle) before the
   // attachments cross the wire — the backend only consumes the parsed metadata.
   const wireAttachments = attachments.map(({ file: _file, toLibrary: _toLibrary, ...rest }) => rest);
 
   const payload: UnknownRecord = {
-    model_name: model,
-    profile_name: "default",
-    user_input: userInput,
-    session_id: normalizeSessionId(sessionId),
-    history: conversationHistory,
+    message: message.trim(),
+    project_root: projectRoot,
+    model,
     num_ctx: numCtx,
+    mode: "code",
+    auto_remember: true,
+    conversation_history: conversationHistory,
+    session_id: normalizeSessionId(sessionId),
     attachments: wireAttachments,
-    ...CHAT_SKILL_FLAGS,
   };
 
   let response: Response;
   try {
-    response = await fetch(buildApiUrl("/api/chat/stream"), {
+    response = await fetch(buildApiUrl("/api/code-agent/stream"), {
       method: "POST",
       headers: withAuth({ "Content-Type": "application/json", Accept: "text/event-stream" }),
       body: JSON.stringify(payload),
@@ -422,131 +377,7 @@ export async function streamChatPlanner(args: StreamChatPlannerArgs): Promise<vo
     return;
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) {
-    onError?.(new Error("Streaming response body is not available"));
-    return;
-  }
-
-  // WebView2/Chromium does not reliably reject an in-flight reader.read() when
-  // the fetch signal aborts, so cancel the reader explicitly on abort.
-  const onAbort = () => { reader.cancel().catch(() => {}); };
-  if (signal?.aborted) onAbort();
-  else signal?.addEventListener("abort", onAbort);
-
-  const emitFinal = (fullText: string): void => {
-    onEvent?.({ type: "final_response", step: 0, text: fullText });
-    onEvent?.({ type: "done", ok: true, steps: 0, stop_reason: "answer", error: null });
-  };
-  const emitError = (errText: string): void => {
-    onEvent?.({ type: "done", ok: false, steps: 0, stop_reason: "error", error: errText });
-  };
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let accumulated = "";
-  let finished = false;
-
-  try {
-    while (true) {
-      if (signal?.aborted) break;
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-
-        let event: StreamEvent;
-        try {
-          event = JSON.parse(trimmed.slice(6)) as StreamEvent;
-        } catch (parseError) {
-          console.warn("Chat SSE parse error:", trimmed.slice(0, 100), parseError);
-          continue;
-        }
-
-        if (event.error) {
-          emitError(String(event.error));
-          finished = true;
-          return;
-        }
-
-        // run_id arrives first so the Stop button can address this run via
-        // /api/chat/cancel (#2). Mirrors the code-agent's run_started event.
-        if (typeof event.run_id === "string" && event.run_id) {
-          onRunId?.(event.run_id);
-        }
-
-        // Live tokens/sec for "Чат" (#1): the backend emits estimated usage
-        // every ~0.5s during generation, then one authoritative packet at the
-        // end. wire() ADDS completion_tokens (each code-agent step is a distinct
-        // increment), but our estimated packets carry a *cumulative* running
-        // count — so we suppress their completion_tokens (emit 0) to avoid
-        // double-counting and let only the final, non-estimated packet set the
-        // real total. tokens_per_second flows through on every packet so the
-        // live rate updates during generation.
-        if (isRecord(event.usage)) {
-          const u = event.usage;
-          const estimated = u.estimated === true;
-          // Forward the context-window snapshot so the "Чат" meter fills like
-          // "Код" does. The backend attaches it to the authoritative (final)
-          // usage packet; estimated packets carry no context.
-          const context = isRecord(event.context)
-            ? (event.context as unknown as ContextUsage)
-            : undefined;
-          onEvent?.({
-            type: "usage",
-            step: 0,
-            prompt_tokens: Number(u.prompt_tokens ?? 0),
-            completion_tokens: estimated ? 0 : Number(u.completion_tokens ?? 0),
-            total_tokens: Number(u.total_tokens ?? 0),
-            tokens_per_second: Number(u.tokens_per_second ?? 0),
-            ...(context ? { context } : {}),
-          });
-        }
-
-        if (event.token) {
-          const tok = String(event.token);
-          accumulated += tok;
-          onEvent?.({ type: "delta", step: 0, text: tok });
-        }
-
-        if (event.done) {
-          const fullText = (event.full_text as string) || accumulated;
-          emitFinal(fullText);
-          finished = true;
-          return;
-        }
-      }
-    }
-
-    if (!signal?.aborted && !finished) emitFinal(accumulated);
-  } catch (err) {
-    if (!((err as DOMException)?.name === "AbortError")) {
-      onError?.(err as Error);
-    }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
-    reader.cancel().catch(() => {});
-  }
-}
-
-/**
- * Cancel a live "Чат" planner run (#2). The backend sets the run's cancel
- * event so the stream loop stops pulling tokens and closes the upstream
- * llama-server connection — the server stops generating instead of staying
- * busy after the client disconnects.
- */
-export async function cancelChat(runId: string): Promise<void> {
-  if (!runId) return;
-  await request("/api/chat/cancel", {
-    method: "POST",
-    body: { run_id: runId },
-  });
+  await consumeCodeAgentStream(response, { onEvent, onRunId, onError });
 }
 
 /**

@@ -111,7 +111,7 @@ export default function WorkspaceShell() {
       (async () => {
         try {
           const id = await ensureServerId(runKey, deriveTitle(turns), proj, mdl);
-          await patchCodeSession(id, { title: deriveTitle(turns), turns: serializeTurns(turns), projectRoot: proj, model: mdl, contextState: snap.contextUsage, taskLedger: snap.taskLedger });
+          await patchCodeSession(id, { title: deriveTitle(turns), turns: serializeTurns(turns), projectRoot: proj, model: mdl, contextState: snap.contextState, taskLedger: snap.taskLedger });
           refreshSessions();
         } catch { /* offline; keep local */ }
       })();

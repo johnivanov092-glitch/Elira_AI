@@ -28,6 +28,7 @@ from app.application.context.compaction import (  # noqa: E402
     _FALLBACK_PLACEHOLDER,
     _MAX_SUMMARY_CHARS,
     _SUMMARY_PREFIX,
+    extract_rolling_summary,
     maybe_compact,
 )
 
@@ -107,6 +108,10 @@ class TestMaybeCompactSummary(unittest.TestCase):
         summary_turn = next((m for m in system_turns if _SUMMARY_PREFIX in m["content"]), None)
         self.assertIsNotNone(summary_turn)
         self.assertIn("Bullet summary.", summary_turn["content"])
+
+    def test_extract_rolling_summary_returns_summary_body(self):
+        result, _ = self._compact()
+        self.assertEqual(extract_rolling_summary(result), "Bullet summary.")
 
     def test_recent_pairs_preserved(self):
         result, _ = self._compact(num_turns=10, keep_pairs=4)
@@ -356,9 +361,12 @@ class TestCompactionInAgentLoop(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             # Set threshold=0 to always compact; inject via mock
+            def compact_with_summary(msgs, *a, **kw):
+                return [*msgs, {"role": "system", "content": _SUMMARY_PREFIX + "Memory survives."}], True
+
             with mock.patch(
                 "app.application.context.compaction.maybe_compact",
-                wraps=lambda msgs, *a, **kw: (msgs, True),  # always say compacted
+                wraps=compact_with_summary,  # always say compacted
             ):
                 events = list(stream_code_agent(
                     user_message="go",
@@ -369,6 +377,7 @@ class TestCompactionInAgentLoop(unittest.TestCase):
 
         compacted_events = [e for e in events if e.get("type") == "context_compacted"]
         self.assertGreaterEqual(len(compacted_events), 1)
+        self.assertEqual(compacted_events[0].get("rolling_summary"), "Memory survives.")
 
 
 if __name__ == "__main__":

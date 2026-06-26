@@ -186,7 +186,6 @@ class ChatAgentBoundaryTest(unittest.TestCase):
 
     def test_chat_agent_request_has_no_code_agent_tool_flags(self) -> None:
         forbidden = {
-            "direct_llm",
             "use_python_exec",
             "use_file_gen",
             "use_http_api",

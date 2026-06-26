@@ -167,6 +167,10 @@ class StreamFeedsTruncatedToolOutputToLlmTest(unittest.TestCase):
                     }],
                 }
             },
+            # Step 2: the model tries to close. Because files were edited but
+            # nothing was verified, the soft verification gate nudges once more
+            # (reminder-injection, not a hard block), so the model answers again.
+            {"message": {"content": "ok", "tool_calls": []}},
             {"message": {"content": "ok", "tool_calls": []}},
         ])
 

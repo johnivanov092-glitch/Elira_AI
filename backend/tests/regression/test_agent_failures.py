@@ -261,6 +261,7 @@ class AgentFailureRegressionTest(unittest.TestCase):
 
         def fake_stream(**kwargs):
             captured["num_ctx"] = int(kwargs["options"]["num_ctx"])
+            captured["active_context_limit"] = int(kwargs["options"]["active_context_limit"])
             yield {
                 "type": "message",
                 "response": {"message": {"content": "done", "tool_calls": []}},
@@ -294,6 +295,7 @@ class AgentFailureRegressionTest(unittest.TestCase):
             ))
 
         self.assertEqual(captured["num_ctx"], 32_768)
+        self.assertEqual(captured["active_context_limit"], 32_768)
         self.assertEqual(events[-1]["stop_reason"], "answer")
 
     def test_large_tool_result_keeps_head_and_tail(self) -> None:

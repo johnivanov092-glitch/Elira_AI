@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
   BookMarked, Brain, Check, Cpu, FolderSearch, LayoutDashboard, Loader2, MessageSquare,
-  Palette, Play, Plus, RefreshCw, Route, Save, Send, Server, Square, Trash2, UserCog, X,
+  Palette, Play, Plus, RefreshCw, Send, Server, Square, Trash2, UserCog, X,
   type LucideIcon,
 } from "lucide-react";
 import { listLocalModels } from "../api/chat";
@@ -16,9 +16,6 @@ import { getDashboardOverview } from "../api/dashboard";
 import {
   deleteLibraryFile, listLibraryFilesTyped, toggleLibraryFile, type LibraryFile,
 } from "../api/library";
-import {
-  getPlannerKeywords, savePlannerKeywords, type PlannerKeywords,
-} from "../api/plannerKeywords";
 import { listPlugins, reloadPlugins, setPluginEnabled, type PluginItem } from "../api/plugins";
 import {
   addSmartMemory, deleteSmartMemory, listSmartMemory, type SmartMemoryItem,
@@ -31,7 +28,7 @@ import { cn } from "../ui/cn";
 import { getTheme, setTheme, type Theme } from "../ui/theme";
 
 type Section =
-  | "model" | "profiles" | "memory" | "library" | "chatmemory" | "keywords"
+  | "model" | "profiles" | "memory" | "library" | "chatmemory"
   | "dashboard" | "telegram" | "sshmcp" | "theme";
 
 const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
@@ -40,7 +37,6 @@ const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "memory", label: "Память", icon: Brain },
   { id: "library", label: "Библиотека", icon: BookMarked },
   { id: "chatmemory", label: "Память чата", icon: MessageSquare },
-  { id: "keywords", label: "Маршрутизация", icon: Route },
   { id: "dashboard", label: "Дашборд", icon: LayoutDashboard },
   { id: "telegram", label: "Telegram", icon: Send },
   { id: "sshmcp", label: "Интеграции", icon: Server },
@@ -88,7 +84,6 @@ export function Settings({ model, onModel, onClose, project }: { model: string; 
           {section === "memory" && <MemorySection project={project} />}
           {section === "library" && <LibrarySection />}
           {section === "chatmemory" && <ChatMemorySection />}
-          {section === "keywords" && <KeywordsSection />}
           {section === "dashboard" && <Lazy load={getDashboardOverview} title="Дашборд" />}
           {section === "telegram" && <TelegramSection />}
           {section === "sshmcp" && <SshMcpSection />}
@@ -335,99 +330,6 @@ function ChatMemorySection() {
               <button type="button" onClick={() => remove(it.id)} aria-label="Удалить" className="grid h-5 w-5 shrink-0 place-items-center rounded text-mut opacity-0 transition-opacity hover:text-tx group-hover:opacity-100">
                 <Trash2 size={13} />
               </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </Wrap>
-  );
-}
-
-function KeywordsSection() {
-  const [kw, setKw] = useState<PlannerKeywords | null>(null);
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState("");
-
-  const reload = useCallback(() => {
-    getPlannerKeywords()
-      .then((r) => setKw(r.effective ?? {}))
-      .catch(() => setKw({}));
-  }, []);
-  useEffect(() => { reload(); }, [reload]);
-
-  function removeWord(cat: string, word: string) {
-    if (!kw) return;
-    setKw({ ...kw, [cat]: (kw[cat] ?? []).filter((w) => w !== word) });
-  }
-  function addWord(cat: string) {
-    const raw = (draft[cat] ?? "").trim();
-    if (!raw || !kw) return;
-    // Accept comma/space-separated bulk input; skip dups.
-    const existing = new Set(kw[cat] ?? []);
-    const next = [...(kw[cat] ?? [])];
-    for (const w of raw.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean)) {
-      if (!existing.has(w)) { existing.add(w); next.push(w); }
-    }
-    setKw({ ...kw, [cat]: next });
-    setDraft({ ...draft, [cat]: "" });
-  }
-  async function save() {
-    if (!kw || busy) return;
-    setBusy(true); setMsg("");
-    try {
-      const r = await savePlannerKeywords(kw);
-      setMsg(r.ok ? "Сохранено." : "Не удалось сохранить.");
-    } catch { setMsg("Ошибка сохранения."); } finally { setBusy(false); }
-  }
-
-  const cats = kw ? Object.keys(kw).sort() : [];
-
-  return (
-    <Wrap title="Маршрутизация (planner keywords)">
-      <Note>Слова-маркеры, по которым планировщик чата выбирает маршрут (поиск, код, погода и т.д.). Правки сохраняются как пользовательские overrides поверх дефолтов.</Note>
-      <div className="my-2.5 flex items-center gap-2">
-        <button type="button" onClick={reload} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50">
-          <RefreshCw size={13} /> Сбросить правки
-        </button>
-        <button type="button" onClick={save} disabled={busy || !kw} className="ml-auto flex items-center gap-1.5 rounded-lg bg-ac px-3 py-1.5 text-[12.5px] font-medium text-[#14151b] disabled:opacity-50">
-          {busy ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />} Сохранить
-        </button>
-      </div>
-      {msg && <Note>{msg}</Note>}
-      {kw === null ? (
-        <Loading />
-      ) : cats.length === 0 ? (
-        <Note>Категории недоступны (сервер не отвечает).</Note>
-      ) : (
-        <div className="mt-2 flex flex-col gap-3">
-          {cats.map((cat) => (
-            <div key={cat} className="rounded-lg border border-line p-2.5">
-              <div className="mb-2 text-[11.5px] font-medium uppercase tracking-wide text-mut">{cat}</div>
-              <div className="mb-2 flex flex-wrap gap-1.5">
-                {(kw[cat] ?? []).length === 0 ? (
-                  <span className="text-[11px] text-mut">пусто</span>
-                ) : (kw[cat] ?? []).map((w) => (
-                  <span key={w} className="group flex items-center gap-1 rounded-md border border-line bg-surface px-1.5 py-0.5 text-[11.5px] text-t2">
-                    {w}
-                    <button type="button" onClick={() => removeWord(cat, w)} aria-label={`Удалить ${w}`} className="grid h-3.5 w-3.5 place-items-center rounded text-mut hover:text-tx">
-                      <X size={11} />
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  value={draft[cat] ?? ""}
-                  onChange={(e) => setDraft({ ...draft, [cat]: e.target.value })}
-                  onKeyDown={(e) => { if (e.key === "Enter") addWord(cat); }}
-                  placeholder="добавить слово…"
-                  className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12px] text-tx outline-none placeholder:text-mut focus:border-acl"
-                />
-                <button type="button" onClick={() => addWord(cat)} disabled={!(draft[cat] ?? "").trim()} aria-label="Добавить" className={cn("grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg text-[#14151b]", (draft[cat] ?? "").trim() ? "bg-ac" : "cursor-not-allowed bg-ac/40")}>
-                  <Plus size={15} />
-                </button>
-              </div>
             </div>
           ))}
         </div>

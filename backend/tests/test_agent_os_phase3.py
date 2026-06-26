@@ -4,7 +4,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -17,7 +16,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.api.routes.event_bus_routes import router as event_bus_router  # noqa: E402
-from app.application.chat import runtime as agents_service  # noqa: E402
 from app.application.event_bus import runtime as bus  # noqa: E402
 
 
@@ -158,92 +156,6 @@ class EventBusRoutesTest(EventBusDbMixin):
         )
         self.assertEqual(delete_response.status_code, 200)
         self.assertTrue(delete_response.json()["removed"])
-
-
-class EventBusIntegrationTest(EventBusDbMixin):
-    def _base_plan(self) -> dict:
-        return {
-            "route": "chat",
-            "tools": [],
-            "temporal": {"mode": "none", "requires_web": False, "freshness_sensitive": False, "years": []},
-            "web_plan": {"is_multi_intent": False, "subqueries": [], "passes": [], "pass_count": 1, "overflow_applied": False, "uncovered_subqueries": []},
-        }
-
-    def test_run_agent_emits_started_and_completed(self) -> None:
-        with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat", return_value={"ok": True, "answer": "hello from agent"}), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer):
-            result = agents_service.run_agent(
-                model_name="test-model",
-                profile_name="Universal",
-                user_input="Hello",
-                session_id="session-1",
-                use_memory=False,
-                use_library=False,
-                use_web_search=False,
-            )
-
-        self.assertTrue(result["ok"])
-        events, total = bus.list_events(limit=10)
-        self.assertEqual(total, 2)
-        event_types = [event["event_type"] for event in events]
-        self.assertIn("agent.run.started", event_types)
-        self.assertIn("agent.run.completed", event_types)
-        completed = next(event for event in events if event["event_type"] == "agent.run.completed")
-        self.assertTrue(completed["payload"]["ok"])
-        self.assertEqual(completed["payload"]["model_used"], "test-model")
-
-    def test_run_agent_emits_failed_completion_event(self) -> None:
-        with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat", return_value={"ok": False, "warnings": ["boom"]}):
-            result = agents_service.run_agent(
-                model_name="test-model",
-                profile_name="Universal",
-                user_input="Hello",
-                session_id="session-2",
-                use_memory=False,
-                use_library=False,
-                use_web_search=False,
-            )
-
-        self.assertFalse(result["ok"])
-        events, total = bus.list_events(limit=10)
-        self.assertEqual(total, 2)
-        completed = next(event for event in events if event["event_type"] == "agent.run.completed")
-        self.assertFalse(completed["payload"]["ok"])
-        self.assertIn("boom", completed["payload"]["error"])
-
-    def test_run_agent_stream_emits_started_and_completed(self) -> None:
-        with patch.object(agents_service.PlannerV2Service, "plan", return_value=self._base_plan()), \
-             patch.object(agents_service, "_collect_context", return_value=""), \
-             patch.object(agents_service, "run_chat_stream", return_value=iter(["hello", " world"])), \
-             patch.object(agents_service, "observe_dialogue", return_value={"ok": True}), \
-             patch.object(agents_service, "_get_and_clear_attachments", return_value=""), \
-             patch.object(agents_service, "_maybe_generate_files", return_value=""), \
-             patch.object(agents_service, "_maybe_auto_exec_python", side_effect=lambda user_input, answer, timeline, enabled=True: answer), \
-             patch.object(agents_service, "should_cache", return_value=False):
-            events = list(
-                agents_service.run_agent_stream(
-                    model_name="test-model",
-                    profile_name="Universal",
-                    user_input="Stream hello",
-                    session_id="session-stream",
-                    use_memory=False,
-                    use_library=False,
-                    use_web_search=False,
-                )
-            )
-
-        self.assertTrue(events[-1]["done"])
-        bus_events, total = bus.list_events(limit=10)
-        self.assertEqual(total, 2)
-        completed = next(event for event in bus_events if event["event_type"] == "agent.run.completed")
-        self.assertTrue(completed["payload"]["ok"])
 
 
 if __name__ == "__main__":

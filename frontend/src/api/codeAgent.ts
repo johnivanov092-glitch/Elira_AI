@@ -48,6 +48,9 @@ export type CodeAgentRunArgs = {
   mode?: CodeAgentMode;
   autoRemember?: boolean;
   conversationHistory?: ConversationMessage[];
+  /** UI persona profile (Универсальный/Исследователь/Программист/Аналитик/Сократ)
+   *  overlaid onto Elira's personality. Mirrors chat's profile_name field. */
+  profileName?: string;
 };
 
 /** Single-shot (legacy). Resolves with the aggregated final dict. */
@@ -60,6 +63,7 @@ export async function runCodeAgent({
   mode = "code",
   autoRemember = true,
   conversationHistory,
+  profileName,
 }: CodeAgentRunArgs): Promise<CodeAgentResponse> {
   return request<CodeAgentResponse>("/api/code-agent/run", {
     method: "POST",
@@ -72,6 +76,7 @@ export async function runCodeAgent({
       mode,
       auto_remember: autoRemember,
       conversation_history: conversationHistory,
+      ...(profileName ? { profile_name: profileName } : {}),
     },
   });
 }
@@ -99,7 +104,7 @@ export type CodeAgentStreamEvent =
       approval_id: string;
     }
   | { type: "approval_wait"; step: number; approval_id: string; waited_s: number }
-  | { type: "context_compacted"; step: number; context?: ContextUsage }
+  | { type: "context_compacted"; step: number; context?: ContextUsage; rolling_summary?: string | null }
   | {
       type: "usage";
       step: number;
@@ -129,6 +134,14 @@ export type ContextUsage = {
   percent: number;
   free_tokens: number;
   breakdown: Record<string, number>;
+};
+
+export type ContextState = Partial<ContextUsage> & {
+  last_context_usage?: ContextUsage;
+  rolling_summary_text?: string;
+  rolling_summary_updated_at?: number;
+  rolling_summary_source?: string;
+  [key: string]: unknown;
 };
 
 export type ContextProfile = {
@@ -175,6 +188,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     mode = "code",
     autoRemember = true,
     conversationHistory,
+    profileName,
     runId,
     signal,
     onEvent,
@@ -198,6 +212,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         auto_remember: autoRemember,
         conversation_history: conversationHistory,
         run_id: runId,
+        ...(profileName ? { profile_name: profileName } : {}),
       }),
       signal,
     });
@@ -247,7 +262,7 @@ export async function resumeCodeAgent(
   await consumeCodeAgentStream(response, handlers);
 }
 
-async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers): Promise<void> {
+export async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers): Promise<void> {
   const { onEvent, onRunId, onError } = handlers;
   const headerRunId = response.headers.get("X-Run-Id");
   if (headerRunId && onRunId) onRunId(headerRunId);
@@ -378,7 +393,7 @@ export type CodeSessionFull = CodeSessionMeta & {
   // Turns shape mirrors the frontend's local Turn[] — typed as unknown
   // because parser lives in CodeAgentChatShell.
   turns: unknown[];
-  context_state?: ContextUsage | null;
+  context_state?: ContextState | null;
   task_ledger?: TaskLedgerEntry[];
   pinned_items?: unknown[];
   compression_events?: unknown[];
@@ -433,7 +448,7 @@ export type CodeSessionPatch = {
   numCtx?: number;
   pinned?: boolean;
   turns?: unknown[];
-  contextState?: ContextUsage | null;
+  contextState?: ContextState | null;
   taskLedger?: TaskLedgerEntry[];
 };
 

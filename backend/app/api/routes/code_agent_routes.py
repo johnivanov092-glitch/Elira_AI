@@ -75,6 +75,35 @@ def _inject_library_context(message: str) -> str:
     return f"{header}\n\n{block}\n\n----- ЗАПРОС ПОЛЬЗОВАТЕЛЯ -----\n{message}"
 
 
+class CodeAgentAttachment(BaseModel):
+    ok: bool = True
+    filename: str = ""
+    kind: str = "document"
+    text: str = ""
+    chars: int = 0
+    note: Optional[str] = None
+
+
+def _inject_attachment_context(message: str, attachments: list[CodeAgentAttachment] | None) -> str:
+    """Fold parsed attachment text into the core user message.
+
+    Mirrors the old chat stream path: OCR/vision/document parsing happens before
+    this request, and the code-agent receives only bounded text metadata.
+    """
+    blocks: list[str] = []
+    for attachment in attachments or []:
+        text = str(attachment.text or "").strip()
+        if not text:
+            continue
+        kind = str(attachment.kind or "document").strip() or "document"
+        filename = str(attachment.filename or "attachment").strip() or "attachment"
+        blocks.append(f"[{kind}: {filename}]\n{text}")
+    if not blocks:
+        return message
+    attachment_block = "\n\n".join(blocks)
+    return f"{message.strip()}\n\n{attachment_block}" if message.strip() else attachment_block
+
+
 def _resolve_project_root(raw: str | None) -> str:
     """Default an empty/blank project_root to a writable scratch workspace.
 
@@ -126,9 +155,14 @@ class CodeAgentRequest(BaseModel):
     mode: CodeAgentMode = Field(default="code", description="Composer mode: code or search")
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")
     conversation_history: list[ConversationMessage] | None = None
+    attachments: list[CodeAgentAttachment] | None = None
     access_mode: Literal["project-workspace"] = Field(
         default="project-workspace",
         description="Enforced code-agent access profile; broader profiles are not enabled.",
+    )
+    profile_name: str = Field(
+        default="Универсальный",
+        description="UI persona profile (Универсальный/Исследователь/Программист/Аналитик/Сократ) overlaid onto Elira's personality.",
     )
 
 
@@ -193,8 +227,9 @@ class RecallRequest(BaseModel):
 @router.post("/run", response_model=CodeAgentResponse)
 def run(payload: CodeAgentRequest) -> CodeAgentResponse:
     history = [m.model_dump() for m in (payload.conversation_history or [])]
+    user_message = _inject_library_context(_inject_attachment_context(payload.message, payload.attachments))
     result = run_code_agent(
-        user_message=_inject_library_context(payload.message),
+        user_message=user_message,
         project_root=_resolve_project_root(payload.project_root),
         working_dir=payload.working_dir,
         model=payload.model,
@@ -204,6 +239,7 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
         base_tools=_base_tools_for_mode(payload.mode),
         auto_remember=payload.auto_remember,
         access_mode=payload.access_mode,
+        profile_name=payload.profile_name,
     )
     return CodeAgentResponse(**result)
 
@@ -216,7 +252,7 @@ def _sse_format(event: dict[str, Any]) -> str:
 def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
     run_id = payload.run_id or uuid.uuid4().hex
     history = [m.model_dump() for m in (payload.conversation_history or [])]
-    user_message = _inject_library_context(payload.message)
+    user_message = _inject_library_context(_inject_attachment_context(payload.message, payload.attachments))
 
     def gen():
         try:
@@ -233,6 +269,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 run_id=run_id,
                 approval_wait_seconds=payload.approval_wait_seconds,
                 access_mode=payload.access_mode,
+                profile_name=payload.profile_name,
             ):
                 yield _sse_format(event)
         except Exception as exc:

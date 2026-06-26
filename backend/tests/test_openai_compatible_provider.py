@@ -122,6 +122,27 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
                 )
         post.assert_not_called()
 
+    def test_active_context_limit_overrides_stale_lower_config(self) -> None:
+        env = {**_llama_env(), "LLAMA_SERVER_CONTEXT_WINDOW": "32768"}
+        response = _Response(
+            {
+                "model": "local-model",
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+            }
+        )
+        with patch.dict(os.environ, env, clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            result = openai_compatible.chat_completion(
+                model="local-model",
+                messages=[{"role": "user", "content": "X" * 140_000}],
+                options={"num_ctx": 131_072, "active_context_limit": 131_072},
+            )
+
+        self.assertEqual(result["message"]["content"], "OK")
+        post.assert_called_once()
+
     def test_chat_completion_serializes_tool_history_for_openai_api(self) -> None:
         response = _Response(
             {

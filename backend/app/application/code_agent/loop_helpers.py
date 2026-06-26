@@ -292,7 +292,7 @@ def _wrap_up_text(
                 "role": "user",
                 "content": WRAP_UP_PROMPT.format(reason=reason),
             }],
-            options={"num_ctx": int(num_ctx)},
+            options={"num_ctx": int(num_ctx), "active_context_limit": int(num_ctx)},
         )
         text = (((response or {}).get("message") or {}).get("content") or "").strip()
         if text:

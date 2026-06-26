@@ -92,6 +92,29 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "project_map",
+                "description": (
+                    "One-call structural overview of a codebase: a pruned file "
+                    "tree (ignores .git/node_modules/.venv/build caches), detected "
+                    "manifests/config files, conventional entry points, and "
+                    "top-level signatures (functions/classes) for the main "
+                    "languages. Use this FIRST on an unfamiliar or non-trivial "
+                    "project to understand its shape before reading files."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Subdirectory to map. Default: project root."},
+                        "max_depth": {"type": "integer", "description": "Tree depth (1-8). Default 4."},
+                        "max_files": {"type": "integer", "description": "Max files listed (20-2000). Default 400."},
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "recall",
                 "description": (
                     "Semantic search over the agent's RAG memory. Returns "
@@ -179,7 +202,10 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Run a platform-native shell command inside the project root. "
                     "On Windows this is cmd.exe (use dir/type/where or explicitly invoke "
-                    "powershell.exe); on POSIX it is /bin/sh. Returns stdout, stderr, and exit code."
+                    "powershell.exe); on POSIX it is /bin/sh. Returns stdout, stderr, and exit code. "
+                    "BLOCKS until the command finishes (max 120s). For a long-lived process that "
+                    "never returns on its own — a dev server, watcher, `npm run dev`, `uvicorn`, "
+                    "`flask run` — use run_server instead, or run_bash will hang and time out."
                 ),
                 "parameters": {
                     "type": "object",
@@ -188,6 +214,35 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                         "timeout": {"type": "integer", "description": "Seconds. Default 60."},
                     },
                     "required": ["command"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_server",
+                "description": (
+                    "Start and manage LONG-LIVED background processes (dev servers, watchers) "
+                    "that never exit on their own. Unlike run_bash, this returns IMMEDIATELY and "
+                    "the process keeps running across turns; output is captured to a log file you "
+                    "can tail. Use this for `npm run dev`, `uvicorn`, `flask run`, `vite`, etc. "
+                    "Actions: 'start' (launch `command`, optional `port`), 'list' (show running "
+                    "servers), 'logs' (tail output of `pid`), 'stop' (terminate `pid`), 'stop_all'. "
+                    "Servers are NOT killed by the Stop button — stop them explicitly with 'stop'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["start", "list", "logs", "stop", "stop_all"],
+                            "description": "Default 'start'.",
+                        },
+                        "command": {"type": "string", "description": "Shell command to launch (action='start')."},
+                        "port": {"type": "integer", "description": "Optional port the server binds, for reporting."},
+                        "pid": {"type": "integer", "description": "Target server pid (action='logs'|'stop')."},
+                    },
+                    "required": [],
                 },
             },
         },
@@ -298,6 +353,172 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "translator",
+                "description": "Translate text to another language using the local LLM.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Text to translate."},
+                        "target_lang": {"type": "string", "description": "Target language, e.g. 'english', 'russian', 'spanish'."},
+                        "model": {"type": "string", "description": "Optional local model name. Default local-model."},
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "regex",
+                "description": "Test a regular expression against text and return matches with offsets and groups.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "Regular expression pattern."},
+                        "text": {"type": "string", "description": "Text to test."},
+                        "flags": {"type": "string", "description": "Optional flags: i, m, s."},
+                    },
+                    "required": ["pattern", "text"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "csv",
+                "description": "Analyze a CSV file inside the project and return shape, columns, sample rows, nulls and stats.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {"type": "string", "description": "CSV path relative to the project root, or absolute inside it."},
+                        "query": {"type": "string", "description": "Optional analysis question."},
+                    },
+                    "required": ["file_path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "converter",
+                "description": "Convert a project file using built-in converters: CSV to XLSX, JSON to CSV, MD to DOCX, XLSX to CSV.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source_path": {"type": "string", "description": "Source path relative to the project root, or absolute inside it."},
+                        "target_format": {"type": "string", "description": "Target extension: xlsx, csv, or docx."},
+                    },
+                    "required": ["source_path", "target_format"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "http_api",
+                "description": "Send an outbound HTTP request. Use only for user-requested API calls.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Absolute http(s) URL."},
+                        "method": {"type": "string", "description": "GET, POST, PUT, or DELETE."},
+                        "headers": {"type": "object", "description": "Optional request headers."},
+                        "body": {"description": "Optional request body for POST/PUT."},
+                        "timeout": {"type": "integer", "description": "Timeout seconds. Default 15."},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "sql",
+                "description": "List, describe, or query allowed local SQLite databases.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "One of: list, describe, query."},
+                        "db_path": {"type": "string", "description": "SQLite DB path for describe/query."},
+                        "query": {"type": "string", "description": "SQL query for action=query."},
+                        "params": {"type": "array", "description": "Optional positional SQL parameters."},
+                        "max_rows": {"type": "integer", "description": "Max returned rows for SELECT. Default 100."},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "encrypt",
+                "description": "Encrypt or decrypt short text using the local Fernet key.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "encrypt or decrypt."},
+                        "text": {"type": "string", "description": "Plain text for action=encrypt."},
+                        "token": {"type": "string", "description": "Encrypted token for action=decrypt."},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "archiver",
+                "description": "Create or extract ZIP archives for files inside the project.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "create or extract."},
+                        "source_path": {"type": "string", "description": "File or directory path for action=create."},
+                        "zip_path": {"type": "string", "description": "ZIP path for action=extract."},
+                        "dest": {"type": "string", "description": "Optional destination directory inside the project for extraction."},
+                        "output_name": {"type": "string", "description": "Optional output ZIP filename for action=create."},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "webhook",
+                "description": "Store, list, or clear local webhook payloads in the in-memory webhook buffer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string", "description": "store, list, or clear."},
+                        "data": {"type": "object", "description": "Payload for action=store."},
+                        "source": {"type": "string", "description": "Optional source label for action=store."},
+                        "limit": {"type": "integer", "description": "Max items for action=list. Default 20."},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "screenshot",
+                "description": "Capture a screenshot of an http(s) URL and return view/download URLs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "Absolute http(s) URL to capture."},
+                        "width": {"type": "integer", "description": "Viewport width. Default 1280."},
+                        "height": {"type": "integer", "description": "Viewport height. Default 800."},
+                        "full_page": {"type": "boolean", "description": "Capture full page instead of viewport."},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "image_gen",
                 "description": (
                     "Generate an image from a text prompt using a local "
@@ -353,6 +574,48 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                         "filename": {"type": "string", "description": "Optional output filename (extension appended if missing)."},
                     },
                     "required": ["format"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_image",
+                "description": (
+                    "Describe an image file from the project using the vision model "
+                    "(screenshots, photos, diagrams, scanned pages). Returns a text "
+                    "description that also transcribes any visible text. Use this to "
+                    "'see' an image the project already contains. Requires the vision "
+                    "service to be enabled; returns an error otherwise."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the image, relative to project root or absolute inside it."},
+                        "prompt": {"type": "string", "description": "Optional instruction for what to focus on. Defaults to a full description."},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ocr_file",
+                "description": (
+                    "Extract text from a scanned document or image file in the project "
+                    "(PDF scans, photographed pages, screenshots of text) via the OCR "
+                    "service. Returns the recognized text. Use this for documents where "
+                    "read_file shows only binary/garbage. Requires the OCR service to be "
+                    "enabled; returns an error otherwise."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Path to the document/image, relative to project root or absolute inside it."},
+                        "language": {"type": "string", "description": "Optional OCR language hint (e.g. 'ru', 'en'). Defaults to auto-detect."},
+                    },
+                    "required": ["path"],
                 },
             },
         },

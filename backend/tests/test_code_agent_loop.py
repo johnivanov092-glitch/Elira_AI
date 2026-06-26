@@ -20,6 +20,7 @@ from app.application.code_agent.agent_loop import (  # noqa: E402
     DEFAULT_NUM_CTX,
     _extract_inline_tool_calls,
     _resolve_code_route,
+    _temperature_for_role,
     get_project_prompt,
     index_project,
     recall_from_rag,
@@ -35,6 +36,7 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_edit_file,
     tool_glob,
     tool_grep,
+    tool_project_map,
     tool_read_file,
     tool_recall,
     tool_delegate_task,
@@ -115,11 +117,54 @@ class SandboxedToolsTest(unittest.TestCase):
         self.assertIn("blocked dangerous", res["text"])
 
     def test_run_bash_truncates_large_output(self) -> None:
-        completed = SimpleNamespace(returncode=0, stdout="A" * 30000, stderr="")
-        with patch("app.application.code_agent.tools.subprocess.run", return_value=completed):
-            res = tool_run_bash(self.root, command="echo lots")
+        # tool_run_bash now streams via Popen (killable for the Stop button), so we
+        # drive the real truncation path with a command that prints >16k chars.
+        res = tool_run_bash(
+            self.root,
+            command="python -c \"print('A' * 30000)\"",
+        )
         self.assertIn("truncated", res["text"])
         self.assertLess(len(res["text"]), 17000)
+
+    # --- project_map (Variant B) ----------------------------------------
+
+    def test_project_map_reports_tree_manifests_and_signatures(self) -> None:
+        # Enrich the sandbox fixture with a manifest, an entry point, and a
+        # module carrying a real function + class so signatures are exercised.
+        (self.root / "pyproject.toml").write_text(
+            "[project]\nname = 'demo'\n", encoding="utf-8")
+        (self.root / "app.py").write_text(
+            "def main():\n    return 1\n", encoding="utf-8")
+        (self.root / "service.py").write_text(
+            "import os\n\n\n"
+            "def helper(x):\n    return x\n\n\n"
+            "class Engine:\n"
+            "    def start(self):\n        return True\n",
+            encoding="utf-8",
+        )
+        # A pruned dir must NOT show up in the tree.
+        (self.root / "node_modules").mkdir()
+        (self.root / "node_modules" / "junk.js").write_text(
+            "x", encoding="utf-8")
+
+        out = tool_project_map(self.root)
+        text = out["text"]
+
+        # Tree lists real files but skips the pruned directory.
+        self.assertIn("service.py", text)
+        self.assertIn("hello.py", text)
+        self.assertNotIn("node_modules", text)
+        # Manifest + entry-point detection.
+        self.assertIn("pyproject.toml", text)
+        self.assertIn("app.py", text)
+        # Signatures: function + class with its method.
+        self.assertIn("def helper", text)
+        self.assertIn("class Engine", text)
+        self.assertIn("start", text)
+
+    def test_project_map_rejects_escape(self) -> None:
+        with self.assertRaises(SandboxError):
+            tool_project_map(self.root, path="../outside")
 
 
 class AgentLoopTest(unittest.TestCase):
@@ -131,7 +176,12 @@ class AgentLoopTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_loop_executes_tool_call_then_answers(self) -> None:
-        """Simulate: turn1 → call write_file, turn2 → plain answer."""
+        """Simulate: turn1 → call write_file, turn2 → plain answer.
+
+        Note: editing without running tests trips the soft verification gate,
+        which injects one extra round before the run may close — so the model
+        is asked once more and answers again (turn3).
+        """
         scripted_responses = iter([
             {
                 "message": {
@@ -147,6 +197,13 @@ class AgentLoopTest(unittest.TestCase):
             {
                 "message": {
                     "content": "Готово, файл создан.",
+                    "tool_calls": [],
+                }
+            },
+            # turn3: post-gate answer (gate already fired, run closes here).
+            {
+                "message": {
+                    "content": "Готово, файл создан и проверять тут нечего.",
                     "tool_calls": [],
                 }
             },
@@ -170,7 +227,7 @@ class AgentLoopTest(unittest.TestCase):
 
         self.assertTrue(result["ok"], result.get("error"))
         self.assertEqual(result["stop_reason"], "answer")
-        self.assertEqual(result["steps"], 2)
+        self.assertEqual(result["steps"], 3)
         self.assertEqual(len(result["tool_calls"]), 1)
         self.assertEqual(result["tool_calls"][0]["tool"], "write_file")
         self.assertEqual(
@@ -463,6 +520,37 @@ class AgentLoopTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertIn("options", captured)
         self.assertEqual(captured["options"]["num_ctx"], 8192)
+
+    def test_temperature_for_role_strict_profile(self) -> None:
+        # Strict profile: code edits the most deterministic, casual replies looser.
+        self.assertEqual(_temperature_for_role("code"), 0.1)
+        self.assertEqual(_temperature_for_role("strong"), 0.3)
+        self.assertEqual(_temperature_for_role("fast"), 0.4)
+        # Case-insensitive and whitespace-tolerant.
+        self.assertEqual(_temperature_for_role("  CODE "), 0.1)
+        # Unknown / empty roles fall back to the default temperature.
+        self.assertEqual(_temperature_for_role(None), 0.2)
+        self.assertEqual(_temperature_for_role(""), 0.2)
+        self.assertEqual(_temperature_for_role("embedding"), 0.2)
+
+    def test_code_role_temperature_passed_to_chat_options(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def fake_chat(**kwargs):
+            captured.update(kwargs)
+            return {"message": {"content": "ok", "tool_calls": []}}
+
+        # The default code-agent route resolves to role "code", so the strict
+        # profile must emit temperature 0.1 in the forwarded options.
+        result = run_code_agent(
+            user_message="ping",
+            project_root=self.root,
+            num_ctx=8192,
+            chat_fn=fake_chat,
+        )
+        self.assertTrue(result["ok"])
+        self.assertIn("options", captured)
+        self.assertEqual(captured["options"]["temperature"], 0.1)
 
     def test_num_ctx_defaults_to_large_window(self) -> None:
         captured: dict[str, Any] = {}
@@ -884,6 +972,101 @@ class AgentLoopTest(unittest.TestCase):
         self.assertTrue(second["exists"])
         self.assertEqual(second["content"], "Style: tabs, not spaces.")
 
+    # --- Soft verification gate (Variant 2) -----------------------------
+
+    _AUTO_SPEC = {"permission": "auto", "max_output_chars": 50000,
+                  "policy_classified": True, "enabled": True}
+
+    def test_verify_gate_nudges_once_after_edit_without_tests(self) -> None:
+        """Edited a file, then tried to answer with no run_bash/run_server:
+        the gate must inject one extra round before the run can close."""
+        turns = {"n": 0}
+
+        def fake_chat(**kwargs):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                return {"message": {"content": "", "tool_calls": [{
+                    "function": {"name": "write_file",
+                                 "arguments": {"path": "out.txt", "content": "x"}},
+                }]}}
+            # turn 2: model tries to close without verifying -> gate fires.
+            # turn 3: model answers again -> gate already fired, run closes.
+            return {"message": {"content": "Готово.", "tool_calls": []}}
+
+        with patch("app.application.tool_registry.runtime.get_tool",
+                   return_value=self._AUTO_SPEC):
+            result = run_code_agent(
+                user_message="создай out.txt",
+                project_root=self.root,
+                model="test-model",
+                chat_fn=fake_chat,
+            )
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["stop_reason"], "answer")
+        # The gate forced a third model call it would not otherwise make.
+        self.assertEqual(turns["n"], 3)
+
+    def test_verify_gate_does_not_fire_when_tests_were_run(self) -> None:
+        """Edit + run_bash in the same run satisfies the gate — no extra round."""
+        turns = {"n": 0}
+
+        def fake_chat(**kwargs):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                return {"message": {"content": "", "tool_calls": [{
+                    "function": {"name": "write_file",
+                                 "arguments": {"path": "out.txt", "content": "x"}},
+                }]}}
+            if turns["n"] == 2:
+                return {"message": {"content": "", "tool_calls": [{
+                    "function": {"name": "run_bash",
+                                 "arguments": {"command": "echo ok"}},
+                }]}}
+            return {"message": {"content": "Готово, проверено.", "tool_calls": []}}
+
+        with patch("app.application.tool_registry.runtime.get_tool",
+                   return_value=self._AUTO_SPEC):
+            result = run_code_agent(
+                user_message="создай и проверь",
+                project_root=self.root,
+                model="test-model",
+                chat_fn=fake_chat,
+            )
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["stop_reason"], "answer")
+        # No injected round: write(1) -> run_bash(2) -> answer(3), and the
+        # answer is accepted immediately.
+        self.assertEqual(turns["n"], 3)
+
+    def test_verify_gate_never_fires_on_no_edit_run(self) -> None:
+        """A read-only / conversational run must close on the first answer —
+        the gate must never fire when nothing was edited."""
+        turns = {"n": 0}
+
+        def fake_chat(**kwargs):
+            turns["n"] += 1
+            if turns["n"] == 1:
+                return {"message": {"content": "", "tool_calls": [{
+                    "function": {"name": "glob", "arguments": {"pattern": "*"}},
+                }]}}
+            return {"message": {"content": "Вот что я нашёл.", "tool_calls": []}}
+
+        with patch("app.application.tool_registry.runtime.get_tool",
+                   return_value=self._AUTO_SPEC):
+            result = run_code_agent(
+                user_message="что в проекте?",
+                project_root=self.root,
+                model="test-model",
+                chat_fn=fake_chat,
+            )
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["stop_reason"], "answer")
+        # glob(1) -> answer(2); the answer is accepted with no extra round.
+        self.assertEqual(turns["n"], 2)
+
 
 class ApprovalPauseTest(unittest.TestCase):
     """F1: the loop pauses on waiting_approval and the approval is consumed
@@ -898,12 +1081,18 @@ class ApprovalPauseTest(unittest.TestCase):
 
     @staticmethod
     def _chat_two_steps():
+        # write_file edits a file but no run_bash/run_server follows, so the
+        # soft verification gate injects one extra round before the run may
+        # close. The third response is that post-gate answer; tests that exit
+        # earlier (cancel / timeout / zero-wait) simply never consume it.
         responses = iter([
             {"message": {"content": "", "tool_calls": [{
                 "function": {"name": "write_file",
                              "arguments": {"path": "a.txt", "content": "hi"}},
             }]}},
             {"message": {"content": "Готово.", "tool_calls": []}},
+            {"message": {"content": "Проверять тут нечего — файл записан.",
+                         "tool_calls": []}},
         ])
         return lambda **kw: next(responses)
 
