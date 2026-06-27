@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, GitBranch, Loader2, Play, Plus, Power, RefreshCw, Trash2 } from "lucide-react";
 import {
   createPipeline,
@@ -19,6 +19,14 @@ function field(p: Record<string, unknown>, ...keys: string[]): string {
     if (typeof v === "number") return String(v);
   }
   return "";
+}
+
+/** `run_count` растёт на +1 после КАЖДОГО завершённого прогона. Это надёжный
+ *  признак «пришёл свежий результат» для поллинга — точнее, чем сравнивать текст
+ *  ответа (который мог совпасть) или `last_run` (строка времени). */
+function runCount(p: Record<string, unknown>): number {
+  const v = p["run_count"];
+  return typeof v === "number" ? v : Number(v) || 0;
 }
 
 /** A pipeline run stores its result as a JSON string in `last_result` / log
@@ -46,6 +54,21 @@ export function PipelinesShell() {
   const [form, setForm] = useState({ name: "", prompt: "", interval: 60 });
   const [openId, setOpenId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Record<string, PipelineLogEntry[]>>({});
+  // pid -> «прогон идёт, ждём свежий результат» (фоновый прогон на бэке + поллинг).
+  const [running, setRunning] = useState<Record<string, boolean>>({});
+  const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+
+  const stopPoll = useCallback((id: string) => {
+    const t = pollTimers.current[id];
+    if (t) { clearInterval(t); delete pollTimers.current[id]; }
+    setRunning((m) => { const next = { ...m }; delete next[id]; return next; });
+  }, []);
+
+  // Снять все таймеры при размонтировании, чтобы не поллить «в пустоту».
+  useEffect(() => {
+    const timers = pollTimers.current;
+    return () => { for (const t of Object.values(timers)) clearInterval(t); };
+  }, []);
 
   const load = useCallback(() => {
     listPipelines()
@@ -70,10 +93,43 @@ export function PipelinesShell() {
   }
 
   async function run(id: string) {
+    if (running[id]) return;
+    // Базовый run_count: ждём, пока он вырастет → значит фоновый прогон записал
+    // свежий результат в БД. Полный ReAct-цикл агента на 35B занимает минуты.
+    const baseCount = runCount((items ?? []).find((p) => String(p.id) === id) ?? {});
     setBusy(id);
-    try { await runPipeline(id); setErr(""); load(); if (openId === id) void loadLogs(id); }
-    catch { setErr("Запуск не удался."); }
+    try {
+      const resp = await runPipeline(id);
+      setErr("");
+      // Бэкенд вернул started=false только если прогон этого pipeline уже идёт —
+      // всё равно встаём в режим ожидания и поллим тот же прогон.
+      if (resp && (resp as Record<string, unknown>).ok === false) {
+        setErr("Запуск не удался.");
+        return;
+      }
+    } catch { setErr("Запуск не удался."); setBusy(null); return; }
     finally { setBusy(null); }
+
+    // Раскрываем строку и поллим список+логи, пока run_count не вырастет.
+    setRunning((m) => ({ ...m, [id]: true }));
+    setOpenId(id);
+    void loadLogs(id);
+    const startedAt = Date.now();
+    const MAX_WAIT_MS = 15 * 60 * 1000; // потолок ожидания фонового прогона
+    if (pollTimers.current[id]) clearInterval(pollTimers.current[id]);
+    pollTimers.current[id] = setInterval(async () => {
+      try {
+        const fresh = await listPipelines();
+        setItems(fresh);
+        void loadLogs(id);
+        const row = fresh.find((p) => String(p.id) === id);
+        const done = row && runCount(row) > baseCount;
+        if (done || Date.now() - startedAt > MAX_WAIT_MS) {
+          if (!done) setErr("Прогон выполняется дольше обычного — обновите вручную позже.");
+          stopPoll(id);
+        }
+      } catch { /* транзиентная ошибка сети — продолжаем поллить */ }
+    }, 5000);
   }
 
   async function toggle(p: PipelineItem) {
@@ -207,10 +263,12 @@ export function PipelinesShell() {
                   <button
                     type="button"
                     onClick={() => run(id)}
-                    disabled={busy === id}
+                    disabled={busy === id || !!running[id]}
+                    title={running[id] ? "Прогон идёт — ждём ответ агента" : "Запустить сейчас"}
                     className="flex items-center gap-1.5 rounded-lg bg-ac px-3 py-1.5 text-[12px] font-medium text-[#14151b] disabled:opacity-50"
                   >
-                    {busy === id ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} Запуск
+                    {busy === id || running[id] ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+                    {running[id] ? "Идёт…" : "Запуск"}
                   </button>
                   <button
                     type="button"
@@ -227,6 +285,11 @@ export function PipelinesShell() {
                 {open && (
                   <div className="border-t border-line px-3.5 py-3">
                     <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-mut">Последний ответ</div>
+                    {running[id] && (
+                      <div className="mb-3 flex items-center gap-2 rounded-lg border border-acl bg-acs px-3 py-2 text-[12px] text-ac">
+                        <Loader2 size={13} className="animate-spin" /> Агент выполняет задачу — ответ появится здесь автоматически…
+                      </div>
+                    )}
                     {lastError ? (
                       <div className="mb-3 whitespace-pre-wrap rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-[12px] text-red-300">{lastError}</div>
                     ) : lastResult ? (

@@ -1,8 +1,19 @@
 """API роуты для Autopipelines — cron-задачи Elira AI."""
+import threading
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/pipelines", tags=["autopipelines"])
+
+# Ручной прогон через UI делает полный ReAct-цикл агента (минуты на локальной
+# 35B-модели). Держать на это время открытым HTTP-соединение нельзя — клиент
+# таймаутит раньше, чем `run_pipeline_now` допишет `last_result`/логи, и юзер
+# видит «нет ответа», хотя бэкенд отработал. Поэтому эндпойнт fire-and-forget:
+# прогон уходит в фоновый поток (та же функция, тот же journal-lock, те же
+# записи в БД), а UI поллит /list+/logs до появления свежего результата.
+_active_runs: set[str] = set()
+_active_runs_lock = threading.Lock()
 
 
 class CreatePipelineRequest(BaseModel):
@@ -54,8 +65,33 @@ def api_delete(pid: str):
 
 @router.post("/run/{pid}")
 def api_run_now(pid: str):
-    from app.application.autopipeline.runtime import run_pipeline_now
-    return run_pipeline_now(pid)
+    """Запускает прогон в фоне и сразу возвращает управление.
+
+    Сам прогон (`run_pipeline_now` → `_execute_task` → агент-цикл) НЕ меняется:
+    он по-прежнему пишет `last_result`/`last_error`/логи по завершении. Здесь
+    меняется только то, что мы не блокируем HTTP-ответ на всё время прогона.
+    """
+    from app.application.autopipeline.runtime import get_pipeline, run_pipeline_now
+
+    p = get_pipeline(pid)
+    if not p.get("ok"):
+        return {"ok": False, "error": p.get("error", "Pipeline не найден")}
+
+    with _active_runs_lock:
+        if pid in _active_runs:
+            # Прогон уже идёт — не плодим параллельные запуски того же pipeline.
+            return {"ok": True, "started": False, "running": True, "pipeline_id": pid}
+        _active_runs.add(pid)
+
+    def _runner() -> None:
+        try:
+            run_pipeline_now(pid)
+        finally:
+            with _active_runs_lock:
+                _active_runs.discard(pid)
+
+    threading.Thread(target=_runner, name=f"pipeline-run-{pid}", daemon=True).start()
+    return {"ok": True, "started": True, "running": True, "pipeline_id": pid}
 
 
 @router.get("/logs/{pid}")
