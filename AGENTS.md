@@ -3,9 +3,8 @@
 Local AI agent: Tauri (Rust shell) + FastAPI/Python backend + React/Vite/TS
 frontend, talking to a LAN llama.cpp server. Read `docs/README.md` for the map.
 
-Active implementation plan: `UNIFY_CORE_PLAN.md` (one universal chat/code-agent
-core). Execute strictly by stage. The UI rebuild and code-agent rewrite plans
-are shipped and archived; for repo map/guardrails also read `docs/README.md`,
+The UI rebuild, code-agent rewrite, and unified chat/code-agent core plans are
+shipped and archived. For the repo map/guardrails read `docs/README.md`,
 `docs/ARCHITECTURE.md`, `docs/PROJECT_MAP.md`, and `docs/UI_BASELINE.md`.
 
 ## Encoding & Russian text — CRITICAL (read before writing any file)

@@ -7,6 +7,8 @@ been superseded; they stay only for the decisions/history they record.
 ## Current Docs
 
 - `ARCHITECTURE.md` - current backend/frontend/runtime architecture.
+- `architecture-agent-flow.svg` - agent runtime request/SSE flow diagram
+  (referenced from `ARCHITECTURE.md`).
 - `PROJECT_MAP.md` - repo structure, owners, and where to change things.
 - `SERVER.md` - AI inference server summary (host, endpoints, models, access).
   The agent runs as a client; the model runs on the separate `Elira_AI_Server`.

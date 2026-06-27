@@ -1,0 +1,134 @@
+<svg width="100%" viewBox="0 0 680 760" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>Elira agent runtime — request/SSE flow</title>
+<desc>UI via the SSE client backgroundRuns.ts calls the code-agent routes; the unified core stream_code_agent (a 17-module package) runs tools through agent_kernel.executor with a per-class hard timeout; the ToolRegistry routes to the Builtin/SSH/LSP/MCP providers into tools.py; an indexing/RAG branch and run-scoped deferred/tool_search sit alongside; delta/tool_call/final/done events stream back to the UI.</desc>
+<style>
+.t{font-family:ui-sans-serif,system-ui,sans-serif;font-size:13px;font-weight:600;fill:#1a1a1a}
+.ts{font-family:ui-sans-serif,system-ui,sans-serif;font-size:10.5px;fill:#666}
+.th{font-family:ui-sans-serif,system-ui,sans-serif;font-size:14px;font-weight:700;fill:#1a1a1a}
+.lbl{font-family:ui-sans-serif,system-ui,sans-serif;font-size:10px;font-weight:600;fill:#666}
+.node rect{stroke-width:0.5px;rx:4}
+.arr{stroke:#888;stroke-width:1.2px;fill:none}
+.arrb{stroke:#0d9488;stroke-width:1.2px;fill:none;stroke-dasharray:4 3}
+.c-blue rect{fill:#e0f2fe;stroke:#0284c7}
+.c-teal rect{fill:#ccfbf1;stroke:#0d9488}
+.c-amber rect{fill:#fef3c7;stroke:#d97706}
+.c-green rect{fill:#dcfce7;stroke:#16a34a}
+.c-purple rect{fill:#f3e8ff;stroke:#9333ea}
+.c-gray rect{fill:#f1f5f9;stroke:#64748b}
+.c-coral rect{fill:#ffe4e6;stroke:#e11d48}
+</style>
+
+<defs>
+<marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#888"/></marker>
+<marker id="ahb" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#0d9488"/></marker>
+</defs>
+
+<!-- UI layer -->
+<g class="node c-blue">
+<rect x="200" y="30" width="280" height="50"/>
+</g>
+<text x="340" y="51" text-anchor="middle" class="th">UI / Workspace</text>
+<text x="340" y="68" text-anchor="middle" class="ts">SSE client backgroundRuns.ts</text>
+
+<!-- arrow down to routes -->
+<path class="arr" d="M340,80 L340,108" marker-end="url(#ah)"/>
+
+<!-- routes -->
+<g class="node c-gray">
+<rect x="140" y="110" width="400" height="56"/>
+</g>
+<text x="340" y="131" text-anchor="middle" class="th">code_agent_routes</text>
+<text x="340" y="148" text-anchor="middle" class="ts">/stream &#183; /run &#183; /cancel &#183; /resume &#183; /sessions</text>
+<text x="340" y="160" text-anchor="middle" class="ts">/mcp &#183; /lsp &#183; /watcher &#183; /ssh &#183; /index &#183; /recall</text>
+
+<!-- arrow down to core -->
+<path class="arr" d="M340,166 L340,192" marker-end="url(#ah)"/>
+
+<!-- unified core -->
+<g class="node c-teal">
+<rect x="120" y="194" width="440" height="74"/>
+</g>
+<text x="340" y="216" text-anchor="middle" class="th">stream_code_agent &#8212; unified core</text>
+<text x="340" y="234" text-anchor="middle" class="ts">chat + code = one engine (legacy chat-agent dead)</text>
+<text x="340" y="251" text-anchor="middle" class="ts">17-module package: prompts &#183; history &#183; generation</text>
+<text x="340" y="263" text-anchor="middle" class="ts">execution &#183; sandbox &#183; indexing &#183; file_watcher &#183; sessions</text>
+
+<!-- arrow to kernel executor -->
+<path class="arr" d="M340,268 L340,296" marker-end="url(#ah)"/>
+
+<!-- RAG branch off to the right -->
+<path class="arr" d="M560,231 L600,231 L600,330 L512,330" marker-end="url(#ah)"/>
+<g class="node c-green">
+<rect x="404" y="306" width="156" height="48"/>
+</g>
+<text x="482" y="326" text-anchor="middle" class="t">indexing / RAG</text>
+<text x="482" y="342" text-anchor="middle" class="ts">file_watcher &#183; recall</text>
+
+<!-- kernel executor -->
+<g class="node c-amber">
+<rect x="120" y="298" width="280" height="56"/>
+</g>
+<text x="260" y="319" text-anchor="middle" class="th">agent_kernel.executor</text>
+<text x="260" y="336" text-anchor="middle" class="ts">execute_tool &#183; hard-timeout watchdog</text>
+<text x="260" y="348" text-anchor="middle" class="ts">120 / 600 / 900s per class</text>
+
+<!-- deferred tools side box -->
+<path class="arr" d="M120,326 L70,326 L70,420 L150,420" marker-end="url(#ah)"/>
+<g class="node c-purple">
+<rect x="40" y="396" width="186" height="48"/>
+</g>
+<text x="133" y="416" text-anchor="middle" class="t">deferred_tools</text>
+<text x="133" y="432" text-anchor="middle" class="ts">tool_search (run-scoped)</text>
+
+<!-- arrow to registry -->
+<path class="arr" d="M260,354 L260,392" marker-end="url(#ah)"/>
+
+<!-- registry -->
+<g class="node c-gray">
+<rect x="150" y="394" width="220" height="44"/>
+</g>
+<text x="260" y="413" text-anchor="middle" class="th">ToolRegistry</text>
+<text x="260" y="429" text-anchor="middle" class="ts">routing per provider</text>
+
+<!-- four providers row -->
+<path class="arr" d="M260,438 L260,460 L120,460 L120,484" marker-end="url(#ah)"/>
+<path class="arr" d="M260,438 L260,460 L233,460 L233,484" marker-end="url(#ah)"/>
+<path class="arr" d="M260,438 L260,460 L347,460 L347,484" marker-end="url(#ah)"/>
+<path class="arr" d="M260,438 L260,460 L460,460 L460,484" marker-end="url(#ah)"/>
+
+<g class="node c-green"><rect x="64" y="486" width="112" height="44"/></g>
+<text x="120" y="506" text-anchor="middle" class="t">Builtin</text>
+<text x="120" y="521" text-anchor="middle" class="ts">local tools</text>
+
+<g class="node c-green"><rect x="190" y="486" width="86" height="44"/></g>
+<text x="233" y="506" text-anchor="middle" class="t">SSH</text>
+<text x="233" y="521" text-anchor="middle" class="ts">remote</text>
+
+<g class="node c-coral"><rect x="304" y="486" width="86" height="44"/></g>
+<text x="347" y="506" text-anchor="middle" class="t">LSP</text>
+<text x="347" y="521" text-anchor="middle" class="ts">new</text>
+
+<g class="node c-purple"><rect x="404" y="486" width="112" height="44"/></g>
+<text x="460" y="506" text-anchor="middle" class="t">MCP</text>
+<text x="460" y="521" text-anchor="middle" class="ts">external servers</text>
+
+<!-- arrow to tools.py -->
+<path class="arr" d="M120,530 L120,552 L290,552 L290,574" marker-end="url(#ah)"/>
+<path class="arr" d="M233,530 L233,552 L290,552" marker-end="url(#ah)"/>
+<path class="arr" d="M347,530 L347,552 L290,552" marker-end="url(#ah)"/>
+<path class="arr" d="M460,530 L460,552 L290,552" marker-end="url(#ah)"/>
+
+<g class="node c-gray"><rect x="200" y="576" width="180" height="44"/></g>
+<text x="290" y="596" text-anchor="middle" class="th">tools.py</text>
+<text x="290" y="612" text-anchor="middle" class="ts">tool implementations</text>
+
+<!-- SSE return path -->
+<path class="arrb" d="M120,298 L40,298 L40,20 L196,20" marker-end="url(#ahb)"/>
+<text x="48" y="160" class="lbl" transform="rotate(-90 48 160)">SSE: delta &#183; tool_call &#183; final &#183; done</text>
+
+<!-- legend -->
+<g class="node c-coral"><rect x="200" y="660" width="14" height="14"/></g>
+<text x="220" y="671" class="ts">new vs the previous diagram</text>
+<g class="node c-teal"><rect x="440" y="660" width="14" height="14"/></g>
+<text x="460" y="671" class="ts">unified core</text>
+</svg>

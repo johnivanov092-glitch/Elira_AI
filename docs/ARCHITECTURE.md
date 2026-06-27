@@ -99,6 +99,13 @@ Chat entrypoints:
 - `backend/app/application/chat/service.py`
 - `backend/app/application/chat/local_chat.py`
 
+The request/SSE flow through the unified core is drawn in
+[`architecture-agent-flow.svg`](architecture-agent-flow.svg): UI -> code-agent
+routes -> `stream_code_agent` (a multi-module package) -> `agent_kernel.executor`
+(hard-timeout) -> `ToolRegistry` over the Builtin/SSH/LSP/MCP providers ->
+`tools.py`, with an indexing/RAG branch and run-scoped `deferred_tools` /
+`tool_search`; `delta`/`tool_call`/`final`/`done` events stream back to the UI.
+
 Code-agent runtime (`backend/app/application/code_agent/`):
 
 - `agent_loop.py` - the streaming run loop and orchestration.
