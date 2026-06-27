@@ -1,8 +1,1 @@
-{
-  "example_hello": {
-    "enabled": true
-  },
-  "wire_test_plugin": {
-    "enabled": true
-  }
-}
+{}

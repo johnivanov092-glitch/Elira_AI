@@ -19,7 +19,7 @@ const ITEMS: Item[] = [
   { id: "bash", group: "Инструменты", label: "Shell", sub: "run_bash", icon: TerminalSquare, action: { kind: "prefill", text: "Выполни команду: " } },
   { id: "recall", group: "Инструменты", label: "Поиск по памяти", sub: "recall", icon: Brain, action: { kind: "prefill", text: "Вспомни из памяти: " } },
   { id: "image", group: "Скиллы", label: "Генерация изображений", sub: "SDXL", icon: ImageIcon, action: { kind: "prefill", text: "Сгенерируй изображение: " } },
-  { id: "mcp", group: "Плагины", label: "Плагины и MCP", sub: "example_hello, подключить MCP", icon: Package, action: { kind: "settings" } },
+  { id: "mcp", group: "Плагины", label: "Плагины и MCP", sub: "управление плагинами, подключить MCP", icon: Package, action: { kind: "settings" } },
   { id: "model", group: "Возможности", label: "Модель и провайдер", sub: "настройки", icon: Cpu, action: { kind: "settings" } },
   { id: "memory", group: "Возможности", label: "Память", sub: "настройки", icon: Brain, action: { kind: "settings" } },
   { id: "dash", group: "Возможности", label: "Дашборд", sub: "метрики", icon: LayoutDashboard, action: { kind: "settings" } },

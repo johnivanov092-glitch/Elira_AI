@@ -9,6 +9,7 @@ import sys
 import textwrap
 import tempfile
 import importlib
+import contextlib
 from pathlib import Path
 from unittest import mock
 
@@ -31,6 +32,21 @@ _PLUGIN_SRC = textwrap.dedent("""\
     def run(args: dict) -> dict:
         return {"ok": True, "echoed": args.get("value", "default")}
 """)
+
+
+@contextlib.contextmanager
+def _patched_plugins_env(psys, tmp_path: Path):
+    """Isolate the plugin system from real on-disk state for one test.
+
+    Patches BOTH PLUGINS_DIR (discovery) and _CONFIG_FILE (persisted enabled/
+    disabled state) onto a temp dir, so enable/disable flows never mutate the
+    git-tracked data/plugins_config.json. _load_config/_save_config reference
+    _CONFIG_FILE via the module global, so patching the attribute is enough.
+    """
+    cfg_file = tmp_path / "plugins_config.json"
+    with mock.patch.object(psys, "PLUGINS_DIR", tmp_path), \
+            mock.patch.object(psys, "_CONFIG_FILE", cfg_file):
+        yield
 
 
 class TestPluginToolRegistryWire(unittest.TestCase):
@@ -73,7 +89,7 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             tmp_path = Path(tmpdir)
             self._make_plugin_dir_with_file(tmp_path, "wire_test_plugin", _PLUGIN_SRC)
 
-            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+            with _patched_plugins_env(psys, tmp_path):
                 psys.load_plugins()
 
             tool = reg.get_tool("wire_test_plugin")
@@ -98,7 +114,7 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             tmp_path = Path(tmpdir)
             self._make_plugin_dir_with_file(tmp_path, "wire_test_plugin", _PLUGIN_SRC)
 
-            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+            with _patched_plugins_env(psys, tmp_path):
                 psys.load_plugins()
 
             # New plugins are disabled fail-closed — enable the spec to reach the handler.
@@ -115,10 +131,9 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             tmp_path = Path(tmpdir)
             self._make_plugin_dir_with_file(tmp_path, "wire_test_plugin", _PLUGIN_SRC)
 
-            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+            with _patched_plugins_env(psys, tmp_path):
                 psys.load_plugins()
-
-            psys.disable_plugin("wire_test_plugin")
+                psys.disable_plugin("wire_test_plugin")
 
             tool = reg.get_tool("wire_test_plugin")
             self.assertIsNotNone(tool)
@@ -139,11 +154,10 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             tmp_path = Path(tmpdir)
             self._make_plugin_dir_with_file(tmp_path, "wire_test_plugin", _PLUGIN_SRC)
 
-            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+            with _patched_plugins_env(psys, tmp_path):
                 psys.load_plugins()
-
-            psys.disable_plugin("wire_test_plugin")
-            psys.enable_plugin("wire_test_plugin")
+                psys.disable_plugin("wire_test_plugin")
+                psys.enable_plugin("wire_test_plugin")
 
             tool = reg.get_tool("wire_test_plugin")
             self.assertIsNotNone(tool)
@@ -158,7 +172,7 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             tmp_path = Path(tmpdir)
             self._make_plugin_dir_with_file(tmp_path, "wire_test_plugin", _PLUGIN_SRC)
 
-            with mock.patch.object(psys, "PLUGINS_DIR", tmp_path):
+            with _patched_plugins_env(psys, tmp_path):
                 psys.load_plugins()
                 psys.reload_plugins()  # second load — should not fail
 
