@@ -221,7 +221,7 @@ function MemorySection({ project }: { project: string }) {
 
 // Number of freshest active files build_library_context() actually injects.
 // Keep in sync with backend build_library_context(max_files=...).
-const LIB_CONTEXT_LIMIT = 3;
+const LIB_CONTEXT_LIMIT = 10;
 
 function fmtSize(bytes: number): string {
   if (!bytes) return "";

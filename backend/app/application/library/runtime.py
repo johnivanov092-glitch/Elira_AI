@@ -370,7 +370,7 @@ def delete_library_file(filename: str) -> dict[str, Any]:
     return {"ok": True, "filename": filename}
 
 
-def build_library_context(max_files: int = 3, max_chars_per_file: int = 4000) -> dict[str, Any]:
+def build_library_context(max_files: int = 10, max_chars_per_file: int = 2500) -> dict[str, Any]:
     conn = _conn()
     try:
         rows = conn.execute(
