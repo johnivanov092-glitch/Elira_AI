@@ -39,10 +39,13 @@ _SHELL_READONLY_PREFIXES: tuple[str, ...] = (
     "git status", "git log", "git diff", "git show", "git branch",
     "git remote", "git stash list", "git tag", "git fetch --dry-run",
     "git ls-files", "git describe", "git rev-parse",
+    "git config --get ", "git config --list", "git cat-file ",
+    "git blame ", "git shortlog", "git reflog",
     # File listing / reading
     "ls", "dir", "find ", "tree",
     "cat ", "head ", "tail ", "less ", "more ", "type ",
-    "wc ", "file ",
+    "wc ", "file ", "stat ", "realpath ", "readlink ",
+    "basename ", "dirname ",
     # Search
     "grep ", "egrep ", "fgrep ", "rg ", "ag ",
     # System info / status
@@ -221,6 +224,13 @@ def is_shell_safe(command: str) -> bool:
     # These could chain an unsafe subcommand past the prefix check.
     _UNSAFE_METACHAR = ("&&", "||", ";;", "|", ";", ">", "<", "`", "$(", "\n", "\r")
     if any(meta in cmd for meta in _UNSAFE_METACHAR):
+        return False
+    # Windows cmd.exe expands %VAR% to environment-variable values at exec time
+    # (e.g. ``echo %TOKEN%`` / ``find %USERPROFILE%``), which would leak env
+    # values or inject expanded arguments past the approval gate. On POSIX "%"
+    # is harmless (``git log --format=%H``, ``printf %s``), so only guard it on
+    # Windows.
+    if sys.platform == "win32" and "%" in cmd:
         return False
     for prefix in _SHELL_READONLY_PREFIXES:
         p = prefix.lower()

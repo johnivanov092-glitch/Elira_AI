@@ -254,7 +254,7 @@ def request_cancel(run_id: str) -> bool:
         from app.application.code_agent.tools import kill_run_processes
         kill_run_processes(run_id)
     except Exception:
-        pass
+        logger.warning("kill_run_processes failed for run %s", run_id, exc_info=True)
     with _REGISTRY_LOCK:
         ev = _CANCEL_REGISTRY.get(run_id)
     if ev is None:

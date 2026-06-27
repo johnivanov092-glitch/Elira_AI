@@ -35,6 +35,12 @@ class TestIsShellSafe(unittest.TestCase):
     def test_docker_ps(self):        self.assertTrue(is_shell_safe("docker ps"))
     def test_node_version(self):     self.assertTrue(is_shell_safe("node --version"))
     def test_case_insensitive(self): self.assertTrue(is_shell_safe("GIT STATUS"))
+    # Newly allowlisted read-only introspectors (C2)
+    def test_git_config_get(self):   self.assertTrue(is_shell_safe("git config --get user.name"))
+    def test_git_blame(self):        self.assertTrue(is_shell_safe("git blame README.md"))
+    def test_stat(self):             self.assertTrue(is_shell_safe("stat README.md"))
+    def test_realpath(self):         self.assertTrue(is_shell_safe("realpath ."))
+    def test_basename(self):         self.assertTrue(is_shell_safe("basename /a/b/c"))
 
     # ── Unsafe (require approval or blocked) ─────────────────────────────────
     def test_pip_install(self):      self.assertFalse(is_shell_safe("pip install requests"))
@@ -54,6 +60,28 @@ class TestIsShellSafe(unittest.TestCase):
     def test_subshell(self):         self.assertFalse(is_shell_safe("echo $(cat /etc/passwd)"))
     def test_backtick(self):         self.assertFalse(is_shell_safe("ls `rm file`"))
     def test_input_redirect(self):   self.assertFalse(is_shell_safe("cat < /etc/passwd"))
+    # Windows cmd.exe env-var expansion must not auto-run (C3). Only blocked on
+    # Windows; on POSIX "%" is harmless so it stays allowlisted (see below).
+    @unittest.skipUnless(sys.platform == "win32", "Windows cmd.exe env-expansion")
+    def test_percent_env_echo_win(self):   self.assertFalse(is_shell_safe("echo %TOKEN%"))
+    @unittest.skipUnless(sys.platform == "win32", "Windows cmd.exe env-expansion")
+    def test_percent_env_find_win(self):   self.assertFalse(is_shell_safe("find %USERPROFILE%"))
+    @unittest.skipUnless(sys.platform == "win32", "Windows cmd.exe env-expansion")
+    def test_percent_env_type_win(self):   self.assertFalse(is_shell_safe("type %APPDATA%\\secret"))
+
+    # On POSIX, "%" is a legitimate literal (git --format=%H, printf %s) and must
+    # NOT block an otherwise-allowlisted command.
+    @unittest.skipIf(sys.platform == "win32", "POSIX-only: % is literal here")
+    def test_percent_git_format_posix(self):
+        self.assertTrue(is_shell_safe("git log --format=%H"))
+    @unittest.skipIf(sys.platform == "win32", "POSIX-only: % is literal here")
+    def test_percent_echo_posix(self):
+        self.assertTrue(is_shell_safe("echo 100%"))
+
+    # Both platforms: a "%" command that isn't allowlisted is still unsafe
+    # (falls through prefix matching) regardless of OS.
+    def test_percent_non_allowlisted(self):
+        self.assertFalse(is_shell_safe("deploy %TARGET%"))
 
 
 class TestExecutorBypassForSafeCommands(unittest.TestCase):

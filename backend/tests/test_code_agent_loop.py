@@ -461,6 +461,26 @@ class AgentLoopTest(unittest.TestCase):
         self.assertFalse(done["ok"])
         self.assertEqual(done["stop_reason"], "cancelled")
 
+    def test_request_cancel_logs_when_kill_fails(self) -> None:
+        """A failing kill_run_processes must be logged, not silently swallowed,
+        and cancel must still flip the event (return True)."""
+        import app.application.code_agent.agent_loop as loop_mod
+
+        run_id = "test-cancel-kill-fail"
+        loop_mod._register_run(run_id)
+        try:
+            with patch(
+                "app.application.code_agent.tools.kill_run_processes",
+                side_effect=RuntimeError("boom"),
+            ), self.assertLogs(loop_mod.logger, level="WARNING") as cm:
+                result = loop_mod.request_cancel(run_id)
+            self.assertTrue(result)
+            self.assertTrue(
+                any("kill_run_processes failed" in line for line in cm.output)
+            )
+        finally:
+            loop_mod._unregister_run(run_id)
+
     def test_run_code_agent_uses_conversation_history(self) -> None:
         captured: dict[str, list] = {}
 
