@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -1061,6 +1062,126 @@ def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
     return _truncate_middle(data.rstrip(), limit)
 
 
+# ─── GUI auto-verification after run_server ─────────────────────────────────
+# When the agent starts a GUI (a web dev-server *or* a native desktop window),
+# it is blind to what actually rendered: a process that didn't crash can still
+# have launched a broken/blank window. So right after a successful `start` we
+# capture ONE screenshot and feed it back into the run, closing the perception
+# loop the model otherwise lacks (this is the gap that made it "fix one error,
+# create another" during GUI bring-up — it could not see the result of an edit).
+#
+#   * port set  → web app: screenshot http://localhost:<port> via Playwright
+#                 (reuses skills.runtime.screenshot_url).
+#   * no port   → native window: full-screen grab via Pillow.ImageGrab.
+#
+# Delivery is "screenshot + vision, with fallback": if VISION_ENABLED, the PNG
+# is described by the vision model (:8004) and that text goes back to the agent
+# so it can read what it built. If vision is off / unreachable, we degrade
+# gracefully to the screenshot path + process status — never an exception, since
+# this is best-effort instrumentation, not a gate.
+
+_GUI_VERIFY_SETTLE = 1.0  # extra seconds for a window/page to paint before the shot
+
+
+def _native_screenshot() -> dict[str, Any]:
+    """Grab the full primary screen to a PNG in the shared generated-files dir.
+
+    Mirrors the dict shape of skills.runtime.screenshot_url (ok/path/filename)
+    so the caller treats web and native captures uniformly. Best-effort: returns
+    {"ok": False, "error": ...} instead of raising when Pillow is missing or the
+    grab fails (e.g. headless / no display)."""
+    try:
+        from PIL import ImageGrab
+    except Exception as exc:  # pragma: no cover - optional dependency
+        return {"ok": False, "error": f"native screenshot needs Pillow: {exc}"}
+    try:
+        from app.application.skills.runtime import OUTPUT_DIR
+    except Exception as exc:  # pragma: no cover - import guard
+        return {"ok": False, "error": f"output dir unavailable: {exc}"}
+
+    fname = f"gui_native_{int(time.time())}.png"
+    path = OUTPUT_DIR / fname
+    try:
+        img = ImageGrab.grab()
+        img.save(str(path))
+    except Exception as exc:
+        return {"ok": False, "error": f"native grab failed: {exc}"}
+    return {
+        "ok": True,
+        "path": str(path),
+        "filename": fname,
+        "download_url": f"/api/skills/download/{fname}",
+        "view_url": f"/api/skills/view/{fname}",
+    }
+
+
+def _auto_verify_gui(handle: "_ServerHandle") -> str:
+    """Capture + (optionally) describe the GUI a just-started server renders.
+
+    Returns a human-readable block to append to the run_server result, or "" if
+    capture is impossible. Never raises — GUI verification is best-effort and
+    must not turn a healthy `start` into an error."""
+    # Let the window/page paint a little past the bare crash-grace already spent.
+    try:
+        time.sleep(_GUI_VERIFY_SETTLE)
+    except Exception:
+        pass
+
+    if handle.port:
+        try:
+            from app.application.skills.runtime import screenshot_url
+            shot = screenshot_url(f"http://localhost:{handle.port}")
+        except Exception as exc:
+            shot = {"ok": False, "error": str(exc)}
+        kind = f"web (http://localhost:{handle.port})"
+    else:
+        shot = _native_screenshot()
+        kind = "native window"
+
+    if not shot.get("ok"):
+        return (
+            f"🖼 GUI verification: could not capture {kind} "
+            f"({shot.get('error') or 'unknown error'}). Process is running — "
+            f"use run_server(action='logs', pid={handle.pid}) to inspect output."
+        )
+
+    shot_path = str(shot.get("path") or "")
+    title = shot.get("title")
+    header = f"🖼 GUI verification ({kind}): screenshot saved at {shot_path}"
+    if title:
+        header += f"\n  page title: {title}"
+
+    # Vision channel with graceful fallback. Read the PNG bytes and describe via
+    # the same :8004 path read_image uses; if vision is off/unreachable, return
+    # the path + status so the agent can still open it later with read_image.
+    try:
+        from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
+    except Exception:
+        is_vision_enabled = None  # type: ignore[assignment]
+        describe_image = None  # type: ignore[assignment]
+
+    if is_vision_enabled and is_vision_enabled():
+        try:
+            contents = Path(shot_path).read_bytes()
+        except Exception:
+            contents = b""
+        description = describe_image(Path(shot_path).name, contents) if (describe_image and contents) else None
+        if description:
+            return (
+                f"{header}\n  vision sees:\n"
+                f"{textwrap.indent(description.strip(), '    ')}"
+            )
+        return (
+            f"{header}\n  (vision is on but returned no description — service "
+            f"unreachable or empty. Try read_image('{shot_path}') to retry.)"
+        )
+
+    return (
+        f"{header}\n  (vision is off: set VISION_ENABLED=1 on the server, or call "
+        f"read_image('{shot_path}') once enabled, to get a text description of what rendered.)"
+    )
+
+
 def stop_all_servers() -> int:
     """Kill every tracked background server. Returns the count signalled.
     Intended for process/app shutdown, not the per-run Stop button."""
@@ -1210,14 +1331,25 @@ def tool_run_server(
         )}
 
     port_s = f" on port {port}" if port else ""
-    return {"text": (
+    text = (
         f"Server started in background{port_s}.\n"
         f"  pid={proc.pid}\n"
         f"  $ {cleaned_command}\n"
         f"Use run_server(action='logs', pid={proc.pid}) to read output, "
         f"run_server(action='stop', pid={proc.pid}) to stop it. "
         f"It keeps running across turns and is NOT killed by Stop."
-    )}
+    )
+
+    # Auto GUI verification: capture what just launched and feed it back so the
+    # model can "see" its build instead of flying blind through UI bring-up.
+    try:
+        gui_block = _auto_verify_gui(handle)
+    except Exception as exc:  # never let instrumentation break a healthy start
+        gui_block = f"🖼 GUI verification skipped (internal error: {exc})."
+    if gui_block:
+        text = f"{text}\n\n{gui_block}"
+
+    return {"text": text}
 
 
 # ─── P10.1: deferred tool search meta-tool (foundation) ─────────────────────
