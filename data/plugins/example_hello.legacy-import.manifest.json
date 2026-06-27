@@ -1,0 +1,13 @@
+{
+  "name": "example_hello.legacy-import",
+  "description": "Приветствие — пример плагина",
+  "author": "Jarvis",
+  "version": "1.0",
+  "category": "utility",
+  "icon": "🔌",
+  "triggers": [],
+  "hooks": [],
+  "config": {},
+  "capabilities": [],
+  "enabled": false
+}

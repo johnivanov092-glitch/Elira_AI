@@ -1,0 +1,16 @@
+{
+  "name": "example_hello",
+  "description": "Приветствие — пример плагина",
+  "author": "Elira",
+  "version": "1.0",
+  "category": "utility",
+  "icon": "👋",
+  "triggers": ["привет плагин", "hello plugin"],
+  "hooks": ["on_start", "on_message"],
+  "config": {
+    "greeting": "Привет",
+    "emoji": true
+  },
+  "capabilities": [],
+  "enabled": false
+}
