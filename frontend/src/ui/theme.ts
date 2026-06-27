@@ -7,7 +7,7 @@ export const THEMES: { id: Theme; label: string; swatch: string; dark: boolean }
   { id: "dark", label: "Тёмная", swatch: "#8b93f8", dark: true },
   { id: "cursor", label: "Cursor", swatch: "#4a9eff", dark: true },
   { id: "light", label: "Светлая", swatch: "#4a7aff", dark: false },
-  { id: "bw", label: "Чёрно-белая", swatch: "#1a1a1a", dark: false },
+  { id: "bw", label: "Чёрно-белая", swatch: "#ffffff", dark: true },
   { id: "cyber", label: "Неон", swatch: "#00ff9f", dark: true },
   { id: "glass", label: "Стекло", swatch: "#c084fc", dark: true },
   { id: "solar", label: "Сепия", swatch: "#b58900", dark: false },

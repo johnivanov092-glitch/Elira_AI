@@ -67,22 +67,22 @@
   --color-acl: rgba(74, 122, 255, 0.45);
 }
 
-/* Black & white — high-contrast monochrome on a light base; accent is near-
-   black ink so the whole UI reads as greyscale. */
+/* Black & white — high-contrast monochrome on a black base: white text, white
+   accent, so the whole UI reads as greyscale on dark (distinct from Светлая). */
 :root[data-theme="bw"] {
-  color-scheme: light;
-  --color-bg: #ffffff;
-  --color-side: #f2f2f2;
-  --color-card: #ffffff;
-  --color-surface: rgba(0, 0, 0, 0.035);
-  --color-hover: rgba(0, 0, 0, 0.06);
-  --color-line: rgba(0, 0, 0, 0.14);
-  --color-tx: #111111;
-  --color-t2: #555555;
-  --color-mut: #888888;
-  --color-ac: #1a1a1a;
-  --color-acs: rgba(0, 0, 0, 0.07);
-  --color-acl: rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+  --color-bg: #000000;
+  --color-side: #0a0a0a;
+  --color-card: #141414;
+  --color-surface: rgba(255, 255, 255, 0.04);
+  --color-hover: rgba(255, 255, 255, 0.08);
+  --color-line: rgba(255, 255, 255, 0.16);
+  --color-tx: #ffffff;
+  --color-t2: #b0b0b0;
+  --color-mut: #777777;
+  --color-ac: #ffffff;
+  --color-acs: rgba(255, 255, 255, 0.1);
+  --color-acl: rgba(255, 255, 255, 0.45);
 }
 
 /* Neon — near-black terminal with a phosphor-green accent. */
