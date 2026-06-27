@@ -3,6 +3,7 @@ import {
   Check, ChevronDown, ChevronRight, FolderPlus, MessageSquare, Pencil, Pin, PinOff, Plus, Trash2, X,
 } from "lucide-react";
 import type { CodeSessionMeta } from "../api/codeAgent";
+import { EliraMark } from "../ui/EliraMark";
 import * as bg from "./backgroundRuns";
 import * as folders from "./chatFolders";
 
@@ -81,9 +82,7 @@ export function Sidebar({
   return (
     <aside className="flex min-h-0 flex-col border-r border-line bg-side">
       <div className="flex items-center gap-2.5 px-4 pb-2.5 pt-3.5 text-[15px] font-medium">
-        <span className="grid h-[22px] w-[22px] place-items-center rounded-md bg-ac text-[#14151b]">
-          <span className="h-2 w-2 rounded-full bg-[#14151b]" />
-        </span>
+        <EliraMark className="h-[22px] w-[22px] shrink-0" />
         Elira
       </div>
 

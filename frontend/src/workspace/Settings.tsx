@@ -37,8 +37,8 @@ export function Settings({ model, onModel, onClose, project }: { model: string; 
 
   return (
     <div className="fixed inset-0 z-30 flex justify-center bg-black/50 pt-[42px]" onClick={onClose}>
-      <div className="flex h-[min(720px,88vh)] w-[min(920px,94vw)] overflow-hidden rounded-xl border border-line bg-card" onClick={(e) => e.stopPropagation()}>
-        <nav className="flex w-[170px] shrink-0 flex-col gap-0.5 border-r border-line p-2">
+      <div className="flex h-[min(720px,88vh)] w-[min(960px,94vw)] overflow-hidden rounded-xl border border-line bg-card" onClick={(e) => e.stopPropagation()}>
+        <nav className="flex w-[200px] shrink-0 flex-col gap-0.5 border-r border-line p-2">
           <div className="px-2.5 pb-1.5 pt-1 text-[13.5px] font-medium">Настройки</div>
           {NAV.map((n) => (
             <button
@@ -46,11 +46,11 @@ export function Settings({ model, onModel, onClose, project }: { model: string; 
               type="button"
               onClick={() => setSection(n.id)}
               className={cn(
-                "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[12.5px] transition-colors",
+                "flex items-center gap-2.5 whitespace-nowrap rounded-lg px-2.5 py-2 text-left text-[12.5px] transition-colors",
                 section === n.id ? "bg-acs text-ac" : "text-t2 hover:bg-hover hover:text-tx",
               )}
             >
-              <n.icon size={15} /> {n.label}
+              <n.icon size={15} className="shrink-0" /> {n.label}
             </button>
           ))}
         </nav>

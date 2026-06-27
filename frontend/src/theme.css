@@ -48,3 +48,90 @@
   --color-acs: rgba(74, 158, 255, 0.14);
   --color-acl: rgba(74, 158, 255, 0.45);
 }
+
+/* Light — clean neutral light surfaces with a calm blue accent. Note the
+   inverted surface/hover/line alphas (dark overlays on a light base). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-bg: #f5f5f7;
+  --color-side: #ececef;
+  --color-card: #ffffff;
+  --color-surface: rgba(0, 0, 0, 0.03);
+  --color-hover: rgba(0, 0, 0, 0.05);
+  --color-line: rgba(0, 0, 0, 0.1);
+  --color-tx: #1d1d1f;
+  --color-t2: #56565c;
+  --color-mut: #86868b;
+  --color-ac: #4a7aff;
+  --color-acs: rgba(74, 122, 255, 0.12);
+  --color-acl: rgba(74, 122, 255, 0.45);
+}
+
+/* Black & white — high-contrast monochrome on a light base; accent is near-
+   black ink so the whole UI reads as greyscale. */
+:root[data-theme="bw"] {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-side: #f2f2f2;
+  --color-card: #ffffff;
+  --color-surface: rgba(0, 0, 0, 0.035);
+  --color-hover: rgba(0, 0, 0, 0.06);
+  --color-line: rgba(0, 0, 0, 0.14);
+  --color-tx: #111111;
+  --color-t2: #555555;
+  --color-mut: #888888;
+  --color-ac: #1a1a1a;
+  --color-acs: rgba(0, 0, 0, 0.07);
+  --color-acl: rgba(0, 0, 0, 0.35);
+}
+
+/* Neon — near-black terminal with a phosphor-green accent. */
+:root[data-theme="cyber"] {
+  color-scheme: dark;
+  --color-bg: #06080a;
+  --color-side: #04060a;
+  --color-card: #0b0f12;
+  --color-surface: rgba(0, 255, 159, 0.04);
+  --color-hover: rgba(0, 255, 159, 0.09);
+  --color-line: rgba(0, 255, 159, 0.16);
+  --color-tx: #d6ffe9;
+  --color-t2: #5ea58a;
+  --color-mut: #3c6e5d;
+  --color-ac: #00ff9f;
+  --color-acs: rgba(0, 255, 159, 0.13);
+  --color-acl: rgba(0, 255, 159, 0.5);
+}
+
+/* Glass — deep desaturated indigo with a frosted violet accent. */
+:root[data-theme="glass"] {
+  color-scheme: dark;
+  --color-bg: #14121f;
+  --color-side: #100e1a;
+  --color-card: #1b1830;
+  --color-surface: rgba(192, 132, 252, 0.05);
+  --color-hover: rgba(192, 132, 252, 0.1);
+  --color-line: rgba(192, 132, 252, 0.16);
+  --color-tx: #ece6ff;
+  --color-t2: #a99fc4;
+  --color-mut: #786f95;
+  --color-ac: #c084fc;
+  --color-acs: rgba(192, 132, 252, 0.15);
+  --color-acl: rgba(192, 132, 252, 0.5);
+}
+
+/* Сепия — warm Solarized-light paper tones with an amber accent. */
+:root[data-theme="solar"] {
+  color-scheme: light;
+  --color-bg: #fdf6e3;
+  --color-side: #f4ecd6;
+  --color-card: #fffbf0;
+  --color-surface: rgba(101, 123, 131, 0.05);
+  --color-hover: rgba(101, 123, 131, 0.09);
+  --color-line: rgba(101, 123, 131, 0.18);
+  --color-tx: #586e75;
+  --color-t2: #839496;
+  --color-mut: #93a1a1;
+  --color-ac: #b58900;
+  --color-acs: rgba(181, 137, 0, 0.13);
+  --color-acl: rgba(181, 137, 0, 0.45);
+}
