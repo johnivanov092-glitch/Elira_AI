@@ -88,6 +88,23 @@ from app.application.code_agent.history import (  # noqa: F401
     _resolve_code_route,
     summarize_history,
 )
+# Layer C (deterministic "no changes" cross-check) extracted to .layer_c; a leaf
+# importing nothing from agent_loop. Re-exported so the loop and tests keep
+# importing these from agent_loop unchanged.
+from app.application.code_agent.layer_c import (  # noqa: F401
+    _NO_CHANGE_CLAIM_MARKERS,
+    _claims_no_changes,
+    _layer_c_correction,
+)
+# Project-prompt CRUD extracted to .project_prompt; a leaf. Re-exported (with
+# PROJECT_PROMPT_FILENAME) so code_agent_routes and tests keep importing these
+# from agent_loop unchanged.
+from app.application.code_agent.project_prompt import (  # noqa: F401
+    PROJECT_PROMPT_FILENAME,
+    get_project_prompt,
+    init_project_prompt,
+    set_project_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +115,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_STEPS = 100
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
 MAX_CODE_AGENT_STEPS = 200
-PROJECT_PROMPT_FILENAME = ".elira/agent.md"
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 4
 
@@ -984,57 +1000,6 @@ def _stream_code_agent_core(
         _unregister_run(rid)
 
 
-# Layer C — machine cross-check of the model's final claim against the runtime's
-# own record of file changes. A local model reports by memory-of-intent, not by
-# observed result: when an edit_file/write_file fails it has no post-write state
-# and tends to fabricate a tidy "nothing changed" narrative. The journal,
-# however, records every touched path on the actual tool_call event, so we can
-# catch the contradiction and correct it deterministically — no model in the loop.
-_NO_CHANGE_CLAIM_MARKERS = (
-    "никаких изменений",
-    "изменений нет",
-    "изменения не вносил",
-    "изменения не внесены",
-    "ничего не изменил",
-    "ничего не менял",
-    "не вносил изменени",
-    "не внёс изменени",
-    "не внес изменени",
-    "no changes were made",
-    "no changes have been made",
-    "i did not make any changes",
-    "i have not made any changes",
-    "nothing was changed",
-    "no files were changed",
-    "no files were modified",
-)
-
-
-def _claims_no_changes(text: str) -> bool:
-    """True if the final text asserts that nothing in the project was changed."""
-    low = (text or "").lower()
-    return any(marker in low for marker in _NO_CHANGE_CLAIM_MARKERS)
-
-
-def _layer_c_correction(final_text: str, changed_files: list[str]) -> str:
-    """A correction note when the model claims 'no changes' but files were touched.
-
-    Returns "" when the claim is consistent with the record (no correction needed).
-    """
-    if not changed_files:
-        return ""
-    if not _claims_no_changes(final_text):
-        return ""
-    listed = "\n".join(f"- {p}" for p in changed_files[:50])
-    extra = "" if len(changed_files) <= 50 else f"\n…и ещё {len(changed_files) - 50}"
-    return (
-        "\n\n⚠️ Проверка по журналу выполнения: в ходе этого запуска изменения в "
-        f"файлах всё-таки были ({len(changed_files)} шт.), хотя в ответе сказано "
-        "обратное. Фактически затронутые файлы:\n"
-        f"{listed}{extra}"
-    )
-
-
 def stream_code_agent(
     *,
     user_message: str,
@@ -1306,38 +1271,3 @@ def run_code_agent(
         "error": error,
         "partial": partial,
     }
-
-
-# ─── project-prompt CRUD ────────────────────────────────────────────────────
-
-
-def get_project_prompt(project_root: Path | str) -> dict[str, Any]:
-    root = Path(project_root).resolve()
-    target = root / PROJECT_PROMPT_FILENAME
-    exists = target.is_file()
-    content = ""
-    if exists:
-        try:
-            content = target.read_text(encoding="utf-8")
-        except Exception as exc:
-            return {"ok": False, "exists": True, "content": "", "error": str(exc), "path": str(target)}
-    return {"ok": True, "exists": exists, "content": content, "path": str(target)}
-
-
-def init_project_prompt(project_root: Path | str, content: str | None = None) -> dict[str, Any]:
-    from app.application.instructions.loader import init_project_instructions
-
-    return init_project_instructions(project_root, content=content)
-
-
-def set_project_prompt(project_root: Path | str, content: str) -> dict[str, Any]:
-    root = Path(project_root).resolve()
-    if not root.exists() or not root.is_dir():
-        return {"ok": False, "error": f"project_root does not exist: {root}"}
-    target = root / PROJECT_PROMPT_FILENAME
-    target.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        target.write_text(content, encoding="utf-8")
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "path": str(target)}
-    return {"ok": True, "exists": True, "content": content, "path": str(target)}
