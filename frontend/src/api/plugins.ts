@@ -38,3 +38,25 @@ export async function setPluginEnabled(
     { method: "POST" },
   );
 }
+
+export async function createPlugin(
+  name: string,
+  category = "",
+  description = "",
+): Promise<PluginResponse> {
+  return request<PluginResponse>("/api/extra/plugins/create", {
+    method: "POST",
+    body: { name, category, description },
+  });
+}
+
+export async function uploadPlugin(
+  filename: string,
+  pyContent: string,
+  manifestContent: string | null = null,
+): Promise<PluginResponse> {
+  return request<PluginResponse>("/api/extra/plugins/upload", {
+    method: "POST",
+    body: { filename, py_content: pyContent, manifest_content: manifestContent },
+  });
+}

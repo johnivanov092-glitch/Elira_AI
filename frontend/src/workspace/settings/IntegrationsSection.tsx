@@ -1,11 +1,12 @@
-import { Loader2, Play, Plus, RefreshCw, Square, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { FilePlus, Loader2, Play, Plus, RefreshCw, Square, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getSshConfig, listMcpServers, restartMcpServer, setSshConfig,
   startMcpServer, stopMcpServer, type McpServerSpec, type SshConfig,
 } from "../../api/codeAgent";
 import {
-  listPlugins, reloadPlugins, setPluginEnabled, type PluginItem,
+  createPlugin, listPlugins, reloadPlugins, setPluginEnabled, uploadPlugin,
+  type PluginItem,
 } from "../../api/plugins";
 import { cn } from "../../ui/cn";
 import { Loading, McpBtn, Note, Wrap } from "./_shared";
@@ -23,6 +24,12 @@ export function SshMcpSection() {
 function PluginsBlock() {
   const [items, setItems] = useState<PluginItem[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCategory, setNewCategory] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const reload = useCallback(() => {
     listPlugins().then(setItems).catch(() => setItems([]));
@@ -30,26 +37,101 @@ function PluginsBlock() {
   useEffect(() => { reload(); }, [reload]);
 
   async function doReload() {
-    setBusy(true);
+    setBusy(true); setErr("");
     try { await reloadPlugins(); reload(); } catch { /* ignore */ } finally { setBusy(false); }
   }
   async function toggle(name: string, enabled: boolean) {
-    setBusy(true);
+    setBusy(true); setErr("");
     try { await setPluginEnabled(name, !enabled); reload(); } catch { /* ignore */ } finally { setBusy(false); }
+  }
+
+  async function doCreate() {
+    const name = newName.trim();
+    if (!name) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await createPlugin(name, newCategory.trim(), newDesc.trim());
+      if (r && r.ok === false) { setErr(String(r.error ?? "Не удалось создать плагин")); return; }
+      setNewName(""); setNewCategory(""); setNewDesc(""); setShowNew(false);
+      reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Сбой запроса");
+    } finally { setBusy(false); }
+  }
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = ""; // allow re-picking the same file
+    if (files.length === 0) return;
+    const py = files.find((f) => f.name.toLowerCase().endsWith(".py"));
+    if (!py) { setErr("Нужен .py файл плагина"); return; }
+    const manifestFile = files.find((f) => f.name.toLowerCase().endsWith(".json"));
+    setBusy(true); setErr("");
+    try {
+      const pyText = await py.text();
+      const manifestText = manifestFile ? await manifestFile.text() : null;
+      const r = await uploadPlugin(py.name, pyText, manifestText);
+      if (r && r.ok === false) { setErr(String(r.error ?? "Не удалось загрузить плагин")); return; }
+      reload();
+    } catch (er) {
+      setErr(er instanceof Error ? er.message : "Сбой чтения файла");
+    } finally { setBusy(false); }
   }
 
   return (
     <Wrap title="Плагины">
-      <Note>Локальные плагины проекта (data/plugins) — дают агенту дополнительные инструменты.</Note>
-      <div className="my-2 flex justify-end">
+      <Note>Локальные плагины проекта (data/plugins) — дают агенту дополнительные инструменты. Новые создаются выключенными и требуют классификации админом.</Note>
+      <div className="my-2 flex flex-wrap justify-end gap-2">
+        <button type="button" onClick={() => { setShowNew((v) => !v); setErr(""); }} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50">
+          <FilePlus size={13} /> Создать
+        </button>
+        <button type="button" onClick={() => fileRef.current?.click()} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50">
+          <Upload size={13} /> Загрузить
+        </button>
         <button type="button" onClick={doReload} disabled={busy} className="flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50">
           {busy ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Перезагрузить
         </button>
+        <input ref={fileRef} type="file" accept=".py,.json" multiple onChange={onFile} className="hidden" />
       </div>
+
+      {showNew && (
+        <div className="mb-2.5 flex flex-col gap-2 rounded-lg border border-line bg-surface/40 p-2.5">
+          <input
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void doCreate(); }}
+            placeholder="имя (a-z, 0-9, -, _)"
+            className="rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+          />
+          <div className="flex gap-2">
+            <input
+              value={newCategory}
+              onChange={(e) => setNewCategory(e.target.value)}
+              placeholder="категория (необяз.)"
+              className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+            />
+            <input
+              value={newDesc}
+              onChange={(e) => setNewDesc(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void doCreate(); }}
+              placeholder="описание (необяз.)"
+              className="flex-[2] rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+            />
+          </div>
+          <div className="flex justify-end">
+            <button type="button" onClick={() => void doCreate()} disabled={busy || !newName.trim()} className={cn("flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity", newName.trim() && !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40")}>
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />} Создать скелет
+            </button>
+          </div>
+        </div>
+      )}
+
+      {err && <div className="mb-2 rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[12px] text-[#d99a9a]">{err}</div>}
+
       {items === null ? (
         <Loading />
       ) : items.length === 0 ? (
-        <Note>Плагинов нет. Положи их в data/plugins и нажми «Перезагрузить».</Note>
+        <Note>Плагинов нет. Создай скелет, загрузи .py или положи файлы в data/plugins.</Note>
       ) : (
         <div className="flex flex-col gap-1.5">
           {items.map((p, i) => {

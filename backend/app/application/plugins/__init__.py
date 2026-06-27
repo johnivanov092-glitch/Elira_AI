@@ -4,6 +4,7 @@ from app.application.plugins.runtime import (
     PLUGINS_DIR,
     PLUGIN_DEFAULT_TIMEOUT,
     check_triggers,
+    create_plugin,
     disable_plugin,
     enable_plugin,
     fire_hook,
@@ -14,12 +15,14 @@ from app.application.plugins.runtime import (
     run_plugin,
     run_triggered,
     update_plugin_settings,
+    upload_plugin,
 )
 
 __all__ = [
     "PLUGINS_DIR",
     "PLUGIN_DEFAULT_TIMEOUT",
     "check_triggers",
+    "create_plugin",
     "disable_plugin",
     "enable_plugin",
     "fire_hook",
@@ -30,4 +33,5 @@ __all__ = [
     "run_plugin",
     "run_triggered",
     "update_plugin_settings",
+    "upload_plugin",
 ]

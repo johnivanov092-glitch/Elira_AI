@@ -17,6 +17,7 @@ from app.application.skills_extra import (
 from app.application.plugins import (
     list_plugins, run_plugin, reload_plugins,
     enable_plugin, disable_plugin, get_plugin_info, update_plugin_settings,
+    create_plugin, upload_plugin,
 )
 
 router = APIRouter(prefix="/api/extra", tags=["extra-skills"])
@@ -135,6 +136,16 @@ class PluginSettingsRequest(BaseModel):
     name: str
     settings: dict = {}
 
+class PluginCreateRequest(BaseModel):
+    name: str
+    category: str = ""
+    description: str = ""
+
+class PluginUploadRequest(BaseModel):
+    filename: str
+    py_content: str
+    manifest_content: str | None = None
+
 @router.get("/plugins/list")
 def api_plugins_list():
     return list_plugins()
@@ -182,3 +193,11 @@ def api_plugin_settings(p: PluginSettingsRequest):
 @router.post("/plugins/reload")
 def api_plugins_reload():
     return reload_plugins()
+
+@router.post("/plugins/create")
+def api_plugin_create(p: PluginCreateRequest):
+    return create_plugin(p.name, p.category, p.description)
+
+@router.post("/plugins/upload")
+def api_plugin_upload(p: PluginUploadRequest):
+    return upload_plugin(p.filename, p.py_content, p.manifest_content)

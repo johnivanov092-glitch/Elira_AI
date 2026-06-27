@@ -577,6 +577,177 @@ def run_triggered(user_text: str) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════════
+# СОЗДАНИЕ / ЗАГРУЗКА (авторинг из UI)
+# ═══════════════════════════════════════════════════════════════
+
+import re as _re
+
+_NAME_RE = _re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_UPLOAD_MAX_BYTES: int = 256 * 1024  # 256 KiB per file — plugins are tiny scripts
+
+_SKELETON_TEMPLATE = '''\
+"""{name} — Elira plugin (auto-generated skeleton)."""
+
+# Metadata surfaced via `inspect` (optional, mirrored from the manifest).
+CATEGORY = {category!r}
+DESCRIPTION = {description!r}
+TRIGGERS: list[str] = []
+ICON = "🔌"
+VERSION = "1.0"
+AUTHOR = ""
+CONFIG: dict = {{}}
+
+
+def run(args: dict) -> dict:
+    """Entry point. `args` is the JSON payload from the caller.
+
+    Return a JSON-serialisable dict. This skeleton just echoes the input.
+    """
+    return {{"ok": True, "echo": args}}
+'''
+
+
+def _sanitize_plugin_stem(raw: str) -> str:
+    """Validate a plugin file stem from untrusted UI input.
+
+    Rejects empty names, leading underscore (reserved for runner internals),
+    anything outside [a-z0-9_-], and path-traversal. Returns the clean stem
+    or raises ValueError with a user-facing message.
+    """
+    stem = (raw or "").strip()
+    if stem.lower().endswith(".py"):
+        stem = stem[:-3]
+    stem = stem.strip()
+    if not stem:
+        raise ValueError("Имя плагина пустое")
+    if stem.startswith("_"):
+        raise ValueError("Имя не может начинаться с '_' (зарезервировано)")
+    if not _NAME_RE.match(stem):
+        raise ValueError(
+            "Имя: только строчные латинские буквы, цифры, '-' и '_', "
+            "до 64 символов, начинается с буквы или цифры"
+        )
+    return stem
+
+
+def _default_manifest(stem: str, category: str = "", description: str = "") -> dict:
+    """Build a safe default manifest: disabled, sane limits, no capabilities."""
+    return {
+        "name": stem,
+        "version": "1.0",
+        "enabled": False,  # forbidden + disabled until admin classification
+        "timeout": PLUGIN_DEFAULT_TIMEOUT,
+        "capabilities": [],
+        "category": category or "utility",
+        "icon": "🔌",
+        "description": description or stem,
+        "author": "",
+        "triggers": [],
+        "hooks": [],
+        "config": {},
+    }
+
+
+def _write_plugin_files(stem: str, py_text: str, manifest: dict) -> Path:
+    """Write <stem>.py + <stem>.manifest.json as UTF-8 (no BOM). Caller ensures
+    neither file pre-exists. Returns the .py path."""
+    py_path = (PLUGINS_DIR / f"{stem}.py").resolve()
+    manifest_path = (PLUGINS_DIR / f"{stem}.manifest.json").resolve()
+    # Defence in depth: both targets must stay inside PLUGINS_DIR.
+    base = PLUGINS_DIR.resolve()
+    for p in (py_path, manifest_path):
+        if base not in p.parents:
+            raise ValueError("Недопустимый путь плагина")
+    py_path.write_text(py_text, encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return py_path
+
+
+def create_plugin(name: str, category: str = "", description: str = "") -> dict:
+    """Generate a skeleton plugin (<name>.py + manifest, disabled) then reload.
+
+    The .py is never imported here — discovery only reads the manifest, and the
+    plugin lands forbidden + disabled until an admin classifies it.
+    """
+    try:
+        stem = _sanitize_plugin_stem(name)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    if (PLUGINS_DIR / f"{stem}.py").exists():
+        return {"ok": False, "error": f"Плагин '{stem}' уже существует"}
+
+    category = (category or "").strip()
+    description = (description or "").strip()
+    py_text = _SKELETON_TEMPLATE.format(
+        name=stem, category=category or "utility", description=description or stem
+    )
+    manifest = _default_manifest(stem, category, description)
+    try:
+        _write_plugin_files(stem, py_text, manifest)
+    except Exception as exc:
+        return {"ok": False, "error": f"Запись не удалась: {exc}"}
+
+    reload_result = reload_plugins()
+    return {"ok": True, "name": stem, "reload": reload_result}
+
+
+def upload_plugin(
+    filename: str,
+    py_content: str,
+    manifest_content: str | None = None,
+) -> dict:
+    """Save an uploaded plugin .py (+ optional manifest) then reload.
+
+    Untrusted .py text is written to disk but never imported into the backend;
+    it can only run out-of-process after admin classification. If no manifest is
+    supplied, a safe disabled default is generated. The manifest's `enabled` flag
+    is always forced to False on upload.
+    """
+    try:
+        stem = _sanitize_plugin_stem(filename)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    if py_content is None:
+        return {"ok": False, "error": "Пустой файл плагина"}
+    py_bytes = py_content.encode("utf-8")
+    if len(py_bytes) == 0:
+        return {"ok": False, "error": "Пустой файл плагина"}
+    if len(py_bytes) > _UPLOAD_MAX_BYTES:
+        return {"ok": False, "error": f"Файл больше {_UPLOAD_MAX_BYTES // 1024} КиБ"}
+
+    if (PLUGINS_DIR / f"{stem}.py").exists():
+        return {"ok": False, "error": f"Плагин '{stem}' уже существует"}
+
+    if manifest_content:
+        if len(manifest_content.encode("utf-8")) > _UPLOAD_MAX_BYTES:
+            return {"ok": False, "error": "manifest больше лимита"}
+        try:
+            manifest = json.loads(manifest_content)
+        except Exception as exc:
+            return {"ok": False, "error": f"manifest не парсится: {exc}"}
+        if not isinstance(manifest, dict):
+            return {"ok": False, "error": "manifest должен быть объектом JSON"}
+    else:
+        manifest = _default_manifest(stem)
+
+    # Never trust the uploaded manifest's enable flag — admin must classify first.
+    manifest["enabled"] = False
+    manifest.setdefault("name", stem)
+
+    try:
+        _write_plugin_files(stem, py_content, manifest)
+    except Exception as exc:
+        return {"ok": False, "error": f"Запись не удалась: {exc}"}
+
+    reload_result = reload_plugins()
+    return {"ok": True, "name": stem, "reload": reload_result}
+
+
+# ═══════════════════════════════════════════════════════════════
 # АВТОЗАГРУЗКА
 # ═══════════════════════════════════════════════════════════════
 
