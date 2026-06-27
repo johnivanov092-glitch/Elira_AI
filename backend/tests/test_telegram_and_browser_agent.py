@@ -172,43 +172,68 @@ class TelegramRuntimeConfigTest(unittest.TestCase):
         self.assertFalse(result["running"])
 
 
-class BrowserAgentStubTest(unittest.TestCase):
+class BrowserAgentTest(unittest.TestCase):
+    """The browser agent is real (Playwright/SSRF-guarded); these cover the
+    deterministic, offline-verifiable paths only — no live network calls."""
+
     def setUp(self) -> None:
         self._agent = BrowserAgent()
 
-    def test_search_returns_not_implemented(self) -> None:
-        result = self._agent.search("test query")
+    # ----- input validation: empty inputs are rejected without touching IO ---
+
+    def test_search_empty_query_not_ok(self) -> None:
+        result = self._agent.search("   ")
         self.assertFalse(result["ok"])
         self.assertIn("error", result)
 
-    def test_search_accepts_max_results(self) -> None:
-        result = self._agent.search("test", max_results=10)
+    def test_run_empty_start_url_not_ok(self) -> None:
+        result = self._agent.run("")
         self.assertFalse(result["ok"])
+        self.assertIn("error", result)
 
-    def test_run_returns_not_implemented(self) -> None:
-        result = self._agent.run()
-        self.assertFalse(result["ok"])
-
-    def test_run_accepts_args(self) -> None:
-        result = self._agent.run("goal", key="val")
-        self.assertFalse(result["ok"])
-
-    def test_screenshot_returns_not_implemented(self) -> None:
+    def test_screenshot_empty_url_not_ok(self) -> None:
         result = self._agent.screenshot()
         self.assertFalse(result["ok"])
+        self.assertIn("error", result)
 
-    def test_error_message_mentions_stub(self) -> None:
-        result = self._agent.search("query")
-        self.assertIn("stub", result["error"])
+    # ----- SSRF guard: private / loopback targets are blocked before launch ---
 
-    def test_all_methods_consistently_not_ok(self) -> None:
+    def test_run_blocks_loopback_url(self) -> None:
+        result = self._agent.run("http://127.0.0.1:8000/admin")
+        self.assertFalse(result["ok"])
+        self.assertIn("SSRF", result["error"])
+
+    def test_run_blocks_private_host(self) -> None:
+        result = self._agent.run("http://192.168.0.1/")
+        self.assertFalse(result["ok"])
+        self.assertIn("SSRF", result["error"])
+
+    def test_screenshot_blocks_loopback_url(self) -> None:
+        result = self._agent.screenshot("http://localhost/secret")
+        self.assertFalse(result["ok"])
+        self.assertIn("SSRF", result["error"])
+
+    # ----- step-count guard ---------------------------------------------------
+
+    def test_run_rejects_too_many_steps(self) -> None:
+        result = self._agent.run(
+            "https://example.com",
+            steps=[{"action": "wait", "ms": 1}] * 100,
+        )
+        self.assertFalse(result["ok"])
+        self.assertIn("too many steps", result["error"])
+
+    # ----- contract: every method returns a dict carrying an "ok" key --------
+
+    def test_all_methods_return_structured_dict(self) -> None:
         results = [
-            self._agent.search("q"),
-            self._agent.run(),
-            self._agent.screenshot(),
+            self._agent.search(""),
+            self._agent.run("http://127.0.0.1/"),
+            self._agent.screenshot("http://127.0.0.1/"),
         ]
         for result in results:
-            self.assertFalse(result["ok"])
+            self.assertIsInstance(result, dict)
+            self.assertIn("ok", result)
 
 
 if __name__ == "__main__":
