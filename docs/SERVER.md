@@ -20,12 +20,15 @@ here, and do not store keys, passwords, or tokens here.
 
 ## Services
 
-Two llama.cpp containers (image `ghcr.io/ggml-org/llama.cpp:server-rocm`):
+Four containers; the GPU services use `ghcr.io/ggml-org/llama.cpp:server-rocm`,
+embeddings use `ghcr.io/ggml-org/llama.cpp:server` (CPU), OCR uses PaddleOCR (CPU):
 
-| Service | Container | Endpoint | OpenAI model | Backing model (current, swappable) |
-|---------|-----------|----------|--------------|------------------------------------|
-| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model` | Qwen3.6-27B GGUF (Q4_K_XL) |
-| Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | `local-embed` | Qwen3-Embedding-0.6B GGUF, dim 1024 |
+| Service | Container | Endpoint | OpenAI model | Backing model (current, swappable) | Compute |
+|---------|-----------|----------|--------------|------------------------------------|---------|
+| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model` | Qwen3.6-35B-A3B (Q4_K_XL), 128K ctx | GPU (ROCm) |
+| Vision (multimodal) | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | `vision-model` | MiniCPM-V 4.6 (Q5_K_M) + mmproj-f16 | GPU (ROCm) |
+| Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | `local-embed` | Qwen3-Embedding-0.6B GGUF, dim 1024 | CPU |
+| OCR | `elira-ocr` | `http://192.168.88.15:8002/ocr` | — | PaddleOCR | CPU |
 
 - Monitoring (Netdata): `http://192.168.88.15:19999`
 - Backing models change on swaps; `../Elira_AI_Server/Server/ACCESS.md` is the
