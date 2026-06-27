@@ -1,0 +1,478 @@
+from __future__ import annotations
+
+import subprocess
+import textwrap
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+from app.application.code_agent.tools._sandbox import _truncate_middle
+from app.application.code_agent.tools._shell import (
+    _CURRENT_RUN_ID,
+    _KILLED_RUN_IDS,
+    _LIVE_SHELL_LOCK,
+    _LIVE_SHELL_PROCS,
+    _SHELL_STDERR_LIMIT,
+    _SHELL_STDOUT_LIMIT,
+    _SHELL_TIMEOUT_MAX,
+    _blocked_shell_fragment,
+    _kill_proc_tree,
+    _new_process_group_kwargs,
+    _register_shell_proc,
+    _unregister_shell_proc,
+)
+
+
+def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
+    cleaned_command = (command or "").strip()
+    if not cleaned_command:
+        return {"text": "ERROR: command is empty"}
+    blocked = _blocked_shell_fragment(cleaned_command)
+    if blocked:
+        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}"}
+    safe_timeout = max(1, min(int(timeout), _SHELL_TIMEOUT_MAX))
+
+    run_id = _CURRENT_RUN_ID.get()
+    try:
+        # Popen (not subprocess.run) so the live process is registered and can
+        # be killed mid-flight by the Stop button. We drive the wait ourselves
+        # via communicate() with a deadline, killing on timeout OR cancel.
+        proc = subprocess.Popen(
+            cleaned_command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(project_root.resolve()),
+            # Close stdin: a shell tool must never block on input. Interactive
+            # prompts (ssh host-key/password, apt, etc.) get EOF and fail fast
+            # instead of hanging until the timeout. For real SSH use the ssh tool.
+            stdin=subprocess.DEVNULL,
+            # Own process group so Stop/timeout can kill the whole tree, not just
+            # the cmd.exe wrapper (which would orphan the real child on Windows).
+            **_new_process_group_kwargs(),
+        )
+    except Exception as exc:
+        return {"text": f"ERROR: {exc}"}
+
+    _register_shell_proc(run_id, proc)
+    cancelled = False
+    timed_out = False
+    # Drain stdout/stderr in background threads so a chatty command can't fill
+    # the OS pipe buffer and deadlock (child blocks on write → never exits →
+    # poll() never completes). The main loop then only watches poll()/deadline,
+    # which keeps the process killable mid-flight by the Stop button.
+    out_buf: list[str] = []
+    err_buf: list[str] = []
+
+    def _drain(stream, sink: list[str]) -> None:
+        try:
+            for chunk in iter(lambda: stream.read(8192), ""):
+                if not chunk:
+                    break
+                sink.append(chunk)
+        except Exception:
+            pass
+
+    t_out = threading.Thread(target=_drain, args=(proc.stdout, out_buf), daemon=True)
+    t_err = threading.Thread(target=_drain, args=(proc.stderr, err_buf), daemon=True)
+    t_out.start()
+    t_err.start()
+    try:
+        deadline = time.monotonic() + safe_timeout
+        # Poll so a Stop press (which proc.kill()s us from another thread) is
+        # observed within ~0.1s instead of waiting out the whole timeout.
+        while True:
+            if proc.poll() is not None:
+                break
+            if time.monotonic() >= deadline:
+                _kill_proc_tree(proc)
+                timed_out = True
+                break
+            time.sleep(0.1)
+    except Exception as exc:
+        try:
+            _kill_proc_tree(proc)
+        except Exception:
+            pass
+        return {"text": f"ERROR: {exc}"}
+    finally:
+        # Let the readers finish flushing whatever the process wrote/buffered.
+        t_out.join(timeout=5)
+        t_err.join(timeout=5)
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
+        except Exception:
+            pass
+        _unregister_shell_proc(run_id, proc)
+        # Stop is detected via the explicit kill registry (taskkill on Windows
+        # yields a *positive* exit code, so the returncode alone can't tell a
+        # Stop from a normal failure). A timeout also kills the proc, but that
+        # is a tool error, not a Stop. Fall back to a negative code for the
+        # POSIX direct-kill case where no run_id was bound.
+        if not timed_out:
+            if run_id:
+                with _LIVE_SHELL_LOCK:
+                    if run_id in _KILLED_RUN_IDS:
+                        _KILLED_RUN_IDS.discard(run_id)
+                        cancelled = True
+            if not cancelled and proc.returncode is not None and proc.returncode < 0:
+                cancelled = True
+
+    out, err = "".join(out_buf), "".join(err_buf)
+
+    if timed_out:
+        tail = f"\n{_truncate_middle(err.rstrip(), _SHELL_STDERR_LIMIT)}" if err else ""
+        return {"text": f"ERROR: command timed out after {safe_timeout}s{tail}"}
+
+    if cancelled:
+        return {"text": f"$ {cleaned_command}\nПрервано пользователем (Стоп)."}
+
+    stdout, stderr = out or "", err or ""
+    parts = [f"$ {cleaned_command}", f"exit={proc.returncode}"]
+    if stdout:
+        parts.append(f"STDOUT:\n{_truncate_middle(stdout.rstrip(), _SHELL_STDOUT_LIMIT)}")
+    if stderr:
+        parts.append(f"STDERR:\n{_truncate_middle(stderr.rstrip(), _SHELL_STDERR_LIMIT)}")
+    return {"text": "\n".join(parts)}
+
+
+# ─── run_server: background process launcher ────────────────────────────────
+# Unlike run_bash (which blocks until the command exits or times out), run_server
+# starts a long-lived process via Popen and returns IMMEDIATELY. The process is
+# tracked in a module-level registry keyed by pid so it can be listed and stopped
+# explicitly later. These servers deliberately OUTLIVE the agent run that started
+# them, so they are NOT registered in _LIVE_SHELL_PROCS and are NOT killed by the
+# Stop button — only by `stop`/`stop_all`. Output is captured to log files under
+# the project's .elira/servers/ so the model can inspect startup without blocking.
+
+_SERVER_LOG_DIRNAME = ".elira/servers"
+_SERVER_STARTUP_GRACE = 1.5  # seconds to let the process crash-or-bind before reporting
+_SERVER_LOG_TAIL_CHARS = 4000
+
+
+class _ServerHandle:
+    __slots__ = ("pid", "command", "proc", "log_path", "port", "started_at")
+
+    def __init__(self, pid: int, command: str, proc: subprocess.Popen,
+                 log_path: Path, port: int | None) -> None:
+        self.pid = pid
+        self.command = command
+        self.proc = proc
+        self.log_path = log_path
+        self.port = port
+        self.started_at = time.time()
+
+
+_LIVE_SERVERS: dict[int, _ServerHandle] = {}
+_SERVERS_LOCK = threading.Lock()
+
+
+def _reap_dead_servers() -> None:
+    """Drop handles whose process has exited so `list` stays honest."""
+    with _SERVERS_LOCK:
+        dead = [pid for pid, h in _LIVE_SERVERS.items() if h.proc.poll() is not None]
+        for pid in dead:
+            _LIVE_SERVERS.pop(pid, None)
+
+
+def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
+    try:
+        data = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+    return _truncate_middle(data.rstrip(), limit)
+
+
+# ─── GUI auto-verification after run_server ─────────────────────────────────
+# When the agent starts a GUI (a web dev-server *or* a native desktop window),
+# it is blind to what actually rendered: a process that didn't crash can still
+# have launched a broken/blank window. So right after a successful `start` we
+# capture ONE screenshot and feed it back into the run, closing the perception
+# loop the model otherwise lacks (this is the gap that made it "fix one error,
+# create another" during GUI bring-up — it could not see the result of an edit).
+#
+#   * port set  → web app: screenshot http://localhost:<port> via Playwright
+#                 (reuses skills.runtime.screenshot_url).
+#   * no port   → native window: full-screen grab via Pillow.ImageGrab.
+#
+# Delivery is "screenshot + vision, with fallback": if VISION_ENABLED, the PNG
+# is described by the vision model (:8004) and that text goes back to the agent
+# so it can read what it built. If vision is off / unreachable, we degrade
+# gracefully to the screenshot path + process status — never an exception, since
+# this is best-effort instrumentation, not a gate.
+
+_GUI_VERIFY_SETTLE = 1.0  # extra seconds for a window/page to paint before the shot
+
+
+def _native_screenshot() -> dict[str, Any]:
+    """Grab the full primary screen to a PNG in the shared generated-files dir.
+
+    Mirrors the dict shape of skills.runtime.screenshot_url (ok/path/filename)
+    so the caller treats web and native captures uniformly. Best-effort: returns
+    {"ok": False, "error": ...} instead of raising when Pillow is missing or the
+    grab fails (e.g. headless / no display)."""
+    try:
+        from PIL import ImageGrab
+    except Exception as exc:  # pragma: no cover - optional dependency
+        return {"ok": False, "error": f"native screenshot needs Pillow: {exc}"}
+    try:
+        from app.application.skills.runtime import OUTPUT_DIR
+    except Exception as exc:  # pragma: no cover - import guard
+        return {"ok": False, "error": f"output dir unavailable: {exc}"}
+
+    fname = f"gui_native_{int(time.time())}.png"
+    path = OUTPUT_DIR / fname
+    try:
+        img = ImageGrab.grab()
+        img.save(str(path))
+    except Exception as exc:
+        return {"ok": False, "error": f"native grab failed: {exc}"}
+    return {
+        "ok": True,
+        "path": str(path),
+        "filename": fname,
+        "download_url": f"/api/skills/download/{fname}",
+        "view_url": f"/api/skills/view/{fname}",
+    }
+
+
+def _auto_verify_gui(handle: "_ServerHandle") -> str:
+    """Capture + (optionally) describe the GUI a just-started server renders.
+
+    Returns a human-readable block to append to the run_server result, or "" if
+    capture is impossible. Never raises — GUI verification is best-effort and
+    must not turn a healthy `start` into an error."""
+    # Let the window/page paint a little past the bare crash-grace already spent.
+    try:
+        time.sleep(_GUI_VERIFY_SETTLE)
+    except Exception:
+        pass
+
+    if handle.port:
+        try:
+            from app.application.skills.runtime import screenshot_url
+            shot = screenshot_url(f"http://localhost:{handle.port}")
+        except Exception as exc:
+            shot = {"ok": False, "error": str(exc)}
+        kind = f"web (http://localhost:{handle.port})"
+    else:
+        shot = _native_screenshot()
+        kind = "native window"
+
+    if not shot.get("ok"):
+        return (
+            f"🖼 GUI verification: could not capture {kind} "
+            f"({shot.get('error') or 'unknown error'}). Process is running — "
+            f"use run_server(action='logs', pid={handle.pid}) to inspect output."
+        )
+
+    shot_path = str(shot.get("path") or "")
+    title = shot.get("title")
+    header = f"🖼 GUI verification ({kind}): screenshot saved at {shot_path}"
+    if title:
+        header += f"\n  page title: {title}"
+
+    # Vision channel with graceful fallback. Read the PNG bytes and describe via
+    # the same :8004 path read_image uses; if vision is off/unreachable, return
+    # the path + status so the agent can still open it later with read_image.
+    try:
+        from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
+    except Exception:
+        is_vision_enabled = None  # type: ignore[assignment]
+        describe_image = None  # type: ignore[assignment]
+
+    if is_vision_enabled and is_vision_enabled():
+        try:
+            contents = Path(shot_path).read_bytes()
+        except Exception:
+            contents = b""
+        description = describe_image(Path(shot_path).name, contents) if (describe_image and contents) else None
+        if description:
+            return (
+                f"{header}\n  vision sees:\n"
+                f"{textwrap.indent(description.strip(), '    ')}"
+            )
+        return (
+            f"{header}\n  (vision is on but returned no description — service "
+            f"unreachable or empty. Try read_image('{shot_path}') to retry.)"
+        )
+
+    return (
+        f"{header}\n  (vision is off: set VISION_ENABLED=1 on the server, or call "
+        f"read_image('{shot_path}') once enabled, to get a text description of what rendered.)"
+    )
+
+
+def stop_all_servers() -> int:
+    """Kill every tracked background server. Returns the count signalled.
+    Intended for process/app shutdown, not the per-run Stop button."""
+    with _SERVERS_LOCK:
+        handles = list(_LIVE_SERVERS.values())
+    killed = 0
+    for h in handles:
+        try:
+            if h.proc.poll() is None:
+                _kill_proc_tree(h.proc)
+                killed += 1
+        except Exception:
+            pass
+    with _SERVERS_LOCK:
+        _LIVE_SERVERS.clear()
+    return killed
+
+
+def tool_run_server(
+    project_root: Path,
+    *,
+    action: str = "start",
+    command: str = "",
+    port: int | None = None,
+    pid: int | None = None,
+) -> dict[str, Any]:
+    """Manage long-lived background processes (dev servers, watchers).
+
+    action:
+        start  — launch `command` in the background, return immediately (pid + log).
+        list   — show every running server this agent started (pid, port, command).
+        logs   — tail the captured output of the server with the given `pid`.
+        stop   — terminate the server with the given `pid`.
+        stop_all — terminate every tracked server.
+    """
+    act = (action or "start").strip().lower()
+    _reap_dead_servers()
+
+    if act == "list":
+        with _SERVERS_LOCK:
+            handles = list(_LIVE_SERVERS.values())
+        if not handles:
+            return {"text": "No background servers are running."}
+        lines = ["Running background servers:"]
+        for h in sorted(handles, key=lambda x: x.started_at):
+            age = int(time.time() - h.started_at)
+            port_s = f" port={h.port}" if h.port else ""
+            lines.append(f"  pid={h.pid}{port_s} age={age}s — {h.command}")
+        return {"text": "\n".join(lines)}
+
+    if act == "stop_all":
+        n = stop_all_servers()
+        return {"text": f"Stopped {n} background server(s)."}
+
+    if act == "logs":
+        if pid is None:
+            return {"text": "ERROR: action 'logs' requires a pid."}
+        with _SERVERS_LOCK:
+            h = _LIVE_SERVERS.get(int(pid))
+        if h is None:
+            return {"text": f"ERROR: no tracked server with pid={pid}."}
+        tail = _read_log_tail(h.log_path)
+        status = "running" if h.proc.poll() is None else f"exited (code={h.proc.returncode})"
+        body = tail or "(no output captured yet)"
+        return {"text": f"server pid={pid} [{status}]\n$ {h.command}\n\n{body}"}
+
+    if act == "stop":
+        if pid is None:
+            return {"text": "ERROR: action 'stop' requires a pid."}
+        with _SERVERS_LOCK:
+            h = _LIVE_SERVERS.pop(int(pid), None)
+        if h is None:
+            return {"text": f"ERROR: no tracked server with pid={pid}."}
+        try:
+            if h.proc.poll() is None:
+                _kill_proc_tree(h.proc)
+                try:
+                    h.proc.wait(timeout=5)
+                except Exception:
+                    pass
+            return {"text": f"Stopped server pid={pid} — {h.command}"}
+        except Exception as exc:
+            return {"text": f"ERROR stopping pid={pid}: {exc}"}
+
+    if act != "start":
+        return {"text": f"ERROR: unknown action '{action}'. Use start|list|logs|stop|stop_all."}
+
+    cleaned_command = (command or "").strip()
+    if not cleaned_command:
+        return {"text": "ERROR: action 'start' requires a command."}
+    blocked = _blocked_shell_fragment(cleaned_command)
+    if blocked:
+        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}"}
+
+    log_dir = (project_root.resolve() / _SERVER_LOG_DIRNAME)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        return {"text": f"ERROR: cannot create server log dir: {exc}"}
+    log_path = log_dir / f"server-{int(time.time() * 1000)}.log"
+
+    try:
+        log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return {"text": f"ERROR: cannot open log file: {exc}"}
+
+    try:
+        proc = subprocess.Popen(
+            cleaned_command,
+            shell=True,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=str(project_root.resolve()),
+            # Background servers never read stdin; close it so they don't block.
+            stdin=subprocess.DEVNULL,
+            # Own process group so `stop` kills the whole server tree, not just
+            # the cmd.exe wrapper (which would orphan the real server process).
+            **_new_process_group_kwargs(),
+        )
+    except Exception as exc:
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+        return {"text": f"ERROR: {exc}"}
+
+    handle = _ServerHandle(proc.pid, cleaned_command, proc, log_path, port)
+    with _SERVERS_LOCK:
+        _LIVE_SERVERS[proc.pid] = handle
+
+    # Give it a moment to either bind its port or crash, so we can report
+    # something useful instead of a bare "started" for a command that died.
+    time.sleep(_SERVER_STARTUP_GRACE)
+    if proc.poll() is not None:
+        with _SERVERS_LOCK:
+            _LIVE_SERVERS.pop(proc.pid, None)
+        try:
+            log_fh.close()
+        except Exception:
+            pass
+        tail = _read_log_tail(log_path)
+        body = f"\n{tail}" if tail else ""
+        return {"text": (
+            f"ERROR: server exited immediately (code={proc.returncode}).\n"
+            f"$ {cleaned_command}{body}"
+        )}
+
+    port_s = f" on port {port}" if port else ""
+    text = (
+        f"Server started in background{port_s}.\n"
+        f"  pid={proc.pid}\n"
+        f"  $ {cleaned_command}\n"
+        f"Use run_server(action='logs', pid={proc.pid}) to read output, "
+        f"run_server(action='stop', pid={proc.pid}) to stop it. "
+        f"It keeps running across turns and is NOT killed by Stop."
+    )
+
+    # Auto GUI verification: capture what just launched and feed it back so the
+    # model can "see" its build instead of flying blind through UI bring-up.
+    try:
+        gui_block = _auto_verify_gui(handle)
+    except Exception as exc:  # never let instrumentation break a healthy start
+        gui_block = f"🖼 GUI verification skipped (internal error: {exc})."
+    if gui_block:
+        text = f"{text}\n\n{gui_block}"
+
+    return {"text": text}
