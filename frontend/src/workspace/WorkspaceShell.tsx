@@ -224,6 +224,15 @@ export default function WorkspaceShell() {
     refreshSessions();
   }
 
+  async function togglePin(id: string) {
+    const s = sessions.find((x) => x.id === id);
+    const next = !s?.pinned;
+    // Оптимистично — чтобы строка прыгнула наверх сразу, без ожидания сети.
+    setSessions((prev) => prev.map((x) => (x.id === id ? { ...x, pinned: next } : x)));
+    try { await patchCodeSession(id, { pinned: next }); } catch { /* ignore */ }
+    refreshSessions();
+  }
+
   async function deleteSession(id: string) {
     bg.stop(id);
     try { await deleteCodeSession(id); } catch { /* ignore */ }
@@ -254,6 +263,7 @@ export default function WorkspaceShell() {
         onSelect={selectSession}
         onDelete={deleteSession}
         onRename={renameSession}
+        onTogglePin={togglePin}
       />
 
       <section className="relative flex min-h-0 min-w-0 flex-col">
