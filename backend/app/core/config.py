@@ -9,7 +9,6 @@ DATA_DIR      = APP_DIR
 UPLOAD_DIR    = DATA_DIR / "uploads"
 CHAT_DIR      = DATA_DIR / "chats"
 OUTPUT_DIR    = DATA_DIR / "outputs"
-DB_PATH       = DATA_DIR / "memory.db"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 BROWSER_DIR   = DATA_DIR / "browser_downloads"
 GENERATED_DIR = DATA_DIR / "generated"

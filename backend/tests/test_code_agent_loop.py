@@ -1005,6 +1005,35 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(remember_calls[0]["user_message"], "fix the bug")
         self.assertEqual(remember_calls[0]["response_text"], "fixed bug X")
 
+    def test_try_remember_skips_throwaway_temp_project(self) -> None:
+        """agent_turn summaries must not be persisted for disposable temp
+        projects (smoke/experimental runs over tmp dirs) — only for real
+        user projects. Guards the canonical RAG DB against noise like
+        '[agent_turn project=tmpXXXX] task: hello | outcome: Hello world'."""
+        from app.application.code_agent import loop_helpers
+
+        calls: list[Any] = []
+        with patch(
+            "app.application.rag_memory.service.add_to_rag",
+            side_effect=lambda **kw: calls.append(kw),
+        ):
+            # self.root is a tempfile.TemporaryDirectory → guarded out
+            loop_helpers._try_remember_turn(
+                user_message="hello",
+                response_text="Hello world",
+                project_root=self.root,
+            )
+            self.assertEqual(calls, [])
+
+            # a real (non-temp) project path → remembered
+            loop_helpers._try_remember_turn(
+                user_message="real task",
+                response_text="real outcome",
+                project_root=BACKEND_ROOT,
+            )
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["category"], "agent_turn")
+
     def test_project_prompt_get_and_set_roundtrip(self) -> None:
         # No prompt yet
         first = get_project_prompt(self.root)

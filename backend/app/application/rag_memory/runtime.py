@@ -19,9 +19,10 @@ def _text_hash(text: str) -> str:
 def _embedding_to_blob(vec: list[float] | None) -> bytes | None:
     """Pack an embedding into a compact float32 byte buffer.
 
-    768-dim float32 = 3072 bytes per embedding. ~5x smaller than the
+    1024-dim float32 = 4096 bytes per embedding. ~5x smaller than the
     JSON-text representation (~15KB per embedding) and ~50x faster to
-    read back via numpy.frombuffer than json.loads.
+    read back via numpy.frombuffer than json.loads. The packer is
+    dimension-agnostic — it serializes len(vec) floats whatever the dim.
     """
     if not vec:
         return None
@@ -532,6 +533,79 @@ def delete_rag(*, conn_factory: Callable[[], Any], item_id: int) -> dict[str, An
     finally:
         conn.close()
     return {"ok": True}
+
+
+def prune_rag(
+    *,
+    conn_factory: Callable[[], Any],
+    max_age_days: int = 30,
+    max_importance: int = 3,
+    categories: tuple[str, ...] = ("agent_turn",),
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Decay / forgetting for RAG: evict stale, never-recalled machine-made
+    memories so the store doesn't grow without bound.
+
+    A row is a prune candidate only when ALL hold:
+      - its category is in ``categories`` (default just ``agent_turn`` — the
+        auto-generated turn summaries). User-authored facts / preferences /
+        instructions are **never** touched.
+      - ``importance <= max_importance`` — dedup never bumped it, so it stayed
+        low-value (a repeated/important turn would have climbed above this).
+      - ``access_count == 0`` — a recall never once surfaced it.
+      - ``created_at`` older than ``max_age_days``.
+
+    ``dry_run=True`` reports the candidates (count + small sample) without
+    deleting. Returns a dict with counts and the criteria used.
+    """
+    if not categories:
+        return {"ok": True, "candidates": 0, "pruned": 0, "dry_run": dry_run, "sample": []}
+
+    placeholders = ",".join("?" for _ in categories)
+    where = (
+        f"category IN ({placeholders}) "
+        "AND importance <= ? "
+        "AND COALESCE(access_count, 0) = 0 "
+        "AND created_at IS NOT NULL "
+        "AND created_at < datetime('now', ?)"
+    )
+    params = (*categories, int(max_importance), f"-{int(max_age_days)} days")
+
+    conn = conn_factory()
+    try:
+        candidates = conn.execute(
+            f"SELECT COUNT(*) FROM rag_items WHERE {where}", params
+        ).fetchone()[0]
+        sample = [
+            {"id": row[0], "text": (row[1] or "")[:80]}
+            for row in conn.execute(
+                f"SELECT id, text FROM rag_items WHERE {where} ORDER BY created_at LIMIT 5",
+                params,
+            ).fetchall()
+        ]
+        pruned = 0
+        if not dry_run and candidates:
+            cur = conn.execute(f"DELETE FROM rag_items WHERE {where}", params)
+            pruned = cur.rowcount or 0
+            conn.commit()
+    finally:
+        conn.close()
+
+    if pruned:
+        logger.info("rag_memory: pruned %d stale rows (categories=%s)", pruned, list(categories))
+    return {
+        "ok": True,
+        "candidates": int(candidates),
+        "pruned": int(pruned),
+        "dry_run": dry_run,
+        "sample": sample,
+        "criteria": {
+            "categories": list(categories),
+            "max_importance": int(max_importance),
+            "max_age_days": int(max_age_days),
+            "access_count": 0,
+        },
+    }
 
 
 def rag_stats(*, conn_factory: Callable[[], Any], embed_model: str) -> dict[str, Any]:

@@ -146,6 +146,16 @@ def chats_messages(chat_id: int):
     return {"items": get_messages(chat_id)}
 
 
+@router.post("/chats/{chat_id}/reflect")
+def chats_reflect(chat_id: int):
+    """Consolidate this chat into a durable episodic memory (reflection) so it
+    can be recalled in future chats. Marks the chat as saved on success."""
+    init_db()
+    from app.application.rag_memory.service import reflect_chat
+
+    return reflect_chat(chat_id)
+
+
 @router.post("/messages")
 def messages_add(payload: ChatMessageRequest):
     init_db()

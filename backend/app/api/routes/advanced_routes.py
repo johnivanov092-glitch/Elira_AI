@@ -192,6 +192,22 @@ def rag_clear_category(category: str | None = None):
         conn.close()
 
 
+@router.post("/rag/prune")
+def rag_prune(dry_run: bool = True, max_age_days: int = 30, max_importance: int = 3):
+    """Decay/forgetting: evict stale, never-recalled machine-made memories
+    (default category `agent_turn`). User facts/preferences/instructions are
+    never touched. `dry_run=true` (the default) previews candidates without
+    deleting — pass `dry_run=false` to actually prune.
+    """
+    from app.application.rag_memory.service import prune_rag
+
+    return prune_rag(
+        max_age_days=max_age_days,
+        max_importance=max_importance,
+        dry_run=dry_run,
+    )
+
+
 # ═══════════════════════════════════════════════════════════════
 # PROJECT MODE
 # ═══════════════════════════════════════════════════════════════

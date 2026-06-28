@@ -309,11 +309,33 @@ def _wrap_up_text(
     return f"Прогон остановлен: {reason} — до первого вызова инструмента."
 
 
+def _is_throwaway_project(project_root: Path) -> bool:
+    """True when the project lives under the OS temp dir — a disposable
+    sandbox from a smoke/experimental run, not a real user project.
+
+    We must not persist agent_turn memories for these: they flood RAG with
+    noise like ``[agent_turn project=tmpXXXX] task: hello | outcome: Hello
+    world`` that never matches a real future query but still dilutes recall.
+    (pytest is already isolated via ELIRA_DATA_DIR; this guards the *real*
+    canonical DB against manual/smoke runs over temp dirs.)
+    """
+    try:
+        import tempfile
+
+        root = project_root.expanduser().resolve()
+        tmp = Path(tempfile.gettempdir()).resolve()
+        return root == tmp or tmp in root.parents
+    except Exception:
+        return False
+
+
 def _try_remember_turn(*, user_message: str, response_text: str, project_root: Path) -> None:
     """Fire-and-forget: write a short summary of a successful agent turn
     to RAG so future `recall(query)` can surface it. Failures are logged
     but never raised.
     """
+    if _is_throwaway_project(project_root):
+        return
     try:
         from app.application.rag_memory.service import add_to_rag
     except Exception:

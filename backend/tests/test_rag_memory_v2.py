@@ -329,5 +329,60 @@ class SearchWithEmbeddingsBatchTest(unittest.TestCase):
         self.assertEqual(result["items"][0]["text"], "the cat purrs")
 
 
+class PruneRagTest(unittest.TestCase):
+    """Decay/eviction: prune_rag drops stale, never-recalled machine-made
+    rows but never touches user facts, recent, accessed, or important rows."""
+
+    def _seed(self) -> tuple[Any, Any]:
+        factory, holder = _make_conn_factory()
+        runtime.init_db(conn_factory=factory)
+        # (text, category, importance, access_count, created_at_sql)
+        rows = [
+            ("[agent_turn] old noise", "agent_turn", 3, 0, "datetime('now','-100 days')"),       # PRUNE
+            ("[agent_turn] recent", "agent_turn", 3, 0, "datetime('now')"),                       # spared: recent
+            ("[agent_turn] old but recalled", "agent_turn", 3, 2, "datetime('now','-100 days')"), # spared: accessed
+            ("[agent_turn] old but important", "agent_turn", 7, 0, "datetime('now','-100 days')"),# spared: importance
+            ("user name is Alice", "fact", 3, 0, "datetime('now','-100 days')"),                  # spared: category
+        ]
+        for i, (text, cat, imp, ac, created) in enumerate(rows):
+            holder.execute(
+                "INSERT INTO rag_items "
+                "(text, text_hash, category, embedding, importance, access_count, project, created_at) "
+                f"VALUES (?, ?, ?, '', ?, ?, '', {created})",
+                (text, f"h{i}", cat, imp, ac),
+            )
+        holder.commit()
+        return factory, holder
+
+    def test_dry_run_reports_candidates_but_deletes_nothing(self) -> None:
+        factory, holder = self._seed()
+        res = runtime.prune_rag(conn_factory=factory, dry_run=True)
+        self.assertEqual(res["candidates"], 1)
+        self.assertEqual(res["pruned"], 0)
+        self.assertTrue(res["dry_run"])
+        self.assertEqual(holder.execute("SELECT COUNT(*) FROM rag_items").fetchone()[0], 5)
+
+    def test_prune_evicts_only_the_stale_unrecalled_agent_turn(self) -> None:
+        factory, holder = self._seed()
+        res = runtime.prune_rag(conn_factory=factory)
+        self.assertEqual(res["pruned"], 1)
+        remaining = {row[0] for row in holder.execute("SELECT text FROM rag_items").fetchall()}
+        self.assertNotIn("[agent_turn] old noise", remaining)      # the only candidate, gone
+        self.assertIn("[agent_turn] recent", remaining)            # recent spared
+        self.assertIn("[agent_turn] old but recalled", remaining)  # accessed spared
+        self.assertIn("[agent_turn] old but important", remaining) # importance spared
+        self.assertIn("user name is Alice", remaining)             # user fact never touched
+        self.assertEqual(len(remaining), 4)
+
+    def test_categories_gate_is_the_only_thing_protecting_user_facts(self) -> None:
+        # Widening categories to include 'fact' prunes the stale user fact too —
+        # proving the default ('agent_turn',) is what keeps facts safe.
+        factory, holder = self._seed()
+        res = runtime.prune_rag(conn_factory=factory, categories=("agent_turn", "fact"))
+        self.assertEqual(res["pruned"], 2)
+        remaining = {row[0] for row in holder.execute("SELECT text FROM rag_items").fetchall()}
+        self.assertNotIn("user name is Alice", remaining)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -303,37 +303,57 @@ def tool_recall(
     top_k: int = 5,
     min_score: float = 0.3,
 ) -> dict[str, Any]:
-    """Semantic search over RAG memory. Returns top matching items —
-    relevant code chunks (if the project was indexed) and summaries of
-    prior agent turns.
+    """Recall from memory through the unified MemoryService facade — returns
+    BOTH curated facts (what we know about the user: name, preferences,
+    working details) AND semantic/episodic matches (relevant code chunks,
+    prior-turn summaries, chat reflection episodes).
 
-    Scope: results are restricted to entries tagged with this project
-    name, plus global entries (project='') so user-level facts still
-    surface. Cross-project leakage is prevented.
+    Facts are user-level so they surface regardless of project. Semantic
+    results are restricted to this project plus global entries (project='')
+    so cross-project leakage is prevented.
     """
-    try:
-        from app.application.rag_memory.service import search_rag
-    except Exception as exc:
-        return {"text": f"ERROR: RAG service unavailable: {exc}"}
+    from app.application import memory as mem
 
+    limit = max(1, int(top_k))
+    sections: list[str] = []
+
+    # 1) Curated facts (lexical, smart_memory).
+    try:
+        fact_items = mem.search_facts(query, limit=limit).get("items", []) or []
+    except Exception:
+        fact_items = []
+    if fact_items:
+        flines = [f"Known facts ({len(fact_items)}):"]
+        for item in fact_items:
+            text = (item.get("text") or "").strip()
+            if len(text) > 300:
+                text = text[:300] + " [...]"
+            flines.append(f"- [{item.get('category', 'fact')}] {text}")
+        sections.append("\n".join(flines))
+
+    # 2) Semantic / episodic (vector, rag_memory) — project-scoped + global.
     scope_id = project_scope_id(project_root)
-    result = search_rag(
-        query=query,
-        limit=max(1, int(top_k)),
-        min_score=float(min_score),
-        project=scope_id,
-    )
+    try:
+        result = mem.search_semantic(query, limit=limit, min_score=float(min_score), project=scope_id)
+    except Exception as exc:
+        result = {"ok": False, "error": f"RAG service unavailable: {exc}"}
     if not result.get("ok"):
+        if sections:  # facts are still useful even if the semantic side failed
+            return {"text": "\n\n".join(sections)}
         return {"text": f"ERROR: {result.get('error', 'recall failed')}"}
-    items = result.get("items", []) or []
-    if not items:
+
+    sem_items = result.get("items", []) or []
+    if sem_items:
+        slines = [f"Found {len(sem_items)} relevant items:"]
+        for i, item in enumerate(sem_items, 1):
+            score = item.get("score", 0.0)
+            category = item.get("category", "fact")
+            text = (item.get("text") or "").strip()
+            if len(text) > 600:
+                text = text[:600] + " [...]"
+            slines.append(f"\n[{i}] score={score:.2f}  category={category}\n{text}")
+        sections.append("\n".join(slines))
+
+    if not sections:
         return {"text": f"No matches for '{query}' (min_score={min_score})"}
-    lines = [f"Found {len(items)} relevant items:"]
-    for i, item in enumerate(items, 1):
-        score = item.get("score", 0.0)
-        category = item.get("category", "fact")
-        text = (item.get("text") or "").strip()
-        if len(text) > 600:
-            text = text[:600] + " [...]"
-        lines.append(f"\n[{i}] score={score:.2f}  category={category}\n{text}")
-    return {"text": "\n".join(lines)}
+    return {"text": "\n\n".join(sections)}

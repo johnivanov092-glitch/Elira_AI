@@ -141,6 +141,28 @@ out-of-scope tools do not reach provider dispatch.
 
 Active runtime root is root-level `data/`.
 
+### Long-term memory (LTM)
+
+Two engines behind one facade — `app.application.memory` (`recall`, `add_fact`,
+`search_facts`, `add_semantic`, `search_semantic`, `reflect_chat`, `prune`):
+
+- **Facts** — `smart_memory.db` (lexical TF-IDF, profile-scoped). Curated facts
+  the agent knows about the user; backs the "Память чата" settings UI
+  (`/api/chat-agent/memory`) and the agent's `recall` / `search_memory` tools.
+  Never auto-evicted.
+- **Semantic / episodic** — `rag_memory.db` (1024-dim vectors via the local
+  embed endpoint, with keyword fallback). Indexed code/turn summaries and chat
+  reflection episodes (`category=episode`, written by `reflect_chat`). Decays
+  via `prune_rag` (stale, never-recalled `agent_turn` rows) + periodic `VACUUM`.
+
+The code-agent `recall(query)` tool returns both (facts + semantic) through the
+facade. Recall is pull-based (tool-driven), not auto-injected per turn.
+
+Not LTM: `elira_state.db` (chats, messages, persona — conversation log) and
+`agent_monitor.db` (`model_profiles` routing + monitoring). Retired in the
+memory cleanup: `chat_agent.db` and `memory.db` (the latter held only a stale
+`model_profiles` copy; the live table lives in `agent_monitor.db`).
+
 Gitignored runtime data:
 
 - `data/*.db`
