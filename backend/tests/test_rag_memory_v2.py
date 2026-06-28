@@ -328,6 +328,33 @@ class SearchWithEmbeddingsBatchTest(unittest.TestCase):
         # Best match must be the cat row
         self.assertEqual(result["items"][0]["text"], "the cat purrs")
 
+    def test_hybrid_lexical_reranks_above_pure_cosine(self) -> None:
+        # "beta note" has the higher PURE cosine, but "alpha note" matches the
+        # query token lexically — the hybrid rerank must surface it first.
+        rows = [
+            ("alpha note", [0.6, 0.8, 0.0, 0.0]),     # cosine 0.6, contains "alpha"
+            ("beta note",  [0.9, 0.4359, 0.0, 0.0]),  # cosine 0.9, no "alpha"
+        ]
+        for text, vec in rows:
+            runtime.add_to_rag(
+                conn_factory=self.factory,
+                get_embedding_func=lambda t, v=vec: v,
+                text=text,
+                category="fact",
+                importance=5,
+            )
+        result = runtime.search_rag(
+            conn_factory=self.factory,
+            get_embedding_func=lambda t: [1.0, 0.0, 0.0, 0.0],
+            cosine_sim_func=runtime.cosine_sim,
+            query="alpha",
+            min_score=0.0,
+        )
+        self.assertEqual(result["method"], "embedding")
+        texts = [it["text"] for it in result["items"]]
+        self.assertEqual(texts[0], "alpha note")  # lexical+semantic beats pure-semantic
+        self.assertIn("beta note", texts)
+
 
 class PruneRagTest(unittest.TestCase):
     """Decay/eviction: prune_rag drops stale, never-recalled machine-made

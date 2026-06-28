@@ -9,6 +9,11 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+# Hybrid-rerank weight: how much a full lexical (keyword-overlap) match adds on
+# top of the vector cosine score. 0.5 keeps semantic dominant while letting an
+# exact-token match meaningfully reorder candidates.
+_LEXICAL_WEIGHT = 0.5
+
 
 def _text_hash(text: str) -> str:
     """Stable content hash used for dedup. SHA1 (12 hex chars) gives
@@ -447,16 +452,23 @@ def search_rag(
                         list(vec) if not isinstance(vec, list) else vec,
                     )
 
-    # Score, optionally fall back to keyword overlap, apply importance
-    # boost, then filter by min_score.
+    # Hybrid rerank: fuse semantic (vector cosine) with a lexical co-signal, then
+    # apply the importance boost and filter by min_score. The lexical term always
+    # contributes (not just as a low-cosine fallback) so exact-token matches —
+    # identifiers, file paths, rare words that pure vector search misses — surface,
+    # and rows matching BOTH semantic and lexical rank highest. With no query
+    # embedding, cosine is 0 for every row and lexical drives the ranking
+    # (keyword-only mode, as before). Local + deterministic — no cloud/cross-encoder.
     keywords = [word for word in query.lower().split() if len(word) > 2]
     scored: list[tuple[float, dict[str, Any]]] = []
     for i, row_dict in enumerate(parsed_rows):
-        score = cosine_scores[i]
-        if score < 0.1 and keywords:
+        cosine = cosine_scores[i]
+        lexical = 0.0
+        if keywords:
             text_lower = (row_dict.get("text") or "").lower()
             matches = sum(1 for keyword in keywords if keyword in text_lower)
-            score = max(score, matches / len(keywords) * 0.5)
+            lexical = matches / len(keywords)
+        score = cosine + _LEXICAL_WEIGHT * lexical
         score *= 1 + (row_dict.get("importance", 5) or 5) / 20.0
         if score >= min_score:
             row_dict.pop("embedding", None)       # don't leak vector to caller
