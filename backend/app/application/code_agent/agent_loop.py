@@ -753,6 +753,29 @@ def _stream_code_agent_core(
                     })
                     continue
                 final_text = content or last_text
+                # Step C: proactivity (default OFF; opt-in master switch + per-
+                # trigger first-fire gate). At most one item, appended as text to
+                # Elira's reply. Fail-safe — never breaks the run.
+                try:
+                    from app.application.persona.proactive import consider_proactive
+
+                    _pro = consider_proactive({
+                        "edited": edited_in_run,
+                        "verified": ran_verification,
+                        "run_id": rid,
+                        "project_scope_id": scope_id,
+                        "project_root": str(root),
+                    })
+                    _extras = list(_pro.get("suggestions") or [])
+                    for _ask in _pro.get("enable_asks") or []:
+                        _extras.append(
+                            f"Могу проявлять инициативу: «{_ask['title']}». "
+                            "Если хочешь — одобри запрос в панели подтверждений."
+                        )
+                    if _extras:
+                        final_text = final_text + "\n\n" + "\n".join(f"💡 {e}" for e in _extras)
+                except Exception:
+                    pass
                 yield {"type": "final_response", "step": step, "text": final_text}
                 # Step B: drift Elira's mood from this exchange (auto, global,
                 # decaying). Fire-and-forget — never breaks the run.

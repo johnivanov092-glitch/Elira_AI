@@ -47,6 +47,8 @@ _TRUTHY = frozenset({"1", "on", "true", "yes"})
 _ENV_VAR: dict[str, str] = {
     "remote_mcp": "ELIRA_REMOTE_MCP",
     "action_envelopes": "ELIRA_ACTION_ENVELOPES",
+    # Living Persona step C — master switch for Elira's proactivity (default OFF).
+    "proactive": "ELIRA_PROACTIVE",
 }
 
 # Canonical flag set + defaults (all OFF). The file is normalised to exactly

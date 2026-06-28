@@ -72,6 +72,17 @@ def get_approval(approval_id: str):
     return item
 
 
+def _maybe_persist_proactive_decision(item: dict, status: str) -> None:
+    """Persona step C: a `proactive:<id>` approval doubles as the per-trigger
+    first-fire gate — remember the decision so Elira asks only once."""
+    try:
+        from app.application.persona.proactive import decide_from_approval
+
+        decide_from_approval(str(item.get("tool_name") or ""), status)
+    except Exception:
+        pass
+
+
 @router.post("/approvals/{approval_id}/approve", summary="Approve a pending tool call")
 def approve_approval(approval_id: str):
     item = agent_monitor.get_approval(approval_id)
@@ -79,7 +90,9 @@ def approve_approval(approval_id: str):
         raise HTTPException(404, f"Approval '{approval_id}' not found")
     if item["status"] != "pending":
         raise HTTPException(400, f"Cannot approve: status is '{item['status']}' (must be 'pending')")
-    return agent_monitor.update_approval_status(approval_id, status="approved")
+    result = agent_monitor.update_approval_status(approval_id, status="approved")
+    _maybe_persist_proactive_decision(item, "approved")
+    return result
 
 
 @router.post("/approvals/{approval_id}/reject", summary="Reject a pending tool call")
@@ -89,7 +102,9 @@ def reject_approval(approval_id: str):
         raise HTTPException(404, f"Approval '{approval_id}' not found")
     if item["status"] != "pending":
         raise HTTPException(400, f"Cannot reject: status is '{item['status']}' (must be 'pending')")
-    return agent_monitor.update_approval_status(approval_id, status="rejected")
+    result = agent_monitor.update_approval_status(approval_id, status="rejected")
+    _maybe_persist_proactive_decision(item, "rejected")
+    return result
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────────

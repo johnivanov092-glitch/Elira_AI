@@ -48,7 +48,7 @@ class DefaultOffTest(unittest.TestCase):
                 self.assertFalse(ff.flag_enabled("action_envelopes"))
                 self.assertEqual(
                     ff.get_flags(),
-                    {"remote_mcp": False, "action_envelopes": False},
+                    {"remote_mcp": False, "action_envelopes": False, "proactive": False},
                 )
             finally:
                 _clear_env()
@@ -71,7 +71,7 @@ class PersistenceTest(unittest.TestCase):
                 ff = _fresh_module(data)
                 state = ff.set_flag("action_envelopes", True)
                 self.assertEqual(
-                    state, {"remote_mcp": False, "action_envelopes": True}
+                    state, {"remote_mcp": False, "action_envelopes": True, "proactive": False}
                 )
                 self.assertTrue(ff.CONFIG_PATH.exists())
                 self.assertTrue(ff.flag_enabled("action_envelopes"))
@@ -149,7 +149,7 @@ class MalformedFileTest(unittest.TestCase):
                 self.assertFalse(ff.flag_enabled("remote_mcp"))
                 self.assertEqual(
                     ff.get_flags(),
-                    {"remote_mcp": False, "action_envelopes": False},
+                    {"remote_mcp": False, "action_envelopes": False, "proactive": False},
                 )
             finally:
                 _clear_env()
@@ -167,7 +167,7 @@ class MalformedFileTest(unittest.TestCase):
                 # Unknown key must not leak into the canonical set.
                 self.assertEqual(
                     set(ff.get_flags().keys()),
-                    {"remote_mcp", "action_envelopes"},
+                    {"remote_mcp", "action_envelopes", "proactive"},
                 )
             finally:
                 _clear_env()

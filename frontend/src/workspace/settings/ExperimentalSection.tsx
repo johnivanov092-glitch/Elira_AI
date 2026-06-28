@@ -1,10 +1,10 @@
-import { Braces, Globe, Play, Square, type LucideIcon } from "lucide-react";
+import { Braces, Globe, Play, Sparkles, Square, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { cn } from "../../ui/cn";
 import { Loading, McpBtn, Note, Wrap } from "./_shared";
 
-type FeatureFlags = { remote_mcp: boolean; action_envelopes: boolean };
+type FeatureFlags = { remote_mcp: boolean; action_envelopes: boolean; proactive: boolean };
 
 const FLAG_META: { key: keyof FeatureFlags; label: string; hint: string; icon: LucideIcon }[] = [
   {
@@ -19,6 +19,12 @@ const FLAG_META: { key: keyof FeatureFlags; label: string; hint: string; icon: L
     hint: "Строгая JSON-валидация вызовов инструментов в цикле агента (одна попытка починки → откат). Обычный чат не затрагивается.",
     icon: Braces,
   },
+  {
+    key: "proactive",
+    label: "Инициативность Elira",
+    hint: "Главный выключатель проактивности. Пока выключен — Elira только отвечает. После включения каждый триггер срабатывает один раз с запросом-подтверждением; действия с последствиями — через гейт.",
+    icon: Sparkles,
+  },
 ];
 
 export function ExperimentalSection() {
@@ -29,7 +35,7 @@ export function ExperimentalSection() {
     let alive = true;
     request<FeatureFlags>("/api/elira/feature-flags")
       .then((f) => { if (alive) setFlags(f); })
-      .catch(() => { if (alive) setFlags({ remote_mcp: false, action_envelopes: false }); });
+      .catch(() => { if (alive) setFlags({ remote_mcp: false, action_envelopes: false, proactive: false }); });
     return () => { alive = false; };
   }, []);
 

@@ -22,6 +22,17 @@ def persona_status():
     )
 
 
+@router.get("/triggers")
+def persona_triggers():
+    """Proactivity triggers and their status (Living Persona step C)."""
+    from app.application.persona.proactive import list_triggers
+
+    return JSONResponse(
+        content=list_triggers(),
+        media_type="application/json; charset=utf-8",
+    )
+
+
 @router.get("/mood")
 def persona_mood():
     """Elira's current mood (transient coloring; auto-drift + decay)."""

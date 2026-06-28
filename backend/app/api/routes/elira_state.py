@@ -49,7 +49,7 @@ class FeatureFlagRequest(BaseModel):
     """Toggle one deferred-track feature flag (D1 remote MCP / D3 envelopes)."""
 
     model_config = {"extra": "forbid"}
-    name: Literal["remote_mcp", "action_envelopes"]
+    name: Literal["remote_mcp", "action_envelopes", "proactive"]
     value: bool
 
 
