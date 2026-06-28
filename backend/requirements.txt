@@ -21,6 +21,11 @@ requests>=2.32
 beautifulsoup4>=4.12
 pypdf>=5.0
 
+# Encoding detection — the code-agent reads/edits legacy-encoded source files
+# (cp1251, cp866, utf-16, …) without corrupting non-ASCII text. Already pulled in
+# transitively by requests/pdfminer; pinned here as a direct dependency.
+charset-normalizer>=3.4
+
 # Documents (lightweight only — heavy parsers live in optional)
 python-docx>=1.1
 

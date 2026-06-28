@@ -98,6 +98,37 @@ class SandboxedToolsTest(unittest.TestCase):
         self.assertTrue(res["text"].startswith("ERROR"))
         self.assertNotIn("new_content", res)
 
+    def test_edit_file_preserves_cp1251_encoding(self) -> None:
+        # A file saved in a legacy Russian codepage (cp1251) must survive an edit
+        # without its Cyrillic being mangled, and must stay cp1251 on disk —
+        # reading/writing as utf-8 used to silently destroy the non-ASCII text.
+        original = "комментарий\nstr = 'значение'\nещё текст\n"
+        target = self.root / "legacy.py"
+        target.write_bytes(original.encode("cp1251"))
+
+        res = tool_edit_file(
+            self.root,
+            path="legacy.py",
+            old_string="str = 'значение'",
+            new_string="str = 'новое'",
+        )
+
+        # The edit succeeded and the Cyrillic round-tripped intact (no U+FFFD).
+        self.assertIn("Edited", res["text"])
+        self.assertEqual(res["diff_action"], "edit")
+        self.assertIn("новое", res["new_content"])
+        self.assertIn("комментарий", res["new_content"])
+        self.assertNotIn("�", res["new_content"])
+
+        # The file on disk is still cp1251 (not silently converted to utf-8) and
+        # decodes back to exactly the edited text.
+        raw = target.read_bytes()
+        expected = "комментарий\nstr = 'новое'\nещё текст\n"
+        self.assertEqual(raw.decode("cp1251"), expected)
+        self.assertEqual(raw, expected.encode("cp1251"))
+        # Sanity: the bytes are genuinely cp1251, not utf-8 (which would differ).
+        self.assertNotEqual(raw, expected.encode("utf-8"))
+
     def test_glob_lists_matches_relative(self) -> None:
         res = tool_glob(self.root, pattern="**/*.txt")
         self.assertIn("sub/data.txt", res["text"])
