@@ -139,6 +139,16 @@ def list_runs(
 
 # ── MemoryCandidate ───────────────────────────────────────────────────────────
 
+@router.get("/events/summary", summary="Observability: operational event counts + recent feed")
+def get_events_summary(recent_limit: int = Query(20, ge=1, le=100)):
+    """Cumulative counts of operationally-important events (tool timeouts,
+    fail-closed/policy blocks, pending approvals, executions) plus a recent
+    activity feed. Complements /dashboard (agent_metrics) with the event-bus
+    safety/operational signals."""
+    from app.application.event_bus import runtime as event_bus
+    return event_bus.summarize_events(recent_limit=recent_limit)
+
+
 @router.get("/memory/candidates", summary="List memory candidates")
 def list_candidates(
     status: str | None = Query(None, description="pending|accepted|rejected|expired"),

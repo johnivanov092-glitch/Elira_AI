@@ -155,6 +155,40 @@ def list_events(
     )
 
 
+# Operationally-important event types for the observability summary. These are
+# emitted by the unified tool executor (agent_kernel) but are NOT in the
+# agent_metrics dashboard — surfacing them gives a "what went wrong" view
+# (timeouts, fail-closed blocks, policy blocks, pending approvals).
+_OBSERVABILITY_EVENT_TYPES = (
+    "tool.executed",
+    "tool.timeout",
+    "tool.invalid_spec",
+    "sandbox.policy.blocked",
+    "tool.approval_pending",
+)
+
+
+def summarize_events(*, recent_limit: int = 20) -> dict[str, Any]:
+    """Observability summary over the event bus: cumulative counts of the
+    operationally-important event types plus a recent-activity feed. Local,
+    read-only — complements /dashboard (which only sees agent_metrics)."""
+    counts: dict[str, int] = {}
+    for event_type in _OBSERVABILITY_EVENT_TYPES:
+        _, total = list_events(event_type=event_type, limit=1)
+        counts[event_type] = int(total or 0)
+
+    recent_events, total_all = list_events(limit=max(1, int(recent_limit)))
+    recent = [
+        {
+            "type": evt.get("event_type") or evt.get("type"),
+            "at": evt.get("created_at"),
+            "payload": evt.get("payload"),
+        }
+        for evt in recent_events
+    ]
+    return {"ok": True, "counts": counts, "total_events": int(total_all or 0), "recent": recent}
+
+
 def get_message(message_id: str) -> dict[str, Any] | None:
     return event_bus_store.get_message(
         conn_factory=_conn,
