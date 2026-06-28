@@ -165,11 +165,6 @@ def _normalize_run_id(run_id: Any) -> str:
     return str(run_id or "").strip()
 
 
-def _normalize_item_id(value: Any, *, id_func: Callable[[], str]) -> str:
-    raw = str(value or "").strip()
-    return raw or str(id_func()).strip()
-
-
 def _normalize_checklist_status(value: Any) -> str:
     status = str(value or "pending").strip().lower()
     if status not in CHECKLIST_STATUSES:
@@ -264,19 +259,32 @@ def update_checklist(
         ).fetchall()
         existing = {str(row["item_id"]): dict(row) for row in existing_rows}
         max_pos = max((int(row.get("position") or 0) for row in existing.values()), default=-1)
+        # position -> existing item_id, so a re-sent plan that omits ids upserts
+        # the row already holding that slot instead of inserting a duplicate.
+        # Local models routinely re-emit the full checklist without the ids we
+        # generated earlier; without this they'd pile up copies sharing a pos.
+        by_position = {int(row.get("position") or 0): str(row["item_id"]) for row in existing.values()}
 
         prepared_items: list[dict[str, Any]] = []
         next_pos = max_pos + 1
         for raw in raw_items:
             if not isinstance(raw, dict):
                 return {"ok": False, "error": "invalid_item", "items": _list_checklist_items(conn, rid)}
-            item_id = _normalize_item_id(raw.get("id") or raw.get("item_id"), id_func=id_func)
             text = str(raw.get("text") or "").strip()
             if not text:
-                return {"ok": False, "error": "item_text_required", "item_id": item_id, "items": _list_checklist_items(conn, rid)}
+                return {"ok": False, "error": "item_text_required", "items": _list_checklist_items(conn, rid)}
             status = _normalize_checklist_status(raw.get("status"))
             position = int(raw.get("position")) if raw.get("position") is not None else next_pos
             next_pos = max(next_pos, position + 1)
+            raw_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+            # No explicit id: reuse the id already occupying this position (if any)
+            # so the upsert lands on the existing row; only mint a fresh id for a
+            # genuinely new slot.
+            if raw_id:
+                item_id = raw_id
+            else:
+                item_id = by_position.get(position) or str(id_func()).strip()
+            by_position[position] = item_id
             blocker = str(raw.get("blocker") or "").strip()
             prepared_items.append({
                 "id": item_id,

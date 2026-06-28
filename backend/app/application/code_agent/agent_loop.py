@@ -117,6 +117,12 @@ DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local mode
 MAX_CODE_AGENT_STEPS = 200
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 4
+# Idempotent meta-tools whose repeats are harmless — re-sending them does not
+# advance the run but also does not corrupt state, so they must NOT trip the
+# loop-guard. `todo_update` in particular: local models routinely re-emit the
+# full checklist (now upserted by position, so no duplicate rows), and a benign
+# repeat used to kill the whole run. Read-only/idempotent by construction.
+_LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search"})
 
 # Role-based sampling for a single served model (one large LLM plays every
 # role — see resolve_model_for_route/route_to_role). The role does not switch
@@ -783,7 +789,10 @@ def _stream_code_agent_core(
                     default=str,
                 )
                 repeated_tool_calls[fingerprint] = repeated_tool_calls.get(fingerprint, 0) + 1
-                if repeated_tool_calls[fingerprint] >= _REPEATED_TOOL_CALL_LIMIT:
+                if (
+                    name not in _LOOP_GUARD_EXEMPT_TOOLS
+                    and repeated_tool_calls[fingerprint] >= _REPEATED_TOOL_CALL_LIMIT
+                ):
                     final_text = _wrap_up_text(
                         chat,
                         model,

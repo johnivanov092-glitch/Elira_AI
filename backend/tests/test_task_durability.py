@@ -336,6 +336,68 @@ class TestRunChecklist(unittest.TestCase):
         listed = planner_rt.list_checklist(connect_func=lambda: _connect(self.db), run_id="run-3")
         self.assertEqual(listed["items"][0]["status"], "pending")
 
+    def _update_counting(self, counter, **kwargs):
+        # Distinct minted ids per new slot — mirrors the real uuid id_func, so a
+        # re-send that omits ids cannot accidentally share the constant id used
+        # by the other tests.
+        result = planner_rt.update_checklist(
+            connect_func=lambda: _connect(self.db),
+            id_func=lambda: f"gen-{next(counter)}",
+            now_func=lambda: "2026-01-01T00:00:00",
+            emit_event_func=lambda **kw: None,
+            **kwargs,
+        )
+        return result
+
+    def test_resend_without_ids_upserts_by_position_no_duplicates(self):
+        # Fix A: a local model re-emits the full plan WITHOUT the ids we minted.
+        # Position must reuse the existing row's id so rows don't pile up.
+        import itertools
+        counter = itertools.count()
+        plan = [
+            {"text": "Создать index.html", "status": "pending", "position": 1},
+            {"text": "Добавить стили", "status": "pending", "position": 2},
+            {"text": "Подключить скрипт", "status": "pending", "position": 3},
+        ]
+        first = self._update_counting(counter, run_id="run-dup", items=plan)
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["count"], 3)
+        first_ids = [item["id"] for item in first["items"]]
+
+        # Re-send the identical plan three more times, still no ids supplied.
+        for _ in range(3):
+            again = self._update_counting(counter, run_id="run-dup", items=plan)
+            self.assertTrue(again["ok"])
+            self.assertEqual(again["count"], 3, "re-send must not inflate the checklist")
+            self.assertEqual([item["id"] for item in again["items"]], first_ids,
+                             "re-send must reuse existing ids per position")
+
+        listed = planner_rt.list_checklist(connect_func=lambda: _connect(self.db), run_id="run-dup")
+        self.assertEqual(len(listed["items"]), 3)
+        self.assertEqual([item["text"] for item in listed["items"]],
+                         ["Создать index.html", "Добавить стили", "Подключить скрипт"])
+
+    def test_resend_can_advance_status_in_place(self):
+        # The upsert-by-position path must still let a re-send change status
+        # (e.g. mark the first item completed) without creating a new row.
+        import itertools
+        counter = itertools.count()
+        plan = [
+            {"text": "step one", "status": "pending", "position": 1},
+            {"text": "step two", "status": "pending", "position": 2},
+        ]
+        self._update_counting(counter, run_id="run-adv", items=plan)
+        advanced = [
+            {"text": "step one", "status": "completed", "position": 1},
+            {"text": "step two", "status": "pending", "position": 2},
+        ]
+        result = self._update_counting(counter, run_id="run-adv", items=advanced)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["count"], 2)
+        statuses = {item["position"]: item["status"] for item in result["items"]}
+        self.assertEqual(statuses[1], "completed")
+        self.assertEqual(statuses[2], "pending")
+
 
 class TestSubagentRuns(unittest.TestCase):
     def setUp(self):

@@ -123,6 +123,57 @@ class AgentFailureRegressionTest(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "loop_guard")
         self.assertTrue(result["response"])
 
+    def test_repeated_todo_update_is_exempt_from_loop_guard(self) -> None:
+        # Local models routinely re-emit the full checklist verbatim. The loop
+        # fingerprint is taken before run_id is injected, so identical todo_update
+        # calls share a fingerprint and the repeat counter climbs past the limit.
+        # todo_update is idempotent (upserted by position), so a benign repeat
+        # must NOT kill the run — it should run out via max_steps instead.
+        def todo_loop(**kwargs):
+            if not kwargs.get("tools"):
+                return {"message": {"content": "controlled final", "tool_calls": []}}
+            return {
+                "message": {
+                    "content": "",
+                    "tool_calls": [{
+                        "function": {
+                            "name": "todo_update",
+                            "arguments": {
+                                "items": [{"text": "build index.html", "status": "pending", "position": 1}]
+                            },
+                        }
+                    }],
+                }
+            }
+
+        def fake_todo_update(*, run_id, items=None, updates=None):
+            return {
+                "ok": True,
+                "run_id": run_id,
+                "items": [
+                    {"id": "it-1", "text": "build index.html", "status": "pending", "position": 1}
+                ],
+                "changed": [],
+                "count": 1,
+            }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "app.application.task_planner.service.todo_update", side_effect=fake_todo_update
+        ):
+            # max_steps comfortably exceeds the repeat limit (4) so, absent the
+            # exemption, the guard would fire well before max_steps is reached.
+            result = run_code_agent(
+                user_message="plan",
+                project_root=tmp,
+                model="test-model",
+                max_steps=8,
+                chat_fn=todo_loop,
+            )
+
+        self.assertNotEqual(result["stop_reason"], "loop_guard", result)
+        self.assertEqual(result["stop_reason"], "max_steps")
+        self.assertTrue(result["ok"])
+
     def test_max_steps_wrap_up_is_a_controlled_partial_result(self) -> None:
         calls = 0
 
