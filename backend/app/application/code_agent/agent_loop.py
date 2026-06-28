@@ -73,6 +73,7 @@ from app.application.code_agent.prompts import (  # noqa: F401
     _build_base_system_prompt,
     _build_system_prompt,
 )
+from app.application.persona.service import mode_temperature, mode_tool_posture
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
 # (code_agent_routes, tests) and the loop's `summarize_fn=summarize_history`
@@ -141,6 +142,16 @@ _DEFAULT_TEMPERATURE = 0.2
 def _temperature_for_role(role: str | None) -> float:
     """Sampling temperature for a routing role (strict profile, default 0.2)."""
     return _ROLE_TEMPERATURE.get((role or "").strip().lower(), _DEFAULT_TEMPERATURE)
+
+
+def _effective_temperature(profile_name: str, role: str | None) -> float:
+    """Persona-mode temperature wins when set (Личный/Баланс raise warmth);
+    Инженерный (mode temperature=None) keeps the per-role sampling that protects
+    code-edit reproducibility."""
+    mode_temp = mode_temperature(profile_name)
+    if mode_temp is not None:
+        return float(mode_temp)
+    return _temperature_for_role(role)
 
 
 def _chat_events(
@@ -329,7 +340,7 @@ def _stream_code_agent_core(
     chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 300,
     compaction_audit_sink: Callable[[dict[str, Any]], None] | None = None,
-    profile_name: str = "Универсальный",
+    profile_name: str = "Инженерный",
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -439,6 +450,13 @@ def _stream_code_agent_core(
         )
 
         initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
+        # Persona mode posture: Личный narrows the OFFERED tools to read-only
+        # (she does not reach for write/edit/run without being asked). This only
+        # restricts what the model is offered — the fail-closed kernel still
+        # gates every call independently, so a mode can never widen access.
+        if mode_tool_posture(profile_name) == "readonly":
+            narrowed = tuple(t for t in initial_tools if t in _CODE_AGENT_READONLY_TOOLS)
+            initial_tools = narrowed or _CODE_AGENT_READONLY_TOOLS
         enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _local_chat
         stream_chat = chat_stream_fn
@@ -550,8 +568,8 @@ def _stream_code_agent_core(
                     "options": {
                         "num_ctx": safe_num_ctx,
                         "active_context_limit": safe_num_ctx,
-                        "temperature": _temperature_for_role(
-                            getattr(_route_decision, "role", None)
+                        "temperature": _effective_temperature(
+                            profile_name, getattr(_route_decision, "role", None)
                         ),
                     },
                 }
@@ -1028,7 +1046,7 @@ def stream_code_agent(
     approval_wait_seconds: int = 300,
     resume: bool = False,
     access_mode: str = "project-workspace",
-    profile_name: str = "Универсальный",
+    profile_name: str = "Инженерный",
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -1220,7 +1238,7 @@ def run_code_agent(
     chat_stream_fn: Callable[..., Any] | None = None,
     approval_wait_seconds: int = 0,
     access_mode: str = "project-workspace",
-    profile_name: str = "Универсальный",
+    profile_name: str = "Инженерный",
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.

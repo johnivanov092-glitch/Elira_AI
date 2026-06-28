@@ -13,8 +13,7 @@ from typing import Generator, List, Dict, Optional
 from functools import lru_cache
 
 from .config import MODEL_SAFE_CTX, DEFAULT_SAFE_CTX
-from .persona_defaults import DEFAULT_PROFILE, PROFILE_MODE_OVERLAYS
-from app.application.persona.service import build_persona_prompt
+from app.application.persona.service import build_persona_prompt, to_mode
 from app.infrastructure.llm.openai_compatible import chat_completion, chat_completion_stream
 from app.infrastructure.llm.local_models import get_models as get_local_models
 
@@ -181,9 +180,9 @@ def build_system_prompt(
     use_memory: bool,
 ) -> str:
     """Собирает system prompt. Контексты уже обрезаны в budget_contexts()."""
-    normalized_profile = profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
+    # build_persona_prompt maps legacy profile names / unknowns onto a real mode.
     parts = [
-        build_persona_prompt(normalized_profile),
+        build_persona_prompt(profile_name),
         "Используй только релевантные данные. Если данных не хватает — скажи прямо. "
         "Если пользователь просит код — давай рабочий код и объясняй изменения.",
     ]
@@ -218,7 +217,7 @@ def ask_model(
     history: Optional[List[Dict]] = None,
     warning_callback=None,
 ) -> str:
-    profile_name = profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
+    profile_name = to_mode(profile_name)
     safe_ctx = get_safe_ctx(model_name, num_ctx)
     history  = list(history or []) if include_history else []
 
@@ -310,7 +309,7 @@ def ask_model_stream(
     warning_callback=None,
 ) -> Generator[str, None, None]:
     """Генератор токенов для st.write_stream(). При ctx-ошибке откатывается к ask_model."""
-    profile_name = profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
+    profile_name = to_mode(profile_name)
     safe_ctx = get_safe_ctx(model_name, num_ctx)
     history  = list(history or [])
 

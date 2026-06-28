@@ -431,7 +431,7 @@ function ProfilePicker() {
   if (profiles !== null && profiles.length === 0) return null;
 
   const current = profiles?.find((p) => p.name === active);
-  const label = current?.name || active || "Профиль";
+  const label = current?.name || active || "Режим";
   const icon = current?.icon || "•";
 
   return (
@@ -440,8 +440,8 @@ function ProfilePicker() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={busy || profiles === null}
-        title="Активный профиль агента"
-        aria-label="Активный профиль агента"
+        title="Режим Elira (Авто / Личный / Баланс / Инженерный)"
+        aria-label="Режим Elira"
         className="flex h-7 items-center gap-1.5 rounded-full border border-line px-2.5 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
       >
         <span className="text-[12px] leading-none">{icon}</span>

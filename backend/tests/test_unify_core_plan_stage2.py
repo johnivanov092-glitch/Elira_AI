@@ -41,7 +41,7 @@ def test_system_prompt_passes_model_name_to_persona_builder(tmp_path: Path) -> N
     ) as build_persona_prompt:
         prompt = _build_system_prompt(tmp_path, model_name="local-model")
 
-    build_persona_prompt.assert_called_once_with("Универсальный", "local-model")
+    build_persona_prompt.assert_called_once_with("Инженерный", "local-model")
     assert "PERSONA_FOR_MODEL" in prompt
 
 

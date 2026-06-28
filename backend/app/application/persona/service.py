@@ -8,8 +8,32 @@ from app.core.persona_defaults import (
     DEFAULT_MODEL_CALIBRATION,
     DEFAULT_PROFILE,
     ELIRA_PERSONA_BASE_PAYLOAD,
+    LEGACY_PROFILE_TO_MODE,
+    PERSONA_MODES,
     PROFILE_MODE_OVERLAYS,
 )
+
+
+def to_mode(name: str) -> str:
+    """Resolve any incoming profile/mode name to a real persona mode.
+
+    Accepts a current mode, a legacy profile name, or junk — always returns one
+    of PERSONA_MODES (DEFAULT_PROFILE as the safe fallback).
+    """
+    if name in PERSONA_MODES:
+        return name
+    return LEGACY_PROFILE_TO_MODE.get(name, DEFAULT_PROFILE)
+
+
+def mode_temperature(name: str):
+    """Sampling temperature for a mode, or None to keep the per-role default
+    (None = Инженерный/code keeps its strict reproducible sampling)."""
+    return PERSONA_MODES[to_mode(name)]["temperature"]
+
+
+def mode_tool_posture(name: str) -> str:
+    """'readonly' (Личный narrows the offered tools) or 'full'."""
+    return PERSONA_MODES[to_mode(name)]["tools"]
 
 
 get_persona_version = persona_store.get_persona_version
@@ -79,9 +103,7 @@ def build_persona_prompt(
     snapshot = get_persona_version()
     payload = deepcopy(snapshot.get("payload") or ELIRA_PERSONA_BASE_PAYLOAD)
 
-    profile_key = (
-        profile_name if profile_name in PROFILE_MODE_OVERLAYS else DEFAULT_PROFILE
-    )
+    profile_key = to_mode(profile_name)
 
     calibration_record = get_model_calibration(
         model_name,

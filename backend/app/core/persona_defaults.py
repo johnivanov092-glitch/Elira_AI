@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-DEFAULT_PROFILE = "Универсальный"
+DEFAULT_PROFILE = "Баланс"
+# Selection sentinel: not a mode itself. When the picker is on "Авто", the
+# effective mode is decided per-message by a lightweight heuristic
+# (see chat.local_chat.classify_mode). Picking a concrete mode locks it.
+AUTO_PROFILE = "Авто"
 
 ELIRA_PERSONA_BASE_PAYLOAD = {
     "identity": {
@@ -56,59 +60,71 @@ ELIRA_PERSONA_BASE_PAYLOAD = {
     ],
 }
 
-PROFILE_MODE_OVERLAYS = {
-    "Универсальный": (
-        "Режим работы: нейтральный рабочий режим Elira. "
-        "Сохраняй общий характер, отвечай сбалансированно, ясно и полезно."
-    ),
-    "Исследователь": (
-        "Режим работы: исследователь. "
-        "Углубляй проверку фактов, показывай гипотезы и источники, "
-        "но не меняй базовый характер Elira."
-    ),
-    "Программист": (
-        "Режим работы: программист. "
-        "Ставь код, исправления, архитектуру и надёжность выше общих рассуждений, "
-        "оставаясь той же Elira."
-    ),
-    "Аналитик": (
-        "Режим работы: аналитик. "
-        "Делай декомпозицию, сравнивай варианты, явно показывай риски и выводы, "
-        "не ломая общий голос Elira."
-    ),
-    "Сократ": (
-        "Режим работы: Сократ. "
-        "Веди пользователя через уточняющие вопросы и мягкое обучение, "
-        "сохраняя ту же личность Elira."
-    ),
+# ── Persona modes (Living Persona, step A) ───────────────────────────────────
+# Elira is a living companion, not only a coding agent. The mode is the
+# "личное↔инженерное" axis: it shapes her VOICE (overlay), how free vs precise
+# she phrases (temperature), and which tools she reaches for (tool posture).
+#   - temperature=None  -> keep the per-role sampling (protects code-edit
+#     reproducibility); only Личный/Баланс raise warmth.
+#   - tools="readonly"  -> the model is OFFERED only read-only tools (it cannot
+#     reach for write/edit/run). This only NARROWS what is offered; the
+#     fail-closed kernel still gates every call independently — a mode can never
+#     widen access.
+PERSONA_MODES = {
+    "Личный": {
+        "overlay": (
+            "Режим работы: личный. Ты — тёплая, живая собеседница и компаньон. "
+            "Говори по-человечески, поддерживай, общайся свободно; не уходи в код "
+            "и инструменты без явной просьбы. Оставайся той же Elira."
+        ),
+        "temperature": 0.75,
+        "tools": "readonly",
+        "ui": {
+            "icon": "♥",
+            "short": "Тёплый компаньон и собеседник.",
+            "tags": ["личное", "поддержка", "общение"],
+        },
+    },
+    "Баланс": {
+        "overlay": (
+            "Режим работы: баланс. Нейтральная Elira: отвечай ясно, по делу и "
+            "по-человечески, без лишней сухости. Оставайся собой."
+        ),
+        "temperature": 0.45,
+        "tools": "full",
+        "ui": {
+            "icon": "○",
+            "short": "Нейтральный режим Elira.",
+            "tags": ["баланс", "универсально"],
+        },
+    },
+    "Инженерный": {
+        "overlay": (
+            "Режим работы: инженерный. Ставь точность, код, архитектуру, риски и "
+            "проверяемость выше общих рассуждений, оставаясь той же Elira."
+        ),
+        "temperature": None,
+        "tools": "full",
+        "ui": {
+            "icon": "⌘",
+            "short": "Код, архитектура, точность.",
+            "tags": ["код", "инженерия", "точность"],
+        },
+    },
 }
 
-PROFILE_UI = {
-    "Универсальный": {
-        "icon": "○",
-        "short": "Базовый режим Elira.",
-        "tags": ["чат", "поддержка", "универсально"],
-    },
-    "Исследователь": {
-        "icon": "◉",
-        "short": "Глубокая проверка и исследование.",
-        "tags": ["факты", "источники", "web"],
-    },
-    "Программист": {
-        "icon": "⌘",
-        "short": "Код, исправления и архитектура.",
-        "tags": ["код", "patch", "debug"],
-    },
-    "Аналитик": {
-        "icon": "◀",
-        "short": "Структура, риски и выводы.",
-        "tags": ["анализ", "сравнение", "решения"],
-    },
-    "Сократ": {
-        "icon": "◊",
-        "short": "Обучение через вопросы.",
-        "tags": ["обучение", "вопросы", "мышление"],
-    },
+# Derived back-compat views (older imports expect these two dicts).
+PROFILE_MODE_OVERLAYS = {name: mode["overlay"] for name, mode in PERSONA_MODES.items()}
+PROFILE_UI = {name: mode["ui"] for name, mode in PERSONA_MODES.items()}
+
+# Migration: pre-step-A profile names map onto the new modes so saved settings
+# and old requests keep working (Сократ retired -> Баланс).
+LEGACY_PROFILE_TO_MODE = {
+    "Универсальный": "Баланс",
+    "Программист": "Инженерный",
+    "Аналитик": "Инженерный",
+    "Исследователь": "Инженерный",
+    "Сократ": "Баланс",
 }
 
 PERSONA_PROMOTION_RULES = {

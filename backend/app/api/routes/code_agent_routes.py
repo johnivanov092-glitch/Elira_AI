@@ -35,6 +35,7 @@ from app.application.code_agent.agent_loop import (
     summarize_history,
 )
 from app.application.code_agent import sessions as session_store
+from app.application.chat.local_chat import resolve_persona_mode
 from app.application.library.runtime import build_library_context
 from app.core.data_files import data_subdir
 
@@ -161,8 +162,8 @@ class CodeAgentRequest(BaseModel):
         description="Enforced code-agent access profile; broader profiles are not enabled.",
     )
     profile_name: str = Field(
-        default="Универсальный",
-        description="UI persona profile (Универсальный/Исследователь/Программист/Аналитик/Сократ) overlaid onto Elira's personality.",
+        default="Авто",
+        description="Persona mode: Авто (Elira picks per message), Личный, Баланс or Инженерный. Legacy profile names are migrated automatically.",
     )
 
 
@@ -239,7 +240,7 @@ def run(payload: CodeAgentRequest) -> CodeAgentResponse:
         base_tools=_base_tools_for_mode(payload.mode),
         auto_remember=payload.auto_remember,
         access_mode=payload.access_mode,
-        profile_name=payload.profile_name,
+        profile_name=resolve_persona_mode(payload.profile_name, user_message),
     )
     return CodeAgentResponse(**result)
 
@@ -269,7 +270,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 run_id=run_id,
                 approval_wait_seconds=payload.approval_wait_seconds,
                 access_mode=payload.access_mode,
-                profile_name=payload.profile_name,
+                profile_name=resolve_persona_mode(payload.profile_name, user_message),
             ):
                 yield _sse_format(event)
         except Exception as exc:

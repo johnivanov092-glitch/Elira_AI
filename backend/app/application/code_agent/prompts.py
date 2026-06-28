@@ -197,11 +197,11 @@ def _tools_section(active_tools: tuple[str, ...] | list[str]) -> str:
     return "\n".join(lines)
 
 
-def _persona_section(model_name: str = "", profile_name: str = "Универсальный") -> str:
+def _persona_section(model_name: str = "", profile_name: str = "Инженерный") -> str:
     try:
         from app.application.persona.service import build_persona_prompt
 
-        prompt = build_persona_prompt(profile_name or "Универсальный", model_name)
+        prompt = build_persona_prompt(profile_name or "Инженерный", model_name)
     except Exception:
         prompt = (
             "Ты — Elira, AI-ассистентка пользователя в Elira AI.\n"
@@ -215,7 +215,7 @@ def _build_base_system_prompt(
     project_root: Path,
     active_tools: tuple[str, ...] | list[str] | None = None,
     model_name: str = "",
-    profile_name: str = "Универсальный",
+    profile_name: str = "Инженерный",
 ) -> str:
     tools = tuple(active_tools) if active_tools is not None else _CODE_AGENT_BASE_TOOLS
     base = BASE_SYSTEM_PROMPT_TEMPLATE.format(
@@ -243,7 +243,7 @@ def _build_system_prompt(
     working_dir: Path | str | None = None,
     active_tools: tuple[str, ...] | list[str] | None = None,
     model_name: str = "",
-    profile_name: str = "Универсальный",
+    profile_name: str = "Инженерный",
 ) -> str:
     from app.application.instructions.loader import load_instructions
     from app.application.projects.scope import project_scope_id as _scope_id

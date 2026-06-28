@@ -40,7 +40,7 @@ class ChatMessageRequest(BaseModel):
 class SettingsRequest(BaseModel):
     context_window: int = 131072
     default_model: str = "local-model"
-    agent_profile: str = "Универсальный"
+    agent_profile: str = "Авто"
     route_model_map: dict | None = None
     orchestration_enabled: bool = False
 
