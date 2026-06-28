@@ -351,7 +351,9 @@ def tool_recall(
             text = (item.get("text") or "").strip()
             if len(text) > 600:
                 text = text[:600] + " [...]"
-            slines.append(f"\n[{i}] score={score:.2f}  category={category}\n{text}")
+            src = item.get("source") or {}
+            cite = f"  ⟨{src['file']}:{src['start']}-{src['end']}⟩" if src else ""
+            slines.append(f"\n[{i}] score={score:.2f}  category={category}{cite}\n{text}")
         sections.append("\n".join(slines))
 
     if not sections:

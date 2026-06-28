@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from typing import Any, Callable
 
 
@@ -13,6 +14,24 @@ logger = logging.getLogger(__name__)
 # top of the vector cosine score. 0.5 keeps semantic dominant while letting an
 # exact-token match meaningfully reorder candidates.
 _LEXICAL_WEIGHT = 0.5
+
+# Indexed code chunks start with a `[file:<rel>:<start>-<end>]` header
+# (index_project._chunk_file). We parse it back into a structured citation so
+# recall can tell the agent exactly which file/lines a result came from.
+_SOURCE_RE = re.compile(r"^\[file:(?P<file>[^\]]+?):(?P<start>\d+)-(?P<end>\d+)\]")
+
+
+def _parse_source(text: str) -> dict[str, Any] | None:
+    """Extract a {file, start, end} citation from a chunk's `[file:…]` header,
+    or None for rows without one (facts, episodes, agent turns)."""
+    match = _SOURCE_RE.match(text or "")
+    if not match:
+        return None
+    return {
+        "file": match.group("file"),
+        "start": int(match.group("start")),
+        "end": int(match.group("end")),
+    }
 
 
 def _text_hash(text: str) -> str:
@@ -477,7 +496,13 @@ def search_rag(
             scored.append((score, row_dict))
 
     scored.sort(key=lambda item: -item[0])
-    items = [{"score": round(score, 3), **item} for score, item in scored[:limit]]
+    items = []
+    for score, item in scored[:limit]:
+        entry = {"score": round(score, 3), **item}
+        source = _parse_source(entry.get("text") or "")
+        if source:
+            entry["source"] = source  # file/line citation for indexed code chunks
+        items.append(entry)
 
     if items:
         conn = conn_factory()

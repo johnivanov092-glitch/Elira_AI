@@ -355,6 +355,35 @@ class SearchWithEmbeddingsBatchTest(unittest.TestCase):
         self.assertEqual(texts[0], "alpha note")  # lexical+semantic beats pure-semantic
         self.assertIn("beta note", texts)
 
+    def test_indexed_chunk_exposes_source_citation(self) -> None:
+        # Indexed code chunks carry a [file:<rel>:<a>-<b>] header → structured
+        # citation; plain facts/episodes have none.
+        runtime.add_to_rag(
+            conn_factory=self.factory,
+            get_embedding_func=lambda t: None,
+            text="[file:app/foo.py:10-20]\ndef bar():\n    return 1",
+            category="code",
+            importance=5,
+        )
+        runtime.add_to_rag(
+            conn_factory=self.factory,
+            get_embedding_func=lambda t: None,
+            text="user name is alice",
+            category="fact",
+            importance=5,
+        )
+        res = runtime.search_rag(
+            conn_factory=self.factory,
+            get_embedding_func=lambda t: None,
+            cosine_sim_func=runtime.cosine_sim,
+            query="bar foo alice",
+            min_score=0.0,
+        )
+        code_item = next(it for it in res["items"] if "foo.py" in it["text"])
+        self.assertEqual(code_item["source"], {"file": "app/foo.py", "start": 10, "end": 20})
+        fact_item = next(it for it in res["items"] if "alice" in it["text"])
+        self.assertNotIn("source", fact_item)
+
 
 class PruneRagTest(unittest.TestCase):
     """Decay/eviction: prune_rag drops stale, never-recalled machine-made
