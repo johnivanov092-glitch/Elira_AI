@@ -754,6 +754,14 @@ def _stream_code_agent_core(
                     continue
                 final_text = content or last_text
                 yield {"type": "final_response", "step": step, "text": final_text}
+                # Step B: drift Elira's mood from this exchange (auto, global,
+                # decaying). Fire-and-forget — never breaks the run.
+                try:
+                    from app.application.persona.mood import nudge_mood
+
+                    nudge_mood(user_message, final_text)
+                except Exception:
+                    pass
                 if auto_remember:
                     _try_remember_turn(
                         user_message=user_message,

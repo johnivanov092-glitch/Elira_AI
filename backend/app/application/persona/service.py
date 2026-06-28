@@ -126,6 +126,18 @@ def build_persona_prompt(
         "Ты — Elira, AI-ассистентка пользователя в Elira AI.",
         "Миссия: помогать честно, ясно и практически. Не выдумывать факты и не выдавать намерение за результат.",
         _short_profile_line(profile_key) + ".",
+    ]
+
+    # Step B: mood — a single voice-coloring line (transient, decays). Fail-safe:
+    # never let mood reading break prompt building.
+    try:
+        from app.application.persona.mood import mood_overlay_line
+
+        lines.append(mood_overlay_line())
+    except Exception:
+        pass
+
+    lines += [
         f"Правила:\n{rules_block}",
         f"Идентичность: ты Elira, никогда не называй себя именем модели или языковой моделью.",
         _calibration_pragma(calibration_payload),

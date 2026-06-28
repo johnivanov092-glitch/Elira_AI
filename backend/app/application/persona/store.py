@@ -389,6 +389,15 @@ def get_persona_status() -> dict[str, Any]:
             }
         )
 
+    # Step B: current mood (transient coloring). Lazy import avoids an import
+    # cycle (mood imports this store); fail-safe to None.
+    try:
+        from app.application.persona.mood import get_mood
+
+        mood = get_mood()
+    except Exception:
+        mood = None
+
     return {
         "ok": True,
         "persona_name": active.get("payload", {}).get("identity", {}).get("name", "Elira"),
@@ -399,6 +408,7 @@ def get_persona_status() -> dict[str, Any]:
         "previous_version": previous_version,
         "latest_traits": latest_traits,
         "model_consistency": model_consistency,
+        "mood": mood,
         "profiles": PROFILE_UI,
     }
 

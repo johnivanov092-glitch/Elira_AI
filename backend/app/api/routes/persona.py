@@ -22,6 +22,17 @@ def persona_status():
     )
 
 
+@router.get("/mood")
+def persona_mood():
+    """Elira's current mood (transient coloring; auto-drift + decay)."""
+    from app.application.persona.mood import get_mood
+
+    return JSONResponse(
+        content={"ok": True, "mood": get_mood()},
+        media_type="application/json; charset=utf-8",
+    )
+
+
 @router.get("/version")
 def persona_version(version: int | None = None):
     return JSONResponse(
