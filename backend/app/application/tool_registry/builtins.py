@@ -394,6 +394,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("recall",      "Recall",       "memory",  "Recall from project RAG memory",           15, 20000, True),
         ("web_search",  "Web Search",   "web",     "Search the web",                          30, 50000, True),
         ("web_fetch",   "Web Fetch",    "web",     "Fetch and parse a web page",              30, 50000, True),
+        ("browser",     "Browser",      "web",     "Open a URL in a real headless browser (renders JS) and return page text", 90, 50000, True),
         ("translator",  "Translator",   "text",    "Translate text with the local LLM",        60, 10000, True),
         ("regex",       "Regex",        "text",    "Test a regular expression against text",   15, 20000, True),
         ("csv",         "CSV Analyze",  "data",    "Analyze a CSV file in the project",        30, 50000, True),
@@ -426,7 +427,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     _native_scopes = {
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
         "project_map": ["fs.read"], "recall": ["fs.read"],
-        "web_search": ["net.outbound"], "web_fetch": ["net.outbound"],
+        "web_search": ["net.outbound"], "web_fetch": ["net.outbound"], "browser": ["net.outbound"],
         "csv": ["fs.read"], "converter": ["fs.read", "fs.write"],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
