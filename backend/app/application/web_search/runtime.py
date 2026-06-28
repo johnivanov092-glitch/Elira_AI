@@ -9,9 +9,9 @@ from app.infrastructure.search.multisearch import (
     news_search as news_search_impl,
 )
 
-DEFAULT_ENGINES = ("tavily", "duckduckgo", "wikipedia")
+DEFAULT_ENGINES = ("searxng", "duckduckgo", "wikipedia")
 ENGINE_ITEMS = [
-    {"id": "tavily", "name": "Tavily", "type": "research-api", "status": "active"},
+    {"id": "searxng", "name": "SearXNG", "type": "metasearch", "status": "active"},
     {"id": "duckduckgo", "name": "DuckDuckGo", "type": "search", "status": "active"},
     {"id": "wikipedia", "name": "Wikipedia", "type": "encyclopedia", "status": "active"},
 ]

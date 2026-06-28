@@ -317,8 +317,8 @@ def _has_weak_subquery_coverage(
 
 def _select_deep_search_engines(intent_kind: str) -> tuple[str, str, str]:
     if intent_kind == "historical":
-        return ("wikipedia", "tavily", "duckduckgo")
-    return ("tavily", "duckduckgo", "wikipedia")
+        return ("wikipedia", "searxng", "duckduckgo")
+    return ("searxng", "duckduckgo", "wikipedia")
 
 
 def _collect_subquery_engines(

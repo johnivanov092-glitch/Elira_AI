@@ -10,7 +10,7 @@ All functions under test are pure (no real DB/network/FS side-effects):
                CURRENT_WORLD_ENGINES, KZ_LOCAL_NEWS_DOMAINS
     clean_url, extract_domain, domain_matches, re_sub_html,
     engine_available (duckduckgo/wikipedia branch only),
-    resolve_search_engines (no-tavily branch)
+    resolve_search_engines (no-searxng branch)
 """
 from __future__ import annotations
 
@@ -342,8 +342,8 @@ class WebEngineConstantsTest(unittest.TestCase):
     def test_supported_engines_has_wikipedia(self) -> None:
         self.assertIn("wikipedia", SUPPORTED_SEARCH_ENGINES)
 
-    def test_supported_engines_has_tavily(self) -> None:
-        self.assertIn("tavily", SUPPORTED_SEARCH_ENGINES)
+    def test_supported_engines_has_searxng(self) -> None:
+        self.assertIn("searxng", SUPPORTED_SEARCH_ENGINES)
 
     def test_engine_labels_is_dict(self) -> None:
         self.assertIsInstance(ENGINE_LABELS, dict)
@@ -361,8 +361,8 @@ class WebEngineConstantsTest(unittest.TestCase):
     def test_engine_priority_is_dict(self) -> None:
         self.assertIsInstance(ENGINE_PRIORITY, dict)
 
-    def test_engine_priority_tavily_is_lowest_number(self) -> None:
-        self.assertEqual(ENGINE_PRIORITY["tavily"], 0)
+    def test_engine_priority_searxng_is_lowest_number(self) -> None:
+        self.assertEqual(ENGINE_PRIORITY["searxng"], 0)
 
     def test_current_world_engines_is_set_like(self) -> None:
         self.assertIn("duckduckgo", CURRENT_WORLD_ENGINES)
@@ -526,14 +526,14 @@ class EngineAvailableTest(unittest.TestCase):
     def test_wikipedia_always_available(self) -> None:
         self.assertTrue(engine_available("wikipedia"))
 
-    def test_tavily_false_without_key(self) -> None:
-        # Remove key if present to test the False branch
-        old = os.environ.pop("TAVILY_API_KEY", None)
+    def test_searxng_false_without_url(self) -> None:
+        # Remove URL if present to test the False branch
+        old = os.environ.pop("SEARXNG_URL", None)
         try:
-            self.assertFalse(engine_available("tavily"))
+            self.assertFalse(engine_available("searxng"))
         finally:
             if old is not None:
-                os.environ["TAVILY_API_KEY"] = old
+                os.environ["SEARXNG_URL"] = old
 
     def test_unknown_engine_false(self) -> None:
         self.assertFalse(engine_available("google_custom_search"))
@@ -544,37 +544,37 @@ class EngineAvailableTest(unittest.TestCase):
 # ---
 
 class ResolveSearchEnginesTest(unittest.TestCase):
-    def _no_tavily(self):
-        """Ensure TAVILY_API_KEY is absent for deterministic results."""
-        return os.environ.pop("TAVILY_API_KEY", None)
+    def _no_searxng(self):
+        """Ensure SEARXNG_URL is absent for deterministic results."""
+        return os.environ.pop("SEARXNG_URL", None)
 
     def _restore(self, old):
         if old is not None:
-            os.environ["TAVILY_API_KEY"] = old
+            os.environ["SEARXNG_URL"] = old
 
     def test_returns_tuple(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             self.assertIsInstance(resolve_search_engines(), tuple)
         finally:
             self._restore(old)
 
     def test_always_includes_duckduckgo(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             self.assertIn("duckduckgo", resolve_search_engines())
         finally:
             self._restore(old)
 
     def test_always_includes_wikipedia(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             self.assertIn("wikipedia", resolve_search_engines())
         finally:
             self._restore(old)
 
     def test_no_duplicates(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             result = resolve_search_engines()
             self.assertEqual(len(result), len(set(result)))
@@ -582,7 +582,7 @@ class ResolveSearchEnginesTest(unittest.TestCase):
             self._restore(old)
 
     def test_unknown_engine_filtered_out(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             result = resolve_search_engines(["nonexistent_engine"])
             self.assertNotIn("nonexistent_engine", result)
@@ -590,7 +590,7 @@ class ResolveSearchEnginesTest(unittest.TestCase):
             self._restore(old)
 
     def test_explicit_engines_subset_used(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             result = resolve_search_engines(["wikipedia"])
             self.assertIn("wikipedia", result)
@@ -598,7 +598,7 @@ class ResolveSearchEnginesTest(unittest.TestCase):
             self._restore(old)
 
     def test_none_uses_defaults(self) -> None:
-        old = self._no_tavily()
+        old = self._no_searxng()
         try:
             result = resolve_search_engines(None)
             self.assertGreater(len(result), 0)

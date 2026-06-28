@@ -4,7 +4,7 @@ from typing import Any
 
 
 def tool_web_search(*, query: str, top_k: int = 5) -> dict[str, Any]:
-    """Search the web via the configured engines (Tavily / DuckDuckGo /
+    """Search the web via the configured engines (SearXNG / DuckDuckGo /
     Wikipedia). Returns ranked results with title + URL + snippet. Use
     `web_fetch` after this to read the full content of a specific result.
     """

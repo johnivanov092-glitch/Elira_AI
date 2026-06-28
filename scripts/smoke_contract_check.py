@@ -110,12 +110,15 @@ AGENT_OS_DASHBOARD_REQUIRED_KEYS = {
     "warnings",
 }
 AGENT_OS_LIMITS_REQUIRED_KEYS = {"items", "total"}
-EXPECTED_SEARCH_ENGINES = ("tavily", "duckduckgo", "wikipedia")
+EXPECTED_SEARCH_ENGINES = ("searxng", "duckduckgo", "wikipedia")
+# SearXNG is now the legitimate primary engine. The bans below still guard
+# against re-introducing the removed multi-engine "zoo" (brave/bing/google/
+# yandex); the two tuple snippets are the old bloated configs (kept banned for
+# their bing/google members). `{"id": "searxng"` is intentionally NOT banned.
 LEGACY_ENGINE_SNIPPETS = {
     '"brave"',
     '("duckduckgo", "searxng", "wikipedia", "bing", "google")',
     '("duckduckgo", "searxng", "wikipedia", "bing", "google", "yandex")',
-    '{"id": "searxng"',
     '{"id": "brave"',
     '{"id": "bing"',
     '{"id": "google"',
@@ -293,8 +296,8 @@ def validate_runtime_status_shape(status: Any) -> list[str]:
     api_keys_present = status.get("api_keys_present") or {}
     if "brave" in api_keys_present:
         failures.append("runtime_status: api_keys_present must not include brave")
-    if "tavily" not in api_keys_present:
-        failures.append("runtime_status: api_keys_present must include tavily")
+    if "searxng" not in api_keys_present:
+        failures.append("runtime_status: api_keys_present must include searxng")
 
     return failures
 

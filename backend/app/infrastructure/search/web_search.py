@@ -11,6 +11,7 @@ from urllib.parse import quote_plus
 from app.core.web import ENGINE_LABELS, format_search_results
 from app.core.web import research_web as core_research_web
 from app.core.web import search_web as core_search_web
+from app.core.web_engines import searxng_url
 from app.infrastructure.search import web_query
 from app.infrastructure.search import web_runtime
 from app.infrastructure.search import web_temporal
@@ -37,8 +38,11 @@ def search_web(query: str, max_results: int = 8) -> dict[str, Any]:
     engines_used = list({item.get("engine", "") for item in sources if item.get("engine")})
     context = format_search_results(sources[:6]) if sources else ""
 
-    engine_links = [
-        {"name": "Tavily", "url": "https://app.tavily.com/"},
+    engine_links = []
+    _searxng = searxng_url()
+    if _searxng:
+        engine_links.append({"name": "SearXNG", "url": f"{_searxng}/search?q={quote_plus(query)}"})
+    engine_links += [
         {"name": "DuckDuckGo", "url": f"https://duckduckgo.com/?q={quote_plus(query)}"},
         {"name": "Wikipedia", "url": f"https://en.wikipedia.org/w/index.php?search={quote_plus(query)}"},
     ]

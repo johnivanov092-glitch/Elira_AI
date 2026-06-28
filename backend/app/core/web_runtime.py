@@ -22,7 +22,6 @@ from .web_engines import (
     clean_url,
     domain_matches,
     extract_domain,
-    search_tavily,
     session,
 )
 
@@ -175,7 +174,7 @@ def result_score(
         if engine == "wikipedia":
             score += 50
 
-    if engine == "tavily":
+    if engine == "searxng":
         score += 8
     elif engine == "duckduckgo":
         score += 4
@@ -360,18 +359,6 @@ def fetch_page_text(url: str) -> str:
         return f"Ошибка чтения страницы: {exc}"
 
 
-def tavily_research(query: str, max_results: int) -> List[Dict[str, str]]:
-    try:
-        return search_tavily(
-            query,
-            max_results=max_results,
-            search_depth="advanced",
-            include_raw_content=True,
-        )
-    except Exception:
-        return []
-
-
 def research_web_runtime(
     query: str,
     *,
@@ -387,9 +374,10 @@ def research_web_runtime(
     fetch_page_text_func: Callable[[str], str],
 ) -> str:
     engine_list = list(resolve_search_engines_func(engines))
+    # SearXNG and DuckDuckGo return snippet-level results only (no raw page
+    # content), so there is no advanced fast-path here — full text comes from
+    # fetching the top pages below.
     advanced_items: list[Dict[str, str]] = []
-    if "tavily" in engine_list:
-        advanced_items = tavily_research(query, max_results=min(max_results, pages_to_read))
 
     merged_results = dedupe_results(
         [

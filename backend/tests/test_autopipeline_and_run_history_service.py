@@ -195,9 +195,9 @@ class AutopipelineCRUDTest(unittest.TestCase):
                     "results": [{"title": "Local", "href": "https://example.test", "body": "Body", "engine": "ddg-news"}],
                     "count": 1,
                     "engines": ["ddg-news"],
-                    "engines_attempted": ["tavily", "duckduckgo", "ddg-news"],
+                    "engines_attempted": ["searxng", "duckduckgo", "ddg-news"],
                     "engines_used": ["ddg-news"],
-                    "engine_errors": {"tavily": "missing key"},
+                    "engine_errors": {"searxng": "unreachable"},
                 }
 
             multisearch.news_multi_search = fake_news_multi_search
@@ -210,7 +210,7 @@ class AutopipelineCRUDTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["mode"], "local_news")
-        self.assertEqual(result["engines_attempted"], ["tavily", "duckduckgo", "ddg-news"])
+        self.assertEqual(result["engines_attempted"], ["searxng", "duckduckgo", "ddg-news"])
         self.assertEqual(calls[0]["query"], "Алматы новости")
         self.assertEqual(calls[0]["max_results"], 7)
         self.assertTrue(calls[0]["local_first"])
@@ -220,11 +220,11 @@ class AutopipelineCRUDTest(unittest.TestCase):
         from app.core import web_engines, web_runtime
         from app.infrastructure.search import multisearch
 
-        original_tavily = web_engines.search_tavily
+        original_searxng = web_engines.search_searxng
         original_duckduckgo = web_engines.search_duckduckgo
         original_news = web_runtime.search_news
         try:
-            web_engines.search_tavily = lambda _query, max_results=5: (_ for _ in ()).throw(RuntimeError("missing key"))
+            web_engines.search_searxng = lambda _query, max_results=5: (_ for _ in ()).throw(RuntimeError("unreachable"))
             web_engines.search_duckduckgo = lambda _query, max_results=5: [
                 {"title": "DDG", "href": "https://example.test/ddg", "body": "Duck result", "engine": "duckduckgo"}
             ]
@@ -234,13 +234,13 @@ class AutopipelineCRUDTest(unittest.TestCase):
 
             result = multisearch.news_multi_search("Алматы новости", max_results=5, local_first=True, geo_scope="Алматы")
         finally:
-            web_engines.search_tavily = original_tavily
+            web_engines.search_searxng = original_searxng
             web_engines.search_duckduckgo = original_duckduckgo
             web_runtime.search_news = original_news
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["engines_attempted"], ["tavily", "duckduckgo", "ddg-news"])
-        self.assertIn("tavily", result["engine_errors"])
+        self.assertEqual(result["engines_attempted"], ["searxng", "duckduckgo", "ddg-news"])
+        self.assertIn("searxng", result["engine_errors"])
         self.assertEqual(set(result["engines_used"]), {"duckduckgo", "ddg-news"})
         self.assertEqual(result["count"], 2)
 

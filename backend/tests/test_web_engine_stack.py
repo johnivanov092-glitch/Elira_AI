@@ -19,7 +19,7 @@ from app.core.web import DEFAULT_SEARCH_ENGINES, SUPPORTED_SEARCH_ENGINES, _rera
 from app.main import app  # noqa: E402
 
 
-EXPECTED = ("tavily", "duckduckgo", "wikipedia")
+EXPECTED = ("searxng", "duckduckgo", "wikipedia")
 
 
 class WebEngineStackTest(unittest.TestCase):
@@ -27,29 +27,29 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(tuple(SUPPORTED_SEARCH_ENGINES), EXPECTED)
         self.assertEqual(tuple(DEFAULT_SEARCH_ENGINES), EXPECTED)
 
-    def test_runtime_falls_back_to_duckduckgo_without_api_keys(self) -> None:
-        with patch.dict(os.environ, {"TAVILY_API_KEY": ""}, clear=False):
+    def test_runtime_falls_back_to_duckduckgo_without_searxng(self) -> None:
+        with patch.dict(os.environ, {"SEARXNG_URL": ""}, clear=False):
             status = get_web_engine_status()
 
         self.assertEqual(status["primary_engine"], "duckduckgo")
         self.assertTrue(status["degraded_mode"])
         self.assertIn("duckduckgo", status["available_engines"])
         self.assertIn("wikipedia", status["available_engines"])
-        self.assertFalse(status["api_keys_present"]["tavily"])
+        self.assertFalse(status["api_keys_present"]["searxng"])
 
-    def test_runtime_prefers_tavily_when_key_exists(self) -> None:
-        with patch.dict(os.environ, {"TAVILY_API_KEY": "test-tavily"}, clear=False):
+    def test_runtime_prefers_searxng_when_url_set(self) -> None:
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}, clear=False):
             engines = resolve_search_engines()
             status = get_web_engine_status()
 
         self.assertEqual(tuple(engines), EXPECTED)
-        self.assertEqual(status["primary_engine"], "tavily")
+        self.assertEqual(status["primary_engine"], "searxng")
         self.assertIn("duckduckgo", status["fallback_engines"])
         self.assertFalse(status["degraded_mode"])
 
-    def test_tavily_http_failure_falls_back_without_leaking_error_rows(self) -> None:
-        def _raise_tavily(*args, **kwargs):
-            raise RuntimeError("402 simulated")
+    def test_searxng_failure_falls_back_without_leaking_error_rows(self) -> None:
+        def _raise_searxng(*args, **kwargs):
+            raise RuntimeError("503 simulated")
 
         duck_results = [
             {
@@ -60,11 +60,11 @@ class WebEngineStackTest(unittest.TestCase):
             }
         ]
 
-        with patch.dict(os.environ, {"TAVILY_API_KEY": "test-tavily"}, clear=False):
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}, clear=False):
             with patch.dict(
                 "app.core.web.ENGINE_FUNCS",
                 {
-                    "tavily": _raise_tavily,
+                    "searxng": _raise_searxng,
                     "duckduckgo": lambda query, max_results=5: duck_results,
                     "wikipedia": lambda query, max_results=5: [],
                 },
@@ -104,7 +104,7 @@ class WebEngineStackTest(unittest.TestCase):
                 "title": "NUR news",
                 "href": "https://www.nur.kz/incident",
                 "body": "Происшествие в Алматы сегодня",
-                "engine": "tavily",
+                "engine": "searxng",
             },
         ]
 
@@ -137,7 +137,7 @@ class WebEngineStackTest(unittest.TestCase):
                 "title": "National bank rate",
                 "href": "https://nationalbank.kz/rates",
                 "body": "Курс USD KZT на сегодня",
-                "engine": "tavily",
+                "engine": "searxng",
             },
         ]
 

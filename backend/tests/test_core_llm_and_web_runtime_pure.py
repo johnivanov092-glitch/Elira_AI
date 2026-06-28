@@ -376,10 +376,10 @@ class ResultScoreTest(unittest.TestCase):
         score_other = result_score(self._item(href="https://other.com"))
         self.assertGreater(score_preferred, score_other)
 
-    def test_tavily_engine_bonus(self) -> None:
-        score_tavily = result_score(self._item(engine="tavily"))
+    def test_searxng_engine_bonus(self) -> None:
+        score_searxng = result_score(self._item(engine="searxng"))
         score_ddg = result_score(self._item(engine="duckduckgo"))
-        self.assertGreater(score_tavily, score_ddg)
+        self.assertGreater(score_searxng, score_ddg)
 
     def test_geo_news_wikipedia_penalty(self) -> None:
         score_wiki = result_score(
@@ -428,7 +428,7 @@ class RerankResultsTest(unittest.TestCase):
         return [
             {"href": "https://example.com", "engine": "duckduckgo", "title": "A", "body": ""},
             {"href": "https://tengrinews.kz/x", "engine": "duckduckgo", "title": "B", "body": ""},
-            {"href": "https://nationalbank.kz/", "engine": "tavily", "title": "C", "body": ""},
+            {"href": "https://nationalbank.kz/", "engine": "searxng", "title": "C", "body": ""},
         ]
 
     def test_returns_list(self) -> None:

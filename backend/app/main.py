@@ -1,7 +1,7 @@
 from pathlib import Path
 import logging
 
-# Load .env and .env.local from backend/ directory so API keys (TAVILY_API_KEY etc.)
+# Load .env and .env.local from backend/ directory so service config (SEARXNG_URL etc.)
 # are available whether the server is started via Elira.bat or manually.
 # existing_envs are not overridden — OS-level env vars always win.
 _backend_dir = Path(__file__).resolve().parent.parent  # backend/

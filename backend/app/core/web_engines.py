@@ -14,16 +14,16 @@ except ImportError:  # pragma: no cover - compatibility fallback
 from .files import truncate_text
 
 
-SUPPORTED_SEARCH_ENGINES = ("tavily", "duckduckgo", "wikipedia")
+SUPPORTED_SEARCH_ENGINES = ("searxng", "duckduckgo", "wikipedia")
 DEFAULT_SEARCH_ENGINES = SUPPORTED_SEARCH_ENGINES
-CURRENT_WORLD_ENGINES = {"tavily", "duckduckgo", "ddg-news"}
+CURRENT_WORLD_ENGINES = {"searxng", "duckduckgo", "ddg-news"}
 ENGINE_PRIORITY = {
-    "tavily": 0,
+    "searxng": 0,
     "duckduckgo": 1,
     "wikipedia": 2,
 }
 ENGINE_LABELS = {
-    "tavily": "Tavily",
+    "searxng": "SearXNG",
     "duckduckgo": "DuckDuckGo",
     "wikipedia": "Wikipedia",
     "ddg-news": "DDG News",
@@ -85,13 +85,16 @@ def domain_matches(domain: str, expected: Iterable[str]) -> bool:
     return any(domain == item or domain.endswith("." + item) for item in expected)
 
 
-def tavily_api_key() -> str:
-    return os.environ.get("TAVILY_API_KEY", "").strip()
+def searxng_url() -> str:
+    """Base URL of the self-hosted SearXNG metasearch (e.g.
+    http://192.168.88.15:8003). Empty when unconfigured -> SearXNG is skipped
+    and search degrades to the keyless DuckDuckGo/Wikipedia fallback."""
+    return os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
 
 
 def engine_available(engine: str) -> bool:
-    if engine == "tavily":
-        return bool(tavily_api_key())
+    if engine == "searxng":
+        return bool(searxng_url())
     return engine in {"duckduckgo", "wikipedia"}
 
 
@@ -116,20 +119,16 @@ def resolve_search_engines(engines: Iterable[str] | None = None) -> tuple[str, .
 
 
 def get_web_engine_status() -> dict:
-    tavily_enabled = bool(tavily_api_key())
+    searxng_enabled = bool(searxng_url())
     available = list(resolve_search_engines())
 
-    if tavily_enabled:
-        primary = "tavily"
-    else:
-        primary = "duckduckgo"
-
+    primary = "searxng" if searxng_enabled else "duckduckgo"
     fallback = [engine for engine in available if engine != primary]
-    degraded = not tavily_enabled
+    degraded = not searxng_enabled
     warnings: list[str] = []
 
-    if not tavily_enabled:
-        warnings.append("TAVILY_API_KEY not configured; deep research is running without Tavily.")
+    if not searxng_enabled:
+        warnings.append("SEARXNG_URL not configured; web search is running on DuckDuckGo only (no SearXNG metasearch).")
 
     return {
         "supported_engines": list(SUPPORTED_SEARCH_ENGINES),
@@ -137,7 +136,7 @@ def get_web_engine_status() -> dict:
         "primary_engine": primary,
         "fallback_engines": fallback,
         "api_keys_present": {
-            "tavily": tavily_enabled,
+            "searxng": searxng_enabled,
         },
         "degraded_mode": degraded,
         "warnings": warnings,
@@ -159,27 +158,19 @@ def search_duckduckgo(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     return results
 
 
-def search_tavily(
-    query: str,
-    max_results: int = 5,
-    search_depth: str = "basic",
-    include_raw_content: bool = False,
-) -> List[Dict[str, str]]:
-    api_key = tavily_api_key()
-    if not api_key:
-        raise RuntimeError("TAVILY_API_KEY is not configured")
+def search_searxng(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Query the self-hosted SearXNG metasearch JSON API. SearXNG already
+    aggregates Google/Bing/DuckDuckGo/Wikipedia upstream, so one call fans out
+    across engines. Returns snippet-level results (no raw page content — the
+    research path fetches full text from the top pages separately)."""
+    base = searxng_url()
+    if not base:
+        raise RuntimeError("SEARXNG_URL is not configured")
 
-    response = session().post(
-        "https://api.tavily.com/search",
-        json={
-            "api_key": api_key,
-            "query": query,
-            "max_results": max_results,
-            "search_depth": search_depth,
-            "include_answer": False,
-            "include_raw_content": include_raw_content,
-        },
-        timeout=30,
+    response = session().get(
+        f"{base}/search",
+        params={"q": query, "format": "json"},
+        timeout=20,
     )
     response.raise_for_status()
     payload = response.json()
@@ -189,17 +180,15 @@ def search_tavily(
         href = clean_url(item.get("url", ""))
         if not href.startswith("http"):
             continue
-        body = item.get("content") or item.get("snippet") or ""
-        row = {
-            "title": (item.get("title") or "").strip(),
-            "href": href,
-            "body": truncate_text(str(body).strip(), 300),
-            "engine": "tavily",
-        }
-        raw_content = item.get("raw_content")
-        if include_raw_content and raw_content:
-            row["raw_content"] = truncate_text(str(raw_content).strip(), 12000)
-        results.append(row)
+        body = item.get("content") or ""
+        results.append(
+            {
+                "title": (item.get("title") or "").strip(),
+                "href": href,
+                "body": truncate_text(str(body).strip(), 300),
+                "engine": "searxng",
+            }
+        )
     return results
 
 

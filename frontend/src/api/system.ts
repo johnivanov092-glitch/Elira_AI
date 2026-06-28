@@ -83,7 +83,7 @@ export async function getRuntimeStatus(): Promise<SystemResponse> {
     primary_engine: "",
     fallback_engines: [],
     available_engines: [],
-    api_keys_present: { tavily: false },
+    api_keys_present: { searxng: false },
     degraded_mode: false,
     web_warnings: [],
   });

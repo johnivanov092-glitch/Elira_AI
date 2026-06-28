@@ -49,8 +49,8 @@ const isScalar = (v: unknown) =>
   v !== null && (["string", "number", "boolean"].includes(typeof v) || Array.isArray(v));
 
 /** Flatten one group's fields into rows, descending one level into nested
- *  status maps (e.g. runtimeStatus.api_keys_present.tavily) so their flags —
- *  Tavily and the like — still surface instead of being silently dropped. */
+ *  status maps (e.g. runtimeStatus.api_keys_present.searxng) so their flags —
+ *  SearXNG and the like — still surface instead of being silently dropped. */
 function groupRows(data: Record<string, unknown>): { k: string; v: unknown }[] {
   const rows: { k: string; v: unknown }[] = [];
   for (const [k, v] of Object.entries(data)) {

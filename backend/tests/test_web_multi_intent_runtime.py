@@ -34,8 +34,8 @@ class WebMultiIntentRuntimeTest(unittest.TestCase):
         }
 
         fake_debug = {
-            "news a": {"found": 4, "news_hits": 2, "fetched_pages": 1, "engines": ["tavily"], "local_source_hits": 2, "deeper_search_used": False, "coverage": "strong"},
-            "finance b": {"found": 3, "news_hits": 0, "fetched_pages": 1, "engines": ["tavily"], "local_source_hits": 1, "deeper_search_used": False, "coverage": "strong"},
+            "news a": {"found": 4, "news_hits": 2, "fetched_pages": 1, "engines": ["searxng"], "local_source_hits": 2, "deeper_search_used": False, "coverage": "strong"},
+            "finance b": {"found": 3, "news_hits": 0, "fetched_pages": 1, "engines": ["searxng"], "local_source_hits": 1, "deeper_search_used": False, "coverage": "strong"},
             "price c": {"found": 0, "news_hits": 0, "fetched_pages": 0, "engines": ["duckduckgo"], "local_source_hits": 0, "deeper_search_used": False, "coverage": "weak"},
             "status d": {"found": 2, "news_hits": 0, "fetched_pages": 1, "engines": ["duckduckgo"], "local_source_hits": 0, "deeper_search_used": True, "coverage": "strong"},
         }

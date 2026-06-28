@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 def multi_search(
     query: str,
-    engines: tuple[str, ...] = ("tavily", "duckduckgo", "wikipedia"),
+    engines: tuple[str, ...] = ("searxng", "duckduckgo", "wikipedia"),
     max_results: int = 10,
     per_engine: int | None = None,
 ) -> dict[str, Any]:
@@ -50,17 +50,17 @@ def news_multi_search(
 ) -> dict[str, Any]:
     """News search with per-engine diagnostics for scheduled pipelines."""
     from app.core.web import format_search_results
-    from app.core.web_engines import KZ_LOCAL_NEWS_DOMAINS, search_duckduckgo, search_tavily
+    from app.core.web_engines import KZ_LOCAL_NEWS_DOMAINS, search_duckduckgo, search_searxng
     from app.core.web_runtime import dedupe_results, rerank_results, search_news
 
-    engines_attempted = ["tavily", "duckduckgo", "ddg-news"]
+    engines_attempted = ["searxng", "duckduckgo", "ddg-news"]
     engine_errors: dict[str, str] = {}
     combined: list[dict[str, str]] = []
     per_engine = max(3, max_results)
     domains = preferred_domains if preferred_domains is not None else (KZ_LOCAL_NEWS_DOMAINS if local_first else ())
 
     for engine, search_func in (
-        ("tavily", search_tavily),
+        ("searxng", search_searxng),
         ("duckduckgo", search_duckduckgo),
     ):
         try:
@@ -109,7 +109,7 @@ def news_multi_search(
 
 def deep_search(
     query: str,
-    engines: tuple[str, ...] = ("tavily", "duckduckgo", "wikipedia"),
+    engines: tuple[str, ...] = ("searxng", "duckduckgo", "wikipedia"),
     max_results: int = 8,
     pages_to_read: int = 3,
 ) -> dict[str, Any]:
@@ -166,7 +166,7 @@ def fetch_page(url: str, max_chars: int = 10000) -> dict[str, Any]:
 
 class WebMultiSearchService:
     def search(self, query: str, max_results: int = 10, engines: tuple[str, ...] | None = None) -> dict[str, Any]:
-        return multi_search(query, engines=engines or ("tavily", "duckduckgo", "wikipedia"), max_results=max_results)
+        return multi_search(query, engines=engines or ("searxng", "duckduckgo", "wikipedia"), max_results=max_results)
 
     def deep_search(
         self,
@@ -175,7 +175,7 @@ class WebMultiSearchService:
         pages_to_read: int = 3,
         engines: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
-        return deep_search(query, engines=engines or ("tavily", "duckduckgo", "wikipedia"), max_results=max_results, pages_to_read=pages_to_read)
+        return deep_search(query, engines=engines or ("searxng", "duckduckgo", "wikipedia"), max_results=max_results, pages_to_read=pages_to_read)
 
     def news(self, query: str, max_results: int = 5) -> dict[str, Any]:
         return news_search(query, max_results=max_results)

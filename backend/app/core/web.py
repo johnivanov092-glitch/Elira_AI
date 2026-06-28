@@ -19,7 +19,7 @@ from .web_engines import (
     get_web_engine_status,
     resolve_search_engines,
     search_duckduckgo as _search_duckduckgo,
-    search_tavily as _search_tavily,
+    search_searxng as _search_searxng,
     search_wikipedia as _search_wikipedia,
 )
 from .web_runtime import (
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 ENGINE_FUNCS = {
-    "tavily": _search_tavily,
+    "searxng": _search_searxng,
     "duckduckgo": _search_duckduckgo,
     "wikipedia": _search_wikipedia,
 }

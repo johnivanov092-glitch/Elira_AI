@@ -51,9 +51,9 @@ def try_deep_research(
         from app.core.web import research_web
 
         deep_engines = (
-            ("wikipedia", "tavily", "duckduckgo")
+            ("wikipedia", "searxng", "duckduckgo")
             if temporal.get("stable_historical")
-            else ("tavily", "duckduckgo", "wikipedia")
+            else ("searxng", "duckduckgo", "wikipedia")
         )
         deep_context = research_web(
             clean_query_func(query),
@@ -101,7 +101,7 @@ def do_temporal_web_search_legacy(
     fetched_pages = int(web_result.get("fetched_pages", 0) or 0)
     news_count = int(web_result.get("news", 0) or 0)
     engines_used = set(web_result.get("engines", []) or [])
-    current_evidence_engines = {"tavily", "duckduckgo", "ddg-news"}
+    current_evidence_engines = {"searxng", "duckduckgo", "ddg-news"}
     has_current_evidence = bool(engines_used & current_evidence_engines) or news_count > 0
     deeper_search = False
 
@@ -169,7 +169,7 @@ def do_temporal_web_search(
         web_result.get("total_subqueries", len(web_result.get("subqueries", []) or [])) or 0
     )
     engines_used = set(web_result.get("engines", []) or [])
-    current_evidence_engines = {"tavily", "duckduckgo", "ddg-news"}
+    current_evidence_engines = {"searxng", "duckduckgo", "ddg-news"}
     has_current_evidence = bool(engines_used & current_evidence_engines) or news_count > 0
     deeper_search = bool(web_result.get("deeper_search_used"))
 
