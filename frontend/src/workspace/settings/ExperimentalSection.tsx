@@ -39,7 +39,7 @@ export function ExperimentalSection() {
     try {
       const next = await request<FeatureFlags>("/api/elira/feature-flags", {
         method: "PUT",
-        body: JSON.stringify({ name: key, value }),
+        body: { name: key, value },
       });
       setFlags(next);
     } catch {
