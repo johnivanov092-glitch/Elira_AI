@@ -761,6 +761,30 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("model down", result["text"])
         self.assertEqual(finish.call_args.kwargs["status"], "failed")
 
+    def test_delegate_task_supports_review_role(self) -> None:
+        # P2.10: a bounded read-only LOCAL reviewer subagent critiques the work.
+        started = {
+            "ok": True, "subagent_run_id": "sub-rev", "parent_run_id": "parent-1",
+            "role": "review", "status": "in_progress",
+        }
+        with patch("app.application.task_planner.service.start_subagent_run", return_value=started), \
+             patch("app.application.task_planner.service.finish_subagent_run",
+                   return_value={"ok": True, **started, "status": "completed", "result_text": "looks correct"}), \
+             patch("app.application.code_agent.agent_loop.run_code_agent",
+                   return_value={"ok": True, "response": "looks correct", "error": None}) as run:
+            result = tool_delegate_task(self.root, run_id="parent-1", role="review", task="review my edit to auth.py")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["role"], "review")
+        self.assertEqual(run.call_args.kwargs["agent_id"], "subagent-review")
+        # reviewer stays read-only and gets the review guidance in its prompt
+        self.assertEqual(tuple(run.call_args.kwargs["base_tools"]), ("read_file", "glob", "grep", "recall"))
+        self.assertIn("review", run.call_args.kwargs["user_message"].lower())
+
+    def test_delegate_task_rejects_unknown_role(self) -> None:
+        result = tool_delegate_task(self.root, run_id="p", role="hacker", task="x")
+        self.assertFalse(result["ok"])
+        self.assertIn("unsupported", result.get("error", ""))
+
     def test_recall_tool_returns_text(self) -> None:
         # Either "No matches", "Found N items", or "ERROR" (if local provider offline)
         result = tool_recall(self.root, query="xyz_zzz_unlikely_phrase", top_k=3)

@@ -12,7 +12,7 @@ DELEGATE_TASK_MAX_STEPS = 6
 DELEGATE_TASK_MAX_CTX = 8192
 DELEGATE_TASK_TIMEOUT_SECONDS = 60
 DELEGATE_TASK_READONLY_TOOLS = ("read_file", "glob", "grep", "recall")
-DELEGATE_TASK_ROLES = {"explore", "plan", "verify"}
+DELEGATE_TASK_ROLES = {"explore", "plan", "verify", "review"}
 
 
 def _clamp_to_max(value: Any, maximum: int) -> int:
@@ -184,6 +184,11 @@ def _delegate_prompt(role: str, task: str) -> str:
         "explore": "Find relevant files, symbols, facts, and constraints. Do not propose edits unless asked.",
         "plan": "Produce a concise implementation plan and risks from read-only inspection.",
         "verify": "Inspect evidence and report whether the requested condition appears satisfied.",
+        "review": (
+            "Critically review the described work/changes for correctness, completeness, "
+            "missed edge cases, and risks. Report concrete issues with file paths and "
+            "what is wrong — do NOT fix them. If it looks good, say so explicitly."
+        ),
     }
     guidance = role_guidance.get(role, role_guidance["explore"])
     return (

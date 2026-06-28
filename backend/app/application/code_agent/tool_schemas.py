@@ -167,7 +167,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "name": "delegate_task",
                 "description": (
                     "Delegate a bounded read-only subtask to a child agent. "
-                    "Roles: explore, plan, verify. The child gets its own "
+                    "Roles: explore, plan, verify, review. The child gets its own "
                     "run_id, max steps/context/time, cannot write files, "
                     "and cannot delegate again."
                 ),
@@ -176,7 +176,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "role": {
                             "type": "string",
-                            "description": "One of: explore, plan, verify.",
+                            "description": "One of: explore, plan, verify, review.",
                         },
                         "task": {
                             "type": "string",
