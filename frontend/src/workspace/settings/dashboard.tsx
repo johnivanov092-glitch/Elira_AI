@@ -25,6 +25,7 @@ const DASH_GROUP_LABELS: Record<string, string> = {
   agentOsHealth: "Agent OS · здоровье",
   agentOsDashboard: "Agent OS · прогоны",
   agentOsLimits: "Agent OS · лимиты",
+  agentOsEvents: "Agent OS · события",
 };
 
 function fmtVal(v: unknown): string {

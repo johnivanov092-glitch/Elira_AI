@@ -59,6 +59,12 @@ export async function listAgentOsLimits() {
   return safeRequest("/api/agent-os/limits", {}, { items: [], total: 0 });
 }
 
+export async function getAgentOsEvents() {
+  return safeRequest("/api/agent-os/events/summary", {}, {
+    ok: false, counts: {}, total_events: 0, recent: [],
+  });
+}
+
 export async function getPersonaVersion(version: string | number) {
   return safeRequest(withParams("/api/persona/version", { version }), {}, { ok: false, item: null });
 }
@@ -73,7 +79,7 @@ export async function rollbackPersona(version: string | number) {
 }
 
 export async function getDashboardOverview() {
-  const [statsResult, projectBrainStatusResult, personaStatusResult, runtimeStatusResult, agentOsHealthResult, agentOsDashboardResult, agentOsLimitsResult] = await Promise.allSettled([
+  const [statsResult, projectBrainStatusResult, personaStatusResult, runtimeStatusResult, agentOsHealthResult, agentOsDashboardResult, agentOsLimitsResult, agentOsEventsResult] = await Promise.allSettled([
     request("/api/dashboard/stats"),
     getProjectBrainStatus(),
     getPersonaStatus(),
@@ -81,6 +87,7 @@ export async function getDashboardOverview() {
     getAgentOsHealth(),
     getAgentOsDashboard(),
     listAgentOsLimits(),
+    getAgentOsEvents(),
   ]);
 
   const errors: string[] = [];
@@ -91,6 +98,7 @@ export async function getDashboardOverview() {
   const agentOsHealth = agentOsHealthResult.status === "fulfilled" ? agentOsHealthResult.value : null;
   const agentOsDashboard = agentOsDashboardResult.status === "fulfilled" ? agentOsDashboardResult.value : null;
   const agentOsLimits = agentOsLimitsResult.status === "fulfilled" ? agentOsLimitsResult.value : null;
+  const agentOsEvents = agentOsEventsResult.status === "fulfilled" ? agentOsEventsResult.value : null;
 
   if (statsResult.status === "rejected") errors.push(`dashboard stats: ${formatRequestError(statsResult.reason)}`);
   if (projectBrainStatusResult.status === "rejected") errors.push(`project brain status: ${formatRequestError(projectBrainStatusResult.reason)}`);
@@ -99,10 +107,11 @@ export async function getDashboardOverview() {
   if (agentOsHealthResult.status === "rejected") errors.push(`agent os health: ${formatRequestError(agentOsHealthResult.reason)}`);
   if (agentOsDashboardResult.status === "rejected") errors.push(`agent os dashboard: ${formatRequestError(agentOsDashboardResult.reason)}`);
   if (agentOsLimitsResult.status === "rejected") errors.push(`agent os limits: ${formatRequestError(agentOsLimitsResult.reason)}`);
+  if (agentOsEventsResult.status === "rejected") errors.push(`agent os events: ${formatRequestError(agentOsEventsResult.reason)}`);
 
-  if (!stats && !projectBrainStatus && !personaStatus && !runtimeStatus && !agentOsHealth && !agentOsDashboard && !agentOsLimits && errors.length) {
+  if (!stats && !projectBrainStatus && !personaStatus && !runtimeStatus && !agentOsHealth && !agentOsDashboard && !agentOsLimits && !agentOsEvents && errors.length) {
     throw new Error(errors.join(" | "));
   }
 
-  return { stats, projectBrainStatus, personaStatus, runtimeStatus, agentOsHealth, agentOsDashboard, agentOsLimits, errors };
+  return { stats, projectBrainStatus, personaStatus, runtimeStatus, agentOsHealth, agentOsDashboard, agentOsLimits, agentOsEvents, errors };
 }
