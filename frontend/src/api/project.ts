@@ -1,4 +1,4 @@
-import { request, safeRequest } from "./client";
+import { API_BASE, request, safeRequest, withAuth } from "./client";
 
 type QueryParam = string | number | boolean | null | undefined;
 
@@ -34,6 +34,8 @@ export type AdvancedMultiAgentRequest = {
   agents?: string[];
   use_reflection?: boolean;
   use_orchestrator?: boolean;
+  project_root?: string;
+  num_ctx?: number;
   [key: string]: unknown;
 };
 
@@ -155,4 +157,98 @@ export async function runAdvancedMultiAgent(
     method: "POST",
     body,
   });
+}
+
+/** SSE event shapes emitted by /api/advanced/multi-agent/stream. A `step` event
+ *  fires once per workflow step (1-based index, total, human label); a `done`
+ *  event carries the same payload the sync /multi-agent route returns; an
+ *  `error` event carries a message. */
+export type AdvancedMultiAgentStreamEvent =
+  | { type: "step"; index: number; total: number; label: string }
+  | ({ type: "done" } & ProjectResponse)
+  | { type: "error"; error: string };
+
+export type AdvancedMultiAgentStreamHandlers = {
+  onStep?: (index: number, total: number, label: string) => void;
+  onDone?: (result: ProjectResponse) => void;
+  onError?: (error: Error) => void;
+};
+
+/** Stream a multi-agent run over SSE, emitting per-step progress before the
+ *  final report. Mirrors codeAgent.streamCodeAgent's raw-fetch shape (the
+ *  request() helper can't read a streaming body). */
+export async function streamAdvancedMultiAgent(
+  body: AdvancedMultiAgentRequest,
+  handlers: AdvancedMultiAgentStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const { onStep, onDone, onError } = handlers;
+  const isAbort = (err: unknown) => (err as Error)?.name === "AbortError";
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/advanced/multi-agent/stream`, {
+      method: "POST",
+      headers: withAuth({ "Content-Type": "application/json", Accept: "text/event-stream" }),
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if (isAbort(err)) return; // Stop button aborted the request — not an error.
+    onError?.(err as Error);
+    return;
+  }
+
+  if (!response.ok || !response.body) {
+    onError?.(new Error(`Stream failed: HTTP ${response.status}`));
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  function dispatch(data: string) {
+    const trimmed = data.trim();
+    if (!trimmed) return;
+    let evt: AdvancedMultiAgentStreamEvent;
+    try {
+      evt = JSON.parse(trimmed) as AdvancedMultiAgentStreamEvent;
+    } catch {
+      return; // ignore malformed lines
+    }
+    if (evt.type === "step") {
+      onStep?.(evt.index, evt.total, evt.label);
+    } else if (evt.type === "done") {
+      const { type: _type, ...result } = evt;
+      onDone?.(result);
+    } else if (evt.type === "error") {
+      onError?.(new Error(evt.error));
+    }
+  }
+
+  function flush(chunk: string) {
+    const dataLines = chunk
+      .split("\n")
+      .map((ln) => ln.trim())
+      .filter((ln) => ln.startsWith("data:"))
+      .map((ln) => ln.slice(5).trim());
+    if (dataLines.length) dispatch(dataLines.join("\n"));
+  }
+
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf("\n\n")) >= 0) {
+        flush(buffer.slice(0, idx));
+        buffer = buffer.slice(idx + 2);
+      }
+    }
+    if (buffer.trim()) flush(buffer);
+  } catch (err) {
+    if (isAbort(err)) return; // Stop button aborted the read — not an error.
+    onError?.(err as Error);
+  }
 }

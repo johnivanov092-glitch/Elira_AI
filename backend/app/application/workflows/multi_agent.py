@@ -6,6 +6,7 @@ seeding, multi-agent run orchestration, and legacy compatibility API.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
 from app.application.workflows.db_path import get_workflow_db_path
@@ -63,6 +64,8 @@ def _builtin_workflow_templates() -> list[dict[str, Any]]:
         "Исследование:\n{research}\n\n"
         "Контекст проекта:\n{project_context}\n\n"
         "Контекст файлов:\n{file_context}\n\n"
+        "Если нужного файла нет в контексте выше — прочитай его инструментом read_file "
+        "(и при необходимости найди файлы через glob/grep), прежде чем предлагать правки.\n\n"
         "Подготовь техническое решение, кодовый подход или реализационный план."
     )
     analyst_prompt = (
@@ -301,6 +304,142 @@ def _build_multi_agent_timeline(template: dict[str, Any], step_results: dict[str
     return timeline
 
 
+def _build_project_context_from_root(project_root: str | None) -> str:
+    """Render a project overview (name + file list) for the selected folder.
+
+    Mirrors context_builder._build_project_context_from_open_project, but scoped
+    to an explicit root instead of the global open project — the multi-agent run
+    operates on the folder the user picked in the Composer, which may differ from
+    the chat's open project. Threading project_root into run_context already
+    points the agents' file tools at this folder; this populates the prompt's
+    {project_context} placeholder so the Coding step actually sees the file list.
+    """
+    if not project_root:
+        return ""
+    try:
+        root = Path(project_root)
+        if not root.exists():
+            return ""
+        file_list: list[str] = []
+        for file_path in sorted(root.rglob("*"))[:50]:
+            if not file_path.is_file():
+                continue
+            if any(blocked in str(file_path) for blocked in [".git", "node_modules", "__pycache__", ".venv", "dist"]):
+                continue
+            file_list.append(str(file_path.relative_to(root)))
+        if not file_list:
+            return ""
+        return f"Открыт проект: {root.name}\nФайлы ({len(file_list)}):\n" + "\n".join("- " + item for item in file_list[:30])
+    except Exception:
+        return ""
+
+
+# Directories we never scan when picking relevant files — same ignore set as the
+# project-overview builder above and the code-agent's internal grep.
+_RELEVANCE_BLOCKED_PARTS = (".git", "node_modules", "__pycache__", ".venv", "dist", "build", ".mypy_cache")
+# Russian/English stop-words and generic verbs that carry no targeting signal —
+# keeping them would match nearly every file and drown out the real keywords.
+_RELEVANCE_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "with", "this", "that", "from", "into", "code", "file", "files",
+        "что", "как", "для", "это", "эта", "или", "при", "под", "над", "над", "файл", "файлы",
+        "код", "кода", "сделай", "сделать", "нужно", "надо", "проект", "проекта",
+    }
+)
+
+
+def _looks_binary_bytes(raw: bytes) -> bool:
+    """Cheap binary sniff: a NUL byte in the first 8 KiB means "don't read as text"."""
+    return b"\x00" in raw[:8192]
+
+
+def _query_keywords(query: str) -> list[str]:
+    """Lower-cased word tokens (≥3 chars, not stop-words) used to score files."""
+    import re
+
+    tokens = re.findall(r"[0-9A-Za-zА-Яа-яЁё_]{3,}", (query or "").lower())
+    seen: set[str] = set()
+    keywords: list[str] = []
+    for token in tokens:
+        if token in _RELEVANCE_STOPWORDS or token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+    return keywords
+
+
+def _build_file_context_from_root(
+    project_root: str | None,
+    query: str,
+    *,
+    max_files: int = 6,
+    max_chars_per_file: int = 2500,
+    max_scan_files: int = 2000,
+) -> str:
+    """Select files relevant to ``query`` from the disk project and return their
+    *content* for the Coding step's {file_context} placeholder.
+
+    Relevance is keyword/grep-style (no embedding index exists for the on-disk
+    project): a file scores on query keywords appearing in its path (weighted) and
+    in its body. The top ``max_files`` text files are returned, each truncated to
+    ``max_chars_per_file``. Empty string when there's no root, no keywords, or no
+    match — the prompt placeholder then renders blank, exactly as before.
+    """
+    if not project_root:
+        return ""
+    keywords = _query_keywords(query)
+    if not keywords:
+        return ""
+    try:
+        root = Path(project_root)
+        if not root.exists():
+            return ""
+
+        scored: list[tuple[int, str, str]] = []  # (score, rel_path, text)
+        scanned = 0
+        for file_path in sorted(root.rglob("*")):
+            if scanned >= max_scan_files:
+                break
+            if not file_path.is_file():
+                continue
+            if any(part in _RELEVANCE_BLOCKED_PARTS for part in file_path.parts):
+                continue
+            scanned += 1
+            rel = str(file_path.relative_to(root)).replace("\\", "/")
+            rel_lower = rel.lower()
+            # Path matches are a strong signal — a filename hit is worth more than
+            # an incidental body mention.
+            score = sum(3 for kw in keywords if kw in rel_lower)
+            try:
+                raw = file_path.read_bytes()
+            except Exception:
+                continue
+            if _looks_binary_bytes(raw):
+                continue
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("cp1252", errors="replace")
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
+            body_lower = text.lower()
+            score += sum(body_lower.count(kw) for kw in keywords)
+            if score > 0:
+                scored.append((score, rel, text))
+
+        if not scored:
+            return ""
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        blocks: list[str] = []
+        for _score, rel, text in scored[:max_files]:
+            snippet = text[:max_chars_per_file]
+            if len(text) > max_chars_per_file:
+                snippet += "\n[... обрезано]"
+            blocks.append(f"### {rel}\n```\n{snippet}\n```")
+        return "Содержимое релевантных файлов:\n\n" + "\n\n".join(blocks)
+    except Exception:
+        return ""
+
+
 def run_multi_agent_workflow(
     *,
     query: str,
@@ -309,15 +448,32 @@ def run_multi_agent_workflow(
     agents: list[str] | None = None,
     use_reflection: bool = False,
     use_orchestrator: bool = False,
+    project_root: str | None = None,
+    num_ctx: int | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     from app.application.workflows.runtime import start_workflow_run
     seed_builtin_workflows()
     workflow_id = _select_multi_agent_workflow_id(use_reflection=use_reflection, use_orchestrator=use_orchestrator)
+    # The run context dict is threaded down to every agent step (see
+    # step_executor._execute_agent_step); putting project_root/num_ctx here is
+    # what scopes the agents' file tools to the user's selected folder and runs
+    # them at the full production context window.
+    run_context: dict[str, Any] = {"model_name": model_name}
+    if project_root:
+        run_context["project_root"] = project_root
+    if isinstance(num_ctx, int) and num_ctx > 0:
+        run_context["num_ctx"] = num_ctx
+    project_context = _build_project_context_from_root(project_root)
+    file_context = _build_file_context_from_root(project_root, query)
     run = start_workflow_run(
         workflow_id=workflow_id,
-        workflow_input={"query": query, "context": context, "plan": "", "project_context": "", "file_context": ""},
-        context={"model_name": model_name},
+        workflow_input={"query": query, "context": context, "plan": "", "project_context": project_context, "file_context": file_context},
+        context=run_context,
         trigger_source="advanced.multi_agent",
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
 
     if run.get("status") != "completed":

@@ -129,6 +129,17 @@ def _execute_agent_step(
     # shared profile routing engages; an explicit step/context model is preserved.
     model_name = str(config.get("model_name") or run_context.get("model_name") or "auto")
     profile_name = _determine_profile_name(str(step.get("agent_id", "")), config)
+    # Thread the selected project folder + context window from the run context so the
+    # agent's file tools scope to the user's project (not the default workspace) and
+    # the full production context window is used. Only forward when present/positive
+    # so run_agent's defaults (default project root, DEFAULT_NUM_CTX) stay intact.
+    extra_kwargs: dict[str, Any] = {}
+    project_root = run_context.get("project_root")
+    if project_root:
+        extra_kwargs["project_root"] = str(project_root)
+    num_ctx = run_context.get("num_ctx")
+    if isinstance(num_ctx, int) and num_ctx > 0:
+        extra_kwargs["num_ctx"] = num_ctx
     result = run_agent(
         model_name=model_name,
         profile_name=profile_name,
@@ -153,6 +164,7 @@ def _execute_agent_step(
         use_csv=bool(config.get("use_csv", False)),
         use_webhook=bool(config.get("use_webhook", False)),
         use_plugins=bool(config.get("use_plugins", False)),
+        **extra_kwargs,
     )
 
     answer = str(result.get("answer", ""))

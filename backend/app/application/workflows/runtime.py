@@ -66,6 +66,7 @@ def execute_workflow_run(
     db_path: str | Path | None = None,
     resume_event: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     resolved_db_path = _resolve_db_path(db_path)
     init_db(db_path=resolved_db_path)
@@ -111,6 +112,21 @@ def execute_workflow_run(
         record_workflow_total_steps(run, run_id=run_id, total_steps=total_steps)
 
     while current_step_id:
+        # Cooperative cancellation: the SSE route sets a flag on client
+        # disconnect (Stop button). The workflow runs in a daemon thread that
+        # can't be interrupted mid-LLM-call, so we break between steps — the
+        # next step never starts and the run is recorded as cancelled.
+        if cancel_check and cancel_check():
+            run = _get_workflow_run(run_id) or run
+            return cancel_run(
+                run_id=run_id,
+                run=run,
+                update_workflow_run=lambda current_run_id, **fields: _update_run(current_run_id, **fields),
+                record_workflow_run_state=record_workflow_run_state,
+                emit_workflow_event=emit_workflow_event,
+                now_func=now_utc,
+            )
+
         step = steps_by_id.get(current_step_id)
         if not step:
             return fail_missing_step(
@@ -241,6 +257,7 @@ def start_workflow_run(
     context: dict[str, Any] | None = None,
     trigger_source: str = "api",
     progress_callback: Callable[[int, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     resolved_db_path = _resolve_db_path(db_path)
@@ -257,6 +274,7 @@ def start_workflow_run(
         run_id=run["run_id"],
         db_path=resolved_db_path,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
 
 

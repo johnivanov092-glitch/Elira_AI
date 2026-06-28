@@ -155,6 +155,33 @@ class AgentMonitorServiceTest(AgentOsPhase5DbMixin):
         self.assertNotIn(stale_id, ids)
         self.assertIn("builtin-universal", ids)
 
+    def test_migrate_raises_stale_builtin_runtime_limits(self) -> None:
+        # Regression: builtin agent rows left at the old (16384, 180) caps by a
+        # pre-fix seed must be raised to the production defaults. A stale 16384
+        # monitoring cap silently shrank multi-agent runs to a 16K window via
+        # effective_context_limit()'s min() of positive caps.
+        store = agent_monitor.monitoring_store
+        for agent_id in ("builtin-orchestrator", "code-agent", "workflow-engine"):
+            payload = store.default_limit_payload(agent_id)
+            payload["max_context_tokens"] = 16384
+            payload["max_execution_seconds"] = 180
+            store.upsert_limit(agent_monitor.DB_PATH, payload)
+        # A non-default cap (e.g. an explicit admin override) must NOT be touched.
+        custom = store.default_limit_payload("builtin-analyst")
+        custom["max_context_tokens"] = 65536
+        store.upsert_limit(agent_monitor.DB_PATH, custom)
+
+        store.migrate_default_runtime_limits(agent_monitor.DB_PATH)
+
+        for agent_id in ("builtin-orchestrator", "code-agent", "workflow-engine"):
+            row = store.get_agent_limit(agent_monitor.DB_PATH, agent_id)
+            assert row is not None
+            self.assertEqual(row["max_context_tokens"], store.DEFAULT_MAX_CONTEXT_TOKENS)
+            self.assertEqual(row["max_execution_seconds"], store.DEFAULT_MAX_EXECUTION_SECONDS)
+        untouched = store.get_agent_limit(agent_monitor.DB_PATH, "builtin-analyst")
+        assert untouched is not None
+        self.assertEqual(untouched["max_context_tokens"], 65536)
+
     def test_context_limit_block_records_metric_and_event(self) -> None:
         agent_monitor.update_agent_limit(
             "builtin-universal",

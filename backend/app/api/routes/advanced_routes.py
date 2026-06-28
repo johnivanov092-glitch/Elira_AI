@@ -4,9 +4,12 @@ advanced_routes.py — роуты для Multi-agent, RAG, Project mode.
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+import json
 import logging
+import queue
+import threading
 
 from app.application.advanced import runtime as project_runtime
 
@@ -25,6 +28,8 @@ class MultiAgentRequest(BaseModel):
     agents: list[str] = ["researcher", "programmer", "analyst"]
     use_reflection: bool = False
     use_orchestrator: bool = False
+    project_root: str | None = None
+    num_ctx: int | None = None
 
 
 @router.post("/multi-agent")
@@ -39,6 +44,8 @@ def run_multi(payload: MultiAgentRequest):
             agents=payload.agents,
             use_reflection=payload.use_reflection,
             use_orchestrator=payload.use_orchestrator,
+            project_root=payload.project_root,
+            num_ctx=payload.num_ctx,
         )
         if not isinstance(result, dict):
             return JSONResponse(status_code=502, content={"ok": False, "error": "Multi-agent вернул некорректный результат."})
@@ -47,6 +54,73 @@ def run_multi(payload: MultiAgentRequest):
     except Exception as e:
         logger.exception("/api/advanced/multi-agent failed")
         return JSONResponse(status_code=500, content={"ok": False, "error": f"Multi-agent error: {e}"})
+
+
+@router.post("/multi-agent/stream")
+def run_multi_stream(payload: MultiAgentRequest):
+    """Streaming sibling of /multi-agent.
+
+    The workflow runs synchronously inside a worker thread; a progress_callback
+    pushes one `{"type":"step", ...}` event per step into a queue that the SSE
+    generator drains in real time, then a final `{"type":"done", ...}` event
+    carries the same payload the sync route returns (report/timeline/results/…).
+    The sync /multi-agent route stays intact for non-streaming callers.
+    """
+    from app.application.workflows.multi_agent import run_multi_agent_workflow
+
+    events: "queue.Queue[dict]" = queue.Queue()
+    _SENTINEL: dict = {"__end__": True}
+    # Set when the client disconnects (Stop button tears down the SSE stream).
+    # The workflow runs in a daemon thread that can't be interrupted mid-LLM
+    # call, so cancellation is cooperative: run_multi_agent_workflow checks this
+    # flag between steps and records the run as cancelled.
+    cancel_event = threading.Event()
+
+    def _on_progress(index: int, total: int, label: str) -> None:
+        events.put({"type": "step", "index": index, "total": total, "label": label})
+
+    def _worker() -> None:
+        try:
+            result = run_multi_agent_workflow(
+                query=payload.query,
+                model_name=payload.model_name,
+                context=payload.context,
+                agents=payload.agents,
+                use_reflection=payload.use_reflection,
+                use_orchestrator=payload.use_orchestrator,
+                project_root=payload.project_root,
+                num_ctx=payload.num_ctx,
+                progress_callback=_on_progress,
+                cancel_check=cancel_event.is_set,
+            )
+            if not isinstance(result, dict):
+                events.put({"type": "error", "error": "Multi-agent вернул некорректный результат."})
+            else:
+                result.setdefault("ok", True)
+                events.put({"type": "done", **result})
+        except Exception as e:  # noqa: BLE001 - surfaced to the client as an SSE error event
+            logger.exception("/api/advanced/multi-agent/stream failed")
+            events.put({"type": "error", "error": f"Multi-agent error: {e}"})
+        finally:
+            events.put(_SENTINEL)
+
+    def _generate():
+        worker = threading.Thread(target=_worker, daemon=True)
+        worker.start()
+        try:
+            while True:
+                event = events.get()
+                if event is _SENTINEL:
+                    break
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except GeneratorExit:
+            # Client disconnected (Stop). Signal the worker to stop between
+            # steps; it owns the same SQLite lifecycle and will mark the run
+            # cancelled. Re-raise so the StreamingResponse closes cleanly.
+            cancel_event.set()
+            raise
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 # ═══════════════════════════════════════════════════════════════

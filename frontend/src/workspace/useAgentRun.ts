@@ -60,11 +60,12 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName });
   }, [sessionId, projectRoot, model]);
 
-  // Multi-agent run: NOT a stream. Forwards the two run-mode flags to the
-  // pipeline endpoint via the background manager. Independent of `agent_profile`.
+  // Multi-agent run: streams per-step progress from the pipeline endpoint via
+  // the background manager. Forwards the two run-mode flags. Independent of
+  // `agent_profile`.
   const sendMultiAgent = useCallback((text: string, useOrchestrator: boolean, useReflection: boolean) => {
-    bg.sendMultiAgent({ sessionId, text, useOrchestrator, useReflection });
-  }, [sessionId]);
+    bg.sendMultiAgent({ sessionId, text, useOrchestrator, useReflection, projectRoot });
+  }, [sessionId, projectRoot]);
 
   const resume = useCallback((agentId: string, runId: string) => {
     bg.resume(sessionId, agentId, runId);

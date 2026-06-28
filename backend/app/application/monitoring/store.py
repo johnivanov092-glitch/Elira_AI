@@ -210,16 +210,42 @@ def migrate_model_profiles_table(db_path: str | Path) -> None:
         )
 
 
+# Built-in runtime rows that should never be capped below the production
+# context window. The multi-agent templates run under these agent_ids
+# (builtin-* + workflow-engine); the chat/code-agent rows were the original
+# pair. Any of these still carrying the old 16384 cap silently shrinks the
+# effective context window via effective_context_limit()'s min().
+_BUILTIN_RUNTIME_AGENT_IDS = (
+    "chat",
+    "code-agent",
+    "api-direct",
+    "workflow-engine",
+    "builtin-orchestrator",
+    "builtin-reviewer",
+    "builtin-researcher",
+    "builtin-programmer",
+    "builtin-analyst",
+    "builtin-universal",
+    "builtin-socrat",
+)
+
+
 def migrate_default_runtime_limits(db_path: str | Path) -> None:
-    """Raise only known built-in runtime rows still carrying the old defaults."""
+    """Raise built-in runtime rows still carrying the old 16384 context cap."""
     with get_connection(db_path) as con:
         con.execute(
-            """UPDATE agent_limits
-               SET max_context_tokens = ?, max_execution_seconds = ?, updated_at = ?
-               WHERE agent_id IN ('chat', 'code-agent')
-                 AND max_context_tokens = 16384
-                 AND max_execution_seconds = 180""",
-            (DEFAULT_MAX_CONTEXT_TOKENS, DEFAULT_MAX_EXECUTION_SECONDS, now_utc()),
+            f"""UPDATE agent_limits
+                SET max_context_tokens = ?, updated_at = ?
+                WHERE agent_id IN ({",".join("?" for _ in _BUILTIN_RUNTIME_AGENT_IDS)})
+                  AND max_context_tokens = 16384""",
+            (DEFAULT_MAX_CONTEXT_TOKENS, now_utc(), *_BUILTIN_RUNTIME_AGENT_IDS),
+        )
+        con.execute(
+            f"""UPDATE agent_limits
+                SET max_execution_seconds = ?, updated_at = ?
+                WHERE agent_id IN ({",".join("?" for _ in _BUILTIN_RUNTIME_AGENT_IDS)})
+                  AND max_execution_seconds = 180""",
+            (DEFAULT_MAX_EXECUTION_SECONDS, now_utc(), *_BUILTIN_RUNTIME_AGENT_IDS),
         )
 
 

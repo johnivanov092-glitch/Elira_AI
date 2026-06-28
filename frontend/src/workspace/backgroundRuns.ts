@@ -12,7 +12,7 @@ import {
   type TaskLedgerEntry,
 } from "../api/codeAgent";
 import type { ChatAttachment } from "../api/chat";
-import { runAdvancedMultiAgent } from "../api/project";
+import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, Turn } from "./types";
 
 /**
@@ -374,16 +374,18 @@ export function send(args: SendArgs): void {
     streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, ...handlers }));
 }
 
-/** Start a MULTI-AGENT run for a session. Unlike `send`, this is NOT a stream:
- *  `/api/advanced/multi-agent` runs a pipeline of 3–5 chained LLM calls and
- *  returns one combined report after it completes. So we append the user + a
- *  "working…" agent turn (running:true), await the single POST, then write the
- *  whole report into that agent turn as one block. No SSE reader, no runId, no
- *  abort wiring — there is nothing to stream and the server has no cancel hook. */
+/** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`
+ *  runs a pipeline of 3–5 chained LLM calls and emits one SSE `step` event per
+ *  workflow step before the final `done` event carries the combined report. So
+ *  we append the user + a "working…" agent turn (running:true), then drive that
+ *  turn from the stream: each `step` updates `activeTool` to a "Шаг N/total: …"
+ *  status, `done` writes the whole report as one block, `error` surfaces the
+ *  message. Stop aborts the SSE fetch (entry.abort); the backend then cancels
+ *  the pipeline between steps. Late events after a stop are ignored. */
 export function sendMultiAgent(
-  args: { sessionId: string; text: string; useOrchestrator: boolean; useReflection: boolean },
+  args: { sessionId: string; text: string; useOrchestrator: boolean; useReflection: boolean; projectRoot?: string },
 ): void {
-  const { sessionId, text, useOrchestrator, useReflection } = args;
+  const { sessionId, text, useOrchestrator, useReflection, projectRoot } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -391,6 +393,16 @@ export function sendMultiAgent(
   const agentId = nid();
   entry.runId = null;
   entry.persistedAtDone = false;
+  // AbortController so Stop genuinely tears down the SSE connection. When the
+  // fetch aborts, the backend generator gets GeneratorExit and cancels the
+  // pipeline between steps. stop() calls entry.abort?.abort().
+  const ctrl = new AbortController();
+  entry.abort = ctrl;
+  entry.activeAgentId = agentId;
+  // After a stop, a late event (a `done` already in flight) must not overwrite
+  // the turn or re-flip persistence. stop() aborts the controller and clears
+  // activeAgentId, so either guard catches a stale callback.
+  const stopped = () => ctrl.signal.aborted || entry.activeAgentId !== agentId;
   update(entry, (s) => ({
     ...s,
     running: true,
@@ -401,32 +413,55 @@ export function sendMultiAgent(
     ],
   }));
 
-  void runAdvancedMultiAgent({ query: msg, use_orchestrator: useOrchestrator, use_reflection: useReflection })
-    .then((res) => {
-      const ok = res.ok !== false;
-      const report = typeof res.report === "string" ? res.report : "";
-      const errMsg = typeof res.error === "string" ? res.error : "";
-      patchAgent(entry, agentId, (a) => ({
-        ...a,
-        running: false,
-        text: ok ? (report || "Мульти-агент не вернул ответ.") : a.text,
-        error: ok ? undefined : (errMsg || "Мульти-агент завершился с ошибкой."),
-      }));
-    })
-    .catch((e: unknown) => {
-      patchAgent(entry, agentId, (a) => ({
-        ...a,
-        running: false,
-        error: e instanceof Error ? e.message : "Не удалось выполнить мульти-агентный запуск.",
-      }));
-    })
-    .finally(() => {
-      update(entry, (s) => ({ ...s, running: false }));
-      if (!entry.persistedAtDone) {
-        entry.persistedAtDone = true;
-        entry.persist?.(entry.snapshot);
-      }
-    });
+  void streamAdvancedMultiAgent(
+    {
+      query: msg,
+      use_orchestrator: useOrchestrator,
+      use_reflection: useReflection,
+      ...(projectRoot ? { project_root: projectRoot } : {}),
+    },
+    {
+      onStep: (index, total, label) => {
+        if (stopped()) return;
+        patchAgent(entry, agentId, (a) => ({
+          ...a,
+          activeTool: `Шаг ${index}/${total}: ${label}`,
+        }));
+      },
+      onDone: (res) => {
+        if (stopped()) return;
+        const ok = res.ok !== false;
+        const report = typeof res.report === "string" ? res.report : "";
+        const errMsg = typeof res.error === "string" ? res.error : "";
+        patchAgent(entry, agentId, (a) => ({
+          ...a,
+          running: false,
+          activeTool: undefined,
+          text: ok ? (report || "Мульти-агент не вернул ответ.") : a.text,
+          error: ok ? undefined : (errMsg || "Мульти-агент завершился с ошибкой."),
+        }));
+      },
+      onError: (e) => {
+        if (stopped()) return;
+        patchAgent(entry, agentId, (a) => ({
+          ...a,
+          running: false,
+          activeTool: undefined,
+          error: e instanceof Error ? e.message : "Не удалось выполнить мульти-агентный запуск.",
+        }));
+      },
+    },
+    ctrl.signal,
+  ).finally(() => {
+    if (entry.abort === ctrl) entry.abort = null;
+    if (stopped()) return; // Stop already reset running/turn state.
+    entry.activeAgentId = null;
+    update(entry, (s) => ({ ...s, running: false }));
+    if (!entry.persistedAtDone) {
+      entry.persistedAtDone = true;
+      entry.persist?.(entry.snapshot);
+    }
+  });
 }
 
 /** Resume a persisted interrupted/partial run for a session's agent turn. */

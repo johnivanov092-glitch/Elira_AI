@@ -32,6 +32,8 @@ from app.application.workflows.multi_agent import (  # noqa: E402
     MULTI_AGENT_ORCHESTRATED_WORKFLOW_ID,
     MULTI_AGENT_FULL_WORKFLOW_ID,
     _multi_agent_template,
+    _build_file_context_from_root,
+    _query_keywords,
 )
 
 
@@ -411,6 +413,124 @@ class MultiAgentTemplateTest(unittest.TestCase):
             "wf1", name="X", name_ru="Х", description="d", steps=steps
         )
         self.assertEqual(len(result["graph"]["steps"]), 3)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# workflows/multi_agent — _query_keywords
+# ─────────────────────────────────────────────────────────────────────────────
+
+class QueryKeywordsTest(unittest.TestCase):
+    def test_returns_list(self) -> None:
+        self.assertIsInstance(_query_keywords("hello world"), list)
+
+    def test_lowercases_tokens(self) -> None:
+        self.assertEqual(_query_keywords("AuthService"), ["authservice"])
+
+    def test_drops_short_tokens(self) -> None:
+        # "to" is 2 chars → dropped; "fix" is 3 → kept
+        self.assertEqual(_query_keywords("to fix"), ["fix"])
+
+    def test_drops_stopwords(self) -> None:
+        # "code"/"что"/"для" are stop-words; "логин" survives
+        self.assertNotIn("code", _query_keywords("code для логин"))
+        self.assertIn("логин", _query_keywords("code для логин"))
+
+    def test_dedupes_repeated_tokens(self) -> None:
+        self.assertEqual(_query_keywords("auth auth auth"), ["auth"])
+
+    def test_handles_cyrillic(self) -> None:
+        self.assertIn("авторизация", _query_keywords("почини авторизацию авторизация"))
+
+    def test_empty_query_returns_empty(self) -> None:
+        self.assertEqual(_query_keywords(""), [])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# workflows/multi_agent — _build_file_context_from_root
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BuildFileContextTest(unittest.TestCase):
+    def _make_project(self, files: dict[str, bytes]) -> Path:
+        import tempfile
+
+        tmp = Path(tempfile.mkdtemp(prefix="elira_fc_"))
+        self.addCleanup(self._rmtree, tmp)
+        for rel, data in files.items():
+            target = tmp / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        return tmp
+
+    @staticmethod
+    def _rmtree(path: Path) -> None:
+        import shutil
+
+        shutil.rmtree(path, ignore_errors=True)
+
+    def test_none_root_returns_empty(self) -> None:
+        self.assertEqual(_build_file_context_from_root(None, "auth"), "")
+
+    def test_no_keywords_returns_empty(self) -> None:
+        root = self._make_project({"a.py": b"def f(): pass"})
+        # query is all stop-words / too short → no keywords → empty
+        self.assertEqual(_build_file_context_from_root(str(root), "то и"), "")
+
+    def test_no_match_returns_empty(self) -> None:
+        root = self._make_project({"a.py": b"def helper(): return 1"})
+        self.assertEqual(_build_file_context_from_root(str(root), "nonexistentword"), "")
+
+    def test_matches_by_filename(self) -> None:
+        root = self._make_project({"login_handler.py": b"x = 1\n"})
+        out = _build_file_context_from_root(str(root), "login flow")
+        self.assertIn("login_handler.py", out)
+        self.assertIn("x = 1", out)
+
+    def test_matches_by_content(self) -> None:
+        root = self._make_project({"misc.py": b"def authenticate(user):\n    return True\n"})
+        out = _build_file_context_from_root(str(root), "authenticate user")
+        self.assertIn("misc.py", out)
+        self.assertIn("authenticate", out)
+
+    def test_skips_binary_files(self) -> None:
+        # NUL byte → binary → never read, even though name matches the keyword
+        root = self._make_project({"auth.bin": b"auth\x00\x00\x00data"})
+        out = _build_file_context_from_root(str(root), "auth")
+        # filename still scores, but binary body is excluded from the snippet
+        self.assertNotIn("\x00", out)
+
+    def test_skips_blocked_directories(self) -> None:
+        root = self._make_project(
+            {
+                "node_modules/pkg/auth.js": b"export const auth = 1;\n",
+                "src/auth.py": b"AUTH = True\n",
+            }
+        )
+        out = _build_file_context_from_root(str(root), "auth")
+        self.assertIn("src/auth.py", out)
+        self.assertNotIn("node_modules", out)
+
+    def test_respects_max_files(self) -> None:
+        files = {f"auth_{i}.py": b"auth = %d\n" % i for i in range(10)}
+        root = self._make_project(files)
+        out = _build_file_context_from_root(str(root), "auth", max_files=3)
+        self.assertEqual(out.count("### "), 3)
+
+    def test_truncates_long_files(self) -> None:
+        big = b"auth\n" + b"x" * 10000
+        root = self._make_project({"big.py": big})
+        out = _build_file_context_from_root(str(root), "auth", max_chars_per_file=100)
+        self.assertIn("[... обрезано]", out)
+
+    def test_filename_match_outranks_body_mention(self) -> None:
+        root = self._make_project(
+            {
+                "auth.py": b"# small\n",  # name hit (weight 3)
+                "notes.py": b"auth\n",     # single body mention (weight 1)
+            }
+        )
+        out = _build_file_context_from_root(str(root), "auth", max_files=2)
+        # auth.py should appear before notes.py in the rendered output
+        self.assertLess(out.index("### auth.py"), out.index("### notes.py"))
 
 
 if __name__ == "__main__":
