@@ -505,6 +505,7 @@ def _emit_invalid_spec(req: ToolExecutionRequest, reason: str) -> None:
     """
     try:
         from app.application.event_bus import runtime as _eb
+        from app.core.redaction import redact_secrets as _redact
         _eb.emit_event(
             event_type="tool.invalid_spec",
             payload={
@@ -513,7 +514,7 @@ def _emit_invalid_spec(req: ToolExecutionRequest, reason: str) -> None:
                 "source": req.source,
                 "project_scope_id": req.project_scope_id,
                 "run_id": req.run_id,
-                "reason": reason,
+                "reason": _redact(reason),
             },
         )
     except Exception as exc:
@@ -523,6 +524,7 @@ def _emit_invalid_spec(req: ToolExecutionRequest, reason: str) -> None:
 def _emit_blocked(req: ToolExecutionRequest, reason: str) -> None:
     try:
         from app.application.event_bus import runtime as _eb
+        from app.core.redaction import redact_secrets as _redact
         _eb.emit_event(
             event_type="sandbox.policy.blocked",
             payload={
@@ -531,7 +533,7 @@ def _emit_blocked(req: ToolExecutionRequest, reason: str) -> None:
                 "source": req.source,
                 "project_scope_id": req.project_scope_id,
                 "run_id": req.run_id,
-                "reason": reason,
+                "reason": _redact(reason),
             },
         )
     except Exception as exc:

@@ -722,9 +722,15 @@ def create_approval(
     args: dict[str, Any] | None = None,
     ttl_seconds: int = 300,
 ) -> dict[str, Any]:
+    from app.core.redaction import redact_secrets
+
     now = now_utc()
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=max(1, ttl_seconds))).isoformat()
+    # Digest is computed from the RAW args (approval matching on retry depends on
+    # it); only the displayed/persisted args_json is redacted, so secrets never
+    # land in the store/UI/Telegram while matching stays intact.
     args_digest = canonical_args_digest(args)
+    redacted_args = redact_secrets(args or {})
     with get_connection(db_path) as con:
         con.execute(
             """INSERT INTO approvals
@@ -732,7 +738,7 @@ def create_approval(
                 args_json, args_sha256, status, ttl_seconds, expires_at, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
             (id, tool_name, agent_id, source, run_id, project_scope_id,
-             dumps_json(args or {}), args_digest, ttl_seconds, expires_at, now, now),
+             dumps_json(redacted_args), args_digest, ttl_seconds, expires_at, now, now),
         )
     return get_approval(db_path, id) or {}
 
