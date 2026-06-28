@@ -17,7 +17,7 @@ export function Chip({ active, icon, children, onClick, title }: ChipProps) {
       onClick={onClick}
       title={title}
       className={cn(
-        "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+        "flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors",
         active
           ? "border-acl bg-acs text-ac"
           : "border-line text-t2 hover:bg-hover hover:text-tx",

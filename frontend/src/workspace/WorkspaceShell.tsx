@@ -182,6 +182,20 @@ export default function WorkspaceShell() {
     }
   }
 
+  function onSendMultiAgent(text: string, useOrchestrator: boolean, useReflection: boolean) {
+    // Multi-agent runs through a separate pipeline endpoint (not the streaming
+    // code-agent), but is persisted and surfaced in the sidebar exactly like a
+    // normal run — so mirror onSend's persist binding + eager session create.
+    const msg = text.trim();
+    if (!msg) return;
+    bg.setPersist(activeKey, makePersist(activeKey, project, model));
+    run.sendMultiAgent(text, useOrchestrator, useReflection);
+    if (!sessionId && !keyToServerId.current.has(activeKey)) {
+      void ensureServerId(activeKey, msg.slice(0, 48) || "Новый чат", project, model)
+        .catch(() => { /* offline; the persist closure retries the create */ });
+    }
+  }
+
   function newChat() {
     // A new chat gets a fresh draft key. The previous chat's run (if any) keeps
     // streaming in the background under its own key — switching never cancels it.
@@ -313,7 +327,7 @@ export default function WorkspaceShell() {
           </div>
         )}
 
-        <Composer value={input} onChange={setInput} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(open) => { openFilePicker.current = open; }} />
+        <Composer value={input} onChange={setInput} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(open) => { openFilePicker.current = open; }} />
 
         {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => openFilePicker.current?.()} />}
       </section>

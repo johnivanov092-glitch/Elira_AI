@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Plus, Search, Send, Square, X } from "lucide-react";
+import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Plus, Search, Send, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage } from "../api/codeAgent";
 import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
@@ -14,13 +14,16 @@ type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agen
  *  carry attachments, so file picking lives inside the "+" menu (opened in the
  *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
 export function Composer({
-  value, onChange, onPlus, onPlugins, onSend, running, onStop, contextUsage, onAttachReady,
+  value, onChange, onPlus, onPlugins, onSend, onSendMultiAgent, running, onStop, contextUsage, onAttachReady,
 }: {
   value: string;
   onChange: (v: string) => void;
   onPlus: () => void;
   onPlugins: () => void;
   onSend: (text: string, mode: CodeAgentMode, attachments?: ChatAttachment[]) => void;
+  /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
+   *  pick one of the 4 backend workflow templates. */
+  onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean) => void;
   running: boolean;
   onStop: () => void;
   contextUsage?: ContextUsage | null;
@@ -29,6 +32,13 @@ export function Composer({
   onAttachReady?: (openFilePicker: () => void) => void;
 }) {
   const [mode, setMode] = useState<Mode>("code");
+  // "Мульти-агент" is a run MODE, not a profile: when on, submit() routes to the
+  // multi-agent pipeline instead of the code-agent stream. The two flags map to
+  // the backend's 4 workflow templates. Local state only — never touches the
+  // global `agent_profile` setting.
+  const [multiAgent, setMultiAgent] = useState(false);
+  const [useOrchestrator, setUseOrchestrator] = useState(true);
+  const [useReflection, setUseReflection] = useState(true);
   // Attachments (images + documents) parsed to text by the backend on pick. Kept
   // across both modes; cleared after each send. The project root and these files
   // travel together to the same code-agent stream.
@@ -42,15 +52,16 @@ export function Composer({
     && Number.isFinite(contextUsage.percent)
     ? contextUsage
     : null;
+  // Stroke color for the context gauge ring, escalating as the window fills.
   const contextTone = !usage ? "" : usage.percent >= 95
-    ? "border-red-500/60 text-red-400"
+    ? "text-red-400"
     : usage.percent >= 90
-      ? "border-red-400/50 text-red-300"
+      ? "text-red-300"
       : usage.percent >= 80
-        ? "border-orange-400/50 text-orange-300"
+        ? "text-orange-300"
         : usage.percent >= 60
-          ? "border-yellow-400/50 text-yellow-300"
-          : "border-line text-mut";
+          ? "text-yellow-300"
+          : "text-ac";
 
   // Hand the Shell a trigger for the hidden file input so the "+" menu's
   // "Прикрепить файл" can open it. Registered once on mount.
@@ -61,6 +72,13 @@ export function Composer({
   function submit() {
     const text = value.trim();
     if (!text || running) return;
+    // Multi-agent runs through a separate pipeline endpoint that takes only the
+    // query (no chat attachments). Route there and keep any staged files intact.
+    if (multiAgent) {
+      onSendMultiAgent(text, useOrchestrator, useReflection);
+      onChange("");
+      return;
+    }
     const staged = attachments.length ? attachments : undefined;
     // Fire-and-forget: persist any chips the user marked for the Library to
     // data/uploads (/api/lib/add) so the document is reusable across chats. The
@@ -113,20 +131,24 @@ export function Composer({
           <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Чат\Код</Chip>
           <Chip active={mode === "search"} icon={<Search size={13} />} onClick={() => setMode("search")}>Поиск</Chip>
           <ProfilePicker />
+          <MultiAgentChip
+            active={multiAgent}
+            useOrchestrator={useOrchestrator}
+            useReflection={useReflection}
+            onToggleActive={() => setMultiAgent((v) => !v)}
+            onChangeOrchestrator={setUseOrchestrator}
+            onChangeReflection={setUseReflection}
+          />
           <button
             type="button"
             onClick={onPlugins}
             title="Скиллы, плагины, инструменты (⌘K)"
             aria-label="Скиллы и плагины"
-            className="ml-auto flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx"
+            className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-line text-t2 transition-colors hover:bg-hover hover:text-tx"
           >
-            <Blocks size={13} /> Плагины
+            <Blocks size={13} />
           </button>
-          {usage && (
-            <span className={cn("rounded-full border px-2 py-1 font-mono text-[10.5px]", contextTone)} title={`Контекст: ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} · свободно ${usage.free_tokens.toLocaleString()}`}>
-              {Math.round(usage.percent)}% · {Math.round(usage.current_tokens / 1000)}K/{Math.round(usage.ctx_size / 1024)}K
-            </span>
-          )}
+          {usage && <ContextGauge usage={usage} tone={contextTone} />}
         </div>
         {attachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -224,6 +246,140 @@ export function Composer({
   );
 }
 
+/** "Мульти-агент" run-mode chip: icon + caption below it. Clicking the body
+ *  toggles the mode (when on, the Composer routes submit() to the multi-agent
+ *  pipeline instead of the code-agent stream). The chevron opens a popover with
+ *  two checkboxes — «Планирование» (use_orchestrator) and «Саморевью»
+ *  (use_reflection) — which together pick one of the 4 backend workflow
+ *  templates. This is NOT a profile: it never writes the global agent_profile. */
+function MultiAgentChip({
+  active, useOrchestrator, useReflection, onToggleActive, onChangeOrchestrator, onChangeReflection,
+}: {
+  active: boolean;
+  useOrchestrator: boolean;
+  useReflection: boolean;
+  onToggleActive: () => void;
+  onChangeOrchestrator: (on: boolean) => void;
+  onChangeReflection: (on: boolean) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close the popover on any outside click.
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <div
+        className={cn(
+          "flex h-7 shrink-0 items-center gap-1 rounded-full border pl-2 pr-1.5 transition-colors",
+          active ? "border-acl bg-acs text-ac" : "border-line text-t2 hover:bg-hover hover:text-tx",
+        )}
+      >
+        <button
+          type="button"
+          onClick={onToggleActive}
+          title={active ? "Мульти-агент включён — следующий запрос пойдёт по пайплайну" : "Включить мульти-агентный режим"}
+          aria-pressed={active}
+          aria-label="Мульти-агент"
+          className="flex items-center leading-none"
+        >
+          <Users size={13} />
+        </button>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          title="Настройки мульти-агента"
+          aria-label="Настройки мульти-агента"
+          className="shrink-0 rounded text-mut transition-colors hover:text-tx"
+        >
+          <ChevronDown size={12} className="shrink-0" />
+        </button>
+      </div>
+      {open && (
+        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-[220px] rounded-lg border border-line bg-surface p-1 shadow-lg">
+          <MultiAgentOption
+            checked={useOrchestrator}
+            onChange={onChangeOrchestrator}
+            label="Планирование"
+            hint="Оркестратор разбивает задачу на шаги перед исполнением"
+          />
+          <MultiAgentOption
+            checked={useReflection}
+            onChange={onChangeReflection}
+            label="Саморевью"
+            hint="Ревьюер проверяет и уточняет итоговый ответ"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One checkbox row inside the MultiAgentChip popover. */
+function MultiAgentOption({
+  checked, onChange, label, hint,
+}: {
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      role="checkbox"
+      aria-checked={checked}
+      className="flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-hover"
+    >
+      <span
+        className={cn(
+          "mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border",
+          checked ? "border-acl bg-acs text-ac" : "border-line text-transparent",
+        )}
+      >
+        <Check size={11} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12.5px] text-tx">{label}</span>
+        <span className="block text-[11px] text-mut">{hint}</span>
+      </span>
+    </button>
+  );
+}
+
+/** Context-window gauge: a small ring that fills as the window fills (Claude-style).
+ *  Hover reveals the full usage breakdown via the native title tooltip. */
+function ContextGauge({ usage, tone }: { usage: ContextUsage; tone: string }) {
+  const pct = Math.max(0, Math.min(100, usage.percent));
+  const r = 7;
+  const c = 2 * Math.PI * r;
+  return (
+    <span
+      className={cn("flex h-7 w-7 shrink-0 items-center justify-center", tone)}
+      title={`Контекст: ${Math.round(pct)}% · ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} токенов · свободно ${usage.free_tokens.toLocaleString()}`}
+      aria-label={`Контекст заполнен на ${Math.round(pct)}%`}
+    >
+      <svg width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeWidth="2" className="text-line" />
+        <circle
+          cx="9" cy="9" r={r} fill="none"
+          stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - pct / 100)}
+        />
+      </svg>
+    </span>
+  );
+}
+
 /** Active-agent-profile picker for the Composer slice. Self-contained: loads the
  *  profile list (/api/profiles) and the active one (/api/elira/settings →
  *  agent_profile) on mount, and switches the SAME global setting on pick —
@@ -286,7 +442,7 @@ function ProfilePicker() {
         disabled={busy || profiles === null}
         title="Активный профиль агента"
         aria-label="Активный профиль агента"
-        className="flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
+        className="flex h-7 items-center gap-1.5 rounded-full border border-line px-2.5 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
       >
         <span className="text-[12px] leading-none">{icon}</span>
         <span className="max-w-[120px] truncate">{label}</span>

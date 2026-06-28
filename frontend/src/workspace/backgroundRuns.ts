@@ -12,6 +12,7 @@ import {
   type TaskLedgerEntry,
 } from "../api/codeAgent";
 import type { ChatAttachment } from "../api/chat";
+import { runAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, Turn } from "./types";
 
 /**
@@ -371,6 +372,61 @@ export function send(args: SendArgs): void {
   // chip carries both at once.
   wire(entry, agentId, (handlers) =>
     streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, ...handlers }));
+}
+
+/** Start a MULTI-AGENT run for a session. Unlike `send`, this is NOT a stream:
+ *  `/api/advanced/multi-agent` runs a pipeline of 3–5 chained LLM calls and
+ *  returns one combined report after it completes. So we append the user + a
+ *  "working…" agent turn (running:true), await the single POST, then write the
+ *  whole report into that agent turn as one block. No SSE reader, no runId, no
+ *  abort wiring — there is nothing to stream and the server has no cancel hook. */
+export function sendMultiAgent(
+  args: { sessionId: string; text: string; useOrchestrator: boolean; useReflection: boolean },
+): void {
+  const { sessionId, text, useOrchestrator, useReflection } = args;
+  const msg = text.trim();
+  const entry = ensureEntry(sessionId);
+  if (!msg || entry.snapshot.running) return;
+
+  const agentId = nid();
+  entry.runId = null;
+  entry.persistedAtDone = false;
+  update(entry, (s) => ({
+    ...s,
+    running: true,
+    turns: [
+      ...s.turns,
+      { kind: "user", id: nid(), text: msg },
+      { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
+    ],
+  }));
+
+  void runAdvancedMultiAgent({ query: msg, use_orchestrator: useOrchestrator, use_reflection: useReflection })
+    .then((res) => {
+      const ok = res.ok !== false;
+      const report = typeof res.report === "string" ? res.report : "";
+      const errMsg = typeof res.error === "string" ? res.error : "";
+      patchAgent(entry, agentId, (a) => ({
+        ...a,
+        running: false,
+        text: ok ? (report || "Мульти-агент не вернул ответ.") : a.text,
+        error: ok ? undefined : (errMsg || "Мульти-агент завершился с ошибкой."),
+      }));
+    })
+    .catch((e: unknown) => {
+      patchAgent(entry, agentId, (a) => ({
+        ...a,
+        running: false,
+        error: e instanceof Error ? e.message : "Не удалось выполнить мульти-агентный запуск.",
+      }));
+    })
+    .finally(() => {
+      update(entry, (s) => ({ ...s, running: false }));
+      if (!entry.persistedAtDone) {
+        entry.persistedAtDone = true;
+        entry.persist?.(entry.snapshot);
+      }
+    });
 }
 
 /** Resume a persisted interrupted/partial run for a session's agent turn. */
