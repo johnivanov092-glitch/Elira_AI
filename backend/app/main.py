@@ -82,8 +82,13 @@ from app.application.tool_registry.runtime import seed_builtin_tools
 seed_builtin_tools()
 
 try:
-    from app.application.task_planner.service import recover_stale_tasks
+    from app.application.task_planner.service import (
+        recover_stale_tasks,
+        start_task_recovery_scheduler,
+    )
     recover_stale_tasks()
+    # Self-heal stale tasks on a long-lived server without waiting for a restart.
+    start_task_recovery_scheduler()
 except Exception as exc:
     logger.warning("task planner startup recovery failed: %s", exc)
 

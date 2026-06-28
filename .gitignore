@@ -134,6 +134,7 @@ data/generated/
 data/system/
 data/run_history.json
 data/feature_flags.json
+data/code_agent_backups/
 
 # Secrets / per-machine tokens — auto-generated at runtime, never commit.
 # The Fernet key self-generates when absent; committing it defeats encryption.

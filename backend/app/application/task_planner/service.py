@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
 from datetime import datetime
@@ -8,6 +9,8 @@ from app.application.task_planner import runtime as planner_runtime
 from app.core.config import DATA_DIR
 from app.infrastructure.db.connection import connect_sqlite
 
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = DATA_DIR / "task_planner.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +117,52 @@ def recover_stale_tasks(
         backoff_base_seconds=backoff_base_seconds,
         emit_event_func=emit_event,
     )
+
+
+def start_task_recovery_scheduler(
+    *,
+    interval_seconds: float | None = None,
+    recover_fn=None,
+    stop_event=None,
+):
+    """Start a daemon timer that periodically re-runs recover_stale_tasks.
+
+    Startup recovery (main.py) only runs once; on a long-lived server a task
+    that goes stale hours later would otherwise wait for the next restart. This
+    re-runs recovery on an interval so the server self-heals. Best-effort: the
+    thread is a daemon (dies with the process) and swallows/logs errors.
+
+    interval_seconds defaults to env ``ELIRA_TASK_RECOVERY_INTERVAL_SECONDS``
+    (floor 60s, default 600s). ``recover_fn`` is injectable for tests.
+    ``stop_event`` (threading.Event) lets a caller/test stop the loop
+    gracefully; without it the daemon runs until the process exits.
+    Returns the started Thread.
+    """
+    import os
+    import threading
+    import time
+
+    if interval_seconds is None:
+        interval_seconds = max(60, int(os.getenv("ELIRA_TASK_RECOVERY_INTERVAL_SECONDS", "600")))
+    fn = recover_fn or recover_stale_tasks
+
+    def _loop() -> None:
+        while True:
+            # stop_event.wait returns True the instant it is set, so shutdown is
+            # prompt instead of sleeping out the whole interval.
+            if stop_event is not None:
+                if stop_event.wait(interval_seconds):
+                    return
+            else:
+                time.sleep(interval_seconds)
+            try:
+                fn()
+            except Exception as exc:
+                logger.warning("periodic task recovery failed: %s", exc)
+
+    thread = threading.Thread(target=_loop, name="task-recovery", daemon=True)
+    thread.start()
+    return thread
 
 
 def list_checklist(run_id: str) -> dict:

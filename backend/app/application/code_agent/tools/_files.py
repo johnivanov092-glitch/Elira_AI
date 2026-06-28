@@ -126,6 +126,27 @@ def _encoding_for_write(codec: str, had_bom: bool) -> str:
     return base
 
 
+def _save_backup(path: str, raw_bytes: bytes) -> str | None:
+    """Persist a file's pre-edit bytes so the last change is recoverable
+    (single-step undo). Bounded: one backup per file path — the latest
+    pre-edit snapshot, overwritten on each edit — so backups never grow
+    unbounded. Best-effort: a failed backup must never block the write.
+    Returns the backup file path on success, else None.
+    """
+    try:
+        import hashlib
+        from app.core.data_files import data_subdir
+
+        key = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+        bdir = data_subdir("code_agent_backups")
+        backup = bdir / f"{key}.bak"
+        backup.write_bytes(raw_bytes)
+        (bdir / f"{key}.path").write_text(str(path), encoding="utf-8")
+        return str(backup)
+    except Exception:
+        return None
+
+
 def tool_read_file(
     project_root: Path,
     *,
@@ -176,6 +197,7 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
 
     write_codec = "utf-8"  # new files default to UTF-8 (no BOM)
     old_content = ""
+    backup_path: str | None = None
     if existed:
         try:
             raw = target.read_bytes()
@@ -199,6 +221,9 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
             old_content = _to_text_newlines(body.decode(codec))
         except Exception:
             old_content = ""
+        # Snapshot the original bytes before overwriting so the change is
+        # recoverable (single-step undo).
+        backup_path = _save_backup(path, raw)
 
     target.write_bytes(content.encode(write_codec))
     action = "Overwrote" if existed else "Created"
@@ -208,6 +233,7 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
         "old_content": old_content,
         "new_content": content,
         "diff_action": "overwrite" if existed else "create",
+        "backup_path": backup_path,
     }
 
 
@@ -252,6 +278,7 @@ def tool_edit_file(
             )
         }
     updated = current.replace(old_string, new_string, 1)
+    backup_path = _save_backup(path, raw)
     target.write_bytes(updated.encode(write_codec))
     return {
         "text": f"Edited {path} (1 replacement)",
@@ -259,6 +286,7 @@ def tool_edit_file(
         "old_content": current,
         "new_content": updated,
         "diff_action": "edit",
+        "backup_path": backup_path,
     }
 
 
