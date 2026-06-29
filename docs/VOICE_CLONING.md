@@ -21,8 +21,9 @@ professional results.
 - Varied sentences and intonation (not the same phrase repeated).
 
 ## 2. Prepare the dataset (automated)
-Needs `pip install pydub requests` + `ffmpeg` on PATH. The whisper STT service
-(`:8006`) must be up (it drafts the transcripts).
+Needs `pip install soundfile numpy requests` (no ffmpeg — soundfile's bundled
+libsndfile decodes wav/flac/ogg/opus, incl. WhatsApp voice notes). The whisper
+STT service (`:8006`) must be up (it drafts the transcripts).
 
 ```sh
 python scripts/voice_dataset_prep.py \
