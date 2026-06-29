@@ -1,12 +1,36 @@
-import { Loader2, RotateCcw, ShieldQuestion } from "lucide-react";
+import { Loader2, RotateCcw, ShieldQuestion, Volume2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { ToolCallGroup } from "./ToolCallGroup";
 import type { AgentTurnData, PendingApproval } from "./types";
+import { getAutoSpeak, speak } from "./voice";
 
 type ApproveFn = (approvalId: string, decision: "approve" | "reject") => void;
 
 export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
   const idle = turn.running && !turn.text && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval;
+  const [speaking, setSpeaking] = useState(false);
+
+  // Auto-speak: only when this turn transitions running -> done while mounted
+  // (a live reply), never for already-finished turns rendered from history.
+  const wasRunning = useRef(turn.running);
+  useEffect(() => {
+    if (wasRunning.current && !turn.running && turn.text && getAutoSpeak()) {
+      void speak(turn.text);
+    }
+    wasRunning.current = turn.running;
+  }, [turn.running, turn.text]);
+
+  async function onSpeak() {
+    if (!turn.text) return;
+    setSpeaking(true);
+    try {
+      await speak(turn.text);
+    } finally {
+      setSpeaking(false);
+    }
+  }
+
   return (
     <div className="my-2 mb-6">
       <ToolCallGroup calls={turn.toolCalls} activeTool={turn.running ? turn.activeTool : undefined} />
@@ -23,6 +47,19 @@ export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { tur
         <div className="text-[13.8px] leading-relaxed">
           <MarkdownRenderer content={turn.text} />
         </div>
+      )}
+
+      {turn.text && !turn.running && (
+        <button
+          type="button"
+          onClick={() => void onSpeak()}
+          disabled={speaking}
+          title="Озвучить голосом Elira"
+          aria-label="Озвучить"
+          className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg border border-line px-2 py-1 text-[11px] text-mut transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
+        >
+          <Volume2 size={12} className={speaking ? "animate-pulse text-ac" : ""} /> Озвучить
+        </button>
       )}
 
       {(turn.genTokens ?? 0) > 0 && (

@@ -33,6 +33,7 @@ from app.api.routes.telegram_routes import router as telegram_router
 from app.api.routes.terminal import router as terminal_router
 from app.api.routes.tool_registry_routes import router as tool_registry_router
 from app.api.routes.tools_exec import router as tools_exec_router
+from app.api.routes.voice_routes import router as voice_router
 from app.api.routes.web_search_routes import router as web_search_router
 from app.api.routes.workflow_routes import router as workflow_router
 
@@ -71,6 +72,7 @@ ALL_ROUTERS = (
     workflow_router,
     agent_monitor_router,
     tool_registry_router,
+    voice_router,
     code_agent_router,
 )
 

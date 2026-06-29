@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { BookMarked, Brain, Cpu, FlaskConical, LayoutDashboard, MessageSquare, Palette, Send, Server, Sparkles, UserCog, X, type LucideIcon } from "lucide-react";
+import { BookMarked, Brain, Cpu, FlaskConical, LayoutDashboard, MessageSquare, Palette, Send, Server, Sparkles, UserCog, Volume2, X, type LucideIcon } from "lucide-react";
 import { getDashboardOverview } from "../api/dashboard";
 import { cn } from "../ui/cn";
 import { ModelSection } from "./settings/ModelSection";
@@ -12,11 +12,12 @@ import { Lazy } from "./settings/dashboard";
 import { TelegramSection } from "./settings/TelegramSection";
 import { SshMcpSection } from "./settings/IntegrationsSection";
 import { ExperimentalSection } from "./settings/ExperimentalSection";
+import { VoiceSection } from "./settings/VoiceSection";
 import { ThemeSection } from "./settings/ThemeSection";
 
 type Section =
   | "model" | "profiles" | "persona" | "memory" | "library" | "chatmemory"
-  | "dashboard" | "telegram" | "sshmcp" | "experimental" | "theme";
+  | "dashboard" | "telegram" | "sshmcp" | "experimental" | "voice" | "theme";
 
 const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
@@ -29,6 +30,7 @@ const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "telegram", label: "Telegram", icon: Send },
   { id: "sshmcp", label: "Интеграции", icon: Server },
   { id: "experimental", label: "Экспериментальное", icon: FlaskConical },
+  { id: "voice", label: "Голос", icon: Volume2 },
   { id: "theme", label: "Тема", icon: Palette },
 ];
 
@@ -69,6 +71,7 @@ export function Settings({ model, onModel, onClose, project }: { model: string; 
           {section === "telegram" && <TelegramSection />}
           {section === "sshmcp" && <SshMcpSection />}
           {section === "experimental" && <ExperimentalSection />}
+          {section === "voice" && <VoiceSection />}
           {section === "theme" && <ThemeSection />}
         </div>
       </div>
