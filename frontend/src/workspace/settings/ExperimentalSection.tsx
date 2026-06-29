@@ -30,14 +30,30 @@ const FLAG_META: { key: keyof FeatureFlags; label: string; hint: string; icon: L
 export function ExperimentalSection() {
   const [flags, setFlags] = useState<FeatureFlags | null>(null);
   const [busy, setBusy] = useState<keyof FeatureFlags | "">("");
+  const [checkin, setCheckin] = useState<string>("09:00");
+  const [savingTime, setSavingTime] = useState(false);
 
   useEffect(() => {
     let alive = true;
     request<FeatureFlags>("/api/elira/feature-flags")
       .then((f) => { if (alive) setFlags(f); })
       .catch(() => { if (alive) setFlags({ remote_mcp: false, action_envelopes: false, proactive: false }); });
+    request<{ checkin_time?: string }>("/api/persona/proactive-config")
+      .then((c) => { if (alive && c?.checkin_time) setCheckin(c.checkin_time); })
+      .catch(() => { /* offline */ });
     return () => { alive = false; };
   }, []);
+
+  async function saveCheckin() {
+    setSavingTime(true);
+    try {
+      await request("/api/persona/proactive-config", { method: "PUT", body: { checkin_time: checkin } });
+    } catch {
+      /* offline — leave as-is */
+    } finally {
+      setSavingTime(false);
+    }
+  }
 
   async function toggle(key: keyof FeatureFlags, value: boolean) {
     if (!flags) return;
@@ -84,6 +100,23 @@ export function ExperimentalSection() {
               </div>
             );
           })}
+        </div>
+      )}
+      {flags?.proactive && (
+        <div className="mt-2 flex items-center gap-2.5 rounded-lg border border-line px-3 py-2.5 text-[12.5px]">
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-tx">Время ежедневного чек-ина</span>
+            <span className="mt-0.5 block text-[11.5px] text-mut">Раз в день в это время Elira присылает короткий чек-ин (в приложении + desktop-уведомление). Первый раз спросит подтверждение.</span>
+          </span>
+          <input
+            type="time"
+            value={checkin}
+            onChange={(e) => setCheckin(e.target.value)}
+            className="rounded-md border border-line bg-surface px-2 py-1 text-[12px] text-tx"
+          />
+          <McpBtn onClick={() => void saveCheckin()} busy={savingTime} label="Сохранить">
+            <Play size={13} />
+          </McpBtn>
         </div>
       )}
       <div className="mt-2.5">

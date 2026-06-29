@@ -110,5 +110,100 @@ class ListTriggersTest(unittest.TestCase):
         self.assertIn("proactive_enabled", data)
 
 
+class ScheduledQueueTest(unittest.TestCase):
+    def _reset(self) -> None:
+        p.set_trigger_status("scheduled", "unknown")
+        conn = p.persona_store.connect()
+        try:
+            conn.execute("DELETE FROM persona_pending_suggestions")
+            conn.execute("DELETE FROM persona_proactive_config")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def setUp(self) -> None:
+        p._ensure_aux_tables()
+        self._reset()
+
+    def test_queue_and_dismiss(self) -> None:
+        qid = p.queue_suggestion("scheduled", "digest", "T", "B")
+        self.assertEqual(len(p.list_pending()), 1)
+        p.dismiss_suggestion(qid)
+        self.assertEqual(len(p.list_pending()), 0)
+
+    def test_mark_read_drops_from_unread(self) -> None:
+        qid = p.queue_suggestion("scheduled", "digest", "T", "B")
+        p.mark_read(qid)
+        self.assertEqual(len(p.list_pending(only_unread=True)), 0)
+        self.assertEqual(len(p.list_pending(only_unread=False)), 1)
+
+    def test_respond_enable_ask_approves_trigger(self) -> None:
+        qid = p.queue_suggestion("scheduled", "enable_ask", "T", "B")
+        p.respond_suggestion(qid, "approve")
+        self.assertEqual(p.get_trigger("scheduled")["status"], "approved")
+        self.assertEqual(len(p.list_pending()), 0)  # dismissed
+
+    def test_set_checkin_time_validates(self) -> None:
+        self.assertTrue(p.set_checkin_time("07:30")["ok"])
+        self.assertEqual(p.get_proactive_config()["checkin_time"], "07:30")
+        self.assertFalse(p.set_checkin_time("25:00")["ok"])
+
+    def test_digest_is_nonempty_text(self) -> None:
+        self.assertTrue(p.build_checkin_digest().strip())
+
+
+class ScheduledDaemonTest(unittest.TestCase):
+    def _reset(self) -> None:
+        p.set_trigger_status("scheduled", "unknown")
+        conn = p.persona_store.connect()
+        try:
+            conn.execute("DELETE FROM persona_pending_suggestions")
+            conn.execute("DELETE FROM persona_proactive_config")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def setUp(self) -> None:
+        p._ensure_aux_tables()
+        self._reset()
+        p.set_checkin_time("09:00")
+
+    def test_master_off_does_nothing(self) -> None:
+        import datetime
+        with _off():
+            self.assertIsNone(p.run_scheduled_checkin(now=datetime.datetime(2030, 1, 1, 10, 0)))
+
+    def test_before_time_does_nothing(self) -> None:
+        import datetime
+        with _on():
+            self.assertIsNone(p.run_scheduled_checkin(now=datetime.datetime(2030, 1, 1, 8, 0)))
+
+    def test_unknown_status_queues_enable_ask(self) -> None:
+        import datetime
+        with _on():
+            out = p.run_scheduled_checkin(now=datetime.datetime(2030, 1, 1, 10, 0))
+        self.assertEqual(out["kind"], "enable_ask")
+        pend = p.list_pending()
+        self.assertEqual(len(pend), 1)
+        self.assertEqual(pend[0]["kind"], "enable_ask")
+
+    def test_approved_queues_digest_once_per_day(self) -> None:
+        import datetime
+        p.set_trigger_status("scheduled", "approved")
+        with _on():
+            first = p.run_scheduled_checkin(now=datetime.datetime(2030, 1, 1, 10, 0))
+            second = p.run_scheduled_checkin(now=datetime.datetime(2030, 1, 1, 11, 0))
+        self.assertEqual(first["kind"], "digest")
+        self.assertIsNone(second)  # already fired today
+
+    def test_denied_status_silent(self) -> None:
+        import datetime
+        p.set_trigger_status("scheduled", "denied")
+        with _on():
+            out = p.run_scheduled_checkin(now=datetime.datetime(2030, 1, 1, 10, 0))
+        self.assertIsNone(out)
+        self.assertEqual(len(p.list_pending()), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

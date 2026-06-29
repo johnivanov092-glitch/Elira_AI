@@ -138,6 +138,7 @@ fn backend_status(state: tauri::State<BackendState>) -> Result<serde_json::Value
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(BackendState {
             child: Mutex::new(None),
         })

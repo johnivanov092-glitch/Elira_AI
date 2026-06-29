@@ -12,3 +12,5 @@ tauri-build = { version = "2", features = [] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+# Living Persona step C — desktop OS notifications for scheduled proactivity.
+tauri-plugin-notification = "2"

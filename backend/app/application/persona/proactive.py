@@ -258,3 +258,255 @@ def decide_from_approval(tool_name: str, status: str) -> None:
     if trigger_id not in TRIGGERS:
         return
     set_trigger_status(trigger_id, "approved" if status == "approved" else "denied")
+
+
+# ── Scheduled trigger (out-of-chat delivery via a pending-suggestions queue) ──
+# The three in-stream triggers ride the approval-gate during an open SSE turn.
+# `scheduled` has no open chat, so its first-fire ask AND its digest are written
+# to a small queue that the frontend polls (in-app banner/toast) + surfaces as a
+# desktop OS toast. Same double gate: master switch + per-trigger first-fire.
+_CHECKIN_DEFAULT = "09:00"
+
+
+def _ensure_aux_tables() -> None:
+    conn = persona_store.connect()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS persona_pending_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trigger_id TEXT NOT NULL,
+                kind TEXT NOT NULL,               -- 'enable_ask' | 'digest'
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                read_at TEXT,
+                dismissed_at TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS persona_proactive_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                checkin_time TEXT NOT NULL,
+                last_checkin_date TEXT
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_proactive_config() -> dict:
+    _ensure_aux_tables()
+    conn = persona_store.connect()
+    try:
+        row = conn.execute(
+            "SELECT checkin_time, last_checkin_date FROM persona_proactive_config WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"checkin_time": _CHECKIN_DEFAULT, "last_checkin_date": None}
+    return {"checkin_time": row["checkin_time"], "last_checkin_date": row["last_checkin_date"]}
+
+
+def _valid_hhmm(value: str) -> bool:
+    try:
+        h, m = (value or "").split(":")
+        return 0 <= int(h) <= 23 and 0 <= int(m) <= 59
+    except Exception:
+        return False
+
+
+def set_checkin_time(checkin_time: str) -> dict:
+    if not _valid_hhmm(checkin_time):
+        return {"ok": False, "error": "invalid_time", **get_proactive_config()}
+    _ensure_aux_tables()
+    conn = persona_store.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO persona_proactive_config(id, checkin_time, last_checkin_date)
+            VALUES (1, ?, NULL)
+            ON CONFLICT(id) DO UPDATE SET checkin_time = excluded.checkin_time
+            """,
+            (checkin_time,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, **get_proactive_config()}
+
+
+def _set_last_checkin_date(date_str: str) -> None:
+    _ensure_aux_tables()
+    conn = persona_store.connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO persona_proactive_config(id, checkin_time, last_checkin_date)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET last_checkin_date = excluded.last_checkin_date
+            """,
+            (_CHECKIN_DEFAULT, date_str),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def queue_suggestion(trigger_id: str, kind: str, title: str, body: str) -> int:
+    _ensure_aux_tables()
+    conn = persona_store.connect()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO persona_pending_suggestions(trigger_id, kind, title, body, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (trigger_id, kind, title, body, persona_store.utc_now()),
+        )
+        conn.commit()
+        return int(cur.lastrowid)
+    finally:
+        conn.close()
+
+
+def list_pending(only_unread: bool = True) -> list[dict]:
+    _ensure_aux_tables()
+    where = "dismissed_at IS NULL" + (" AND read_at IS NULL" if only_unread else "")
+    conn = persona_store.connect()
+    try:
+        rows = conn.execute(
+            f"SELECT id, trigger_id, kind, title, body, created_at, read_at, dismissed_at "
+            f"FROM persona_pending_suggestions WHERE {where} ORDER BY id ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def mark_read(suggestion_id: int) -> dict:
+    return _stamp(suggestion_id, "read_at")
+
+
+def dismiss_suggestion(suggestion_id: int) -> dict:
+    return _stamp(suggestion_id, "dismissed_at")
+
+
+def _stamp(suggestion_id: int, column: str) -> dict:
+    _ensure_aux_tables()
+    conn = persona_store.connect()
+    try:
+        conn.execute(
+            f"UPDATE persona_pending_suggestions SET {column} = ? WHERE id = ?",
+            (persona_store.utc_now(), int(suggestion_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
+def respond_suggestion(suggestion_id: int, decision: str) -> dict:
+    """Resolve an enable_ask suggestion: set the trigger's status and dismiss it."""
+    _ensure_aux_tables()
+    conn = persona_store.connect()
+    try:
+        row = conn.execute(
+            "SELECT trigger_id, kind FROM persona_pending_suggestions WHERE id = ?",
+            (int(suggestion_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {"ok": False, "error": "not_found"}
+    if row["kind"] == "enable_ask":
+        set_trigger_status(row["trigger_id"], "approved" if decision == "approve" else "denied")
+    dismiss_suggestion(suggestion_id)
+    return {"ok": True, "trigger_id": row["trigger_id"], "decision": decision}
+
+
+def build_checkin_digest() -> str:
+    """A warm, time-based daily check-in. Code-built (no LLM call in the daemon),
+    no project-git claims — the daemon has no active-project context, so concrete
+    project nudges stay with the in-stream triggers."""
+    import datetime
+
+    hour = datetime.datetime.now().hour
+    if 5 <= hour < 12:
+        greet = "Доброе утро"
+    elif 12 <= hour < 18:
+        greet = "Добрый день"
+    else:
+        greet = "Добрый вечер"
+    return (
+        f"{greet}! Я на связи. Загляни, когда будет минутка — разберём, "
+        "что в работе и что стоит сделать дальше."
+    )
+
+
+def run_scheduled_checkin(now=None) -> dict | None:
+    """Daemon tick: once per day at/after the configured time, queue either the
+    first-fire enable-ask (status unknown) or the check-in digest (approved).
+    Master switch OFF or already-done-today -> nothing. Fully fail-safe."""
+    try:
+        if not proactive_enabled():
+            return None
+        import datetime
+
+        now = now or datetime.datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        cfg = get_proactive_config()
+        if cfg.get("last_checkin_date") == today:
+            return None
+        if now.strftime("%H:%M") < (cfg.get("checkin_time") or _CHECKIN_DEFAULT):
+            return None
+        # Stamp the day FIRST so a minute-granularity daemon can't double-fire.
+        _set_last_checkin_date(today)
+        tr = get_trigger("scheduled")
+        if tr["status"] == "denied":
+            return None
+        if tr["status"] == "unknown":
+            qid = queue_suggestion(
+                "scheduled",
+                "enable_ask",
+                "Ежедневный чек-ин Elira",
+                f"Раз в день (в {cfg.get('checkin_time') or _CHECKIN_DEFAULT}) Elira может "
+                "присылать короткий тёплый чек-ин. Включить?",
+            )
+            return {"kind": "enable_ask", "suggestion_id": qid}
+        qid = queue_suggestion("scheduled", "digest", "Чек-ин Elira", build_checkin_digest())
+        return {"kind": "digest", "suggestion_id": qid}
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("run_scheduled_checkin failed: %s", exc)
+        return None
+
+
+def start_proactive_scheduler(*, interval_seconds: float = 60.0, stop_event=None, tick_fn=None):
+    """Daemon thread that periodically evaluates the scheduled check-in. Mirrors
+    task_planner.start_task_recovery_scheduler: daemon thread, best-effort,
+    stop_event for graceful shutdown/tests."""
+    import threading
+    import time as _time
+
+    tick = tick_fn or run_scheduled_checkin
+
+    def _loop() -> None:
+        while True:
+            if stop_event is not None:
+                if stop_event.wait(interval_seconds):
+                    return
+            else:
+                _time.sleep(interval_seconds)
+            try:
+                tick()
+            except Exception as exc:
+                logger.warning("proactive scheduler tick failed: %s", exc)
+
+    thread = threading.Thread(target=_loop, name="persona-proactive", daemon=True)
+    thread.start()
+    return thread

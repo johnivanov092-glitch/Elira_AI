@@ -92,6 +92,16 @@ try:
 except Exception as exc:
     logger.warning("task planner startup recovery failed: %s", exc)
 
+# Living Persona step C — scheduled-proactivity daemon. No-op unless the master
+# switch (feature flag `proactive`) is on AND the scheduled trigger is approved;
+# fully fail-safe. Evaluates a once-per-day check-in at the configured time.
+try:
+    from app.application.persona.proactive import start_proactive_scheduler
+
+    start_proactive_scheduler()
+except Exception as exc:
+    logger.warning("proactive scheduler startup failed: %s", exc)
+
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "elira-ai-api"}
