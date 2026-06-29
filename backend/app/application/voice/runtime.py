@@ -51,3 +51,34 @@ def synthesize(text: str, voice: str | None = None) -> bytes:
     resp = requests.post(f"{base}/tts", json=payload, timeout=60)
     resp.raise_for_status()
     return resp.content
+
+
+# ── STT (speech-to-text) — slice 2 ───────────────────────────────────────────
+def stt_url() -> str:
+    return os.environ.get("ELIRA_STT_URL", "http://192.168.88.15:8006").strip().rstrip("/")
+
+
+def stt_status() -> dict:
+    base = stt_url()
+    if not base:
+        return {"ok": False, "configured": False}
+    try:
+        resp = requests.get(f"{base}/health", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        return {"ok": True, "configured": True, "url": base, "model": data.get("model")}
+    except Exception as exc:
+        return {"ok": False, "configured": True, "url": base, "error": str(exc)}
+
+
+def transcribe(audio: bytes, filename: str = "audio", language: str | None = None) -> str:
+    base = stt_url()
+    if not base:
+        raise RuntimeError("ELIRA_STT_URL is not configured")
+    files = {"file": (filename or "audio", audio, "application/octet-stream")}
+    data: dict[str, str] = {}
+    if language:
+        data["language"] = language
+    resp = requests.post(f"{base}/stt", files=files, data=data, timeout=120)
+    resp.raise_for_status()
+    return str(resp.json().get("text", ""))

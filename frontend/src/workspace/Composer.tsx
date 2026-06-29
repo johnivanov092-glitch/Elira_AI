@@ -5,6 +5,7 @@ import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
 import { getActiveProfile, listProfiles, setActiveProfile, type ProfileInfo } from "../api/profiles";
 import { Chip } from "../ui/Chip";
+import { MicButton } from "./MicButton";
 import { cn } from "../ui/cn";
 
 type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agent mode.
@@ -131,6 +132,7 @@ export function Composer({
           <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Чат\Код</Chip>
           <Chip active={mode === "search"} icon={<Search size={13} />} onClick={() => setMode("search")}>Поиск</Chip>
           <ProfilePicker />
+          <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
           <MultiAgentChip
             active={multiAgent}
             useOrchestrator={useOrchestrator}

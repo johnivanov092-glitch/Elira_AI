@@ -68,5 +68,43 @@ class VoiceRouteTest(unittest.TestCase):
         self.assertEqual(r.status_code, 502)
 
 
+class VoiceSttTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = TestClient(app)
+
+    def test_stt_status_failsafe(self) -> None:
+        import os
+        with patch.dict(os.environ, {"ELIRA_STT_URL": "http://127.0.0.1:1"}, clear=False):
+            r = self.client.get("/api/voice/stt-status")
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+
+    def test_stt_transcribes(self) -> None:
+        with patch.object(voice_runtime, "transcribe", return_value="привет элира"):
+            r = self.client.post(
+                "/api/voice/stt",
+                files={"file": ("a.webm", b"fake-audio-bytes", "audio/webm")},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["text"], "привет элира")
+
+    def test_stt_empty_audio_400(self) -> None:
+        r = self.client.post(
+            "/api/voice/stt",
+            files={"file": ("a.webm", b"", "audio/webm")},
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_stt_upstream_failure_502(self) -> None:
+        def _boom(*a, **k):
+            raise RuntimeError("whisper down")
+        with patch.object(voice_runtime, "transcribe", _boom):
+            r = self.client.post(
+                "/api/voice/stt",
+                files={"file": ("a.webm", b"bytes", "audio/webm")},
+            )
+        self.assertEqual(r.status_code, 502)
+
+
 if __name__ == "__main__":
     unittest.main()

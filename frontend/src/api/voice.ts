@@ -29,3 +29,12 @@ export async function synthesizeSpeech(text: string, voice?: string): Promise<Bl
     responseType: "blob",
   });
 }
+
+/** Transcribe an audio blob → text via the self-hosted whisper service. */
+export async function transcribeAudio(blob: Blob, language?: string): Promise<string> {
+  const form = new FormData();
+  form.append("file", blob, "audio.webm");
+  if (language) form.append("language", language);
+  const r = await request<{ text?: string }>("/api/voice/stt", { method: "POST", body: form });
+  return typeof r.text === "string" ? r.text : "";
+}
