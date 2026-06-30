@@ -76,6 +76,35 @@ class WebEngineStackTest(unittest.TestCase):
         self.assertEqual(results[0]["engine"], "duckduckgo")
         self.assertEqual(results[0]["href"], "https://example.com/result")
 
+    def test_searxng_query_params_auto_language_and_filters(self) -> None:
+        from unittest.mock import MagicMock
+        import app.core.web_engines as we
+
+        captured: dict = {}
+
+        def fake_get(url, params=None, timeout=None):
+            captured["params"] = params
+            resp = MagicMock()
+            resp.json.return_value = {"results": []}
+            resp.raise_for_status.return_value = None
+            return resp
+
+        fake_session = MagicMock()
+        fake_session.get.side_effect = fake_get
+
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}, clear=False), \
+             patch.object(we, "session", return_value=fake_session):
+            # Cyrillic query → auto language=ru; news category + time_range passed through.
+            we.search_searxng("курс доллара", categories="news", time_range="week")
+            self.assertEqual(captured["params"]["language"], "ru")
+            self.assertEqual(captured["params"]["categories"], "news")
+            self.assertEqual(captured["params"]["time_range"], "week")
+            # English query → SearXNG default (no forced language); bad time_range dropped.
+            captured.clear()
+            we.search_searxng("fastapi latest version", time_range="bogus")
+            self.assertNotIn("language", captured["params"])
+            self.assertNotIn("time_range", captured["params"])
+
     def test_web_engines_route_exposes_only_new_stack(self) -> None:
         client = TestClient(app)
         response = client.get("/api/web/engines")

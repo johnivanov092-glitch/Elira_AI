@@ -158,18 +158,44 @@ def search_duckduckgo(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     return results
 
 
-def search_searxng(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+def _is_cyrillic(text: str) -> bool:
+    return any("Ѐ" <= ch <= "ӿ" for ch in text or "")
+
+
+def search_searxng(
+    query: str,
+    max_results: int = 5,
+    *,
+    time_range: str | None = None,
+    categories: str | None = None,
+) -> List[Dict[str, str]]:
     """Query the self-hosted SearXNG metasearch JSON API. SearXNG already
     aggregates Google/Bing/DuckDuckGo/Wikipedia upstream, so one call fans out
     across engines. Returns snippet-level results (no raw page content — the
-    research path fetches full text from the top pages separately)."""
+    research path fetches full text from the top pages separately).
+
+    Optional tuning (all backward-compatible — omitted means SearXNG default):
+      - the query language is auto-set to ``ru`` for Cyrillic queries (better
+        Russian relevance) and left to SearXNG otherwise (so English/technical
+        queries are not degraded);
+      - ``time_range`` (day|week|month|year) filters by recency;
+      - ``categories`` (e.g. ``news``) selects engine categories.
+    """
     base = searxng_url()
     if not base:
         raise RuntimeError("SEARXNG_URL is not configured")
 
+    params: dict[str, str] = {"q": query, "format": "json"}
+    if _is_cyrillic(query):
+        params["language"] = "ru"
+    if time_range in ("day", "week", "month", "year"):
+        params["time_range"] = time_range
+    if categories:
+        params["categories"] = categories
+
     response = session().get(
         f"{base}/search",
-        params={"q": query, "format": "json"},
+        params=params,
         timeout=20,
     )
     response.raise_for_status()

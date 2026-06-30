@@ -59,14 +59,17 @@ def news_multi_search(
     per_engine = max(3, max_results)
     domains = preferred_domains if preferred_domains is not None else (KZ_LOCAL_NEWS_DOMAINS if local_first else ())
 
-    for engine, search_func in (
-        ("searxng", search_searxng),
-        ("duckduckgo", search_duckduckgo),
-    ):
-        try:
-            combined.extend(search_func(query, max_results=per_engine))
-        except Exception as exc:
-            engine_errors[engine] = str(exc)
+    # SearXNG with the "news" category fans out across its news engines
+    # (Google/Bing/DDG News, etc.) instead of general web — fresher, broader
+    # coverage than the DDG-news-only leg below.
+    try:
+        combined.extend(search_searxng(query, max_results=per_engine, categories="news"))
+    except Exception as exc:
+        engine_errors["searxng"] = str(exc)
+    try:
+        combined.extend(search_duckduckgo(query, max_results=per_engine))
+    except Exception as exc:
+        engine_errors["duckduckgo"] = str(exc)
 
     try:
         combined.extend(
