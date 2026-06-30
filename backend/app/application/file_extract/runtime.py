@@ -155,6 +155,25 @@ def _extract_text(data: bytes, max_chars: int = 30000) -> str:
     return data.decode("utf-8", errors="replace")[:max_chars]
 
 
+_AUDIO_EXTS = (".ogg", ".oga", ".opus", ".wav", ".mp3", ".m4a", ".flac", ".webm", ".aac")
+
+
+def _transcribe_audio(contents: bytes, filename: str) -> str:
+    """Расшифровать аудио-вложение через self-hosted whisper (STT).
+
+    whisper сам сегментирует длинное аудио по паузам/границам фраз; ставим
+    щедрый таймаут (на small/int8 ~0.14x реального времени → ~1.5ч аудио в 900с).
+    Ошибку STT возвращаем текстом, чтобы вложение не падало с 500.
+    """
+    from app.application.voice.runtime import transcribe
+
+    try:
+        text = transcribe(contents, filename=filename or "audio", language=None, timeout=900)
+    except Exception as exc:  # noqa: BLE001 — surface STT failure as attachment text
+        return f"[не удалось расшифровать аудио: {exc}]"
+    return (text or "").strip() or "[аудио распознано, но текст пустой]"
+
+
 def extract_file(filename: str, contents: bytes) -> dict:
     """Извлекает текст из любого поддерживаемого файла."""
     filename = (filename or "").strip()
@@ -168,6 +187,8 @@ def extract_file(filename: str, contents: bytes) -> dict:
         text = _extract_xlsx(contents)
     elif ext == ".zip":
         text = _extract_zip(contents)
+    elif ext in _AUDIO_EXTS:
+        text = _transcribe_audio(contents, filename)
     else:
         text = _extract_text(contents)
 

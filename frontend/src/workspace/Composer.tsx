@@ -197,7 +197,7 @@ export function Composer({
             ref={fileRef}
             type="file"
             multiple
-            accept="image/*,.pdf,.txt,.md,.csv,.docx,.doc,.rtf,.json"
+            accept="image/*,audio/*,.pdf,.txt,.md,.csv,.docx,.doc,.rtf,.json,.ogg,.oga,.opus,.wav,.mp3,.m4a,.flac,.webm,.aac"
             className="hidden"
             onChange={(e) => onPickFiles(e.target.files)}
           />

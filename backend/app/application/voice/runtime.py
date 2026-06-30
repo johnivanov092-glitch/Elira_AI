@@ -71,7 +71,7 @@ def stt_status() -> dict:
         return {"ok": False, "configured": True, "url": base, "error": str(exc)}
 
 
-def transcribe(audio: bytes, filename: str = "audio", language: str | None = None) -> str:
+def transcribe(audio: bytes, filename: str = "audio", language: str | None = None, timeout: float = 120) -> str:
     base = stt_url()
     if not base:
         raise RuntimeError("ELIRA_STT_URL is not configured")
@@ -79,6 +79,6 @@ def transcribe(audio: bytes, filename: str = "audio", language: str | None = Non
     data: dict[str, str] = {}
     if language:
         data["language"] = language
-    resp = requests.post(f"{base}/stt", files=files, data=data, timeout=120)
+    resp = requests.post(f"{base}/stt", files=files, data=data, timeout=timeout)
     resp.raise_for_status()
     return str(resp.json().get("text", ""))
