@@ -58,6 +58,24 @@ class WebSearchToolTest(unittest.TestCase):
         self.assertIn("[2]", text)
         self.assertIn("DuckDuckGo", text)
 
+    def test_formats_results_with_real_engine_keys_href_body(self) -> None:
+        # Engines (SearXNG/DDG/Wikipedia) return href + body, NOT url + snippet.
+        # Reading only url/snippet left every link AND snippet blank. Guard that.
+        fake = {
+            "sources": [
+                {"title": "SO answer", "href": "https://stackoverflow.com/q/1", "body": "use asyncio.gather", "engine": "searxng"},
+            ],
+            "engines_used": ["SearXNG"],
+        }
+        with patch(
+            "app.infrastructure.search.web_search.search_web",
+            return_value=fake,
+        ):
+            result = tool_web_search(query="asyncio gather")
+        text = result["text"]
+        self.assertIn("https://stackoverflow.com/q/1", text)  # link present
+        self.assertIn("use asyncio.gather", text)             # snippet present
+
     def test_top_k_clamps_to_max(self) -> None:
         sources = [{"title": f"T{i}", "url": f"https://x/{i}", "snippet": "s"} for i in range(20)]
         with patch(

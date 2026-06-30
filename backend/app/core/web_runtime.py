@@ -299,17 +299,28 @@ def search_web_runtime(
     resolve_search_engines_func: Callable[[Iterable[str] | None], tuple[str, ...]],
     engine_funcs: dict[str, Callable[..., List[Dict[str, str]]]],
     logger_obj: logging.Logger,
+    time_range: str | None = None,
+    categories: str | None = None,
 ) -> List[Dict[str, str]]:
     engine_list = list(resolve_search_engines_func(engines))
     per_engine = per_engine or max(3, max_results)
     combined: list[Dict[str, str]] = []
+    # SearXNG accepts time_range / categories; DuckDuckGo and Wikipedia do not,
+    # so the extras are passed ONLY to SearXNG and ONLY when set (a no-arg engine
+    # mock in tests is never handed kwargs it cannot take).
+    searxng_extra = {
+        k: v for k, v in (("time_range", time_range), ("categories", categories)) if v
+    }
 
     for engine in engine_list:
         search_fn = engine_funcs.get(engine)
         if not search_fn:
             continue
         try:
-            combined.extend(search_fn(query, max_results=per_engine))
+            if engine == "searxng" and searxng_extra:
+                combined.extend(search_fn(query, max_results=per_engine, **searxng_extra))
+            else:
+                combined.extend(search_fn(query, max_results=per_engine))
         except Exception as exc:
             logger_obj.warning(
                 "web search engine '%s' failed for query %r: %s",

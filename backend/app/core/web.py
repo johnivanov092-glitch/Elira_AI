@@ -53,6 +53,8 @@ def search_web(
     geo_scope: str = "",
     local_first: bool = False,
     preferred_domains: Iterable[str] | None = None,
+    time_range: str | None = None,
+    categories: str | None = None,
 ) -> List[Dict[str, str]]:
     return search_web_runtime(
         query,
@@ -66,6 +68,8 @@ def search_web(
         resolve_search_engines_func=resolve_search_engines,
         engine_funcs=ENGINE_FUNCS,
         logger_obj=logger,
+        time_range=time_range,
+        categories=categories,
     )
 
 

@@ -105,6 +105,34 @@ class WebEngineStackTest(unittest.TestCase):
             self.assertNotIn("language", captured["params"])
             self.assertNotIn("time_range", captured["params"])
 
+    def test_tool_web_search_threads_targeting_to_searxng(self) -> None:
+        import app.core.web as core_web
+        from app.application.code_agent.tools import tool_web_search
+
+        captured: dict = {}
+
+        def fake_searxng(query, max_results=5, **kw):
+            captured.clear()
+            captured.update(kw)
+            return [{"title": "t", "href": "https://example.com/x", "body": "b", "engine": "searxng"}]
+
+        def fake_other(query, max_results=5):  # DDG/Wiki reject extra kwargs — must never get them
+            return []
+
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}, clear=False), \
+             patch.dict(
+                 core_web.ENGINE_FUNCS,
+                 {"searxng": fake_searxng, "duckduckgo": fake_other, "wikipedia": fake_other},
+                 clear=True,
+             ):
+            # Valid targeting reaches SearXNG.
+            tool_web_search(query="regex in python", categories="it", time_range="week")
+            self.assertEqual(captured.get("categories"), "it")
+            self.assertEqual(captured.get("time_range"), "week")
+            # Invalid values are dropped (no kwargs passed at all).
+            tool_web_search(query="x", categories="bogus", time_range="decade")
+            self.assertEqual(captured, {})
+
     def test_web_engines_route_exposes_only_new_stack(self) -> None:
         client = TestClient(app)
         response = client.get("/api/web/engines")

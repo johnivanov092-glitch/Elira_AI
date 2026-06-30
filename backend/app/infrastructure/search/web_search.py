@@ -21,7 +21,13 @@ TimelineAppender = Any
 WEB_SKIP_FETCH_DOMAINS = web_runtime.WEB_SKIP_FETCH_DOMAINS
 
 
-def search_web(query: str, max_results: int = 8) -> dict[str, Any]:
+def search_web(
+    query: str,
+    max_results: int = 8,
+    *,
+    time_range: str | None = None,
+    categories: str | None = None,
+) -> dict[str, Any]:
     query = (query or "").strip()
     if not query:
         return {
@@ -34,7 +40,7 @@ def search_web(query: str, max_results: int = 8) -> dict[str, Any]:
             "engine_links": [],
         }
 
-    sources = core_search_web(query, max_results=max_results)
+    sources = core_search_web(query, max_results=max_results, time_range=time_range, categories=categories)
     engines_used = list({item.get("engine", "") for item in sources if item.get("engine")})
     context = format_search_results(sources[:6]) if sources else ""
 

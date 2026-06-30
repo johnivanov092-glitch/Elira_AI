@@ -9,10 +9,31 @@ from typing import Any
 _THIN_TEXT_THRESHOLD = 200
 
 
-def tool_web_search(*, query: str, top_k: int = 5) -> dict[str, Any]:
+# SearXNG engine categories the agent may target (passed only to SearXNG; other
+# engines ignore them). Keep in sync with the tool schema enum.
+_WEB_SEARCH_CATEGORIES = frozenset(
+    {"general", "news", "it", "science", "images", "videos", "map", "music", "files"}
+)
+_WEB_SEARCH_TIME_RANGES = frozenset({"day", "week", "month", "year"})
+
+
+def tool_web_search(
+    *,
+    query: str,
+    top_k: int = 5,
+    categories: str = "",
+    time_range: str = "",
+) -> dict[str, Any]:
     """Search the web via the configured engines (SearXNG / DuckDuckGo /
     Wikipedia). Returns ranked results with title + URL + snippet. Use
     `web_fetch` after this to read the full content of a specific result.
+
+    Optional targeting (applied via SearXNG):
+      - `categories`: focus the search — "it" (github/stackoverflow/pypi/mdn),
+        "science" (arxiv/pubmed/scholar), "news", "map", "images", "videos".
+        Omit for general web.
+      - `time_range`: "day" | "week" | "month" | "year" to bias toward recent
+        results (current events, latest versions).
     """
     cleaned = (query or "").strip()
     if not cleaned:
@@ -22,18 +43,27 @@ def tool_web_search(*, query: str, top_k: int = 5) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - import path
         return {"text": f"ERROR: web search unavailable: {exc}"}
 
+    cat = (categories or "").strip().lower()
+    cat = cat if cat in _WEB_SEARCH_CATEGORIES else ""
+    tr = (time_range or "").strip().lower()
+    tr = tr if tr in _WEB_SEARCH_TIME_RANGES else ""
+
     limit = max(1, min(int(top_k), 10))
-    result = search_web(cleaned, max_results=limit)
+    result = search_web(cleaned, max_results=limit, categories=cat or None, time_range=tr or None)
     sources = result.get("sources") or []
     if not sources:
         return {"text": f"No web results for '{cleaned}'"}
 
     engines = ", ".join(result.get("engines_used") or []) or "?"
-    lines = [f"Found {len(sources)} results via {engines}:"]
+    focus = "".join(f" · {x}" for x in (cat, tr) if x)
+    lines = [f"Found {len(sources)} results via {engines}{focus}:"]
     for i, item in enumerate(sources[:limit], 1):
         title = (item.get("title") or "").strip() or "(no title)"
-        url = (item.get("url") or "").strip()
-        snippet = (item.get("snippet") or item.get("content") or "").strip()
+        # Engine results carry the link under "href" (SearXNG/DDG/Wikipedia);
+        # fall back to "url" for any source that uses that key. Reading only
+        # "url" left every result link blank — the agent had nothing to fetch.
+        url = (item.get("href") or item.get("url") or "").strip()
+        snippet = (item.get("body") or item.get("snippet") or item.get("content") or "").strip()
         if len(snippet) > 350:
             snippet = snippet[:350] + " […]"
         lines.append(f"\n[{i}] {title}\n    {url}\n    {snippet}" if snippet else f"\n[{i}] {title}\n    {url}")

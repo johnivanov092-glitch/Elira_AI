@@ -255,6 +255,9 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "list of {title, url, snippet}. Use this BEFORE answering "
                     "any question that depends on facts you don't already "
                     "know — current events, library versions, niche docs. "
+                    "Optionally target engine `categories` (e.g. 'it' for "
+                    "github/stackoverflow/pypi, 'science' for arxiv/pubmed, "
+                    "'news') and/or `time_range` for recency. "
                     "Call `web_fetch` after on URLs that look relevant."
                 ),
                 "parameters": {
@@ -262,6 +265,16 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "query": {"type": "string", "description": "Search query."},
                         "top_k": {"type": "integer", "description": "Max results (default 5, max 10)."},
+                        "categories": {
+                            "type": "string",
+                            "enum": ["general", "news", "it", "science", "images", "videos", "map", "music", "files"],
+                            "description": "Focus engines: 'it'=github/stackoverflow/pypi/mdn, 'science'=arxiv/pubmed/scholar, 'news', 'map', etc. Omit for general web.",
+                        },
+                        "time_range": {
+                            "type": "string",
+                            "enum": ["day", "week", "month", "year"],
+                            "description": "Bias toward recent results. Omit for no recency filter.",
+                        },
                     },
                     "required": ["query"],
                 },
