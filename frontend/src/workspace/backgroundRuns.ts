@@ -13,7 +13,7 @@ import {
 } from "../api/codeAgent";
 import type { ChatAttachment } from "../api/chat";
 import { streamAdvancedMultiAgent } from "../api/project";
-import type { AgentTurnData, Turn } from "./types";
+import type { AgentTurnData, FileEntry, Turn } from "./types";
 
 /**
  * Background run manager.
@@ -358,11 +358,22 @@ export function send(args: SendArgs): void {
   const agentId = nid();
   entry.runId = null;
   entry.lastMode = mode;
+  // Per-message attachments: surface a file chip in the transcript so the user
+  // sees the message carried a file (the parsed text/transcription itself goes
+  // to the agent inline). "attached" renders neutrally — no library status.
+  const fileEntries: FileEntry[] = (attachments ?? [])
+    .filter((a) => a && a.filename)
+    .map((a): FileEntry => ({
+      name: a.filename || "файл",
+      isImage: a.kind === "image",
+      status: a.ok === false ? "error" : "attached",
+    }));
   update(entry, (s) => ({
     ...s,
     running: true,
     turns: [
       ...s.turns,
+      ...(fileEntries.length ? [{ kind: "files" as const, id: nid(), files: fileEntries }] : []),
       { kind: "user", id: nid(), text: msg },
       { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
     ],

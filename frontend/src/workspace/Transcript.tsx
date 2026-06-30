@@ -38,7 +38,7 @@ function FileChip({ file }: { file: FileEntry }) {
       )}
       <span className="max-w-[160px] truncate text-[11.5px] text-t2">{file.name}</span>
       <span className="text-[10.5px] text-mut">
-        {file.status === "uploading" ? <Loader2 size={11} className="animate-spin" /> : file.status === "saved" ? "в памяти" : "ошибка"}
+        {file.status === "uploading" ? <Loader2 size={11} className="animate-spin" /> : file.status === "saved" ? "в памяти" : file.status === "error" ? "ошибка" : "вложение"}
       </span>
     </div>
   );

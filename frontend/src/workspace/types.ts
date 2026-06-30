@@ -33,7 +33,7 @@ export type FileEntry = {
   name: string;
   isImage: boolean;
   url?: string;
-  status: "uploading" | "saved" | "error";
+  status: "uploading" | "saved" | "error" | "attached";
 };
 
 export type FilesTurnData = { kind: "files"; id: string; files: FileEntry[] };
