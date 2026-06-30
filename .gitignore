@@ -102,6 +102,7 @@ chroma/
 *.ckpt
 *.safetensors
 *.onnx
+lightning_logs/
 
 # ------------------------------
 # Project specific heavy folders
@@ -135,6 +136,9 @@ data/system/
 data/run_history.json
 data/feature_flags.json
 data/code_agent_backups/
+# MCP server list — machine-local (absolute tool paths) and may carry
+# secret_headers for HTTP MCP servers; never commit.
+data/mcp_servers.json
 
 # Secrets / per-machine tokens — auto-generated at runtime, never commit.
 # The Fernet key self-generates when absent; committing it defeats encryption.
