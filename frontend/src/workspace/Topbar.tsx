@@ -1,6 +1,7 @@
 import { ChevronDown, Folder, PanelRight, Settings, TerminalSquare } from "lucide-react";
 import { IconButton } from "../ui/Button";
 import { cn } from "../ui/cn";
+import { ContextLibraryChip } from "./ContextLibraryChip";
 
 export type MainTab = "chat" | "pipe";
 
@@ -40,6 +41,7 @@ export function Topbar({
       </div>
 
       <div className="ml-auto flex gap-2">
+        <ContextLibraryChip />
         <IconButton onClick={onToggleTerminal} active={terminalOpen} title="Терминал" aria-label="Терминал">
           <TerminalSquare size={16} />
         </IconButton>
