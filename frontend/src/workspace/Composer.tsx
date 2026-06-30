@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Plus, Search, Send, Square, Users, X } from "lucide-react";
-import type { CodeAgentMode, ContextUsage } from "../api/codeAgent";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import type { CodeAgentMode, ContextUsage, PermissionMode } from "../api/codeAgent";
 import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
 import { getActiveProfile, listProfiles, setActiveProfile, type ProfileInfo } from "../api/profiles";
@@ -21,7 +21,7 @@ export function Composer({
   onChange: (v: string) => void;
   onPlus: () => void;
   onPlugins: () => void;
-  onSend: (text: string, mode: CodeAgentMode, attachments?: ChatAttachment[]) => void;
+  onSend: (text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode) => void;
   /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
    *  pick one of the 4 backend workflow templates. */
   onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean) => void;
@@ -40,6 +40,10 @@ export function Composer({
   const [multiAgent, setMultiAgent] = useState(false);
   const [useOrchestrator, setUseOrchestrator] = useState(true);
   const [useReflection, setUseReflection] = useState(true);
+  // Approval policy for the run (Спрашивать / Принимать правки / Без ограничений).
+  // Local run-mode like multiAgent — passed per-send into the code-agent stream;
+  // the backend approval gate enforces it. Default = the safest "ask".
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
   // Attachments (images + documents) parsed to text by the backend on pick. Kept
   // across both modes; cleared after each send. The project root and these files
   // travel together to the same code-agent stream.
@@ -91,7 +95,7 @@ export function Composer({
         }
       }
     }
-    onSend(text, mode, staged);
+    onSend(text, mode, staged, permissionMode);
     onChange("");
     setAttachments([]);
   }
@@ -150,6 +154,7 @@ export function Composer({
           >
             <Blocks size={13} />
           </button>
+          <PermissionModeChip mode={permissionMode} onChange={setPermissionMode} />
           {usage && <ContextGauge usage={usage} tone={contextTone} />}
         </div>
         {attachments.length > 0 && (
@@ -355,6 +360,100 @@ function MultiAgentOption({
         <span className="block text-[11px] text-mut">{hint}</span>
       </span>
     </button>
+  );
+}
+
+/** One option in the permission selector: label + one-line explanation + icon. */
+const PERMISSION_MODES: { value: PermissionMode; label: string; hint: string; icon: ReactNode }[] = [
+  {
+    value: "ask",
+    label: "Спрашивать",
+    hint: "Подтверждение перед каждым изменением файлов, командой и сетью",
+    icon: <Shield size={13} />,
+  },
+  {
+    value: "accept_edits",
+    label: "Принимать правки",
+    hint: "Правки файлов — без вопросов; команды и сеть по-прежнему спрашивают",
+    icon: <ShieldCheck size={13} />,
+  },
+  {
+    value: "bypass",
+    label: "Без ограничений",
+    hint: "Выполняет всё без подтверждений (запрещённые действия всё равно блокируются)",
+    icon: <ShieldAlert size={13} />,
+  },
+];
+
+/** Permission-mode selector chip (after «плагины»). A single icon+chevron button
+ *  whose icon/tint reflect the active mode; the popover lists the three modes
+ *  with a one-line explanation each. Mirrors the chat's access-rights menu. This
+ *  is a per-run policy (not a global setting) wired into the approval gate. */
+function PermissionModeChip({
+  mode, onChange,
+}: {
+  mode: PermissionMode;
+  onChange: (m: PermissionMode) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close the popover on any outside click.
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const current = PERMISSION_MODES.find((m) => m.value === mode) ?? PERMISSION_MODES[0];
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={`Права доступа: ${current.label}`}
+        aria-label={`Права доступа: ${current.label}`}
+        className={cn(
+          "flex h-7 shrink-0 items-center gap-1 rounded-full border pl-2 pr-1.5 transition-colors",
+          mode === "bypass"
+            ? "border-orange-400/50 bg-orange-400/10 text-orange-300"
+            : mode === "accept_edits"
+              ? "border-acl bg-acs text-ac"
+              : "border-line text-t2 hover:bg-hover hover:text-tx",
+        )}
+      >
+        {current.icon}
+        <ChevronDown size={12} className="shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute bottom-full right-0 z-20 mb-1.5 w-[268px] rounded-lg border border-line bg-card p-1 shadow-lg">
+          {PERMISSION_MODES.map((m) => (
+            <button
+              key={m.value}
+              type="button"
+              onClick={() => { onChange(m.value); setOpen(false); }}
+              className={cn(
+                "flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
+                m.value === mode ? "bg-acs" : "hover:bg-hover",
+              )}
+            >
+              <span className="mt-0.5 grid h-4 w-4 shrink-0 place-items-center text-t2">{m.icon}</span>
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-[12.5px] text-tx">
+                  <span className="truncate">{m.label}</span>
+                  {m.value === mode && <Check size={12} className="shrink-0 text-ac" />}
+                </span>
+                <span className="block text-[11px] text-mut">{m.hint}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

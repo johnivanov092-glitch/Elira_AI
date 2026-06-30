@@ -40,6 +40,12 @@ export type ConversationMessage = {
 
 export type CodeAgentMode = "code" | "search";
 
+/** Approval policy for a run, picked in the composer's permission selector:
+ *  - "ask"          — pause for the user on every gated tool (default);
+ *  - "accept_edits" — auto-approve filesystem edits, still pause shell/net;
+ *  - "bypass"       — auto-approve every gated tool (forbidden stays blocked). */
+export type PermissionMode = "ask" | "accept_edits" | "bypass";
+
 export type CodeAgentRunArgs = {
   message: string;
   projectRoot: string;
@@ -56,6 +62,9 @@ export type CodeAgentRunArgs = {
   /** Persona mode (Авто / Личный / Баланс / Инженерный); "Авто" lets Elira pick
    *  per message, a concrete mode locks it. Mirrors chat's profile_name field. */
   profileName?: string;
+  /** Approval policy for this run (composer permission selector). Omitted → the
+   *  backend default "ask". See {@link PermissionMode}. */
+  permissionMode?: PermissionMode;
 };
 
 /** Single-shot (legacy). Resolves with the aggregated final dict. */
@@ -195,6 +204,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     conversationHistory,
     attachments,
     profileName,
+    permissionMode,
     runId,
     signal,
     onEvent,
@@ -225,6 +235,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         conversation_history: conversationHistory,
         run_id: runId,
         ...(profileName ? { profile_name: profileName } : {}),
+        ...(permissionMode ? { permission_mode: permissionMode } : {}),
         ...(wireAttachments.length ? { attachments: wireAttachments } : {}),
       }),
       signal,

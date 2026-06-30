@@ -8,6 +8,7 @@ import {
   type ContextState,
   type ContextUsage,
   type ConversationMessage,
+  type PermissionMode,
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
@@ -333,13 +334,16 @@ export type SendArgs = {
    *  into the code-agent stream so the user's selected mode reaches Elira's
    *  persona prompt; undefined falls back to the backend default. */
   profileName?: string;
+  /** Approval policy picked in the composer's permission selector; undefined →
+   *  backend default "ask". */
+  permissionMode?: PermissionMode;
 };
 
 /** Start a run for a session. Appends the user + agent turns to that session's
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, attachments, profileName } = args;
+  const { sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -382,7 +386,7 @@ export function send(args: SendArgs): void {
   // a project root and parsed attachments together, so the unified "Чат\Код"
   // chip carries both at once.
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, ...handlers }));
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, permissionMode, ...handlers }));
 }
 
 /** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`

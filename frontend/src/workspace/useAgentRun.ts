@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import { fetchContextProfile, type CodeAgentMode } from "../api/codeAgent";
+import { fetchContextProfile, type CodeAgentMode, type PermissionMode } from "../api/codeAgent";
 import type { ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
 import { getActiveProfile } from "../api/profiles";
@@ -55,9 +55,9 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     return () => { cancelled = true; };
   }, [model, sessionId]);
 
-  const send = useCallback((text: string, mode: CodeAgentMode, attachments?: ChatAttachment[]) => {
+  const send = useCallback((text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode) => {
     const profileName = profileRef.current || undefined;
-    bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName });
+    bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode });
   }, [sessionId, projectRoot, model]);
 
   // Multi-agent run: streams per-step progress from the pipeline endpoint via

@@ -194,6 +194,11 @@ class CodeAgentStreamRequest(CodeAgentRequest):
         default=300, ge=0, le=3600,
         description="How long the loop pauses waiting for a human approval (0 = legacy no-pause)",
     )
+    permission_mode: Literal["ask", "accept_edits", "bypass"] = Field(
+        default="ask",
+        description="Approval policy: ask (pause on every gated tool), accept_edits "
+        "(auto-approve filesystem edits, pause shell/net), bypass (auto-approve all).",
+    )
 
 
 class CodeAgentCancelRequest(BaseModel):
@@ -282,6 +287,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 approval_wait_seconds=payload.approval_wait_seconds,
                 access_mode=payload.access_mode,
                 profile_name=resolve_persona_mode(payload.profile_name, user_message),
+                permission_mode=payload.permission_mode,
             ):
                 yield _sse_format(event)
         except Exception as exc:
@@ -349,6 +355,7 @@ def resume_run(run_id: str) -> StreamingResponse:
             approval_wait_seconds=300,
             resume=True,
             access_mode=str(request_data.get("access_mode") or "project-workspace"),
+            permission_mode=str(request_data.get("permission_mode") or "ask"),
         ):
             yield _sse_format(event)
 

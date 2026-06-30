@@ -308,8 +308,10 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _TOOL_SEARCH_SCHEMA,
     _approval_status,
     _flatten_for_summary,
+    _mark_approval_approved,
     _maybe_inject_execution_reminder,
     _messages_char_count,
+    _mode_auto_approves,
     _prepare_messages_for_llm,
     _record_code_route_metric,
     _schema_tool_name,
@@ -341,6 +343,7 @@ def _stream_code_agent_core(
     approval_wait_seconds: int = 300,
     compaction_audit_sink: Callable[[dict[str, Any]], None] | None = None,
     profile_name: str = "Инженерный",
+    permission_mode: str = "ask",
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -918,6 +921,24 @@ def _stream_code_agent_core(
                 # the model "waiting approval" and burning steps. The approval
                 # is consumed in the SAME run (binding incl. run_id intact).
                 _approval_id = str((_exec_result.output or {}).get("approval_id") or "")
+                # Permission selector: «Принимать правки»/«Без ограничений» grant
+                # the just-created approval and re-execute in the same run instead
+                # of pausing for the user (binding incl. run_id stays intact).
+                if (
+                    _exec_result.status == "waiting_approval"
+                    and _approval_id
+                    and _mode_auto_approves(permission_mode, name)
+                ):
+                    _mark_approval_approved(_approval_id)
+                    if _delay_tool_started:
+                        yield {
+                            "type": "tool_started",
+                            "step": step,
+                            "tool": name,
+                            "arguments": parsed_args,
+                        }
+                        _delay_tool_started = False
+                    _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
                 if (
                     _exec_result.status == "waiting_approval"
                     and approval_wait_seconds > 0
@@ -1078,6 +1099,7 @@ def stream_code_agent(
     resume: bool = False,
     access_mode: str = "project-workspace",
     profile_name: str = "Инженерный",
+    permission_mode: str = "ask",
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -1099,6 +1121,7 @@ def stream_code_agent(
         "auto_remember": bool(auto_remember),
         "access_mode": access_mode,
         "profile_name": profile_name,
+        "permission_mode": permission_mode,
     }
     terminal = False
     try:
@@ -1141,6 +1164,7 @@ def stream_code_agent(
             approval_wait_seconds=approval_wait_seconds,
             compaction_audit_sink=audit_sink,
             profile_name=profile_name,
+            permission_mode=permission_mode,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)

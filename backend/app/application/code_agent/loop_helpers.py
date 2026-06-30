@@ -154,6 +154,36 @@ def _approval_status(approval_id: str) -> str:
         return "pending"
 
 
+# Permission modes (selector in the composer, mirrored in Settings):
+#   "ask"          — every require_approval tool pauses for the user (default).
+#   "accept_edits" — auto-approve filesystem-only edits; still pause shell/net.
+#   "bypass"       — auto-approve every require_approval tool, no prompts.
+# The fs-only set mirrors tool_registry/builtins scopes (scopes ⊆ {fs.read,
+# fs.write}); keep it in sync with `_native_scopes` there.
+_EDIT_ONLY_TOOLS = frozenset(
+    {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver", "sandbox_reset"}
+)
+
+
+def _mode_auto_approves(permission_mode: str, tool_name: str) -> bool:
+    """Whether the active permission mode pre-approves this tool without asking."""
+    if permission_mode == "bypass":
+        return True
+    if permission_mode == "accept_edits":
+        return tool_name in _EDIT_ONLY_TOOLS
+    return False
+
+
+def _mark_approval_approved(approval_id: str) -> bool:
+    """Programmatically grant an approval row (for non-'ask' permission modes)."""
+    try:
+        from app.application.monitoring import runtime as _mon
+        _mon.update_approval_status(approval_id, status="approved")
+        return True
+    except Exception:
+        return False
+
+
 def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """F3.1: convert in-loop messages (assistant with tool_calls, role="tool"
     results) into plain text turns the summarizer keeps. Without this,

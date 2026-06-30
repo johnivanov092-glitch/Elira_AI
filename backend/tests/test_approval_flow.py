@@ -212,6 +212,54 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class TestPermissionModeAutoApprove(unittest.TestCase):
+    """Composer permission selector: ask / accept_edits / bypass auto-approve."""
+
+    def test_mode_auto_approves_matrix(self):
+        from app.application.code_agent.loop_helpers import _mode_auto_approves
+        # "ask" never auto-approves.
+        self.assertFalse(_mode_auto_approves("ask", "edit_file"))
+        self.assertFalse(_mode_auto_approves("ask", "run_bash"))
+        # "accept_edits" auto-approves filesystem-only edits, not shell/net.
+        self.assertTrue(_mode_auto_approves("accept_edits", "edit_file"))
+        self.assertTrue(_mode_auto_approves("accept_edits", "write_file"))
+        self.assertTrue(_mode_auto_approves("accept_edits", "file_gen"))
+        self.assertFalse(_mode_auto_approves("accept_edits", "run_bash"))
+        self.assertFalse(_mode_auto_approves("accept_edits", "run_server"))
+        # "bypass" auto-approves everything that reached the gate.
+        self.assertTrue(_mode_auto_approves("bypass", "run_bash"))
+        self.assertTrue(_mode_auto_approves("bypass", "edit_file"))
+        # Unknown mode is treated as the safe default.
+        self.assertFalse(_mode_auto_approves("nonsense", "edit_file"))
+
+    def test_mark_approval_approved_flips_pending(self):
+        db = _temp_db()
+        try:
+            with mock.patch.object(mon_runtime, "DB_PATH", db):
+                from app.application.code_agent.loop_helpers import (
+                    _approval_status,
+                    _mark_approval_approved,
+                )
+                mon_store.create_approval(
+                    db, id="pm-1", tool_name="edit_file", agent_id="code-agent",
+                    run_id="run-pm", project_scope_id="scope:pm",
+                )
+                self.assertEqual(_approval_status("pm-1"), "pending")
+                self.assertTrue(_mark_approval_approved("pm-1"))
+                self.assertEqual(_approval_status("pm-1"), "approved")
+                # The approved record is then findable for the re-execute path.
+                found = mon_store.find_approved_approval(
+                    db, tool_name="edit_file", agent_id="code-agent",
+                    source="", run_id="run-pm", project_scope_id="scope:pm", args={},
+                )
+                self.assertIsNotNone(found)
+        finally:
+            try:
+                db.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 class TestApprovalRoutes(unittest.TestCase):
     """API routes: list, get, approve, reject."""
 
