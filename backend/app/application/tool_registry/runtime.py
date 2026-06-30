@@ -230,10 +230,18 @@ def search_tool_specs(query: str, *, limit: int = 20) -> list[dict]:
     Results are deterministically ordered by name.
     """
     q = str(query or "").strip().lower()
+    # Token (OR) matching: a spec matches if ANY whitespace-separated word of the
+    # query is a substring of its haystack. A multi-word query like
+    # "computer screenshot desktop" thus matches a tool whose description mentions
+    # any of those words, instead of requiring the whole phrase verbatim. An empty
+    # query keeps matching everything (unchanged).
+    tokens = [t for t in q.split() if t]
     results: list[dict] = []
     for spec in list_tools_with_schemas(enabled_only=False):
-        if q and q not in _spec_search_haystack(spec):
-            continue
+        if tokens:
+            haystack = _spec_search_haystack(spec)
+            if not any(tok in haystack for tok in tokens):
+                continue
         activatable, reason = _spec_activatability(spec)
         results.append({
             "name": str(spec.get("name", "")),

@@ -166,6 +166,47 @@ class ToolSearchMetaToolTest(unittest.TestCase):
         self.assertTrue(any(m["name"] == "web_search" and m["activatable"] for m in result["matches"]))
 
 
+class TokenMatchingTest(unittest.TestCase):
+    """Multi-word queries match by any token (OR), not the whole phrase verbatim."""
+
+    def test_multiword_query_matches_any_token(self):
+        _patch_registry(self, [
+            _spec("computer", description="Control the desktop: screenshot + mouse/keyboard", category="system"),
+            _spec("write_file", description="write content to a file", category="fs"),
+        ])
+        # The agent's natural multi-word query finds the computer tool even though
+        # the exact phrase appears nowhere in the haystack.
+        names = [r["name"] for r in search_tool_specs("computer screenshot desktop")]
+        self.assertIn("computer", names)
+        self.assertNotIn("write_file", names)
+
+    def test_single_field_phrase_still_matches(self):
+        # Regression guard for the original substring behaviour on a real phrase.
+        _patch_registry(self, [_spec("alpha", description="fetch web pages")])
+        self.assertEqual([r["name"] for r in search_tool_specs("web pages")], ["alpha"])
+
+
+class WhitelistedSideEffectActivationTest(unittest.TestCase):
+    """`computer` is side-effect but explicitly activatable via tool_search."""
+
+    def tearDown(self):
+        deferred_tools.clear_run("rWL")
+
+    def test_computer_is_activated_despite_side_effect(self):
+        _patch_registry(self, [
+            _spec("computer", side_effect=True, permission="require_approval",
+                  scopes=("shell.exec",), description="screenshot + mouse/keyboard", category="system"),
+            _spec("run_bash", side_effect=True, permission="require_approval", scopes=("shell.exec",)),
+        ])
+        deferred_tools.enable_deferred_tools("rWL", [])
+        result = tools.tool_search(run_id="rWL", query="computer")
+        # computer is whitelisted -> activated; run_bash stays non-activated.
+        self.assertIn("computer", result["activated"])
+        self.assertTrue(deferred_tools.is_tool_active("rWL", "computer"))
+        self.assertNotIn("run_bash", result["activated"])
+        self.assertFalse(deferred_tools.is_tool_active("rWL", "run_bash"))
+
+
 class ActivatedToolStillEnforcedByExecutorTest(unittest.TestCase):
     """Activation grants visibility only — the executor still enforces policy."""
 

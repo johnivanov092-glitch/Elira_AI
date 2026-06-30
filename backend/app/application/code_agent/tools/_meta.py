@@ -8,6 +8,13 @@ from typing import Any
 
 TOOL_SEARCH_RESULT_LIMIT = 20
 TOOL_SEARCH_ACTIVATION_CAP = 5
+# Side-effect tools are not auto-activated by tool_search in general (the model
+# should not silently gain side-effecting powers from a search). A small curated
+# set is exempt: powerful but explicitly user-facing tools the agent must be able
+# to reach on demand. Activation grants VISIBILITY ONLY — the unified executor
+# still enforces require_approval at dispatch, so the permission gate (and the
+# composer's permission mode) remains the real control.
+_SEARCH_ACTIVATABLE_SIDE_EFFECT = frozenset({"computer"})
 DELEGATE_TASK_MAX_STEPS = 6
 DELEGATE_TASK_MAX_CTX = 8192
 DELEGATE_TASK_TIMEOUT_SECONDS = 60
@@ -70,7 +77,9 @@ def tool_search(
     - Activation grants VISIBILITY only — the unified executor still enforces
       policy / scope / approval at dispatch. This function executes nothing.
     - Disabled / unclassified / forbidden tools are surfaced but never activated.
-    - Side-effect tools are surfaced but NOT auto-activated in this slice.
+    - Side-effect tools are surfaced but NOT auto-activated, except the curated
+      ``_SEARCH_ACTIVATABLE_SIDE_EFFECT`` set (e.g. ``computer``) — activation is
+      visibility-only and the executor still enforces approval at dispatch.
     - Activates at most ``activation_cap`` tools per call.
     - Uses the existing run-scoped deferred_tools store; ``activate_tools`` is a
       no-op unless the run already opted into deferred mode, so a non-deferred
@@ -97,7 +106,9 @@ def tool_search(
     for match in matches:
         if len(eligible) >= cap:
             break
-        if match["activatable"] and not match["side_effect"]:
+        if match["activatable"] and (
+            not match["side_effect"] or match["name"] in _SEARCH_ACTIVATABLE_SIDE_EFFECT
+        ):
             eligible.append(match["name"])
 
     activated: list[str] = []
