@@ -56,17 +56,32 @@ logger = logging.getLogger(__name__)
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
-def _expand_env_refs(value: str) -> str:
+def _resolve_header_value(value: Any) -> tuple[Any, list[str]]:
     """Expand ``${VAR}`` references in a header value from the process env.
 
-    Lets a config keep secrets OUT of the file — e.g. an HTTP MCP server's
-    ``secret_headers`` can be ``{"Authorization": "Bearer ${HF_TOKEN}"}`` and the
-    real token lives in the backend's environment (.env.local). Unknown vars
-    expand to empty string (the request then fails auth, surfaced as a normal
-    error — never a literal ``${VAR}`` leaking to the server)."""
+    Lets a config keep secrets OUT of the file — an HTTP MCP server's
+    ``secret_headers`` can be ``{"Authorization": "Bearer ${HF_TOKEN}"}`` with the
+    real token living in the backend's environment (.env.local).
+
+    Returns ``(expanded, missing)`` where ``missing`` lists every referenced var
+    that is unset or empty. When ``missing`` is non-empty the caller DROPS the
+    header rather than forward a half-expanded value: sending ``"Bearer "`` (no
+    token) is worse than sending nothing — httpx rejects it as an *Illegal
+    header value* (a cryptic transport crash) whereas omitting the header yields
+    a clean auth error from the server. A literal ``${VAR}`` is never forwarded.
+    """
     if not isinstance(value, str):
-        return value
-    return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), ""), value)
+        return value, []
+    missing: list[str] = []
+
+    def _sub(m: "re.Match[str]") -> str:
+        name = m.group(1)
+        resolved = os.environ.get(name, "")
+        if not resolved:
+            missing.append(name)
+        return resolved
+
+    return _ENV_REF.sub(_sub, value), missing
 
 
 JSONRPC_VERSION = "2.0"
@@ -201,9 +216,10 @@ class McpHttpClient:
         self._url = url.strip()
         # Non-secret headers may be logged; secret headers must not be.
         # ${ENV_VAR} refs in values expand from the process env so the config
-        # file can reference a token (.env.local) instead of storing it.
-        self._headers = {k: _expand_env_refs(v) for k, v in (headers or {}).items()}
-        self._secret_headers = {k: _expand_env_refs(v) for k, v in (secret_headers or {}).items()}
+        # file can reference a token (.env.local) instead of storing it. A
+        # header whose ref is unset is dropped (see _resolve_header_value).
+        self._headers = self._resolve_header_map(headers, kind="header")
+        self._secret_headers = self._resolve_header_map(secret_headers, kind="secret header")
         self._allow_insecure_http = bool(allow_insecure_http)
         self._client: Optional[httpx.Client] = None
         # MCP streamable HTTP carries a session id the server hands back on
@@ -218,6 +234,26 @@ class McpHttpClient:
         self.server_info: dict[str, Any] = {}
         self.server_capabilities: dict[str, Any] = {}
         self.protocol_version: str = MCP_PROTOCOL_VERSION
+
+    @staticmethod
+    def _resolve_header_map(
+        raw: Optional[dict[str, str]], *, kind: str
+    ) -> dict[str, str]:
+        """Expand ${VAR} refs in a header map, dropping any header whose refs
+        are unset (logging which vars are missing). ``kind`` is only used for
+        the log line; secret values themselves are never logged."""
+        resolved: dict[str, str] = {}
+        for key, value in (raw or {}).items():
+            expanded, missing = _resolve_header_value(value)
+            if missing:
+                logger.warning(
+                    "MCP HTTP %s %r dropped: unset environment variable(s): %s "
+                    "(set them in the backend environment, e.g. .env.local)",
+                    kind, key, ", ".join(sorted(set(missing))),
+                )
+                continue
+            resolved[key] = expanded
+        return resolved
 
     # ── Lifecycle ───────────────────────────────────────────────
 

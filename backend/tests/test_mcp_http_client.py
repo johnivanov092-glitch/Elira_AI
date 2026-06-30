@@ -488,13 +488,25 @@ class EnvRefHeaderTest(unittest.TestCase):
             )
         self.assertEqual(client._secret_headers["Authorization"], "Bearer hf_abc123")
 
-    def test_unknown_env_ref_expands_to_empty_no_literal_leak(self) -> None:
+    def test_unknown_env_ref_drops_header_no_empty_value(self) -> None:
+        # An unset var must DROP the header, not send a half-expanded
+        # "Bearer " (httpx rejects that as an Illegal header value).
         os.environ.pop("DEFINITELY_MISSING_VAR", None)
         client = McpHttpClient(
             FAKE_URL, secret_headers={"Authorization": "Bearer ${DEFINITELY_MISSING_VAR}"}
         )
-        self.assertEqual(client._secret_headers["Authorization"], "Bearer ")
-        self.assertNotIn("${", client._secret_headers["Authorization"])
+        self.assertNotIn("Authorization", client._secret_headers)
+
+    def test_partially_missing_ref_drops_whole_header(self) -> None:
+        # One present + one missing ref → still dropped (can't send a partial
+        # credential); no literal ${...} leaks anywhere.
+        with patch.dict(os.environ, {"PRESENT_VAR": "x"}, clear=False):
+            os.environ.pop("MISSING_VAR", None)
+            client = McpHttpClient(
+                FAKE_URL,
+                headers={"X-Combo": "${PRESENT_VAR}-${MISSING_VAR}"},
+            )
+        self.assertNotIn("X-Combo", client._headers)
 
     def test_plain_header_without_ref_is_unchanged(self) -> None:
         client = McpHttpClient(FAKE_URL, headers={"X-Client": "elira"})
