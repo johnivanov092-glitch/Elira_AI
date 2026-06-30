@@ -156,6 +156,9 @@ backend/.env.local
 # Local agent instruction override (contains personal/machine-specific notes)
 **/.elira/agent.local.md
 
+# Serena MCP per-project dir (machine-local: LSP cache, memories, absolute paths)
+.serena/
+
 # Claude worktrees
 .claude/
 .claire/
