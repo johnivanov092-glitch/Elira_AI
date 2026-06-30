@@ -124,10 +124,21 @@ echo [2/3] Starting Tauri dev shell...
 rem Tell Rust setup handler that backend was started externally (Phase 7 fix).
 set "ELIRA_EXTERNAL_BACKEND=1"
 call npm.cmd run tauri dev
+set "TAURI_EXIT=%ERRORLEVEL%"
 
-if errorlevel 1 (
+rem --- App window closed -> stop the backend this launcher started. ---
+rem Previously the backend was left running in its own window, which orphaned it
+rem on port 8000 and forced a manual close / kill_elira.bat. Now it shuts down
+rem with the app. /T kills the whole tree (cmd window -> python -> uvicorn
+rem reloader+worker); the port sweep is a backstop for an orphaned worker.
+echo [3/3] Stopping Elira backend...
+taskkill /F /T /FI "WINDOWTITLE eq Elira Backend*" >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8000" ^| findstr "LISTENING"') do taskkill /F /T /PID %%a >nul 2>&1
+echo [3/3] Backend stopped.
+
+if not "%TAURI_EXIT%"=="0" (
     echo.
-    echo [ERROR] Tauri dev failed to start.
+    echo [ERROR] Tauri dev exited with an error.
     echo [HINT] Try:
     echo        npm install
     echo        npm run tauri dev
@@ -136,8 +147,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [INFO] If the dashboard shows missing packages, install backend\requirements-optional.txt
-echo [INFO] Backend keeps running in a separate window until you close it.
+echo [INFO] If the dashboard showed missing packages, install backend\requirements-optional.txt
 echo.
 
 endlocal
