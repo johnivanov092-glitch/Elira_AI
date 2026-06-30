@@ -10,6 +10,10 @@ import { cn } from "../ui/cn";
 
 type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agent mode.
 
+// Persisted approval-policy choice (localStorage, like theme.ts / voice.ts) so the
+// chip survives a new chat and app restart instead of resetting to "ask" each mount.
+const PERMISSION_MODE_KEY = "elira.permissionMode";
+
 /** Composer per v4: mode chips + "+" (project / files / skills) + plugins + send.
  *  The merged "Чат\Код" chip is the "code" mode; "Поиск" is "search". Both modes
  *  carry attachments, so file picking lives inside the "+" menu (opened in the
@@ -42,8 +46,24 @@ export function Composer({
   const [useReflection, setUseReflection] = useState(true);
   // Approval policy for the run (Спрашивать / Принимать правки / Без ограничений).
   // Local run-mode like multiAgent — passed per-send into the code-agent stream;
-  // the backend approval gate enforces it. Default = the safest "ask".
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
+  // the backend approval gate enforces it. Persisted across chats/restarts (the
+  // chip used to reset to "ask" every mount); first run with no stored value
+  // still defaults to the safest "ask". Validated on read.
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
+    try {
+      const v = localStorage.getItem(PERMISSION_MODE_KEY);
+      return v === "accept_edits" || v === "bypass" ? v : "ask";
+    } catch {
+      return "ask";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(PERMISSION_MODE_KEY, permissionMode);
+    } catch {
+      /* quota / private mode — non-fatal */
+    }
+  }, [permissionMode]);
   // Attachments (images + documents) parsed to text by the backend on pick. Kept
   // across both modes; cleared after each send. The project root and these files
   // travel together to the same code-agent stream.
