@@ -4,7 +4,8 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -107,6 +108,38 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["json"]["model"], "local-model")
         self.assertEqual(post.call_args.kwargs["json"]["temperature"], 0)
         self.assertIn("tools", post.call_args.kwargs["json"])
+
+    def test_chat_completion_retries_transient_then_succeeds(self) -> None:
+        good = _Response({"model": "local-model", "choices": [{"message": {"role": "assistant", "content": "OK"}}]})
+        attempts = [
+            openai_compatible.requests.ConnectionError("connection dropped"),
+            openai_compatible.requests.Timeout("read timed out"),
+            good,
+        ]
+        with patch.dict(os.environ, _llama_env(), clear=False), \
+             patch("app.infrastructure.llm.openai_compatible.time.sleep") as sleep, \
+             patch("app.infrastructure.llm.openai_compatible.requests.post", side_effect=attempts) as post:
+            result = openai_compatible.chat_completion(
+                model="local-model", messages=[{"role": "user", "content": "hi"}]
+            )
+        self.assertEqual(result["message"]["content"], "OK")
+        self.assertEqual(post.call_count, 3)   # 2 transient failures + 1 success
+        self.assertEqual(sleep.call_count, 2)  # backoff before each retry
+
+    def test_chat_completion_does_not_retry_client_error(self) -> None:
+        err = openai_compatible.requests.HTTPError("400 Bad Request")
+        err.response = SimpleNamespace(status_code=400, text="Bad Request")
+        bad = _Response({})
+        bad.raise_for_status = MagicMock(side_effect=err)
+        with patch.dict(os.environ, _llama_env(), clear=False), \
+             patch("app.infrastructure.llm.openai_compatible.time.sleep") as sleep, \
+             patch("app.infrastructure.llm.openai_compatible.requests.post", return_value=bad) as post:
+            with self.assertRaises(RuntimeError):
+                openai_compatible.chat_completion(
+                    model="local-model", messages=[{"role": "user", "content": "hi"}]
+                )
+        post.assert_called_once()   # 4xx is not retried
+        sleep.assert_not_called()
 
     def test_configured_server_context_caps_larger_request_option(self) -> None:
         env = {**_llama_env(), "LLAMA_SERVER_CONTEXT_WINDOW": "32768"}

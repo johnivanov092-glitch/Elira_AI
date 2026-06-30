@@ -1,8 +1,11 @@
 """API роуты для Autopipelines — cron-задачи Elira AI."""
+import logging
 import threading
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pipelines", tags=["autopipelines"])
 
@@ -86,6 +89,8 @@ def api_run_now(pid: str):
     def _runner() -> None:
         try:
             run_pipeline_now(pid)
+        except Exception:  # noqa: BLE001 — daemon thread: never let it die silently
+            logger.exception("pipeline run %s crashed", pid)
         finally:
             with _active_runs_lock:
                 _active_runs.discard(pid)

@@ -31,6 +31,11 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in _TRUE_VALUES
 
 
+# Transient-error retry for non-stream chat completions (connection/timeout/5xx).
+_LLM_RETRY_ATTEMPTS = 3
+_LLM_RETRY_BACKOFF_S = 0.5
+
+
 def _env_value(name: str, default: str = "") -> str:
     raw = os.getenv(name)
     return default if raw is None else raw
@@ -393,21 +398,40 @@ def chat_completion(
     )
 
     started = time.monotonic_ns()
-    try:
-        response = requests.post(
-            f"{cfg.base_url}/chat/completions",
-            headers=_headers(cfg),
-            json=payload,
-            timeout=timeout or cfg.timeout_seconds,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.HTTPError as exc:
-        raise RuntimeError(_http_error_message(exc)) from exc
-    except requests.RequestException as exc:
-        raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
-    except ValueError as exc:
-        raise RuntimeError("OpenAI-compatible provider returned invalid JSON") from exc
+    data = None
+    last_exc: Exception | None = None
+    # Retry transient hiccups (connection drop, read timeout, 5xx) a couple of
+    # times with linear backoff. Client errors (4xx) and invalid JSON are not
+    # retried — retrying won't fix them.
+    for _attempt in range(_LLM_RETRY_ATTEMPTS):
+        try:
+            response = requests.post(
+                f"{cfg.base_url}/chat/completions",
+                headers=_headers(cfg),
+                json=payload,
+                timeout=timeout or cfg.timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+            break
+        except ValueError as exc:
+            raise RuntimeError("OpenAI-compatible provider returned invalid JSON") from exc
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            last_exc = exc  # transient → retry
+        except requests.HTTPError as exc:
+            status = getattr(exc.response, "status_code", 0) or 0
+            if not (500 <= status < 600):
+                raise RuntimeError(_http_error_message(exc)) from exc  # 4xx → no retry
+            last_exc = exc  # 5xx → transient
+        except requests.RequestException as exc:
+            raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
+        if _attempt < _LLM_RETRY_ATTEMPTS - 1:
+            time.sleep(_LLM_RETRY_BACKOFF_S * (_attempt + 1))
+
+    if data is None:  # all attempts exhausted on a transient error
+        if isinstance(last_exc, requests.HTTPError):
+            raise RuntimeError(_http_error_message(last_exc)) from last_exc
+        raise RuntimeError(f"OpenAI-compatible request failed after retries: {last_exc}") from last_exc
 
     return _local_llm_response(data, elapsed_ns=time.monotonic_ns() - started)
 

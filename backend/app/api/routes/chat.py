@@ -6,6 +6,7 @@ before the frontend sends that text to the code-agent stream.
 """
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -90,7 +91,10 @@ async def chat_attach(file: UploadFile) -> JSONResponse:
                     note="Распознавание картинок отключено на сервере (VISION_ENABLED).",
                 )
             )
-        description = describe_image(filename, contents)
+        # Offload the blocking vision HTTP call (up to ~180s) off the event
+        # loop so concurrent requests (/health, other chats, scheduler) aren't
+        # frozen while one image is described.
+        description = await asyncio.to_thread(describe_image, filename, contents)
         if not description:
             return _json_attach(
                 _attach_result(
@@ -103,7 +107,9 @@ async def chat_attach(file: UploadFile) -> JSONResponse:
             )
         return _json_attach(_attach_result(filename=filename, kind="image", text=description))
 
-    extracted = extract_file(filename, contents)
+    # Same offload for document parsing + audio transcription (transcribe can
+    # block up to ~600s) — keep the event loop free.
+    extracted = await asyncio.to_thread(extract_file, filename, contents)
     text = str(extracted.get("text") or "")
     stripped = text.strip()
     if not stripped:
