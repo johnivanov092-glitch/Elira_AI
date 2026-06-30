@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import type { CodeAgentToolCall } from "../api/codeAgent";
 import { toolIcon } from "./toolIcon";
@@ -23,7 +23,19 @@ function plural(n: number): string {
 }
 
 export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[]; activeTool?: string }) {
-  const [open, setOpen] = useState(true);
+  // Collapse big groups by default so they don't sprawl across the chat. The
+  // initializer runs once at mount: a live run that starts small stays expanded
+  // (you watch it grow), while a large/historical group mounts collapsed.
+  const [open, setOpen] = useState(() => calls.length <= 5);
+  // While a run is active, keep the (height-capped) list scrolled to the latest
+  // call so progress stays visible without the group eating the whole screen.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open && activeTool && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [calls.length, activeTool, open]);
+
   if (calls.length === 0 && !activeTool) return null;
 
   return (
@@ -39,7 +51,10 @@ export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[
       </button>
       {open && (
         <div>
-          {calls.map((call, i) => <ToolRow key={i} call={call} />)}
+          {/* Bounded + scrollable so a long list never sprawls down the chat. */}
+          <div ref={scrollRef} className="max-h-[46vh] overflow-y-auto">
+            {calls.map((call, i) => <ToolRow key={i} call={call} />)}
+          </div>
           {activeTool && (
             <div className="flex items-center gap-2.5 border-t border-line px-3.5 py-2.5 text-[12.5px] text-t2">
               <Loader2 size={14} className="animate-spin text-ac" /> выполняется {activeTool}…
