@@ -13,7 +13,7 @@ from fastapi import APIRouter, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
-from app.application.file_extract.runtime import extract_file
+from app.application.file_extract.runtime import extract_file, _AUDIO_EXTS
 from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -128,4 +128,5 @@ async def chat_attach(file: UploadFile) -> JSONResponse:
                 note=stripped.strip("[]"),
             )
         )
-    return _json_attach(_attach_result(filename=filename, kind="document", text=text))
+    kind = "audio" if ext in _AUDIO_EXTS else "document"
+    return _json_attach(_attach_result(filename=filename, kind=kind, text=text))

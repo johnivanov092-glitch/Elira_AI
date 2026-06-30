@@ -98,7 +98,17 @@ def _inject_attachment_context(message: str, attachments: list[CodeAgentAttachme
             continue
         kind = str(attachment.kind or "document").strip() or "document"
         filename = str(attachment.filename or "attachment").strip() or "attachment"
-        blocks.append(f"[{kind}: {filename}]\n{text}")
+        if kind == "audio":
+            blocks.append(
+                f"[ВЛОЖЕНИЕ — аудиозапись «{filename}», УЖЕ автоматически распознанная в текст "
+                f"(сервер сделал speech-to-text). Ниже — готовая расшифровка этой записи. Если "
+                f"пользователь просит «расшифруй / прочитай запись / что там» — ответ это и есть: "
+                f"приведи этот текст (можешь аккуратно почистить повторы и слова-паразиты). НЕ говори, "
+                f"что не умеешь работать с аудио, и НЕ проси прислать файл — звук уже распознан.]\n"
+                f"РАСШИФРОВКА:\n{text}"
+            )
+        else:
+            blocks.append(f"[{kind}: {filename}]\n{text}")
     if not blocks:
         return message
     attachment_block = "\n\n".join(blocks)
