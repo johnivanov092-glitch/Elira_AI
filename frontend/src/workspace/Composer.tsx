@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode } from "../api/codeAgent";
 import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
@@ -69,6 +69,10 @@ export function Composer({
   // travel together to the same code-agent stream.
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
+  // Names of files currently being uploaded/parsed by the backend. Drives a
+  // transient "загрузка…" chip per file while attachToChat is in flight (audio
+  // transcription / PDF parse take a few seconds); cleared as each resolves.
+  const [uploading, setUploading] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const usage = contextUsage
     && Number.isFinite(contextUsage.current_tokens)
@@ -129,9 +133,14 @@ export function Composer({
 
   async function onPickFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
+    const picked = Array.from(files);
+    // Show a transient "загрузка…" chip per file while it is sent to the backend
+    // for parsing/transcription; each clears the moment its file resolves and is
+    // replaced by the real attachment chip.
+    setUploading(picked.map((f) => f.name));
     setAttaching(true);
     try {
-      for (const file of Array.from(files)) {
+      for (const file of picked) {
         try {
           const att = await attachToChat(file);
           setAttachments((prev) => [...prev, att]);
@@ -141,10 +150,18 @@ export function Composer({
             kind: file.type.startsWith("image/") ? "image" : "document",
             text: "", chars: 0, note: "Не удалось обработать файл",
           }]);
+        } finally {
+          // Remove the first matching name so this file's spinner disappears as
+          // soon as it finishes, even mid-batch.
+          setUploading((prev) => {
+            const idx = prev.indexOf(file.name);
+            return idx === -1 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+          });
         }
       }
     } finally {
       setAttaching(false);
+      setUploading([]);
       if (fileRef.current) fileRef.current.value = "";
     }
   }
@@ -177,7 +194,7 @@ export function Composer({
           <PermissionModeChip mode={permissionMode} onChange={setPermissionMode} />
           {usage && <ContextGauge usage={usage} tone={contextTone} />}
         </div>
-        {attachments.length > 0 && (
+        {(attachments.length > 0 || uploading.length > 0) && (
           <div className="mb-2 flex flex-wrap gap-1.5">
             {attachments.map((a, i) => (
               <span
@@ -213,6 +230,17 @@ export function Composer({
                 >
                   <X size={12} />
                 </button>
+              </span>
+            ))}
+            {uploading.map((name, i) => (
+              <span
+                key={`uploading-${name}-${i}`}
+                title="Файл загружается и обрабатывается…"
+                className="flex items-center gap-1.5 rounded-full border border-line px-2 py-1 text-[11px] text-t2"
+              >
+                <Loader2 size={12} className="shrink-0 animate-spin" />
+                <span className="max-w-[160px] truncate">{name}</span>
+                <span className="text-mut">загрузка…</span>
               </span>
             ))}
           </div>
