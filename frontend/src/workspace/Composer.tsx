@@ -306,7 +306,7 @@ function MultiAgentChip({
         </button>
       </div>
       {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-[220px] rounded-lg border border-line bg-surface p-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-[220px] rounded-lg border border-line bg-card p-1 shadow-lg">
           <MultiAgentOption
             checked={useOrchestrator}
             onChange={onChangeOrchestrator}
@@ -451,7 +451,7 @@ function ProfilePicker() {
         <ChevronDown size={12} className="shrink-0 text-mut" />
       </button>
       {open && profiles && profiles.length > 0 && (
-        <div className="absolute bottom-full left-0 z-20 mb-1.5 max-h-[280px] w-[240px] overflow-y-auto rounded-lg border border-line bg-surface p-1 shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1.5 max-h-[280px] w-[240px] overflow-y-auto rounded-lg border border-line bg-card p-1 shadow-lg">
           {profiles.map((p) => (
             <button
               key={p.name}

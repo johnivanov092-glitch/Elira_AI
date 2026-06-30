@@ -72,7 +72,7 @@ export function ContextLibraryChip() {
         </span>
       )}
       {open && (
-        <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[340px] w-[300px] overflow-y-auto rounded-lg border border-line bg-surface p-1 shadow-lg">
+        <div className="absolute right-0 top-full z-30 mt-1.5 max-h-[340px] w-[300px] overflow-y-auto rounded-lg border border-line bg-card p-1 shadow-lg">
           {items === null ? (
             <div className="px-2.5 py-2 text-[11px] text-mut">Загрузка…</div>
           ) : list.length === 0 ? (
