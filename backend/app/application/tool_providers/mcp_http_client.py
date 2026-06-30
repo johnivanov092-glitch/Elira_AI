@@ -29,6 +29,8 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
+import re
 import socket
 import threading
 from typing import Any, Optional
@@ -49,6 +51,22 @@ from app.application.tool_providers.mcp_sanitize import (
 
 
 logger = logging.getLogger(__name__)
+
+
+_ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env_refs(value: str) -> str:
+    """Expand ``${VAR}`` references in a header value from the process env.
+
+    Lets a config keep secrets OUT of the file — e.g. an HTTP MCP server's
+    ``secret_headers`` can be ``{"Authorization": "Bearer ${HF_TOKEN}"}`` and the
+    real token lives in the backend's environment (.env.local). Unknown vars
+    expand to empty string (the request then fails auth, surfaced as a normal
+    error — never a literal ``${VAR}`` leaking to the server)."""
+    if not isinstance(value, str):
+        return value
+    return _ENV_REF.sub(lambda m: os.environ.get(m.group(1), ""), value)
 
 
 JSONRPC_VERSION = "2.0"
@@ -182,8 +200,10 @@ class McpHttpClient:
     ) -> None:
         self._url = url.strip()
         # Non-secret headers may be logged; secret headers must not be.
-        self._headers = dict(headers or {})
-        self._secret_headers = dict(secret_headers or {})
+        # ${ENV_VAR} refs in values expand from the process env so the config
+        # file can reference a token (.env.local) instead of storing it.
+        self._headers = {k: _expand_env_refs(v) for k, v in (headers or {}).items()}
+        self._secret_headers = {k: _expand_env_refs(v) for k, v in (secret_headers or {}).items()}
         self._allow_insecure_http = bool(allow_insecure_http)
         self._client: Optional[httpx.Client] = None
         # MCP streamable HTTP carries a session id the server hands back on

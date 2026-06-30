@@ -476,5 +476,30 @@ class RemoteFlagGatingTest(unittest.TestCase):
         self.assertFalse(self.runtime._remote_mcp_enabled())
 
 
+class EnvRefHeaderTest(unittest.TestCase):
+    """secret_headers / headers expand ${ENV_VAR} from the process env, so the
+    config file references a token instead of storing it."""
+
+    def test_secret_header_env_ref_is_expanded(self) -> None:
+        with patch.dict(os.environ, {"HF_TOKEN_TEST": "hf_abc123"}, clear=False):
+            client = McpHttpClient(
+                FAKE_URL,
+                secret_headers={"Authorization": "Bearer ${HF_TOKEN_TEST}"},
+            )
+        self.assertEqual(client._secret_headers["Authorization"], "Bearer hf_abc123")
+
+    def test_unknown_env_ref_expands_to_empty_no_literal_leak(self) -> None:
+        os.environ.pop("DEFINITELY_MISSING_VAR", None)
+        client = McpHttpClient(
+            FAKE_URL, secret_headers={"Authorization": "Bearer ${DEFINITELY_MISSING_VAR}"}
+        )
+        self.assertEqual(client._secret_headers["Authorization"], "Bearer ")
+        self.assertNotIn("${", client._secret_headers["Authorization"])
+
+    def test_plain_header_without_ref_is_unchanged(self) -> None:
+        client = McpHttpClient(FAKE_URL, headers={"X-Client": "elira"})
+        self.assertEqual(client._headers["X-Client"], "elira")
+
+
 if __name__ == "__main__":
     unittest.main()
