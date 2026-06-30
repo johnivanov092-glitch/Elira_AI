@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
 import textwrap
 import threading
@@ -24,6 +26,47 @@ from app.application.code_agent.tools._shell import (
 )
 
 
+# Interpreters whose inline-script form (`python -c "<script>"`, `node -e …`)
+# must bypass the shell. A MULTI-LINE script handed to `cmd.exe /c` on Windows is
+# truncated at the first newline — the interpreter then runs an empty/garbled body
+# (exit 0, no output), so the model sees nothing back and re-issues the same call
+# until the loop-guard trips. Running argv directly (shell=False) delivers the
+# whole script to the interpreter as ONE intact argument. Applied on every OS so
+# behaviour is identical on Windows and Linux (on POSIX /bin/sh already coped, but
+# uniformity beats a platform branch). Only EXACT `[interp, flag, script]` forms
+# divert; pipes/redirects/`&&`/`dir` parse to more tokens and stay on the shell path.
+_INLINE_SCRIPT_INTERPRETERS = frozenset(
+    {"python", "python3", "py", "node", "nodejs", "deno", "ruby", "perl", "php"}
+)
+_INLINE_SCRIPT_FLAGS = frozenset({"-c", "-e", "--eval"})
+
+
+def _inline_script_argv(command: str) -> list[str] | None:
+    """Return argv to run *command* WITHOUT a shell if it is a multi-line
+    inline-script call (e.g. ``python -c "<script>"``); else None (keep the shell).
+
+    Narrow by design: triggers ONLY on a newline-containing command that
+    ``shlex``-parses to exactly ``[interpreter, flag, script]`` with a known
+    interpreter and inline-script flag. Single-line commands are left alone (they
+    already work), and anything with shell metacharacters yields extra tokens
+    (``len != 3``) so pipes, redirects and ``dir`` keep flowing through the shell.
+    """
+    if "\n" not in command:
+        return None
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return None
+    if len(argv) != 3:
+        return None
+    interp = os.path.basename(argv[0]).lower()
+    if interp.endswith(".exe"):
+        interp = interp[:-4]
+    if interp in _INLINE_SCRIPT_INTERPRETERS and argv[1] in _INLINE_SCRIPT_FLAGS:
+        return argv
+    return None
+
+
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
     cleaned_command = (command or "").strip()
     if not cleaned_command:
@@ -34,13 +77,17 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     safe_timeout = max(1, min(int(timeout), _SHELL_TIMEOUT_MAX))
 
     run_id = _CURRENT_RUN_ID.get()
+    # Multi-line inline scripts (python -c "<…>", node -e …) are mangled by
+    # cmd.exe /c, so run them via argv with no shell; everything else keeps the
+    # shell path. The wait/kill/capture machinery below is identical either way.
+    _argv = _inline_script_argv(cleaned_command)
     try:
         # Popen (not subprocess.run) so the live process is registered and can
         # be killed mid-flight by the Stop button. We drive the wait ourselves
         # via communicate() with a deadline, killing on timeout OR cancel.
         proc = subprocess.Popen(
-            cleaned_command,
-            shell=True,
+            _argv if _argv is not None else cleaned_command,
+            shell=_argv is None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

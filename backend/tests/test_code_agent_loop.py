@@ -157,6 +157,41 @@ class SandboxedToolsTest(unittest.TestCase):
         self.assertIn("truncated", res["text"])
         self.assertLess(len(res["text"]), 17000)
 
+    def test_run_bash_multiline_python_returns_stdout(self) -> None:
+        # Regression: a multi-line `python -c "<script>"` used to be mangled by
+        # cmd.exe /c on Windows (truncated at the first newline → exit 0, empty
+        # stdout), which sent the agent into a repeat loop. It must now run via
+        # argv (no shell) and return the script's full output.
+        res = tool_run_bash(
+            self.root,
+            command="python -c \"\nfor i in range(3):\n    print('line', i)\nprint('done-multiline')\n\"",
+        )
+        self.assertIn("exit=0", res["text"])
+        self.assertIn("line 0", res["text"])
+        self.assertIn("line 2", res["text"])
+        self.assertIn("done-multiline", res["text"])
+
+    def test_inline_script_argv_detection(self) -> None:
+        from app.application.code_agent.tools._run import _inline_script_argv
+        # multi-line inline script → argv, run without a shell
+        argv = _inline_script_argv("python -c \"\nprint(1)\n\"")
+        self.assertIsNotNone(argv)
+        assert argv is not None  # for type-checkers
+        self.assertEqual(argv[0], "python")
+        self.assertEqual(argv[1], "-c")
+        self.assertIn("\n", argv[2])
+        # single-line already works → keep the shell path (don't divert)
+        self.assertIsNone(_inline_script_argv("python -c \"print(1)\""))
+        # a pipe yields >3 tokens → shell path, so pipelines are not broken
+        self.assertIsNone(_inline_script_argv("python -c \"\nx\n\" | grep y"))
+        # multi-line but not an inline-script interpreter → shell path
+        self.assertIsNone(_inline_script_argv("echo hi\necho bye"))
+        # node inline eval is covered too (parse only — node need not be installed)
+        node_argv = _inline_script_argv("node -e \"\nconsole.log(1)\n\"")
+        self.assertIsNotNone(node_argv)
+        assert node_argv is not None
+        self.assertEqual(node_argv[:2], ["node", "-e"])
+
     # --- project_map (Variant B) ----------------------------------------
 
     def test_project_map_reports_tree_manifests_and_signatures(self) -> None:
