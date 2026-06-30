@@ -42,7 +42,7 @@ async def voice_stt(file: UploadFile = File(...), language: str | None = Form(de
     if not data:
         raise HTTPException(status_code=400, detail="empty audio")
     try:
-        text = voice_runtime.transcribe(data, filename=file.filename or "audio", language=language)
+        text = voice_runtime.transcribe(data, filename=file.filename or "audio", language=language, timeout=600)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"STT failed: {exc}")
     return JSONResponse(
