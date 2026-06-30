@@ -947,9 +947,11 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("- todo_update(", prompt)
         self.assertIn("- delegate_task(", prompt)
         self.assertIn("tool_search(query)", prompt)
-        # Long-tail tools are not advertised as directly available — the
+        # Web search/fetch are in the base set (directly available, no tool_search
+        # round-trip) — so they ARE advertised in the default prompt.
+        self.assertIn("- web_search(query", prompt)
+        # Other long-tail tools stay hidden until tool_search activates them — the
         # executor would block them as not-activated (P10.1 deferred mode).
-        self.assertNotIn("- web_search(query", prompt)
         self.assertNotIn("- sandbox_run(code", prompt)
 
     def test_custom_base_tools_reflected_in_prompt(self) -> None:

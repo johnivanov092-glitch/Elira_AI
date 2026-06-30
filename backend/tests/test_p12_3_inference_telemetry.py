@@ -54,7 +54,7 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
             }
 
         with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(agent_loop, "_resolve_code_route", return_value=("test-code", 4096, decision)), \
+             patch.object(agent_loop, "_resolve_code_route", return_value=("test-code", 8192, decision)), \
              patch.object(agent_loop, "_record_code_route_metric"), \
              patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
              patch.object(agent_loop.ToolRegistry, "collect_schemas", return_value=[]), \
@@ -76,7 +76,7 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
         self.assertEqual(kwargs["run_id"], "p12-code-run")
         self.assertEqual(kwargs["route"], "code")
         self.assertEqual(kwargs["model"], "test-code")
-        self.assertEqual(kwargs["num_ctx"], 4096)
+        self.assertEqual(kwargs["num_ctx"], 8192)
         self.assertEqual(kwargs["completion_chars"], 4)
         self.assertEqual(kwargs["usage"]["total_tokens"], 5)
         self.assertEqual(kwargs["tool_round_trips"], 0)
@@ -97,7 +97,7 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
             }
 
         with tempfile.TemporaryDirectory() as tmp, \
-             patch.object(agent_loop, "_resolve_code_route", return_value=("test-code", 4096, decision)), \
+             patch.object(agent_loop, "_resolve_code_route", return_value=("test-code", 8192, decision)), \
              patch.object(agent_loop, "_record_code_route_metric"), \
              patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
              patch.object(agent_loop.ToolRegistry, "collect_schemas", return_value=[]), \

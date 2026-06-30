@@ -30,7 +30,9 @@ from app.application.agent_kernel import executor as ex  # noqa: E402
 from app.application.tool_providers import ToolRegistry  # noqa: E402
 
 
-_LONG_TAIL = ("web_search", "web_fetch", "sandbox_run", "sandbox_reset")
+# web_search/web_fetch moved into the base set; csv stays a non-side-effect
+# long-tail tool, sandbox_* are side-effect long-tail.
+_LONG_TAIL = ("csv", "sandbox_run", "sandbox_reset")
 
 
 def _schema(name):
@@ -157,17 +159,17 @@ class DeferredLoopTest(unittest.TestCase):
         self.assertNotIn("delegate_task", first)
 
     def test_activated_long_tail_tool_visible_next_step(self):
-        chat = ScriptedChat([_call("tool_search", query="web"), _final()])
+        chat = ScriptedChat([_call("tool_search", query="csv"), _final()])
         with _loop_env(), patch("app.application.tool_registry.runtime.search_tool_specs",
-                                return_value=[_match("web_search", side_effect=False)]):
+                                return_value=[_match("csv", side_effect=False)]):
             _run(chat, run_id="r3")
-        self.assertNotIn("web_search", chat.tools_per_call[0])   # hidden at start
-        self.assertIn("web_search", chat.tools_per_call[1])      # visible after activation
+        self.assertNotIn("csv", chat.tools_per_call[0])   # hidden at start (long-tail)
+        self.assertIn("csv", chat.tools_per_call[1])      # visible after activation
 
     def test_guessed_unactivated_tool_blocked_before_dispatch(self):
-        chat = ScriptedChat([_call("web_search", query="x"), _final()])  # long-tail, not activated
+        chat = ScriptedChat([_call("csv", path="x.csv"), _final()])  # long-tail, not activated
         classified = {
-            "name": "web_search", "policy_classified": True, "enabled": True,
+            "name": "csv", "policy_classified": True, "enabled": True,
             "permission": "auto", "scopes": [], "max_output_chars": 50000,
         }
         with _loop_env(), \
@@ -175,7 +177,7 @@ class DeferredLoopTest(unittest.TestCase):
              patch.object(ToolRegistry, "dispatch_raw") as dispatch_spy:
             events = _run(chat, run_id="r4")
         self.assertFalse(dispatch_spy.called)  # provider never reached
-        tc = [e for e in events if e.get("type") == "tool_call" and e.get("tool") == "web_search"]
+        tc = [e for e in events if e.get("type") == "tool_call" and e.get("tool") == "csv"]
         self.assertEqual(len(tc), 1)
         self.assertIn("not activated", tc[0]["result"].lower())
 
