@@ -290,6 +290,34 @@ class PromptsTest(unittest.TestCase):
             client.stop()
 
 
+class LaunchArgvResolutionTest(unittest.TestCase):
+    """Windows: bare 'npx'/'uvx' and .cmd shims must launch correctly."""
+
+    def _argv(self, command, args, *, platform, which):
+        from app.application.tool_providers import mcp_client as mc
+        with patch.object(mc.sys, "platform", platform), \
+             patch.object(mc.shutil, "which", return_value=which):
+            return mc._resolve_launch_argv(command, args)
+
+    def test_windows_cmd_shim_wrapped_in_cmd_c(self):
+        argv = self._argv("npx", ["-y", "pkg"], platform="win32",
+                          which=r"C:\Program Files\nodejs\npx.CMD")
+        self.assertEqual(argv, ["cmd", "/c", r"C:\Program Files\nodejs\npx.CMD", "-y", "pkg"])
+
+    def test_windows_exe_not_wrapped(self):
+        argv = self._argv("uvx", ["serena"], platform="win32",
+                          which=r"C:\Users\x\.local\bin\uvx.exe")
+        self.assertEqual(argv, [r"C:\Users\x\.local\bin\uvx.exe", "serena"])
+
+    def test_posix_no_wrapper(self):
+        argv = self._argv("npx", ["-y", "pkg"], platform="linux", which="/usr/bin/npx")
+        self.assertEqual(argv, ["/usr/bin/npx", "-y", "pkg"])
+
+    def test_unresolved_falls_back_to_bare_command(self):
+        argv = self._argv("npx", ["-y", "pkg"], platform="win32", which=None)
+        self.assertEqual(argv, ["npx", "-y", "pkg"])
+
+
 class ServerCrashTest(unittest.TestCase):
     def test_pending_request_after_crash_unblocks_with_error(self) -> None:
         """If the server dies, follow-up requests must NOT hang —

@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -46,6 +48,22 @@ from app.application.tool_providers.mcp_sanitize import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_launch_argv(command: str, args: list[str]) -> list[str]:
+    """Build the Popen argv for a stdio MCP server, robust on Windows.
+
+    CreateProcess can't find a bare command name like "npx"/"uvx" and can't
+    execute .cmd/.bat shims (npx.cmd) directly. Resolve through PATH
+    (shutil.which honours PATHEXT, so "npx" -> "...\\npx.cmd") and wrap batch
+    shims in `cmd /c`. On POSIX, which returns a real executable and no wrapper
+    is added; if resolution fails we fall back to the bare command so the
+    caller's FileNotFoundError handling still fires.
+    """
+    resolved = shutil.which(command) or command
+    if sys.platform == "win32" and resolved.lower().endswith((".cmd", ".bat")):
+        return ["cmd", "/c", resolved, *args]
+    return [resolved, *args]
 
 
 # JSON-RPC protocol version is fixed for MCP.
@@ -128,9 +146,12 @@ class McpClient:
         if self._env:
             full_env.update(self._env)
 
+        # Robust Windows launch (npx/uvx, .cmd shims) — see _resolve_launch_argv.
+        argv = _resolve_launch_argv(self._command, list(self._args))
+
         try:
             self._proc = subprocess.Popen(
-                [self._command, *self._args],
+                argv,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
