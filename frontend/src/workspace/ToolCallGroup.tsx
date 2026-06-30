@@ -4,7 +4,7 @@ import type { CodeAgentToolCall } from "../api/codeAgent";
 import { toolIcon } from "./toolIcon";
 
 function shortArg(args: Record<string, unknown>): string {
-  for (const key of ["path", "command", "query", "pattern", "url", "task", "code", "host"]) {
+  for (const key of ["path", "command", "query", "pattern", "url", "task", "code", "host", "action", "text"]) {
     const value = args[key];
     if (typeof value === "string" && value) {
       const flat = value.replace(/\s+/g, " ").trim();

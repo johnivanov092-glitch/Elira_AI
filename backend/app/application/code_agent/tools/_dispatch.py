@@ -48,6 +48,9 @@ from app.application.code_agent.tools._vision import (
     tool_ocr_file,
     tool_read_image,
 )
+from app.application.code_agent.tools._computer import (
+    tool_computer,
+)
 
 
 def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str, Any]]]:
@@ -81,4 +84,5 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "file_gen": lambda **kw: tool_file_gen(project_root, **kw),
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
         "ocr_file": lambda **kw: tool_ocr_file(project_root, **kw),
+        "computer": lambda **kw: tool_computer(project_root, **kw),
     }

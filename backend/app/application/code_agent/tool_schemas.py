@@ -592,4 +592,48 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "computer",
+                "description": (
+                    "Control the local desktop like a human: take a screenshot (interpreted "
+                    "by the vision model so you can 'see' the screen) and drive the mouse and "
+                    "keyboard. Always call action='screenshot' FIRST to read the screen and its "
+                    "size before clicking — coordinates are absolute pixels and grounding is "
+                    "approximate, so re-screenshot to verify the result of each action. "
+                    "Actions: 'screenshot' (returns a description + screen size), 'left_click'/"
+                    "'right_click'/'double_click'/'middle_click' (need x,y), 'move' (x,y), "
+                    "'type' (text), 'key' (keys, e.g. [\"ctrl\",\"c\"] or [\"enter\"]), 'scroll' "
+                    "(amount + direction, optional x,y). Requires the vision service for "
+                    "screenshots; needs a desktop session for input. Gated by the approval policy."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": [
+                                "screenshot", "left_click", "right_click", "double_click",
+                                "middle_click", "move", "type", "key", "scroll",
+                            ],
+                            "description": "What to do. Default 'screenshot'.",
+                        },
+                        "x": {"type": "integer", "description": "Absolute X pixel (click/move/scroll target)."},
+                        "y": {"type": "integer", "description": "Absolute Y pixel (click/move/scroll target)."},
+                        "text": {"type": "string", "description": "Text to type (action='type')."},
+                        "keys": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Key or chord for action='key', e.g. [\"enter\"] or [\"ctrl\",\"c\"].",
+                        },
+                        "amount": {"type": "integer", "description": "Scroll steps (action='scroll'). Default 3."},
+                        "direction": {"type": "string", "enum": ["up", "down"], "description": "Scroll direction. Default 'down'."},
+                        "clicks": {"type": "integer", "description": "Click count for click actions. Default 1."},
+                        "prompt": {"type": "string", "description": "Optional focus for the screenshot description."},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
     ]

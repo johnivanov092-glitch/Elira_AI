@@ -417,6 +417,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
         ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
         ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel file",            60,  5000, False),
+        ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
@@ -437,6 +438,9 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "archiver": ["fs.read", "fs.write"], "screenshot": ["net.outbound", "fs.write"],
         "file_gen": ["fs.write"],
         "read_image": ["fs.read", "net.outbound"], "ocr_file": ["fs.read", "net.outbound"],
+        # Desktop control is shell-level power: gated like run_bash, so the
+        # "accept_edits" mode never auto-approves it (only "bypass" / explicit ask).
+        "computer": ["shell.exec", "net.outbound"],
     }
 
     result: list[dict[str, Any]] = []
