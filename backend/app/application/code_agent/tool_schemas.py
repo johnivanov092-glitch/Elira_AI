@@ -255,6 +255,9 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "list of {title, url, snippet}. Use this BEFORE answering "
                     "any question that depends on facts you don't already "
                     "know — current events, library versions, niche docs. "
+                    "Pass `queries` (a list) to run SEVERAL searches in PARALLEL "
+                    "in one call (faster than one-by-one; merged + de-duped); "
+                    "otherwise pass a single `query`. "
                     "Optionally target engine `categories` (e.g. 'it' for "
                     "github/stackoverflow/pypi, 'science' for arxiv/pubmed, "
                     "'news') and/or `time_range` for recency. "
@@ -263,8 +266,13 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Search query."},
-                        "top_k": {"type": "integer", "description": "Max results (default 5, max 10)."},
+                        "query": {"type": "string", "description": "Single search query."},
+                        "queries": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Several queries to run in parallel in one call (up to 6). Prefer this over many sequential web_search calls.",
+                        },
+                        "top_k": {"type": "integer", "description": "Max results per query (default 5, max 10)."},
                         "categories": {
                             "type": "string",
                             "enum": ["general", "news", "it", "science", "images", "videos", "map", "music", "files"],
@@ -276,7 +284,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                             "description": "Bias toward recent results. Omit for no recency filter.",
                         },
                     },
-                    "required": ["query"],
+                    "required": [],
                 },
             },
         },
@@ -285,18 +293,26 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "web_fetch",
                 "description": (
-                    "Fetch one URL and extract the main readable text "
-                    "(navigation, ads, scripts stripped). Use AFTER "
-                    "`web_search` to actually read a page, not just see "
-                    "its snippet. Output is plain text up to max_chars."
+                    "Fetch a web page and extract the main readable text "
+                    "(navigation, ads, scripts stripped; JS-rendered pages are "
+                    "auto-rendered). Use AFTER `web_search` to actually read "
+                    "pages, not just snippets. Pass `urls` (a list) to fetch "
+                    "SEVERAL pages in PARALLEL in one call (far faster than one "
+                    "at a time); otherwise pass a single `url`. Plain text up to "
+                    "max_chars per page."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "url": {"type": "string", "description": "Full http(s) URL."},
-                        "max_chars": {"type": "integer", "description": "Truncate body to this many chars (default 8000, max 50000)."},
+                        "url": {"type": "string", "description": "Single full http(s) URL."},
+                        "urls": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Several http(s) URLs to fetch in parallel in one call (up to 6). Prefer this over many sequential web_fetch calls.",
+                        },
+                        "max_chars": {"type": "integer", "description": "Truncate each page to this many chars (default 8000, max 50000)."},
                     },
-                    "required": ["url"],
+                    "required": [],
                 },
             },
         },

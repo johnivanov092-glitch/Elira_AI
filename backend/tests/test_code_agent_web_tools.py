@@ -198,6 +198,43 @@ class WebFetchToolTest(unittest.TestCase):
         self.assertIn("network down", result["text"])
 
 
+class BatchWebToolsTest(unittest.TestCase):
+    """web_search(queries=[...]) / web_fetch(urls=[...]) run in parallel."""
+
+    def test_web_search_batch_merges_and_dedupes(self) -> None:
+        import app.application.code_agent.tools._web as w
+
+        def fake_run(query, limit, cat, tr):
+            if query == "q1":
+                return [{"title": "A", "href": "https://a.com", "body": "a"},
+                        {"title": "S", "href": "https://shared.com", "body": "s"}]
+            return [{"title": "B", "href": "https://b.com", "body": "b"},
+                    {"title": "S", "href": "https://shared.com", "body": "s2"}]
+
+        with patch.object(w, "_run_search", side_effect=fake_run):
+            text = tool_web_search(queries=["q1", "q2"])["text"]
+        self.assertIn("2 parallel queries", text)
+        self.assertIn("https://a.com", text)
+        self.assertIn("https://b.com", text)
+        self.assertEqual(text.count("https://shared.com"), 1)  # de-duped across queries
+
+    def test_web_fetch_batch_fetches_all(self) -> None:
+        import app.application.code_agent.tools._web as w
+        urls = ["https://x/1", "https://x/2", "https://x/3"]
+        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: f"[fetched: {u}]\n\nbody {u}"):
+            text = tool_web_fetch(urls=urls)["text"]
+        self.assertIn("3 pages in parallel", text)
+        for u in urls:
+            self.assertIn(u, text)
+
+    def test_batch_is_capped(self) -> None:
+        import app.application.code_agent.tools._web as w
+        seen: list[str] = []
+        with patch.object(w, "_fetch_one", side_effect=lambda u, limit: seen.append(u) or "[fetched]"):
+            tool_web_fetch(urls=[f"https://x/{i}" for i in range(20)])
+        self.assertLessEqual(len(seen), w._WEB_BATCH_MAX)
+
+
 class ToolRegistrationTest(unittest.TestCase):
     """The new tools must be visible to the LLM (schemas) AND callable
     via the dispatch table."""
@@ -226,15 +263,20 @@ class ToolRegistrationTest(unittest.TestCase):
         self.assertTrue(callable(dispatch["sandbox_run"]))
         self.assertTrue(callable(dispatch["sandbox_reset"]))
 
-    def test_web_search_schema_requires_query(self) -> None:
+    def test_web_search_schema_offers_query_and_queries(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
         params = schemas["web_search"]["function"]["parameters"]
-        self.assertEqual(params["required"], ["query"])
+        # query OR queries — neither is hard-required (the handler validates).
+        self.assertEqual(params["required"], [])
+        self.assertIn("query", params["properties"])
+        self.assertEqual(params["properties"]["queries"]["type"], "array")
 
-    def test_web_fetch_schema_requires_url(self) -> None:
+    def test_web_fetch_schema_offers_url_and_urls(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
         params = schemas["web_fetch"]["function"]["parameters"]
-        self.assertEqual(params["required"], ["url"])
+        self.assertEqual(params["required"], [])
+        self.assertIn("url", params["properties"])
+        self.assertEqual(params["properties"]["urls"]["type"], "array")
 
     def test_sandbox_run_schema_requires_code(self) -> None:
         schemas = {s["function"]["name"]: s for s in build_tool_schemas()}
