@@ -99,18 +99,43 @@ class WebFetchToolTest(unittest.TestCase):
         self.assertIn("ERROR", result["text"])
 
     def test_empty_body_returns_error(self) -> None:
+        # Static extraction empty AND the JS-render fallback yields nothing → ERROR.
         with patch(
             "app.infrastructure.search.web_search.fetch_page_text",
+            return_value="",
+        ), patch(
+            "app.application.code_agent.tools._web._render_fallback",
             return_value="",
         ):
             result = tool_web_fetch(url="https://example.com/empty")
         self.assertIn("ERROR", result["text"])
         self.assertIn("empty", result["text"].lower())
 
+    def test_thin_static_triggers_js_render(self) -> None:
+        # Phase A: static extraction thin/empty → transparently render with the
+        # headless browser and return the richer rendered text (with a JS marker).
+        rendered = "USD/RUB rate today: 1 USD = 78.50 RUB. " * 6
+        with patch(
+            "app.infrastructure.search.web_search.fetch_page_text",
+            return_value="",
+        ), patch(
+            "app.application.code_agent.tools._web._render_fallback",
+            return_value=rendered,
+        ):
+            result = tool_web_fetch(url="https://example.com/spa")
+        self.assertIn("78.50", result["text"])
+        self.assertIn("JS", result["text"])          # marked as browser-rendered
+        self.assertNotIn("ERROR", result["text"])
+
     def test_successful_fetch_returns_body_with_source_header(self) -> None:
         with patch(
             "app.infrastructure.search.web_search.fetch_page_text",
-            return_value="The capital of France is Paris.\n\nIt is located on the Seine.",
+            return_value=(
+                "The capital of France is Paris. It is the country's largest city and "
+                "its political, economic and cultural centre, located on the river Seine "
+                "in the north of the country. Paris is famous for its museums, wide "
+                "boulevards and historic landmarks such as the Eiffel Tower and the Louvre."
+            ),
         ):
             result = tool_web_fetch(url="https://example.com/france")
         self.assertIn("Paris", result["text"])
@@ -121,7 +146,7 @@ class WebFetchToolTest(unittest.TestCase):
 
         def fake_fetch(url, max_chars):
             captured["max_chars"] = max_chars
-            return "ok"
+            return "x" * 300  # > _THIN_TEXT_THRESHOLD so no JS-render fallback fires
 
         with patch(
             "app.infrastructure.search.web_search.fetch_page_text",
@@ -136,7 +161,7 @@ class WebFetchToolTest(unittest.TestCase):
 
         def fake_fetch(url, max_chars):
             captured["max_chars"] = max_chars
-            return "ok"
+            return "x" * 300  # > _THIN_TEXT_THRESHOLD so no JS-render fallback fires
 
         with patch(
             "app.infrastructure.search.web_search.fetch_page_text",

@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+# Phase A — JS auto-render: static (BeautifulSoup) extraction returns little/no
+# text for SPA / JS-rendered pages (currency tickers, dashboards). Below this many
+# characters web_fetch transparently retries with the headless browser and keeps
+# the rendered text only if it is actually richer. Fail-open.
+_THIN_TEXT_THRESHOLD = 200
+
 
 def tool_web_search(*, query: str, top_k: int = 5) -> dict[str, Any]:
     """Search the web via the configured engines (SearXNG / DuckDuckGo /
@@ -38,8 +44,10 @@ def tool_web_fetch(*, url: str, max_chars: int = 8000) -> dict[str, Any]:
     """Fetch a single web page and extract its main readable text.
 
     HTML noise (nav, footer, ads, scripts) is stripped via the project's
-    existing BeautifulSoup-based extractor. Use this AFTER `web_search`
-    has surfaced URLs worth reading in full.
+    existing BeautifulSoup-based extractor. If the page is JS-rendered (SPA,
+    dashboards, currency tickers) and static extraction comes back thin/empty,
+    this transparently re-fetches with a headless browser — no extra call needed.
+    Use this AFTER `web_search` has surfaced URLs worth reading in full.
     """
     cleaned_url = (url or "").strip()
     if not cleaned_url:
@@ -64,6 +72,14 @@ def tool_web_fetch(*, url: str, max_chars: int = 8000) -> dict[str, Any]:
         return {"text": f"ERROR: {exc}"}
 
     body = (body or "").strip()
+    # Phase A — transparent JS auto-render. Static extraction misses JS-rendered
+    # content, so on a thin/empty result retry with the headless browser and use
+    # it when it actually yields more text. Fail-open: keep the static body on any
+    # render failure (incl. Playwright absent).
+    if len(body) < _THIN_TEXT_THRESHOLD:
+        rendered = _render_fallback(cleaned_url, limit)
+        if len(rendered) > len(body):
+            return {"text": f"[fetched: {cleaned_url} · отрисовано в браузере (JS)]\n\n{rendered}"}
     if not body:
         return {"text": f"ERROR: empty or non-HTML response from {cleaned_url}"}
     return {"text": f"[fetched: {cleaned_url}]\n\n{body}"}
@@ -86,6 +102,21 @@ def _browser_render(url: str, wait_selector: str | None, limit: int) -> tuple[st
             return page.title(), page.url, (page.inner_text("body") or "")[:limit]
         finally:
             browser.close()
+
+
+def _render_fallback(url: str, limit: int) -> str:
+    """Best-effort headless-browser render for a thin/empty static fetch (Phase A).
+    Reuses _browser_render in a worker thread (the Playwright sync API must not be
+    called from inside an asyncio loop). Returns '' on ANY failure — Playwright not
+    installed, navigation/timeout error — so web_fetch fails open to the static body.
+    """
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            _title, _final_url, text = ex.submit(_browser_render, url, None, limit).result(timeout=45)
+        return (text or "").strip()
+    except Exception:
+        return ""
 
 
 def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000) -> dict[str, Any]:
