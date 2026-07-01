@@ -224,7 +224,7 @@ export function Composer({
               ? "Рассуждение включено — Elira подумает перед ответом (видно в отдельном блоке)"
               : "Включить рассуждение — модель думает перед ответом (медленнее, больше токенов)"}
           >
-            Рассуждение
+            Мозг
           </Chip>
           <ProfilePicker />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
