@@ -3,22 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.application.code_agent.tool_policy import SEARCH_ACTIVATABLE_SIDE_EFFECT
+
 
 # ─── P10.1: deferred tool search meta-tool (foundation) ─────────────────────
 
 TOOL_SEARCH_RESULT_LIMIT = 20
 TOOL_SEARCH_ACTIVATION_CAP = 5
-# Side-effect tools are not auto-activated by tool_search in the default "ask"
-# mode (the model should not silently gain side-effecting powers from a fuzzy
-# search). This curated set is exempt: powerful but genuinely useful dev tools the
-# agent must be able to reach on demand. In "bypass" permission mode the whole
-# restriction lifts — tool_search then activates ANY side-effect tool (see
-# tool_search()), so bypass means "no friction" for BOTH gates, activation and
-# approval, matching what the user expects. Activation grants VISIBILITY only —
-# the executor still enforces require_approval at dispatch in non-bypass modes.
-_SEARCH_ACTIVATABLE_SIDE_EFFECT = frozenset(
-    {"computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver"}
-)
+# Side-effect tools tool_search may activate in the default "ask" mode (the model
+# should not silently gain side-effecting powers from a fuzzy search). Curated in
+# tool_policy (single source of truth). In "bypass" the restriction lifts —
+# tool_search activates ANY side-effect tool (see tool_search()) — so bypass means
+# "no friction" for BOTH gates (activation + approval). Activation grants
+# VISIBILITY only; the executor still enforces require_approval at dispatch.
+_SEARCH_ACTIVATABLE_SIDE_EFFECT = SEARCH_ACTIVATABLE_SIDE_EFFECT
 DELEGATE_TASK_MAX_STEPS = 6
 DELEGATE_TASK_MAX_CTX = 8192
 DELEGATE_TASK_TIMEOUT_SECONDS = 60

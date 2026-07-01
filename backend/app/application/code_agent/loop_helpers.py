@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from app.application.projects.scope import project_scope_id
 from app.application.code_agent.history import summarize_history
+from app.application.code_agent.tool_policy import CRITICAL_TOOLS, EDIT_ONLY_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +159,9 @@ def _approval_status(approval_id: str) -> str:
 #   "ask"          — every require_approval tool pauses for the user (default).
 #   "accept_edits" — auto-approve filesystem-only edits; still pause shell/net.
 #   "bypass"       — auto-approve every require_approval tool, no prompts.
-# The fs-only set mirrors tool_registry/builtins scopes (scopes ⊆ {fs.read,
-# fs.write}); keep it in sync with `_native_scopes` there.
-_EDIT_ONLY_TOOLS = frozenset(
-    {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver", "sandbox_reset"}
-)
+# Auto-approved under "accept_edits". Defined in tool_policy (single source of
+# truth); imported here to preserve the old name.
+_EDIT_ONLY_TOOLS = EDIT_ONLY_TOOLS
 
 
 def _mode_auto_approves(permission_mode: str, tool_name: str) -> bool:
@@ -174,9 +173,9 @@ def _mode_auto_approves(permission_mode: str, tool_name: str) -> bool:
     return False
 
 
-# Tools that must ALWAYS be confirmed by the user, even in bypass. Reserved for
-# future high-risk tools; shell criticality is decided per-command below.
-_CRITICAL_TOOLS: frozenset[str] = frozenset()
+# Tools that must ALWAYS be confirmed, even in bypass (from tool_policy; shell
+# criticality is decided per-command below via is_shell_critical).
+_CRITICAL_TOOLS: frozenset[str] = CRITICAL_TOOLS
 
 
 def _is_critical_call(tool_name: str, args: dict[str, Any] | None) -> bool:

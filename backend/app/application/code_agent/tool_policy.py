@@ -1,0 +1,50 @@
+"""Single source of truth for code-agent tool POLICY.
+
+Before this module the four policy sets lived in four different files (base set
+in prompts.py, activatable-side-effect set in tools/_meta.py, accept-edits set
+and critical set in loop_helpers.py) — so "which tools does the agent have and
+under what gate" had no single home, and adding a tool meant remembering to
+touch several files. Everything now lives here; the other modules import from it.
+
+Kept dependency-free (no imports from the code_agent package) so prompts.py,
+tools/_meta.py and loop_helpers.py can all import it without a cycle.
+
+The gates (recap):
+  * BASE_TOOLS               — always visible, no tool_search needed.
+  * SEARCH_ACTIVATABLE_SIDE_EFFECT — side-effect tools tool_search may activate
+                               even in "ask"/"accept_edits" mode. In "bypass"
+                               tool_search activates ANY side-effect tool.
+  * EDIT_ONLY_TOOLS          — auto-approved under "accept_edits" (filesystem-
+                               shaped work; shell/net still pause).
+  * CRITICAL_TOOLS           — must ALWAYS be confirmed, even in bypass.
+                               (Destructive SHELL commands are judged per-command
+                               by _shell.is_shell_critical, not by tool name.)
+Being in a set grants VISIBILITY / auto-APPROVAL only — the executor still
+enforces scope, policy and the forbidden tier at dispatch.
+"""
+from __future__ import annotations
+
+# Always available from the first step (no tool_search round-trip).
+BASE_TOOLS: tuple[str, ...] = (
+    "read_file", "glob", "grep", "project_map", "recall",
+    "todo_update", "delegate_task",
+    "write_file", "edit_file", "run_bash", "run_server",
+    "web_search", "web_fetch", "http_api",
+)
+
+# Narrowed base for the read-only persona posture (mode "Личный").
+READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")
+
+# Side-effect tools tool_search may activate in normal modes (bypass lifts all).
+SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
+    {"computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver"}
+)
+
+# Auto-approved under "accept_edits" — filesystem-shaped, non-shell/non-net.
+EDIT_ONLY_TOOLS: frozenset[str] = frozenset(
+    {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver", "sandbox_reset"}
+)
+
+# Tools that must ALWAYS be confirmed by the user, even in bypass. Reserved for
+# future high-risk tools; destructive shell is handled per-command elsewhere.
+CRITICAL_TOOLS: frozenset[str] = frozenset()

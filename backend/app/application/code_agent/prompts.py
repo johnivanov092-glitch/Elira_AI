@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from app.application.code_agent import tool_policy
+
 
 BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira, инженер-напарник пользователя, с ПРЯМЫМ ДОСТУПОМ к файловой системе и shell.
 
@@ -152,30 +154,14 @@ def _shell_guidance(platform: str | None = None) -> str:
     )
 
 
-# P10.1: code-agent runs start in deferred tool mode exposing only this base set
-# (core read + edit + shell tools); long-tail tools stay hidden until tool_search
-# activates them. The base side-effect tools (write_file / edit_file / run_bash)
-# remain fully subject to the executor's policy / scope / approval gates — being
-# in the base set grants visibility, not a policy bypass.
-_CODE_AGENT_BASE_TOOLS = (
-    "read_file", "glob", "grep", "project_map", "recall",
-    "todo_update", "delegate_task",
-    "write_file", "edit_file", "run_bash", "run_server",
-    # Web is part of the job, not a last resort: keep search/fetch directly
-    # available so the agent reaches the internet for freshness/versions/facts
-    # without a tool_search round-trip first. Both are read-only (net.outbound,
-    # idempotent) — being in the base set grants visibility, not a policy bypass.
-    "web_search", "web_fetch",
-    # http_api is a SIDE-EFFECT net tool (net.outbound, not idempotent). Promoted
-    # into the base set so the model can make user-requested API calls without a
-    # tool_search round-trip — it stays fully under the executor's approval gate,
-    # so being in the base set grants visibility, not a policy bypass.
-    "http_api",
-)
+# P10.1: code-agent runs start in deferred tool mode exposing only this base set;
+# long-tail tools stay hidden until tool_search activates them. Base side-effect
+# tools stay fully under the executor's policy/scope/approval gates — base
+# membership grants visibility, not a policy bypass. The set itself now lives in
+# tool_policy (single source of truth); imported here to preserve the old name.
+_CODE_AGENT_BASE_TOOLS = tool_policy.BASE_TOOLS
 
-_CODE_AGENT_READONLY_TOOLS = (
-    "read_file", "glob", "grep", "recall",
-)
+_CODE_AGENT_READONLY_TOOLS = tool_policy.READONLY_TOOLS
 
 # F4: per-tool prompt lines. The "Твои инструменты" section is generated from
 # the run's ACTUAL initial tool set, so the prompt never advertises a tool the
