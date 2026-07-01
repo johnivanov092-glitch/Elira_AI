@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.application.file_extract.runtime import _AUDIO_EXTS
 from app.core.config import DATA_DIR, UPLOAD_DIR
 from app.infrastructure.db.connection import connect_sqlite
 
@@ -144,6 +145,20 @@ def _ocr_pdf_preview(filename: str, contents: bytes) -> str:
     return ""
 
 
+def _transcribe_audio_preview(filename: str, contents: bytes) -> str:
+    """Audio routes to the same whisper STT path as the composer attachment
+    (file_extract.extract_file), so a dragged-in voice note lands in the Library
+    as its transcript instead of a text-less blob. Empty string on STT failure."""
+    try:
+        from app.application.file_extract.runtime import extract_file
+
+        text = extract_file(filename, contents).get("text") or ""
+    except Exception as exc:
+        logger.warning("audio transcription preview failed for %s: %s", filename, exc)
+        return ""
+    return text[:12000]
+
+
 def extract_preview(filename: str, contents: bytes) -> str:
     ext = Path(filename).suffix.lower()
     preview = ""
@@ -151,6 +166,8 @@ def extract_preview(filename: str, contents: bytes) -> str:
         return contents.decode("utf-8", errors="replace")[:12000]
     if ext in IMAGE_EXTS:
         return _describe_image_preview(filename, contents)
+    if ext in _AUDIO_EXTS:
+        return _transcribe_audio_preview(filename, contents)
     if ext == ".pdf":
         try:
             from pypdf import PdfReader

@@ -10,6 +10,8 @@ API:
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.application.library.runtime import (
@@ -34,9 +36,14 @@ async def add_file(
     file: UploadFile = File(...),
     use_in_context: bool = Form(True),
 ):
-    return add_file_contents(
+    contents = await file.read()
+    # add_file_contents runs vision / OCR / audio transcription (network calls —
+    # seconds, up to minutes for audio) plus a SQLite write. Offload to a worker
+    # thread so a large upload can't block the event loop and stall other requests.
+    return await asyncio.to_thread(
+        add_file_contents,
         filename=file.filename or "unknown",
-        contents=await file.read(),
+        contents=contents,
         content_type=file.content_type,
         use_in_context=use_in_context,
     )
