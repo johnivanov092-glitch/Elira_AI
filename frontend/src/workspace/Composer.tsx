@@ -73,7 +73,13 @@ export function Composer({
   // transient "загрузка…" chip per file while attachToChat is in flight (audio
   // transcription / PDF parse take a few seconds); cleared as each resolves.
   const [uploading, setUploading] = useState<string[]>([]);
+  // Deferred send (Variant Б): if the user hits send while files are still
+  // uploading, remember the intent and fire it automatically once `uploading`
+  // drains — so the message goes out WITH the attachments instead of silently
+  // dropping the not-yet-ready ones.
+  const [pendingSend, setPendingSend] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const submitRef = useRef<() => void>(() => {});
   const usage = contextUsage
     && Number.isFinite(contextUsage.current_tokens)
     && Number.isFinite(contextUsage.ctx_size)
@@ -108,6 +114,13 @@ export function Composer({
       onChange("");
       return;
     }
+    // Variant Б: files still uploading/transcribing — defer this send. The
+    // effect below re-fires submit() once `uploading` drains, by which point the
+    // finished files are in `attachments`, so nothing is silently dropped.
+    if (uploading.length > 0) {
+      setPendingSend(true);
+      return;
+    }
     const staged = attachments.length ? attachments : undefined;
     // Fire-and-forget: persist any chips the user marked for the Library to
     // data/uploads (/api/lib/add) so the document is reusable across chats. The
@@ -123,6 +136,17 @@ export function Composer({
     onChange("");
     setAttachments([]);
   }
+
+  // Keep a ref to the latest submit() so the deferred-send effect always calls
+  // the current closure (with the finished attachments), not a stale one.
+  useEffect(() => { submitRef.current = submit; });
+  // Fire a deferred send once every upload has finished (Variant Б).
+  useEffect(() => {
+    if (pendingSend && uploading.length === 0) {
+      setPendingSend(false);
+      submitRef.current();
+    }
+  }, [pendingSend, uploading]);
 
   function onKey(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -287,12 +311,13 @@ export function Composer({
               onClick={submit}
               disabled={!value.trim()}
               aria-label="Отправить"
+              title={pendingSend ? "Отправлю, как только загрузится файл" : undefined}
               className={cn(
                 "grid h-[33px] w-[33px] shrink-0 place-items-center rounded-lg text-[#14151b] transition-opacity",
                 value.trim() ? "bg-ac" : "cursor-not-allowed bg-ac/40",
               )}
             >
-              <Send size={16} />
+              {pendingSend ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
             </button>
           )}
         </div>
