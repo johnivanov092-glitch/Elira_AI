@@ -100,6 +100,14 @@ def test_stage4_chat_can_activate_and_run_light_tool_from_core(tmp_path: Path) -
     ])
 
     def fake_chat(**_kwargs):
+        # A no-tools call is context compaction / wrap-up (small num_ctx=8192
+        # forces it once messages grow) — answer it with a summary instead of
+        # consuming the scripted tool responses. Only the tool-loop calls (which
+        # carry `tools`) advance the script. Mirrors the convention used by the
+        # other agent-loop tests; keeps this test about tool activation, not
+        # compaction timing.
+        if not _kwargs.get("tools"):
+            return {"message": {"content": "summary", "tool_calls": []}}
         return next(responses)
 
     patches = _patch_agent_loop()

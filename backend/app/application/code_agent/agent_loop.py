@@ -319,6 +319,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _approval_status,
     _flatten_for_summary,
     _is_critical_call,
+    _looks_like_intent_without_action,
     _looks_like_repeat_request,
     _mark_approval_approved,
     _maybe_inject_execution_reminder,
@@ -508,6 +509,11 @@ def _stream_code_agent_core(
         # PREVIOUS turn's answer verbatim to a DIFFERENT question (local-model
         # loop). prev_assistant_text = the last assistant reply from history.
         repeat_gate_fired = False
+        # Anti-"narrate instead of act" gate: fires at most once if the model
+        # ends its turn on a forward-looking intent ("сейчас прочитаю…") with no
+        # tool call and nothing was edited yet — a plan-without-execute stop
+        # (amplified by thinking). Nudges it to actually call the tool.
+        intent_gate_fired = False
         prev_assistant_text = next(
             (str(m.get("content") or "") for m in reversed(messages)
              if isinstance(m, dict) and m.get("role") == "assistant"),
@@ -816,6 +822,37 @@ def _stream_code_agent_core(
                             "нему у тебя нет новой информации или источника — честно "
                             "так и скажи (например «источник не найден / не "
                             "подтверждено»), но НЕ копируй прошлый ответ."
+                        ),
+                    })
+                    continue
+                # Anti-"narrate instead of act" gate: the model returned prose
+                # with NO tool call, but the prose is a forward-looking intent
+                # ("сейчас прочитаю…", "начну с…") and nothing was edited yet —
+                # i.e. it announced the next step and stopped instead of doing
+                # it (a plan-without-execute failure, amplified by thinking).
+                # Nudge it ONCE to emit the tool call and do the work. Fires at
+                # most once and only on a no-edit run, so a genuine short answer
+                # (or a summary after real edits) is never cut.
+                _answer_intent = content or last_text
+                if (
+                    _answer_intent
+                    and not intent_gate_fired
+                    and not edited_in_run
+                    and _looks_like_intent_without_action(_answer_intent)
+                ):
+                    intent_gate_fired = True
+                    messages.append({"role": "assistant", "content": _answer_intent})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Не описывай, что собираешься сделать — СДЕЛАЙ это "
+                            "сейчас. Вызови нужный инструмент "
+                            "(read_file/edit_file/write_file/run_bash) в этом же "
+                            "ходу и доведи задачу до конца. Заканчивать ход одним "
+                            "намерением («сейчас прочитаю…», «начну с…») без "
+                            "вызова инструмента нельзя — это не выполненная "
+                            "работа. Дай итог только когда правки реально внесены "
+                            "и проверены."
                         ),
                     })
                     continue

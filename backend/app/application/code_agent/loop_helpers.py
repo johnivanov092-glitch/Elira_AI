@@ -216,6 +216,37 @@ def _norm_answer(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
+# First-person "I'm about to do X" verbs/openers. Deliberately explicit
+# first-person-future forms (прочита-ю, добавл-ю, …) and intent openers — NOT
+# infinitives or 2nd-person imperatives, so a real closing answer that tells the
+# USER what THEY can do ("теперь можешь запустить …") does not match.
+_INTENT_TO_ACT_RE = re.compile(
+    r"(прочита[юя]|перечита[юя]|дочита[юя]|дочитыва|добавл[юя]|сдела[юя]|"
+    r"напиш[у]|создам|создаю|измен[юя]|исправл[юя]|запущ[у]|перепиш[у]|"
+    r"обновл[юя]|внес[у]|посмотр[юя]|провер[юя]|перейд[у]|начн[уё]|приступ|"
+    r"разбер[у]сь|доработа[юя]|реализу[юя]|проанализиру[юя]|допиш[у]|поправл[юя]|"
+    r"let me\b|i['’]?ll\b|i will\b|i['’]?m going to)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _looks_like_intent_without_action(text: str) -> bool:
+    """True when the model's prose is a forward-looking plan-to-act ("сейчас
+    прочитаю…", "начну с…", "let me read…") rather than a delivered result —
+    it announces the NEXT step but (the caller has already checked) calls no
+    tool. Conservative on purpose: matches only a first-person intent verb and
+    only when it sits at the TAIL of the message, so a substantive final answer
+    that merely mentions a future step in passing is not misread as a stop-on-
+    plan. Used to nudge the agent to actually act instead of ending the turn on
+    a promise (a failure mode amplified by thinking mode)."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    # Only the tail: a genuine answer does not END on "now I'll read the files".
+    tail = t[-200:]
+    return bool(_INTENT_TO_ACT_RE.search(tail))
+
+
 def _mark_approval_approved(approval_id: str) -> bool:
     """Programmatically grant an approval row (for non-'ask' permission modes)."""
     try:
