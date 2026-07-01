@@ -308,6 +308,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _TOOL_SEARCH_SCHEMA,
     _approval_status,
     _flatten_for_summary,
+    _is_critical_call,
     _mark_approval_approved,
     _maybe_inject_execution_reminder,
     _messages_char_count,
@@ -930,10 +931,13 @@ def _stream_code_agent_core(
                 # Permission selector: «Принимать правки»/«Без ограничений» grant
                 # the just-created approval and re-execute in the same run instead
                 # of pausing for the user (binding incl. run_id stays intact).
+                # Critical calls (destructive shell: rm/git reset/drop/kill…) are
+                # NEVER auto-approved — the user confirms them even in bypass.
                 if (
                     _exec_result.status == "waiting_approval"
                     and _approval_id
                     and _mode_auto_approves(permission_mode, name)
+                    and not _is_critical_call(name, parsed_args)
                 ):
                     _mark_approval_approved(_approval_id)
                     if _delay_tool_started:

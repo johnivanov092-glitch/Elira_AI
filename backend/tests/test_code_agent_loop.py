@@ -144,7 +144,10 @@ class SandboxedToolsTest(unittest.TestCase):
         self.assertIn("42", res["text"])
 
     def test_run_bash_blocks_dangerous_command(self) -> None:
-        res = tool_run_bash(self.root, command="git reset --hard")
+        # Catastrophic commands stay hard-blocked. (Destructive-but-legit ones
+        # like `git reset --hard` moved to the critical/ask tier — see
+        # test_shell_critical.py — so they're no longer hard-blocked.)
+        res = tool_run_bash(self.root, command="rm -rf /")
         self.assertIn("blocked dangerous", res["text"])
 
     def test_run_bash_truncates_large_output(self) -> None:

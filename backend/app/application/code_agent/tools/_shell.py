@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextvars
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -11,6 +12,8 @@ from typing import Any
 _SHELL_TIMEOUT_MAX = 120
 _SHELL_STDOUT_LIMIT = 16000
 _SHELL_STDERR_LIMIT = 6000
+# Catastrophic / irreversible — BLOCKED entirely, never run (even with approval
+# or bypass). System-wipe, mass recursive delete, host shutdown, fork bomb.
 _BLOCKED_SHELL_FRAGMENTS = (
     "rm -rf /",
     "rm -rf /*",
@@ -25,9 +28,26 @@ _BLOCKED_SHELL_FRAGMENTS = (
     "del /s",
     "rd /s",
     "rmdir /s",
-    "git reset --hard",
-    "git clean -fd",
-    "git checkout --",
+)
+
+# Destructive-but-LEGITIMATE — allowed, but must ALWAYS be confirmed by the user,
+# even in bypass mode (ordinary side-effects auto-approve in bypass; these do
+# not). "ask, never auto." Delete files, discard/rewrite git state, drop/truncate
+# DB, docker rm/prune, kill processes, uninstall packages, recursive chmod/chown.
+_CRITICAL_SHELL_PREFIXES = (
+    "rm ", "del ", "erase ", "rmdir", "remove-item",
+    "git reset", "git clean", "git checkout --", "git push --force",
+    "git push -f", "git push --f", "git branch -d", "git tag -d",
+    "git stash drop", "git stash clear",
+    "docker rm", "docker rmi", "docker volume rm", "docker network rm",
+    "docker system prune", "docker image prune", "docker container prune",
+    "docker compose down", "docker-compose down",
+    "kill ", "pkill", "killall", "taskkill",
+    "pip uninstall", "npm uninstall", "npm unpublish",
+    "chmod -r", "chown -r",
+)
+_CRITICAL_SHELL_SUBSTR = (
+    "drop table", "drop database", "truncate table", "delete from",
 )
 
 
@@ -246,3 +266,24 @@ def is_shell_safe(command: str) -> bool:
 def _blocked_shell_fragment(command: str) -> str | None:
     lowered = (command or "").strip().lower()
     return next((fragment for fragment in _BLOCKED_SHELL_FRAGMENTS if fragment in lowered), None)
+
+
+def is_shell_critical(command: str) -> bool:
+    """True for destructive-but-legitimate commands that must ALWAYS be confirmed
+    by the user, even under bypass (delete files, git reset/clean/checkout--/
+    force-push/branch-delete/stash-drop, drop/truncate DB, docker rm/prune/down,
+    kill processes, package uninstall, recursive chmod/chown). Catastrophic
+    commands are blocked entirely (_blocked_shell_fragment); this is the "ask,
+    never auto" tier. Errs toward asking (a false positive just adds one prompt)."""
+    cmd = (command or "").strip().lower()
+    if not cmd:
+        return False
+    for sub in _CRITICAL_SHELL_SUBSTR:
+        if sub in cmd:
+            return True
+    # Check each shell segment so "echo hi && rm x" is caught by the rm segment.
+    for seg in re.split(r"&&|\|\||;|\||\n|\r|`|\$\(", cmd):
+        seg = seg.strip()
+        if any(seg.startswith(pat) for pat in _CRITICAL_SHELL_PREFIXES):
+            return True
+    return False

@@ -20,6 +20,7 @@ from app.application.code_agent.tools._sandbox import (  # noqa: F401
 from app.application.code_agent.tools._shell import (  # noqa: F401
     _kill_proc_tree,
     _new_process_group_kwargs,
+    is_shell_critical,
     is_shell_safe,
     kill_run_processes,
     reset_current_run_id,
@@ -81,6 +82,7 @@ __all__ = [
     "build_tool_dispatch",
     "SandboxError",
     "is_shell_safe",
+    "is_shell_critical",
     "set_current_run_id",
     "reset_current_run_id",
     "kill_run_processes",

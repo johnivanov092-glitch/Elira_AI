@@ -174,6 +174,29 @@ def _mode_auto_approves(permission_mode: str, tool_name: str) -> bool:
     return False
 
 
+# Tools that must ALWAYS be confirmed by the user, even in bypass. Reserved for
+# future high-risk tools; shell criticality is decided per-command below.
+_CRITICAL_TOOLS: frozenset[str] = frozenset()
+
+
+def _is_critical_call(tool_name: str, args: dict[str, Any] | None) -> bool:
+    """A specific call that must NEVER auto-approve — the user confirms it even in
+    bypass mode. Covers destructive-but-legitimate shell commands (rm / git reset
+    / drop / docker rm / kill / uninstall …) and any tool in _CRITICAL_TOOLS.
+    Catastrophic commands are blocked outright elsewhere; this is 'ask, never
+    auto'. Keeps bypass = 'no friction for normal work' while still guarding the
+    handful of operations that destroy data."""
+    if tool_name in _CRITICAL_TOOLS:
+        return True
+    if tool_name == "run_bash":
+        try:
+            from app.application.code_agent.tools import is_shell_critical
+            return is_shell_critical(str((args or {}).get("command", "")))
+        except Exception:
+            return False
+    return False
+
+
 def _mark_approval_approved(approval_id: str) -> bool:
     """Programmatically grant an approval row (for non-'ask' permission modes)."""
     try:
