@@ -157,6 +157,11 @@ _CODE_AGENT_BASE_TOOLS = (
     # without a tool_search round-trip first. Both are read-only (net.outbound,
     # idempotent) — being in the base set grants visibility, not a policy bypass.
     "web_search", "web_fetch",
+    # http_api is a SIDE-EFFECT net tool (net.outbound, not idempotent). Promoted
+    # into the base set so the model can make user-requested API calls without a
+    # tool_search round-trip — it stays fully under the executor's approval gate,
+    # so being in the base set grants visibility, not a policy bypass.
+    "http_api",
 )
 
 _CODE_AGENT_READONLY_TOOLS = (
@@ -180,6 +185,7 @@ TOOL_PROMPT_LINES: dict[str, str] = {
     "delegate_task": "- delegate_task(role, task) — запустить ограниченного read-only субагента (исследование/анализ)",
     "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",
     "web_fetch":     "- web_fetch(url) — прочитать полный текст веб-страницы (после web_search)",
+    "http_api":      "- http_api(url, method='GET', headers?, body?, timeout=15) — исходящий HTTP-запрос к API (GET/POST/PUT/DELETE), по явному запросу пользователя",
     "sandbox_run":   "- sandbox_run(code, install=[...]) — выполнить Python-код в изолированном venv (для экспериментов с pip-пакетами, прототипов)",
     "sandbox_reset": "- sandbox_reset() — обнулить sandbox если он сломался",
 }
