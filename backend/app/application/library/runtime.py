@@ -145,16 +145,17 @@ def _ocr_pdf_preview(filename: str, contents: bytes) -> str:
     return ""
 
 
-def _transcribe_audio_preview(filename: str, contents: bytes) -> str:
-    """Audio routes to the same whisper STT path as the composer attachment
-    (file_extract.extract_file), so a dragged-in voice note lands in the Library
-    as its transcript instead of a text-less blob. Empty string on STT failure."""
+def _extract_via_file_extract(filename: str, contents: bytes) -> str:
+    """Delegate to the composer's extractor (file_extract.extract_file) for
+    formats the Library shares with it but doesn't parse itself: audio (whisper
+    STT), legacy .xls (xlrd), .pptx (python-pptx). One implementation, no drift.
+    Empty string on failure."""
     try:
         from app.application.file_extract.runtime import extract_file
 
         text = extract_file(filename, contents).get("text") or ""
     except Exception as exc:
-        logger.warning("audio transcription preview failed for %s: %s", filename, exc)
+        logger.warning("library extract via file_extract failed for %s: %s", filename, exc)
         return ""
     return text[:12000]
 
@@ -166,8 +167,9 @@ def extract_preview(filename: str, contents: bytes) -> str:
         return contents.decode("utf-8", errors="replace")[:12000]
     if ext in IMAGE_EXTS:
         return _describe_image_preview(filename, contents)
-    if ext in _AUDIO_EXTS:
-        return _transcribe_audio_preview(filename, contents)
+    # audio (whisper) / legacy .xls (xlrd) / .pptx — reuse the composer extractor.
+    if ext in _AUDIO_EXTS or ext in (".xls", ".pptx"):
+        return _extract_via_file_extract(filename, contents)
     if ext == ".pdf":
         try:
             from pypdf import PdfReader
@@ -190,7 +192,7 @@ def extract_preview(filename: str, contents: bytes) -> str:
             preview = "\n".join(p.text for p in doc.paragraphs if p.text.strip())[:12000]
         except Exception:
             preview = ""
-    elif ext in (".xlsx", ".xls", ".xlsm"):
+    elif ext in (".xlsx", ".xlsm"):
         try:
             from openpyxl import load_workbook
 

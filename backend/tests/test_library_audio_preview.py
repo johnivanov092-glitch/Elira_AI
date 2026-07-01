@@ -31,6 +31,24 @@ class LibraryAudioPreviewTest(unittest.TestCase):
             out = extract_preview("note.opus", b"x")
         self.assertEqual(out, "")
 
+    def test_extract_preview_delegates_xls(self) -> None:
+        # Legacy .xls must delegate to the composer extractor (xlrd), not openpyxl.
+        with patch(
+            "app.application.file_extract.runtime.extract_file",
+            return_value={"ok": True, "text": "sheet rows"},
+        ) as m:
+            out = extract_preview("book.xls", b"\xd0\xcf\x11\xe0")
+        m.assert_called_once()
+        self.assertEqual(out, "sheet rows")
+
+    def test_extract_preview_delegates_pptx(self) -> None:
+        with patch(
+            "app.application.file_extract.runtime.extract_file",
+            return_value={"ok": True, "text": "slide text"},
+        ):
+            out = extract_preview("deck.pptx", b"x")
+        self.assertEqual(out, "slide text")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -109,6 +109,57 @@ def _extract_xlsx(data: bytes, max_chars: int = 30000) -> str:
         return f"[XLSX ошибка: {e}]"
 
 
+def _extract_xls(data: bytes, max_chars: int = 30000) -> str:
+    """Legacy .xls (Excel ≤2003). openpyxl не читает .xls — используем xlrd."""
+    try:
+        import xlrd
+        book = xlrd.open_workbook(file_contents=data)
+        parts: list[str] = []
+        total = 0
+        for sheet in book.sheets()[:5]:  # макс 5 листов
+            parts.append(f"=== Лист: {sheet.name} ===")
+            for r in range(min(sheet.nrows, 200)):
+                cells = [str(sheet.cell_value(r, c)) for c in range(sheet.ncols)]
+                line = " | ".join(cells)
+                if total + len(line) > max_chars:
+                    break
+                parts.append(line)
+                total += len(line)
+        return "\n".join(parts)
+    except ImportError:
+        return "[xlrd не установлен: pip install xlrd]"
+    except Exception as e:
+        return f"[XLS ошибка: {e}]"
+
+
+def _extract_pptx(data: bytes, max_chars: int = 30000) -> str:
+    """PowerPoint .pptx — собираем текст со всех фигур каждого слайда."""
+    try:
+        from pptx import Presentation
+        prs = Presentation(io.BytesIO(data))
+        parts: list[str] = []
+        total = 0
+        for i, slide in enumerate(prs.slides, 1):
+            parts.append(f"=== Слайд {i} ===")
+            for shape in slide.shapes:
+                if not getattr(shape, "has_text_frame", False):
+                    continue
+                text = shape.text.strip()
+                if not text:
+                    continue
+                if total + len(text) > max_chars:
+                    break
+                parts.append(text)
+                total += len(text)
+            if total >= max_chars:
+                break
+        return "\n".join(parts)
+    except ImportError:
+        return "[python-pptx не установлен: pip install python-pptx]"
+    except Exception as e:
+        return f"[PPTX ошибка: {e}]"
+
+
 def _extract_zip(data: bytes, max_chars: int = 30000) -> str:
     """Открывает ZIP и читает текстовые файлы внутри."""
     try:
@@ -183,8 +234,12 @@ def extract_file(filename: str, contents: bytes) -> dict:
         text = _extract_pdf(contents)
     elif ext in (".docx", ".doc"):
         text = _extract_docx(contents)
-    elif ext in (".xlsx", ".xls", ".xlsm"):
+    elif ext == ".xls":
+        text = _extract_xls(contents)
+    elif ext in (".xlsx", ".xlsm"):
         text = _extract_xlsx(contents)
+    elif ext == ".pptx":
+        text = _extract_pptx(contents)
     elif ext == ".zip":
         text = _extract_zip(contents)
     elif ext in _AUDIO_EXTS:
