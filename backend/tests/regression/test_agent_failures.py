@@ -123,6 +123,31 @@ class AgentFailureRegressionTest(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "loop_guard")
         self.assertTrue(result["response"])
 
+    def test_repeat_nudge_precedes_hard_stop(self) -> None:
+        # A few identical calls (below the hard limit) get a loud [loop-guard]
+        # nudge appended to the tool result — a chance to change course — instead
+        # of a silent hard cut. The run must NOT be killed at this point.
+        seen: list = []
+        calls = {"n": 0}
+
+        def chat_fn(**kwargs):
+            seen.append(kwargs.get("messages") or [])
+            if not kwargs.get("tools"):
+                return {"message": {"content": "final", "tool_calls": []}}
+            calls["n"] += 1
+            if calls["n"] <= 3:  # repeat the same glob 3× (< limit 6)
+                return {"message": {"content": "", "tool_calls": [{"function": {"name": "glob", "arguments": {"pattern": "*"}}}]}}
+            return {"message": {"content": "done", "tool_calls": []}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run_code_agent(user_message="x", project_root=tmp, model="test-model", max_steps=10, chat_fn=chat_fn)
+        nudged = any(
+            isinstance(m, dict) and "[loop-guard]" in str(m.get("content", ""))
+            for msgs in seen for m in msgs
+        )
+        self.assertTrue(nudged, "expected a [loop-guard] nudge in the tool results")
+        self.assertNotEqual(result["stop_reason"], "loop_guard")  # 3 repeats < limit 6
+
     def test_repeated_todo_update_is_exempt_from_loop_guard(self) -> None:
         # Local models routinely re-emit the full checklist verbatim. The loop
         # fingerprint is taken before run_id is injected, so identical todo_update
@@ -160,7 +185,7 @@ class AgentFailureRegressionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch(
             "app.application.task_planner.service.todo_update", side_effect=fake_todo_update
         ):
-            # max_steps comfortably exceeds the repeat limit (4) so, absent the
+            # max_steps comfortably exceeds the repeat limit (6) so, absent the
             # exemption, the guard would fire well before max_steps is reached.
             result = run_code_agent(
                 user_message="plan",

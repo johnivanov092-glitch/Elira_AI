@@ -117,7 +117,11 @@ DEFAULT_MAX_STEPS = 100
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
 MAX_CODE_AGENT_STEPS = 200
 _LLM_HEARTBEAT_EVERY = 10.0
-_REPEATED_TOOL_CALL_LIMIT = 4
+_REPEATED_TOOL_CALL_LIMIT = 6
+# Repeats at or above this count (but below the hard limit) get a loud nudge
+# appended to the tool result — a chance to change course before the run is
+# stopped, instead of a silent hard cut at the first few repeats.
+_REPEATED_TOOL_CALL_NUDGE_AT = 2
 # Idempotent meta-tools whose repeats are harmless — re-sending them does not
 # advance the run but also does not corrupt state, so they must NOT trip the
 # loop-guard. `todo_update` in particular: local models routinely re-emit the
@@ -1061,9 +1065,21 @@ def _stream_code_agent_core(
                 # LLM. Without this, a single huge `run_bash` or `read_file`
                 # could blow out `num_ctx` and start eating the system
                 # prompt off the front of the context.
+                _tool_content = _truncate_for_llm(text_result)
+                # Loop-guard nudge: if the model is repeating the SAME call, append
+                # a loud hint to the result so it can change course before the hard
+                # stop at _REPEATED_TOOL_CALL_LIMIT (see the guard above).
+                _rc = repeated_tool_calls.get(fingerprint, 0)
+                if name not in _LOOP_GUARD_EXEMPT_TOOLS and _REPEATED_TOOL_CALL_NUDGE_AT <= _rc < _REPEATED_TOOL_CALL_LIMIT:
+                    _left = _REPEATED_TOOL_CALL_LIMIT - _rc
+                    _tool_content += (
+                        f"\n\n[loop-guard] Ты вызвал {name} с теми же аргументами уже {_rc} раз — "
+                        f"результат не изменится. Смени подход или дай финальный ответ. "
+                        f"Ещё {_left} повтор(а/ов) до принудительной остановки."
+                    )
                 messages.append({
                     "role": "tool",
-                    "content": _truncate_for_llm(text_result),
+                    "content": _tool_content,
                     "name": name,
                 })
 
