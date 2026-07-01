@@ -137,6 +137,27 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "remember",
+                "description": (
+                    "Save a durable USER fact / correction into curated memory "
+                    "(the source of truth). Use when the user states a lasting fact "
+                    "to remember or CORRECTS you (e.g. 'на самом деле…', 'это "
+                    "неверно, правильно…', 'запомни, что…'). Such facts are "
+                    "auto-injected into future prompts and trusted above web/memory."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "fact": {"type": "string", "description": "The fact/correction to remember, as a clear standalone statement."},
+                        "correction": {"type": "boolean", "description": "True if this fixes something you got wrong (highest trust). Default false."},
+                    },
+                    "required": ["fact"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "todo_update",
                 "description": (
                     "Read or update the durable checklist for this run. "

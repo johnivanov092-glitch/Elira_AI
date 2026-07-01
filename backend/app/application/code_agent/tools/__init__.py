@@ -36,6 +36,7 @@ from app.application.code_agent.tools._search import (  # noqa: F401
     tool_grep,
     tool_project_map,
     tool_recall,
+    tool_remember,
 )
 from app.application.code_agent.tools._web import (  # noqa: F401
     tool_browser,
@@ -94,6 +95,7 @@ __all__ = [
     "tool_grep",
     "tool_project_map",
     "tool_recall",
+    "tool_remember",
     "tool_todo_update",
     "tool_delegate_task",
     "tool_run_bash",

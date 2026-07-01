@@ -26,7 +26,7 @@ from __future__ import annotations
 
 # Always available from the first step (no tool_search round-trip).
 BASE_TOOLS: tuple[str, ...] = (
-    "read_file", "glob", "grep", "project_map", "recall",
+    "read_file", "glob", "grep", "project_map", "recall", "remember",
     "todo_update", "delegate_task",
     "write_file", "edit_file", "run_bash", "run_server",
     "web_search", "web_fetch", "http_api",

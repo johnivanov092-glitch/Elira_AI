@@ -296,6 +296,33 @@ def tool_project_map(
     return {"text": "\n\n".join(sections)}
 
 
+def tool_remember(
+    project_root: Path,
+    *,
+    fact: str,
+    correction: bool = False,
+) -> dict[str, Any]:
+    """Persist a durable USER fact / correction into curated memory (the source of
+    truth). Use when the user states a lasting fact to remember or CORRECTS you
+    ("на самом деле…", "это неверно, правильно…", "запомни, что…"). correction=True
+    marks it as a user correction (highest trust). Such facts are auto-injected
+    into future prompts and must be trusted ABOVE web/model memory."""
+    from app.application import memory as mem
+
+    text = (fact or "").strip()
+    if len(text) < 3:
+        return {"ok": False, "text": "Нечего запоминать: факт слишком короткий."}
+    src = "user_correction" if correction else "user"
+    try:
+        res = mem.add_fact(text, category="user_fact", source=src, importance=10 if correction else 8)
+    except Exception as exc:  # noqa: BLE001 — memory failure must not break the run
+        return {"ok": False, "text": f"Не удалось сохранить факт: {exc}"}
+    if not res.get("ok"):
+        return {"ok": False, "text": f"Не удалось сохранить факт: {res.get('error', 'ошибка памяти')}"}
+    label = "поправка сохранена" if correction else "факт сохранён"
+    return {"ok": True, "text": f"Запомнил ({label}, источник правды): {text}"}
+
+
 def tool_recall(
     project_root: Path,
     *,

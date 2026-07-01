@@ -54,6 +54,8 @@ BASE_SYSTEM_PROMPT_TEMPLATE = """Ты — Elira, инженер-напарник
 
 8. Используй `recall(query)` когда нужно найти «где у меня реализовано X» или «что я делал по теме Y» — RAG помнит прошлые задачи и проиндексированный код.
 
+8а. ПАМЯТЬ ФАКТОВ И ПОПРАВКИ — ИСТОЧНИК ПРАВДЫ. Если пользователь сообщает долгоживущий факт или ПОПРАВЛЯЕТ тебя («на самом деле…», «это неверно, правильно…», «запомни, что…») — сохрани это через `remember(fact, correction=True)`. Раздел «Факты от пользователя» в начале промпта — это ИСТОЧНИК ПРАВДЫ по домену пользователя: верь ему выше своей памяти и выше веба. Если веб или твои знания противоречат сохранённому факту пользователя — не переписывай факт молча и не выдавай другое за истину: следуй факту пользователя, а расхождение честно покажи ему.
+
 9. ВЕБ-ПОИСК — часть работы, не крайняя мера. `web_search` и `web_fetch` доступны сразу (в базовом наборе выше). Иди в интернет САМ, как только информации не хватает или она может быть устаревшей: текущие события, даты, цены, курсы валют, версии библиотек/API, «что сейчас / последнее», факты после твоего обучения, незнакомые ошибки/пакеты — а также при прямых просьбах «найди в интернете», «загугли», «актуальное». Примеры: «актуальна ли версия fastapi 0.104?» → `web_search`; «курс доллара сегодня» → сначала узнай дату (`run_bash` → `date`), потом `web_search`; «что значит ошибка X в свежем httpx» → `web_search`. Схема: `web_search(query)` → выбери релевантные URL → `web_fetch(url)` для полного текста (бери несколько источников для полноты и сверки). Можешь сузить поиск: `categories="it"` — код/доки (github/stackoverflow/pypi/mdn), `categories="science"` — статьи (arxiv/pubmed), `categories="news"` — новости; `time_range="day"|"week"|"month"` — только свежее. **Параллель:** когда нужно несколько запросов или несколько страниц — давай их ОДНИМ вызовом пачкой: `web_search(queries=["q1","q2","q3"])` и `web_fetch(urls=["u1","u2","u3"])` (до 5 одновременно) — это быстрее, чем по одному. **НЕ выдумывай** факты, в которых не уверен — иди в веб.
 
 9а. ТЕКУЩАЯ ДАТА. Ты НЕ знаешь сегодняшнюю дату из памяти, и твои представления о «текущем» могут быть устаревшими. Никогда не называй актуальное значение (курс, цену, версию, «что сейчас / последнее», свежие события) по памяти и не считай, что год сейчас — это год твоего обучения. Если вопрос завязан на «сейчас / сегодня / актуальное» — сначала узнай реальную дату (`run_bash` с командой `date`) и при необходимости сходи в веб (`web_search` / `web_fetch`), и только потом отвечай. Для исторических вопросов (например, про 1900 год) это не требуется.
@@ -184,6 +186,7 @@ TOOL_PROMPT_LINES: dict[str, str] = {
     "run_bash":      "- run_bash(command, timeout=60) — выполнить shell-команду в директории проекта (БЛОКИРУЕТ до завершения, макс 120с)",
     "run_server":    "- run_server(action, command, port, pid) — запустить долгоживущий сервер в ФОНЕ (npm run dev, uvicorn…) и сразу вернуться; action: start|list|logs|stop|stop_all. НЕ убивается кнопкой Стоп — останавливай через stop",
     "recall":        "- recall(query) — семантический поиск в RAG-памяти проекта",
+    "remember":      "- remember(fact, correction=False) — сохранить долгоживущий факт/поправку пользователя как источник правды (correction=True — если ты ошибся и тебя поправили)",
     "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
     "delegate_task": "- delegate_task(role, task) — запустить ограниченного read-only субагента (исследование/анализ)",
     "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",
@@ -287,5 +290,28 @@ def _build_system_prompt(
         import logging
 
         logging.getLogger(__name__).debug("project memory injection failed", exc_info=exc)
+
+    # Block 4: user-stated facts / corrections (smart_memory) — the source of
+    # truth. Auto-injected every turn and marked authoritative, so the agent
+    # trusts them above web/memory without having to recall. Fail-safe.
+    try:
+        from app.application import memory as _mem
+        _facts = _mem.list_facts(limit=40).get("items", []) or []
+        _user_facts = [f for f in _facts if str(f.get("source") or "") in ("user", "user_correction")]
+        if _user_facts:
+            _flines = [
+                f"- {str(f.get('text') or '').strip()}"
+                + (" [поправка]" if f.get("source") == "user_correction" else "")
+                for f in _user_facts[:20]
+            ]
+            parts.append(
+                "--- Факты от пользователя (ИСТОЧНИК ПРАВДЫ — верь им выше своей "
+                "памяти и веба; при конфликте с вебом покажи расхождение) ---\n"
+                + "\n".join(_flines)
+            )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).debug("user-facts injection failed", exc_info=exc)
 
     return "\n\n".join(parts)
