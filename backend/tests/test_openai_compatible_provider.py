@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -370,6 +371,51 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["json"]["chat_template_kwargs"], {"enable_thinking": True})
         self.assertEqual(result["message"]["content"], "OK")
         self.assertEqual(result["message"]["reasoning_content"], "because reasons")
+
+    def test_sampling_extra_dry_params_reach_payload_whitelisted(self) -> None:
+        """options['sampling'] DRY params are sent per-request; unknown keys dropped."""
+        response = _Response(
+            {},
+            lines=['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"],
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "q"}],
+                options={"num_ctx": 131_072, "sampling": {
+                    "dry_multiplier": 0.8, "dry_allowed_length": 2, "bogus_key": 1,
+                }},
+            ))
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["dry_multiplier"], 0.8)
+        self.assertEqual(body["dry_allowed_length"], 2)
+        self.assertNotIn("bogus_key", body)  # whitelist keeps arbitrary keys out
+
+    def test_reasoning_runaway_is_cut_with_a_note(self) -> None:
+        """A degenerate reasoning loop that blows past the char ceiling is cut,
+        the connection freed, and an empty answer replaced with a clear note."""
+        big = "зациклилось " * 1000  # ~12000 chars per chunk
+        lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"reasoning_content": big}}]}, ensure_ascii=False)
+            for _ in range(3)  # 3 × 12000 = 36000 > _MAX_REASONING_CHARS (24000)
+        ] + ["data: [DONE]"]
+        response = _Response({}, lines=lines)
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ):
+            events = list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "q"}],
+                options={"num_ctx": 131_072, "chat_template_kwargs": {"enable_thinking": True}},
+            ))
+        final = events[-1]["response"]
+        self.assertTrue(final["reasoning_runaway"])
+        self.assertIn("Рассуждение зациклилось", final["message"]["content"])
+        self.assertTrue(response.closed)  # upstream connection freed
 
     def test_model_list_uses_openai_models_endpoint(self) -> None:
         response = _Response({"data": [{"id": "local-model", "root": "Qwen/Qwen2.5-7B-Instruct", "n_ctx": 16384}]})

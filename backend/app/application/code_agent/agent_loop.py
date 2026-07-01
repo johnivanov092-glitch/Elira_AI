@@ -116,6 +116,17 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_STEPS = 200
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
 MAX_CODE_AGENT_STEPS = 200
+# Per-request DRY sampler params sent only on thinking runs (llama.cpp accepts
+# them in the request body — verified against the live server). DRY penalises
+# repeated token sequences at sampling time, so a reasoning model can't lock into
+# a degenerate "same sentence forever" loop. Standard recommended values; server
+# default is off, so the non-think path is unchanged.
+_THINKING_SAMPLING = {
+    "dry_multiplier": 0.8,
+    "dry_base": 1.75,
+    "dry_allowed_length": 2,
+    "dry_penalty_last_n": -1,
+}
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 6
 # Repeats at or above this count (but below the hard limit) get a loud nudge
@@ -606,8 +617,12 @@ def _stream_code_agent_core(
                 # Thinking toggle (per-request, --jinja server): opt the run into
                 # model reasoning without a server restart. Reasoning streams on a
                 # separate channel below; the server default stays off when unset.
+                # Also enable per-request DRY anti-repetition so a reasoning model
+                # can't fall into a degenerate "same sentence forever" loop; scoped
+                # to thinking runs so the well-tested non-think path is untouched.
                 if thinking:
                     llm_options["chat_template_kwargs"] = {"enable_thinking": True}
+                    llm_options["sampling"] = dict(_THINKING_SAMPLING)
                 llm_kwargs = {
                     "model": model,
                     "messages": messages,

@@ -48,6 +48,8 @@ class CodeAgentThinkingTest(unittest.TestCase):
             captured[0]["options"].get("chat_template_kwargs"),
             {"enable_thinking": True},
         )
+        # DRY anti-repetition is enabled alongside thinking (scoped to think runs).
+        self.assertEqual(captured[0]["options"].get("sampling", {}).get("dry_multiplier"), 0.8)
         # Reasoning surfaced on its own event, never folded into the answer.
         reasoning_evs = [e for e in events if e.get("type") == "reasoning_delta"]
         self.assertTrue(reasoning_evs)
@@ -60,6 +62,7 @@ class CodeAgentThinkingTest(unittest.TestCase):
     def test_thinking_off_omits_flag_and_emits_no_reasoning(self):
         captured, events = _drive(thinking=False, reasoning="", run_id="think-off")
         self.assertNotIn("chat_template_kwargs", captured[0]["options"])
+        self.assertNotIn("sampling", captured[0]["options"])  # DRY only on think runs
         self.assertFalse([e for e in events if e.get("type") == "reasoning_delta"])
         finals = [e for e in events if e.get("type") == "final_response"]
         self.assertEqual(finals[-1]["text"], "ANSWER")

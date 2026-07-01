@@ -363,6 +363,35 @@ def _apply_thinking_option(payload: dict[str, Any], opts: dict[str, Any]) -> Non
         payload["chat_template_kwargs"] = ctk
 
 
+# Extra sampler params llama.cpp accepts in the request body (verified against the
+# live server via /props). Whitelisted so callers can only set known keys, never
+# inject arbitrary payload fields. Used for per-request DRY anti-repetition on
+# thinking runs (a reasoning model can fall into a degenerate "same sentence
+# forever" loop; DRY penalises repeated token sequences at sampling time so the
+# loop never forms). Sent per-request → no server restart, server default stays off.
+_SAMPLING_EXTRA_KEYS = frozenset({
+    "dry_multiplier", "dry_base", "dry_allowed_length", "dry_penalty_last_n",
+    "dry_sequence_breakers", "repeat_penalty", "repeat_last_n",
+})
+
+
+def _apply_sampling_extra(payload: dict[str, Any], opts: dict[str, Any]) -> None:
+    """Merge whitelisted extra sampling params (e.g. DRY) from ``options['sampling']``
+    into the request body top-level. Omitted keys keep the server default."""
+    extra = opts.get("sampling")
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if key in _SAMPLING_EXTRA_KEYS and value is not None:
+                payload[key] = value
+
+
+# Safety ceiling for a single generation's reasoning stream (chars). Far above any
+# real chain-of-thought (a normal thinking answer is a few thousand chars); a
+# runaway repetition loop is cut here so it can't generate into the whole context
+# window or burn the execution deadline. Only reached when thinking is on.
+_MAX_REASONING_CHARS = 24000
+
+
 def _request_context_limit(options: dict[str, Any], *, configured_context: Any) -> int | None:
     requested_context = _positive_int(options.get("num_ctx"))
     active_context = _positive_int(
@@ -405,6 +434,7 @@ def chat_completion(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
+    _apply_sampling_extra(payload, opts)
 
     _guard_context_request(
         normalized_messages,
@@ -474,6 +504,7 @@ def chat_completion_stream(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
+    _apply_sampling_extra(payload, opts)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
@@ -545,6 +576,7 @@ def chat_completion_event_stream(
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
+    _apply_sampling_extra(payload, opts)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
@@ -555,6 +587,8 @@ def chat_completion_event_stream(
     started = time.monotonic_ns()
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
+    reasoning_chars = 0
+    reasoning_runaway = False
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
     try:
@@ -590,7 +624,15 @@ def chat_completion_event_stream(
             rtoken = str(delta.get("reasoning_content") or "")
             if rtoken:
                 reasoning_parts.append(rtoken)
+                reasoning_chars += len(rtoken)
                 yield {"type": "reasoning", "content": rtoken}
+                # Runaway-reasoning guard (safety net beside per-request DRY): a
+                # degenerate "same sentence forever" loop is cut here before it
+                # fills the context window. Stop reading → `finally` closes the
+                # upstream connection and frees the server.
+                if reasoning_chars > _MAX_REASONING_CHARS:
+                    reasoning_runaway = True
+                    break
             token = str(delta.get("content") or "")
             if token:
                 content_parts.append(token)
@@ -626,17 +668,26 @@ def chat_completion_event_stream(
 
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
+    final_content = "".join(content_parts)
+    # If reasoning ran away and produced no actual answer, surface a clear note
+    # instead of an empty turn, so the loop finalizes usefully rather than looping.
+    if reasoning_runaway and not final_content.strip() and not calls:
+        final_content = (
+            "Рассуждение зациклилось и было прервано. Переформулируй вопрос "
+            "или отключи «Мозг» для этой задачи."
+        )
     yield {
         "type": "message",
         "response": {
             "model": model or cfg.model,
             "message": {
                 "role": "assistant",
-                "content": "".join(content_parts),
+                "content": final_content,
                 "reasoning_content": "".join(reasoning_parts),
                 "tool_calls": [calls[index] for index in sorted(calls)],
             },
             "done": True,
+            "reasoning_runaway": reasoning_runaway,
             "prompt_eval_count": prompt_tokens,
             "eval_count": completion_tokens,
             "total_duration": time.monotonic_ns() - started,
