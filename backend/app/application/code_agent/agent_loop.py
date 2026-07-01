@@ -313,10 +313,12 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _approval_status,
     _flatten_for_summary,
     _is_critical_call,
+    _looks_like_repeat_request,
     _mark_approval_approved,
     _maybe_inject_execution_reminder,
     _messages_char_count,
     _mode_auto_approves,
+    _norm_answer,
     _prepare_messages_for_llm,
     _record_code_route_metric,
     _schema_tool_name,
@@ -495,6 +497,15 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
+        # Anti-repeat gate: fires at most once if the model is about to echo its
+        # PREVIOUS turn's answer verbatim to a DIFFERENT question (local-model
+        # loop). prev_assistant_text = the last assistant reply from history.
+        repeat_gate_fired = False
+        prev_assistant_text = next(
+            (str(m.get("content") or "") for m in reversed(messages)
+             if isinstance(m, dict) and m.get("role") == "assistant"),
+            "",
+        )
         # D3 — at most ONE envelope repair-retry per run, then deterministic
         # fallback to the existing inline-recovery behaviour. Only consulted
         # when ELIRA_ACTION_ENVELOPES is on.
@@ -757,6 +768,33 @@ def _stream_code_agent_core(
                             "что оно стартует. Если проверять реально нечего "
                             "(тестов/линтера в проекте нет) — так и скажи. Не "
                             "заявляй «готово» по факту записи файла."
+                        ),
+                    })
+                    continue
+                # Anti-repeat gate: the model is about to emit an answer identical
+                # (after whitespace-normalisation) to its PREVIOUS turn's reply,
+                # but the user asked something different — a local-model echo loop.
+                # Nudge it ONCE to answer the new question (or admit it has no new
+                # info/source), instead of serving the duplicate. Skipped when the
+                # user explicitly asked to repeat.
+                _answer = content or last_text
+                if (
+                    _answer
+                    and prev_assistant_text
+                    and not repeat_gate_fired
+                    and _norm_answer(_answer) == _norm_answer(prev_assistant_text)
+                    and not _looks_like_repeat_request(user_message)
+                ):
+                    repeat_gate_fired = True
+                    messages.append({"role": "assistant", "content": _answer})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Ты слово в слово повторил свой прошлый ответ, хотя "
+                            "вопрос другой. Ответь именно на НОВЫЙ вопрос. Если по "
+                            "нему у тебя нет новой информации или источника — честно "
+                            "так и скажи (например «источник не найден / не "
+                            "подтверждено»), но НЕ копируй прошлый ответ."
                         ),
                     })
                     continue

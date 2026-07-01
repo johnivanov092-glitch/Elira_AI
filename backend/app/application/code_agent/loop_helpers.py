@@ -196,6 +196,26 @@ def _is_critical_call(tool_name: str, args: dict[str, Any] | None) -> bool:
     return False
 
 
+_REPEAT_REQUEST_MARKERS = (
+    "еще раз", "ещё раз", "повтор", "снова", "заново", "repeat", "again", "same",
+)
+
+
+def _looks_like_repeat_request(text: str) -> bool:
+    """True if the user explicitly asked to repeat / say it again, so an identical
+    answer is legitimate and the anti-repeat gate must NOT fire."""
+    t = (text or "").strip().lower()
+    return any(m in t for m in _REPEAT_REQUEST_MARKERS)
+
+
+def _norm_answer(text: str) -> str:
+    """Normalise an assistant answer for exact-duplicate comparison: collapse all
+    whitespace and strip. Deterministic — only answers that are byte-identical
+    after normalisation match, so genuinely different replies never trip the
+    anti-repeat gate (no fuzzy similarity, no false positives on real work)."""
+    return " ".join((text or "").split()).strip()
+
+
 def _mark_approval_approved(approval_id: str) -> bool:
     """Programmatically grant an approval row (for non-'ask' permission modes)."""
     try:
