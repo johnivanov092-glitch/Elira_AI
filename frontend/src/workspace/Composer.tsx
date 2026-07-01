@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, Plus, Search, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import { Blocks, BookmarkPlus, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode } from "../api/codeAgent";
 import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
@@ -14,9 +14,11 @@ type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agen
 // chip survives a new chat and app restart instead of resetting to "ask" each mount.
 const PERMISSION_MODE_KEY = "elira.permissionMode";
 
-/** Composer per v4: mode chips + "+" (project / files / skills) + plugins + send.
- *  The merged "Чат\Код" chip is the "code" mode; "Поиск" is "search". Both modes
- *  carry attachments, so file picking lives inside the "+" menu (opened in the
+/** Composer per v4: mode chip + "+" (project / files / skills) + plugins + send.
+ *  Runs are always "code" mode — web_search/web_fetch are base tools available in
+ *  every run, so a separate "Поиск" mode added nothing and was removed.
+ *  Attachments are carried regardless, so file picking lives inside the "+" menu
+ *  (opened in the
  *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
 export function Composer({
   value, onChange, onPlus, onPlugins, onSend, onSendMultiAgent, running, onStop, contextUsage, onAttachReady,
@@ -195,7 +197,6 @@ export function Composer({
       <div className="mx-auto max-w-[760px]">
         <div className="mb-2 flex items-center gap-1.5">
           <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Чат\Код</Chip>
-          <Chip active={mode === "search"} icon={<Search size={13} />} onClick={() => setMode("search")}>Поиск</Chip>
           <ProfilePicker />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
           <MultiAgentChip
