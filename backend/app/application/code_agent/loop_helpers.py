@@ -216,16 +216,24 @@ def _norm_answer(text: str) -> str:
     return " ".join((text or "").split()).strip()
 
 
-# First-person "I'm about to do X" verbs/openers. Deliberately explicit
-# first-person-future forms (прочита-ю, добавл-ю, …) and intent openers — NOT
-# infinitives or 2nd-person imperatives, so a real closing answer that tells the
+# "I'm about to do X" verbs/openers that a model emits INSTEAD of calling the
+# tool. Covers first-person singular future ("прочитаю", "начну"), first-person
+# plural / "давай …" filler ("давай посмотрим", "проверим", "сделаем" — the most
+# common Russian stall), and English ("let me", "let's"). Deliberately excludes
+# infinitives and 2nd-person imperatives, so a real closing answer that tells the
 # USER what THEY can do ("теперь можешь запустить …") does not match.
 _INTENT_TO_ACT_RE = re.compile(
+    # first-person singular future / intent
     r"(прочита[юя]|перечита[юя]|дочита[юя]|дочитыва|добавл[юя]|сдела[юя]|"
     r"напиш[у]|создам|создаю|измен[юя]|исправл[юя]|запущ[у]|перепиш[у]|"
     r"обновл[юя]|внес[у]|посмотр[юя]|провер[юя]|перейд[у]|начн[уё]|приступ|"
     r"разбер[у]сь|доработа[юя]|реализу[юя]|проанализиру[юя]|допиш[у]|поправл[юя]|"
-    r"let me\b|i['’]?ll\b|i will\b|i['’]?m going to)",
+    # first-person plural ("давай посмотрим", "проверим", "сделаем", …)
+    r"посмотрим|глянем|проверим|сделаем|прочитаем|прочтём|прочтем|начнём|начнем|"
+    r"разберёмся|разберемся|добавим|исправим|напишем|создадим|обновим|перепишем|поправим|"
+    r"давай(те)?\s+(посмотр|глян|провер|сдела|разбер|начн|прочит|добав|исправ|напиш|созда|обнов)|"
+    # English
+    r"let me\b|let['’]?s\b|let us\b|i['’]?ll\b|i will\b|i['’]?m going to)",
     re.IGNORECASE | re.UNICODE,
 )
 

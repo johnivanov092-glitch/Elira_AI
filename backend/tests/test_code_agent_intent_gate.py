@@ -25,6 +25,10 @@ class IntentHeuristicTest(unittest.TestCase):
         self.assertTrue(_looks_like_intent_without_action("Начну с CSS-улучшений."))
         self.assertTrue(_looks_like_intent_without_action("Ок. Теперь добавлю анимации в hero."))
         self.assertTrue(_looks_like_intent_without_action("Let me read the files first."))
+        # First-person plural / "давай …" filler — the exact stall seen live.
+        self.assertTrue(_looks_like_intent_without_action("Давай посмотрим, что не так с проектом."))
+        self.assertTrue(_looks_like_intent_without_action("Сейчас проверим и исправим."))
+        self.assertTrue(_looks_like_intent_without_action("Let's take a look."))
 
     def test_does_not_match_genuine_answers(self):
         # Delivered result — past tense, no forward intent.
@@ -55,6 +59,24 @@ class IntentGateLoopTest(unittest.TestCase):
         self.assertIn("Готово", finals[-1]["text"])          # the nudged retry was served
         self.assertNotIn("Сначала прочитаю", finals[-1]["text"])  # not the preamble
         self.assertEqual(state["i"], 2)                       # exactly one nudge fired
+
+    def test_repeated_filler_is_nudged_up_to_cap_then_finalizes(self):
+        # A stubborn model that keeps emitting "давай посмотрим…" filler with no
+        # tool call gets pushed twice (the cap), then the run finalizes instead
+        # of looping forever.
+        state = {"i": 0}
+
+        def chat_fn(**kw):
+            if not kw.get("tools"):
+                return {"message": {"content": "summary", "tool_calls": []}}
+            state["i"] += 1
+            return {"message": {"content": "Давай посмотрим, что не так с проектом.", "tool_calls": []}}
+
+        evs = _drive(chat_fn, "смотри", "intent_cap")
+        done = [e for e in evs if e.get("type") == "done"]
+        self.assertTrue(done)
+        # 2 nudges (cap) + the finalizing call = 3 tool-enabled model calls.
+        self.assertEqual(state["i"], 3)
 
     def test_genuine_answer_is_not_cut(self):
         state = {"i": 0}

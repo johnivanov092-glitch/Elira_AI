@@ -509,11 +509,14 @@ def _stream_code_agent_core(
         # PREVIOUS turn's answer verbatim to a DIFFERENT question (local-model
         # loop). prev_assistant_text = the last assistant reply from history.
         repeat_gate_fired = False
-        # Anti-"narrate instead of act" gate: fires at most once if the model
-        # ends its turn on a forward-looking intent ("сейчас прочитаю…") with no
-        # tool call and nothing was edited yet — a plan-without-execute stop
-        # (amplified by thinking). Nudges it to actually call the tool.
-        intent_gate_fired = False
+        # Anti-"narrate instead of act" gate: fires when the model ends its turn
+        # on a forward-looking intent ("давай посмотрим…", "сейчас прочитаю…")
+        # with no tool call and nothing edited yet — a plan-without-execute stop
+        # (amplified by thinking). Nudges it to actually call the tool. Bounded
+        # (a stubborn local model can repeat filler) — push again up to the cap,
+        # then let it finalize rather than loop forever.
+        intent_gate_fires = 0
+        _INTENT_GATE_MAX = 2
         prev_assistant_text = next(
             (str(m.get("content") or "") for m in reversed(messages)
              if isinstance(m, dict) and m.get("role") == "assistant"),
@@ -827,20 +830,21 @@ def _stream_code_agent_core(
                     continue
                 # Anti-"narrate instead of act" gate: the model returned prose
                 # with NO tool call, but the prose is a forward-looking intent
-                # ("сейчас прочитаю…", "начну с…") and nothing was edited yet —
-                # i.e. it announced the next step and stopped instead of doing
-                # it (a plan-without-execute failure, amplified by thinking).
-                # Nudge it ONCE to emit the tool call and do the work. Fires at
-                # most once and only on a no-edit run, so a genuine short answer
-                # (or a summary after real edits) is never cut.
+                # ("давай посмотрим…", "сейчас прочитаю…") and nothing was edited
+                # yet — i.e. it announced the next step and stopped instead of
+                # doing it (a plan-without-execute failure, amplified by
+                # thinking). Nudge it to emit the tool call and do the work.
+                # Bounded by _INTENT_GATE_MAX and only on a no-edit run, so a
+                # genuine short answer (or a summary after real edits) is never
+                # cut, and a stubborn model can't loop forever.
                 _answer_intent = content or last_text
                 if (
                     _answer_intent
-                    and not intent_gate_fired
+                    and intent_gate_fires < _INTENT_GATE_MAX
                     and not edited_in_run
                     and _looks_like_intent_without_action(_answer_intent)
                 ):
-                    intent_gate_fired = True
+                    intent_gate_fires += 1
                     messages.append({"role": "assistant", "content": _answer_intent})
                     messages.append({
                         "role": "user",
