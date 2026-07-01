@@ -207,6 +207,34 @@ class WhitelistedSideEffectActivationTest(unittest.TestCase):
         self.assertFalse(deferred_tools.is_tool_active("rWL", "run_bash"))
 
 
+class BypassLiftsActivationGateTest(unittest.TestCase):
+    """bypass permission mode removes BOTH gates: a side-effect tool that is not
+    in the curated whitelist becomes activatable; in ask mode it stays gated."""
+
+    def tearDown(self):
+        deferred_tools.clear_run("rBYP")
+
+    def test_bypass_activates_non_whitelisted_side_effect(self):
+        _patch_registry(self, [
+            _spec("run_bash", side_effect=True, permission="require_approval", scopes=("shell.exec",)),
+        ])
+        deferred_tools.enable_deferred_tools("rBYP", [])
+        ask = tools.tool_search(run_id="rBYP", query="run_bash")
+        self.assertNotIn("run_bash", ask["activated"])  # ask: still gated
+        byp = tools.tool_search(run_id="rBYP", query="run_bash", permission_mode="bypass")
+        self.assertIn("run_bash", byp["activated"])       # bypass: activation gate lifted
+        self.assertTrue(deferred_tools.is_tool_active("rBYP", "run_bash"))
+
+    def test_curated_side_effect_activatable_even_in_ask(self):
+        # sandbox_run is now curated -> activatable without bypass.
+        _patch_registry(self, [
+            _spec("sandbox_run", side_effect=True, permission="require_approval", scopes=("shell.exec",)),
+        ])
+        deferred_tools.enable_deferred_tools("rBYP", [])
+        res = tools.tool_search(run_id="rBYP", query="sandbox_run")
+        self.assertIn("sandbox_run", res["activated"])
+
+
 class ActivatedToolStillEnforcedByExecutorTest(unittest.TestCase):
     """Activation grants visibility only — the executor still enforces policy."""
 

@@ -8,13 +8,17 @@ from typing import Any
 
 TOOL_SEARCH_RESULT_LIMIT = 20
 TOOL_SEARCH_ACTIVATION_CAP = 5
-# Side-effect tools are not auto-activated by tool_search in general (the model
-# should not silently gain side-effecting powers from a search). A small curated
-# set is exempt: powerful but explicitly user-facing tools the agent must be able
-# to reach on demand. Activation grants VISIBILITY ONLY — the unified executor
-# still enforces require_approval at dispatch, so the permission gate (and the
-# composer's permission mode) remains the real control.
-_SEARCH_ACTIVATABLE_SIDE_EFFECT = frozenset({"computer"})
+# Side-effect tools are not auto-activated by tool_search in the default "ask"
+# mode (the model should not silently gain side-effecting powers from a fuzzy
+# search). This curated set is exempt: powerful but genuinely useful dev tools the
+# agent must be able to reach on demand. In "bypass" permission mode the whole
+# restriction lifts — tool_search then activates ANY side-effect tool (see
+# tool_search()), so bypass means "no friction" for BOTH gates, activation and
+# approval, matching what the user expects. Activation grants VISIBILITY only —
+# the executor still enforces require_approval at dispatch in non-bypass modes.
+_SEARCH_ACTIVATABLE_SIDE_EFFECT = frozenset(
+    {"computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver"}
+)
 DELEGATE_TASK_MAX_STEPS = 6
 DELEGATE_TASK_MAX_CTX = 8192
 DELEGATE_TASK_TIMEOUT_SECONDS = 60
@@ -69,6 +73,7 @@ def tool_search(
     agent_id: str = "code-agent",
     limit: int = TOOL_SEARCH_RESULT_LIMIT,
     activation_cap: int = TOOL_SEARCH_ACTIVATION_CAP,
+    permission_mode: str = "ask",
 ) -> dict[str, Any]:
     """Read-only meta-tool (P10.1 foundation): search the ToolSpec registry and
     activate eligible, non-side-effect tools for THIS run only.
@@ -78,8 +83,10 @@ def tool_search(
       policy / scope / approval at dispatch. This function executes nothing.
     - Disabled / unclassified / forbidden tools are surfaced but never activated.
     - Side-effect tools are surfaced but NOT auto-activated, except the curated
-      ``_SEARCH_ACTIVATABLE_SIDE_EFFECT`` set (e.g. ``computer``) — activation is
-      visibility-only and the executor still enforces approval at dispatch.
+      ``_SEARCH_ACTIVATABLE_SIDE_EFFECT`` set — UNLESS ``permission_mode`` is
+      ``"bypass"``, in which case every side-effect tool is activatable (bypass
+      removes both the activation and the approval gate). Activation is
+      visibility-only; the executor still enforces approval at dispatch otherwise.
     - Activates at most ``activation_cap`` tools per call.
     - Uses the existing run-scoped deferred_tools store; ``activate_tools`` is a
       no-op unless the run already opted into deferred mode, so a non-deferred
@@ -107,7 +114,9 @@ def tool_search(
         if len(eligible) >= cap:
             break
         if match["activatable"] and (
-            not match["side_effect"] or match["name"] in _SEARCH_ACTIVATABLE_SIDE_EFFECT
+            not match["side_effect"]
+            or match["name"] in _SEARCH_ACTIVATABLE_SIDE_EFFECT
+            or permission_mode == "bypass"
         ):
             eligible.append(match["name"])
 

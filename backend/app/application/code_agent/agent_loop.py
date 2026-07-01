@@ -874,7 +874,13 @@ def _stream_code_agent_core(
                         "tool": name,
                         "arguments": parsed_args,
                     }
-                    _ts = _tool_search(run_id=rid, query=str(parsed_args.get("query", "")))
+                    # permission_mode flows in so bypass lifts the activation gate
+                    # (not just the approval gate) — bypass = no friction on both.
+                    _ts = _tool_search(
+                        run_id=rid,
+                        query=str(parsed_args.get("query", "")),
+                        permission_mode=permission_mode,
+                    )
                     _ts_text = str(_ts.get("text", ""))
                     yield {
                         "type": "tool_call",
