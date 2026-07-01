@@ -8,7 +8,7 @@ export const DEFAULT_CODE_AGENT_MODEL = "auto";
 export function codeAgentFaviconUrl(url: string): string {
   return buildApiUrl(`/api/code-agent/favicon?url=${encodeURIComponent(url)}`);
 }
-export const DEFAULT_CODE_AGENT_MAX_STEPS = 100;
+export const DEFAULT_CODE_AGENT_MAX_STEPS = 200;
 export const DEFAULT_CODE_AGENT_NUM_CTX = 131072;
 
 export type CodeAgentToolCall = {

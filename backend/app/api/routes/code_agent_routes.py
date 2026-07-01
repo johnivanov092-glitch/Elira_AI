@@ -162,7 +162,7 @@ class CodeAgentRequest(BaseModel):
     # P9.3: "auto" routes through the shared model order (route='code') server-side;
     # an explicit model is preserved. (CodeAgentStreamRequest inherits this.)
     model: str = Field(default="auto")
-    max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=100)
+    max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=200)
     num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
     mode: CodeAgentMode = Field(default="code", description="Composer mode: code or search")
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")

@@ -113,7 +113,7 @@ logger = logging.getLogger(__name__)
 # a runaway-loop guard, not a "stop the agent" budget — real stopping is the
 # user's Stop button plus the execution-time deadline, and hitting the ceiling
 # yields a resumable partial ("Продолжить"), never an error.
-DEFAULT_MAX_STEPS = 100
+DEFAULT_MAX_STEPS = 200
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
 MAX_CODE_AGENT_STEPS = 200
 _LLM_HEARTBEAT_EVERY = 10.0
