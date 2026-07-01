@@ -65,6 +65,10 @@ export type CodeAgentRunArgs = {
   /** Approval policy for this run (composer permission selector). Omitted → the
    *  backend default "ask". See {@link PermissionMode}. */
   permissionMode?: PermissionMode;
+  /** Enable model reasoning for this run («Рассуждение» chip). When on, the
+   *  backend streams reasoning as separate `reasoning_delta` events. Omitted →
+   *  backend default (off). */
+  thinking?: boolean;
 };
 
 /** Single-shot (legacy). Resolves with the aggregated final dict. */
@@ -103,6 +107,7 @@ export type CodeAgentStreamEvent =
   | { type: "step_started"; step: number }
   | { type: "heartbeat"; step: number }
   | { type: "delta"; step: number; text: string }
+  | { type: "reasoning_delta"; step: number; text: string }
   | {
       type: "tool_started";
       step: number;
@@ -205,6 +210,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     attachments,
     profileName,
     permissionMode,
+    thinking,
     runId,
     signal,
     onEvent,
@@ -236,6 +242,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         run_id: runId,
         ...(profileName ? { profile_name: profileName } : {}),
         ...(permissionMode ? { permission_mode: permissionMode } : {}),
+        ...(thinking ? { thinking: true } : {}),
         ...(wireAttachments.length ? { attachments: wireAttachments } : {}),
       }),
       signal,

@@ -244,6 +244,7 @@ function wire(
       }
       if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined }));
       else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
+      else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text }));
       else if (e.type === "tool_call") {
         patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, pendingApproval: undefined }));
         const result = e.result.trim();
@@ -337,13 +338,15 @@ export type SendArgs = {
   /** Approval policy picked in the composer's permission selector; undefined →
    *  backend default "ask". */
   permissionMode?: PermissionMode;
+  /** Enable model reasoning for this run («Рассуждение» chip). */
+  thinking?: boolean;
 };
 
 /** Start a run for a session. Appends the user + agent turns to that session's
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode } = args;
+  const { sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode, thinking } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -386,7 +389,7 @@ export function send(args: SendArgs): void {
   // a project root and parsed attachments together, so the unified "Чат\Код"
   // chip carries both at once.
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, permissionMode, ...handlers }));
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, permissionMode, thinking, ...handlers }));
 }
 
 /** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`

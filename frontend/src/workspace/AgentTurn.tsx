@@ -1,14 +1,15 @@
-import { Loader2, RotateCcw, ShieldQuestion, Volume2 } from "lucide-react";
+import { Brain, ChevronDown, Loader2, RotateCcw, ShieldQuestion, Volume2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { ToolCallGroup } from "./ToolCallGroup";
 import type { AgentTurnData, PendingApproval } from "./types";
 import { getAutoSpeak, speak } from "./voice";
+import { cn } from "../ui/cn";
 
 type ApproveFn = (approvalId: string, decision: "approve" | "reject") => void;
 
 export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
-  const idle = turn.running && !turn.text && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval;
+  const idle = turn.running && !turn.text && !turn.reasoning && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval;
   const [speaking, setSpeaking] = useState(false);
 
   // Auto-speak: only when this turn transitions running -> done while mounted
@@ -34,6 +35,8 @@ export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { tur
   return (
     <div className="my-2 mb-6">
       <ToolCallGroup calls={turn.toolCalls} activeTool={turn.running ? turn.activeTool : undefined} />
+
+      {turn.reasoning && <ReasoningBlock text={turn.reasoning} running={turn.running} />}
 
       {turn.pendingApproval && <ApprovalPrompt approval={turn.pendingApproval} onApprove={onApprove} onApproveAll={onApproveAll} />}
 
@@ -91,6 +94,36 @@ export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { tur
         >
           <RotateCcw size={12} /> Продолжить
         </button>
+      )}
+    </div>
+  );
+}
+
+/** Collapsible «Рассуждение» block — the model's chain-of-thought streamed on
+ *  the separate reasoning channel (when the composer's think toggle is on).
+ *  Opens live while the turn is thinking so you can watch it, then auto-collapses
+ *  once done (unless the user manually toggled it). Never part of the answer. */
+function ReasoningBlock({ text, running }: { text: string; running: boolean }) {
+  const [open, setOpen] = useState(running);
+  const touched = useRef(false);
+  useEffect(() => {
+    if (!running && !touched.current) setOpen(false);
+  }, [running]);
+  return (
+    <div className="mb-2 rounded-lg border border-line bg-surface/60">
+      <button
+        type="button"
+        onClick={() => { touched.current = true; setOpen((v) => !v); }}
+        className="flex w-full items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] text-mut transition-colors hover:text-tx"
+      >
+        {running ? <Loader2 size={12} className="shrink-0 animate-spin" /> : <Brain size={12} className="shrink-0" />}
+        <span>Рассуждение</span>
+        <ChevronDown size={12} className={cn("ml-auto shrink-0 transition-transform", open ? "" : "-rotate-90")} />
+      </button>
+      {open && (
+        <div className="border-t border-line px-2.5 py-2 text-[12px] leading-relaxed text-t2">
+          <MarkdownRenderer content={text} />
+        </div>
       )}
     </div>
   );

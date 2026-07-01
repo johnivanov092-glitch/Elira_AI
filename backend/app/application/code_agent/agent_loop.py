@@ -198,6 +198,12 @@ def _chat_events(
                     if text:
                         collected.append(text)
                         events.put(("delta", text))
+                elif item_type == "reasoning":
+                    # Thinking tokens — relayed on their own channel, never
+                    # folded into `collected` (which becomes the answer).
+                    rtext = str(item.get("content") or item.get("text") or "")
+                    if rtext:
+                        events.put(("reasoning", rtext))
                 elif item_type == "message":
                     response = item.get("response")
                     if isinstance(response, dict):
@@ -351,6 +357,7 @@ def _stream_code_agent_core(
     compaction_audit_sink: Callable[[dict[str, Any]], None] | None = None,
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
+    thinking: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -580,17 +587,23 @@ def _stream_code_agent_core(
                 response: dict[str, Any] = {}
                 pending_delta = ""
                 suppress_deltas = False
+                llm_options: dict[str, Any] = {
+                    "num_ctx": safe_num_ctx,
+                    "active_context_limit": safe_num_ctx,
+                    "temperature": _effective_temperature(
+                        profile_name, getattr(_route_decision, "role", None)
+                    ),
+                }
+                # Thinking toggle (per-request, --jinja server): opt the run into
+                # model reasoning without a server restart. Reasoning streams on a
+                # separate channel below; the server default stays off when unset.
+                if thinking:
+                    llm_options["chat_template_kwargs"] = {"enable_thinking": True}
                 llm_kwargs = {
                     "model": model,
                     "messages": messages,
                     "tools": step_schemas,
-                    "options": {
-                        "num_ctx": safe_num_ctx,
-                        "active_context_limit": safe_num_ctx,
-                        "temperature": _effective_temperature(
-                            profile_name, getattr(_route_decision, "role", None)
-                        ),
-                    },
+                    "options": llm_options,
                 }
                 for llm_event in _chat_events(
                     chat_fn=chat,
@@ -605,6 +618,14 @@ def _stream_code_agent_core(
                         continue
                     if llm_event["type"] == "response":
                         response = dict(llm_event["value"] or {})
+                        continue
+                    if llm_event["type"] == "reasoning":
+                        # Surface thinking tokens on their own SSE event so the UI
+                        # can show them in a separate, collapsible block. Kept out
+                        # of the answer stream and out of message history.
+                        rtext = str(llm_event["value"] or "")
+                        if rtext:
+                            yield {"type": "reasoning_delta", "step": step, "text": rtext}
                         continue
                     if llm_event["type"] != "delta":
                         continue
@@ -1164,6 +1185,7 @@ def stream_code_agent(
     access_mode: str = "project-workspace",
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
+    thinking: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -1186,6 +1208,7 @@ def stream_code_agent(
         "access_mode": access_mode,
         "profile_name": profile_name,
         "permission_mode": permission_mode,
+        "thinking": bool(thinking),
     }
     terminal = False
     try:
@@ -1229,6 +1252,7 @@ def stream_code_agent(
             compaction_audit_sink=audit_sink,
             profile_name=profile_name,
             permission_mode=permission_mode,
+            thinking=thinking,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)

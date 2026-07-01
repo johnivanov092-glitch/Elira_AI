@@ -317,6 +317,10 @@ def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, A
         "message": {
             "role": str(message.get("role") or "assistant"),
             "content": str(message.get("content") or ""),
+            # Reasoning arrives in a separate field when thinking is enabled
+            # (--jinja server); surface it so callers can show it apart from the
+            # answer. Empty string when thinking is off — never mixed into content.
+            "reasoning_content": str(message.get("reasoning_content") or ""),
             "tool_calls": _normalize_tool_calls(message.get("tool_calls")),
         },
         "done": True,
@@ -347,6 +351,16 @@ def _guard_context_request(
             "Context request blocked before send: estimated prompt and output "
             f"require {required} tokens, but the active limit is {context_limit}."
         )
+
+
+def _apply_thinking_option(payload: dict[str, Any], opts: dict[str, Any]) -> None:
+    """Pass a per-request ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``)
+    through to a ``--jinja`` llama-server. This lets a single run toggle model
+    reasoning without a server restart or config edit; when the caller doesn't set
+    it the key is omitted and the server keeps its own default (reasoning off)."""
+    ctk = opts.get("chat_template_kwargs")
+    if isinstance(ctk, dict) and ctk:
+        payload["chat_template_kwargs"] = ctk
 
 
 def _request_context_limit(options: dict[str, Any], *, configured_context: Any) -> int | None:
@@ -390,6 +404,7 @@ def chat_completion(
     opts = options or {}
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
+    _apply_thinking_option(payload, opts)
 
     _guard_context_request(
         normalized_messages,
@@ -458,6 +473,7 @@ def chat_completion_stream(
     opts = options or {}
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
+    _apply_thinking_option(payload, opts)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
@@ -528,6 +544,7 @@ def chat_completion_event_stream(
     opts = options or {}
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
+    _apply_thinking_option(payload, opts)
     _guard_context_request(
         normalized_messages,
         max_tokens=payload.get("max_tokens"),
@@ -537,6 +554,7 @@ def chat_completion_event_stream(
     response: requests.Response | None = None
     started = time.monotonic_ns()
     content_parts: list[str] = []
+    reasoning_parts: list[str] = []
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
     try:
@@ -565,6 +583,14 @@ def chat_completion_event_stream(
             choices = data.get("choices") if isinstance(data.get("choices"), list) else []
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
             delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+            # Thinking (--jinja) streams the chain-of-thought in its own
+            # `reasoning_content` field, separate from the answer's `content`.
+            # Route it to a distinct event so callers show it apart from (and
+            # never blended into) the final answer.
+            rtoken = str(delta.get("reasoning_content") or "")
+            if rtoken:
+                reasoning_parts.append(rtoken)
+                yield {"type": "reasoning", "content": rtoken}
             token = str(delta.get("content") or "")
             if token:
                 content_parts.append(token)
@@ -607,6 +633,7 @@ def chat_completion_event_stream(
             "message": {
                 "role": "assistant",
                 "content": "".join(content_parts),
+                "reasoning_content": "".join(reasoning_parts),
                 "tool_calls": [calls[index] for index in sorted(calls)],
             },
             "done": True,

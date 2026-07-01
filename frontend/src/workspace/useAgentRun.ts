@@ -55,9 +55,9 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     return () => { cancelled = true; };
   }, [model, sessionId]);
 
-  const send = useCallback((text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode) => {
+  const send = useCallback((text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean) => {
     const profileName = profileRef.current || undefined;
-    bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode });
+    bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode, thinking });
   }, [sessionId, projectRoot, model]);
 
   // Multi-agent run: streams per-step progress from the pipeline endpoint via

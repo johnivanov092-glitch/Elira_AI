@@ -199,6 +199,12 @@ class CodeAgentStreamRequest(CodeAgentRequest):
         description="Approval policy: ask (pause on every gated tool), accept_edits "
         "(auto-approve filesystem edits, pause shell/net), bypass (auto-approve all).",
     )
+    thinking: bool = Field(
+        default=False,
+        description="Enable model reasoning for this run (per-request enable_thinking "
+        "on the --jinja server). Reasoning streams as separate `reasoning_delta` "
+        "events, never mixed into the answer. Default off = server default.",
+    )
 
 
 class CodeAgentCancelRequest(BaseModel):
@@ -288,6 +294,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 access_mode=payload.access_mode,
                 profile_name=resolve_persona_mode(payload.profile_name, user_message),
                 permission_mode=payload.permission_mode,
+                thinking=payload.thinking,
             ):
                 yield _sse_format(event)
         except Exception as exc:
@@ -356,6 +363,7 @@ def resume_run(run_id: str) -> StreamingResponse:
             resume=True,
             access_mode=str(request_data.get("access_mode") or "project-workspace"),
             permission_mode=str(request_data.get("permission_mode") or "ask"),
+            thinking=bool(request_data.get("thinking", False)),
         ):
             yield _sse_format(event)
 

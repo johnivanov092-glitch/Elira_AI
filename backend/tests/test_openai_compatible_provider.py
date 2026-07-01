@@ -291,6 +291,86 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertIn("tools", post.call_args.kwargs["json"])
         self.assertTrue(response.closed)
 
+    def test_thinking_option_adds_chat_template_kwargs_and_surfaces_reasoning(self) -> None:
+        """enable_thinking travels as chat_template_kwargs; reasoning streams on
+        its own `reasoning` event and is kept out of the answer content."""
+        response = _Response(
+            {},
+            lines=[
+                'data: {"choices":[{"delta":{"reasoning_content":"Let me "}}]}',
+                'data: {"choices":[{"delta":{"reasoning_content":"think."}}]}',
+                'data: {"choices":[{"delta":{"content":"Answer."}}]}',
+                'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":9}}',
+                "data: [DONE]",
+            ],
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            events = list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "q"}],
+                options={"num_ctx": 131_072, "chat_template_kwargs": {"enable_thinking": True}},
+            ))
+
+        # Per-request thinking flag reached the server.
+        self.assertEqual(
+            post.call_args.kwargs["json"]["chat_template_kwargs"],
+            {"enable_thinking": True},
+        )
+        # Reasoning surfaced on its own channel, in order, verbatim.
+        reasoning = [e["content"] for e in events if e.get("type") == "reasoning"]
+        self.assertEqual(reasoning, ["Let me ", "think."])
+        # Answer deltas stay separate from reasoning.
+        deltas = [e["content"] for e in events if e.get("type") == "delta"]
+        self.assertEqual(deltas, ["Answer."])
+        # Final assembled message: answer in content, reasoning apart.
+        message = events[-1]["response"]["message"]
+        self.assertEqual(message["content"], "Answer.")
+        self.assertEqual(message["reasoning_content"], "Let me think.")
+
+    def test_no_thinking_option_omits_chat_template_kwargs(self) -> None:
+        response = _Response(
+            {},
+            lines=['data: {"choices":[{"delta":{"content":"hi"}}]}', "data: [DONE]"],
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "q"}],
+                options={"num_ctx": 131_072},
+            ))
+        self.assertNotIn("chat_template_kwargs", post.call_args.kwargs["json"])
+
+    def test_chat_completion_passes_thinking_and_surfaces_reasoning(self) -> None:
+        response = _Response(
+            {
+                "model": "local-model",
+                "choices": [{"message": {
+                    "role": "assistant",
+                    "content": "OK",
+                    "reasoning_content": "because reasons",
+                }}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            result = openai_compatible.chat_completion(
+                model="local-model",
+                messages=[{"role": "user", "content": "hi"}],
+                options={"chat_template_kwargs": {"enable_thinking": True}},
+            )
+        self.assertEqual(post.call_args.kwargs["json"]["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(result["message"]["content"], "OK")
+        self.assertEqual(result["message"]["reasoning_content"], "because reasons")
+
     def test_model_list_uses_openai_models_endpoint(self) -> None:
         response = _Response({"data": [{"id": "local-model", "root": "Qwen/Qwen2.5-7B-Instruct", "n_ctx": 16384}]})
         with patch.dict(os.environ, _llama_env(), clear=False), patch(

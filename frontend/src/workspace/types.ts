@@ -15,6 +15,10 @@ export type AgentTurnData = {
   id: string;
   toolCalls: CodeAgentToolCall[];
   text: string;
+  /** Model reasoning streamed on the separate `reasoning_delta` channel when the
+   *  «Рассуждение» toggle is on. Shown in a collapsible block, kept out of the
+   *  answer text and out of conversation history. */
+  reasoning?: string;
   running: boolean;
   activeTool?: string;
   error?: string | null;
