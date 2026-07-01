@@ -182,14 +182,15 @@ class DeferredLoopTest(unittest.TestCase):
         self.assertIn("not activated", tc[0]["result"].lower())
 
     def test_tool_search_does_not_activate_side_effect_tool(self):
-        # screenshot is side-effect and NOT in the curated whitelist, so in the
-        # default (ask) mode tool_search leaves it gated. (bypass would lift it.)
-        chat = ScriptedChat([_call("tool_search", query="screenshot"), _final()])
+        # An UNCURATED side-effect tool (e.g. a fresh plugin, not in
+        # SEARCH_ACTIVATABLE_SIDE_EFFECT) stays gated in the default (ask) mode.
+        # (Curated native side-effect tools ARE activatable; bypass lifts all.)
+        chat = ScriptedChat([_call("tool_search", query="uncurated"), _final()])
         with _loop_env(), patch("app.application.tool_registry.runtime.search_tool_specs",
-                                return_value=[_match("screenshot", side_effect=True)]):
+                                return_value=[_match("uncurated_plugin_writer", side_effect=True)]):
             _run(chat, run_id="r5")
         # side-effect tool was never activated -> still hidden on the next step
-        self.assertNotIn("screenshot", chat.tools_per_call[1])
+        self.assertNotIn("uncurated_plugin_writer", chat.tools_per_call[1])
 
     def test_base_side_effect_tool_still_enforced_by_executor(self):
         from app.application.agent_registry.sandbox import _make_error

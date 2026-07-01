@@ -35,9 +35,17 @@ BASE_TOOLS: tuple[str, ...] = (
 # Narrowed base for the read-only persona posture (mode "Личный").
 READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")
 
-# Side-effect tools tool_search may activate in normal modes (bypass lifts all).
+# Side-effect tools tool_search may activate in normal (ask/accept_edits) modes;
+# bypass lifts the restriction for ANY side-effect tool. This lists every curated
+# native side-effect tool — so the only thing still gated at activation is an
+# UNKNOWN/uncurated side-effect tool (e.g. a freshly-added plugin), which stays
+# hidden until vetted. Activation is visibility-only; the executor's approval gate
+# still asks before any of these actually runs in non-bypass modes.
 SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
-    {"computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver"}
+    {
+        "computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver",
+        "encrypt", "webhook", "screenshot",
+    }
 )
 
 # Auto-approved under "accept_edits" — filesystem-shaped, non-shell/non-net.
