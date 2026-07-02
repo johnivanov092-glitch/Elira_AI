@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +89,13 @@ def _init_db() -> None:
 
 
 _init_db()
+
+
+def prune_events(max_age_days: int = 45) -> dict[str, Any]:
+    """Retention for event_bus.db — delete events/messages older than max_age_days
+    and VACUUM. Driven on a daily cadence from the task-recovery scheduler."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    return event_bus_store.prune_old_events(conn_factory=_conn, cutoff_iso=cutoff)
 
 
 def _dumps(value: Any) -> str:

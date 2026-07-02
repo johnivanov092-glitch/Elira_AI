@@ -120,6 +120,34 @@ def recover_stale_tasks(
     )
 
 
+# Daily gate for observability retention, piggy-backed on the recovery loop so
+# VACUUM runs ~once/day instead of every 600s interval. monotonic() starts at 0,
+# so the first loop iteration (after one interval) runs the initial prune.
+_last_observability_prune: list[float] = [0.0]
+_OBSERVABILITY_PRUNE_EVERY_S = 86400.0
+
+
+def _maybe_prune_observability() -> None:
+    """Best-effort daily retention for agent_monitor.db + event_bus.db (FIX-10).
+    Lazy-imports the runtimes so task_planner stays decoupled; never raises."""
+    import time as _time
+
+    now = _time.monotonic()
+    if now - _last_observability_prune[0] < _OBSERVABILITY_PRUNE_EVERY_S:
+        return
+    _last_observability_prune[0] = now
+    try:
+        from app.application.monitoring.runtime import prune_metrics
+        prune_metrics()
+    except Exception as exc:
+        logger.warning("metrics retention failed: %s", exc)
+    try:
+        from app.application.event_bus.runtime import prune_events
+        prune_events()
+    except Exception as exc:
+        logger.warning("event retention failed: %s", exc)
+
+
 def start_task_recovery_scheduler(
     *,
     interval_seconds: float | None = None,
@@ -160,6 +188,7 @@ def start_task_recovery_scheduler(
                 fn()
             except Exception as exc:
                 logger.warning("periodic task recovery failed: %s", exc)
+            _maybe_prune_observability()
 
     thread = threading.Thread(target=_loop, name="task-recovery", daemon=True)
     thread.start()

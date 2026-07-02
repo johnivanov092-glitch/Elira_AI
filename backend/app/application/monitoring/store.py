@@ -168,6 +168,28 @@ def get_connection(db_path: str | Path) -> sqlite3.Connection:
     return connect_sqlite(db_path)
 
 
+def prune_old_metrics(db_path: str | Path, *, cutoff_iso: str, vacuum: bool = True) -> dict[str, Any]:
+    """Delete monotonically-growing telemetry rows older than cutoff and reclaim
+    disk. created_at is ISO-8601 so a lexical `<` compares chronologically. VACUUM
+    runs on a fresh connection (it cannot run inside an open transaction)."""
+    removed: dict[str, int] = {}
+    con = get_connection(db_path)
+    try:
+        for table in ("agent_metrics", "resource_usage"):
+            cur = con.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff_iso,))
+            removed[table] = cur.rowcount
+        con.commit()
+    finally:
+        con.close()
+    if vacuum:
+        con2 = get_connection(db_path)
+        try:
+            con2.execute("VACUUM")
+        finally:
+            con2.close()
+    return {"ok": True, "cutoff": cutoff_iso, "removed": removed}
+
+
 def init_db(db_path: str | Path) -> None:
     with get_connection(db_path) as con:
         con.executescript(CREATE_SQL)

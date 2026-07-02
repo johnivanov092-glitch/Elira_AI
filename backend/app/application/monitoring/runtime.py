@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,14 @@ def _init_db() -> None:
 
 
 _init_db()
+
+
+def prune_metrics(max_age_days: int = 45) -> dict[str, Any]:
+    """Retention for agent_monitor.db — delete telemetry older than max_age_days
+    and VACUUM. Called on a daily cadence from the task-recovery scheduler so the
+    DB stops growing monotonically."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    return monitoring_store.prune_old_metrics(DB_PATH, cutoff_iso=cutoff)
 
 
 def seed_default_limits() -> int:

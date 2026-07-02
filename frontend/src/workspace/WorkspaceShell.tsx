@@ -131,7 +131,14 @@ export default function WorkspaceShell() {
   useEffect(() => {
     let alive = true;
     waitForBackend(20, 1500).then((ok) => { if (alive) setConnected(ok); });
-    return () => { alive = false; };
+    // Keep the connection indicator live: re-check /health periodically so a
+    // backend that dies mid-session flips to "disconnected" instead of showing
+    // "connected" forever (FIX-13). waitForBackend(1, 0) is a single 4s-bounded
+    // probe (WebView2-safe manual AbortController).
+    const id = setInterval(() => {
+      waitForBackend(1, 0).then((ok) => { if (alive) setConnected(ok); });
+    }, 15_000);
+    return () => { alive = false; clearInterval(id); };
   }, []);
 
   useEffect(() => {

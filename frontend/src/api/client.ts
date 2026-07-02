@@ -4,6 +4,11 @@ export type ApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
   raw?: boolean;
   responseType?: ResponseType;
+  /** Abort the request after this many ms so a silently-hung backend fails fast
+   *  instead of leaving the caller waiting forever. Default 120s; pass 0 to
+   *  disable (for genuinely long ops like project indexing). Ignored if the
+   *  caller already supplies its own AbortSignal. */
+  timeoutMs?: number;
 };
 
 export type FallbackValue<T> = T | ((error: unknown) => T | Promise<T>);
@@ -131,6 +136,7 @@ export async function request<T = unknown>(
     body,
     raw = false,
     responseType,
+    timeoutMs = 120_000,
     ...rest
   } = options;
 
@@ -150,12 +156,29 @@ export async function request<T = unknown>(
     }
   }
 
-  const response = await fetch(buildApiUrl(path), {
-    method,
-    headers: finalHeaders,
-    body: finalBody,
-    ...rest,
-  });
+  // Inactivity timeout via a manual AbortController (AbortSignal.timeout isn't in
+  // older WebView2). Skipped when the caller passes its own signal or timeoutMs=0.
+  let timeoutSignal: AbortSignal | undefined;
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+  const callerSignal = (rest as { signal?: AbortSignal }).signal;
+  if (!callerSignal && timeoutMs > 0) {
+    const controller = new AbortController();
+    timeoutSignal = controller.signal;
+    timeoutTimer = setTimeout(() => controller.abort(), timeoutMs);
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(path), {
+      method,
+      headers: finalHeaders,
+      body: finalBody,
+      ...rest,
+      ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+    });
+  } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  }
 
   if (raw) return response;
 

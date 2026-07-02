@@ -293,6 +293,29 @@ export async function resumeCodeAgent(
   await consumeCodeAgentStream(response, handlers);
 }
 
+// The backend heartbeats every ~10s, so no bytes for this long means it died or
+// the connection stalled. Without this the UI shows "Думает…" forever (FIX-13).
+const SSE_INACTIVITY_MS = 90_000;
+
+/** reader.read() that rejects if no chunk arrives within `ms`. The timer is
+ *  cleared as soon as a chunk (or a real error) resolves, so it never leaks
+ *  across the many reads of a long stream. */
+function readWithInactivityTimeout<T>(
+  reader: ReadableStreamDefaultReader<T>,
+  ms: number,
+): Promise<ReadableStreamReadResult<T>> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("Соединение с агентом прервалось — нет ответа. Попробуй ещё раз.")),
+      ms,
+    );
+    reader.read().then(
+      (result) => { clearTimeout(timer); resolve(result); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 export async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers): Promise<void> {
   const { onEvent, onRunId, onError } = handlers;
   const headerRunId = response.headers.get("X-Run-Id");
@@ -320,7 +343,7 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
 
   try {
     for (;;) {
-      const { value, done } = await reader.read();
+      const { value, done } = await readWithInactivityTimeout(reader, SSE_INACTIVITY_MS);
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let idx;
@@ -348,6 +371,8 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
     }
   } catch (err) {
     if ((err as DOMException)?.name === "AbortError") return;
+    // Free the socket on an inactivity timeout / read error before surfacing it.
+    try { await reader.cancel(); } catch { /* already closed */ }
     onError?.(err as Error);
   }
 }
@@ -542,6 +567,7 @@ export async function indexProject({
   return request<IndexProjectResult>("/api/code-agent/index-project", {
     method: "POST",
     body: { project_root: projectRoot, patterns, replace },
+    timeoutMs: 600_000, // indexing a large repo can take minutes — don't abort early
   });
 }
 

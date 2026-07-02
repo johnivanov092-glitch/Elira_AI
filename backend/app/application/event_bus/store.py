@@ -10,6 +10,33 @@ def init_db(*, conn_factory: Callable[[], Any], create_sql: str) -> None:
         con.executescript(create_sql)
 
 
+def prune_old_events(*, conn_factory: Callable[[], Any], cutoff_iso: str, vacuum: bool = True) -> dict[str, Any]:
+    """Retention for event_bus.db — delete events/messages older than cutoff_iso
+    (ISO-8601, so a lexical `<` compares chronologically) and reclaim disk. VACUUM
+    runs on a fresh connection because it cannot run inside an open transaction."""
+    removed: dict[str, int] = {}
+    con = conn_factory()
+    try:
+        existing = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        for table in ("events", "messages"):
+            if table not in existing:
+                continue  # schema may not have this table — skip, don't abort
+            cur = con.execute(f"DELETE FROM {table} WHERE created_at < ?", (cutoff_iso,))
+            removed[table] = cur.rowcount
+        con.commit()
+    finally:
+        con.close()
+    if vacuum:
+        con2 = conn_factory()
+        try:
+            con2.execute("VACUUM")
+        finally:
+            con2.close()
+    return {"ok": True, "cutoff": cutoff_iso, "removed": removed}
+
+
 def dumps_json(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False)
 
