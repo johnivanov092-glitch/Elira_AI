@@ -361,7 +361,7 @@ function ChatRow({
           </button>
           <button
             type="button"
-            onClick={() => onDelete(s.id)}
+            onClick={() => { if (window.confirm("Удалить этот чат? Историю нельзя будет восстановить.")) onDelete(s.id); }}
             aria-label="Удалить диалог"
             title="Удалить"
             className="grid h-5 w-5 shrink-0 place-items-center rounded text-mut opacity-0 transition-opacity hover:text-tx group-hover:opacity-100"

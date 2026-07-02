@@ -1,6 +1,7 @@
 import { Braces, Globe, Play, Sparkles, Square, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { request } from "../../api/client";
+import { toast } from "../../components/ToastHost";
 import { cn } from "../../ui/cn";
 import { Loading, McpBtn, Note, Wrap } from "./_shared";
 
@@ -65,7 +66,9 @@ export function ExperimentalSection() {
       });
       setFlags(next);
     } catch {
-      /* offline — leave state unchanged */
+      // Surface the failure instead of silently reverting — the toggle looked
+      // like it did nothing otherwise (FIX-20).
+      toast.error("Не удалось сохранить настройку");
     } finally {
       setBusy("");
     }

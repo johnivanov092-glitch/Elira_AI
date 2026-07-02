@@ -151,7 +151,12 @@ export default function WorkspaceShell() {
 
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    // Stick-to-bottom (FIX-17): only auto-scroll when the user is already near the
+    // bottom, so scrolling up to read earlier output isn't yanked back down on
+    // every new token/turn. ~120px threshold tolerates minor drift.
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [run.turns]);
 
   useEffect(() => {
