@@ -87,6 +87,26 @@ def extract_bearer(auth_header: str | None) -> str:
     return auth_header.strip()
 
 
+def make_auth_middleware(open_paths):
+    """Build the HTTP auth middleware (extracted from main.py so the 401 path is
+    testable via ASGI without importing the whole app + its startup schedulers).
+    Loopback callers pass; non-loopback callers need a valid token."""
+    from starlette.responses import JSONResponse
+
+    async def _auth_guard(request, call_next):
+        if request.method == "OPTIONS" or request.url.path in open_paths:
+            return await call_next(request)
+        client_host = request.client.host if request.client else None
+        if not is_authorized(client_host, request.headers.get("authorization")):
+            return JSONResponse(
+                {"detail": "Unauthorized: API token required for non-local access"},
+                status_code=401,
+            )
+        return await call_next(request)
+
+    return _auth_guard
+
+
 def is_authorized(
     client_host: str | None,
     auth_header: str | None,

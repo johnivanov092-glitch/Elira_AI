@@ -22,7 +22,7 @@ import { Composer } from "./Composer";
 import { Transcript } from "./Transcript";
 import { PreviewPanel } from "./PreviewPanel";
 import { CommandPalette, type PaletteAction } from "./CommandPalette";
-import { Settings } from "./Settings";
+import { Settings, type SettingsSection } from "./Settings";
 import { PipelinesShell } from "./PipelinesShell";
 import { TerminalDock } from "./TerminalDock";
 import { useAgentRun } from "./useAgentRun";
@@ -38,6 +38,9 @@ export default function WorkspaceShell() {
   const [tab, setTab] = useState<MainTab>("chat");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Which Settings section to open at — set by the command palette (FIX-19),
+  // undefined = default ("Модель") when opened from the topbar.
+  const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [menuOpen, setMenuOpen] = useState(false);
   // Trigger for the Composer's hidden file input, registered via onAttachReady.
   // Lets the "+" menu's "Прикрепить файл" open the picker that lives in Composer.
@@ -171,7 +174,7 @@ export default function WorkspaceShell() {
   }, []);
 
   function onPaletteAction(a: PaletteAction) {
-    if (a.kind === "settings") setSettingsOpen(true);
+    if (a.kind === "settings") { setSettingsSection(a.section); setSettingsOpen(true); }
     else if (a.kind === "pipelines") setTab("pipe");
     else if (a.kind === "preview") setPreviewOpen(true);
     else if (a.kind === "prefill") setInput((v) => (v.trim() ? v.trimEnd() + " " : "") + a.text);
@@ -318,7 +321,7 @@ export default function WorkspaceShell() {
           tab={tab}
           onTab={setTab}
           onPickProject={pick}
-          onSettings={() => setSettingsOpen(true)}
+          onSettings={() => { setSettingsSection(undefined); setSettingsOpen(true); }}
           previewOpen={previewOpen}
           onTogglePreview={() => setPreviewOpen((v) => !v)}
           terminalOpen={terminalOpen}
@@ -373,7 +376,7 @@ export default function WorkspaceShell() {
 
       {showPreview && <PreviewPanel artifacts={artifacts} project={project} onClose={() => setPreviewOpen(false)} />}
 
-      {settingsOpen && <Settings model={model} onModel={setModel} onClose={() => setSettingsOpen(false)} project={project} />}
+      {settingsOpen && <Settings model={model} onModel={setModel} onClose={() => setSettingsOpen(false)} project={project} initialSection={settingsSection} />}
       {paletteOpen && <CommandPalette onAction={onPaletteAction} onClose={() => setPaletteOpen(false)} />}
     </div>
   );

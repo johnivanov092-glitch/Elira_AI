@@ -4,9 +4,10 @@ import {
   Package, Palette, Search, Send, Server, TerminalSquare, type LucideIcon,
 } from "lucide-react";
 import { cn } from "../ui/cn";
+import type { SettingsSection } from "./Settings";
 
 export type PaletteAction =
-  | { kind: "settings" }
+  | { kind: "settings"; section?: SettingsSection }
   | { kind: "pipelines" }
   | { kind: "preview" }
   | { kind: "prefill"; text: string };
@@ -18,13 +19,13 @@ const ITEMS: Item[] = [
   { id: "sandbox", group: "Инструменты", label: "Python-песочница", sub: "sandbox_run", icon: Code2, action: { kind: "prefill", text: "Запусти в песочнице Python: " } },
   { id: "bash", group: "Инструменты", label: "Shell", sub: "run_bash", icon: TerminalSquare, action: { kind: "prefill", text: "Выполни команду: " } },
   { id: "recall", group: "Инструменты", label: "Поиск по памяти", sub: "recall", icon: Brain, action: { kind: "prefill", text: "Вспомни из памяти: " } },
-  { id: "mcp", group: "Плагины", label: "Плагины и MCP", sub: "управление плагинами, подключить MCP", icon: Package, action: { kind: "settings" } },
-  { id: "model", group: "Возможности", label: "Модель и провайдер", sub: "настройки", icon: Cpu, action: { kind: "settings" } },
-  { id: "memory", group: "Возможности", label: "Память", sub: "настройки", icon: Brain, action: { kind: "settings" } },
-  { id: "dash", group: "Возможности", label: "Дашборд", sub: "метрики", icon: LayoutDashboard, action: { kind: "settings" } },
-  { id: "tg", group: "Возможности", label: "Telegram", sub: "одобрения", icon: Send, action: { kind: "settings" } },
-  { id: "ssh", group: "Возможности", label: "SSH / MCP", sub: "настройки", icon: Server, action: { kind: "settings" } },
-  { id: "theme", group: "Возможности", label: "Тема", sub: "настройки", icon: Palette, action: { kind: "settings" } },
+  { id: "mcp", group: "Плагины", label: "Плагины и MCP", sub: "управление плагинами, подключить MCP", icon: Package, action: { kind: "settings", section: "sshmcp" } },
+  { id: "model", group: "Возможности", label: "Модель и провайдер", sub: "настройки", icon: Cpu, action: { kind: "settings", section: "model" } },
+  { id: "memory", group: "Возможности", label: "Память", sub: "настройки", icon: Brain, action: { kind: "settings", section: "memory" } },
+  { id: "dash", group: "Возможности", label: "Дашборд", sub: "метрики", icon: LayoutDashboard, action: { kind: "settings", section: "dashboard" } },
+  { id: "tg", group: "Возможности", label: "Telegram", sub: "одобрения", icon: Send, action: { kind: "settings", section: "telegram" } },
+  { id: "ssh", group: "Возможности", label: "SSH / MCP", sub: "настройки", icon: Server, action: { kind: "settings", section: "sshmcp" } },
+  { id: "theme", group: "Возможности", label: "Тема", sub: "настройки", icon: Palette, action: { kind: "settings", section: "theme" } },
   { id: "pipe", group: "Возможности", label: "Пайплайны", sub: "режим", icon: GitBranch, action: { kind: "pipelines" } },
   { id: "prev", group: "Возможности", label: "Превью", sub: "панель артефактов", icon: PanelRight, action: { kind: "preview" } },
 ];

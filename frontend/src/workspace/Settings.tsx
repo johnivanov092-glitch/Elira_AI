@@ -15,11 +15,11 @@ import { ExperimentalSection } from "./settings/ExperimentalSection";
 import { VoiceSection } from "./settings/VoiceSection";
 import { ThemeSection } from "./settings/ThemeSection";
 
-type Section =
+export type SettingsSection =
   | "model" | "profiles" | "persona" | "memory" | "library" | "chatmemory"
   | "dashboard" | "telegram" | "sshmcp" | "experimental" | "voice" | "theme";
 
-const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
+const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
   { id: "profiles", label: "Профили", icon: UserCog },
   { id: "persona", label: "Личность", icon: Sparkles },
@@ -34,8 +34,8 @@ const NAV: { id: Section; label: string; icon: LucideIcon }[] = [
   { id: "theme", label: "Тема", icon: Palette },
 ];
 
-export function Settings({ model, onModel, onClose, project }: { model: string; onModel: (m: string) => void; onClose: () => void; project: string }) {
-  const [section, setSection] = useState<Section>("model");
+export function Settings({ model, onModel, onClose, project, initialSection }: { model: string; onModel: (m: string) => void; onClose: () => void; project: string; initialSection?: SettingsSection }) {
+  const [section, setSection] = useState<SettingsSection>(initialSection ?? "model");
 
   return (
     <div className="fixed inset-0 z-30 flex justify-center bg-black/50 pt-[42px]" onClick={onClose}>

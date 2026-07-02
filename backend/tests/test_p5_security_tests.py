@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class AuthNegativeTest(unittest.TestCase):
@@ -21,6 +22,57 @@ class AuthNegativeTest(unittest.TestCase):
         self.assertTrue(is_authorized("192.168.1.50", "Bearer secret", token="secret", enabled=True))
         self.assertTrue(is_authorized("127.0.0.1", None, token="secret", enabled=True))  # loopback trusted
         self.assertTrue(is_authorized("192.168.1.50", None, token="secret", enabled=False))  # auth off
+
+
+class AuthMiddlewareAsgiTest(unittest.TestCase):
+    """FIX-26: the REAL auth middleware returns 401 for a non-loopback client with
+    no token, driven through ASGI (not just the pure is_authorized function)."""
+
+    def _app(self):
+        from app.core.auth import make_auth_middleware
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.middleware("http")(make_auth_middleware(frozenset({"/health"})))
+
+        @app.get("/protected")
+        def protected():
+            return {"ok": True}
+
+        @app.get("/health")
+        def health():
+            return {"ok": True}
+
+        return app
+
+    def _client_from(self, app, host: str):
+        from fastapi.testclient import TestClient
+
+        async def wrapper(scope, receive, send):
+            if scope["type"] == "http":
+                scope = dict(scope)
+                scope["client"] = (host, 12345)  # force a non-loopback peer
+            await app(scope, receive, send)
+
+        return TestClient(wrapper)
+
+    def test_non_loopback_without_token_is_401(self):
+        with patch.dict(os.environ, {"ELIRA_API_AUTH": "on"}, clear=False):
+            r = self._client_from(self._app(), "203.0.113.7").get("/protected")
+        self.assertEqual(r.status_code, 401)
+
+    def test_non_loopback_with_valid_token_ok(self):
+        from app.core import auth
+        with patch.dict(os.environ, {"ELIRA_API_AUTH": "on"}, clear=False), \
+                patch.object(auth, "API_TOKEN", "secret"):
+            r = self._client_from(self._app(), "203.0.113.7").get(
+                "/protected", headers={"Authorization": "Bearer secret"},
+            )
+        self.assertEqual(r.status_code, 200)
+
+    def test_open_path_allowed_without_token(self):
+        with patch.dict(os.environ, {"ELIRA_API_AUTH": "on"}, clear=False):
+            r = self._client_from(self._app(), "203.0.113.7").get("/health")
+        self.assertEqual(r.status_code, 200)
 
 
 class PathContainmentTest(unittest.TestCase):

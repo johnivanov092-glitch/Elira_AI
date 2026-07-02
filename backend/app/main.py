@@ -19,7 +19,7 @@ from starlette.responses import JSONResponse
 from app.api.routes.registry import ALL_ROUTERS
 from app.application.elira_memory.service import init_db
 from app.application.runtime.status import init_runtime_state
-from app.core.auth import is_authorized
+from app.core.auth import make_auth_middleware
 
 # Centralized logging config (FIX-16). basicConfig is a no-op if the host
 # (uvicorn / pytest) already configured the root logger, so it never clobbers
@@ -50,18 +50,10 @@ async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSON
 # 401 responses (the last-added middleware is outermost in Starlette).
 _AUTH_OPEN_PATHS = frozenset({"/health"})
 
-
-@app.middleware("http")
-async def _auth_guard(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path in _AUTH_OPEN_PATHS:
-        return await call_next(request)
-    client_host = request.client.host if request.client else None
-    if not is_authorized(client_host, request.headers.get("authorization")):
-        return JSONResponse(
-            {"detail": "Unauthorized: API token required for non-local access"},
-            status_code=401,
-        )
-    return await call_next(request)
+# Middleware extracted to app.core.auth.make_auth_middleware so the 401 path is
+# unit-testable via ASGI (see tests). Registered here BEFORE CORS so CORS stays
+# outermost (last-added middleware is outermost in Starlette).
+app.middleware("http")(make_auth_middleware(_AUTH_OPEN_PATHS))
 
 
 # CORS: localhost + LAN (для mobile mode).

@@ -38,6 +38,7 @@ import venv
 from pathlib import Path
 from typing import Any
 
+from app.application.code_agent.tools._run import _agent_child_env
 from app.application.projects.scope import project_scope_slug
 from app.core.data_files import DATA_DIR
 
@@ -155,6 +156,9 @@ def run_in_sandbox(
                     capture_output=True,
                     text=True,
                     timeout=max(30, min(int(timeout) * 3, 600)),
+                    # Strip secret env so pip (and any build hooks it runs) can't
+                    # read Elira's GitHub/HF/API tokens (FIX-1).
+                    env=_agent_child_env(),
                 )
                 install_log = (proc.stdout or "") + (proc.stderr or "")
                 if proc.returncode != 0:
@@ -183,9 +187,11 @@ def run_in_sandbox(
     script_path = sandbox / _SCRIPT_NAME
     script_path.write_text(code or "", encoding="utf-8")
 
-    # PYTHONUTF8 + LANG=C.UTF-8 keep print()/repr behaviour predictable
-    # across Windows and Linux without changing the user's main env.
-    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    # sandbox_run executes arbitrary model-written Python, so it is the MOST
+    # dangerous env-inheritance path (`import os; print(os.environ[...])`). Build
+    # the child env from the secret-stripped base (FIX-1) — NOT full os.environ —
+    # then layer the UTF-8 knobs that keep print()/repr predictable cross-platform.
+    env = {**_agent_child_env(), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
     try:
         proc = subprocess.run(
