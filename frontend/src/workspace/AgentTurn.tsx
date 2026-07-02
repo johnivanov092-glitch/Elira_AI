@@ -1,5 +1,5 @@
 import { Brain, ChevronDown, Loader2, RotateCcw, ShieldQuestion, Volume2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { ToolCallGroup } from "./ToolCallGroup";
 import type { AgentTurnData, PendingApproval } from "./types";
@@ -8,7 +8,10 @@ import { cn } from "../ui/cn";
 
 type ApproveFn = (approvalId: string, decision: "approve" | "reject") => void;
 
-export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
+// Memoized (FIX-23): a streaming delta rebuilds the turns array but keeps the
+// reference of every UNCHANGED turn, so memo skips re-rendering all the finished
+// turns on each token (callbacks from useAgentRun are stable useCallbacks).
+export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
   const idle = turn.running && !turn.text && !turn.reasoning && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval;
   const [speaking, setSpeaking] = useState(false);
 
@@ -97,7 +100,7 @@ export function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { tur
       )}
     </div>
   );
-}
+});
 
 /** Collapsible «Рассуждение» block — the model's chain-of-thought streamed on
  *  the separate reasoning channel (when the composer's think toggle is on).

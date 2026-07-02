@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -60,13 +61,19 @@ def _build_project_context_from_open_project() -> str:
         if not root.exists():
             return ""
 
+        # FIX-25: prune blocked dirs during the walk and stop at 50 files, instead
+        # of sorted(rglob("*"))[:50] which materialised + sorted the WHOLE tree
+        # (descending into node_modules/.git) before slicing.
+        blocked = {".git", "node_modules", "__pycache__", ".venv", "dist"}
         file_list: list[str] = []
-        for file_path in sorted(root.rglob("*"))[:50]:
-            if not file_path.is_file():
-                continue
-            if any(blocked in str(file_path) for blocked in [".git", "node_modules", "__pycache__", ".venv", "dist"]):
-                continue
-            file_list.append(str(file_path.relative_to(root)))
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if d not in blocked)
+            for fname in sorted(filenames):
+                file_list.append(str((Path(dirpath) / fname).relative_to(root)))
+                if len(file_list) >= 50:
+                    break
+            if len(file_list) >= 50:
+                break
 
         if not file_list:
             return ""

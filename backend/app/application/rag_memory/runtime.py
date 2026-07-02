@@ -307,6 +307,7 @@ def search_rag(
     limit: int = 5,
     min_score: float = 0.3,
     project: str | None = None,
+    candidate_limit: int = 2000,
 ) -> dict[str, Any]:
     query = (query or "").strip()
     if not query:
@@ -325,6 +326,10 @@ def search_rag(
     )
     conn = conn_factory()
     try:
+        # Candidate cap (FIX-24): rank by importance and take the top N as
+        # similarity candidates instead of scanning the whole table on every
+        # search. Bounds cost as the store grows (an ANN index is the long-term
+        # fix); 2000 covers a local store while capping worst-case latency.
         if project:
             # Project-scope: items tagged with this project + globals
             # (project == '') so user-level facts still surface.
@@ -333,12 +338,14 @@ def search_rag(
                 SELECT {base_cols} FROM rag_items
                 WHERE project = ? OR project = '' OR project IS NULL
                 ORDER BY importance DESC
+                LIMIT ?
                 """,
-                (project,),
+                (project, int(candidate_limit)),
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT {base_cols} FROM rag_items ORDER BY importance DESC"
+                f"SELECT {base_cols} FROM rag_items ORDER BY importance DESC LIMIT ?",
+                (int(candidate_limit),),
             ).fetchall()
     finally:
         conn.close()
