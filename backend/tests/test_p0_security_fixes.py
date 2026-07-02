@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -62,6 +63,19 @@ class PinnedPatchTest(unittest.TestCase):
             self.assertNotIn("pinned", captured)          # not sent → not written
             R.patch_code_session("s1", R.SessionPatchRequest(pinned=True))
             self.assertEqual(captured.get("pinned"), True)  # explicit → written
+
+
+class DataDirRedirectTest(unittest.TestCase):
+    """FIX-6: config paths honour ELIRA_DATA_DIR so pytest never writes live data/."""
+
+    def test_config_paths_follow_env_not_live_tree(self):
+        from app.core import config
+        expected = Path(os.environ["ELIRA_DATA_DIR"]).resolve()
+        self.assertEqual(config.DATA_DIR, expected)
+        self.assertEqual(config.UPLOAD_DIR, expected / "uploads")
+        self.assertEqual(config.GENERATED_DIR, expected / "generated")
+        # and it is NOT the developer's live <repo>/data tree
+        self.assertNotEqual(config.DATA_DIR, (config.ROOT_DIR / "data").resolve())
 
 
 if __name__ == "__main__":

@@ -1,11 +1,16 @@
 """config.py — пути, модели, промпты."""
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT_DIR      = Path(__file__).resolve().parents[3]
 BACKEND_DIR   = ROOT_DIR / "backend"
-APP_DIR       = ROOT_DIR / "data"
-DATA_DIR      = APP_DIR
+# DATA_DIR honours ELIRA_DATA_DIR (falls back to <repo>/data) so tests and alt
+# deployments never touch the live data/ tree — every derived path below inherits
+# the redirect. conftest.py sets ELIRA_DATA_DIR to a temp dir before app modules
+# import, so the whole suite writes there instead of the developer's real data/.
+DATA_DIR      = Path(os.getenv("ELIRA_DATA_DIR") or (ROOT_DIR / "data")).resolve()
+APP_DIR       = DATA_DIR
 UPLOAD_DIR    = DATA_DIR / "uploads"
 CHAT_DIR      = DATA_DIR / "chats"
 OUTPUT_DIR    = DATA_DIR / "outputs"
@@ -13,6 +18,8 @@ SETTINGS_PATH = DATA_DIR / "settings.json"
 BROWSER_DIR   = DATA_DIR / "browser_downloads"
 GENERATED_DIR = DATA_DIR / "generated"
 
+# Create the runtime dirs under the RESOLVED data dir (the test temp dir under
+# pytest, the live data/ in production) — never the live tree during tests.
 for _d in [UPLOAD_DIR, CHAT_DIR, OUTPUT_DIR, BROWSER_DIR, GENERATED_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
