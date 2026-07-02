@@ -1,4 +1,4 @@
-import { API_BASE, buildApiUrl, request, withAuth } from "./client";
+import { API_BASE, ApiError, buildApiUrl, request, withAuth } from "./client";
 import type { ChatAttachment } from "./chat";
 
 export const DEFAULT_CODE_AGENT_MODEL = "auto";
@@ -447,8 +447,13 @@ export async function getCodeSession(sessionId: string): Promise<CodeSessionFull
   try {
     const res = await request<{ ok: boolean; session: CodeSessionFull }>(`/api/code-agent/sessions/${encodeURIComponent(sessionId)}`);
     return res.session || null;
-  } catch {
-    return null;
+  } catch (err) {
+    // 404 = genuinely gone → null (caller may start fresh). Any other error
+    // (network / 5xx) is RE-THROWN: it must NOT masquerade as an empty session,
+    // or the caller seeds a blank transcript and the next save overwrites the
+    // real turns on the server (data loss).
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
   }
 }
 

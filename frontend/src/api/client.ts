@@ -8,6 +8,18 @@ export type ApiRequestOptions = Omit<RequestInit, "body"> & {
 
 export type FallbackValue<T> = T | ((error: unknown) => T | Promise<T>);
 
+/** Error carrying the HTTP status, so callers can distinguish 404 (genuinely
+ *  missing) from a transient 5xx / network failure — critical for not treating a
+ *  failed load as "empty" and overwriting good server data. */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 // Always use the explicit IPv4 loopback address for the backend.
 // Tauri desktop app: backend is always on 127.0.0.1:8000.
 // Using window.location.hostname risks picking up "localhost" which on Windows
@@ -153,7 +165,7 @@ export async function request<T = unknown>(
   else payload = await parseResponse(response);
 
   if (!response.ok) {
-    throw new Error(normalizeError(payload, response.status));
+    throw new ApiError(normalizeError(payload, response.status), response.status);
   }
 
   return payload as T;

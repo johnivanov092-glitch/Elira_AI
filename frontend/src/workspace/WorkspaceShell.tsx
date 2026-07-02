@@ -56,6 +56,12 @@ export default function WorkspaceShell() {
   // session id exists), or the server id once a saved chat is opened. The manager
   // is rekeyed from draft -> server id when createCodeSession resolves.
   const [activeKey, setActiveKey] = useState<string>(() => newDraftKey());
+  // FIX-3: when a session fails to LOAD (network / 5xx, not a genuine 404) we must
+  // not seed a blank transcript or arm persist — otherwise the next save overwrites
+  // the real turns on the server. Track failed keys to also block sending on them,
+  // and surface a banner so the user knows the history is intact server-side.
+  const loadFailedKeys = useRef(new Set<string>());
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const run = useAgentRun(activeKey, project, model);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -169,6 +175,12 @@ export default function WorkspaceShell() {
     // works out of the box. Picking a folder targets a specific project.
     const msg = text.trim();
     if (!msg) return;
+    // FIX-3: refuse to send into a chat whose history failed to load — persisting
+    // this run would overwrite the intact server turns with a blank transcript.
+    if (loadFailedKeys.current.has(activeKey)) {
+      setLoadError("Чат не загрузился — не отправляю, чтобы не потерять историю. Открой чат заново.");
+      return;
+    }
     // Bind persistence to THIS run's key before it starts, so the run saves
     // itself when it finishes — even if you've switched to another chat by then
     // (background completion). The closure captures the run's own project/model.
@@ -221,6 +233,8 @@ export default function WorkspaceShell() {
     setActiveKey(id);
     try {
       const s = await getCodeSession(id);
+      loadFailedKeys.current.delete(id);
+      setLoadError(null);
       if (!bg.isRunning(id)) {
         bg.seed(id, s ? deserializeTurns(s.turns) : [], s?.task_ledger || [], s?.context_state || null);
       }
@@ -228,7 +242,12 @@ export default function WorkspaceShell() {
       if (s?.project_root) setProject(s.project_root);
       if (s?.model) setModel(s.model);
     } catch {
-      if (!bg.isRunning(id)) bg.seed(id, []);
+      // Load FAILED (network / 5xx): do NOT seed a blank transcript and do NOT arm
+      // persist — a later save would push the empty snapshot over the real server
+      // turns. Mark the key unsafe so onSend also refuses until a successful reload.
+      loadFailedKeys.current.add(id);
+      bg.setPersist(id, null);
+      setLoadError("Не удалось загрузить чат. История на сервере не тронута — попробуй открыть его ещё раз.");
     }
   }
 
@@ -325,6 +344,13 @@ export default function WorkspaceShell() {
         {run.autoApprove && (
           <div className="border-t border-acl bg-acs px-4 py-1.5 text-center text-[11.5px] text-ac">
             Авто-одобрение включено для этой сессии — агент действует без запроса (сбросится в новом чате)
+          </div>
+        )}
+
+        {loadError && (
+          <div className="flex items-center justify-between gap-2 border-t border-red-500/40 bg-red-500/10 px-4 py-1.5 text-[11.5px] text-red-300">
+            <span>{loadError}</span>
+            <button type="button" onClick={() => setLoadError(null)} className="shrink-0 px-1 text-red-300/80 hover:text-red-200" aria-label="Скрыть">×</button>
           </div>
         )}
 
