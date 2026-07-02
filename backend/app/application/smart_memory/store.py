@@ -17,7 +17,8 @@ def normalize_profile(profile_name: str | None) -> str:
 
 
 def connect_memory_db() -> sqlite3.Connection:
-    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
+    # WAL (connect_sqlite default) — a memory write must not block concurrent reads.
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row)
 
 
 def init_memory_db() -> None:

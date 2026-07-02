@@ -17,7 +17,8 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _connect():
-    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
+    # WAL (connect_sqlite default) so plan writes don't block readers.
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row)
 
 
 def _init_db():

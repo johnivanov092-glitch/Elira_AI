@@ -13,7 +13,8 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def connect_telegram_db() -> sqlite3.Connection:
-    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
+    # WAL (connect_sqlite default) — integrations.db writer must not block readers.
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row)
 
 
 def init_telegram_db() -> None:

@@ -34,5 +34,30 @@ class UploadLimitTest(unittest.TestCase):
         self.assertNotEqual(r.status_code, 413)  # under the limit → not rejected
 
 
+class WalModeTest(unittest.TestCase):
+    """FIX-9: hot DBs open in WAL so a writer doesn't block readers."""
+
+    def test_hot_dbs_use_wal(self):
+        from app.application.code_agent import sessions
+        from app.application.smart_memory import store
+        from app.application.task_planner import service
+        from app.application.autopipeline import runtime as autopipeline
+        from app.application.telegram import store as telegram
+        conn_fns = [
+            sessions._conn,
+            store.connect_memory_db,
+            service._connect,
+            autopipeline._connect,
+            telegram.connect_telegram_db,
+        ]
+        for conn_fn in conn_fns:
+            conn = conn_fn()
+            try:
+                mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+                self.assertEqual(str(mode).lower(), "wal", f"{conn_fn.__module__} not WAL")
+            finally:
+                conn.close()
+
+
 if __name__ == "__main__":
     unittest.main()

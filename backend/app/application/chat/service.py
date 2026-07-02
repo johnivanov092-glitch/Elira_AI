@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 PlanRunner = Callable[[str], dict[str, Any]]
@@ -408,7 +411,10 @@ def prepare_chat_execution(
                     "Сохранено: " + str(saved_memory_items),
                 )
     except Exception:
-        pass
+        # Business path (chat-memory persistence): surface the failure in the log
+        # instead of swallowing it silently, so a broken extract_and_save is
+        # visible in backend.log. Non-fatal — the turn still proceeds.
+        logger.warning("chat memory save/timeline failed", exc_info=True)
 
     preflight_or_raise_func(
         agent_id=agent_id,

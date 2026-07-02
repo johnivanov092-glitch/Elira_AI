@@ -23,7 +23,9 @@ DB_PATH = sqlite_data_file("code_agent_sessions.db", key_tables=("sessions",))
 
 
 def _conn() -> sqlite3.Connection:
-    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, journal_mode=None)
+    # WAL (connect_sqlite default) so the autosave writer doesn't block readers;
+    # a longer busy_timeout absorbs contention on this hot, frequently-written DB.
+    return connect_sqlite(DB_PATH, row_factory=sqlite3.Row, timeout=20.0)
 
 
 def _now_ms() -> int:
