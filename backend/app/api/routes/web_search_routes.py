@@ -26,8 +26,11 @@ class FetchRequest(BaseModel):
     max_chars: int = 10000
 
 
+# These call blocking `requests`-based search/fetch. Declared as plain `def` so
+# FastAPI runs them in its threadpool instead of freezing the event loop (they
+# have no `await`, so there is no reason to be `async def`).
 @router.post("/search")
-async def web_search(req: SearchRequest):
+def web_search(req: SearchRequest):
     return web_search_runtime.search(
         req.query,
         engines=req.engines,
@@ -36,7 +39,7 @@ async def web_search(req: SearchRequest):
 
 
 @router.post("/deep-search")
-async def web_deep_search(req: DeepSearchRequest):
+def web_deep_search(req: DeepSearchRequest):
     return web_search_runtime.deep_search(
         req.query,
         engines=req.engines,
@@ -46,12 +49,12 @@ async def web_deep_search(req: DeepSearchRequest):
 
 
 @router.post("/news")
-async def web_news(req: SearchRequest):
+def web_news(req: SearchRequest):
     return web_search_runtime.news(req.query, max_results=req.max_results)
 
 
 @router.post("/fetch")
-async def web_fetch(req: FetchRequest):
+def web_fetch(req: FetchRequest):
     return web_search_runtime.fetch(req.url, max_chars=req.max_chars)
 
 

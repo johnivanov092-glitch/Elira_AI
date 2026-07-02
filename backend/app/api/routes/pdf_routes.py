@@ -9,20 +9,32 @@ pdf_routes.py — API для продвинутой работы с PDF.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, UploadFile, File
+import asyncio
+
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.application.pdf import runtime as pdf_runtime
+from app.core.config import MAX_UPLOAD_BYTES
 
 router = APIRouter(prefix="/api/pdf", tags=["pdf-pro"])
+
+
+async def _read_pdf_upload(file: UploadFile) -> bytes:
+    """Read an uploaded file and reject oversized bodies (413) BEFORE the handler's
+    try/except, so the size guard isn't swallowed into a generic 500."""
+    data = await file.read()
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"file larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB")
+    return data
 
 
 @router.post("/extract")
 async def api_extract(file: UploadFile = File(...)):
     """Умное извлечение: pypdf → pdfplumber → OCR."""
+    data = await _read_pdf_upload(file)
     try:
-        data = await file.read()
-        result = pdf_runtime.extract_pdf_smart(data)
+        result = await asyncio.to_thread(pdf_runtime.extract_pdf_smart, data)
         return {
             "ok": True,
             "filename": file.filename,
@@ -39,9 +51,9 @@ async def api_extract(file: UploadFile = File(...)):
 @router.post("/tables")
 async def api_tables(file: UploadFile = File(...)):
     """Извлечь таблицы из PDF → Excel."""
+    data = await _read_pdf_upload(file)
     try:
-        data = await file.read()
-        return pdf_runtime.pdf_tables_to_excel(data, filename=f"{file.filename}_tables")
+        return await asyncio.to_thread(pdf_runtime.pdf_tables_to_excel, data, filename=f"{file.filename}_tables")
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -49,9 +61,9 @@ async def api_tables(file: UploadFile = File(...)):
 @router.post("/to-word")
 async def api_to_word(file: UploadFile = File(...)):
     """Конвертировать PDF → Word."""
+    data = await _read_pdf_upload(file)
     try:
-        data = await file.read()
-        return pdf_runtime.pdf_to_word(data, filename=file.filename.replace(".pdf", ""))
+        return await asyncio.to_thread(pdf_runtime.pdf_to_word, data, filename=file.filename.replace(".pdf", ""))
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -59,9 +71,9 @@ async def api_to_word(file: UploadFile = File(...)):
 @router.post("/analyze")
 async def api_analyze(file: UploadFile = File(...)):
     """Подробный анализ PDF."""
+    data = await _read_pdf_upload(file)
     try:
-        data = await file.read()
-        return pdf_runtime.analyze_pdf(data)
+        return await asyncio.to_thread(pdf_runtime.analyze_pdf, data)
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -69,9 +81,9 @@ async def api_analyze(file: UploadFile = File(...)):
 @router.post("/preview")
 async def api_preview(file: UploadFile = File(...), pages: str = "1,2,3"):
     """Рендерит страницы PDF как PNG картинки."""
+    data = await _read_pdf_upload(file)
     try:
-        data = await file.read()
         page_list = [int(p.strip()) for p in pages.split(",") if p.strip().isdigit()]
-        return pdf_runtime.render_pdf_pages(data, page_list or None)
+        return await asyncio.to_thread(pdf_runtime.render_pdf_pages, data, page_list or None)
     except Exception as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})

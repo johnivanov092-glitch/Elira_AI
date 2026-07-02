@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from app.core.config import MAX_UPLOAD_BYTES
 from app.application.library.runtime import (
     add_file_contents,
     delete_file,
@@ -37,6 +38,8 @@ async def add_file(
     use_in_context: bool = Form(True),
 ):
     contents = await file.read()
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"file larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB")
     # add_file_contents runs vision / OCR / audio transcription (network calls —
     # seconds, up to minutes for audio) plus a SQLite write. Offload to a worker
     # thread so a large upload can't block the event loop and stall other requests.

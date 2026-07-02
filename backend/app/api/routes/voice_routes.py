@@ -5,11 +5,14 @@ Piper service). GET /api/voice/voices + /api/voice/status for the picker.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app.application.voice import runtime as voice_runtime
+from app.core.config import MAX_UPLOAD_BYTES
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 
@@ -41,8 +44,14 @@ async def voice_stt(file: UploadFile = File(...), language: str | None = Form(de
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="empty audio")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"audio larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB")
     try:
-        text = voice_runtime.transcribe(data, filename=file.filename or "audio", language=language, timeout=600)
+        # Whisper transcription is blocking (a network call to the STT service);
+        # off-load it so the event loop keeps serving /health and SSE streams.
+        text = await asyncio.to_thread(
+            voice_runtime.transcribe, data, filename=file.filename or "audio", language=language, timeout=600,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"STT failed: {exc}")
     return JSONResponse(

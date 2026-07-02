@@ -23,6 +23,11 @@ GENERATED_DIR = DATA_DIR / "generated"
 for _d in [UPLOAD_DIR, CHAT_DIR, OUTPUT_DIR, BROWSER_DIR, GENERATED_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
+# Single cap for all file-upload routes (voice / pdf / files / library). An
+# unbounded await file.read() risks OOM on a huge upload; routes reject bigger
+# bodies with HTTP 413. 25 MiB mirrors chat.py's attachment limit.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
 STATIC_MODEL_DESCRIPTIONS = {
     "local-model":                "Local llama-server - OpenAI-compatible endpoint",
     "qwen3-coder:480b-cloud":   "Qwen3 Coder 480B — облачный кодер",
