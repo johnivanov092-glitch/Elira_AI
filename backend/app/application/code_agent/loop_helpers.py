@@ -212,6 +212,41 @@ def _looks_like_repeat_request(text: str) -> bool:
     return any(m in t for m in _REPEAT_REQUEST_MARKERS)
 
 
+# Client-side <think> stripper (safety net). The reasoning/content split relies
+# on llama-server's template parsing; if a model swap or llama.cpp update breaks
+# it, raw think-blocks would leak into content and then into history. Handles an
+# unterminated trailing <think> too (a cut-off generation).
+_THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think_blocks(text: str) -> str:
+    if "<think" not in (text or "").lower():
+        return text or ""
+    return _THINK_BLOCK_RE.sub("", text or "")
+
+
+def _normalized_fingerprint(name: str, args: dict[str, Any]) -> str:
+    """Loop-guard fingerprint with whitespace-collapsed string values, so a stray
+    space/newline in an argument doesn't make an identical retry look 'new' and
+    slip past the repeat counter forever. Structure (offsets, different paths)
+    still distinguishes legitimately different calls."""
+    import json as _json
+
+    def _norm(value: Any) -> Any:
+        if isinstance(value, str):
+            return " ".join(value.split())
+        if isinstance(value, dict):
+            return {str(k): _norm(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_norm(v) for v in value]
+        return value
+
+    return _json.dumps(
+        {"tool": name, "arguments": _norm(args or {})},
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
+
+
 def _norm_answer(text: str) -> str:
     """Normalise an assistant answer for exact-duplicate comparison: collapse all
     whitespace and strip. Deterministic — only answers that are byte-identical

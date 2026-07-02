@@ -76,6 +76,24 @@ type RunEntry = {
 
 const _runs = new Map<string, RunEntry>();
 
+/** Collapse consecutive duplicate paragraphs in an assistant answer before it
+ *  enters conversation_history. A degenerate ×N-repeated answer that slipped
+ *  into a saved turn would otherwise teach the model "my style is to repeat
+ *  myself" on every following turn — this breaks that feedback loop. Exact
+ *  consecutive matches only, so legitimately repeated short lines survive. */
+function dedupeParagraphs(text: string): string {
+  if (!text.includes("\n")) return text;
+  const out: string[] = [];
+  let prev: string | null = null;
+  for (const para of text.split("\n")) {
+    const key = para.trim();
+    if (key.length > 40 && key === prev) continue;
+    out.push(para);
+    if (key) prev = key;
+  }
+  return out.join("\n");
+}
+
 function contextUsageFromState(state: ContextState | null): ContextUsage | null {
   if (!state) return null;
   const direct = state as Partial<ContextUsage>;
@@ -243,6 +261,14 @@ function wire(
         patch((a) => ({ ...a, runId: e.run_id }));
       }
       if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined }));
+      else if (e.type === "step_started") {
+        // Show only the CURRENT step's stream. Deltas used to concatenate across
+        // all steps into one blob; final_response normally replaced it, but on
+        // abort paths (LLM error / cancel / stream timeout) no final arrives and
+        // the multi-step concat got persisted as the answer — and then fed back
+        // into the next turn's history, teaching the model to repeat itself.
+        patch((a) => (a.running ? { ...a, text: "", reasoning: undefined } : a));
+      }
       else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
       else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text }));
       else if (e.type === "tool_call") {
@@ -360,7 +386,7 @@ export function send(args: SendArgs): void {
   }
   for (const t of entry.snapshot.turns) {
     if (t.kind === "user") history.push({ role: "user", content: t.text });
-    else if (t.kind === "agent" && t.text) history.push({ role: "assistant", content: t.text });
+    else if (t.kind === "agent" && t.text) history.push({ role: "assistant", content: dedupeParagraphs(t.text) });
   }
   const agentId = nid();
   entry.runId = null;

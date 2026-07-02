@@ -116,17 +116,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_STEPS = 200
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
 MAX_CODE_AGENT_STEPS = 200
-# Per-request DRY sampler params sent only on thinking runs (llama.cpp accepts
-# them in the request body — verified against the live server). DRY penalises
-# repeated token sequences at sampling time, so a reasoning model can't lock into
-# a degenerate "same sentence forever" loop. Standard recommended values; server
-# default is off, so the non-think path is unchanged.
-_THINKING_SAMPLING = {
+# Per-request DRY sampler params (llama.cpp accepts them in the request body —
+# verified against the live server). DRY penalises repeated token sequences at
+# sampling time, so the model can't lock into a degenerate "same paragraph
+# forever" loop. Originally think-only; extended to ALL runs after a live
+# non-think run produced a paragraph repeated ×20 in the ANSWER channel (the
+# content path had no anti-repeat protection at all). Safe for codegen: DRY's
+# default sequence breakers ("\n" etc.) reset matching at line boundaries, so
+# legitimate repeated code structure isn't penalised the way run-on prose is.
+_ANTI_REPEAT_SAMPLING = {
     "dry_multiplier": 0.8,
     "dry_base": 1.75,
     "dry_allowed_length": 2,
     "dry_penalty_last_n": -1,
 }
+# How many reasoning-runaway generations (provider cut the chain-of-thought at
+# its per-generation ceiling) a single run tolerates before being force-
+# finalized — the cross-step budget missing from the per-generation guard.
+_REASONING_RUNAWAY_LIMIT = 2
+# Malformed inline tool-trace recoveries are nudge-and-retry; bound them so a
+# model stuck emitting broken tool markup can't burn all 200 steps.
+_MALFORMED_TRACE_LIMIT = 3
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 6
 # Repeats at or above this count (but below the hard limit) get a loud nudge
@@ -337,6 +347,8 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _messages_char_count,
     _mode_auto_approves,
     _norm_answer,
+    _normalized_fingerprint,
+    _strip_think_blocks,
     _prepare_messages_for_llm,
     _record_code_route_metric,
     _schema_tool_name,
@@ -528,6 +540,13 @@ def _stream_code_agent_core(
         # then let it finalize rather than loop forever.
         intent_gate_fires = 0
         _INTENT_GATE_MAX = 2
+        # Cross-step budget for degenerate generations: the provider's runaway
+        # guard is per-generation, so a model that loops its reasoning EVERY step
+        # could burn all 200 steps in cut-off generations. Two runaway events in
+        # one run → force-finalize (loop_guard-style). Malformed inline tool
+        # traces get the same bounding (the recovery nudge used to be unlimited).
+        reasoning_runaway_count = 0
+        malformed_trace_count = 0
         prev_assistant_text = next(
             (str(m.get("content") or "") for m in reversed(messages)
              if isinstance(m, dict) and m.get("role") == "assistant"),
@@ -614,15 +633,15 @@ def _stream_code_agent_core(
                         profile_name, getattr(_route_decision, "role", None)
                     ),
                 }
+                # Per-request DRY anti-repetition on EVERY run: the answer channel
+                # degenerated into a ×20-paragraph loop on a non-think run, so the
+                # protection can no longer be think-only.
+                llm_options["sampling"] = dict(_ANTI_REPEAT_SAMPLING)
                 # Thinking toggle (per-request, --jinja server): opt the run into
                 # model reasoning without a server restart. Reasoning streams on a
                 # separate channel below; the server default stays off when unset.
-                # Also enable per-request DRY anti-repetition so a reasoning model
-                # can't fall into a degenerate "same sentence forever" loop; scoped
-                # to thinking runs so the well-tested non-think path is untouched.
                 if thinking:
                     llm_options["chat_template_kwargs"] = {"enable_thinking": True}
-                    llm_options["sampling"] = dict(_THINKING_SAMPLING)
                 llm_kwargs = {
                     "model": model,
                     "messages": messages,
@@ -711,8 +730,32 @@ def _stream_code_agent_core(
                 return
 
             message = (response or {}).get("message") or {}
-            content = (message.get("content") or "").strip()
+            # Safety net: reasoning/content separation relies on the SERVER's
+            # template parsing. If that ever breaks (model swap, llama.cpp
+            # update), raw <think> blocks would flow into content → history →
+            # the model keeps reasoning as content. Strip them client-side too.
+            content = _strip_think_blocks(message.get("content") or "").strip()
             tool_calls = message.get("tool_calls") or []
+            # Cross-step runaway budget: the provider cut this generation's
+            # reasoning at its ceiling. One event is survivable; repeated events
+            # mean the model is stuck in a degenerate loop — force-finalize
+            # instead of burning the remaining steps on cut-off generations.
+            if (response or {}).get("reasoning_runaway"):
+                reasoning_runaway_count += 1
+                if reasoning_runaway_count >= _REASONING_RUNAWAY_LIMIT:
+                    final_text = _wrap_up_text(
+                        chat, model, safe_num_ctx, messages, call_log,
+                        "модель зацикливается в рассуждениях",
+                    )
+                    yield {"type": "final_response", "step": step, "text": final_text}
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "loop_guard",
+                        "error": "reasoning runaway repeated; run finalized early",
+                    }
+                    return
             step_usage = extract_llm_usage(response)
             record_inference_telemetry(
                 agent_id=effective_agent_id,
@@ -779,6 +822,23 @@ def _stream_code_agent_core(
                 # recovered calls as-is (deterministic fallback to today's path).
 
             if not tool_calls and _contains_tool_trace(content):
+                malformed_trace_count += 1
+                if malformed_trace_count >= _MALFORMED_TRACE_LIMIT:
+                    # Bounded: a model stuck emitting broken tool markup used to
+                    # retry indefinitely (up to the step cap). Finalize instead.
+                    final_text = _wrap_up_text(
+                        chat, model, safe_num_ctx, messages, call_log,
+                        "модель повторяет некорректную разметку вызова инструмента",
+                    )
+                    yield {"type": "final_response", "step": step, "text": final_text}
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "loop_guard",
+                        "error": "malformed tool trace repeated; run finalized early",
+                    }
+                    return
                 messages.append({
                     "role": "user",
                     "content": (
@@ -954,12 +1014,9 @@ def _stream_code_agent_core(
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
-                fingerprint = json.dumps(
-                    {"tool": name, "arguments": parsed_args},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                )
+                # Whitespace-normalized fingerprint: a stray space/newline in a
+                # retried argument no longer evades the repeat counter.
+                fingerprint = _normalized_fingerprint(name, parsed_args)
                 repeated_tool_calls[fingerprint] = repeated_tool_calls.get(fingerprint, 0) + 1
                 if (
                     name not in _LOOP_GUARD_EXEMPT_TOOLS

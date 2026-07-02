@@ -332,6 +332,22 @@ def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, A
     }
 
 
+# When the caller sets no max_tokens, reserve a realistic output budget in the
+# pre-send guard anyway. Without this an at-the-limit prompt passed the gate,
+# the server context-shifted mid-generation and returned empty/garbled content —
+# which downstream looks like "the model repeated its previous answer".
+_DEFAULT_OUTPUT_RESERVE_TOKENS = 1024
+
+
+def _estimate_tokens(text: str) -> int:
+    """Coarse char→token estimate. Cyrillic tokenizes ~2.8 chars/token (vs ~4 for
+    ASCII/code); a flat /4 under-counted Russian prompts by ~30%, letting
+    over-limit prompts through the guard."""
+    cyr = sum(1 for ch in text if "Ѐ" <= ch <= "ӿ")
+    ascii_like = len(text) - cyr
+    return int(cyr / 2.8 + ascii_like / 4) + 1
+
+
 def _guard_context_request(
     messages: list[dict[str, Any]],
     *,
@@ -341,9 +357,8 @@ def _guard_context_request(
     context_limit = _positive_int(requested_ctx)
     if context_limit is None:
         return
-    prompt_chars = len(json.dumps(messages, ensure_ascii=False))
-    prompt_tokens = (prompt_chars + 3) // 4
-    output_tokens = _positive_int(max_tokens) or 0
+    prompt_tokens = _estimate_tokens(json.dumps(messages, ensure_ascii=False))
+    output_tokens = _positive_int(max_tokens) or _DEFAULT_OUTPUT_RESERVE_TOKENS
     safety_margin = max(128, context_limit // 64)
     required = prompt_tokens + output_tokens + safety_margin
     if required > context_limit:
@@ -390,6 +405,38 @@ def _apply_sampling_extra(payload: dict[str, Any], opts: dict[str, Any]) -> None
 # runaway repetition loop is cut here so it can't generate into the whole context
 # window or burn the execution deadline. Only reached when thinking is on.
 _MAX_REASONING_CHARS = 24000
+
+# Content-channel analogue (the answer had NO runaway protection: a live run
+# produced one paragraph ×20). Hard cap plus a paragraph-repeat detector: if the
+# latest paragraph (>40 chars) already occurs many times in the accumulated
+# answer, the generation is degenerate — cut it. Checked on paragraph boundaries
+# only, so the per-token cost is negligible.
+_MAX_CONTENT_CHARS = 60000
+_CONTENT_REPEAT_PARA_LIMIT = 6
+
+
+def _content_looks_degenerate(text: str) -> bool:
+    """True when the tail paragraph of *text* repeats _CONTENT_REPEAT_PARA_LIMIT+
+    times — the signature of a sampling attractor, not a legitimate answer."""
+    paras = [p.strip() for p in text.split("\n") if len(p.strip()) > 40]
+    if len(paras) < _CONTENT_REPEAT_PARA_LIMIT:
+        return False
+    tail = paras[-1]
+    return paras.count(tail) >= _CONTENT_REPEAT_PARA_LIMIT
+
+
+def _collapse_repeated_paragraphs(text: str) -> str:
+    """Collapse consecutive duplicate paragraphs (used after a degenerate cut so
+    the surviving answer reads once, not ×N)."""
+    out: list[str] = []
+    prev = None
+    for para in text.split("\n"):
+        key = para.strip()
+        if key and key == prev:
+            continue
+        out.append(para)
+        prev = key if key else prev
+    return "\n".join(out)
 
 
 def _request_context_limit(options: dict[str, Any], *, configured_context: Any) -> int | None:
@@ -589,6 +636,9 @@ def chat_completion_event_stream(
     reasoning_parts: list[str] = []
     reasoning_chars = 0
     reasoning_runaway = False
+    content_chars = 0
+    content_runaway = False
+    content_check_at = 2000  # next accumulated-size checkpoint for the detector
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
     try:
@@ -636,7 +686,18 @@ def chat_completion_event_stream(
             token = str(delta.get("content") or "")
             if token:
                 content_parts.append(token)
+                content_chars += len(token)
                 yield {"type": "delta", "content": token}
+                # Content runaway guard: hard cap + paragraph-repeat detector,
+                # evaluated at coarse checkpoints so it costs ~nothing per token.
+                if content_chars > _MAX_CONTENT_CHARS:
+                    content_runaway = True
+                    break
+                if content_chars >= content_check_at:
+                    content_check_at = content_chars + 2000
+                    if _content_looks_degenerate("".join(content_parts)):
+                        content_runaway = True
+                        break
             for fragment in delta.get("tool_calls") or []:
                 if not isinstance(fragment, dict):
                     continue
@@ -676,6 +737,11 @@ def chat_completion_event_stream(
             "Рассуждение зациклилось и было прервано. Переформулируй вопрос "
             "или отключи «Мозг» для этой задачи."
         )
+    # A degenerate answer was cut mid-loop: collapse the accumulated repeats so
+    # the surviving text reads once, and note the cut.
+    if content_runaway:
+        final_content = _collapse_repeated_paragraphs(final_content).rstrip()
+        final_content += "\n\n[генерация прервана: ответ начал зацикливаться]"
     yield {
         "type": "message",
         "response": {
@@ -688,6 +754,7 @@ def chat_completion_event_stream(
             },
             "done": True,
             "reasoning_runaway": reasoning_runaway,
+            "content_runaway": content_runaway,
             "prompt_eval_count": prompt_tokens,
             "eval_count": completion_tokens,
             "total_duration": time.monotonic_ns() - started,
