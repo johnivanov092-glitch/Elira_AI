@@ -644,7 +644,7 @@ function ProfilePicker() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         disabled={busy || profiles === null}
-        title="Режим Elira (Авто / Личный / Баланс / Инженерный)"
+        title="Режим Elira (Авто / Личный / Баланс / Инженерный / Деловой)"
         aria-label="Режим Elira"
         className="flex h-7 items-center gap-1.5 rounded-full border border-line px-2.5 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
       >

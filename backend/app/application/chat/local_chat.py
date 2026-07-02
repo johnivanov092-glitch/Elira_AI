@@ -71,10 +71,26 @@ _PERSONAL_SIGNALS = re.compile(
     r"люблю|нравишься|поддержи|обними|расскажи\s+о\s+себе)\b",
     re.IGNORECASE,
 )
+# Business signals (Деловой): documents, counterparties, marketing copy, money.
+# Checked AFTER personal ones, so «напиши письмо маме» stays Личный while
+# «составь коммерческое предложение» routes to Деловой. Markers are deliberately
+# specific (деловое письмо / КП / БИН / оффер), not just «письмо».
+# Stems (no trailing \b) so Russian inflections match («контрагентА», «маржУ»),
+# mirroring _CODE_SIGNALS; only the short abbreviations keep strict boundaries.
+_BUSINESS_SIGNALS = re.compile(
+    r"(?:\b(?:коммерческ\w*\s+предложени|деловое\s+письмо|бизнес.?план|"
+    r"договор|контракт|контрагент|поставщик|инвойс|счёт[- ]фактур|счет[- ]фактур|"
+    r"протокол\s+встречи|переговор|прайс|смет[аоуые]|бюджет|маржинальн|марж[ауеи]|"
+    r"юнит.?экономик|рентабельн|прибыль|прибыли|выручк|"
+    r"оффер|лендинг|рассылк|воронк|реклам|маркетинг|"
+    r"учредител|юридическ)"
+    r"|\b(?:бин|иин|инн|огрн|кп)\b)",
+    re.IGNORECASE,
+)
 
 
 def classify_mode(user_input: str | None) -> str:
-    """Heuristic mode for "Авто": Инженерный / Личный / Баланс."""
+    """Heuristic mode for "Авто": Инженерный / Личный / Деловой / Баланс."""
     text = (user_input or "").strip()
     if not text:
         return DEFAULT_PROFILE
@@ -82,6 +98,8 @@ def classify_mode(user_input: str | None) -> str:
         return "Инженерный"
     if _PERSONAL_SIGNALS.search(text):
         return "Личный"
+    if _BUSINESS_SIGNALS.search(text):
+        return "Деловой"
     return DEFAULT_PROFILE
 
 

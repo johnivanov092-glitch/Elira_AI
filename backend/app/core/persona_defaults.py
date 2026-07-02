@@ -111,6 +111,33 @@ PERSONA_MODES = {
             "tags": ["код", "инженерия", "точность"],
         },
     },
+    "Деловой": {
+        # NB: only the FIRST sentence reaches the model (persona prompt is kept
+        # <600 chars for the local model — see _short_profile_line); the rest of
+        # the overlay is the Settings/picker preview. Counterparty/number
+        # grounding is additionally enforced for every mode by the code-agent
+        # base prompt (rules 9б/16) — the mode line reinforces the posture.
+        "overlay": (
+            "Режим работы: деловой — доводи до готового документа или решения "
+            "(письмо, КП, договор, маркетинг-текст), а факты о компаниях и цифры "
+            "бери только из проверяемых источников. Данные о контрагентах "
+            "(БИН/ИИН, руководители, владельцы, связи) — только из веб-поиска с "
+            "URL; нет источника → «не подтверждено», не выдумывай. Суммы и "
+            "проценты — из данных; прикидка = диапазон с пометкой «(оценка)». "
+            "Юридические документы — рабочая основа с обозначением рисков, "
+            "финальную проверку делает юрист. Тон вежливо-деловой, без "
+            "канцелярита; в маркетинге — живо и конкретно. Оставайся той же Elira."
+        ),
+        # More precise than Баланс (0.45) for documents and numbers, but not the
+        # code-strict None — marketing copy still needs a bit of life.
+        "temperature": 0.3,
+        "tools": "full",  # web_search for контрагенты, file_gen for документы
+        "ui": {
+            "icon": "◆",
+            "short": "Документы, маркетинг, финансы, контрагенты.",
+            "tags": ["письма", "КП", "маркетинг", "финансы"],
+        },
+    },
 }
 
 # Derived back-compat views (older imports expect these two dicts).

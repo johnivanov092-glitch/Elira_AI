@@ -59,7 +59,7 @@ export type CodeAgentRunArgs = {
    *  `/api/chat/attach`. Carried alongside the project so the unified "Чат\Код"
    *  chip can do both at once. Frontend-only fields are stripped before send. */
   attachments?: ChatAttachment[];
-  /** Persona mode (Авто / Личный / Баланс / Инженерный); "Авто" lets Elira pick
+  /** Persona mode (Авто / Личный / Баланс / Инженерный / Деловой); "Авто" lets Elira pick
    *  per message, a concrete mode locks it. Mirrors chat's profile_name field. */
   profileName?: string;
   /** Approval policy for this run (composer permission selector). Omitted → the
