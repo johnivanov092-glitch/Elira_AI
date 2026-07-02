@@ -107,21 +107,25 @@ if "%PREFLIGHT_EXIT%"=="21" (
 
 if "%PREFLIGHT_EXIT%"=="11" (
     echo [INFO] Перезапускаю Elira backend на 0.0.0.0...
-    start /min "Elira Backend (LAN)" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    start /min "Elira Backend (LAN)" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     timeout /t 4 /nobreak > nul
 ) else (
     if "%PREFLIGHT_EXIT%"=="0" (
     echo [INFO] Запускаю бекенд на 0.0.0.0...
-    start /min "Elira Backend (LAN)" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    start /min "Elira Backend (LAN)" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d \"%REPO_ROOT%\backend\" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000"
     timeout /t 4 /nobreak > nul
 ) else (
         echo [INFO] Использую уже запущенный backend на 8000...
     )
 )
 
+:: ═══ Читаю API-токен, иначе телефон получит 401 (auth включён по умолчанию) ═══
+set "ELIRA_TOKEN="
+if exist "%ELIRA_DATA_DIR%\elira_api_token" set /p ELIRA_TOKEN=<"%ELIRA_DATA_DIR%\elira_api_token"
+
 :: ═══ Запуск фронтенда на 0.0.0.0 ═══
 echo [INFO] Запускаю фронтенд на 0.0.0.0...
-start "" cmd /c "set VITE_API_BASE_URL=http://%IP%:8000&& set VITE_HOST=0.0.0.0&& cd /d \"%REPO_ROOT%\" && npm --prefix frontend run dev"
+start "" cmd /c "set VITE_API_BASE_URL=http://%IP%:8000&& set VITE_HOST=0.0.0.0&& set VITE_ELIRA_API_TOKEN=%ELIRA_TOKEN%&& cd /d \"%REPO_ROOT%\" && npm --prefix frontend run dev"
 
 timeout /t 3 /nobreak > nul
 

@@ -858,7 +858,10 @@ def create_code_session(payload: SessionCreateRequest) -> dict[str, Any]:
 @router.patch("/sessions/{session_id}")
 def patch_code_session(session_id: str, payload: SessionPatchRequest) -> dict[str, Any]:
     patch_data = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if "pinned" in payload.model_dump(exclude_unset=False):
+    # Only write `pinned` when the client explicitly sent it. model_dump(...) always
+    # contains the field, so the old check was always True and clobbered pinned with
+    # the default (None → SQLite 0) on any unrelated PATCH (e.g. autosave of turns).
+    if "pinned" in payload.model_fields_set:
         patch_data["pinned"] = payload.pinned
     sess = session_store.update_session(session_id, patch_data)
     if not sess:

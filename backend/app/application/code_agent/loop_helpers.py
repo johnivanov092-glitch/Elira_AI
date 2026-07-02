@@ -192,7 +192,11 @@ def _is_critical_call(tool_name: str, args: dict[str, Any] | None) -> bool:
             from app.application.code_agent.tools import is_shell_critical
             return is_shell_critical(str((args or {}).get("command", "")))
         except Exception:
-            return False
+            # Fail CLOSED: if the criticality check can't run (e.g. ImportError),
+            # treat the shell command as critical so it still asks for approval
+            # instead of silently auto-approving a possibly destructive command.
+            logger.warning("is_shell_critical failed; treating run_bash as critical", exc_info=True)
+            return True
     return False
 
 

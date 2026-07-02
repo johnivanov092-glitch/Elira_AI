@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import textwrap
@@ -38,6 +39,34 @@ from app.application.code_agent.tools._shell import (
 _INLINE_SCRIPT_INTERPRETERS = frozenset(
     {"python", "python3", "py", "node", "nodejs", "deno", "ruby", "perl", "php"}
 )
+
+
+# Secret-bearing env keys that agent-spawned child processes must NOT inherit.
+# The backend loads tokens into its own environment (GitHub PAT + HF for the MCP
+# servers, the Elira API token, the llama-server key); without this filter every
+# run_bash / run_server child the model launches would inherit them via the default
+# `env=None` (full os.environ) and could exfiltrate them. We strip by explicit name
+# plus a conservative secret pattern, but keep PATH and the rest of the environment
+# so normal toolchain commands still work (a strict allow-list would break language
+# toolchains on the user's own machine).
+_SECRET_ENV_EXPLICIT = frozenset({
+    "GITHUB_PERSONAL_ACCESS_TOKEN", "HUGGINGFACE_TOKEN", "HF_TOKEN",
+    "ELIRA_API_TOKEN", "VITE_ELIRA_API_TOKEN",
+    "LLAMA_SERVER_API_KEY", "LOCAL_EMBED_API_KEY",
+})
+_SECRET_ENV_RE = re.compile(
+    r"(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|_API_KEY|APIKEY)",
+    re.IGNORECASE,
+)
+
+
+def _agent_child_env() -> dict[str, str]:
+    """Parent environment minus secret-bearing keys, for agent-spawned children."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _SECRET_ENV_EXPLICIT and not _SECRET_ENV_RE.search(key)
+    }
 _INLINE_SCRIPT_FLAGS = frozenset({"-c", "-e", "--eval"})
 
 
@@ -92,6 +121,9 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(project_root.resolve()),
+            # Strip secret-bearing env keys so the model's shell child can't read
+            # Elira's GitHub/HF/API tokens (FIX-1).
+            env=_agent_child_env(),
             # Close stdin: a shell tool must never block on input. Interactive
             # prompts (ssh host-key/password, apt, etc.) get EOF and fail fast
             # instead of hanging until the timeout. For real SSH use the ssh tool.
@@ -469,6 +501,8 @@ def tool_run_server(
             stderr=subprocess.STDOUT,
             text=True,
             cwd=str(project_root.resolve()),
+            # Strip secret-bearing env keys from the model's server child (FIX-1).
+            env=_agent_child_env(),
             # Background servers never read stdin; close it so they don't block.
             stdin=subprocess.DEVNULL,
             # Own process group so `stop` kills the whole server tree, not just
