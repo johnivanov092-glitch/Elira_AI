@@ -526,6 +526,17 @@ export function isAutoApprove(sessionId: string): boolean {
   return _runs.get(sessionId)?.autoApprove ?? false;
 }
 
+/** Re-activate an approval's buttons if resolving it failed (network error etc.),
+ *  so the chip isn't stuck on "отправлено…" forever (FIX-15). */
+function revertResolving(entry: RunEntry, approvalId: string): void {
+  update(entry, (s) => ({
+    ...s,
+    turns: s.turns.map((t) => (t.kind === "agent" && t.pendingApproval?.approvalId === approvalId
+      ? { ...t, pendingApproval: { ...t.pendingApproval, resolving: false } }
+      : t)),
+  }));
+}
+
 /** Resolve a pending approval and mark it resolving in the snapshot. */
 export function approve(sessionId: string, approvalId: string, decision: "approve" | "reject"): void {
   const entry = _runs.get(sessionId);
@@ -536,8 +547,8 @@ export function approve(sessionId: string, approvalId: string, decision: "approv
         ? { ...t, pendingApproval: { ...t.pendingApproval, resolving: true } }
         : t)),
     }));
+    void resolveApproval(approvalId, decision).catch(() => revertResolving(entry, approvalId));
   }
-  void resolveApproval(approvalId, decision).catch(() => {});
 }
 
 export function approveAll(sessionId: string): void {
@@ -548,7 +559,8 @@ export function approveAll(sessionId: string): void {
     autoApprove: true,
     turns: s.turns.map((t) => {
       if (t.kind === "agent" && t.pendingApproval && !t.pendingApproval.resolving) {
-        void resolveApproval(t.pendingApproval.approvalId, "approve").catch(() => {});
+        const id = t.pendingApproval.approvalId;
+        void resolveApproval(id, "approve").catch(() => revertResolving(entry, id));
         return { ...t, pendingApproval: { ...t.pendingApproval, resolving: true } };
       }
       return t;

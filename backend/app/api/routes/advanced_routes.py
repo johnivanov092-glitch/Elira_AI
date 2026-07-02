@@ -158,26 +158,23 @@ def rag_list(limit: int = 50):
     return list_rag(limit)
 
 
-@router.delete("/rag/{item_id}")
-def rag_delete(item_id: int):
-    from app.application.rag_memory.service import delete_rag
-
-    return delete_rag(item_id)
-
-
-@router.get("/rag/stats")
-def rag_get_stats():
-    from app.application.rag_memory.service import rag_stats
-
-    return rag_stats()
-
-
+# Defined BEFORE /rag/{item_id} so the literal path wins — otherwise DELETE
+# /rag/clear is captured by /rag/{item_id} (item_id="clear" → 422) and the
+# clear endpoint is unreachable (pre-existing shadowing bug).
 @router.delete("/rag/clear")
-def rag_clear_category(category: str | None = None):
+def rag_clear_category(category: str | None = None, confirm: bool = False):
     """Bulk delete. If category is provided, deletes only items in that
     category; otherwise nukes everything in rag_items. Returns the
     number of rows removed.
+
+    Wiping ALL memory (no category) is destructive and requires confirm=true
+    (FIX-14) so a stray call can't silently erase the whole store.
     """
+    if not category and not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="Clearing ALL memory is destructive — pass confirm=true to proceed.",
+        )
     from app.application.rag_memory.service import _conn  # type: ignore[attr-defined]
 
     conn = _conn()
@@ -190,6 +187,20 @@ def rag_clear_category(category: str | None = None):
         return {"ok": True, "deleted": cur.rowcount, "category": category}
     finally:
         conn.close()
+
+
+@router.delete("/rag/{item_id}")
+def rag_delete(item_id: int):
+    from app.application.rag_memory.service import delete_rag
+
+    return delete_rag(item_id)
+
+
+@router.get("/rag/stats")
+def rag_get_stats():
+    from app.application.rag_memory.service import rag_stats
+
+    return rag_stats()
 
 
 @router.post("/rag/prune")

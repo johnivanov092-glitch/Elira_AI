@@ -21,9 +21,27 @@ from app.application.elira_memory.service import init_db
 from app.application.runtime.status import init_runtime_state
 from app.core.auth import is_authorized
 
+# Centralized logging config (FIX-16). basicConfig is a no-op if the host
+# (uvicorn / pytest) already configured the root logger, so it never clobbers
+# an existing setup — it just ensures the app's own logs have a format + level
+# when started bare.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Elira AI API")
+
+
+# Global safety net (FIX-16): any UNhandled route exception returns a generic 500
+# body — never the raw exception text (which can leak internal paths/state) — and
+# logs the full traceback server-side. FastAPI keeps handling HTTPException (404 /
+# 413 / etc.) via its own handler, so those still return their intended detail.
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse({"ok": False, "error": "internal server error"}, status_code=500)
 
 # ── Auth gate ───────────────────────────────────────────────────────────────
 # Loopback (Tauri shell + dev browser) is trusted and needs no token. Any

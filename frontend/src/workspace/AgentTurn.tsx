@@ -137,8 +137,8 @@ function ApprovalPrompt({ approval, onApprove, onApproveAll }: { approval: Pendi
         Разрешить действие: <span className="font-mono text-ac">{approval.tool}</span>
         {approval.waitedS ? <span className="text-mut">· ждём {approval.waitedS}с</span> : null}
       </div>
-      <pre className="mb-2.5 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-[#121216] p-2 font-mono text-[11px] text-t2">
-        {JSON.stringify(approval.arguments, null, 2).slice(0, 600)}
+      <pre className="mb-2.5 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-[#121216] p-2 font-mono text-[11px] text-t2">
+        {JSON.stringify(approval.arguments, null, 2)}
       </pre>
       <div className="flex flex-wrap items-center gap-2">
         <button

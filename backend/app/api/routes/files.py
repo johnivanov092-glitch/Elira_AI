@@ -4,6 +4,7 @@ files.py - извлечение текста из файлов.
 Поддержка: PDF, DOCX, XLSX, ZIP, BAS, VBA, CLS, FRM, RSC, и все текстовые.
 """
 import asyncio
+import logging
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 from app.application.file_extract import runtime as file_extract_runtime
 from app.core.config import MAX_UPLOAD_BYTES
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/files", tags=["files"])
 
 
@@ -23,5 +25,6 @@ async def extract_text(file: UploadFile = File(...)):
     try:
         # extract_file does blocking parsing (PDF/DOCX/XLSX) — off-load it.
         return await asyncio.to_thread(file_extract_runtime.extract_file, file.filename or "", contents)
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+    except Exception:
+        logger.exception("file extract failed for %s", file.filename)
+        return JSONResponse(status_code=500, content={"ok": False, "error": "extraction failed"})
