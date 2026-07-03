@@ -27,6 +27,27 @@ from app.application.code_agent.tools._shell import (
 )
 
 
+def _decode_console(data: bytes) -> str:
+    """Decode subprocess output. Windows console apps (ping/ipconfig/arp/netstat)
+    emit the OEM codepage (cp866 on RU Windows); the old text=True mode decoded
+    them with the ANSI/locale default (cp1251) → mojibake the model couldn't read,
+    so it flailed on network tasks. Try UTF-8 strict first (covers UTF-8 tools and
+    pure ASCII), then the OEM codepage, then a lossless latin-1 so it never raises."""
+    if not data:
+        return ""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if os.name == "nt":
+        for enc in ("oem", "cp866", "cp1251"):
+            try:
+                return data.decode(enc)
+            except (UnicodeDecodeError, LookupError):
+                continue
+    return data.decode("latin-1", errors="replace")
+
+
 # Interpreters whose inline-script form (`python -c "<script>"`, `node -e …`)
 # must bypass the shell. A MULTI-LINE script handed to `cmd.exe /c` on Windows is
 # truncated at the first newline — the interpreter then runs an empty/garbled body
@@ -119,7 +140,9 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             shell=_argv is None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            # Capture BYTES (not text=True): Windows console apps emit the OEM
+            # codepage, and text=True would decode with the wrong ANSI default
+            # (mojibake). Decoded via _decode_console below.
             cwd=str(project_root.resolve()),
             # Strip secret-bearing env keys so the model's shell child can't read
             # Elira's GitHub/HF/API tokens (FIX-1).
@@ -142,12 +165,12 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     # the OS pipe buffer and deadlock (child blocks on write → never exits →
     # poll() never completes). The main loop then only watches poll()/deadline,
     # which keeps the process killable mid-flight by the Stop button.
-    out_buf: list[str] = []
-    err_buf: list[str] = []
+    out_buf: list[bytes] = []
+    err_buf: list[bytes] = []
 
-    def _drain(stream, sink: list[str]) -> None:
+    def _drain(stream, sink: list[bytes]) -> None:
         try:
-            for chunk in iter(lambda: stream.read(8192), ""):
+            for chunk in iter(lambda: stream.read(8192), b""):
                 if not chunk:
                     break
                 sink.append(chunk)
@@ -202,7 +225,7 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             if not cancelled and proc.returncode is not None and proc.returncode < 0:
                 cancelled = True
 
-    out, err = "".join(out_buf), "".join(err_buf)
+    out, err = _decode_console(b"".join(out_buf)), _decode_console(b"".join(err_buf))
 
     if timed_out:
         tail = f"\n{_truncate_middle(err.rstrip(), _SHELL_STDERR_LIMIT)}" if err else ""
