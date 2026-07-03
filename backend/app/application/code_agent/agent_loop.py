@@ -315,6 +315,40 @@ def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
 _CANCEL_REGISTRY: dict[str, threading.Event] = {}
 _REGISTRY_LOCK = threading.Lock()
 
+
+def _exec_with_heartbeat(thunk, step):
+    """Run a blocking tool call (thunk) in a daemon thread, yielding `heartbeat`
+    events every _LLM_HEARTBEAT_EVERY seconds while it runs. A long tool (network
+    scan, build, long test) otherwise goes silent, and the client's 90s SSE
+    inactivity watchdog cuts the stream before the tool even returns
+    («Соединение с агентом прервалось — нет ответа»). The FINAL yielded item is
+    {'__result__': <ToolExecutionResult>}; the caller passes heartbeats through
+    and unwraps the result."""
+    box: dict[str, Any] = {}
+    finished = threading.Event()
+
+    def _run() -> None:
+        try:
+            box["r"] = thunk()
+        except BaseException as exc:  # noqa: BLE001 — re-raised in the generator
+            box["e"] = exc
+        finally:
+            finished.set()
+
+    threading.Thread(target=_run, daemon=True).start()
+    # Poll finer than the heartbeat interval, else a tool that finishes between
+    # polls (or a small interval) never triggers the elapsed-time check.
+    _poll = min(1.0, max(0.02, _LLM_HEARTBEAT_EVERY / 2.0))
+    _last = time.monotonic()
+    while not finished.wait(timeout=_poll):
+        _now = time.monotonic()
+        if _now - _last >= _LLM_HEARTBEAT_EVERY:
+            yield {"type": "heartbeat", "step": step}
+            _last = _now
+    if "e" in box:
+        raise box["e"]
+    yield {"__result__": box["r"]}
+
 # Pending ask_user questions: question_id -> answer (None = registered/awaiting,
 # str = answered). The HTTP answer route writes here; the paused loop polls it.
 # In-memory (like the cancel registry) — a restart drops the question and the
@@ -1387,7 +1421,13 @@ def _stream_code_agent_core(
                         "tool": name,
                         "arguments": parsed_args,
                     }
-                _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
+                _exec_result = None
+                for _hb in _exec_with_heartbeat(
+                    lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw), step):
+                    if "__result__" in _hb:
+                        _exec_result = _hb["__result__"]
+                    else:
+                        yield _hb
                 # F1: pause the loop while a human decides, instead of telling
                 # the model "waiting approval" and burning steps. The approval
                 # is consumed in the SAME run (binding incl. run_id intact).
@@ -1412,7 +1452,12 @@ def _stream_code_agent_core(
                             "arguments": parsed_args,
                         }
                         _delay_tool_started = False
-                    _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
+                    for _hb in _exec_with_heartbeat(
+                        lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw), step):
+                        if "__result__" in _hb:
+                            _exec_result = _hb["__result__"]
+                        else:
+                            yield _hb
                 if (
                     _exec_result.status == "waiting_approval"
                     and approval_wait_seconds > 0
@@ -1470,7 +1515,12 @@ def _stream_code_agent_core(
                                 "tool": name,
                                 "arguments": parsed_args,
                             }
-                        _exec_result = _kernel_exec(_request, dispatch_fn=registry.dispatch_raw)
+                        for _hb in _exec_with_heartbeat(
+                            lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw), step):
+                            if "__result__" in _hb:
+                                _exec_result = _hb["__result__"]
+                            else:
+                                yield _hb
                     elif _decision == "rejected":
                         _exec_result = ToolExecutionResult(
                             status="blocked",
