@@ -307,17 +307,27 @@ _GROUNDING_FACT_TOOLS = frozenset({
     "project_map", "glob", "grep", "read_file", "run_bash", "run_server",
     "web_search", "web_fetch", "http_api", "recall", "write_file", "edit_file",
 })
+# Enumeration tools reveal the COMPLETE set of files/structure. Truncating their
+# result to a short snippet was the residual grounding leak (live: the model had a
+# partial file list and invented setup.py/requirements.txt/test_main.py on top).
+# Carry their listing in full so "what files exist / list all files" is grounded
+# authoritatively and the model stops padding the set with plausible inventions.
+_ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
 _FACT_SNIPPET_CHARS = 220
-_FACTS_DIGEST_CHARS = 2200
+_ENUM_FACT_SNIPPET_CHARS = 900
+_FACTS_DIGEST_CHARS = 3000  # room for one full enumeration + several read facts
 FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
 
 
 def _fact_from_tool(name: str, arg_hint: str, text_result: str, *, ok: bool = True) -> str | None:
-    """One compact grounded-fact line from a discovery tool's result, or None
-    when the tool is not fact-bearing / failed / empty."""
+    """One grounded-fact line from a discovery tool's result, or None when the
+    tool is not fact-bearing / failed / empty. Enumeration tools (project_map /
+    glob) carry a much larger snippet so their full file list survives — an
+    authoritative structure is what stops the model inventing extra files."""
     if not ok or name not in _GROUNDING_FACT_TOOLS:
         return None
-    snippet = " ".join((text_result or "").split())[:_FACT_SNIPPET_CHARS]
+    cap = _ENUM_FACT_SNIPPET_CHARS if name in _ENUM_FACT_TOOLS else _FACT_SNIPPET_CHARS
+    snippet = " ".join((text_result or "").split())[:cap]
     if not snippet:
         return None
     hint = (arg_hint or "").strip()

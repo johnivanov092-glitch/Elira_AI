@@ -54,16 +54,26 @@ class FactHelperTest(unittest.TestCase):
         self.assertIsNone(_fact_from_tool("read_file", "x", "content", ok=False))
         self.assertIsNone(_fact_from_tool("glob", "*.py", "   \n  "))
 
-    def test_snippet_is_truncated(self):
+    def test_read_snippet_is_truncated(self):
         f = _fact_from_tool("run_bash", "ls", "x" * 5000)
-        self.assertLess(len(f), 400)
+        self.assertLess(len(f), 400)  # non-enum tools stay compact (220)
+
+    def test_enumeration_tools_carry_full_listing(self):
+        # project_map / glob reveal the COMPLETE file set — carry it in full so the
+        # model stops inventing extra files on top of a truncated list.
+        long_listing = " ".join(f"file{i}.py" for i in range(200))
+        g = _fact_from_tool("glob", "**/*.py", long_listing)
+        r = _fact_from_tool("read_file", "x.py", long_listing)
+        self.assertGreater(len(g), 500)          # enum carries a big snippet
+        self.assertLess(len(r), 300)             # a normal read stays compact
+        self.assertGreater(len(g), len(r) * 2)
 
     def test_digest_dedups_and_caps(self):
         d = _facts_digest(["read_file(a): x", "read_file(a): x", "glob: b"])
         self.assertEqual(d.count("read_file(a): x"), 1)
         self.assertIn("glob: b", d)
         big = _facts_digest([f"read_file(f{i}): " + "z" * 300 for i in range(80)])
-        self.assertLessEqual(len(big), 2210)
+        self.assertLessEqual(len(big), 3010)
 
     def test_empty_digest(self):
         self.assertEqual(_facts_digest([]), "")
