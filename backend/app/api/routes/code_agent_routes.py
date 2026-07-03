@@ -34,6 +34,7 @@ from app.application.code_agent.agent_loop import (
     set_project_prompt,
     set_verify_command,
     stream_code_agent,
+    suggest_verify_command,
     summarize_history,
 )
 from app.application.code_agent import sessions as session_store
@@ -468,7 +469,10 @@ def read_verify_command(project_root: str) -> dict[str, Any]:
     """The project's opt-in verify command (.elira/verify), or "" if unset."""
     if not project_root:
         raise HTTPException(status_code=400, detail="project_root is required")
-    return {"ok": True, "command": get_verify_command(project_root) or ""}
+    command = get_verify_command(project_root) or ""
+    # Only suggest when nothing is configured yet (so we never override a real one).
+    suggested = "" if command else suggest_verify_command(project_root)
+    return {"ok": True, "command": command, "suggested": suggested}
 
 
 class VerifyCommandRequest(BaseModel):

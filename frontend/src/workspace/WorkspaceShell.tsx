@@ -470,11 +470,18 @@ function VerifyCommandModal({ projectRoot, onClose }: { projectRoot: string; onC
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // True while the input holds Elira's auto-suggested command (nothing saved yet)
+  // and the user hasn't edited it — drives the "предложено по проекту" hint.
+  const [isSuggested, setIsSuggested] = useState(false);
 
   useEffect(() => {
     let alive = true;
     getVerifyCommand(projectRoot)
-      .then((c) => { if (alive) setCommand(c); })
+      .then(({ command: cmd, suggested }) => {
+        if (!alive) return;
+        if (cmd) { setCommand(cmd); setIsSuggested(false); }
+        else if (suggested) { setCommand(suggested); setIsSuggested(true); }
+      })
       .catch(() => { if (alive) setErr("Не удалось загрузить"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
@@ -507,12 +514,15 @@ function VerifyCommandModal({ projectRoot, onClose }: { projectRoot: string; onC
         </p>
         <input
           value={loading ? "" : command}
-          onChange={(e) => setCommand(e.target.value)}
+          onChange={(e) => { setCommand(e.target.value); setIsSuggested(false); }}
           disabled={loading || saving}
           placeholder={loading ? "Загрузка…" : "напр. pytest -q  /  npm test"}
           onKeyDown={(e) => { if (e.key === "Enter") void save(); }}
           className="mb-1 w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none focus:border-acl disabled:opacity-60"
         />
+        {isSuggested && !err && (
+          <div className="mb-1 text-[11px] text-ac">Предложено по проекту — сохрани или поправь.</div>
+        )}
         {err && <div className="mb-1 text-[11.5px] text-red-400">{err}</div>}
         <div className="mt-3 flex items-center justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-line px-3 py-1.5 text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">Отмена</button>

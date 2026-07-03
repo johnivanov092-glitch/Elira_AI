@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.code_agent.project_prompt import get_verify_command, set_verify_command
+from app.application.code_agent.project_prompt import (
+    get_verify_command,
+    set_verify_command,
+    suggest_verify_command,
+)
 
 
 class GetVerifyCommandTest(unittest.TestCase):
@@ -56,6 +60,29 @@ class SetVerifyCommandTest(unittest.TestCase):
             set_verify_command(tmp, "pytest -q")
             data = (Path(tmp) / ".elira" / "verify").read_bytes()
             self.assertFalse(data.startswith(b"\xef\xbb\xbf"))  # plain UTF-8, no BOM
+
+
+class SuggestVerifyCommandTest(unittest.TestCase):
+    def test_python_project_suggests_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+            self.assertEqual(suggest_verify_command(tmp), "pytest -q")
+
+    def test_node_project_with_test_script_suggests_npm_test(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "package.json").write_text('{"scripts":{"test":"jest"}}', encoding="utf-8")
+            self.assertEqual(suggest_verify_command(tmp), "npm test")
+
+    def test_node_placeholder_test_not_suggested(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "package.json").write_text(
+                '{"scripts":{"test":"echo \\"Error: no test specified\\" && exit 1"}}', encoding="utf-8")
+            self.assertEqual(suggest_verify_command(tmp), "")
+
+    def test_unknown_project_suggests_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "readme.txt").write_text("hi", encoding="utf-8")
+            self.assertEqual(suggest_verify_command(tmp), "")
 
 
 def _edit_then_finish_chat():

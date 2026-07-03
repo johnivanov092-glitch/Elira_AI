@@ -59,6 +59,45 @@ def get_project_prompt(project_root: Path | str) -> dict[str, Any]:
     return {"ok": True, "exists": exists, "content": content, "path": str(target)}
 
 
+def suggest_verify_command(project_root: Path | str) -> str:
+    """Best-effort guess of a verify command from the project's marker files, so
+    the UI can pre-fill it and the user just confirms. Returns "" if unsure."""
+    root = Path(project_root).resolve()
+
+    def has(name: str) -> bool:
+        return (root / name).exists()
+
+    # Node: prefer a real `test` script, else a build.
+    pkg = root / "package.json"
+    if pkg.is_file():
+        try:
+            import json
+            scripts = (json.loads(pkg.read_text(encoding="utf-8-sig")) or {}).get("scripts") or {}
+            if isinstance(scripts, dict):
+                test = str(scripts.get("test") or "")
+                if test and "no test specified" not in test:
+                    return "npm test"
+                if scripts.get("build"):
+                    return "npm run build"
+        except Exception:
+            pass
+    # Python
+    if has("pytest.ini") or has("pyproject.toml") or has("setup.cfg") or has("conftest.py") or (root / "tests").is_dir():
+        return "pytest -q"
+    if has("Cargo.toml"):
+        return "cargo test"
+    if has("go.mod"):
+        return "go test ./..."
+    mk = root / "Makefile"
+    if mk.is_file():
+        try:
+            if any(ln.strip().startswith("test:") for ln in mk.read_text(encoding="utf-8-sig", errors="ignore").splitlines()):
+                return "make test"
+        except Exception:
+            pass
+    return ""
+
+
 def set_verify_command(project_root: Path | str, command: str) -> dict[str, Any]:
     """Write (or clear) the project's `.elira/verify` command. An empty command
     removes the file — disabling the gate. Written as plain UTF-8, no BOM."""

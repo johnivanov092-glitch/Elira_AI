@@ -408,12 +408,14 @@ export async function setProjectPromptApi(projectRoot: string, content: string):
 
 // ── Project verify command (opt-in E2E gate, .elira/verify) ────────────────
 
-/** The project's verify command ("" if none). After the agent edits files it
- *  must run this green before it can declare the task done. */
-export async function getVerifyCommand(projectRoot: string): Promise<string> {
+/** The project's verify command ("" if none) plus a `suggested` default guessed
+ *  from the project's marker files (pytest/npm/cargo/…), returned only when
+ *  nothing is configured yet. After the agent edits files it must run the
+ *  command green before it can declare the task done. */
+export async function getVerifyCommand(projectRoot: string): Promise<{ command: string; suggested: string }> {
   const qs = new URLSearchParams({ project_root: projectRoot }).toString();
-  const res = await request<{ ok: boolean; command: string }>(`/api/code-agent/verify-command?${qs}`);
-  return res.command || "";
+  const res = await request<{ ok: boolean; command: string; suggested?: string }>(`/api/code-agent/verify-command?${qs}`);
+  return { command: res.command || "", suggested: res.suggested || "" };
 }
 
 /** Set the verify command; an empty string clears it (removes .elira/verify). */
