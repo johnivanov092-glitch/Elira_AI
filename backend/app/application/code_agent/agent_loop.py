@@ -147,6 +147,12 @@ _VERIFY_GATE_TIMEOUT_S = 300
 # ask_user: max clarifying questions per run, so a lazy model asks instead of
 # thinking only a bounded number of times.
 _ASK_USER_MAX = 3
+# ask_user owns its own termination (it is exempt from the generic loop-guard
+# below). Past the budget the model is told to decide for itself; if it keeps
+# asking anyway, finalize cleanly once it has exceeded the budget by this grace
+# margin, instead of spinning to max_steps. Aligned so the hard cut lands at the
+# same total (_ASK_USER_MAX + grace + 1 == _REPEATED_TOOL_CALL_LIMIT).
+_ASK_USER_OVER_CAP_GRACE = 2
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 6
 # Repeats at or above this count (but below the hard limit) get a loud nudge
@@ -158,7 +164,12 @@ _REPEATED_TOOL_CALL_NUDGE_AT = 2
 # loop-guard. `todo_update` in particular: local models routinely re-emit the
 # full checklist (now upserted by position, so no duplicate rows), and a benign
 # repeat used to kill the whole run. Read-only/idempotent by construction.
-_LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search"})
+# `ask_user` is exempt too: it has its OWN dedicated per-run budget + clean
+# terminal below (see _ASK_USER_MAX / _ASK_USER_OVER_CAP_GRACE), so the generic
+# fingerprint guard must not double-govern it and end the run with a confusing
+# loop_guard/error instead of a graceful finalize — especially in no_questions
+# mode, where the canned reply gives a weak model nothing new to diverge on.
+_LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user"})
 
 # Role-based sampling for a single served model (one large LLM plays every
 # role — see resolve_model_for_route/route_to_role). The role does not switch
@@ -1154,41 +1165,55 @@ def _stream_code_agent_core(
                     call_log.append(f"tool_search({_short_arg_hint(parsed_args)})")
                     continue
                 if name == "ask_user":
-                    # Pause the run, ask the user, wait for the answer, then
-                    # continue the SAME run with the answer as the tool result.
-                    # Handled inline (not via the executor) because the "result"
-                    # comes from a human. Keepalive events keep the SSE stream
-                    # alive so the client watchdog doesn't cut it during the wait.
-                    if no_questions:
-                        # «Не спрашивать» toggle: never pause for a human. Tell the
-                        # model to decide for itself and keep going in the same run.
-                        _ans_text = (
-                            "Режим «не задавать вопросы» включён — не спрашивай "
-                            "пользователя. Прими наиболее разумное решение по "
-                            "умолчанию и продолжай; если что-то допустил — отметь "
-                            "это в финальном ответе."
-                        )
-                        yield {
-                            "type": "tool_call", "step": step, "tool": name,
-                            "arguments": parsed_args, "result": _ans_text, "ok": False,
-                        }
-                        messages.append({"role": "tool", "content": _ans_text, "name": name})
-                        tool_round_trips += 1
-                        call_log.append("ask_user(skipped:no_questions)")
-                        continue
-                    if ask_user_count >= _ASK_USER_MAX:
-                        _ans_text = (
-                            "Лимит уточняющих вопросов на этот прогон исчерпан — "
-                            "действуй по имеющимся данным."
-                        )
-                        yield {
-                            "type": "tool_call", "step": step, "tool": name,
-                            "arguments": parsed_args, "result": _ans_text, "ok": False,
-                        }
-                        messages.append({"role": "tool", "content": _ans_text, "name": name})
-                        tool_round_trips += 1
-                        continue
+                    # ask_user is a special inline tool — the "result" comes from a
+                    # human, not the executor. It OWNS its own termination: it is
+                    # exempt from the generic loop-guard above, so this branch must
+                    # bound the questions itself. Keepalive events keep the SSE
+                    # stream alive so the client watchdog doesn't cut it while it
+                    # waits for the human.
                     ask_user_count += 1
+                    if ask_user_count > _ASK_USER_MAX + _ASK_USER_OVER_CAP_GRACE:
+                        # The model kept asking past its budget (ignoring repeated
+                        # "decide for yourself" nudges). Finalize cleanly with a
+                        # real answer instead of spinning to max_steps or tripping
+                        # a loop_guard error.
+                        final_text = _wrap_up_text(
+                            chat, model, safe_num_ctx, messages, call_log,
+                            "the model kept asking clarifying questions past the per-run limit",
+                        )
+                        yield {"type": "final_response", "step": step, "text": final_text}
+                        yield {
+                            "type": "done", "ok": True, "steps": step,
+                            "stop_reason": "answer",
+                        }
+                        return
+                    _budget_spent = ask_user_count > _ASK_USER_MAX
+                    if no_questions or _budget_spent:
+                        # «Не спрашивать» mode, or the per-run question budget is
+                        # spent: never pause — tell the model to decide for itself
+                        # and continue the SAME run.
+                        if no_questions:
+                            _ans_text = (
+                                "Режим «не задавать вопросы» включён — не спрашивай "
+                                "пользователя. Прими наиболее разумное решение по "
+                                "умолчанию и продолжай; если что-то допустил — отметь "
+                                "это в финальном ответе."
+                            )
+                            _log = "ask_user(skipped:no_questions)"
+                        else:
+                            _ans_text = (
+                                "Лимит уточняющих вопросов на этот прогон исчерпан — "
+                                "действуй по имеющимся данным."
+                            )
+                            _log = "ask_user(limit)"
+                        yield {
+                            "type": "tool_call", "step": step, "tool": name,
+                            "arguments": parsed_args, "result": _ans_text, "ok": False,
+                        }
+                        messages.append({"role": "tool", "content": _ans_text, "name": name})
+                        tool_round_trips += 1
+                        call_log.append(_log)
+                        continue
                     _question = str(parsed_args.get("question") or "").strip()
                     _raw_opts = parsed_args.get("options")
                     _options = [str(o) for o in _raw_opts][:8] if isinstance(_raw_opts, list) else []

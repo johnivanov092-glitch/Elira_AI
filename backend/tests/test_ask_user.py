@@ -33,6 +33,18 @@ def _ask_chat(question="К какому хосту подключиться?", o
     return chat_fn
 
 
+def _always_ask_chat(question="К какому хосту подключиться?"):
+    """chat_fn that NEVER finalizes on its own — it re-emits the SAME ask_user
+    every tool-enabled turn, so the run must terminate via ask_user's own bound."""
+    def chat_fn(**kw):
+        if not kw.get("tools"):
+            return {"message": {"content": "итоговый ответ", "tool_calls": []}}
+        return {"message": {"content": "", "tool_calls": [{
+            "function": {"name": "ask_user", "arguments": {"question": question}},
+        }]}}
+    return chat_fn
+
+
 def _find_qid(events):
     for e in events:
         if e.get("type") == "question_pending":
@@ -103,6 +115,42 @@ class AskUserTest(unittest.TestCase):
         self.assertEqual(done["stop_reason"], "answer")
         finals = [e for e in evs if e.get("type") == "final_response"]
         self.assertIn("не задавать вопросы", finals[-1]["text"])
+
+    def test_no_questions_persistent_reask_finalizes_not_loop_guard(self):
+        # A weak model re-emits the SAME ask_user every step in no_questions mode.
+        # The canned reply gives it nothing to diverge on, but the run must NOT die
+        # as loop_guard — ask_user's own bound finalizes it cleanly, well under
+        # max_steps. (Regression: ask_user is exempt from the generic loop-guard.)
+        bound = agent_loop._ASK_USER_MAX + agent_loop._ASK_USER_OVER_CAP_GRACE
+        with tempfile.TemporaryDirectory() as tmp:
+            evs = list(stream_code_agent(
+                user_message="подключись к ssh", project_root=tmp, model="test-model",
+                max_steps=50, chat_fn=_always_ask_chat(), run_id="ask-persist-noq",
+                approval_wait_seconds=5, auto_remember=False, no_questions=True,
+            ))
+        self.assertEqual([e for e in evs if e.get("type") == "question_pending"], [])
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")  # NOT loop_guard
+        self.assertLessEqual(done["steps"], bound + 1)
+
+    def test_persistent_reask_finalizes_not_loop_guard(self):
+        # Same latent bug on the NORMAL path: model re-asks the same question
+        # forever, human never answers. After the budget (3 timed-out pauses +
+        # over-cap nudges) it finalizes cleanly at ask_user's bound — not via the
+        # generic loop_guard error.
+        bound = agent_loop._ASK_USER_MAX + agent_loop._ASK_USER_OVER_CAP_GRACE
+        with tempfile.TemporaryDirectory() as tmp:
+            evs = list(stream_code_agent(
+                user_message="подключись", project_root=tmp, model="test-model",
+                max_steps=50, chat_fn=_always_ask_chat(), run_id="ask-persist",
+                approval_wait_seconds=1, auto_remember=False,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")
+        # exactly _ASK_USER_MAX human pauses were offered before the bound kicked in
+        pends = [e for e in evs if e.get("type") == "question_pending"]
+        self.assertEqual(len(pends), agent_loop._ASK_USER_MAX)
+        self.assertLessEqual(done["steps"], bound + 1)
 
 
 class AnswerRouteTest(unittest.TestCase):
