@@ -11,6 +11,13 @@ set "BACKEND_PY=%REPO_ROOT%\backend\.venv\Scripts\python.exe"
 set "BACKEND_ENV=%REPO_ROOT%\backend\.env"
 set "BACKEND_ENV_LOCAL=%REPO_ROOT%\backend\.env.local"
 
+rem Owner default: full local filesystem access for the agent (private,
+rem single-owner local tool). Set BEFORE the .env/.env.local load below so you can
+rem opt back INTO the project-root sandbox with ELIRA_FS_UNRESTRICTED=0 in
+rem backend\.env.local (or a pre-set env var). Code default stays OFF (secure);
+rem this launcher is what turns it on by default.
+if not defined ELIRA_FS_UNRESTRICTED set "ELIRA_FS_UNRESTRICTED=1"
+
 echo.
 echo [INFO] Startup order: backend ^> Tauri
 echo [INFO] Runtime data dir: %ELIRA_DATA_DIR%
@@ -79,13 +86,13 @@ if "%PREFLIGHT_EXIT%"=="11" (
     powershell -NoProfile -ExecutionPolicy Bypass -Command "for ($i = 0; $i -lt 20; $i++) { $b = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if (-not $b) { Write-Host ('[OK] Port free after ' + ($i * 250) + ' ms.'); break }; Start-Sleep -Milliseconds 250 }"
     echo [1/3] Restarting Elira backend on 127.0.0.1:8000 ^(stdout -^> backend\backend.log^)...
     if exist "%BACKEND_LOG%" del "%BACKEND_LOG%" >nul 2>&1
-    start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d %REPO_ROOT%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >> %BACKEND_LOG% 2>&1"
+    start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& set ELIRA_FS_UNRESTRICTED=%ELIRA_FS_UNRESTRICTED%&& cd /d %REPO_ROOT%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >> %BACKEND_LOG% 2>&1"
     set "BACKEND_FRESH=1"
 ) else (
     if "%PREFLIGHT_EXIT%"=="0" (
         echo [1/3] Starting backend on 127.0.0.1:8000 ^(stdout -^> backend\backend.log^)...
         if exist "%BACKEND_LOG%" del "%BACKEND_LOG%" >nul 2>&1
-        start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& cd /d %REPO_ROOT%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >> %BACKEND_LOG% 2>&1"
+        start /min "Elira Backend" cmd /c "set ELIRA_DATA_DIR=%ELIRA_DATA_DIR%&& set ELIRA_FS_UNRESTRICTED=%ELIRA_FS_UNRESTRICTED%&& cd /d %REPO_ROOT%\backend && .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 >> %BACKEND_LOG% 2>&1"
         set "BACKEND_FRESH=1"
     ) else (
         echo [1/3] Reusing existing backend on 127.0.0.1:8000...
