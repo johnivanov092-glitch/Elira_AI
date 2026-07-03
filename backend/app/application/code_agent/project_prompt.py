@@ -19,17 +19,30 @@ VERIFY_COMMAND_FILENAME = ".elira/verify"
 
 def get_verify_command(project_root: Path | str) -> str | None:
     """The project's configured verify command, or None if not set. Reads the
-    first non-empty, non-comment line of `.elira/verify`."""
+    first non-empty, non-comment line of `.elira/verify`.
+
+    Robust to how the user created the file on Windows: utf-8-sig strips a UTF-8
+    BOM (PowerShell `>` / Notepad "Save as UTF-8"), and a UTF-16 BOM (PowerShell
+    5.1 default) is decoded as a fallback — otherwise the command would silently
+    read as broken (`﻿pytest`) or fail to decode."""
     target = Path(project_root).resolve() / VERIFY_COMMAND_FILENAME
     if not target.is_file():
         return None
     try:
-        for raw in target.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if line and not line.startswith("#"):
-                return line
+        data = target.read_bytes()
     except Exception:
         return None
+    text = ""
+    for encoding in ("utf-8-sig", "utf-16", "latin-1"):
+        try:
+            text = data.decode(encoding)
+            break
+        except (UnicodeDecodeError, LookupError):
+            continue
+    for raw in text.splitlines():
+        line = raw.strip().lstrip("﻿").strip()
+        if line and not line.startswith("#"):
+            return line
     return None
 
 

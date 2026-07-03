@@ -21,6 +21,19 @@ class GetVerifyCommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(get_verify_command(tmp))
 
+    def test_reads_bom_encodings(self):
+        # Files created on Windows carry a BOM (PowerShell / Notepad); the reader
+        # must still recover the command, not return "﻿pytest -q" or None.
+        for data in (
+            "pytest -q\n".encode("utf-8-sig"),   # UTF-8 with BOM
+            "pytest -q\n".encode("utf-16"),       # UTF-16 with BOM (PS 5.1 default)
+        ):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".elira").mkdir()
+                (root / ".elira" / "verify").write_bytes(data)
+                self.assertEqual(get_verify_command(root), "pytest -q")
+
 
 def _edit_then_finish_chat():
     """chat_fn: first tool-enabled call writes a file, then always finalizes."""
