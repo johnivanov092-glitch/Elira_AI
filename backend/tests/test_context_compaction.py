@@ -102,11 +102,13 @@ class TestMaybeCompactSummary(unittest.TestCase):
 
     def test_summary_turn_inserted(self):
         result, _ = self._compact()
+        # Exactly ONE system turn (base); the rolling summary is now an assistant
+        # message so strict templates see a single leading system message.
         system_turns = [m for m in result if m["role"] == "system"]
-        # There should be 2 system turns: original + summary
-        self.assertEqual(len(system_turns), 2)
-        summary_turn = next((m for m in system_turns if _SUMMARY_PREFIX in m["content"]), None)
+        self.assertEqual(len(system_turns), 1)
+        summary_turn = next((m for m in result if _SUMMARY_PREFIX in m.get("content", "")), None)
         self.assertIsNotNone(summary_turn)
+        self.assertEqual(summary_turn["role"], "assistant")
         self.assertIn("Bullet summary.", summary_turn["content"])
 
     def test_extract_rolling_summary_returns_summary_body(self):
@@ -115,8 +117,9 @@ class TestMaybeCompactSummary(unittest.TestCase):
 
     def test_recent_pairs_preserved(self):
         result, _ = self._compact(num_turns=10, keep_pairs=4)
-        non_system = [m for m in result if m["role"] != "system"]
-        # Last 4 pairs = 8 messages
+        non_system = [m for m in result if m["role"] != "system"
+                      and _SUMMARY_PREFIX not in m.get("content", "")]
+        # Last 4 pairs = 8 messages (the assistant summary is excluded above)
         self.assertEqual(len(non_system), 8)
         # Most recent user message should be in result
         self.assertIn("User message 9", non_system[-2]["content"])
@@ -124,6 +127,14 @@ class TestMaybeCompactSummary(unittest.TestCase):
     def test_was_compacted_true(self):
         _, compacted = self._compact()
         self.assertTrue(compacted)
+
+    def test_single_leading_system_after_compaction(self):
+        # The whole point of moving the summary to an assistant message: strict
+        # chat templates (Qwen) reject a 2nd/non-leading system message.
+        result, _ = self._compact(num_turns=10, keep_pairs=3)
+        system_indices = [i for i, m in enumerate(result) if m["role"] == "system"]
+        self.assertEqual(len(system_indices), 1)   # exactly one system
+        self.assertEqual(system_indices[0], 0)     # and it is first
 
 
 class TestMaybeCompactFallback(unittest.TestCase):
@@ -140,8 +151,8 @@ class TestMaybeCompactFallback(unittest.TestCase):
     def test_fallback_when_summarize_returns_fail(self):
         result, compacted = self._compact_fallback()
         self.assertTrue(compacted)
-        system_turns = [m for m in result if m["role"] == "system"]
-        self.assertTrue(any(_SUMMARY_PREFIX in m["content"] for m in system_turns))
+        # summary is now an assistant message — check across all roles
+        self.assertTrue(any(_SUMMARY_PREFIX in m["content"] for m in result))
 
     def test_fallback_when_summarize_raises(self):
         def _raise(**kw):
@@ -153,7 +164,8 @@ class TestMaybeCompactFallback(unittest.TestCase):
     def test_fallback_keeps_last_n_messages(self):
         result, _ = self._compact_fallback(fallback_keep=4)
         non_system = [m for m in result if m["role"] != "system"
-                      and _FALLBACK_PLACEHOLDER not in m["content"]]
+                      and _FALLBACK_PLACEHOLDER not in m["content"]
+                      and _SUMMARY_PREFIX not in m["content"]]
         self.assertLessEqual(len(non_system), 4)
 
     def test_original_system_preserved_in_fallback(self):
@@ -194,10 +206,12 @@ class TestMaybeCompactEdgeCases(unittest.TestCase):
             threshold=0.0,
         )
         system_in_result = [m for m in result if m["role"] == "system"]
-        # 2 original + 1 new summary = 3
-        self.assertGreaterEqual(len(system_in_result), 3)
+        # Both base system messages preserved; the new summary is an assistant
+        # message (not a 3rd system), so a strict template still sees system-first.
+        self.assertEqual(len(system_in_result), 2)
         self.assertTrue(any("Base prompt." in m["content"] for m in system_in_result))
         self.assertTrue(any("Prior summary." in m["content"] for m in system_in_result))
+        self.assertTrue(any(m["role"] == "assistant" and _SUMMARY_PREFIX in m.get("content", "") for m in result))
 
     def test_repeated_compaction_keeps_single_summary_turn(self):
         messages = [
@@ -210,8 +224,11 @@ class TestMaybeCompactEdgeCases(unittest.TestCase):
             threshold=0.0,
         )
         self.assertTrue(compacted)
-        summaries = [m for m in result if m.get("role") == "system" and _SUMMARY_PREFIX in m.get("content", "")]
+        # Single rolling summary, now emitted as an assistant message (a legacy
+        # system-role summary in the input is still recognised and merged).
+        summaries = [m for m in result if _SUMMARY_PREFIX in m.get("content", "")]
         self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["role"], "assistant")
         self.assertIn("Pending work: finish API.", summaries[0]["content"])
         self.assertIn("Important files: a.py", summaries[0]["content"])
         self.assertIn("Bullet summary.", summaries[0]["content"])

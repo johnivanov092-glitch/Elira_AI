@@ -84,7 +84,14 @@ def _emit_audit(
 
 
 def _is_summary_message(message: dict[str, Any]) -> bool:
-    return message.get("role") == "system" and str(message.get("content") or "").startswith(_SUMMARY_PREFIX)
+    # Match by the marker regardless of role: the rolling summary is now emitted
+    # as an ASSISTANT message (so there's exactly one system message, first, for
+    # strict chat templates like Qwen), but sessions persisted before this change
+    # still carry it as role="system" — both must be recognised.
+    return (
+        message.get("role") in {"system", "assistant"}
+        and str(message.get("content") or "").startswith(_SUMMARY_PREFIX)
+    )
 
 
 def _summary_body(message: dict[str, Any]) -> str:
@@ -102,7 +109,11 @@ def _cap_text(text: str, limit: int = _MAX_SUMMARY_CHARS) -> str:
 
 
 def _make_summary_message(summary: str) -> dict[str, Any]:
-    return {"role": "system", "content": _SUMMARY_PREFIX + _cap_text(summary)}
+    # ASSISTANT, not system: keeps the message list to a SINGLE leading system
+    # message. A strict template (Qwen: "System message must be at the beginning")
+    # 400s on a second system message — this removes the need for the server-side
+    # lenient-template workaround.
+    return {"role": "assistant", "content": _SUMMARY_PREFIX + _cap_text(summary)}
 
 
 def extract_rolling_summary(messages: list[dict[str, Any]]) -> str:
@@ -229,7 +240,10 @@ def maybe_compact(
 
     previous_summaries = [_summary_body(m) for m in messages if _is_summary_message(m)]
     system_msgs = [m for m in messages if m.get("role") == "system" and not _is_summary_message(m)]
-    non_system = [m for m in messages if m.get("role") != "system"]
+    # Exclude the rolling summary (now an assistant message) from the compactable
+    # pool — it is carried via previous_summaries and re-emitted fresh, never
+    # re-summarized.
+    non_system = [m for m in messages if m.get("role") != "system" and not _is_summary_message(m)]
     pinned_ids = {str(value) for value in (pinned_message_ids or set())}
     pinned = [
         message for message in non_system

@@ -113,7 +113,9 @@ class CompressionPolicyTest(unittest.TestCase):
             audit_sink=events.append,
         )
         self.assertTrue(changed)
-        non_system = [message for message in compacted if message["role"] != "system"]
+        # The rolling summary is now a leading assistant message with no _msg_id;
+        # filter to the id-bearing turns to check pinned-first / recent-last order.
+        non_system = [message for message in compacted if message["role"] != "system" and "_msg_id" in message]
         self.assertEqual(non_system[0]["_msg_id"], "u1")
         self.assertEqual(non_system[-1]["_msg_id"], "a7")
         self.assertEqual(events[0]["protected_count"], 1)
