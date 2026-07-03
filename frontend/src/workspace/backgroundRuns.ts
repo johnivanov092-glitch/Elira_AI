@@ -1,4 +1,5 @@
 import {
+  answerQuestion,
   cancelCodeAgent,
   resolveApproval,
   resumeCodeAgent,
@@ -260,7 +261,7 @@ function wire(
         entry.runId = e.run_id;
         patch((a) => ({ ...a, runId: e.run_id }));
       }
-      if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined }));
+      if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined, pendingQuestion: undefined }));
       else if (e.type === "step_started") {
         // Show only the CURRENT step's stream. Deltas used to concatenate across
         // all steps into one blob; final_response normally replaced it, but on
@@ -272,7 +273,7 @@ function wire(
       else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
       else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text }));
       else if (e.type === "tool_call") {
-        patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, pendingApproval: undefined }));
+        patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, pendingApproval: undefined, pendingQuestion: undefined }));
         const result = e.result.trim();
         pushLedger({
           timestamp: Date.now(),
@@ -286,6 +287,8 @@ function wire(
           patch((a) => ({ ...a, pendingApproval: undefined }));
         } else patch((a) => ({ ...a, pendingApproval: { approvalId: e.approval_id, tool: e.tool, arguments: e.arguments } }));
       } else if (e.type === "approval_wait") patch((a) => (a.pendingApproval ? { ...a, pendingApproval: { ...a.pendingApproval, waitedS: e.waited_s } } : a));
+      else if (e.type === "question_pending") patch((a) => ({ ...a, pendingQuestion: { questionId: e.question_id, question: e.question, options: e.options || [] } }));
+      else if (e.type === "question_wait") patch((a) => (a.pendingQuestion ? { ...a, pendingQuestion: { ...a.pendingQuestion, waitedS: e.waited_s } } : a));
       else if (e.type === "context_compacted") {
         update(entry, (s) => {
           const contextState = e.context ? withUsageState(s.contextState, e.context) : { ...(s.contextState || {}) };
@@ -575,6 +578,27 @@ export function approve(sessionId: string, approvalId: string, decision: "approv
     }));
     void resolveApproval(approvalId, decision).catch(() => revertResolving(entry, approvalId));
   }
+}
+
+/** Deliver a human answer to a paused ask_user question. Marks it "answering"
+ *  optimistically; reverts on error so the input re-activates (like FIX-15). */
+export function answer(sessionId: string, questionId: string, text: string): void {
+  const entry = _runs.get(sessionId);
+  if (!entry) return;
+  update(entry, (s) => ({
+    ...s,
+    turns: s.turns.map((t) => (t.kind === "agent" && t.pendingQuestion?.questionId === questionId
+      ? { ...t, pendingQuestion: { ...t.pendingQuestion, answering: true } }
+      : t)),
+  }));
+  void answerQuestion(questionId, text).catch(() => {
+    update(entry, (s) => ({
+      ...s,
+      turns: s.turns.map((t) => (t.kind === "agent" && t.pendingQuestion?.questionId === questionId
+        ? { ...t, pendingQuestion: { ...t.pendingQuestion, answering: false } }
+        : t)),
+    }));
+  });
 }
 
 export function approveAll(sessionId: string): void {

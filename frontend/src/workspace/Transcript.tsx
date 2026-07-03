@@ -2,7 +2,7 @@ import { FileText, Loader2 } from "lucide-react";
 import { AgentTurnView } from "./AgentTurn";
 import type { FileEntry, Turn } from "./types";
 
-export function Transcript({ turns, onApprove, onApproveAll, onResume }: { turns: Turn[]; onApprove?: (id: string, d: "approve" | "reject") => void; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
+export function Transcript({ turns, onApprove, onApproveAll, onResume, onAnswer }: { turns: Turn[]; onApprove?: (id: string, d: "approve" | "reject") => void; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void; onAnswer?: (questionId: string, text: string) => void }) {
   return (
     <div className="mx-auto max-w-[760px] px-5 py-5">
       {turns.map((t) => {
@@ -22,7 +22,7 @@ export function Transcript({ turns, onApprove, onApproveAll, onResume }: { turns
             </div>
           );
         }
-        return <AgentTurnView key={t.id} turn={t} onApprove={onApprove} onApproveAll={onApproveAll} onResume={onResume} />;
+        return <AgentTurnView key={t.id} turn={t} onApprove={onApprove} onApproveAll={onApproveAll} onResume={onResume} onAnswer={onAnswer} />;
       })}
     </div>
   );

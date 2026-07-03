@@ -34,6 +34,7 @@ from app.application.code_agent.agent_loop import (
     set_project_prompt,
     set_verify_command,
     stream_code_agent,
+    submit_answer,
     suggest_verify_command,
     summarize_history,
 )
@@ -386,6 +387,19 @@ def resume_run(run_id: str) -> StreamingResponse:
 def cancel(payload: CodeAgentCancelRequest) -> dict[str, Any]:
     found = request_cancel(payload.run_id)
     return {"ok": True, "found": found, "run_id": payload.run_id}
+
+
+class QuestionAnswerRequest(BaseModel):
+    answer: str
+
+
+@router.post("/questions/{question_id}/answer")
+def answer_question(question_id: str, payload: QuestionAnswerRequest) -> dict[str, Any]:
+    """Deliver a human answer to a paused ask_user question. 404 if the question
+    is unknown/stale (e.g. the run was restarted) so the UI clears the card."""
+    if not submit_answer(question_id, payload.answer):
+        raise HTTPException(status_code=404, detail="question not found or already answered")
+    return {"ok": True, "question_id": question_id}
 
 
 @router.get("/context-profile")

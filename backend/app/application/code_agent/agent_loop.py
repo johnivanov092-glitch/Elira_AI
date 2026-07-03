@@ -144,6 +144,9 @@ _MALFORMED_TRACE_LIMIT = 3
 # a red result back before giving up and letting the run finalize.
 _VERIFY_GATE_MAX = 3
 _VERIFY_GATE_TIMEOUT_S = 300
+# ask_user: max clarifying questions per run, so a lazy model asks instead of
+# thinking only a bounded number of times.
+_ASK_USER_MAX = 3
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 6
 # Repeats at or above this count (but below the hard limit) get a loud nudge
@@ -292,6 +295,23 @@ def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
 _CANCEL_REGISTRY: dict[str, threading.Event] = {}
 _REGISTRY_LOCK = threading.Lock()
 
+# Pending ask_user questions: question_id -> answer (None = registered/awaiting,
+# str = answered). The HTTP answer route writes here; the paused loop polls it.
+# In-memory (like the cancel registry) — a restart drops the question and the
+# answer route 404s, which the UI handles by clearing the stale card.
+_QUESTION_ANSWERS: dict[str, str | None] = {}
+_QUESTION_LOCK = threading.Lock()
+
+
+def submit_answer(question_id: str, answer: str) -> bool:
+    """Record a human answer to a paused ask_user question. Returns True if the
+    question was known/awaiting, False otherwise (stale/unknown id)."""
+    with _QUESTION_LOCK:
+        if question_id not in _QUESTION_ANSWERS:
+            return False
+        _QUESTION_ANSWERS[question_id] = str(answer)
+    return True
+
 
 def request_cancel(run_id: str) -> bool:
     """Flip the cancel event for `run_id`. Returns True if the run was
@@ -343,6 +363,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _APPROVAL_KEEPALIVE_EVERY,
     _APPROVAL_POLL_INTERVAL,
     _EXECUTION_INTENT,
+    _ASK_USER_SCHEMA,
     _TOOL_SEARCH_SCHEMA,
     _approval_status,
     _flatten_for_summary,
@@ -561,6 +582,7 @@ def _stream_code_agent_core(
         # traces get the same bounding (the recovery nudge used to be unlimited).
         reasoning_runaway_count = 0
         malformed_trace_count = 0
+        ask_user_count = 0
         prev_assistant_text = next(
             (str(m.get("content") or "") for m in reversed(messages)
              if isinstance(m, dict) and m.get("role") == "assistant"),
@@ -634,6 +656,7 @@ def _stream_code_agent_core(
             _active = get_active_tools(rid)
             step_schemas = [s for s in all_schemas if _schema_tool_name(s) in _active]
             step_schemas.append(_TOOL_SEARCH_SCHEMA)
+            step_schemas.append(_ASK_USER_SCHEMA)
             llm_prompt_chars = _messages_char_count(messages)
             llm_start = time.monotonic()
             try:
@@ -1128,6 +1151,86 @@ def _stream_code_agent_core(
                     })
                     tool_round_trips += 1
                     call_log.append(f"tool_search({_short_arg_hint(parsed_args)})")
+                    continue
+                if name == "ask_user":
+                    # Pause the run, ask the user, wait for the answer, then
+                    # continue the SAME run with the answer as the tool result.
+                    # Handled inline (not via the executor) because the "result"
+                    # comes from a human. Keepalive events keep the SSE stream
+                    # alive so the client watchdog doesn't cut it during the wait.
+                    if ask_user_count >= _ASK_USER_MAX:
+                        _ans_text = (
+                            "Лимит уточняющих вопросов на этот прогон исчерпан — "
+                            "действуй по имеющимся данным."
+                        )
+                        yield {
+                            "type": "tool_call", "step": step, "tool": name,
+                            "arguments": parsed_args, "result": _ans_text, "ok": False,
+                        }
+                        messages.append({"role": "tool", "content": _ans_text, "name": name})
+                        tool_round_trips += 1
+                        continue
+                    ask_user_count += 1
+                    _question = str(parsed_args.get("question") or "").strip()
+                    _raw_opts = parsed_args.get("options")
+                    _options = [str(o) for o in _raw_opts][:8] if isinstance(_raw_opts, list) else []
+                    _qid = uuid.uuid4().hex
+                    with _QUESTION_LOCK:
+                        _QUESTION_ANSWERS[_qid] = None
+                    yield {
+                        "type": "question_pending", "step": step,
+                        "question": _question, "options": _options, "question_id": _qid,
+                    }
+                    _wait_started = time.monotonic()
+                    _last_keepalive = _wait_started
+                    _answer: str | None = None
+                    _q_decision = "timeout"
+                    # No configured wait means "don't pause" (background/legacy) —
+                    # use a sane default so ask_user still works there.
+                    _q_budget = approval_wait_seconds if approval_wait_seconds > 0 else 300
+                    while time.monotonic() - _wait_started < _q_budget:
+                        if cancel_event.is_set():
+                            _q_decision = "cancelled"
+                            break
+                        with _QUESTION_LOCK:
+                            _stored = _QUESTION_ANSWERS.get(_qid)
+                        if _stored is not None:
+                            _answer = _stored
+                            _q_decision = "answered"
+                            break
+                        _now = time.monotonic()
+                        if _now - _last_keepalive >= _APPROVAL_KEEPALIVE_EVERY:
+                            yield {
+                                "type": "question_wait", "step": step,
+                                "question_id": _qid, "waited_s": int(_now - _wait_started),
+                            }
+                            _last_keepalive = _now
+                        time.sleep(_APPROVAL_POLL_INTERVAL)
+                    with _QUESTION_LOCK:
+                        _QUESTION_ANSWERS.pop(_qid, None)
+                    # Human deliberation must not consume the agent's own budget.
+                    deadline += time.monotonic() - _wait_started
+                    if _q_decision == "cancelled":
+                        yield {
+                            "type": "done", "ok": False, "steps": step,
+                            "stop_reason": "cancelled", "error": "Cancelled by user",
+                        }
+                        return
+                    if _q_decision == "answered":
+                        _ans_text = f"Ответ пользователя: {_answer}"
+                    else:
+                        _ans_text = (
+                            "Пользователь не ответил на вопрос вовремя. Действуй по "
+                            "имеющимся данным или заверши, повторив вопрос в финале."
+                        )
+                    yield {
+                        "type": "tool_call", "step": step, "tool": name,
+                        "arguments": parsed_args, "result": _ans_text,
+                        "ok": _q_decision == "answered",
+                    }
+                    messages.append({"role": "tool", "content": _ans_text, "name": name})
+                    tool_round_trips += 1
+                    call_log.append(f"ask_user({(_question[:40] or '?')})")
                     continue
                 if name == "todo_update":
                     # P12.1: checklist mutations are bound to the current run.

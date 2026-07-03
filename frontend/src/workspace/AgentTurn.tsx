@@ -1,18 +1,19 @@
-import { Brain, ChevronDown, Loader2, RotateCcw, ShieldQuestion, Volume2 } from "lucide-react";
+import { Brain, ChevronDown, Loader2, MessageCircleQuestion, RotateCcw, Send, ShieldQuestion, Volume2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { ToolCallGroup } from "./ToolCallGroup";
-import type { AgentTurnData, PendingApproval } from "./types";
+import type { AgentTurnData, PendingApproval, PendingQuestion } from "./types";
 import { getAutoSpeak, speak } from "./voice";
 import { cn } from "../ui/cn";
 
 type ApproveFn = (approvalId: string, decision: "approve" | "reject") => void;
+type AnswerFn = (questionId: string, text: string) => void;
 
 // Memoized (FIX-23): a streaming delta rebuilds the turns array but keeps the
 // reference of every UNCHANGED turn, so memo skips re-rendering all the finished
 // turns on each token (callbacks from useAgentRun are stable useCallbacks).
-export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onApproveAll, onResume }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void }) {
-  const idle = turn.running && !turn.text && !turn.reasoning && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval;
+export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onApproveAll, onResume, onAnswer }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void; onAnswer?: AnswerFn }) {
+  const idle = turn.running && !turn.text && !turn.reasoning && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval && !turn.pendingQuestion;
   const [speaking, setSpeaking] = useState(false);
 
   // Auto-speak: only when this turn transitions running -> done while mounted
@@ -42,6 +43,8 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
       {turn.reasoning && <ReasoningBlock text={turn.reasoning} running={turn.running} />}
 
       {turn.pendingApproval && <ApprovalPrompt approval={turn.pendingApproval} onApprove={onApprove} onApproveAll={onApproveAll} />}
+
+      {turn.pendingQuestion && <QuestionPrompt question={turn.pendingQuestion} onAnswer={onAnswer} />}
 
       {idle && (
         <div className="flex items-center gap-2 text-[12.5px] text-mut">
@@ -128,6 +131,57 @@ function ReasoningBlock({ text, running }: { text: string; running: boolean }) {
           <MarkdownRenderer content={text} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** Elira asked a clarifying question mid-run (ask_user) — the run is paused,
+ *  waiting for the answer. Option buttons answer instantly; the text field
+ *  handles a free-form reply. The SSE stream stays alive during the wait. */
+function QuestionPrompt({ question, onAnswer }: { question: PendingQuestion; onAnswer?: AnswerFn }) {
+  const [text, setText] = useState("");
+  const busy = question.answering;
+  return (
+    <div className="my-2.5 rounded-xl border border-acl bg-acs p-3 text-[12.5px]">
+      <div className="mb-2 flex items-start gap-2 font-medium text-tx">
+        <MessageCircleQuestion size={15} className="mt-0.5 shrink-0 text-ac" />
+        <span className="min-w-0 whitespace-pre-wrap">{question.question || "Уточняющий вопрос"}</span>
+      </div>
+      {question.options.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {question.options.map((opt, i) => (
+            <button
+              key={`${opt}-${i}`}
+              type="button"
+              disabled={busy}
+              onClick={() => onAnswer?.(question.questionId, opt)}
+              className="rounded-lg border border-acl bg-card px-2.5 py-1.5 text-[12px] text-ac transition-colors hover:bg-hover disabled:opacity-50"
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          disabled={busy}
+          placeholder="Свой ответ…"
+          onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) { onAnswer?.(question.questionId, text.trim()); setText(""); } }}
+          className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-tx outline-none focus:border-acl disabled:opacity-60"
+        />
+        <button
+          type="button"
+          disabled={busy || !text.trim()}
+          onClick={() => { onAnswer?.(question.questionId, text.trim()); setText(""); }}
+          aria-label="Ответить"
+          className="grid h-[33px] w-[33px] shrink-0 place-items-center rounded-lg bg-ac text-[#14151b] transition-opacity hover:opacity-90 disabled:opacity-40"
+        >
+          {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+        </button>
+      </div>
+      {question.waitedS ? <div className="mt-1.5 text-[11px] text-mut">ждём ответа · {question.waitedS}с</div> : null}
     </div>
   );
 }

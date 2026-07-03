@@ -560,5 +560,35 @@ _TOOL_SEARCH_SCHEMA = {
 }
 
 
+# ask_user is handled INLINE by the loop (like tool_search) — it pauses the run
+# and waits for a human answer, so it is never dispatched via the executor. The
+# schema is appended to every step so the model can always reach it.
+_ASK_USER_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "ask_user",
+        "description": (
+            "Ask the user ONE short clarifying question and wait for the answer, "
+            "then continue the SAME run. Use only when the task is genuinely "
+            "ambiguous (which host / file / option among several). Provide "
+            "`options` (a list of choices) when the answer is one of a few known "
+            "values — the UI renders them as buttons. Do NOT ask for anything you "
+            "can find yourself with read_file/glob/grep/config; ask sparingly."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The question to ask the user."},
+                "options": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "Optional list of concrete answer choices.",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
+
 def _schema_tool_name(schema: dict) -> str:
     return str((schema.get("function") or {}).get("name") or "")

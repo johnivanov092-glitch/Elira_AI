@@ -105,5 +105,9 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     bg.approveAll(sessionId);
   }, [sessionId]);
 
-  return { turns, running, send, sendMultiAgent, resume, stop, addFiles, reset, approve, approveAll, autoApprove, contextUsage, taskLedger };
+  const answer = useCallback((questionId: string, text: string) => {
+    bg.answer(sessionId, questionId, text);
+  }, [sessionId]);
+
+  return { turns, running, send, sendMultiAgent, resume, stop, addFiles, reset, approve, approveAll, answer, autoApprove, contextUsage, taskLedger };
 }

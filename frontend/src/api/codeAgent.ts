@@ -123,6 +123,8 @@ export type CodeAgentStreamEvent =
       approval_id: string;
     }
   | { type: "approval_wait"; step: number; approval_id: string; waited_s: number }
+  | { type: "question_pending"; step: number; question: string; options: string[]; question_id: string }
+  | { type: "question_wait"; step: number; question_id: string; waited_s: number }
   | { type: "context_compacted"; step: number; context?: ContextUsage; rolling_summary?: string | null }
   | {
       type: "usage";
@@ -375,6 +377,14 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
     try { await reader.cancel(); } catch { /* already closed */ }
     onError?.(err as Error);
   }
+}
+
+/** Deliver a human answer to a paused ask_user question; the run continues. */
+export async function answerQuestion(questionId: string, answer: string): Promise<void> {
+  await request(`/api/code-agent/questions/${encodeURIComponent(questionId)}/answer`, {
+    method: "POST",
+    body: { answer },
+  });
 }
 
 export async function cancelCodeAgent(runId: string): Promise<{ ok: boolean; found: boolean }> {
