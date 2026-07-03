@@ -25,12 +25,14 @@ from app.application.code_agent.agent_loop import (
     DEFAULT_NUM_CTX,
     _CODE_AGENT_BASE_TOOLS,
     get_project_prompt,
+    get_verify_command,
     init_project_prompt,
     index_project,
     recall_from_rag,
     request_cancel,
     run_code_agent,
     set_project_prompt,
+    set_verify_command,
     stream_code_agent,
     summarize_history,
 )
@@ -456,6 +458,28 @@ def read_project_prompt(project_root: str) -> dict[str, Any]:
 @router.put("/project-prompt")
 def write_project_prompt(payload: ProjectPromptWriteRequest) -> dict[str, Any]:
     result = set_project_prompt(payload.project_root, payload.content)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "failed to write"))
+    return result
+
+
+@router.get("/verify-command")
+def read_verify_command(project_root: str) -> dict[str, Any]:
+    """The project's opt-in verify command (.elira/verify), or "" if unset."""
+    if not project_root:
+        raise HTTPException(status_code=400, detail="project_root is required")
+    return {"ok": True, "command": get_verify_command(project_root) or ""}
+
+
+class VerifyCommandRequest(BaseModel):
+    project_root: str
+    command: str
+
+
+@router.put("/verify-command")
+def write_verify_command(payload: VerifyCommandRequest) -> dict[str, Any]:
+    """Set (or clear, when empty) the project's verify command."""
+    result = set_verify_command(payload.project_root, payload.command)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "failed to write"))
     return result

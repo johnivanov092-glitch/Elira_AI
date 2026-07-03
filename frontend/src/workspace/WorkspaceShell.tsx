@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Code, FileSearch, FolderOpen, Globe, Sparkles, UploadCloud, Wand2 } from "lucide-react";
+import { Code, FileSearch, FolderOpen, Globe, Sparkles, UploadCloud, Wand2, X } from "lucide-react";
 import { waitForBackend } from "../api/client";
 import type { ChatAttachment } from "../api/chat";
 import {
@@ -9,8 +9,10 @@ import {
   createCodeSession,
   deleteCodeSession,
   getCodeSession,
+  getVerifyCommand,
   listCodeSessions,
   patchCodeSession,
+  setVerifyCommand,
 } from "../api/codeAgent";
 import type { Turn } from "./types";
 import { pickFolder } from "../pickFolder";
@@ -42,6 +44,7 @@ export default function WorkspaceShell() {
   // undefined = default ("Модель") when opened from the topbar.
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [verifyOpen, setVerifyOpen] = useState(false);
   // Trigger for the Composer's hidden file input, registered via onAttachReady.
   // Lets the "+" menu's "Прикрепить файл" open the picker that lives in Composer.
   const openFilePicker = useRef<(() => void) | null>(null);
@@ -371,7 +374,8 @@ export default function WorkspaceShell() {
 
         <Composer value={input} onChange={setInput} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(open) => { openFilePicker.current = open; }} />
 
-        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => openFilePicker.current?.()} />}
+        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => openFilePicker.current?.()} onEditVerify={() => setVerifyOpen(true)} hasProject={!!project} />}
+        {verifyOpen && <VerifyCommandModal projectRoot={project} onClose={() => setVerifyOpen(false)} />}
       </section>
 
       {showPreview && <PreviewPanel artifacts={artifacts} project={project} onClose={() => setPreviewOpen(false)} />}
@@ -434,19 +438,90 @@ function ChatEmptyState({ hasProject, onPick, onSuggest }: { hasProject: boolean
   );
 }
 
-function PlusMenu({ onClose, onPickProject, onPickFile }: { onClose: () => void; onPickProject: () => void; onPickFile: () => void }) {
+function PlusMenu({ onClose, onPickProject, onPickFile, onEditVerify, hasProject }: { onClose: () => void; onPickProject: () => void; onPickFile: () => void; onEditVerify: () => void; hasProject: boolean }) {
   return (
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
-      <div className="absolute bottom-[68px] left-4 z-20 w-[218px] rounded-xl border border-line bg-card p-1.5">
+      <div className="absolute bottom-[68px] left-4 z-20 w-[240px] rounded-xl border border-line bg-card p-1.5">
         <button type="button" onClick={() => { onClose(); void onPickProject(); }} className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">
           Выбрать папку проекта
         </button>
         <button type="button" onClick={() => { onClose(); onPickFile(); }} className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">
           Прикрепить файл
         </button>
+        <button
+          type="button"
+          disabled={!hasProject}
+          onClick={() => { onClose(); onEditVerify(); }}
+          title={hasProject ? "Команда проверки — агент не закроет задачу, пока она не зелёная" : "Сначала выбери папку проекта"}
+          className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          Проверка проекта…
+        </button>
       </div>
     </>
+  );
+}
+
+/** Edit the project's opt-in verify command (.elira/verify). When set, the agent
+ *  must run it green after edits before it can declare a task done. */
+function VerifyCommandModal({ projectRoot, onClose }: { projectRoot: string; onClose: () => void }) {
+  const [command, setCommand] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getVerifyCommand(projectRoot)
+      .then((c) => { if (alive) setCommand(c); })
+      .catch(() => { if (alive) setErr("Не удалось загрузить"); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [projectRoot]);
+
+  async function save() {
+    setSaving(true);
+    setErr(null);
+    try {
+      const saved = await setVerifyCommand(projectRoot, command.trim());
+      setCommand(saved);
+      onClose();
+    } catch {
+      setErr("Не удалось сохранить");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-[min(520px,92vw)] rounded-xl border border-line bg-card p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center justify-between">
+          <div className="text-[13.5px] font-medium text-tx">Команда проверки проекта</div>
+          <button type="button" onClick={onClose} aria-label="Закрыть" className="grid h-6 w-6 place-items-center rounded-md border border-line text-t2 hover:bg-hover hover:text-tx"><X size={14} /></button>
+        </div>
+        <p className="mb-3 text-[11.5px] leading-relaxed text-mut">
+          После правок агент не закроет задачу, пока эта команда не вернёт успех (exit 0).
+          Пусто = отключить. Хранится в <span className="font-mono">.elira/verify</span> проекта.
+        </p>
+        <input
+          value={loading ? "" : command}
+          onChange={(e) => setCommand(e.target.value)}
+          disabled={loading || saving}
+          placeholder={loading ? "Загрузка…" : "напр. pytest -q  /  npm test"}
+          onKeyDown={(e) => { if (e.key === "Enter") void save(); }}
+          className="mb-1 w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none focus:border-acl disabled:opacity-60"
+        />
+        {err && <div className="mb-1 text-[11.5px] text-red-400">{err}</div>}
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded-lg border border-line px-3 py-1.5 text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">Отмена</button>
+          <button type="button" onClick={() => void save()} disabled={loading || saving} className="rounded-lg bg-ac px-3 py-1.5 text-[12.5px] font-medium text-[#14151b] transition-opacity hover:opacity-90 disabled:opacity-50">
+            {saving ? "Сохраняю…" : "Сохранить"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

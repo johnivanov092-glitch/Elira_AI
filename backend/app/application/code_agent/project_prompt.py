@@ -59,6 +59,25 @@ def get_project_prompt(project_root: Path | str) -> dict[str, Any]:
     return {"ok": True, "exists": exists, "content": content, "path": str(target)}
 
 
+def set_verify_command(project_root: Path | str, command: str) -> dict[str, Any]:
+    """Write (or clear) the project's `.elira/verify` command. An empty command
+    removes the file — disabling the gate. Written as plain UTF-8, no BOM."""
+    root = Path(project_root).resolve()
+    if not root.exists() or not root.is_dir():
+        return {"ok": False, "error": f"project_root does not exist: {root}"}
+    target = root / VERIFY_COMMAND_FILENAME
+    cmd = (command or "").strip()
+    try:
+        if cmd:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(cmd + "\n", encoding="utf-8")
+        elif target.exists():
+            target.unlink()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "path": str(target)}
+    return {"ok": True, "command": cmd, "path": str(target)}
+
+
 def init_project_prompt(project_root: Path | str, content: str | None = None) -> dict[str, Any]:
     from app.application.instructions.loader import init_project_instructions
 

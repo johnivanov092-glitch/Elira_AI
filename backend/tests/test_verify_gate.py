@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.application.code_agent.agent_loop import stream_code_agent
-from app.application.code_agent.project_prompt import get_verify_command
+from app.application.code_agent.project_prompt import get_verify_command, set_verify_command
 
 
 class GetVerifyCommandTest(unittest.TestCase):
@@ -33,6 +33,29 @@ class GetVerifyCommandTest(unittest.TestCase):
                 (root / ".elira").mkdir()
                 (root / ".elira" / "verify").write_bytes(data)
                 self.assertEqual(get_verify_command(root), "pytest -q")
+
+
+class SetVerifyCommandTest(unittest.TestCase):
+    def test_write_then_read_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            res = set_verify_command(tmp, "  pytest -q  ")
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["command"], "pytest -q")   # trimmed
+            self.assertEqual(get_verify_command(tmp), "pytest -q")
+
+    def test_empty_clears_the_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            set_verify_command(tmp, "pytest -q")
+            self.assertEqual(get_verify_command(tmp), "pytest -q")
+            set_verify_command(tmp, "")                      # empty → remove
+            self.assertIsNone(get_verify_command(tmp))
+            self.assertFalse((Path(tmp) / ".elira" / "verify").exists())
+
+    def test_written_file_has_no_bom(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            set_verify_command(tmp, "pytest -q")
+            data = (Path(tmp) / ".elira" / "verify").read_bytes()
+            self.assertFalse(data.startswith(b"\xef\xbb\xbf"))  # plain UTF-8, no BOM
 
 
 def _edit_then_finish_chat():

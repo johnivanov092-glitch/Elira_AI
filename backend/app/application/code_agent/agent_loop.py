@@ -106,6 +106,7 @@ from app.application.code_agent.project_prompt import (  # noqa: F401
     get_verify_command,
     init_project_prompt,
     set_project_prompt,
+    set_verify_command,
 )
 
 logger = logging.getLogger(__name__)

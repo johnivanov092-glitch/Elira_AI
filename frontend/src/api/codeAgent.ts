@@ -406,6 +406,25 @@ export async function setProjectPromptApi(projectRoot: string, content: string):
   });
 }
 
+// ── Project verify command (opt-in E2E gate, .elira/verify) ────────────────
+
+/** The project's verify command ("" if none). After the agent edits files it
+ *  must run this green before it can declare the task done. */
+export async function getVerifyCommand(projectRoot: string): Promise<string> {
+  const qs = new URLSearchParams({ project_root: projectRoot }).toString();
+  const res = await request<{ ok: boolean; command: string }>(`/api/code-agent/verify-command?${qs}`);
+  return res.command || "";
+}
+
+/** Set the verify command; an empty string clears it (removes .elira/verify). */
+export async function setVerifyCommand(projectRoot: string, command: string): Promise<string> {
+  const res = await request<{ ok: boolean; command: string }>("/api/code-agent/verify-command", {
+    method: "PUT",
+    body: { project_root: projectRoot, command },
+  });
+  return res.command || "";
+}
+
 // ── History summarization ────────────────────────────────────────────────
 
 export type SummarizeHistoryArgs = {
