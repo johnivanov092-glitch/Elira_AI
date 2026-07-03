@@ -9,7 +9,13 @@ import threading
 from typing import Any
 
 
-_SHELL_TIMEOUT_MAX = 120
+# Per-run_bash hard cap. Raised 120→300 once the tool-execution heartbeat
+# (agent_loop._exec_with_heartbeat) began keeping the SSE alive during a long tool,
+# so a legitimately-medium command (build, full test suite, medium download) can
+# finish instead of being cut at 120s. Genuinely long / background work (big
+# downloads, watchers, dev servers) still belongs in run_server, not a blocking
+# run_bash — see the prompt guidance.
+_SHELL_TIMEOUT_MAX = 300
 _SHELL_STDOUT_LIMIT = 16000
 _SHELL_STDERR_LIMIT = 6000
 # Catastrophic / irreversible — BLOCKED entirely, never run (even with approval
