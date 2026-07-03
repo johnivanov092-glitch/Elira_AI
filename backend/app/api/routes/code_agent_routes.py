@@ -209,6 +209,12 @@ class CodeAgentStreamRequest(CodeAgentRequest):
         "on the --jinja server). Reasoning streams as separate `reasoning_delta` "
         "events, never mixed into the answer. Default off = server default.",
     )
+    no_questions: bool = Field(
+        default=False,
+        description="«Не задавать вопросы» toggle. When true, any ask_user call is "
+        "answered inline with a 'decide for yourself' note instead of pausing the "
+        "run for the human — the stream never stops on a clarifying question.",
+    )
 
 
 class CodeAgentCancelRequest(BaseModel):
@@ -299,6 +305,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 profile_name=resolve_persona_mode(payload.profile_name, user_message),
                 permission_mode=payload.permission_mode,
                 thinking=payload.thinking,
+                no_questions=payload.no_questions,
             ):
                 yield _sse_format(event)
         except Exception as exc:
@@ -368,6 +375,7 @@ def resume_run(run_id: str) -> StreamingResponse:
             access_mode=str(request_data.get("access_mode") or "project-workspace"),
             permission_mode=str(request_data.get("permission_mode") or "ask"),
             thinking=bool(request_data.get("thinking", False)),
+            no_questions=bool(request_data.get("no_questions", False)),
         ):
             yield _sse_format(event)
 

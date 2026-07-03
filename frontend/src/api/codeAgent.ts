@@ -69,6 +69,10 @@ export type CodeAgentRunArgs = {
    *  backend streams reasoning as separate `reasoning_delta` events. Omitted →
    *  backend default (off). */
   thinking?: boolean;
+  /** «Не спрашивать» chip. When on, ask_user never pauses the run for a human —
+   *  Elira answers its own question with a "decide for yourself" note and keeps
+   *  going. Omitted → backend default (off, questions pause as normal). */
+  noQuestions?: boolean;
 };
 
 /** Single-shot (legacy). Resolves with the aggregated final dict. */
@@ -213,6 +217,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     profileName,
     permissionMode,
     thinking,
+    noQuestions,
     runId,
     signal,
     onEvent,
@@ -245,6 +250,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         ...(profileName ? { profile_name: profileName } : {}),
         ...(permissionMode ? { permission_mode: permissionMode } : {}),
         ...(thinking ? { thinking: true } : {}),
+        ...(noQuestions ? { no_questions: true } : {}),
         ...(wireAttachments.length ? { attachments: wireAttachments } : {}),
       }),
       signal,

@@ -85,6 +85,25 @@ class AskUserTest(unittest.TestCase):
     def test_submit_answer_unknown_id_is_false(self):
         self.assertFalse(submit_answer("nope-not-real", "x"))
 
+    def test_no_questions_never_pauses(self):
+        # «Не спрашивать» toggle: ask_user is answered inline with a "decide for
+        # yourself" note — no question_pending, no human wait, run continues.
+        with tempfile.TemporaryDirectory() as tmp:
+            evs = list(stream_code_agent(
+                user_message="подключись к ssh", project_root=tmp, model="test-model",
+                max_steps=6, chat_fn=_ask_chat(options=["server-1", "ai-server"]),
+                run_id="ask-noq", approval_wait_seconds=30, auto_remember=False,
+                no_questions=True,
+            ))
+        # The run never paused for the human...
+        self.assertEqual([e for e in evs if e.get("type") == "question_pending"], [])
+        self.assertEqual([e for e in evs if e.get("type") == "question_wait"], [])
+        # ...but the tool result told the model to decide for itself and it finished.
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")
+        finals = [e for e in evs if e.get("type") == "final_response"]
+        self.assertIn("не задавать вопросы", finals[-1]["text"])
+
 
 class AnswerRouteTest(unittest.TestCase):
     def test_answer_route_404_on_unknown(self):

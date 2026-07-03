@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, BookmarkPlus, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import { Blocks, BookmarkPlus, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, MessageCircleOff, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode } from "../api/codeAgent";
 import { attachToChat, type ChatAttachment } from "../api/chat";
 import { uploadLibraryFile } from "../api/library";
@@ -18,6 +18,10 @@ const PERMISSION_MODE_KEY = "elira.permissionMode";
 // (per-request enable_thinking). Survives new chats / restart like the other chips.
 const THINKING_KEY = "elira.thinking";
 
+// Persisted «Не спрашивать» toggle: when on, ask_user never pauses the run for a
+// human — Elira decides for itself. Mirror of the thinking chip's persistence.
+const NO_QUESTIONS_KEY = "elira.noQuestions";
+
 /** Composer per v4: mode chip + "+" (project / files / skills) + plugins + send.
  *  Runs are always "code" mode — web_search/web_fetch are base tools available in
  *  every run, so a separate "Поиск" mode added nothing and was removed.
@@ -31,7 +35,7 @@ export function Composer({
   onChange: (v: string) => void;
   onPlus: () => void;
   onPlugins: () => void;
-  onSend: (text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean) => void;
+  onSend: (text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => void;
   /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
    *  pick one of the 4 backend workflow templates. */
   onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean) => void;
@@ -85,6 +89,21 @@ export function Composer({
       /* quota / private mode — non-fatal */
     }
   }, [thinking]);
+  // «Не спрашивать» toggle — suppress ask_user pauses (Elira decides for itself).
+  const [noQuestions, setNoQuestions] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(NO_QUESTIONS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(NO_QUESTIONS_KEY, noQuestions ? "1" : "0");
+    } catch {
+      /* quota / private mode — non-fatal */
+    }
+  }, [noQuestions]);
   // Attachments (images + documents) parsed to text by the backend on pick. Kept
   // across both modes; cleared after each send. The project root and these files
   // travel together to the same code-agent stream.
@@ -153,7 +172,7 @@ export function Composer({
         }
       }
     }
-    onSend(text, mode, staged, permissionMode, thinking);
+    onSend(text, mode, staged, permissionMode, thinking, noQuestions);
     onChange("");
     setAttachments([]);
   }
@@ -225,6 +244,16 @@ export function Composer({
               : "Включить рассуждение — модель думает перед ответом (медленнее, больше токенов)"}
           >
             Мозг
+          </Chip>
+          <Chip
+            active={noQuestions}
+            icon={<MessageCircleOff size={13} />}
+            onClick={() => setNoQuestions((v) => !v)}
+            title={noQuestions
+              ? "«Не спрашивать» включено — Elira не задаёт уточняющих вопросов, решает сама и продолжает"
+              : "Не задавать вопросы — Elira не будет спрашивать посреди прогона, а примет решение сама"}
+          >
+            Не спрашивать
           </Chip>
           <ProfilePicker />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />

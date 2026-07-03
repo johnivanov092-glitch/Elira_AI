@@ -188,7 +188,7 @@ export default function WorkspaceShell() {
     if (p) setProject(p);
   }
 
-  function onSend(text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean) {
+  function onSend(text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) {
     // No project required: the backend defaults to a scratch workspace, so chat
     // works out of the box. Picking a folder targets a specific project.
     const msg = text.trim();
@@ -203,7 +203,7 @@ export default function WorkspaceShell() {
     // itself when it finishes — even if you've switched to another chat by then
     // (background completion). The closure captures the run's own project/model.
     bg.setPersist(activeKey, makePersist(activeKey, project, model));
-    run.send(text, mode, attachments, permissionMode, thinking);
+    run.send(text, mode, attachments, permissionMode, thinking, noQuestions);
     // Create the session eagerly so it appears in the sidebar as soon as you
     // send — not only when the run finishes. ensureServerId dedupes against the
     // persist closure's own lazy create, so the run is saved exactly once.

@@ -410,6 +410,7 @@ def _stream_code_agent_core(
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
     thinking: bool = False,
+    no_questions: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -1158,6 +1159,23 @@ def _stream_code_agent_core(
                     # Handled inline (not via the executor) because the "result"
                     # comes from a human. Keepalive events keep the SSE stream
                     # alive so the client watchdog doesn't cut it during the wait.
+                    if no_questions:
+                        # «Не спрашивать» toggle: never pause for a human. Tell the
+                        # model to decide for itself and keep going in the same run.
+                        _ans_text = (
+                            "Режим «не задавать вопросы» включён — не спрашивай "
+                            "пользователя. Прими наиболее разумное решение по "
+                            "умолчанию и продолжай; если что-то допустил — отметь "
+                            "это в финальном ответе."
+                        )
+                        yield {
+                            "type": "tool_call", "step": step, "tool": name,
+                            "arguments": parsed_args, "result": _ans_text, "ok": False,
+                        }
+                        messages.append({"role": "tool", "content": _ans_text, "name": name})
+                        tool_round_trips += 1
+                        call_log.append("ask_user(skipped:no_questions)")
+                        continue
                     if ask_user_count >= _ASK_USER_MAX:
                         _ans_text = (
                             "Лимит уточняющих вопросов на этот прогон исчерпан — "
@@ -1457,6 +1475,7 @@ def stream_code_agent(
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
     thinking: bool = False,
+    no_questions: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -1480,6 +1499,7 @@ def stream_code_agent(
         "profile_name": profile_name,
         "permission_mode": permission_mode,
         "thinking": bool(thinking),
+        "no_questions": bool(no_questions),
     }
     terminal = False
     try:
@@ -1524,6 +1544,7 @@ def stream_code_agent(
             profile_name=profile_name,
             permission_mode=permission_mode,
             thinking=thinking,
+            no_questions=no_questions,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)
