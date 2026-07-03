@@ -10,11 +10,14 @@ class AnswerPurityPromptTest(unittest.TestCase):
     must be present in the system prompt — regression guard against dropping it."""
 
     def test_purity_rule_present(self):
+        # Rule 16 was compressed (2026-07-03 guard-audit) — 4 verbose bullets → one
+        # dense line; the load-bearing directives must survive the compression.
         t = prompts.BASE_SYSTEM_PROMPT_TEMPLATE
-        self.assertIn("ЧИСТОТА ОТВЕТА", t)
-        self.assertIn("[источник:", t)                 # inline citation convention
-        self.assertIn("по памяти, не проверено", t)     # unverified marking
-        self.assertIn("источник не найден", t)          # honest not-found
+        self.assertIn("РАЗДЕЛЯЙ ПРОВЕРЕННОЕ И ДОГАДКИ", t)  # the answer-purity rule
+        self.assertIn("с источником", t)                    # cite sources
+        self.assertIn("не проверено", t)                    # unverified marking
+        self.assertIn("источник не найден", t)              # honest not-found
+        self.assertIn("никаких выдуманных", t)              # no fabrication
 
     def test_org_facts_web_grounding_rule_present(self):
         # rule 9б — factual org/person/domain data must be web-grounded, not memory
