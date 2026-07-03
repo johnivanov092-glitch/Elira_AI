@@ -145,6 +145,14 @@ _ANTI_REPEAT_SAMPLING = {
     "dry_base": 1.75,
     "dry_allowed_length": 2,
     "dry_penalty_last_n": _DRY_WINDOW_TOKENS,
+    # Reset DRY matching at these separators so LEGITIMATELY-repeated IPs / MACs /
+    # numbers / versions / paths (192.168.88.1, 2C-C8-1B, /24, v1.0) are not seen as
+    # a penalizable repeat. Without "." DRY penalised the repeated octets of an IP,
+    # and the model MUTATED them to dodge the penalty (live: 192.168→192.169→192.166
+    # →192.170… during a network scan, plus a walk through 8.8.8.8/9.9.9.9/6.6.6.6).
+    # Keeps the llama.cpp defaults (\n : " *) so repeated PROSE — the ×20-paragraph
+    # runaway — is still caught (a repeated sentence resets only at its own period).
+    "dry_sequence_breakers": ["\n", ":", "\"", "*", ".", "-", "/", ",", ";", "="],
 }
 # How many reasoning-runaway generations (provider cut the chain-of-thought at
 # its per-generation ceiling) a single run tolerates before being force-
