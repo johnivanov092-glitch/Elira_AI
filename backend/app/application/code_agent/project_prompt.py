@@ -11,6 +11,26 @@ from pathlib import Path
 from typing import Any
 
 PROJECT_PROMPT_FILENAME = ".elira/agent.md"
+# Opt-in verify command: if a project has `.elira/verify` with a shell command,
+# the code-agent must run it green before it may declare a task done after edits
+# (a non-skippable E2E gate — the model can't rubber-stamp "проверено").
+VERIFY_COMMAND_FILENAME = ".elira/verify"
+
+
+def get_verify_command(project_root: Path | str) -> str | None:
+    """The project's configured verify command, or None if not set. Reads the
+    first non-empty, non-comment line of `.elira/verify`."""
+    target = Path(project_root).resolve() / VERIFY_COMMAND_FILENAME
+    if not target.is_file():
+        return None
+    try:
+        for raw in target.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                return line
+    except Exception:
+        return None
+    return None
 
 
 def get_project_prompt(project_root: Path | str) -> dict[str, Any]:

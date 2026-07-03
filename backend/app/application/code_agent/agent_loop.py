@@ -103,6 +103,7 @@ from app.application.code_agent.layer_c import (  # noqa: F401
 from app.application.code_agent.project_prompt import (  # noqa: F401
     PROJECT_PROMPT_FILENAME,
     get_project_prompt,
+    get_verify_command,
     init_project_prompt,
     set_project_prompt,
 )
@@ -137,6 +138,10 @@ _REASONING_RUNAWAY_LIMIT = 2
 # Malformed inline tool-trace recoveries are nudge-and-retry; bound them so a
 # model stuck emitting broken tool markup can't burn all 200 steps.
 _MALFORMED_TRACE_LIMIT = 3
+# Opt-in verify gate (#2б): max times the loop re-runs `.elira/verify` and feeds
+# a red result back before giving up and letting the run finalize.
+_VERIFY_GATE_MAX = 3
+_VERIFY_GATE_TIMEOUT_S = 300
 _LLM_HEARTBEAT_EVERY = 10.0
 _REPEATED_TOOL_CALL_LIMIT = 6
 # Repeats at or above this count (but below the hard limit) get a loud nudge
@@ -528,6 +533,13 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
+        # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
+        # loop RUNS that command on finalize-after-edits and refuses to close
+        # until it exits 0 — no rubber-stamped "проверено". Bounded so a
+        # persistently-red command can't loop forever.
+        verify_cmd = get_verify_command(root)
+        verify_passed = False
+        verify_attempts = 0
         # Anti-repeat gate: fires at most once if the model is about to echo its
         # PREVIOUS turn's answer verbatim to a DIFFERENT question (local-model
         # loop). prev_assistant_text = the last assistant reply from history.
@@ -854,6 +866,47 @@ def _stream_code_agent_core(
                 last_text = content
 
             if not tool_calls:
+                # Hard verify gate (#2б, opt-in): a project with `.elira/verify`
+                # can't be closed after edits until that command exits 0. The
+                # LOOP runs it (not the model), so "готово" can't be rubber-
+                # stamped. Bounded by _VERIFY_GATE_MAX; after that we fall through
+                # and let the run finalize with the failure visible in history.
+                if (
+                    verify_cmd
+                    and edited_in_run
+                    and not verify_passed
+                    and verify_attempts < _VERIFY_GATE_MAX
+                ):
+                    verify_attempts += 1
+                    from app.application.code_agent.tools import tool_run_bash as _verify_run
+
+                    yield {
+                        "type": "tool_started", "step": step, "tool": "run_bash",
+                        "arguments": {"command": verify_cmd},
+                    }
+                    _vres = _verify_run(root, command=verify_cmd, timeout=_VERIFY_GATE_TIMEOUT_S)
+                    _vtext = str(_vres.get("text") or "")
+                    _passed = any(ln.strip() == "exit=0" for ln in _vtext.splitlines())
+                    ran_verification = True  # also satisfies the soft nudge below
+                    yield {
+                        "type": "tool_call", "step": step, "tool": "run_bash",
+                        "arguments": {"command": verify_cmd},
+                        "result": _vtext, "ok": _passed,
+                    }
+                    if _passed:
+                        verify_passed = True  # fall through to finalize
+                    else:
+                        if content:
+                            messages.append({"role": "assistant", "content": content})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"Проверка проекта `{verify_cmd}` НЕ прошла — "
+                                f"исправь причину и не заявляй «готово», пока она "
+                                f"не станет зелёной. Вывод:\n\n{_truncate_for_llm(_vtext)}"
+                            ),
+                        })
+                        continue
                 # Soft verification gate (Variant 2): the model edited files this
                 # run but never ran tests/lint or started the app, and is now
                 # trying to close. Nudge it once to verify before finishing —
