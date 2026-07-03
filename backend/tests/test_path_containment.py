@@ -9,10 +9,12 @@ raise SandboxError before any I/O.
 """
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +85,40 @@ class ToolContainmentTest(unittest.TestCase):
     def test_in_project_read_works(self) -> None:
         out = tool_read_file(self.root, path="in.txt")
         self.assertIn("hello", out["text"])
+
+
+class UnrestrictedEscapeHatchTest(unittest.TestCase):
+    """Owner opt-in ELIRA_FS_UNRESTRICTED lifts containment on the local machine.
+    patch.dict guarantees the flag never leaks into the containment tests above.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_default_off_still_contains(self) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ELIRA_FS_UNRESTRICTED", None)
+            with self.assertRaises(SandboxError):
+                _resolve_safe(self.root, "../../etc/passwd")
+
+    def test_opt_in_allows_outside_root(self) -> None:
+        outside = Path(tempfile.gettempdir()).resolve() / "elira_unrestricted_probe.txt"
+        with patch.dict(os.environ, {"ELIRA_FS_UNRESTRICTED": "1"}):
+            resolved = _resolve_safe(self.root, str(outside))
+        self.assertEqual(resolved, outside)
+        # boundary snaps back once the flag is gone
+        with self.assertRaises(SandboxError):
+            _resolve_safe(self.root, str(outside))
+
+    def test_falsey_values_stay_contained(self) -> None:
+        for val in ("", "0", "false", "no"):
+            with patch.dict(os.environ, {"ELIRA_FS_UNRESTRICTED": val}):
+                with self.assertRaises(SandboxError):
+                    _resolve_safe(self.root, "../../etc/passwd")
 
 
 if __name__ == "__main__":

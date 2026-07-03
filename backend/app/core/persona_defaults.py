@@ -78,7 +78,12 @@ PERSONA_MODES = {
             "и инструменты без явной просьбы. Оставайся той же Elira."
         ),
         "temperature": 0.75,
-        "tools": "readonly",
+        # Personal mode used to be read-only, which crippled the owner's own local
+        # agent (couldn't run commands / scan the network in personal mode) while
+        # Claude could. This is a private, local, single-owner tool — personal mode
+        # gets full tools like the others; the overlay already tells it not to reach
+        # for code/tools without being asked.
+        "tools": "full",
         "ui": {
             "icon": "♥",
             "short": "Тёплый компаньон и собеседник.",

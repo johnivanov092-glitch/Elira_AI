@@ -32,7 +32,9 @@ def mode_temperature(name: str):
 
 
 def mode_tool_posture(name: str) -> str:
-    """'readonly' (Личный narrows the offered tools) or 'full'."""
+    """'readonly' (narrows the offered tools to read-only) or 'full'. All modes
+    are 'full' by default now; 'readonly' stays available as a posture but no
+    built-in mode ships with it (personal mode was un-narrowed on purpose)."""
     return PERSONA_MODES[to_mode(name)]["tools"]
 
 

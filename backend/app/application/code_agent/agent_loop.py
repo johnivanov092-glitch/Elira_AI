@@ -127,11 +127,20 @@ MAX_CODE_AGENT_STEPS = 200
 # content path had no anti-repeat protection at all). Safe for codegen: DRY's
 # default sequence breakers ("\n" etc.) reset matching at line boundaries, so
 # legitimate repeated code structure isn't penalised the way run-on prose is.
+# DRY must look back only over roughly the CURRENT answer, NOT the whole chat.
+# dry_penalty_last_n=-1 scanned the ENTIRE context (system prompt + every prior
+# turn + tool output); as the conversation grew, DRY penalised ordinary repeated
+# tokens (common words, code idioms, Cyrillic particles) carried over from
+# earlier turns, so the model degenerated after a few turns — the real "breaks
+# after 3-5 answers" bug, a harness fault, not the 35B model. Bound the window so
+# DRY still kills a within-answer runaway loop (the ×20-paragraph case) but never
+# reaches back into conversation history.
+_DRY_WINDOW_TOKENS = 1024
 _ANTI_REPEAT_SAMPLING = {
     "dry_multiplier": 0.8,
     "dry_base": 1.75,
     "dry_allowed_length": 2,
-    "dry_penalty_last_n": -1,
+    "dry_penalty_last_n": _DRY_WINDOW_TOKENS,
 }
 # How many reasoning-runaway generations (provider cut the chain-of-thought at
 # its per-generation ceiling) a single run tolerates before being force-
