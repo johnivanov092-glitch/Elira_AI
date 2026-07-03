@@ -294,6 +294,50 @@ def _looks_like_intent_without_action(text: str) -> bool:
     return bool(_INTENT_TO_ACT_RE.search(tail))
 
 
+# --- Grounding across turns -------------------------------------------------
+# conversation_history carries only user + assistant TEXT (tool results are
+# dropped — see history._coerce_history). So facts the agent learned via tools
+# in an earlier turn (which files exist, what a function is, a command's output)
+# vanish, and a later factual follow-up gets answered from priors → confabulation
+# (empirically: "add()" → invented "calc.py/multiply/test_calc.py"). We capture a
+# compact digest of what the discovery tools revealed this run and hand it back
+# next turn as an authoritative context block, so the model grounds instead of
+# guessing. Read/inspect tools only — pure actions add no facts worth carrying.
+_GROUNDING_FACT_TOOLS = frozenset({
+    "project_map", "glob", "grep", "read_file", "run_bash", "run_server",
+    "web_search", "web_fetch", "http_api", "recall", "write_file", "edit_file",
+})
+_FACT_SNIPPET_CHARS = 220
+_FACTS_DIGEST_CHARS = 2200
+FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
+
+
+def _fact_from_tool(name: str, arg_hint: str, text_result: str, *, ok: bool = True) -> str | None:
+    """One compact grounded-fact line from a discovery tool's result, or None
+    when the tool is not fact-bearing / failed / empty."""
+    if not ok or name not in _GROUNDING_FACT_TOOLS:
+        return None
+    snippet = " ".join((text_result or "").split())[:_FACT_SNIPPET_CHARS]
+    if not snippet:
+        return None
+    hint = (arg_hint or "").strip()
+    return f"{name}({hint}): {snippet}" if hint else f"{name}: {snippet}"
+
+
+def _facts_digest(facts: list[str]) -> str:
+    """Order-preserving de-duplicated digest of this run's grounded facts,
+    capped so it can never dominate the context window. Empty string if none."""
+    seen: set[str] = set()
+    lines: list[str] = []
+    for f in facts:
+        if not f or f in seen:
+            continue
+        seen.add(f)
+        lines.append(f"- {f}")
+    body = "\n".join(lines)
+    return body[:_FACTS_DIGEST_CHARS]
+
+
 def _mark_approval_approved(approval_id: str) -> bool:
     """Programmatically grant an approval row (for non-'ask' permission modes)."""
     try:

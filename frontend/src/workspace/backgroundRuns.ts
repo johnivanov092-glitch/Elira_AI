@@ -320,7 +320,7 @@ function wire(
           genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
           tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
         }));
-      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text }));
+      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts }));
       else if (e.type === "done") {
         pushLedger({ timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" });
         patch((a) => ({
@@ -391,7 +391,16 @@ export function send(args: SendArgs): void {
   }
   for (const t of entry.snapshot.turns) {
     if (t.kind === "user") history.push({ role: "user", content: t.text });
-    else if (t.kind === "agent" && t.text) history.push({ role: "assistant", content: dedupeParagraphs(t.text) });
+    else if (t.kind === "agent" && t.text) {
+      history.push({ role: "assistant", content: dedupeParagraphs(t.text) });
+      // Carry the turn's tool-established facts back as an authoritative grounding
+      // block (backend _coerce_history re-tags the [ПРОВЕРЕННЫЕ ФАКТЫ] prefix to a
+      // system message). Without this the agent loses what it learned via tools and
+      // confabulates factual follow-ups. Prefix must match backend FACTS_PREFIX.
+      if (t.establishedFacts) {
+        history.push({ role: "assistant", content: `[ПРОВЕРЕННЫЕ ФАКТЫ]\n${t.establishedFacts}` });
+      }
+    }
   }
   const agentId = nid();
   entry.runId = null;

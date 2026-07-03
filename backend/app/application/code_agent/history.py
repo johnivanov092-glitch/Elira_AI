@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # re-tags them as system messages so the LLM treats them as out-of-band context
 # rather than as its own prior reply.
 _SUMMARY_PREFIX = "[CONTEXT SUMMARY]"
+# Grounded facts the discovery tools established in a prior turn (see
+# loop_helpers.FACTS_PREFIX). The frontend carries them as an assistant message;
+# we re-tag to system so the model treats them as an authoritative record of what
+# was actually verified — not its own prose — and answers factual follow-ups from
+# them instead of confabulating.
+_FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
 
 DEFAULT_MODEL = "local-model"
 # A long-thinking local model must not be cut off mid-task; this large window is
@@ -83,6 +89,21 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
                 "content": (
                     "Earlier conversation summary (compressed from prior turns by the "
                     "user — treat as context, not as your own previous answer):\n"
+                    + stripped
+                ),
+            })
+            continue
+        if role == "assistant" and content.startswith(_FACTS_PREFIX):
+            stripped = content[len(_FACTS_PREFIX):].lstrip("\n").lstrip()
+            if not stripped:
+                continue
+            out.append({
+                "role": "system",
+                "content": (
+                    "Проверенные факты, установленные инструментами в предыдущих ходах "
+                    "(это ДОСТОВЕРНАЯ запись того, что реально проверено — опирайся на "
+                    "неё для фактических вопросов о проекте/файлах/коде; если нужного "
+                    "факта здесь нет — перепроверь инструментом, не выдумывай):\n"
                     + stripped
                 ),
             })

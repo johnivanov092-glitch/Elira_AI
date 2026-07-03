@@ -385,7 +385,10 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _EXECUTION_INTENT,
     _ASK_USER_SCHEMA,
     _TOOL_SEARCH_SCHEMA,
+    FACTS_PREFIX,
     _approval_status,
+    _fact_from_tool,
+    _facts_digest,
     _flatten_for_summary,
     _is_critical_call,
     _looks_like_intent_without_action,
@@ -570,6 +573,11 @@ def _stream_code_agent_core(
         compaction_count = 0
         call_log: list[str] = []
         repeated_tool_calls: dict[str, int] = {}
+        # Grounding across turns: compact facts the discovery tools revealed this
+        # run, handed back next turn as an authoritative context block so the
+        # model grounds instead of confabulating (see loop_helpers._fact_from_tool
+        # and the FACTS_PREFIX block in the frontend history builder).
+        established_facts: list[str] = []
         # Soft verification gate (Variant 2): if the run edited files but never
         # ran tests/lint or started the app, nudge the model to verify once
         # before it closes. Reminder-injection, not a hard block — and it fires
@@ -1058,7 +1066,11 @@ def _stream_code_agent_core(
                         final_text = final_text + "\n\n" + "\n".join(f"💡 {e}" for e in _extras)
                 except Exception:
                     pass
-                yield {"type": "final_response", "step": step, "text": final_text}
+                _facts = _facts_digest(established_facts)
+                yield {
+                    "type": "final_response", "step": step, "text": final_text,
+                    "established_facts": _facts,
+                }
                 # Step B: drift Elira's mood from this exchange (auto, global,
                 # decaying). Fire-and-forget — never breaks the run.
                 try:
@@ -1079,6 +1091,7 @@ def _stream_code_agent_core(
                     "steps": step,
                     "stop_reason": "answer",
                     "error": None,
+                    "established_facts": _facts,
                 }
                 return
 
@@ -1464,6 +1477,14 @@ def _stream_code_agent_core(
                     "content": _tool_content,
                     "name": name,
                 })
+                # Grounding: remember what this discovery tool revealed so a later
+                # turn (whose history drops tool results) can answer from fact.
+                _fact = _fact_from_tool(
+                    name, _hint, text_result,
+                    ok=bool(tool_meta.get("ok", _exec_result.status == "ok")),
+                )
+                if _fact:
+                    established_facts.append(_fact)
 
         final_text = _wrap_up_text(
             chat, model, safe_num_ctx, messages, call_log,

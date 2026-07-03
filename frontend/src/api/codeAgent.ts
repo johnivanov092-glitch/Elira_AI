@@ -140,7 +140,7 @@ export type CodeAgentStreamEvent =
       context?: ContextUsage;
       profile?: ContextProfile;
     }
-  | { type: "final_response"; step: number; text: string }
+  | { type: "final_response"; step: number; text: string; established_facts?: string }
   | {
       type: "done";
       ok: boolean;
@@ -150,6 +150,7 @@ export type CodeAgentStreamEvent =
       partial?: boolean;
       resumable?: boolean;
       run_id?: string;
+      established_facts?: string;
     };
 
 export type ContextUsage = {

@@ -27,6 +27,12 @@ export type AgentTurnData = {
    *  «Рассуждение» toggle is on. Shown in a collapsible block, kept out of the
    *  answer text and out of conversation history. */
   reasoning?: string;
+  /** Compact digest of facts the discovery tools established this turn (which
+   *  files exist, function signatures, command output). Carried into the next
+   *  turn's conversation_history as an authoritative grounding block so the model
+   *  answers factual follow-ups from fact instead of confabulating. Not rendered
+   *  in the answer bubble. */
+  establishedFacts?: string;
   running: boolean;
   activeTool?: string;
   error?: string | null;
