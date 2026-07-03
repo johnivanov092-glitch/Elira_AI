@@ -58,7 +58,7 @@ _CODE_SIGNALS = re.compile(
     r"(?:\b(?:баг|ошибк|исключени|traceback|стек\s*трейс|функци|класс|метод|"
     r"рефактор|патч|коммит|деплой|компил|собери|собрать|запусти|запуск|"
     r"тест|линт|дебаг|отлад|почини|исправ|перепиши|напиши\s+код|реализуй|"
-    r"имплемент|merge|pull\s*request|pr\b|api\b|endpoint|роут|миграци|"
+    r"имплемент|merge|pull\s*request|pr\b|api\b|endpoint|роутинг|миграци|"
     r"bug|fix|refactor|implement|deploy|compile|build|debug|stack\s*trace|"
     r"exception|commit|function|class\b)"
     r"|\.(?:py|ts|tsx|js|jsx|go|rs|java|c|cpp|h|sql|json|yaml|yml|sh|toml)\b"
@@ -88,9 +88,22 @@ _BUSINESS_SIGNALS = re.compile(
     re.IGNORECASE,
 )
 
+# Infra signals (Инфраструктура): networking / servers / sysadmin. Specific
+# markers (роутер/firewall/ssh/systemctl/RouterOS/nginx) so generic words like
+# «сервер» alone don't steal code tasks («напиши сервер на Flask» stays code).
+# Checked AFTER code — a coding request that merely mentions nginx stays Инженерный.
+_INFRA_SIGNALS = re.compile(
+    r"(?:\b(?:роутер|router|mikrotik|routeros|cisco|коммутатор|свитч|"
+    r"firewall|брандмауэр|iptables|nftables|подсет|маршрутизаци|"
+    r"systemctl|systemd|демон|nginx|apache|proxmox|traceroute|nslookup|"
+    r"инфраструктур|сетев|просканир\w*\s+сет|настро\w*\s+сервер)"
+    r"|\b(?:vlan|dns|dhcp|nat|ssh)\b)",
+    re.IGNORECASE,
+)
+
 
 def classify_mode(user_input: str | None) -> str:
-    """Heuristic mode for "Авто": Инженерный / Личный / Деловой / Баланс."""
+    """Heuristic mode for "Авто": Инженерный / Личный / Деловой / Инфраструктура / Баланс."""
     text = (user_input or "").strip()
     if not text:
         return DEFAULT_PROFILE
@@ -100,6 +113,8 @@ def classify_mode(user_input: str | None) -> str:
         return "Личный"
     if _BUSINESS_SIGNALS.search(text):
         return "Деловой"
+    if _INFRA_SIGNALS.search(text):
+        return "Инфраструктура"
     return DEFAULT_PROFILE
 
 
