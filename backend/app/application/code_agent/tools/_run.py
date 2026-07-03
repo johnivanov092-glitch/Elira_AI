@@ -27,25 +27,9 @@ from app.application.code_agent.tools._shell import (
 )
 
 
-def _decode_console(data: bytes) -> str:
-    """Decode subprocess output. Windows console apps (ping/ipconfig/arp/netstat)
-    emit the OEM codepage (cp866 on RU Windows); the old text=True mode decoded
-    them with the ANSI/locale default (cp1251) → mojibake the model couldn't read,
-    so it flailed on network tasks. Try UTF-8 strict first (covers UTF-8 tools and
-    pure ASCII), then the OEM codepage, then a lossless latin-1 so it never raises."""
-    if not data:
-        return ""
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    if os.name == "nt":
-        for enc in ("oem", "cp866", "cp1251"):
-            try:
-                return data.decode(enc)
-            except (UnicodeDecodeError, LookupError):
-                continue
-    return data.decode("latin-1", errors="replace")
+# Canonical subprocess-output decoder (Windows console mojibake fix) lives in one
+# place now; kept as _decode_console here for the existing call sites and tests.
+from app.infrastructure.encoding import decode_console as _decode_console
 
 
 # Interpreters whose inline-script form (`python -c "<script>"`, `node -e …`)

@@ -238,8 +238,8 @@ class SshWriteTest(SshProviderTestBase):
         for arg in argv:
             self.assertNotIn("$evil", arg)
             self.assertNotIn("`whoami`", arg)
-        # Content IS in stdin
-        self.assertEqual(mock.call_args.kwargs["input"], nasty)
+        # Content IS in stdin (now sent as UTF-8 bytes — no text=True)
+        self.assertEqual(mock.call_args.kwargs["input"], nasty.encode("utf-8"))
 
     def test_append_flag_uses_double_redirect(self) -> None:
         with patch("subprocess.run", return_value=_proc(0, "", "")) as mock:

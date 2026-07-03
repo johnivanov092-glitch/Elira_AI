@@ -10,6 +10,8 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+from app.infrastructure.encoding import decode_console
+
 PYTHON_EXEC_TIMEOUT = 30
 
 FIGURE_SAVER = textwrap.dedent(
@@ -72,14 +74,13 @@ def execute_python_with_capture(
         try:
             proc = subprocess.run(
                 [sys.executable, str(code_file)],
-                capture_output=True,
-                text=True,
+                capture_output=True,  # bytes → decode_console
                 timeout=timeout,
                 cwd=str(tmp_path),
                 env=env,
             )
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
+            stdout = decode_console(proc.stdout)
+            stderr = decode_console(proc.stderr)
             is_error = proc.returncode != 0 or "Traceback" in stderr
 
             figures: list[bytes] = []
@@ -129,12 +130,11 @@ def run_in_dir(cmd: str, cwd: Path, timeout: int = 60) -> str:
         proc = subprocess.run(
             cmd,
             shell=True,
-            capture_output=True,
-            text=True,
+            capture_output=True,  # bytes → decode_console
             timeout=timeout,
             cwd=str(cwd),
         )
-        return f"$ {cmd}\n\nSTDOUT:\n{proc.stdout}\n\nSTDERR:\n{proc.stderr}"
+        return f"$ {cmd}\n\nSTDOUT:\n{decode_console(proc.stdout)}\n\nSTDERR:\n{decode_console(proc.stderr)}"
     except subprocess.TimeoutExpired:
         return f"$ {cmd}\n\nКоманда остановлена по таймауту ({timeout} сек.)"
     except Exception as exc:

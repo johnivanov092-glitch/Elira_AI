@@ -41,6 +41,11 @@ class DecodeConsoleTest(unittest.TestCase):
     def test_never_raises_on_arbitrary_bytes(self):
         self.assertIsInstance(_decode_console(bytes(range(256))), str)
 
+    def test_str_and_none_pass_through(self):
+        # Tolerant of an already-decoded str (or a mocked str stdout) and None.
+        self.assertEqual(_decode_console("уже строка"), "уже строка")
+        self.assertEqual(_decode_console(None), "")
+
 
 if __name__ == "__main__":
     unittest.main()

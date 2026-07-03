@@ -156,6 +156,10 @@ class McpClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                # MCP framing is UTF-8 JSON — force it, else text=True decodes with
+                # the Windows ANSI default (cp1251) and mangles non-ASCII payloads.
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,  # line-buffered
                 env=full_env,
                 cwd=self._cwd,

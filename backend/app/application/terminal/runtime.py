@@ -102,15 +102,9 @@ def exec_command(command: str, cwd: str = ""):
         return {"ok": False, "error": str(exc), "cwd": work_dir}
 
 
-def decode_win(data: bytes) -> str:
-    if not data:
-        return ""
-    for enc in ("utf-8", "cp866", "cp1251"):
-        try:
-            return data.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return data.decode("utf-8", errors="replace")
+# Canonical decoder now lives in app.infrastructure.encoding; kept as decode_win
+# for this module's call sites.
+from app.infrastructure.encoding import decode_console as decode_win
 
 
 def get_cwd():

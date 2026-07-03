@@ -33,6 +33,7 @@ from app.application.tool_providers.ssh_acl import (
     is_host_allowed,
     is_ssh_enabled,
 )
+from app.infrastructure.encoding import decode_console
 
 
 logger = logging.getLogger(__name__)
@@ -99,8 +100,7 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
     try:
         proc = subprocess.run(
             [*_ssh_args(host), command],
-            capture_output=True,
-            text=True,
+            capture_output=True,  # bytes → decode_console (remote may emit non-ANSI)
             timeout=safe_timeout,
         )
     except subprocess.TimeoutExpired:
@@ -111,11 +111,12 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
         logger.exception("ssh_run failed for host=%s", host)
         return {"text": f"ERROR: {exc}"}
 
+    _out, _err = decode_console(proc.stdout), decode_console(proc.stderr)
     parts = [f"$ ssh {host} -- {command}", f"exit={proc.returncode}"]
-    if proc.stdout:
-        parts.append(f"STDOUT:\n{_truncate_for_llm(proc.stdout.rstrip())}")
-    if proc.stderr:
-        parts.append(f"STDERR:\n{_truncate_for_llm(proc.stderr.rstrip())}")
+    if _out:
+        parts.append(f"STDOUT:\n{_truncate_for_llm(_out.rstrip())}")
+    if _err:
+        parts.append(f"STDERR:\n{_truncate_for_llm(_err.rstrip())}")
     return {"text": "\n".join(parts), "touched_host": host}
 
 
@@ -135,8 +136,7 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
     try:
         proc = subprocess.run(
             [*_ssh_args(host), remote_cmd],
-            capture_output=True,
-            text=True,
+            capture_output=True,  # bytes → decode_console
             timeout=30,
         )
     except subprocess.TimeoutExpired:
@@ -145,12 +145,11 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
         return {"text": "ERROR: `ssh` binary not found on this machine"}
 
     if proc.returncode != 0:
-        return {"text": f"ERROR: remote read failed (exit {proc.returncode}): {proc.stderr.rstrip()}"}
+        return {"text": f"ERROR: remote read failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"}
 
-    body = proc.stdout
-    truncated = len(body) > cap
-    if truncated:
-        body = body[:cap]
+    raw = proc.stdout or b""          # `head -c` bounds the transfer in BYTES
+    truncated = len(raw) > cap
+    body = decode_console(raw[:cap] if truncated else raw)
     head = f"[ssh:{host}:{path}]"
     if truncated:
         head += f"  (truncated at {cap} bytes — file is longer)"
@@ -181,9 +180,8 @@ def tool_ssh_write(*, host: str, path: str, content: str, append: bool = False) 
     try:
         proc = subprocess.run(
             [*_ssh_args(host), remote_cmd],
-            input=content,
+            input=content.encode("utf-8"),  # bytes in / bytes out (no text=True)
             capture_output=True,
-            text=True,
             timeout=60,
         )
     except subprocess.TimeoutExpired:
@@ -192,7 +190,7 @@ def tool_ssh_write(*, host: str, path: str, content: str, append: bool = False) 
         return {"text": "ERROR: `ssh` binary not found on this machine"}
 
     if proc.returncode != 0:
-        return {"text": f"ERROR: remote write failed (exit {proc.returncode}): {proc.stderr.rstrip()}"}
+        return {"text": f"ERROR: remote write failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"}
 
     verb = "Appended to" if append else "Wrote"
     return {

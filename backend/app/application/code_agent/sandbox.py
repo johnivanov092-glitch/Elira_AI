@@ -41,6 +41,7 @@ from typing import Any
 from app.application.code_agent.tools._run import _agent_child_env
 from app.application.projects.scope import project_scope_slug
 from app.core.data_files import DATA_DIR
+from app.infrastructure.encoding import decode_console
 
 
 _SANDBOX_ROOT = DATA_DIR / "sandbox"
@@ -153,14 +154,13 @@ def run_in_sandbox(
             try:
                 proc = subprocess.run(
                     [str(_venv_pip(sandbox)), "install", "--disable-pip-version-check", "--quiet", *safe],
-                    capture_output=True,
-                    text=True,
+                    capture_output=True,  # bytes → decode_console
                     timeout=max(30, min(int(timeout) * 3, 600)),
                     # Strip secret env so pip (and any build hooks it runs) can't
                     # read Elira's GitHub/HF/API tokens (FIX-1).
                     env=_agent_child_env(),
                 )
-                install_log = (proc.stdout or "") + (proc.stderr or "")
+                install_log = decode_console(proc.stdout) + decode_console(proc.stderr)
                 if proc.returncode != 0:
                     return {
                         "ok": False,
@@ -196,8 +196,7 @@ def run_in_sandbox(
     try:
         proc = subprocess.run(
             [str(_venv_python(sandbox)), str(script_path)],
-            capture_output=True,
-            text=True,
+            capture_output=True,  # bytes → decode_console (child forces PYTHONIOENCODING=utf-8)
             timeout=int(timeout),
             cwd=str(work),
             env=env,
@@ -218,8 +217,8 @@ def run_in_sandbox(
 
     return {
         "ok": proc.returncode == 0,
-        "stdout": _truncate(proc.stdout or "", _STDOUT_LIMIT),
-        "stderr": _truncate(proc.stderr or "", _STDERR_LIMIT),
+        "stdout": _truncate(decode_console(proc.stdout), _STDOUT_LIMIT),
+        "stderr": _truncate(decode_console(proc.stderr), _STDERR_LIMIT),
         "exit_code": int(proc.returncode),
         "took_seconds": round(time.monotonic() - started, 3),
         "sandbox_path": str(sandbox),

@@ -8,6 +8,7 @@ from __future__ import annotations
 import subprocess
 
 from app.core.config import APP_DIR, TERMINAL_BLOCKED
+from app.infrastructure.encoding import decode_console
 
 
 _OUTPUT_LIMIT = 16000
@@ -25,13 +26,12 @@ def run_terminal(cmd: str, timeout: int = 25) -> str:
         proc = subprocess.run(
             cmd,
             shell=True,
-            capture_output=True,
-            text=True,
+            capture_output=True,  # bytes → decode_console
             timeout=timeout,
             cwd=str(APP_DIR),
         )
-        stdout = (proc.stdout or "")[:_OUTPUT_LIMIT]
-        stderr = (proc.stderr or "")[:_OUTPUT_LIMIT]
+        stdout = decode_console(proc.stdout)[:_OUTPUT_LIMIT]
+        stderr = decode_console(proc.stderr)[:_OUTPUT_LIMIT]
         return f"$ {cmd}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"
     except subprocess.TimeoutExpired:
         return f"$ {cmd}\n\nКоманда остановлена по таймауту ({timeout} сек.)"
