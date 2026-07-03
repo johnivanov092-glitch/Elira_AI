@@ -46,6 +46,19 @@ class DecodeConsoleTest(unittest.TestCase):
         self.assertEqual(_decode_console("уже строка"), "уже строка")
         self.assertEqual(_decode_console(None), "")
 
+    def test_server_log_tail_decodes_oem(self):
+        # run_server writes raw child bytes to the log; _read_log_tail must decode
+        # them like console output, not assume UTF-8 (was mojibake on RU Windows).
+        import tempfile
+        from pathlib import Path
+        from app.application.code_agent.tools._run import _read_log_tail
+        ru = "Сервер запущен на порту 5173"
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "server.log"
+            log.write_bytes(ru.encode("cp866") if os.name == "nt" else ru.encode("utf-8"))
+            self.assertIn("5173", _read_log_tail(log))
+            self.assertIn("Сервер", _read_log_tail(log))
+
 
 if __name__ == "__main__":
     unittest.main()

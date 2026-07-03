@@ -268,7 +268,9 @@ def _reap_dead_servers() -> None:
 
 def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
     try:
-        data = log_path.read_text(encoding="utf-8", errors="replace")
+        # The server child writes RAW bytes to the log fd (OEM codepage on
+        # Windows) — decode like every other console output, not as fixed UTF-8.
+        data = _decode_console(log_path.read_bytes())
     except Exception:
         return ""
     return _truncate_middle(data.rstrip(), limit)
@@ -496,7 +498,9 @@ def tool_run_server(
     log_path = log_dir / f"server-{int(time.time() * 1000)}.log"
 
     try:
-        log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
+        # Binary: the server child writes its raw bytes straight to this fd; we
+        # decode on read (_read_log_tail) so Windows OEM output isn't mangled.
+        log_fh = open(log_path, "wb")
     except Exception as exc:
         return {"text": f"ERROR: cannot open log file: {exc}"}
 
@@ -506,7 +510,6 @@ def tool_run_server(
             shell=True,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
-            text=True,
             cwd=str(project_root.resolve()),
             # Strip secret-bearing env keys from the model's server child (FIX-1).
             env=_agent_child_env(),
