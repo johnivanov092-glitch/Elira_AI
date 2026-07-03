@@ -338,6 +338,51 @@ def _facts_digest(facts: list[str]) -> str:
     return body[:_FACTS_DIGEST_CHARS]
 
 
+# --- Near-duplicate loop detection ------------------------------------------
+# The exact-fingerprint loop-guard misses a model that spams ONE tool with
+# slightly-varying args — `ping -n 1 X`, `ping -n 2 X`, `recall "192.1 88"`,
+# `recall "192.169 88"`… Each variant is a DISTINCT fingerprint, so the per-
+# fingerprint count is spread thin and the run burns dozens of steps before the
+# hard limit trips (observed live: a ping loop ran to step 50 / ~59 calls). We
+# collapse near-duplicates: normalise numbers to "N", tokenise, and treat same-
+# tool calls with high token overlap as the SAME churning loop — nudge to change
+# approach, then stop fast. Legit work (read_file over DIFFERENT files) has low
+# overlap and is never flagged.
+_NEAR_DUP_JACCARD = 0.6
+_NEAR_DUP_NUDGE_AT = 3
+_NEAR_DUP_LIMIT = 5
+_NEAR_DUP_WINDOW = 8
+
+
+def _arg_tokens(parsed_args: dict | None) -> frozenset[str]:
+    """Coarse token set of a call's args. Whole number/IP/version tokens collapse
+    to a single "N" (so `192.1` and `192.169.88.2` match, and `ping -n 1 X` /
+    `ping -n 2 X` collapse to the same shape); embedded digits in words are also
+    normalised. Capped so a huge `content` arg (write_file) stays cheap and never
+    dominates. File paths stay whole tokens, so different files don't collapse."""
+    text = " ".join(str(v) for v in (parsed_args or {}).values())[:400].lower()
+    toks: set[str] = set()
+    for t in text.split():
+        if re.fullmatch(r"[\d.:_\-]+", t):  # pure number / IP / version / flag-number
+            toks.add("N")
+        else:
+            toks.add(re.sub(r"\d+", "N", t))
+    return frozenset(toks)
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _is_near_dup(name: str, tokens: frozenset[str], recent: list[tuple[str, frozenset[str]]]) -> bool:
+    """True if this call closely mirrors a recent call to the SAME tool."""
+    return any(rn == name and _jaccard(tokens, rt) >= _NEAR_DUP_JACCARD for rn, rt in recent)
+
+
 def _mark_approval_approved(approval_id: str) -> bool:
     """Programmatically grant an approval row (for non-'ask' permission modes)."""
     try:

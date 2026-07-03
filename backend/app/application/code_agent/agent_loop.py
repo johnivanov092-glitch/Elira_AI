@@ -386,9 +386,13 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _ASK_USER_SCHEMA,
     _TOOL_SEARCH_SCHEMA,
     FACTS_PREFIX,
+    _NEAR_DUP_LIMIT,
+    _NEAR_DUP_NUDGE_AT,
     _approval_status,
+    _arg_tokens,
     _fact_from_tool,
     _facts_digest,
+    _is_near_dup,
     _flatten_for_summary,
     _is_critical_call,
     _looks_like_intent_without_action,
@@ -573,6 +577,11 @@ def _stream_code_agent_core(
         compaction_count = 0
         call_log: list[str] = []
         repeated_tool_calls: dict[str, int] = {}
+        # Near-duplicate loop detection (see loop_helpers): catches a model
+        # spamming ONE tool with slightly-varying args (ping/recall churn) that
+        # the exact-fingerprint guard below misses. Streak = consecutive near-dups.
+        near_dup_recent: list[tuple[str, frozenset[str]]] = []
+        near_dup_streak = 0
         # Grounding across turns: compact facts the discovery tools revealed this
         # run, handed back next turn as an authoritative context block so the
         # model grounds instead of confabulating (see loop_helpers._fact_from_tool
@@ -1151,6 +1160,32 @@ def _stream_code_agent_core(
                         "error": f"repeated identical tool call: {name}",
                     }
                     return
+                # Near-duplicate loop: same tool, slightly-varying args (ping/recall
+                # churn). Collapses variants the exact guard above misses, so a spin
+                # is cut in ~6 calls instead of ~50. Exempt tools (todo/tool_search/
+                # ask_user) are skipped; legit different-file calls have low overlap.
+                _nd_tokens = _arg_tokens(parsed_args)
+                if name not in _LOOP_GUARD_EXEMPT_TOOLS and _is_near_dup(name, _nd_tokens, near_dup_recent):
+                    near_dup_streak += 1
+                else:
+                    near_dup_streak = 0
+                near_dup_recent.append((name, _nd_tokens))
+                if len(near_dup_recent) > 8:
+                    near_dup_recent = near_dup_recent[-8:]
+                if near_dup_streak >= _NEAR_DUP_LIMIT:
+                    final_text = _wrap_up_text(
+                        chat, model, safe_num_ctx, messages, call_log,
+                        f"near-duplicate {name} loop (varying args, no progress)",
+                    )
+                    yield {"type": "final_response", "step": step, "text": final_text}
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "loop_guard",
+                        "error": f"near-duplicate tool loop: {name}",
+                    }
+                    return
                 if name == "tool_search":
                     # P10.1 meta-tool: inject the current run_id (the model never
                     # supplies it), search + activate eligible tools for this run.
@@ -1471,6 +1506,15 @@ def _stream_code_agent_core(
                         f"\n\n[loop-guard] Ты вызвал {name} с теми же аргументами уже {_rc} раз — "
                         f"результат не изменится. Смени подход или дай финальный ответ. "
                         f"Ещё {_left} повтор(а/ов) до принудительной остановки."
+                    )
+                # Near-dup nudge: same tool, slightly-varying args — help the model
+                # self-correct (change approach / read files / ask) BEFORE the stop.
+                elif name not in _LOOP_GUARD_EXEMPT_TOOLS and _NEAR_DUP_NUDGE_AT <= near_dup_streak < _NEAR_DUP_LIMIT:
+                    _left = _NEAR_DUP_LIMIT - near_dup_streak
+                    _tool_content += (
+                        f"\n\n[loop-guard] Ты повторяешь похожие вызовы {name} с чуть разными "
+                        f"аргументами — это не двигает задачу. Смени ПОДХОД: другой инструмент/данные, "
+                        f"прочитай реальные файлы или спроси пользователя. Ещё {_left} до остановки."
                     )
                 messages.append({
                     "role": "tool",
