@@ -386,6 +386,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _ASK_USER_SCHEMA,
     _TOOL_SEARCH_SCHEMA,
     FACTS_PREFIX,
+    _GROUNDING_NUDGE_MAX,
     _NEAR_DUP_LIMIT,
     _NEAR_DUP_NUDGE_AT,
     _approval_status,
@@ -393,6 +394,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _fact_from_tool,
     _facts_digest,
     _is_near_dup,
+    _ungrounded_files,
     _flatten_for_summary,
     _is_critical_call,
     _looks_like_intent_without_action,
@@ -613,6 +615,11 @@ def _stream_code_agent_core(
         # then let it finalize rather than loop forever.
         intent_gate_fires = 0
         _INTENT_GATE_MAX = 2
+        # Ungrounded-file nudge: fires when the finalizing answer names a project
+        # file that nothing in this run grounds (residual confabulation leak, e.g.
+        # inventing test_main.py/setup.py). Bounded; only on an actual unverified
+        # file claim, so normal answers never see it.
+        grounding_nudge_fires = 0
         # Cross-step budget for degenerate generations: the provider's runaway
         # guard is per-generation, so a model that loops its reasoning EVERY step
         # could burn all 200 steps in cut-off generations. Two runaway events in
@@ -1051,6 +1058,29 @@ def _stream_code_agent_core(
                         ),
                     })
                     continue
+                # Ungrounded-file nudge: the answer names project file(s) that
+                # nothing in this run grounds (no tool result / verified-facts /
+                # user message) — the residual confabulation leak. Nudge it to
+                # verify via a tool before stating them, ONCE-ish. Only fires on a
+                # real unverified file claim, so normal answers never see it.
+                _answer_ground = content or last_text
+                if _answer_ground and grounding_nudge_fires < _GROUNDING_NUDGE_MAX:
+                    _ungrounded = _ungrounded_files(_answer_ground, messages, established_facts)
+                    if _ungrounded:
+                        grounding_nudge_fires += 1
+                        messages.append({"role": "assistant", "content": _answer_ground})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Ты назвал файлы, которые НЕ проверял в этом прогоне "
+                                "и которых нет в блоке «Проверенные факты»: "
+                                f"{', '.join(_ungrounded[:6])}. Не называй файлы по "
+                                "памяти — вызови `glob`/`project_map`/`read_file` и "
+                                "убедись, что они реально существуют. Затем ответь по "
+                                "факту; выдуманное убери."
+                            ),
+                        })
+                        continue
                 final_text = content or last_text
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to

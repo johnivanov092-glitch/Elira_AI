@@ -348,6 +348,45 @@ def _facts_digest(facts: list[str]) -> str:
     return body[:_FACTS_DIGEST_CHARS]
 
 
+# --- Ungrounded-file nudge (residual grounding leak) ------------------------
+# established_facts carries what tools GROUNDED, but when the model is asked about
+# something no tool has fetched yet (a file never read), it can still name files
+# from priors ("README describes test_main.py/setup.py" — live-observed). This
+# detector flags file names in the model's answer that NOTHING in the run grounds
+# (no tool result, no verified-facts block, not from the user), so the loop can
+# nudge it to verify via a tool before stating them. Deliberately narrow: it only
+# fires on an actual ungrounded FILE claim, so normal answers never see it.
+_GROUNDING_NUDGE_MAX = 2
+_ANSWER_FILE_RE = re.compile(
+    r"[\w.\-/\\]+\.(?:py|js|ts|tsx|jsx|json|md|txt|ya?ml|toml|cfg|ini|sh|bash|"
+    r"rs|go|java|kt|c|cpp|h|hpp|sql|html|css|scss|env|lock|rsc|conf|service)\b",
+    re.IGNORECASE,
+)
+
+
+def _basename(path: str) -> str:
+    return re.split(r"[\\/]", path)[-1]
+
+
+def _ungrounded_files(answer: str, messages: list[dict], established_facts: list[str]) -> list[str]:
+    """File names the answer states that nothing in the run grounds. Grounding =
+    a tool result, a [ПРОВЕРЕННЫЕ ФАКТЫ] block, or the user's own message — NOT the
+    system prompt (rule 20 lists calc.py/test_calc.py as NEGATIVE examples) and NOT
+    the model's own prior prose (else a confabulation self-grounds)."""
+    claimed = {_basename(m.group(0)).lower() for m in _ANSWER_FILE_RE.finditer(answer or "")}
+    if not claimed:
+        return []
+    parts = list(established_facts or [])
+    # Skip messages[0] (the system prompt); keep facts/summary (system), tool, user.
+    for m in (messages or [])[1:]:
+        if isinstance(m, dict) and m.get("role") in ("tool", "user", "system"):
+            c = m.get("content")
+            if isinstance(c, str):
+                parts.append(c)
+    hay = " ".join(parts).lower()
+    return sorted({b for b in claimed if b not in hay})
+
+
 # --- Near-duplicate loop detection ------------------------------------------
 # The exact-fingerprint loop-guard misses a model that spams ONE tool with
 # slightly-varying args — `ping -n 1 X`, `ping -n 2 X`, `recall "192.1 88"`,

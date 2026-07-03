@@ -32,6 +32,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: E402
     FACTS_PREFIX,
     _fact_from_tool,
     _facts_digest,
+    _ungrounded_files,
 )
 from app.application.code_agent.history import _coerce_history  # noqa: E402
 from app.application.agent_kernel import deferred_tools  # noqa: E402
@@ -136,6 +137,44 @@ def _final(text="готово"):
     return {"message": {"content": text, "tool_calls": []}}
 
 
+class UngroundedFilesTest(unittest.TestCase):
+    _SYS = {"role": "system", "content": "SYSTEM PROMPT — пример: calc.py, test_calc.py"}
+
+    def test_flags_invented_file_not_grounded_ones(self):
+        msgs = [
+            self._SYS,  # messages[0] (system prompt) is excluded from grounding
+            {"role": "system", "content": f"{FACTS_PREFIX} glob: main.py utils.py data.json"},
+            {"role": "user", "content": "какие файлы?"},
+        ]
+        out = _ungrounded_files("В проекте: main.py, utils.py, setup.py, test_main.py.", msgs, [])
+        self.assertIn("setup.py", out)
+        self.assertIn("test_main.py", out)
+        self.assertNotIn("main.py", out)   # grounded by the facts block
+        self.assertNotIn("utils.py", out)
+
+    def test_no_filenames_no_flag(self):
+        self.assertEqual(_ungrounded_files("Проект работает, всё ок.", [self._SYS], []), [])
+
+    def test_user_named_file_is_grounded(self):
+        msgs = [self._SYS, {"role": "user", "content": "что в config.py?"}]
+        self.assertEqual(_ungrounded_files("В config.py настройки.", msgs, []), [])
+
+    def test_system_prompt_examples_do_not_ground(self):
+        # calc.py lives in the system prompt (excluded) — claiming it is still flagged
+        self.assertIn("calc.py", _ungrounded_files("Есть calc.py.", [self._SYS], []))
+
+    def test_assistant_prose_does_not_self_ground(self):
+        msgs = [self._SYS,
+                {"role": "assistant", "content": "ранее я говорил про setup.py"},
+                {"role": "user", "content": "файлы?"}]
+        self.assertIn("setup.py", _ungrounded_files("Есть setup.py.", msgs, []))
+
+    def test_established_facts_ground(self):
+        out = _ungrounded_files("В requirements.txt есть pytest.", [self._SYS],
+                                ["glob(**/*): requirements.txt README.md"])
+        self.assertEqual(out, [])
+
+
 class LoopEmitsFactsTest(unittest.TestCase):
     def tearDown(self):
         deferred_tools.clear_run("gf1")
@@ -158,6 +197,36 @@ class LoopEmitsFactsTest(unittest.TestCase):
         self.assertIn("read_file", facts)
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done.get("established_facts"), facts)
+
+
+class GroundingNudgeLoopTest(unittest.TestCase):
+    def tearDown(self):
+        deferred_tools.clear_run("gn1")
+
+    def test_ungrounded_file_answer_triggers_nudge_then_finalizes(self):
+        # 1st answer names ungrounded files → gate nudges + continues; 2nd answer
+        # (which sees the nudge) is clean → run finalizes.
+        state = {"step": 0, "nudge_seen": False}
+
+        def chat(**kw):
+            if not kw.get("tools"):
+                return {"message": {"content": "summary", "tool_calls": []}}
+            state["step"] += 1
+            if state["step"] == 1:
+                return _final("В проекте есть setup.py и requirements.txt.")
+            state["nudge_seen"] = any(
+                "Не называй файлы по памяти" in (m.get("content") or "")
+                for m in (kw.get("messages") or []))
+            return _final("Проверил инструментом — таких файлов в проекте нет.")
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env():
+            evs = list(agent_loop.stream_code_agent(
+                user_message="какие файлы в проекте?", project_root=tmp, run_id="gn1",
+                auto_remember=False, permission_mode="bypass", chat_fn=chat))
+        self.assertTrue(state["nudge_seen"], "nudge must reach the model on the retry")
+        self.assertGreaterEqual(state["step"], 2)  # the gate forced a re-answer
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")
 
 
 if __name__ == "__main__":
