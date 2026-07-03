@@ -249,12 +249,11 @@ export function Composer({
             active={noQuestions}
             icon={<MessageCircleOff size={13} />}
             onClick={() => setNoQuestions((v) => !v)}
+            aria-label="Не задавать вопросы"
             title={noQuestions
               ? "«Не спрашивать» включено — Elira не задаёт уточняющих вопросов, решает сама и продолжает"
-              : "Не задавать вопросы — Elira не будет спрашивать посреди прогона, а примет решение сама"}
-          >
-            Не спрашивать
-          </Chip>
+              : "Не задавать вопросы — Elira не будет спрашивать посреди прогона, а примет решение сама (по умолчанию — спрашивает)"}
+          />
           <ProfilePicker />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
           <MultiAgentChip
