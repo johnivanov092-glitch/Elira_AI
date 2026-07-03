@@ -583,6 +583,12 @@ def _wrap_up_text(
             options={"num_ctx": int(num_ctx), "active_context_limit": int(num_ctx)},
         )
         text = (((response or {}).get("message") or {}).get("content") or "").strip()
+        # A degenerate model can emit raw <tool_call>…</tool_call> as the wrap-up
+        # content (live: it leaked into the answer after the loop-guard fired).
+        # Strip it; if nothing meaningful is left, fall through to the call-log
+        # summary rather than showing an empty or markup-only answer.
+        from app.application.code_agent.inline_tool_calls import _strip_tool_call_markup
+        text = _strip_tool_call_markup(text)
         if text:
             return text
     except Exception as exc:

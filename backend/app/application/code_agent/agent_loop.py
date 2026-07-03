@@ -57,7 +57,11 @@ from app.application.code_agent.indexing import (  # noqa: F401
     unindex_file,
 )
 # Inline tool-call recovery extracted to .inline_tool_calls (used by the loop).
-from app.application.code_agent.inline_tool_calls import _contains_tool_trace, _extract_inline_tool_calls
+from app.application.code_agent.inline_tool_calls import (
+    _contains_tool_trace,
+    _extract_inline_tool_calls,
+    _strip_tool_call_markup,
+)
 # D3 — structured action envelopes (opt-in, gated behind ELIRA_ACTION_ENVELOPES).
 from app.application.code_agent.action_envelopes import (
     REPAIR_INSTRUCTION,
@@ -1115,7 +1119,7 @@ def _stream_code_agent_core(
                             ),
                         })
                         continue
-                final_text = content or last_text
+                final_text = _strip_tool_call_markup(content or last_text)
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to
                 # Elira's reply. Fail-safe — never breaks the run.

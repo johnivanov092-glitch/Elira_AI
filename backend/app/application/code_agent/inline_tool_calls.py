@@ -180,6 +180,25 @@ def _contains_tool_trace(content: str) -> bool:
     return "<tool_call" in lowered or "<function=" in lowered
 
 
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call\b[^>]*>.*?</tool_call>", re.DOTALL | re.IGNORECASE)
+_FUNCTION_BLOCK_RE = re.compile(r"<function=[^>]*>.*?</function>", re.DOTALL | re.IGNORECASE)
+_STRAY_TOOL_TAG_RE = re.compile(r"</?(?:tool_call|function|parameter)\b[^>]*>", re.IGNORECASE)
+
+
+def _strip_tool_call_markup(text: str) -> str:
+    """Display safety net: remove leaked `<tool_call>…</tool_call>` / `<function=…>`
+    markup from an ANSWER so a degenerate model's raw tool-call syntax never shows
+    up as text in the chat (live: it leaked into a wrap-up after the loop-guard
+    fired). Whole blocks go first; orphan tags left by a truncated block are then
+    swept. Only touches strings that actually contain the markers."""
+    if not _contains_tool_trace(text):
+        return text or ""
+    t = _TOOL_CALL_BLOCK_RE.sub("", text)
+    t = _FUNCTION_BLOCK_RE.sub("", t)
+    t = _STRAY_TOOL_TAG_RE.sub("", t)
+    return t.strip()
+
+
 def _parse_call_expr_args(arg_str: str) -> dict[str, Any]:
     """Parse `key="value", key2='v2', key3=123, key4=true` from a call
     expression. Best-effort: respects quotes, falls back to bare tokens."""
