@@ -34,6 +34,7 @@ from app.application.tool_providers.ssh_acl import (
     is_ssh_enabled,
 )
 from app.infrastructure.encoding import decode_console
+from app.infrastructure.text import truncate_middle
 
 
 logger = logging.getLogger(__name__)
@@ -49,9 +50,9 @@ _LLM_OUTPUT_LIMIT = 16_000
 
 
 def _truncate_for_llm(text: str, limit: int = _LLM_OUTPUT_LIMIT) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n[... truncated {len(text) - limit} chars]"
+    # Was a head-only cut that dropped the exit code / last error at the bottom of
+    # a remote command's output — now the shared head+tail truncation keeps both.
+    return truncate_middle(text, limit)
 
 
 def _ssh_args(host: str) -> list[str]:

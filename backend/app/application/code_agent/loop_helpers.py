@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from app.application.projects.scope import project_scope_id
 from app.application.code_agent.history import summarize_history
+from app.infrastructure.text import truncate_middle
 from app.application.code_agent.tool_policy import CRITICAL_TOOLS, EDIT_ONLY_TOOLS
 
 logger = logging.getLogger(__name__)
@@ -77,20 +78,7 @@ def _truncate_for_llm(text: str, limit: int = TOOL_RESULT_LLM_LIMIT) -> str:
     bottom is the most useful part, and for `read_file` of large files
     where the start has imports / docstring and the end has main code.
     """
-    if len(text) <= limit:
-        return text
-    # Reserve ~100 chars for the marker; split remainder 65/35 head/tail
-    # so we lean towards the start (where filenames, paths, signatures
-    # tend to live) but keep enough of the end for run_bash results.
-    budget = max(400, limit - 100)
-    head_size = int(budget * 0.65)
-    tail_size = budget - head_size
-    cut = len(text) - head_size - tail_size
-    return (
-        text[:head_size]
-        + f"\n[... truncated {cut} chars from middle to stay under context limit ...]\n"
-        + text[-tail_size:]
-    )
+    return truncate_middle(text, limit)
 
 
 def _messages_char_count(messages: list[dict[str, Any]]) -> int:

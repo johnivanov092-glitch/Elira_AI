@@ -42,6 +42,7 @@ from app.application.code_agent.tools._run import _agent_child_env
 from app.application.projects.scope import project_scope_slug
 from app.core.data_files import DATA_DIR
 from app.infrastructure.encoding import decode_console
+from app.infrastructure.text import truncate_head as _truncate
 
 
 _SANDBOX_ROOT = DATA_DIR / "sandbox"
@@ -91,12 +92,6 @@ def _ensure_sandbox(project_root: Path) -> Path:
         venv.create(sandbox / "venv", with_pip=True, clear=False, symlinks=False)
 
     return sandbox
-
-
-def _truncate(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"\n[... truncated {len(text) - limit} chars]"
 
 
 def run_in_sandbox(

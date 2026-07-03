@@ -44,15 +44,6 @@ def _resolve_safe(project_root: Path, raw_path: str) -> Path:
     return resolved
 
 
-def _truncate_middle(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    budget = max(400, limit - 100)
-    head_size = int(budget * 0.65)
-    tail_size = budget - head_size
-    removed = len(text) - head_size - tail_size
-    return (
-        text[:head_size]
-        + f"\n[... truncated {removed} chars from middle ...]\n"
-        + text[-tail_size:]
-    )
+# Canonical truncation lives in app.infrastructure.text; kept as _truncate_middle
+# here for the existing call sites (_run, etc.) and tests.
+from app.infrastructure.text import truncate_middle as _truncate_middle  # noqa: E402

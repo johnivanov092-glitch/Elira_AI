@@ -20,18 +20,7 @@ STDOUT_LIMIT = 16000
 STDERR_LIMIT = 6000
 
 
-def truncate_middle(text: str, limit: int) -> str:
-    if len(text) <= limit:
-        return text
-    budget = max(400, limit - 100)
-    head_size = int(budget * 0.65)
-    tail_size = budget - head_size
-    removed = len(text) - head_size - tail_size
-    return (
-        text[:head_size]
-        + f"\n[... truncated {removed} chars from middle ...]\n"
-        + text[-tail_size:]
-    )
+from app.infrastructure.text import truncate_middle  # canonical (single source)
 
 
 def exec_command(command: str, cwd: str = ""):
