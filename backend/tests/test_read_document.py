@@ -65,6 +65,32 @@ class ReadDocumentTest(unittest.TestCase):
         self.assertIn("hello", r["text"])
         self.assertNotIn("file_extract", r["text"])
 
+    def test_fuzzy_resolves_a_mangled_cyrillic_filename(self):
+        # the model mangles long Cyrillic names (Latin look-alikes, dropped
+        # letters). read_file should still find the real file.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "Оценка диагноза Исаева.txt").write_text(
+                "СОДЕРЖИМОЕ документа 999", encoding="utf-8")
+            # Latin о,c look-alikes + a dropped final letter:
+            r = tool_read_file(Path(tmp), path="Оценка диагнoза Иcаев.txt")
+        self.assertIn("СОДЕРЖИМОЕ документа 999", r["text"])
+        self.assertIn("не найдено точно", r["text"])  # transparent resolve note
+
+    def test_image_gives_ocr_hint_not_binary_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "photo.jpeg").write_bytes(b"\xff\xd8\xff\xe0 fake\x00\x01 jpeg")
+            r = tool_read_file(Path(tmp), path="photo.jpeg")
+        self.assertNotIn("binary file", r["text"])
+        self.assertIn("картинка", r["text"])
+        self.assertIn("ocr_file", r["text"])
+
+    def test_missing_file_with_no_match_lists_the_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "unrelated_report.txt").write_text("x", encoding="utf-8")
+            r = tool_read_file(Path(tmp), path="totally_different_zzzzz.txt")
+        self.assertIn("not a file or does not exist", r["text"])
+        self.assertIn("unrelated_report.txt", r["text"])  # dir hint
+
 
 if __name__ == "__main__":
     unittest.main()

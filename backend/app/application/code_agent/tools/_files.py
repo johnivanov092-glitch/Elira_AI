@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,69 @@ _BOM_UTF8 = b"\xef\xbb\xbf"
 # of rejecting as "binary". Images/audio are NOT here — those use read_image /
 # ocr_file (the vision/OCR tools).
 _DOCUMENT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".xls", ".xlsx", ".xlsm"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif"}
+# Latin→Cyrillic visual look-alikes: the local model often mangles long Cyrillic
+# filenames by swapping in Latin twins (лечеbной, метаcтатическом), which makes
+# an exact path miss. Fold them before fuzzy-matching so the real file is found.
+_LOOKALIKE = {
+    "a": "а", "b": "б", "c": "с", "e": "е", "h": "н", "k": "к", "m": "м",
+    "o": "о", "p": "р", "t": "т", "x": "х", "y": "у",
+}
+
+
+def _norm_name(name: str) -> str:
+    """Lowercase, fold Latin look-alikes, drop spaces/punctuation — for matching a
+    model-typed (often mangled) filename against real files in a directory."""
+    s = (name or "").lower()
+    s = "".join(_LOOKALIKE.get(ch, ch) for ch in s)
+    return "".join(ch for ch in s if ch.isalnum())
+
+
+def _fuzzy_find(target: Path) -> Path | None:
+    """When an exact path misses, find the closest real file in its directory.
+    Returns a match only when it is clearly the best (high ratio + margin over the
+    runner-up), so an ambiguous guess never silently opens the wrong file."""
+    d = target.parent
+    if not d.is_dir():
+        return None
+    want = _norm_name(target.name)
+    if len(want) < 4:
+        return None
+    best: Path | None = None
+    best_r = 0.0
+    second_r = 0.0
+    try:
+        entries = [f for f in d.iterdir() if f.is_file()]
+    except Exception:
+        return None
+    # If the query names an extension, only consider files WITH that extension
+    # (so "…раке.pdf" resolves to the .pdf, not a same-basename .docx sitting next
+    # to it — which would otherwise tie and get refused as ambiguous).
+    ext = target.suffix.lower()
+    if ext:
+        same_ext = [f for f in entries if f.suffix.lower() == ext]
+        if same_ext:
+            entries = same_ext
+    for f in entries:
+        r = difflib.SequenceMatcher(None, want, _norm_name(f.name)).ratio()
+        if r > best_r:
+            best, second_r, best_r = f, best_r, r
+        elif r > second_r:
+            second_r = r
+    if best is not None and best_r >= 0.70 and (best_r - second_r) >= 0.08:
+        return best
+    return None
+
+
+def _dir_hint(target: Path, cap: int = 8) -> str:
+    d = target.parent
+    if not d.is_dir():
+        return ""
+    try:
+        names = [f.name for f in d.iterdir() if f.is_file()][:cap]
+    except Exception:
+        return ""
+    return (" — файлы в этой папке: " + "; ".join(names)) if names else ""
 _BOM_UTF16_LE = b"\xff\xfe"
 _BOM_UTF16_BE = b"\xfe\xff"
 
@@ -159,8 +223,17 @@ def tool_read_file(
     limit: int = 2000,
 ) -> dict[str, Any]:
     target = _resolve_safe(project_root, path)
+    resolved_note = ""
     if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {path}"}
+        # The local model frequently mangles long non-ASCII filenames (Latin/
+        # Cyrillic look-alikes, dropped syllables) → the exact path misses. Try a
+        # fuzzy match against the real files in the directory before failing.
+        alt = _fuzzy_find(target)
+        if alt is not None:
+            resolved_note = f"[имя '{path}' не найдено точно — открыл ближайшее: {alt.name}]\n"
+            target = alt
+        else:
+            return {"text": f"ERROR: not a file or does not exist: {path}{_dir_hint(target)}"}
     try:
         raw = target.read_bytes()
     except Exception as exc:
@@ -189,10 +262,16 @@ def tool_read_file(
         selected = lines[start:end]
         numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
         suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
-        header = f"[текст извлечён из {target.suffix} через file_extract: {path}]\n"
-        return {"text": header + numbered + suffix, "touched_path": path}
+        header = f"[текст извлечён из {target.suffix} через file_extract: {target.name}]\n"
+        return {"text": resolved_note + header + numbered + suffix, "touched_path": path}
 
     if _looks_binary(raw):
+        if target.suffix.lower() in _IMAGE_EXTS:
+            return {"text": (
+                f"[{target.suffix} — это картинка, не текст: {target.name}. Для текста "
+                f"со скана вызови `ocr_file`, для описания — `read_image` "
+                f"(активируй через `tool_search`, если их нет в списке).]"
+            )}
         return {"text": f"ERROR: binary file (not text): {path}"}
 
     detected = _detect_encoding(raw, strict=False)
@@ -216,7 +295,7 @@ def tool_read_file(
     numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
     suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
     return {
-        "text": numbered + suffix,
+        "text": resolved_note + numbered + suffix,
         "touched_path": path,
     }
 
