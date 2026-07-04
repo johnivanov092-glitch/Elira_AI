@@ -210,3 +210,32 @@
   }
 }
 
+/* Tables (GFM) */
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 0.6em 0;
+  max-width: 100%;
+}
+.md-table {
+  border-collapse: collapse;
+  width: auto;
+  min-width: 100%;
+  font-size: 0.92em;
+}
+.md-table th,
+.md-table td {
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  padding: 5px 10px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+.md-table th {
+  background: var(--code-bg, rgba(255, 255, 255, 0.06));
+  font-weight: 600;
+  color: var(--text-primary, #e8e8ec);
+}
+.md-table tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.025);
+}
+

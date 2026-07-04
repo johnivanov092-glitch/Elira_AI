@@ -82,6 +82,13 @@ const CODE_FENCE_SPLIT_RE = /(```[\s\S]*?```)/g;
 const DOUBLE_NEWLINE_RE = /\n{2,}/;
 const BOLD_SECTION_RE = /\*\*[^*\n]{1,80}?:\s*\*\*/g;
 const ITALIC_SECTION_RE = /(?<![*\w])\*[^*\n]{1,80}?:\s*\*(?![*\w])/g;
+// GFM tables: a "| … |" row, then a "|---|---|" separator, then data rows. The
+// custom block renderer had no table branch, so tables fell into the paragraph
+// case and collapsed all rows onto one line.
+const TABLE_ROW_RE = /^\s*\|.*\|\s*$/;
+const TABLE_SEP_RE = /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
+const splitTableRow = (line: string): string[] =>
+  line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
 
 function normalizeInlineEnumerations(block: string): string {
   if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
@@ -230,6 +237,45 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
       const Tag = `h${hm[1].length}` as "h1" | "h2" | "h3" | "h4";
       elements.push(<Tag key={`h-${i}`} className={`md-heading md-h${hm[1].length}`}>{parseInline(hm[2], `h${i}`)}</Tag>);
       i++; lineIdx++; continue;
+    }
+
+    // Table: a "| … |" row immediately followed by a "|---|---|" separator.
+    if (TABLE_ROW_RE.test(line) && lineIdx + 1 < lines.length && TABLE_SEP_RE.test(lines[lineIdx + 1])) {
+      const header = splitTableRow(line);
+      const ncol = Math.max(1, header.length);
+      lineIdx += 2; // consume the header row + the separator row
+      const rows: string[][] = [];
+      while (
+        lineIdx < lines.length &&
+        TABLE_ROW_RE.test(lines[lineIdx]) &&
+        !TABLE_SEP_RE.test(lines[lineIdx])
+      ) {
+        rows.push(splitTableRow(lines[lineIdx]));
+        lineIdx++;
+      }
+      elements.push(
+        <div key={`tblw-${i}`} className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>
+                {header.map((c, ci) => (
+                  <th key={ci}>{parseInline(c, `th-${i}-${ci}`)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri}>
+                  {Array.from({ length: ncol }).map((_, ci) => (
+                    <td key={ci}>{parseInline(r[ci] ?? "", `td-${i}-${ri}-${ci}`)}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      i++; continue;
     }
 
     if (UL_RE.test(line)) {
