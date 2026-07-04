@@ -52,8 +52,21 @@ class ScienceMedicalModeTest(unittest.TestCase):
             "выведи формулу через интеграл",
             "что такое квантовая запутанность",
             "как устроена молекула ДНК",
+            # chemistry folded into «Научный» per the user's physics↔chemistry note
+            "какая валентность у углерода",
+            "напиши уравнение реакции окисления",
+            "что такое катализатор",
         ):
             self.assertEqual(classify_mode(q), "Научный", q)
+
+    def test_thin_modes_now_carry_instruction_not_a_bare_label(self):
+        # Личный/Баланс/Инженерный used to send only "Режим работы: X" to the model.
+        # Their first (model-visible) sentence must now pack real guidance.
+        from app.application.persona.service import _short_profile_line
+        for mode in ("Личный", "Баланс", "Инженерный"):
+            line = _short_profile_line(mode)
+            self.assertGreater(len(line), 120, mode)  # not just a label
+            self.assertNotEqual(line.strip().rstrip("."), f"Режим работы: {mode.lower()}")
 
     def test_health_questions_route_to_медицина(self):
         for q in (
