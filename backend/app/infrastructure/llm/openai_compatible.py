@@ -35,6 +35,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
 _LLM_RETRY_ATTEMPTS = 3
 _LLM_RETRY_BACKOFF_S = 0.5
 
+# Live server context window (/props) cache. /v1/models does NOT expose the
+# loaded n_ctx, so /props (default_generation_settings.n_ctx) is the only
+# truthful source of the real window. Cached briefly so a server restart with a
+# new -c value is adopted within the TTL, without an app restart.
+_PROPS_CTX_TTL_S = 120.0
+_props_ctx_cache: dict[str, tuple[float, int | None]] = {}
+
 
 def _env_value(name: str, default: str = "") -> str:
     raw = os.getenv(name)
@@ -812,3 +819,45 @@ def list_models() -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+def server_context_window() -> int | None:
+    """Authoritative context window (n_ctx) of the live llama.cpp server.
+
+    Read from the server's ``/props`` endpoint
+    (``default_generation_settings.n_ctx``) — the ONLY place the loaded window is
+    exposed. ``/v1/models`` omits it, so callers that trust ``/models`` silently
+    fall back to the config default (e.g. 128k) and over-size prompts past the
+    server's real window (e.g. 64k), which the server then truncates/errors —
+    read as "the model stops holding context". Returns None when the server is
+    unreachable / unparseable so the caller can fall back to config. Cached for
+    ``_PROPS_CTX_TTL_S`` so a server ``-c`` change is picked up without an app
+    restart.
+    """
+    cfg = local_llm_config()
+    if not cfg.enabled:
+        return None
+    now = time.monotonic()
+    cached = _props_ctx_cache.get(cfg.base_url)
+    if cached is not None and (now - cached[0]) < _PROPS_CTX_TTL_S:
+        return cached[1]
+    value: int | None = None
+    try:
+        # base_url ends with /v1 (OpenAI-compat); /props lives at the server root.
+        root = cfg.base_url[:-3].rstrip("/") if cfg.base_url.endswith("/v1") else cfg.base_url
+        response = requests.get(
+            f"{root}/props",
+            headers=_headers(cfg),
+            timeout=min(8.0, cfg.timeout_seconds),
+        )
+        response.raise_for_status()
+        data = response.json()
+        gen = data.get("default_generation_settings")
+        if isinstance(gen, dict):
+            value = _positive_int(gen.get("n_ctx"))
+        if value is None:
+            value = _positive_int(data.get("n_ctx"))
+    except Exception:
+        value = None
+    _props_ctx_cache[cfg.base_url] = (now, value)
+    return value

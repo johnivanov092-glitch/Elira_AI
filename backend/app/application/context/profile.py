@@ -18,31 +18,49 @@ def _positive_int(value: Any) -> int | None:
 
 def get_active_context_profile(model: str = "local-model", *, ctx_size: int | None = None) -> dict[str, Any]:
     """Return the live llama.cpp context window with bounded config fallback."""
-    from app.infrastructure.llm.openai_compatible import local_llm_config, list_models
+    from app.infrastructure.llm.openai_compatible import (
+        local_llm_config,
+        list_models,
+        server_context_window,
+    )
 
     cfg = local_llm_config()
     context_window = _positive_int(ctx_size) or _positive_int(cfg.context_window) or DEFAULT_CONTEXT_WINDOW
     source = "effective_limit" if _positive_int(ctx_size) else "config"
     if ctx_size is None:
+        # /props exposes the REAL loaded n_ctx and is the only truthful source:
+        # /v1/models omits the window, so trusting /models silently adopts the
+        # config default (e.g. 128k) even when the model is loaded at 64k, and we
+        # then over-size prompts past the real window (server truncates/errors →
+        # "stops holding context"). Read the truth from /props first; fall back to
+        # /models, then config, only when /props is unreachable.
+        live = None
         try:
-            models = list_models()
-            # Prefer an exact name match; fall back to the first served model when
-            # the caller passes an alias the server doesn't echo back (e.g. "auto",
-            # the frontend default). llama.cpp serves a single model, so the first
-            # entry's real n_ctx is authoritative — this is how the live 32k window
-            # is adopted instead of the 128k config default.
-            exact = next(
-                (m for m in models if str(m.get("name") or m.get("model") or "").strip() == model),
-                None,
-            )
-            chosen = exact or (models[0] if models else None)
-            if chosen is not None:
-                discovered = _positive_int(chosen.get("context_window") or chosen.get("n_ctx"))
-                if discovered:
-                    context_window = discovered
-                    source = "server"
+            live = server_context_window()
         except Exception:
-            source = "config_fallback"
+            live = None
+        if live:
+            context_window = live
+            source = "server_props"
+        else:
+            try:
+                models = list_models()
+                # Prefer an exact name match; fall back to the first served model
+                # when the caller passes an alias the server doesn't echo back
+                # (e.g. "auto", the frontend default). llama.cpp serves a single
+                # model, so the first entry is authoritative.
+                exact = next(
+                    (m for m in models if str(m.get("name") or m.get("model") or "").strip() == model),
+                    None,
+                )
+                chosen = exact or (models[0] if models else None)
+                if chosen is not None:
+                    discovered = _positive_int(chosen.get("context_window") or chosen.get("n_ctx"))
+                    if discovered:
+                        context_window = discovered
+                        source = "server"
+            except Exception:
+                source = "config_fallback"
 
     context_window = min(MAX_CONTEXT_WINDOW, max(1024, context_window))
     if context_window < 16_384:
