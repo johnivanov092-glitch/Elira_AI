@@ -87,6 +87,11 @@ const CODE_FENCE_SPLIT_RE = /(```[\s\S]*?```)/g;
 const DOUBLE_NEWLINE_RE = /\n{2,}/;
 const BOLD_SECTION_RE = /\*\*[^*\n]{1,80}?:\s*\*\*/g;
 const ITALIC_SECTION_RE = /(?<![*\w])\*[^*\n]{1,80}?:\s*\*(?![*\w])/g;
+// A block that already contains a Markdown list line (a "-/*/+"" bullet or "N."
+// at a line start) is structured content. The flowing-paragraph splitters below
+// must NOT touch it: their "\n\n before **Heading:**" rewrite would eat the
+// bullet's trailing space and orphan a lone "*" on its own line.
+const LIST_LINE_IN_BLOCK_RE = /(?:^|\n)[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+/;
 // GFM tables: a "| … |" row, then a "|---|---|" separator, then data rows. The
 // custom block renderer had no table branch, so tables fell into the paragraph
 // case and collapsed all rows onto one line.
@@ -113,6 +118,7 @@ function normalizeInlineBoldSections(block: string): string {
   // wall of text. When we detect ≥2 such markers inside one paragraph,
   // split into separate paragraphs at each marker.
   if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
+  if (LIST_LINE_IN_BLOCK_RE.test(block)) return block;
   const matches = block.match(BOLD_SECTION_RE) || [];
   if (matches.length < 2) return block;
   // Insert '\n\n' before any bold-section marker that has content before it.
@@ -124,6 +130,7 @@ function normalizeInlineItalicSections(block: string): string {
   // italic-section markers ('*Subheading:*'), break them onto separate
   // lines so they read as sub-bullets, not run-on prose.
   if (!block) return block;
+  if (LIST_LINE_IN_BLOCK_RE.test(block)) return block;
   const matches = block.match(ITALIC_SECTION_RE) || [];
   if (matches.length < 2) return block;
   return block.replace(/([.!?])\s+(\*[^*\n]{1,80}?:\s*\*)/g, "$1\n$2")
