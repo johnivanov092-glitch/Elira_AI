@@ -103,7 +103,7 @@ class DeferredLoopTest(unittest.TestCase):
         with _loop_env():
             _run(chat, run_id="r1")
         first = set(chat.tools_per_call[0])
-        self.assertEqual(first, set(_CODE_AGENT_BASE_TOOLS) | {"tool_search", "ask_user"})
+        self.assertEqual(first, set(_CODE_AGENT_BASE_TOOLS) | {"tool_search", "ask_user", "ssh_request_host"})
         for lt in _LONG_TAIL:
             self.assertNotIn(lt, first)
         for core in ("write_file", "edit_file", "run_bash"):
@@ -154,7 +154,7 @@ class DeferredLoopTest(unittest.TestCase):
                 chat_fn=chat,
             ))
         first = set(chat.tools_per_call[0])
-        self.assertEqual(first, set(agent_loop._CODE_AGENT_READONLY_TOOLS) | {"tool_search", "ask_user"})
+        self.assertEqual(first, set(agent_loop._CODE_AGENT_READONLY_TOOLS) | {"tool_search", "ask_user", "ssh_request_host"})
         self.assertNotIn("write_file", first)
         self.assertNotIn("delegate_task", first)
 

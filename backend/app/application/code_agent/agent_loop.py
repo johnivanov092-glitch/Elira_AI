@@ -190,7 +190,10 @@ _REPEATED_TOOL_CALL_NUDGE_AT = 2
 # fingerprint guard must not double-govern it and end the run with a confusing
 # loop_guard/error instead of a graceful finalize — especially in no_questions
 # mode, where the canned reply gives a weak model nothing new to diverge on.
-_LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user"})
+_LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user", "ssh_request_host"})
+# Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
+# button, plus common free-text yes-words). Anything else = deny.
+_SSH_APPROVE_WORDS = frozenset({"одобрить", "approve", "yes", "да", "allow", "ok", "разрешить"})
 
 # Role-based sampling for a single served model (one large LLM plays every
 # role — see resolve_model_for_route/route_to_role). The role does not switch
@@ -430,6 +433,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _APPROVAL_POLL_INTERVAL,
     _EXECUTION_INTENT,
     _ASK_USER_SCHEMA,
+    _SSH_REQUEST_HOST_SCHEMA,
     _TOOL_SEARCH_SCHEMA,
     FACTS_PREFIX,
     _GROUNDING_NUDGE_MAX,
@@ -748,6 +752,7 @@ def _stream_code_agent_core(
             step_schemas = [s for s in all_schemas if _schema_tool_name(s) in _active]
             step_schemas.append(_TOOL_SEARCH_SCHEMA)
             step_schemas.append(_ASK_USER_SCHEMA)
+            step_schemas.append(_SSH_REQUEST_HOST_SCHEMA)
             llm_prompt_chars = _messages_char_count(messages)
             llm_start = time.monotonic()
             try:
@@ -1407,6 +1412,123 @@ def _stream_code_agent_core(
                     messages.append({"role": "tool", "content": _ans_text, "name": name})
                     tool_round_trips += 1
                     call_log.append(f"ask_user({(_question[:40] or '?')})")
+                    continue
+                if name == "ssh_request_host":
+                    # The agent CANNOT edit the SSH allowlist itself (that IS the
+                    # security boundary). It calls this to ask the user to approve
+                    # ONE host; on approval the loop adds it and ssh_run works this
+                    # same run. Always pauses for the human — even under bypass /
+                    # «не спрашивать» — because opening the allowlist is the user's
+                    # call, not the model's.
+                    from app.application.tool_providers.ssh_acl import (
+                        get_allowed_hosts as _get_hosts,
+                        set_allowed_hosts as _set_hosts,
+                    )
+
+                    def _ssh_req_return(text: str, ok: bool, log: str):
+                        yield {
+                            "type": "tool_call", "step": step, "tool": name,
+                            "arguments": parsed_args, "result": text, "ok": ok,
+                        }
+                        messages.append({"role": "tool", "content": text, "name": name})
+
+                    _host = str(parsed_args.get("host") or "").strip()
+                    _reason = str(parsed_args.get("reason") or "").strip()
+                    if not _host:
+                        yield from _ssh_req_return(
+                            "ERROR: ssh_request_host требует непустой host (алиас из ~/.ssh/config).",
+                            False, "ssh_request_host(empty)")
+                        tool_round_trips += 1
+                        call_log.append("ssh_request_host(empty)")
+                        continue
+                    if _host in _get_hosts():
+                        yield from _ssh_req_return(
+                            f"Хост '{_host}' уже в SSH-интеграции — ssh_run к нему уже работает.",
+                            True, "already")
+                        tool_round_trips += 1
+                        call_log.append(f"ssh_request_host({_host}:already)")
+                        continue
+                    _q = (
+                        f"Elira просит добавить хост «{_host}» в SSH-интеграцию, "
+                        "чтобы ходить туда своим инструментом ssh_run."
+                        + (f"\nПричина: {_reason}" if _reason else "")
+                    )
+                    _qid = uuid.uuid4().hex
+                    with _QUESTION_LOCK:
+                        _QUESTION_ANSWERS[_qid] = None
+                    yield {
+                        "type": "question_pending", "step": step,
+                        "question": _q, "options": ["Одобрить", "Отклонить"],
+                        "question_id": _qid,
+                    }
+                    _wait_started = time.monotonic()
+                    _last_keepalive = _wait_started
+                    _answer = None
+                    _q_decision = "timeout"
+                    _q_budget = approval_wait_seconds if approval_wait_seconds > 0 else 300
+                    while time.monotonic() - _wait_started < _q_budget:
+                        if cancel_event.is_set():
+                            _q_decision = "cancelled"
+                            break
+                        with _QUESTION_LOCK:
+                            _stored = _QUESTION_ANSWERS.get(_qid)
+                        if _stored is not None:
+                            _answer = _stored
+                            _q_decision = "answered"
+                            break
+                        _now = time.monotonic()
+                        if _now - _last_keepalive >= _APPROVAL_KEEPALIVE_EVERY:
+                            yield {
+                                "type": "question_wait", "step": step,
+                                "question_id": _qid, "waited_s": int(_now - _wait_started),
+                            }
+                            _last_keepalive = _now
+                        time.sleep(_APPROVAL_POLL_INTERVAL)
+                    with _QUESTION_LOCK:
+                        _QUESTION_ANSWERS.pop(_qid, None)
+                    deadline += time.monotonic() - _wait_started
+                    if _q_decision == "cancelled":
+                        yield {
+                            "type": "done", "ok": False, "steps": step,
+                            "stop_reason": "cancelled", "error": "Cancelled by user",
+                        }
+                        return
+                    _approved = (
+                        _q_decision == "answered"
+                        and str(_answer or "").strip().lower() in _SSH_APPROVE_WORDS
+                    )
+                    if _approved:
+                        try:
+                            _new_hosts = _set_hosts(list(_get_hosts()) + [_host])
+                            _added = _host in _new_hosts
+                        except Exception as _exc:
+                            _added = False
+                            logger.warning("ssh_request_host: add %s failed: %s", _host, _exc)
+                        _res = (
+                            f"✅ Пользователь одобрил — хост '{_host}' добавлен в SSH-интеграцию. "
+                            f"Теперь вызывай ssh_run(host='{_host}', command=...) — он работает."
+                            if _added else
+                            f"Пользователь одобрил, но записать '{_host}' в список не удалось. "
+                            "Сообщи пользователю добавить его вручную (Settings → SSH)."
+                        )
+                        _res_ok = _added
+                    elif _q_decision == "answered":
+                        _res = (
+                            f"Пользователь ОТКЛОНИЛ добавление '{_host}'. Хост НЕ в интеграции, "
+                            "ssh_run к нему работать не будет. Не пытайся обойти это другими средствами."
+                        )
+                        _res_ok = False
+                    else:
+                        _res = (
+                            f"Пользователь не ответил вовремя — '{_host}' НЕ добавлен. "
+                            "Заверши и попроси пользователя добавить его вручную (Settings → SSH)."
+                        )
+                        _res_ok = False
+                    yield from _ssh_req_return(
+                        _res, _res_ok,
+                        f"ssh_request_host({_host}:{'approved' if _approved else _q_decision})")
+                    tool_round_trips += 1
+                    call_log.append(f"ssh_request_host({_host}:{'approved' if _approved else _q_decision})")
                     continue
                 if name == "todo_update":
                     # P12.1: checklist mutations are bound to the current run.

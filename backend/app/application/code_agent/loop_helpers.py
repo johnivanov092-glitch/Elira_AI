@@ -729,5 +729,41 @@ _ASK_USER_SCHEMA = {
 }
 
 
+# ssh_request_host is handled INLINE by the loop (like ask_user): the agent
+# CANNOT add hosts to the SSH allowlist itself (that is the security boundary),
+# so it calls this to ask the user to approve one host with a single click. On
+# approval the loop adds the host to the allowlist and ssh_run works for it.
+_SSH_REQUEST_HOST_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "ssh_request_host",
+        "description": (
+            "Ask the user to add ONE host to the SSH integration (the allowlist "
+            "that enables ssh_run). You CANNOT edit that list yourself — it is the "
+            "user's security boundary. This pauses the run and shows the user an "
+            "Approve/Deny button; on approve the host is added and ssh_run works "
+            "for it in this same run. Call it AFTER the host is set up (key "
+            "installed on the server, ~/.ssh/config alias created). `host` MUST be "
+            "the exact alias/token from the ~/.ssh/config Host entry (e.g. "
+            "'elira-ai-server'), not a bare IP, so ssh_run resolves the right key."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "host": {
+                    "type": "string",
+                    "description": "Exact host alias/token to allow (must match the ~/.ssh/config Host entry).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason, shown to the user in the approval card.",
+                },
+            },
+            "required": ["host"],
+        },
+    },
+}
+
+
 def _schema_tool_name(schema: dict) -> str:
     return str((schema.get("function") or {}).get("name") or "")
