@@ -533,7 +533,9 @@ def _stream_code_agent_core(
         if chat_fn is None:
             discovered_profile = get_active_context_profile(model)
             safe_num_ctx = min(safe_num_ctx, int(discovered_profile["ctx_size"]))
-        context_profile = get_active_context_profile(model, ctx_size=safe_num_ctx)
+        # thinking=on reserves more output room (reasoning + answer share the
+        # budget) so a long chain-of-thought never truncates the answer.
+        context_profile = get_active_context_profile(model, ctx_size=safe_num_ctx, thinking=thinking)
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
         try:
             from app.application.agent_registry.sandbox import preflight_or_raise

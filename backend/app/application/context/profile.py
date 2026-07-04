@@ -16,8 +16,16 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def get_active_context_profile(model: str = "local-model", *, ctx_size: int | None = None) -> dict[str, Any]:
-    """Return the live llama.cpp context window with bounded config fallback."""
+def get_active_context_profile(
+    model: str = "local-model", *, ctx_size: int | None = None, thinking: bool = False
+) -> dict[str, Any]:
+    """Return the live llama.cpp context window with bounded config fallback.
+
+    ``thinking=True`` enlarges the output reserve: reasoning and the answer share
+    one output budget, so without extra headroom a long chain-of-thought pushes
+    the answer past the window and the server context-shifts it away mid-stream
+    ("думала, а ответа нет"). The bigger reserve shrinks the input budget instead.
+    """
     from app.infrastructure.llm.openai_compatible import (
         local_llm_config,
         list_models,
@@ -74,6 +82,11 @@ def get_active_context_profile(model: str = "local-model", *, ctx_size: int | No
         reserved_output = 8192 if context_window > DEFAULT_CONTEXT_WINDOW else 4096
         reserved_system = 4096
         safety_margin = max(2048, context_window // 64)
+    if thinking:
+        # Reasoning + answer share the output stream — double the reserve (floor
+        # 8192) so a long chain-of-thought can't starve the answer. Capped at a
+        # third of the window so the input budget is never gutted.
+        reserved_output = min(max(reserved_output * 2, 8192), max(2048, context_window // 3))
     if context_window >= MAX_CONTEXT_WINDOW:
         mode = "256k-stress"
     elif context_window >= 196_608:
@@ -105,4 +118,5 @@ def get_active_context_profile(model: str = "local-model", *, ctx_size: int | No
             ),
         },
         "source": source,
+        "thinking": bool(thinking),
     }
