@@ -308,9 +308,14 @@ _GROUNDING_FACT_TOOLS = frozenset({
 # Carry their listing in full so "what files exist / list all files" is grounded
 # authoritatively and the model stops padding the set with plausible inventions.
 _ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
-_FACT_SNIPPET_CHARS = 220
-_ENUM_FACT_SNIPPET_CHARS = 900
-_FACTS_DIGEST_CHARS = 3000  # room for one full enumeration + several read facts
+# Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
+# 3000→6000) now that the real window is 64k, not a tight small-model budget:
+# more of each verified tool result survives into the next turn's [ПРОВЕРЕННЫЕ
+# ФАКТЫ] block, so the "compress old but keep it accurate" side of grounding loses
+# less. ~6000 chars ≈ 2000 tokens — negligible against 64k.
+_FACT_SNIPPET_CHARS = 400
+_ENUM_FACT_SNIPPET_CHARS = 1500
+_FACTS_DIGEST_CHARS = 6000  # room for one full enumeration + several read facts
 FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
 
 
