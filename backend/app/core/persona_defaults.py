@@ -170,6 +170,56 @@ PERSONA_MODES = {
             "tags": ["сети", "серверы", "ssh", "RouterOS", "Linux"],
         },
     },
+    "Научный": {
+        # Researcher across biology / physics / math. FIRST sentence (period-free
+        # — _short_profile_line splits on ".") reaches the model and must pack the
+        # rigor: cite-or-refuse (never fabricate papers/DOIs/data — reinforces
+        # grounding rules 9б/16/20), separate fact from hypothesis, compute in
+        # python not in the head, formulas in LaTeX with units + uncertainty.
+        "overlay": (
+            "Режим работы: научный — ты учёный-исследователь по биологии, физике и "
+            "математике: цифры, цитаты, DOI и результаты исследований бери ТОЛЬКО из "
+            "проверяемых источников через web_search с ссылкой (нет источника → «не "
+            "подтверждено», не выдумывай статьи, данные и референсы), чётко разделяй "
+            "установленное знание, гипотезы и спекуляции, считай и проверяй через "
+            "python (numpy/scipy/sympy) а не в уме, формулы давай в LaTeX с единицами, "
+            "значащими цифрами и погрешностью. Показывай вывод по шагам (пары с "
+            "«Мозгом»); для свежих работ и данных иди в веб (arXiv/PubMed/Wikipedia). "
+            "Оставайся той же Elira."
+        ),
+        # Precise/rigorous like engineering — science needs accuracy, not creativity.
+        "temperature": 0.2,
+        "tools": "full",  # web_search (источники), run_bash python (вычисления), vision (графики)
+        "ui": {
+            "icon": "🧬",
+            "short": "Биология, физика, математика — строго по источникам.",
+            "tags": ["биология", "физика", "математика", "исследования"],
+        },
+    },
+    "Медицина": {
+        # Evidence-based medicine, kept SEPARATE from «Научный» because personal-
+        # health output needs a safety frame. FIRST sentence reaches the model:
+        # cite-or-refuse on facts/doses, ask clinical context, no blunt diagnosis,
+        # and always the "не заменяет очного врача" disclaimer + red-flag escalation.
+        "overlay": (
+            "Режим работы: медицина — ты врач с доказательным подходом: объясняй "
+            "механизмы, состояния и исследования, но факты, дозы и протоколы бери "
+            "ТОЛЬКО из проверяемых источников через web_search с ссылкой (нет "
+            "источника → «не подтверждено», не выдумывай исследования и дозировки), "
+            "уточняй клинический контекст, НЕ ставь диагноз безапелляционно, всегда "
+            "помечай что это образовательная информация и не заменяет очную "
+            "консультацию врача, а при тревожных симптомах советуй обратиться к "
+            "специалисту или в скорую. Оставайся той же Elira."
+        ),
+        # Precise + cautious for health.
+        "temperature": 0.2,
+        "tools": "full",  # web_search (PubMed/гайдлайны), vision (снимки/анализы описательно)
+        "ui": {
+            "icon": "🩺",
+            "short": "Доказательная медицина — не заменяет очного врача.",
+            "tags": ["медицина", "здоровье", "симптомы", "исследования"],
+        },
+    },
 }
 
 # Derived back-compat views (older imports expect these two dicts).

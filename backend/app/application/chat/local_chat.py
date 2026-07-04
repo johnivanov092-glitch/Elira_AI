@@ -58,6 +58,7 @@ _CODE_SIGNALS = re.compile(
     r"(?:\b(?:баг|ошибк|исключени|traceback|стек\s*трейс|функци|класс|метод|"
     r"рефактор|патч|коммит|деплой|компил|собери|собрать|запусти|запуск|"
     r"тест|линт|дебаг|отлад|почини|исправ|перепиши|напиши\s+код|реализуй|"
+    r"python|питон|скрипт\w*|"  # language markers so code wins over science math terms
     r"имплемент|merge|pull\s*request|pr\b|api\b|endpoint|роутинг|миграци|"
     r"bug|fix|refactor|implement|deploy|compile|build|debug|stack\s*trace|"
     r"exception|commit|function|class\b)"
@@ -102,8 +103,39 @@ _INFRA_SIGNALS = re.compile(
 )
 
 
+# Medical signals (Медицина): health/clinical — symptoms, treatment, doses,
+# conditions, imaging. Kept SEPARATE from science and checked BEFORE it so a
+# health question ("что при высоком давлении") routes to Медицина, not Научный.
+# Deliberately clinical (not bare "белок"/"клетка", which stay Научный biology).
+_MEDICAL_SIGNALS = re.compile(
+    r"(?:\b(?:симптом\w*|диагноз\w*|диагност\w*|лечени\w*|лечить|болезн\w*|"
+    r"заболевани\w*|лекарств\w*|препарат\w*|дозир\w*|дозировк\w*|таблетк\w*|"
+    r"антибиотик\w*|терапи\w*|температур\w*|давлени\w*|тошнот\w*|кашель|"
+    r"насморк|инфекци\w*|воспалени\w*|витамин\w*|иммунитет|беременн\w*|"
+    r"аллерги\w*|болит|боль\s+в\b)"
+    r"|\b(?:узи|мрт|экг|кт|врач|врача|доктор)\b)",
+    re.IGNORECASE,
+)
+
+# Science signals (Научный): biology / physics / math. Checked AFTER code (a
+# coding request wins) and after medical (a health question wins). Uses specific
+# scientific terms so generic words ("энергия"/"сила") don't misroute.
+_SCIENCE_SIGNALS = re.compile(
+    r"(?:\b(?:биолог\w*|ген\b|ген[аеовы]\w*|геном\w*|фермент\w*|белок|белк\w*|"
+    r"клетк\w*|эволюци\w*|организм\w*|молекул\w*|нейрон\w*|фотосинтез|"
+    r"митоз|мейоз|хромосом\w*|физик\w*|квант\w*|частиц\w*|термодинамик\w*|"
+    r"энтропи\w*|релятив\w*|электромагнит\w*|гравитаци\w*|нейтрон\w*|"
+    r"электрон\w*|математик\w*|интеграл\w*|производн\w*|теорем\w*|"
+    r"уравнени\w*|матриц\w*|вероятност\w*|дифференциал\w*|логарифм\w*|"
+    r"тригонометри\w*)"
+    r"|\b(?:днк|рнк|атф)\b)",
+    re.IGNORECASE,
+)
+
+
 def classify_mode(user_input: str | None) -> str:
-    """Heuristic mode for "Авто": Инженерный / Личный / Деловой / Инфраструктура / Баланс."""
+    """Heuristic mode for "Авто": Инженерный / Личный / Деловой / Инфраструктура /
+    Медицина / Научный / Баланс."""
     text = (user_input or "").strip()
     if not text:
         return DEFAULT_PROFILE
@@ -115,6 +147,10 @@ def classify_mode(user_input: str | None) -> str:
         return "Деловой"
     if _INFRA_SIGNALS.search(text):
         return "Инфраструктура"
+    if _MEDICAL_SIGNALS.search(text):
+        return "Медицина"
+    if _SCIENCE_SIGNALS.search(text):
+        return "Научный"
     return DEFAULT_PROFILE
 
 
