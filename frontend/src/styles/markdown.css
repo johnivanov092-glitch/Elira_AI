@@ -239,3 +239,32 @@
   background: rgba(255, 255, 255, 0.025);
 }
 
+/* Blockquote */
+.md-quote {
+  border-left: 3px solid var(--border, rgba(255, 255, 255, 0.28));
+  padding: 1px 0 1px 12px;
+  margin: 0.5em 0;
+  color: var(--text-secondary, rgba(232, 232, 236, 0.74));
+}
+
+/* Strikethrough */
+.md-del {
+  opacity: 0.7;
+}
+
+/* Task lists */
+.md-task {
+  list-style: none;
+  margin-left: -1.1em;
+}
+.md-task > input[type="checkbox"] {
+  margin-right: 6px;
+  vertical-align: middle;
+  accent-color: var(--accent, #8b7cff);
+}
+
+/* Nested lists */
+.md-list .md-list {
+  margin: 2px 0;
+}
+

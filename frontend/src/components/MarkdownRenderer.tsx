@@ -57,6 +57,7 @@ function doDownload(url: string, label: string) {
 const INLINE_PATTERNS: InlinePattern[] = [
   { re: /`([^`]+)`/, render: (m, k) => <code key={k} className="md-inline-code">{m[1]}</code> },
   { re: /\*\*(.+?)\*\*/, render: (m, k) => <strong key={k}>{m[1]}</strong> },
+  { re: /~~(.+?)~~/, render: (m, k) => <del key={k} className="md-del">{m[1]}</del> },
   { re: /\*(.+?)\*/, render: (m, k) => <em key={k}>{m[1]}</em> },
   { re: /!\[([^\]]*)\]\(([^)]+)\)/, render: (m, k) => {
     const src = buildApiUrl(m[2]);
@@ -70,6 +71,10 @@ const INLINE_PATTERNS: InlinePattern[] = [
     }
     return <a key={k} href={url} target="_blank" rel="noopener noreferrer" className="md-link">{label}</a>;
   }},
+  // Bare URL (not already inside []() — the link pattern above matches earlier at
+  // its "[" so it wins there). Trailing punctuation is left out of the link.
+  { re: /(https?:\/\/[^\s<>()\]}"']*[^\s<>()\]}"'.,;:!?])/, render: (m, k) =>
+    <a key={k} href={m[1]} target="_blank" rel="noopener noreferrer" className="md-link">{m[1]}</a> },
 ];
 
 const OUTER_FENCE_RE = /^```(?:markdown|text|md|)\s*\n([\s\S]*?)\n?```\s*$/;
@@ -199,6 +204,59 @@ function stripOuterCodeFence(text: string): string {
   return trimmed.replace(THINK_TAG_RE, "").trim();
 }
 
+const TASK_RE = /^\[([ xX])\]\s+(.*)$/;
+const listIndent = (s: string): number => s.match(/^(\s*)/)?.[1].length ?? 0;
+const isListItem = (s: string): boolean => UL_RE.test(s) || OL_RE.test(s);
+
+// Parse a contiguous list from `start`; deeper-indented item lines become a
+// nested <ul>/<ol> under the preceding item. GFM task items (- [ ] / - [x])
+// render as (disabled) checkboxes. Returns the node + index just past the list.
+function parseListBlock(lines: string[], start: number, keyBase: string): { node: ReactNode; next: number } {
+  const baseIndent = listIndent(lines[start]);
+  const ordered = OL_RE.test(lines[start]);
+  const items: ReactNode[] = [];
+  let idx = start;
+  let n = 0;
+  while (idx < lines.length && isListItem(lines[idx]) && listIndent(lines[idx]) === baseIndent) {
+    const content = lines[idx].replace(/^\s*(?:[-*+]|\d+[.)])\s/, "");
+    idx++;
+    let nested: ReactNode = null;
+    if (idx < lines.length && isListItem(lines[idx]) && listIndent(lines[idx]) > baseIndent) {
+      const sub = parseListBlock(lines, idx, `${keyBase}-${n}`);
+      nested = sub.node;
+      idx = sub.next;
+    }
+    const key = `${keyBase}-li-${n}`;
+    const task = content.match(TASK_RE);
+    if (task) {
+      items.push(
+        <li key={key} className="md-task">
+          <input type="checkbox" checked={task[1].toLowerCase() === "x"} disabled readOnly />{" "}
+          {parseInline(task[2], key)}
+          {nested}
+        </li>,
+      );
+    } else {
+      items.push(<li key={key}>{parseInline(content, key)}{nested}</li>);
+    }
+    n++;
+  }
+  const cls = "md-list" + (ordered ? " md-ol" : "");
+  const node = ordered
+    ? <ol key={keyBase} className={cls}>{items}</ol>
+    : <ul key={keyBase} className={cls}>{items}</ul>;
+  return { node, next: idx };
+}
+
+// Column alignments from a table separator row (":---" left, "---:" right, ":--:" center).
+function parseTableAlign(sepLine: string): (("left" | "center" | "right") | null)[] {
+  return splitTableRow(sepLine).map((c) => {
+    const l = c.startsWith(":");
+    const r = c.endsWith(":");
+    return l && r ? "center" : r ? "right" : l ? "left" : null;
+  });
+}
+
 // ─── Главный компонент (React.memo) ────────────────────────────
 function MarkdownRendererInner({ content }: MarkdownRendererProps) {
   if (!content) return null;
@@ -232,6 +290,18 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
       i++; lineIdx++; continue;
     }
 
+    if (/^\s*>\s?/.test(line)) {
+      const quote: string[] = [];
+      while (lineIdx < lines.length && /^\s*>\s?/.test(lines[lineIdx])) {
+        quote.push(lines[lineIdx].replace(/^\s*>\s?/, ""));
+        lineIdx++;
+      }
+      elements.push(
+        <blockquote key={`bq-${i}`} className="md-quote">{parseInline(quote.join("\n"), `bq${i}`)}</blockquote>,
+      );
+      i++; continue;
+    }
+
     const hm = line.match(HEADING_RE);
     if (hm) {
       const Tag = `h${hm[1].length}` as "h1" | "h2" | "h3" | "h4";
@@ -243,6 +313,7 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
     if (TABLE_ROW_RE.test(line) && lineIdx + 1 < lines.length && TABLE_SEP_RE.test(lines[lineIdx + 1])) {
       const header = splitTableRow(line);
       const ncol = Math.max(1, header.length);
+      const aligns = parseTableAlign(lines[lineIdx + 1]);
       lineIdx += 2; // consume the header row + the separator row
       const rows: string[][] = [];
       while (
@@ -259,7 +330,7 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
             <thead>
               <tr>
                 {header.map((c, ci) => (
-                  <th key={ci}>{parseInline(c, `th-${i}-${ci}`)}</th>
+                  <th key={ci} style={aligns[ci] ? { textAlign: aligns[ci]! } : undefined}>{parseInline(c, `th-${i}-${ci}`)}</th>
                 ))}
               </tr>
             </thead>
@@ -267,7 +338,7 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
               {rows.map((r, ri) => (
                 <tr key={ri}>
                   {Array.from({ length: ncol }).map((_, ci) => (
-                    <td key={ci}>{parseInline(r[ci] ?? "", `td-${i}-${ri}-${ci}`)}</td>
+                    <td key={ci} style={aligns[ci] ? { textAlign: aligns[ci]! } : undefined}>{parseInline(r[ci] ?? "", `td-${i}-${ri}-${ci}`)}</td>
                   ))}
                 </tr>
               ))}
@@ -278,24 +349,12 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
       i++; continue;
     }
 
-    if (UL_RE.test(line)) {
-      const items: ReactNode[] = [];
-      while (lineIdx < lines.length && UL_RE.test(lines[lineIdx])) {
-        items.push(<li key={`li-${i}-${items.length}`}>{parseInline(lines[lineIdx].replace(/^\s*[-*+]\s/, ""), `li${i}${items.length}`)}</li>);
-        lineIdx++;
-      }
-      elements.push(<ul key={`ul-${i}`} className="md-list">{items}</ul>);
-      i++; continue;
-    }
-
-    if (OL_RE.test(line)) {
-      const items: ReactNode[] = [];
-      while (lineIdx < lines.length && OL_RE.test(lines[lineIdx])) {
-        items.push(<li key={`oli-${i}-${items.length}`}>{parseInline(lines[lineIdx].replace(/^\s*\d+[.)]\s/, ""), `oli${i}${items.length}`)}</li>);
-        lineIdx++;
-      }
-      elements.push(<ol key={`ol-${i}`} className="md-list md-ol">{items}</ol>);
-      i++; continue;
+    if (isListItem(line)) {
+      const { node, next } = parseListBlock(lines, lineIdx, `list-${i}`);
+      elements.push(node);
+      lineIdx = next;
+      i++;
+      continue;
     }
 
     if (!line.trim()) { lineIdx++; continue; }
