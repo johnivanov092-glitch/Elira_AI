@@ -65,7 +65,7 @@ _FAKE_SCHEMAS = [
 
 @contextlib.contextmanager
 def _loop_env():
-    with patch.object(agent_loop, "_resolve_code_route", return_value=("test-model", 16384, None)), \
+    with patch.object(agent_loop, "_resolve_code_route", return_value=("test-model", 32768, None)), \
          patch.object(agent_loop, "_record_code_route_metric"), \
          patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
          patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS)), \

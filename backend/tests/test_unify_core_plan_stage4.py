@@ -18,7 +18,7 @@ from app.application.tool_registry.runtime import seed_builtin_tools  # noqa: E4
 def _route_decision(model: str = "stage4-model") -> tuple[str, int, SimpleNamespace]:
     return (
         model,
-        8192,
+        32768,
         SimpleNamespace(
             route="code",
             provider="test",
