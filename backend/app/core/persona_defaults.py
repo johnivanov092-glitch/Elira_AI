@@ -90,7 +90,7 @@ PERSONA_MODES = {
         # for code/tools without being asked.
         "tools": "full",
         "ui": {
-            "icon": "♥",
+            "icon": "🫂",
             "short": "Тёплый компаньон и собеседник.",
             "tags": ["личное", "поддержка", "общение"],
         },
@@ -105,7 +105,7 @@ PERSONA_MODES = {
         "temperature": 0.45,
         "tools": "full",
         "ui": {
-            "icon": "○",
+            "icon": "⚖️",
             "short": "Нейтральный режим Elira.",
             "tags": ["баланс", "универсально"],
         },
@@ -127,7 +127,7 @@ PERSONA_MODES = {
         "temperature": None,
         "tools": "full",
         "ui": {
-            "icon": "⌘",
+            "icon": "🛠️",
             "short": "Код, архитектура, точность.",
             "tags": ["код", "инженерия", "точность"],
         },
@@ -154,7 +154,7 @@ PERSONA_MODES = {
         "temperature": 0.3,
         "tools": "full",  # web_search for контрагенты, file_gen for документы
         "ui": {
-            "icon": "◆",
+            "icon": "💼",
             "short": "Документы, маркетинг, финансы, контрагенты.",
             "tags": ["письма", "КП", "маркетинг", "финансы"],
         },
@@ -181,7 +181,7 @@ PERSONA_MODES = {
         "temperature": 0.2,
         "tools": "full",  # ssh, run_bash (сеть), read/write конфигов, web_search
         "ui": {
-            "icon": "⬡",
+            "icon": "🖥️",
             "short": "Сети, серверы, системное администрирование.",
             "tags": ["сети", "серверы", "ssh", "RouterOS", "Linux"],
         },
