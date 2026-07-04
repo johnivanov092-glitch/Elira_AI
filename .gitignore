@@ -139,6 +139,8 @@ data/code_agent_backups/
 # MCP server list — machine-local (absolute tool paths) and may carry
 # secret_headers for HTTP MCP servers; never commit.
 data/mcp_servers.json
+# DBHub multi-database config holds DB connection strings (credentials); never commit.
+data/dbhub.toml
 
 # Secrets / per-machine tokens — auto-generated at runtime, never commit.
 # The Fernet key self-generates when absent; committing it defeats encryption.
