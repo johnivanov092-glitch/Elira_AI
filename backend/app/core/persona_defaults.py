@@ -90,7 +90,7 @@ PERSONA_MODES = {
         # for code/tools without being asked.
         "tools": "full",
         "ui": {
-            "icon": "🫂",
+            "icon": "❤️",
             "short": "Тёплый компаньон и собеседник.",
             "tags": ["личное", "поддержка", "общение"],
         },
@@ -181,7 +181,7 @@ PERSONA_MODES = {
         "temperature": 0.2,
         "tools": "full",  # ssh, run_bash (сеть), read/write конфигов, web_search
         "ui": {
-            "icon": "🖥️",
+            "icon": "🌐",
             "short": "Сети, серверы, системное администрирование.",
             "tags": ["сети", "серверы", "ssh", "RouterOS", "Linux"],
         },
