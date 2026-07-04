@@ -26,6 +26,7 @@ What we do NOT support yet:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from app.application.tool_providers.mcp_client import McpError
@@ -33,6 +34,18 @@ from app.application.tool_providers.mcp_runtime import get_live_client, list_ser
 
 
 logger = logging.getLogger(__name__)
+
+
+def _mcp_auto_enable() -> bool:
+    """Whether MCP tools should be auto-classified + enabled on discovery.
+
+    MCP servers land in ``data/mcp_servers.json`` because the USER explicitly
+    added them, so their tools are trusted-by-configuration here: default ON.
+    Kill switch: ELIRA_MCP_AUTO_ENABLE=0 restores the fail-closed default
+    (each MCP tool stays blocked until classified via the Tool API). Read live
+    so the toggle takes effect on the next MCP sync without a code change.
+    """
+    return os.getenv("ELIRA_MCP_AUTO_ENABLE", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 # Tool-name prefix delimiter. Two underscores: rare enough in real
@@ -195,11 +208,15 @@ def _mcp_noop_handler(args: dict[str, Any]) -> dict[str, Any]:
 def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
     """Mirror running MCP servers' tools into the Tool Registry, fail-closed.
 
-    Each MCP tool gets a DB ToolSpec that is forbidden + disabled +
-    policy_classified=0 on first sight (untrusted remote code) — it cannot run until
-    an admin classifies it via the Tool API. Re-sync preserves admin policy
-    (register_dynamic_tool refreshes metadata only). MCP-source specs whose tool is
-    no longer advertised by any running server are DISABLED (stale → off, never
+    Each MCP tool gets a DB ToolSpec. It is registered fail-closed (forbidden +
+    disabled + policy_classified=0), then — unless ELIRA_MCP_AUTO_ENABLE=0 — the
+    post-register sweep flips still-unclassified live rows to enabled +
+    policy_classified + permission='require_approval' (MCP servers are user-added,
+    so trusted-by-configuration; require_approval keeps the approval prompt in ask
+    mode, bypass runs straight through). Re-sync preserves admin policy: the sweep
+    only touches unclassified rows, so a MANUAL disable (which keeps
+    policy_classified=1) is never re-enabled. MCP-source specs whose tool is no
+    longer advertised by any running server are DISABLED (stale → off, never
     deleted, so classification/audit survives a transient outage).
 
     Defensive throughout: a registry or network hiccup must never break provider
@@ -241,13 +258,32 @@ def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
             except Exception as exc:
                 logger.warning("mcp spec sync for %r failed: %s", qname, exc)
 
+    auto_enable = _mcp_auto_enable()
     try:
         for tool in _tr.list_tools_with_schemas(source="mcp", enabled_only=False):
             tname = tool.get("name")
-            if tname and tname not in live and tool.get("enabled"):
-                _tr.update_tool(tname, {"enabled": False})
+            if not tname:
+                continue
+            if tname not in live:
+                # No running server advertises this tool anymore → stale, disable
+                # it (never delete — classification/audit survives a transient
+                # server outage and re-enables on next sync).
+                if tool.get("enabled"):
+                    _tr.update_tool(tname, {"enabled": False})
+                continue
+            # Live MCP tool still at the fail-closed default (unclassified) →
+            # auto-enable it: classify + enable + require_approval (still gated
+            # by the approval prompt in ask mode; runs straight through in
+            # bypass). We flip ONLY still-unclassified rows, so a later MANUAL
+            # disable (which keeps policy_classified=1) is never clobbered.
+            if auto_enable and not tool.get("policy_classified"):
+                _tr.update_tool(tname, {
+                    "enabled": True,
+                    "permission": "require_approval",
+                    "policy_classified": True,
+                })
     except Exception as exc:
-        logger.warning("mcp stale-spec disable sweep failed: %s", exc)
+        logger.warning("mcp spec sweep failed: %s", exc)
 
 
 def build_mcp_providers() -> list[McpToolProvider]:

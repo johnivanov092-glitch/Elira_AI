@@ -114,6 +114,7 @@ def tool_search(
         if match["activatable"] and (
             not match["side_effect"]
             or match["name"] in _SEARCH_ACTIVATABLE_SIDE_EFFECT
+            or match.get("source") == "mcp"  # user-added MCP servers are activatable
             or permission_mode == "bypass"
         ):
             eligible.append(match["name"])
