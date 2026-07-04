@@ -267,10 +267,20 @@ def tool_read_file(
 
     if _looks_binary(raw):
         if target.suffix.lower() in _IMAGE_EXTS:
-            return {"text": (
-                f"[{target.suffix} — это картинка, не текст: {target.name}. Для текста "
-                f"со скана вызови `ocr_file`, для описания — `read_image` "
-                f"(активируй через `tool_search`, если их нет в списке).]"
+            # Auto-OCR images so "прочитай это фото/скан" just works (like documents);
+            # empty OCR (a real photo, not a document scan) → point at read_image.
+            try:
+                from app.application.code_agent.tools._vision import tool_ocr_file
+                _ocr = str((tool_ocr_file(project_root, path=str(target)) or {}).get("text") or "").strip()
+            except Exception as exc:
+                _ocr = f"ERROR: OCR failed: {exc}"
+            if _ocr and not _ocr.startswith("ERROR"):
+                return {"text": resolved_note + f"[текст с изображения через OCR: {target.name}]\n{_ocr}", "touched_path": path}
+            if _ocr.startswith("ERROR"):
+                return {"text": resolved_note + f"[{target.name}: {_ocr}. Для описания картинки вызови `read_image`.]"}
+            return {"text": resolved_note + (
+                f"[{target.suffix} {target.name}: OCR не нашёл текста (похоже, обычное "
+                f"фото, а не скан документа). Для описания изображения вызови `read_image`.]"
             )}
         return {"text": f"ERROR: binary file (not text): {path}"}
 

@@ -152,7 +152,14 @@ _ANTI_REPEAT_SAMPLING = {
     # →192.170… during a network scan, plus a walk through 8.8.8.8/9.9.9.9/6.6.6.6).
     # Keeps the llama.cpp defaults (\n : " *) so repeated PROSE — the ×20-paragraph
     # runaway — is still caught (a repeated sentence resets only at its own period).
-    "dry_sequence_breakers": ["\n", ":", "\"", "*", ".", "-", "/", ",", ";", "="],
+    # Digits are breakers too: a repeated number/model-code (RTX 5090 in every table
+    # row, a price repeated down a column) was DRY-penalised and the model dropped a
+    # digit to dodge it (live: "5090"→"509"/"090"). A digit resets the match, so
+    # numbers survive verbatim; word-based degeneration (no digits) is still caught.
+    "dry_sequence_breakers": [
+        "\n", ":", "\"", "*", ".", "-", "/", ",", ";", "=",
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    ],
 }
 # How many reasoning-runaway generations (provider cut the chain-of-thought at
 # its per-generation ceiling) a single run tolerates before being force-
@@ -1267,6 +1274,10 @@ def _stream_code_agent_core(
                         "steps": step,
                         "stop_reason": "loop_guard",
                         "error": f"near-duplicate tool loop: {name}",
+                        # Carry the verified facts forward even on an interrupted run,
+                        # so the NEXT turn keeps its grounding instead of starting blind
+                        # (the wrap-up summary alone used to be all that survived).
+                        "established_facts": _facts_digest(established_facts),
                     }
                     return
                 if name == "tool_search":

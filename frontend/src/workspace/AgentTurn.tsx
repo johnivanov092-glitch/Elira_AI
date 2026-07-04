@@ -83,9 +83,15 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
       )}
 
       {turn.error && (
-        <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-t2">
-          Ошибка: {turn.error}
-        </div>
+        turn.stopReason === "loop_guard" ? (
+          <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-mut">
+            Остановила себя: пошла по кругу на повторяющихся вызовах (защита от зацикливания). Можно уточнить задачу и продолжить.
+          </div>
+        ) : (
+          <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-t2">
+            Ошибка: {turn.error}
+          </div>
+        )
       )}
 
       {!turn.running && !turn.text && !turn.error && turn.stopReason && turn.stopReason !== "answer" && (

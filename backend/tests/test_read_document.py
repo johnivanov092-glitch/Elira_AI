@@ -76,13 +76,28 @@ class ReadDocumentTest(unittest.TestCase):
         self.assertIn("СОДЕРЖИМОЕ документа 999", r["text"])
         self.assertIn("не найдено точно", r["text"])  # transparent resolve note
 
-    def test_image_gives_ocr_hint_not_binary_error(self):
+    def test_image_is_auto_ocred(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "photo.jpeg").write_bytes(b"\xff\xd8\xff\xe0 fake\x00\x01 jpeg")
-            r = tool_read_file(Path(tmp), path="photo.jpeg")
+            (Path(tmp) / "scan.jpeg").write_bytes(b"\xff\xd8\xff\xe0 fake\x00\x01 jpeg")
+            with mock.patch(
+                "app.application.code_agent.tools._vision.tool_ocr_file",
+                return_value={"text": "РАСПОЗНАННЫЙ текст со скана 42"},
+            ):
+                r = tool_read_file(Path(tmp), path="scan.jpeg")
         self.assertNotIn("binary file", r["text"])
-        self.assertIn("картинка", r["text"])
-        self.assertIn("ocr_file", r["text"])
+        self.assertIn("РАСПОЗНАННЫЙ текст со скана 42", r["text"])
+        self.assertIn("OCR", r["text"])
+
+    def test_image_with_no_text_points_to_read_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "photo.png").write_bytes(b"\x89PNG\r\n fake\x00\x01")
+            with mock.patch(
+                "app.application.code_agent.tools._vision.tool_ocr_file",
+                return_value={"text": "   "},
+            ):
+                r = tool_read_file(Path(tmp), path="photo.png")
+        self.assertNotIn("binary file", r["text"])
+        self.assertIn("read_image", r["text"])
 
     def test_missing_file_with_no_match_lists_the_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

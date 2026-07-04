@@ -31,6 +31,13 @@ class DryBreakersTest(unittest.TestCase):
         for ch in (".", ":", "-", "/", "\n"):
             self.assertIn(ch, brks)
 
+    def test_digits_are_breakers(self):
+        # A repeated number/model-code (RTX 5090 in every row) must not be DRY-
+        # penalised → the model stops dropping digits ("5090"→"509").
+        brks = _ANTI_REPEAT_SAMPLING.get("dry_sequence_breakers")
+        for d in "0123456789":
+            self.assertIn(d, brks)
+
     def test_breakers_are_whitelisted(self):
         self.assertIn("dry_sequence_breakers", _SAMPLING_EXTRA_KEYS)
 

@@ -13,7 +13,7 @@ def get_profiles() -> dict[str, Any]:
         {
             "name": AUTO_PROFILE,
             "is_default": True,
-            "icon": "✶",
+            "icon": "🔀",
             "tags": ["авто", "гибрид"],
             "short": "Elira сама выбирает режим под сообщение.",
             "mode_overlay_preview": "Авто: режим выбирается по содержанию запроса; можно зафиксировать вручную.",
