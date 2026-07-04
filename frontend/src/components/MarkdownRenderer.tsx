@@ -373,7 +373,14 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
       !lines[lineIdx].match(HEADING_RE) &&
       !UL_RE.test(lines[lineIdx]) &&
       !OL_RE.test(lines[lineIdx]) &&
-      !HR_RE.test(lines[lineIdx].trim())
+      !HR_RE.test(lines[lineIdx].trim()) &&
+      // Stop before a table (header row + "|---|" separator on the next line),
+      // even with no blank line above it — otherwise a bold heading like
+      // "**192.168.88.1**" directly above the table swallows all its rows as
+      // paragraph text and the table never renders.
+      !(TABLE_ROW_RE.test(lines[lineIdx]) &&
+        lineIdx + 1 < lines.length &&
+        TABLE_SEP_RE.test(lines[lineIdx + 1]))
     ) {
       paraLines.push(lines[lineIdx]);
       lineIdx++;
