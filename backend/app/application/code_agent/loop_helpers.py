@@ -348,6 +348,42 @@ def _facts_digest(facts: list[str]) -> str:
     return body[:_FACTS_DIGEST_CHARS]
 
 
+# Verbatim "recent tool outputs" carried into the NEXT turn — the last few
+# grounding-tool results in full-ish, not just the fact summary. Complements the
+# facts digest: the summary covers ALL turns compactly; this gives the immediately-
+# prior turn's raw output so a follow-up ("что там в файле про X?") reads the real
+# text, not a 400-char snippet. Bounded so it never dominates the 64k window.
+RECENT_TOOLS_PREFIX = "[РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ ПРОШЛОГО ХОДА]"
+_RECENT_TOOL_ENTRY_CHARS = 2500   # per single tool output
+_RECENT_TOOL_KEEP = 6             # last N grounding-tool results
+_RECENT_TOOL_DIGEST_CHARS = 9000  # total cap (~3000 tokens)
+
+
+def _recent_tool_snippet(name: str, arg_hint: str, text_result: str) -> str | None:
+    """A fuller (still bounded) record of ONE grounding tool's output for the
+    verbatim recent-outputs buffer. None when the tool isn't grounding-bearing."""
+    if name not in _GROUNDING_FACT_TOOLS:
+        return None
+    text = (text_result or "").strip()
+    if not text:
+        return None
+    if len(text) > _RECENT_TOOL_ENTRY_CHARS:
+        text = text[:_RECENT_TOOL_ENTRY_CHARS] + " …[обрезано]"
+    hint = (arg_hint or "").strip()
+    head = f"{name}({hint})" if hint else name
+    return f"### {head}\n{text}"
+
+
+def _recent_tools_digest(entries: list[str]) -> str:
+    """Join the last few recent-tool snippets (most-recent last), capped total."""
+    if not entries:
+        return ""
+    body = "\n\n".join(entries[-_RECENT_TOOL_KEEP:])
+    if len(body) > _RECENT_TOOL_DIGEST_CHARS:
+        body = body[-_RECENT_TOOL_DIGEST_CHARS:]  # keep the most-recent tail
+    return body
+
+
 # --- Ungrounded-file nudge (residual grounding leak) ------------------------
 # established_facts carries what tools GROUNDED, but when the model is asked about
 # something no tool has fetched yet (a file never read), it can still name files

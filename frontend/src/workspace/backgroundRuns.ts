@@ -320,7 +320,7 @@ function wire(
           genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
           tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
         }));
-      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts }));
+      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput }));
       else if (e.type === "done") {
         pushLedger({ timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" });
         patch((a) => ({
@@ -383,6 +383,7 @@ export function send(args: SendArgs): void {
   if (!msg || entry.snapshot.running) return;
 
   const history: ConversationMessage[] = [];
+  let latestRecentOutput: string | undefined;  // most-recent agent turn's raw tool output
   const rollingSummary = typeof entry.snapshot.contextState?.rolling_summary_text === "string"
     ? entry.snapshot.contextState.rolling_summary_text.trim()
     : "";
@@ -400,7 +401,17 @@ export function send(args: SendArgs): void {
       if (t.establishedFacts) {
         history.push({ role: "assistant", content: `[ПРОВЕРЕННЫЕ ФАКТЫ]\n${t.establishedFacts}` });
       }
+      latestRecentOutput = t.recentToolOutput;  // overwritten each agent turn → ends as the last
     }
+  }
+  // Verbatim raw output of the MOST RECENT agent turn only (not every turn — it
+  // would accumulate). Placed last, right before the new user message. Prefix must
+  // match backend _RECENT_PREFIX; _coerce_history re-tags it to a system message.
+  if (latestRecentOutput) {
+    history.push({
+      role: "assistant",
+      content: `[РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ ПРОШЛОГО ХОДА]\n${latestRecentOutput}`,
+    });
   }
   const agentId = nid();
   entry.runId = null;

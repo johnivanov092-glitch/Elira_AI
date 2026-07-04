@@ -450,6 +450,9 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _arg_tokens,
     _fact_from_tool,
     _facts_digest,
+    _recent_tool_snippet,
+    _recent_tools_digest,
+    RECENT_TOOLS_PREFIX,
     _is_near_dup,
     _ungrounded_files,
     _flatten_for_summary,
@@ -648,6 +651,9 @@ def _stream_code_agent_core(
         # model grounds instead of confabulating (see loop_helpers._fact_from_tool
         # and the FACTS_PREFIX block in the frontend history builder).
         established_facts: list[str] = []
+        # Verbatim buffer of recent grounding-tool outputs (last few, in full-ish),
+        # carried into the next turn alongside the compact facts digest.
+        recent_tool_outputs: list[str] = []
         # Soft verification gate (Variant 2): if the run edited files but never
         # ran tests/lint or started the app, nudge the model to verify once
         # before it closes. Reminder-injection, not a hard block — and it fires
@@ -1166,9 +1172,11 @@ def _stream_code_agent_core(
                 except Exception:
                     pass
                 _facts = _facts_digest(established_facts)
+                _recent_digest = _recent_tools_digest(recent_tool_outputs)
                 yield {
                     "type": "final_response", "step": step, "text": final_text,
                     "established_facts": _facts,
+                    "recent_tool_output": _recent_digest,
                 }
                 # Step B: drift Elira's mood from this exchange (auto, global,
                 # decaying). Fire-and-forget — never breaks the run.
@@ -1191,6 +1199,7 @@ def _stream_code_agent_core(
                     "stop_reason": "answer",
                     "error": None,
                     "established_facts": _facts,
+                    "recent_tool_output": _recent_digest,
                 }
                 return
 
@@ -1756,6 +1765,9 @@ def _stream_code_agent_core(
                 )
                 if _fact:
                     established_facts.append(_fact)
+                _recent = _recent_tool_snippet(name, _hint, text_result)
+                if _recent:
+                    recent_tool_outputs.append(_recent)
 
         final_text = _wrap_up_text(
             chat, model, safe_num_ctx, messages, call_log,

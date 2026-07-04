@@ -36,6 +36,9 @@ _SUMMARY_PREFIX = "[CONTEXT SUMMARY]"
 # was actually verified — not its own prose — and answers factual follow-ups from
 # them instead of confabulating.
 _FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
+# Verbatim raw output of the previous turn's grounding tools (see
+# loop_helpers.RECENT_TOOLS_PREFIX) — re-tagged to system like the facts block.
+_RECENT_PREFIX = "[РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ ПРОШЛОГО ХОДА]"
 
 DEFAULT_MODEL = "local-model"
 # A long-thinking local model must not be cut off mid-task; this large window is
@@ -105,6 +108,19 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
                     "неё для фактических вопросов о проекте/файлах/коде; если нужного "
                     "факта здесь нет — перепроверь инструментом, не выдумывай):\n"
                     + stripped
+                ),
+            })
+            continue
+        if role == "assistant" and content.startswith(_RECENT_PREFIX):
+            stripped = content[len(_RECENT_PREFIX):].lstrip("\n").lstrip()
+            if not stripped:
+                continue
+            out.append({
+                "role": "system",
+                "content": (
+                    "Полный вывод инструментов из ПРЕДЫДУЩЕГО хода (достоверное сырьё — "
+                    "опирайся на него дословно для фактических вопросов; чётко отделяй "
+                    "то, что тут реально написано, от своих домыслов):\n" + stripped
                 ),
             })
             continue

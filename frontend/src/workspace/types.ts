@@ -33,6 +33,10 @@ export type AgentTurnData = {
    *  answers factual follow-ups from fact instead of confabulating. Not rendered
    *  in the answer bubble. */
   establishedFacts?: string;
+  /** Verbatim raw output of this turn's recent grounding tools; carried (for the
+   *  LAST agent turn only) into the next turn so a follow-up reads the real text,
+   *  not just the compact facts summary. */
+  recentToolOutput?: string;
   running: boolean;
   activeTool?: string;
   error?: string | null;
