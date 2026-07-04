@@ -24,6 +24,10 @@ except Exception:  # pragma: no cover - dependency missing → fall back to pere
     _HAS_CN = False
 
 _BOM_UTF8 = b"\xef\xbb\xbf"
+# Binary document types read_file extracts text from (via file_extract) instead
+# of rejecting as "binary". Images/audio are NOT here — those use read_image /
+# ocr_file (the vision/OCR tools).
+_DOCUMENT_EXTS = {".pdf", ".docx", ".doc", ".pptx", ".xls", ".xlsx", ".xlsm"}
 _BOM_UTF16_LE = b"\xff\xfe"
 _BOM_UTF16_BE = b"\xfe\xff"
 
@@ -161,6 +165,33 @@ def tool_read_file(
         raw = target.read_bytes()
     except Exception as exc:
         return {"text": f"ERROR: {exc}"}
+
+    # Documents (pdf/docx/pptx/xls/xlsx): extract text via the shared file_extract
+    # pipeline (pdf: pypdf→pdfplumber→OCR fallback for scans; docx/pptx/excel via
+    # python-docx/pptx/openpyxl) instead of rejecting them as "binary". Without
+    # this read_file refuses them and the model fumbles with run_bash+PyMuPDF/
+    # PowerShell (seen live on the medical-docs run).
+    if target.suffix.lower() in _DOCUMENT_EXTS:
+        try:
+            from app.application.file_extract.runtime import extract_file
+            doc_text = str((extract_file(target.name, raw) or {}).get("text") or "")
+        except Exception as exc:
+            return {"text": f"ERROR: не удалось извлечь текст из {target.suffix} ({path}): {exc}"}
+        if not doc_text.strip():
+            return {"text": (
+                f"[{target.suffix}: текст не извлечён — вероятно скан без текстового "
+                f"слоя (нужен OCR) или пустой файл: {path}]"
+            )}
+        text = _to_text_newlines(doc_text)
+        lines = text.splitlines(keepends=True)
+        start = max(0, int(offset))
+        end = start + max(1, int(limit))
+        selected = lines[start:end]
+        numbered = "".join(f"{i + 1 + start:>5}\t{ln}" for i, ln in enumerate(selected))
+        suffix = "" if end >= len(lines) else f"\n[... truncated at line {end} of {len(lines)}]"
+        header = f"[текст извлечён из {target.suffix} через file_extract: {path}]\n"
+        return {"text": header + numbered + suffix, "touched_path": path}
+
     if _looks_binary(raw):
         return {"text": f"ERROR: binary file (not text): {path}"}
 
