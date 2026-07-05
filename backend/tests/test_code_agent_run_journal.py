@@ -126,6 +126,9 @@ def test_windows_shell_guidance_matches_run_bash_runtime() -> None:
 def test_capability_snapshot_marks_unconfigured_services_missing(monkeypatch) -> None:
     monkeypatch.setenv("LLAMA_SERVER_ENABLED", "false")
     monkeypatch.setenv("LOCAL_EMBED_ENABLED", "false")
+    # vision now truthfully follows VISION_ENABLED (was hardcoded False) — disable
+    # it explicitly so this "unconfigured services are missing" test stays valid.
+    monkeypatch.setenv("VISION_ENABLED", "false")
     capabilities = discover_capabilities(model="local-model", tools=["read_file"])
     assert capabilities["llm"]["available"] is False
     assert capabilities["embedding"]["available"] is False
