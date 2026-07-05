@@ -9,6 +9,7 @@ from app.api.routes.chat import router as chat_router
 from app.api.routes.chat_agent import router as chat_agent_router
 from app.api.routes.code_agent_routes import router as code_agent_router
 from app.api.routes.dashboard_routes import router as dashboard_router
+from app.api.routes.drift import router as drift_router
 from app.api.routes.elira_patch import router as elira_patch_router
 from app.api.routes.elira_state import router as elira_state_router
 from app.api.routes.event_bus_routes import router as event_bus_router
@@ -74,6 +75,7 @@ ALL_ROUTERS = (
     tool_registry_router,
     voice_router,
     code_agent_router,
+    drift_router,
 )
 
 __all__ = ["ALL_ROUTERS"]

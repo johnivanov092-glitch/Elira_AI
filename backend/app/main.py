@@ -112,6 +112,16 @@ try:
 except Exception as exc:
     logger.warning("proactive scheduler startup failed: %s", exc)
 
+# Server drift detector — probe the live llama-server (/props) on start + daily,
+# alert when the active model / context window drifts from what docs recorded.
+# Read-only + fail-safe; pytest-guarded and killable via ELIRA_DRIFT_CHECK=0.
+try:
+    from app.application.drift.runtime import start_drift_scheduler
+
+    start_drift_scheduler()
+except Exception as exc:
+    logger.warning("drift detector startup failed: %s", exc)
+
 # Auto-start enabled MCP servers on boot. start_all_enabled() existed ("Used on
 # agent startup") but was never wired, so MCP servers stayed STOPPED after every
 # restart until the user clicked ▷ by hand — their tools never reached the agent.
