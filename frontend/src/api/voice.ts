@@ -10,12 +10,12 @@ export type VoiceStatus = {
   error?: string;
 };
 
-/** Health + available voices of the self-hosted Piper service. Never throws. */
+/** Health + available voices of the self-hosted Silero TTS service. Never throws. */
 export async function getVoiceStatus(): Promise<VoiceStatus> {
   return safeRequest<VoiceStatus>("/api/voice/status", {}, { ok: false, voices: [] });
 }
 
-/** Available voice names (e.g. "ru_RU-irina-medium"). [] on any error. */
+/** Available voice names (e.g. "kseniya", "xenia"). [] on any error. */
 export async function listVoices(): Promise<string[]> {
   const r = await safeRequest<{ voices?: string[] }>("/api/voice/voices", {}, { voices: [] });
   return Array.isArray(r.voices) ? r.voices : [];
