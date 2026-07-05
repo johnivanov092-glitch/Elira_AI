@@ -53,6 +53,16 @@ function doDownload(url: string, label: string) {
     });
 }
 
+// Shorten a bare URL to its hostname for display — cleaner than a raw URL soup.
+// The full URL stays in href (click) and title (hover).
+function prettyUrl(raw: string): string {
+  try {
+    return new URL(raw).hostname.replace(/^www\./, "");
+  } catch {
+    return raw;
+  }
+}
+
 // ─── Inline regex patterns (создаются один раз на уровне модуля) ───
 const INLINE_PATTERNS: InlinePattern[] = [
   { re: /`([^`]+)`/, render: (m, k) => <code key={k} className="md-inline-code">{m[1]}</code> },
@@ -74,7 +84,7 @@ const INLINE_PATTERNS: InlinePattern[] = [
   // Bare URL (not already inside []() — the link pattern above matches earlier at
   // its "[" so it wins there). Trailing punctuation is left out of the link.
   { re: /(https?:\/\/[^\s<>()\]}"']*[^\s<>()\]}"'.,;:!?])/, render: (m, k) =>
-    <a key={k} href={m[1]} target="_blank" rel="noopener noreferrer" className="md-link">{m[1]}</a> },
+    <a key={k} href={m[1]} target="_blank" rel="noopener noreferrer" className="md-link" title={m[1]}>{prettyUrl(m[1])}</a> },
 ];
 
 const OUTER_FENCE_RE = /^```(?:markdown|text|md|)\s*\n([\s\S]*?)\n?```\s*$/;

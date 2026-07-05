@@ -291,13 +291,19 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "list of {title, url, snippet}. Use this BEFORE answering "
                     "any question that depends on facts you don't already "
                     "know — current events, library versions, niche docs. "
+                    "For academic / peer-reviewed papers (specific studies, "
+                    "abstracts, citations) prefer tool_search -> paper_search "
+                    "(arXiv, PubMed, bioRxiv, medRxiv, Semantic Scholar and more); "
+                    "fall back to web_search only when paper_search is thin/empty. "
                     "Pass `queries` (a list) to run SEVERAL searches in PARALLEL "
                     "in one call (faster than one-by-one; merged + de-duped); "
                     "otherwise pass a single `query`. "
                     "Optionally target engine `categories` (e.g. 'it' for "
                     "github/stackoverflow/pypi, 'science' for arxiv/pubmed, "
                     "'news') and/or `time_range` for recency. "
-                    "Call `web_fetch` after on URLs that look relevant."
+                    "Call `web_fetch` after on URLs that look relevant. "
+                    "Present each source in your answer as a [Title](url) markdown "
+                    "link, never a bare URL on its own line."
                 ),
                 "parameters": {
                     "type": "object",
