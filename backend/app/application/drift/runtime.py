@@ -70,6 +70,16 @@ def get_status() -> dict[str, Any]:
     return {"facts": drift_store.all_facts()}
 
 
+def get_alerts() -> dict[str, Any]:
+    """Active (unacknowledged) drifts — what the UI badge counts."""
+    drifts = drift_store.active_drifts()
+    return {"count": len(drifts), "drifts": drifts}
+
+
+def acknowledge() -> dict[str, Any]:
+    return {"acknowledged": drift_store.acknowledge_all()}
+
+
 def start_drift_scheduler() -> None:
     """Reconcile once on start, then daily, in a daemon thread.
 

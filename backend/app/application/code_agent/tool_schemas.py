@@ -15,6 +15,21 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "reconcile_server_facts",
+                "description": (
+                    "Verify the live LLM server's authoritative facts and report any drift. "
+                    "Use when the conversation is about the SERVER, the ACTIVE MODEL, the MODEL "
+                    "FILE, the CONTEXT WINDOW (n_ctx), or a config/doc that might be stale: it "
+                    "probes the running llama-server (/props) and returns the current model_path "
+                    "and n_ctx plus any values that changed since the last check. Read-only; "
+                    "prefer it over trusting a doc when the question is what is running now."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "read_file",
                 "description": "Read a file from the project. Returns lines with line numbers.",
                 "parameters": {

@@ -52,6 +52,9 @@ from app.application.code_agent.tools._vision import (
 from app.application.code_agent.tools._computer import (
     tool_computer,
 )
+from app.application.code_agent.tools._drift import (
+    tool_reconcile_server_facts,
+)
 
 
 def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str, Any]]]:
@@ -68,6 +71,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "delegate_task": lambda **kw: tool_delegate_task(project_root, **kw),
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "run_server": lambda **kw: tool_run_server(project_root, **kw),
+        "reconcile_server_facts": lambda **kw: tool_reconcile_server_facts(**kw),
         "web_search": lambda **kw: tool_web_search(**kw),
         "web_fetch": lambda **kw: tool_web_fetch(**kw),
         "browser": lambda **kw: tool_browser(**kw),

@@ -87,6 +87,34 @@ class DriftDetectorTest(unittest.TestCase):
             drift_store.get_fact("active_model")["value"], "/models/x/Qwen-Q5.gguf"
         )
 
+    def test_alerts_and_acknowledge(self) -> None:
+        self._reconcile_with(
+            {"active_model": "/models/x/Qwopus-Q5.gguf", "server_context_window": "65536"}
+        )
+        self._reconcile_with(
+            {"active_model": "/models/x/Qwen-Q5.gguf", "server_context_window": "65536"}
+        )
+        alerts = drift_runtime.get_alerts()
+        self.assertEqual(alerts["count"], 1)
+        self.assertEqual(alerts["drifts"][0]["key"], "active_model")
+        self.assertEqual(drift_runtime.acknowledge()["acknowledged"], 1)
+        self.assertEqual(drift_runtime.get_alerts()["count"], 0)
+
+    def test_reconcile_tool_reports_facts(self) -> None:
+        from app.application.code_agent.tools._drift import tool_reconcile_server_facts
+
+        with patch.object(
+            drift_probes,
+            "probe_live_facts",
+            return_value={
+                "active_model": "/models/x/Qwen-Q5.gguf",
+                "server_context_window": "65536",
+            },
+        ), patch("app.application.event_bus.runtime.emit_event"):
+            out = tool_reconcile_server_facts()
+        self.assertIn("/models/x/Qwen-Q5.gguf", out["text"])
+        self.assertIn("65536", out["text"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,10 +29,15 @@ def init_db() -> None:
                 value TEXT,
                 verified_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 previous_value TEXT,
-                changed_at TEXT
+                changed_at TEXT,
+                acknowledged_at TEXT
             )
             """
         )
+        # Migrate DBs created before the ack column existed.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(verified_facts)").fetchall()}
+        if "acknowledged_at" not in cols:
+            conn.execute("ALTER TABLE verified_facts ADD COLUMN acknowledged_at TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -92,5 +97,40 @@ def upsert_fact(key: str, value: str | None) -> dict[str, Any]:
             )
         conn.commit()
         return {"key": key, "changed": changed, "previous": prev, "current": value}
+    finally:
+        conn.close()
+
+
+def active_drifts() -> list[dict[str, Any]]:
+    """Facts that drifted and have not been acknowledged since the change."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT * FROM verified_facts
+            WHERE changed_at IS NOT NULL
+              AND (acknowledged_at IS NULL OR acknowledged_at < changed_at)
+            ORDER BY changed_at DESC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def acknowledge_all() -> int:
+    """Mark every currently-active drift as seen. Returns rows acknowledged."""
+    conn = _conn()
+    try:
+        cur = conn.execute(
+            """
+            UPDATE verified_facts
+            SET acknowledged_at = CURRENT_TIMESTAMP
+            WHERE changed_at IS NOT NULL
+              AND (acknowledged_at IS NULL OR acknowledged_at < changed_at)
+            """
+        )
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()

@@ -17,6 +17,16 @@ def drift_status() -> dict:
     return drift_runtime.get_status()
 
 
+@router.get("/alerts")
+def drift_alerts() -> dict:
+    return drift_runtime.get_alerts()
+
+
+@router.post("/ack")
+def drift_ack() -> dict:
+    return drift_runtime.acknowledge()
+
+
 @router.post("/reconcile")
 def drift_reconcile() -> dict:
     return drift_runtime.reconcile()

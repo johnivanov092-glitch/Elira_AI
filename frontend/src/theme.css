@@ -22,6 +22,10 @@
   --color-acs: rgba(139, 147, 248, 0.15);
   --color-acl: rgba(139, 147, 248, 0.5);
 
+  /* Alert/drift accent — a saturated red that reads on any theme with white
+     text. Any theme block may override --color-danger to tune its own red. */
+  --color-danger: #e5484d;
+
   --font-sans: Inter, ui-sans-serif, system-ui, "Segoe UI", Roboto, Arial, sans-serif;
   --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Consolas, monospace;
 }
