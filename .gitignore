@@ -85,6 +85,9 @@ screenshots/
 *.bak
 *.bak_*
 
+# Voice sample audio — local reference in assets/voice_samples/ (README tracked, wavs not)
+assets/voice_samples/*.wav
+
 # ------------------------------
 # AI / Data / Models
 # ------------------------------
