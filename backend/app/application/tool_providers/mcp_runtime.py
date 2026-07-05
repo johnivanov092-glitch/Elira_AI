@@ -128,6 +128,7 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
             "headers": headers,
             "secret_headers": secret_headers,
             "allow_insecure_http": bool(spec.get("allow_insecure_http", False)),
+            "allow_private_address": bool(spec.get("allow_private_address", False)),
             "enabled": enabled,
         }
 
@@ -235,7 +236,7 @@ def _spec_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
         # stdio
         "command", "args", "env",
         # http
-        "url", "headers", "secret_headers", "allow_insecure_http",
+        "url", "headers", "secret_headers", "allow_insecure_http", "allow_private_address",
     )
     for key in keys:
         if old_n.get(key) != new.get(key):
@@ -283,6 +284,7 @@ def start_server(server_id: str) -> dict[str, Any]:
                 headers=spec.get("headers") or None,
                 secret_headers=spec.get("secret_headers") or None,
                 allow_insecure_http=bool(spec.get("allow_insecure_http", False)),
+                allow_private_address=bool(spec.get("allow_private_address", False)),
             )
             start_error: type[Exception] = _HttpMcpError
         else:

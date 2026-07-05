@@ -145,7 +145,7 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
-def _guard_url(url: str, *, allow_insecure_http: bool) -> None:
+def _guard_url(url: str, *, allow_insecure_http: bool, allow_private_address: bool = False) -> None:
     """Refuse a URL whose scheme or resolved address is unsafe.
 
     Raises McpSecurityError on: a non-http(s) scheme; plain http without
@@ -173,7 +173,7 @@ def _guard_url(url: str, *, allow_insecure_http: bool) -> None:
     except ValueError:
         literal = None
     if literal is not None:
-        if _is_blocked_ip(literal):
+        if _is_blocked_ip(literal) and not allow_private_address:
             raise McpSecurityError(f"blocked address {host} (private/loopback/metadata)")
         return
 
@@ -191,7 +191,7 @@ def _guard_url(url: str, *, allow_insecure_http: bool) -> None:
             ip = ipaddress.ip_address(addr)
         except ValueError:
             continue
-        if _is_blocked_ip(ip):
+        if _is_blocked_ip(ip) and not allow_private_address:
             raise McpSecurityError(
                 f"host {host!r} resolves to blocked address {addr} (private/loopback/metadata)"
             )
@@ -212,6 +212,7 @@ class McpHttpClient:
         headers: Optional[dict[str, str]] = None,
         secret_headers: Optional[dict[str, str]] = None,
         allow_insecure_http: bool = False,
+        allow_private_address: bool = False,
     ) -> None:
         self._url = url.strip()
         # Non-secret headers may be logged; secret headers must not be.
@@ -221,6 +222,7 @@ class McpHttpClient:
         self._headers = self._resolve_header_map(headers, kind="header")
         self._secret_headers = self._resolve_header_map(secret_headers, kind="secret header")
         self._allow_insecure_http = bool(allow_insecure_http)
+        self._allow_private_address = bool(allow_private_address)
         self._client: Optional[httpx.Client] = None
         # MCP streamable HTTP carries a session id the server hands back on
         # initialize; we echo it on every later request.
@@ -263,7 +265,7 @@ class McpHttpClient:
         if self._started:
             return
         # Guard once up front so a bad URL fails fast before we build state.
-        _guard_url(self._url, allow_insecure_http=self._allow_insecure_http)
+        _guard_url(self._url, allow_insecure_http=self._allow_insecure_http, allow_private_address=self._allow_private_address)
 
         self._client = httpx.Client(
             timeout=httpx.Timeout(DEFAULT_REQUEST_TIMEOUT, connect=DEFAULT_CONNECT_TIMEOUT),
@@ -525,7 +527,7 @@ class McpHttpClient:
         url = self._url
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         for _hop in range(MAX_REDIRECTS + 1):
-            _guard_url(url, allow_insecure_http=self._allow_insecure_http)
+            _guard_url(url, allow_insecure_http=self._allow_insecure_http, allow_private_address=self._allow_private_address)
             request = client.build_request(
                 "POST", url, content=body, headers=self._wire_headers(),
                 timeout=httpx.Timeout(timeout, connect=DEFAULT_CONNECT_TIMEOUT),
