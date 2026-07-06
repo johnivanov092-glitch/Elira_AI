@@ -301,6 +301,9 @@ def _looks_like_intent_without_action(text: str) -> bool:
 _GROUNDING_FACT_TOOLS = frozenset({
     "project_map", "glob", "grep", "read_file", "run_bash", "run_server",
     "web_search", "web_fetch", "http_api", "recall", "write_file", "edit_file",
+    # Remote work grounds facts too — a remote read/check/write must survive into
+    # the next turn's digest, not vanish because it happened over SSH.
+    "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps",
 })
 # Enumeration tools reveal the COMPLETE set of files/structure. Truncating their
 # result to a short snippet was the residual grounding leak (live: the model had a
@@ -466,6 +469,99 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
 def _is_near_dup(name: str, tokens: frozenset[str], recent: list[tuple[str, frozenset[str]]]) -> bool:
     """True if this call closely mirrors a recent call to the SAME tool."""
     return any(rn == name and _jaccard(tokens, rt) >= _NEAR_DUP_JACCARD for rn, rt in recent)
+
+
+# --- Progress controller ----------------------------------------------------
+# The loop-guards above catch REPETITION (same / near-same call). They do NOT
+# catch a model that issues visibly-DIFFERENT calls that all fail to move the
+# world — the raw-ssh escaping spiral (80 distinct commands, zero file changed,
+# test still 7/8) evaded near-dup for ~55 steps. The progress controller closes
+# that: after each ACTION-tool call it asks "did state actually advance?" (a file
+# created/edited, a NEW verified observation from a read, verification flipped
+# green, a server started). N action calls with no advance = a stuck strategy —
+# first REDIRECT (tell it to switch strategy families), only stop honestly if it
+# keeps digging the same dry hole. A soft redirect, not a hard block.
+#
+# Tools that DO work when they succeed (a mutation is inherently progress) and
+# tools whose fresh output is genuine new knowledge (reading/searching) reset the
+# streak; pure "doing" tools (run_bash/ssh_run/ssh_run_ps) only count as progress
+# when they change a file / flip verification, so re-running a check that returns
+# different bytes but the same state does NOT read as progress (semantic ok).
+_INVESTIGATION_TOOLS = frozenset({
+    "read_file", "glob", "grep", "project_map", "recall",
+    "web_search", "web_fetch", "http_api", "ssh_read",
+})
+PROGRESS_REDIRECT_MSG = (
+    "Последние вызовы НЕ сдвинули состояние (файл не изменён, новых фактов нет, "
+    "проверка не пройдена). Текущая стратегия исчерпана — СМЕНИ СЕМЕЙСТВО подхода, "
+    "не повторяй то же самое: другой инструмент, прочитай реальный файл/вывод, а "
+    "для удалённой правки — ssh_write / ssh_run_ps вместо ручного shell-quoting. "
+    "Если не ясно как двигаться дальше — спроси пользователя (ask_user)."
+)
+
+
+def _fact_shape(fact: str) -> str:
+    """Digit-normalised shape of a grounded fact, for "is this NEW knowledge or a
+    re-run of the same check?". A churning netstat/curl/findstr whose only diff is
+    a changing PID/port collapses to ONE shape, so it stops reading as progress."""
+    low = " ".join((fact or "").split()).lower()
+    return re.sub(r"\d+", "N", low)[:160]
+
+
+def step_made_progress(
+    *,
+    name: str,
+    tool_meta: dict,
+    fact: str | None,
+    seen_fact_shapes: set[str],
+) -> bool:
+    """True when this tool call advanced the run toward the goal. Mutates
+    `seen_fact_shapes` (records a newly-seen investigation fact). See the block
+    comment above for the design.
+
+    A "doing" tool (run_bash / ssh_run / ssh_run_ps) counts as progress ONLY when
+    it changes a file — re-running a check that returns different bytes but the
+    same state is deliberately NOT progress (semantic ok). Mutations (touched_path)
+    and a server starting are progress; fresh knowledge from a read/search resets
+    the streak so "go read the real file" is rewarded, not punished."""
+    if tool_meta.get("touched_path"):
+        return True  # a file was created / edited / written (local or remote)
+    if name == "run_server" and tool_meta.get("ok", True):
+        return True  # running state changed
+    if name in _INVESTIGATION_TOOLS and fact:
+        shape = _fact_shape(fact)
+        if shape not in seen_fact_shapes:
+            seen_fact_shapes.add(shape)
+            return True
+    return False
+
+
+def _deterministic_stop_summary(
+    reason: str,
+    call_log: list[str],
+    touched_files: list[str],
+    established_facts: list[str],
+) -> str:
+    """Facts-from-the-journal summary for a controller-forced stop (loop / no
+    progress). Built deterministically from what ACTUALLY happened — never a model
+    retelling — so a stuck run can't confabulate success. LLM prose (if any) is
+    layered AFTER this as optional narrative, not as the source of truth."""
+    lines = [
+        f"⛔ Прогон остановлен контроллером: {reason}.",
+        f"Вызовов инструментов: {len(call_log)}.",
+    ]
+    uniq = list(dict.fromkeys(f for f in (touched_files or []) if f))
+    if uniq:
+        shown = ", ".join(uniq[:12])
+        more = f" (+{len(uniq) - 12})" if len(uniq) > 12 else ""
+        lines.append(f"Изменённые файлы: {shown}{more}.")
+    else:
+        lines.append("Файлы НЕ изменены — задача не завершена.")
+    digest = _facts_digest(established_facts)
+    if digest:
+        lines.append("Проверенные факты:\n" + digest[:900])
+    lines.append("Это детерминированный итог из журнала прогона (не пересказ модели).")
+    return "\n".join(lines)
 
 
 def _mark_approval_approved(approval_id: str) -> bool:

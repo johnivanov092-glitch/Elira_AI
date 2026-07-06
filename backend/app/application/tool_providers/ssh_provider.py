@@ -241,6 +241,54 @@ def tool_ssh_write(*, host: str, path: str, content: str, append: bool = False) 
     }
 
 
+def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, Any]:
+    """Run a PowerShell SCRIPT on a remote Windows host — the safe way.
+
+    The script is base64-encoded (UTF-16LE) and handed to
+    `powershell -EncodedCommand`, so NOTHING in it is parsed by the local
+    shell / ssh / cmd.exe on the way there. This is the primitive that lets the
+    agent run real PowerShell (quotes, pipes, `$_`, here-strings, multi-line) in
+    ONE call — instead of losing dozens of tries to 4-layer quoting the way a
+    hand-escaped `ssh host "powershell …"` through run_bash does. For editing a
+    remote file prefer ssh_write; for POSIX remotes use ssh_run."""
+    err = _validate_host(host)
+    if err is not None:
+        return {"text": f"ERROR: {err}"}
+    if not isinstance(script, str) or not script.strip():
+        return {"text": "ERROR: script is empty"}
+
+    safe_timeout = max(5, min(int(timeout) if timeout else 120, 600))
+    b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    remote_cmd = (
+        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f"-EncodedCommand {b64}"
+    )
+    try:
+        proc = subprocess.run(
+            [*_ssh_args(host), remote_cmd],
+            capture_output=True,  # bytes → decode_console (remote may emit non-ANSI)
+            timeout=safe_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return {"text": f"ERROR: ssh {host} PowerShell timed out after {safe_timeout}s"}
+    except FileNotFoundError:
+        return {"text": "ERROR: `ssh` binary not found on this machine"}
+    except Exception as exc:
+        logger.exception("ssh_run_ps failed for host=%s", host)
+        return {"text": f"ERROR: {exc}"}
+
+    _out, _err = decode_console(proc.stdout), decode_console(proc.stderr)
+    parts = [
+        f"$ ssh {host} -- powershell -EncodedCommand (script: {len(script)} chars)",
+        f"exit={proc.returncode}",
+    ]
+    if _out:
+        parts.append(f"STDOUT:\n{_truncate_for_llm(_out.rstrip())}")
+    if _err:
+        parts.append(f"STDERR:\n{_truncate_for_llm(_err.rstrip())}")
+    return {"text": "\n".join(parts), "touched_host": host}
+
+
 def tool_ssh_list_hosts() -> dict[str, Any]:
     """List the currently allowed SSH hosts. Useful for the agent
     when the user says 'check the production server' and there's
@@ -330,6 +378,32 @@ def _schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "ssh_run_ps",
+                "description": (
+                    "Run a PowerShell script on a remote WINDOWS host via SSH. "
+                    "The script is sent base64-encoded (EncodedCommand) so quotes, "
+                    "pipes, $_ , and here-strings are NEVER mangled by ssh/cmd.exe — "
+                    "use this instead of hand-escaping `ssh host \"powershell …\"` "
+                    "through run_bash. To edit a remote file prefer ssh_write; for "
+                    "POSIX remotes use ssh_run."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "script": {
+                            "type": "string",
+                            "description": "Raw PowerShell source — no escaping needed.",
+                        },
+                        "timeout": {"type": "integer", "description": "Seconds; clamped to [5, 600]. Default 120."},
+                    },
+                    "required": ["host", "script"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "ssh_list_hosts",
                 "description": (
                     "Return the list of hosts the user has whitelisted for "
@@ -346,6 +420,7 @@ _DISPATCH = {
     "ssh_run": tool_ssh_run,
     "ssh_read": tool_ssh_read,
     "ssh_write": tool_ssh_write,
+    "ssh_run_ps": tool_ssh_run_ps,
     "ssh_list_hosts": lambda **_: tool_ssh_list_hosts(),
 }
 

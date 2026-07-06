@@ -198,6 +198,19 @@ _REPEATED_TOOL_CALL_NUDGE_AT = 2
 # loop_guard/error instead of a graceful finalize — especially in no_questions
 # mode, where the canned reply gives a weak model nothing new to diverge on.
 _LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user", "ssh_request_host"})
+# Progress controller (see loop_helpers.step_made_progress). "Doing" tools whose
+# job is to CHANGE the world — if N of these fire in a row without a file change /
+# server start, the strategy is stuck even when each call looks different (the
+# raw-ssh escaping spiral that near-dup missed for ~55 steps). First a soft
+# redirect ("switch strategy families"), then an honest deterministic stop.
+_ACTION_TOOLS = frozenset({"run_bash", "run_server", "ssh_run", "ssh_run_ps"})
+_PROGRESS_REDIRECT_AT = 3   # soft: nudge to change strategy family
+_PROGRESS_STOP_AT = 8       # hard: honest stop after the redirect was ignored
+# SSH provider tools promoted into a run's OFFERED set on SSH-shaped tasks, so the
+# model reaches ssh_run/ssh_write/ssh_run_ps directly instead of drowning in raw
+# `ssh host "…"` through run_bash. Activated by intent (task mentions ssh / an
+# allowlisted host) so non-SSH runs — and the prompt canaries — pay zero tokens.
+_SSH_ACTIVATABLE_TOOLS = ("ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_list_hosts")
 # Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
 # button, plus common free-text yes-words). Anything else = deny.
 _SSH_APPROVE_WORDS = frozenset({"одобрить", "approve", "yes", "да", "allow", "ok", "разрешить"})
@@ -448,8 +461,11 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _NEAR_DUP_NUDGE_AT,
     _approval_status,
     _arg_tokens,
+    _deterministic_stop_summary,
     _fact_from_tool,
     _facts_digest,
+    PROGRESS_REDIRECT_MSG,
+    step_made_progress,
     _recent_tool_snippet,
     _recent_tools_digest,
     RECENT_TOOLS_PREFIX,
@@ -618,6 +634,24 @@ def _stream_code_agent_core(
         if mode_tool_posture(profile_name) == "readonly":
             narrowed = tuple(t for t in initial_tools if t in _CODE_AGENT_READONLY_TOOLS)
             initial_tools = narrowed or _CODE_AGENT_READONLY_TOOLS
+        else:
+            # SSH-shaped run → offer ssh_run/ssh_read/ssh_write/ssh_run_ps from step
+            # one, so the model uses the clean remote tools instead of drowning in
+            # raw `ssh host "…"` through run_bash. Intent-gated (task names ssh or an
+            # allowlisted host) so normal runs and the prompt canaries pay nothing.
+            try:
+                from app.application.tool_providers.ssh_acl import (
+                    get_allowed_hosts as _ssh_hosts,
+                    is_ssh_enabled as _ssh_on,
+                )
+
+                if _ssh_on():
+                    _low = (user_message or "").lower()
+                    _hosts = [h.lower() for h in _ssh_hosts()]
+                    if "ssh" in _low or any(h and h in _low for h in _hosts):
+                        initial_tools = tuple(dict.fromkeys((*initial_tools, *_SSH_ACTIVATABLE_TOOLS)))
+            except Exception:
+                pass
         enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _local_chat
         stream_chat = chat_stream_fn
@@ -702,6 +736,15 @@ def _stream_code_agent_core(
         # fallback to the existing inline-recovery behaviour. Only consulted
         # when ELIRA_ACTION_ENVELOPES is on.
         envelope_repair_fired = False
+        # Progress controller (see _ACTION_TOOLS / loop_helpers.step_made_progress):
+        # consecutive "doing" calls that didn't move state, the fact shapes we've
+        # already seen (so a churning check doesn't read as new knowledge), whether
+        # the soft redirect already fired this stuck stretch, and every file the run
+        # touched (for the deterministic stop summary).
+        no_progress_streak = 0
+        seen_fact_shapes: set[str] = set()
+        progress_redirect_fired = False
+        touched_files: list[str] = []
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -1242,13 +1285,12 @@ def _stream_code_agent_core(
                     name not in _LOOP_GUARD_EXEMPT_TOOLS
                     and repeated_tool_calls[fingerprint] >= _REPEATED_TOOL_CALL_LIMIT
                 ):
-                    final_text = _wrap_up_text(
-                        chat,
-                        model,
-                        safe_num_ctx,
-                        messages,
-                        call_log,
-                        f"repeated tool call: {name}",
+                    # Deterministic summary from the journal — NOT a wrap-up call to
+                    # the model that just looped (it has nothing new to say and would
+                    # only risk confabulating). Facts, not a retelling.
+                    final_text = _deterministic_stop_summary(
+                        f"повтор одного и того же вызова: {name}",
+                        call_log, touched_files, established_facts,
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -1257,6 +1299,7 @@ def _stream_code_agent_core(
                         "steps": step,
                         "stop_reason": "loop_guard",
                         "error": f"repeated identical tool call: {name}",
+                        "established_facts": _facts_digest(established_facts),
                     }
                     return
                 # Near-duplicate loop: same tool, slightly-varying args (ping/recall
@@ -1272,9 +1315,9 @@ def _stream_code_agent_core(
                 if len(near_dup_recent) > 8:
                     near_dup_recent = near_dup_recent[-8:]
                 if near_dup_streak >= _NEAR_DUP_LIMIT:
-                    final_text = _wrap_up_text(
-                        chat, model, safe_num_ctx, messages, call_log,
-                        f"near-duplicate {name} loop (varying args, no progress)",
+                    final_text = _deterministic_stop_summary(
+                        f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",
+                        call_log, touched_files, established_facts,
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -1713,7 +1756,7 @@ def _stream_code_agent_core(
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                 }
-                for opt in ("touched_path", "old_content", "new_content", "diff_action"):
+                for opt in ("touched_path", "old_content", "new_content", "diff_action", "exit_code"):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
                         val = tool_meta[opt]
@@ -1732,6 +1775,26 @@ def _stream_code_agent_core(
                 # could blow out `num_ctx` and start eating the system
                 # prompt off the front of the context.
                 _tool_content = _truncate_for_llm(text_result)
+                _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
+                # Grounding fact from this call — computed HERE (before the tool
+                # message is appended) so the progress controller can judge whether
+                # the call revealed anything NEW.
+                _fact = _fact_from_tool(name, _hint, text_result, ok=_tool_ok)
+                if tool_meta.get("touched_path"):
+                    touched_files.append(str(tool_meta.get("touched_path")))
+                # ── Progress controller ──────────────────────────────────────
+                # Did the world move? A file changed / server started / a read
+                # revealed something new resets the streak; a "doing" tool that
+                # changed nothing advances it. This catches the different-looking-
+                # but-going-nowhere spiral (raw-ssh escaping) that near-dup misses.
+                if step_made_progress(
+                    name=name, tool_meta=tool_meta, fact=_fact,
+                    seen_fact_shapes=seen_fact_shapes,
+                ):
+                    no_progress_streak = 0
+                    progress_redirect_fired = False
+                elif name in _ACTION_TOOLS:
+                    no_progress_streak += 1
                 # Loop-guard nudge: if the model is repeating the SAME call, append
                 # a loud hint to the result so it can change course before the hard
                 # stop at _REPEATED_TOOL_CALL_LIMIT (see the guard above).
@@ -1752,22 +1815,44 @@ def _stream_code_agent_core(
                         f"аргументами — это не двигает задачу. Смени ПОДХОД: другой инструмент/данные, "
                         f"прочитай реальные файлы или спроси пользователя. Ещё {_left} до остановки."
                     )
+                # Progress redirect (SOFT — not a stop): the strategy is stuck but
+                # still under the hard cap. Tell the model ONCE to switch strategy
+                # families; real movement re-arms it (progress_redirect_fired reset).
+                if (
+                    name in _ACTION_TOOLS
+                    and _PROGRESS_REDIRECT_AT <= no_progress_streak < _PROGRESS_STOP_AT
+                    and not progress_redirect_fired
+                ):
+                    progress_redirect_fired = True
+                    _tool_content += f"\n\n[progress] {PROGRESS_REDIRECT_MSG}"
                 messages.append({
                     "role": "tool",
                     "content": _tool_content,
                     "name": name,
                 })
-                # Grounding: remember what this discovery tool revealed so a later
-                # turn (whose history drops tool results) can answer from fact.
-                _fact = _fact_from_tool(
-                    name, _hint, text_result,
-                    ok=bool(tool_meta.get("ok", _exec_result.status == "ok")),
-                )
                 if _fact:
                     established_facts.append(_fact)
                 _recent = _recent_tool_snippet(name, _hint, text_result)
                 if _recent:
                     recent_tool_outputs.append(_recent)
+                # Progress HARD stop: the model kept digging the same dry hole past
+                # the redirect. Honest deterministic summary from the journal (never
+                # a model retelling of a stuck run), then stop — no verified progress.
+                if name in _ACTION_TOOLS and no_progress_streak >= _PROGRESS_STOP_AT:
+                    _det = _deterministic_stop_summary(
+                        "нет прогресса — стратегия не двигает состояние",
+                        call_log, touched_files, established_facts,
+                    )
+                    yield {"type": "final_response", "step": step, "text": _det}
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "no_progress",
+                        "error": f"no verified progress after {no_progress_streak} action calls",
+                        "established_facts": _facts_digest(established_facts),
+                    }
+                    return
 
         final_text = _wrap_up_text(
             chat, model, safe_num_ctx, messages, call_log,

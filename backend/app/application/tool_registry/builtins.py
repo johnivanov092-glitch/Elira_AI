@@ -534,6 +534,16 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound", "fs.write"],
             "timeout_seconds": 60, "max_output_chars": 5000,
         },
+        {
+            "name": "ssh_run_ps", "handler": _noop,
+            "display_name": "SSH PowerShell", "display_name_ru": "SSH PowerShell",
+            "category": "ssh",
+            "description": "Run a PowerShell script on a remote Windows host via SSH (base64, no quoting)",
+            "source": "ssh",
+            "permission": "require_approval", "side_effect": True, "idempotent": False,
+            "scopes": ["net.outbound", "shell.exec"],
+            "timeout_seconds": 120, "max_output_chars": 20000,
+        },
     ]
 
 

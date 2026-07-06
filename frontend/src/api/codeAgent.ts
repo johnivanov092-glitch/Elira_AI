@@ -17,6 +17,7 @@ export type CodeAgentToolCall = {
   arguments: Record<string, unknown>;
   result: string;
   ok?: boolean;
+  exit_code?: number;
   touched_path?: string;
   old_content?: string;
   new_content?: string;
@@ -28,7 +29,7 @@ export type CodeAgentResponse = {
   response: string;
   steps: number;
   tool_calls: CodeAgentToolCall[];
-  stop_reason: "answer" | "max_steps" | "timeout" | "context_limit" | "loop_guard" | "error" | "cancelled";
+  stop_reason: "answer" | "max_steps" | "timeout" | "context_limit" | "loop_guard" | "no_progress" | "error" | "cancelled";
   error: string | null;
   partial: boolean;
 };

@@ -38,7 +38,7 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
 
   return (
     <div className="my-2 mb-6">
-      <ToolCallGroup calls={turn.toolCalls} activeTool={turn.running ? turn.activeTool : undefined} />
+      <ToolCallGroup calls={turn.toolCalls} activeTool={turn.running ? turn.activeTool : undefined} stopReason={turn.running ? undefined : turn.stopReason} />
 
       {turn.reasoning && <ReasoningBlock text={turn.reasoning} running={turn.running} />}
 
@@ -83,9 +83,15 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
       )}
 
       {turn.error && (
-        turn.stopReason === "loop_guard" ? (
+        turn.stopReason === "loop_guard" || turn.stopReason === "no_progress" ? (
+          // Engineering status, not a first-person "I stopped myself" — the run
+          // ended incomplete; the deterministic report above says what's done.
           <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-mut">
-            Остановила себя: пошла по кругу на повторяющихся вызовах (защита от зацикливания). Можно уточнить задачу и продолжить.
+            <span className="font-medium text-t2">Не завершено</span> · остановлено:{" "}
+            {turn.stopReason === "no_progress"
+              ? "нет прогресса — стратегия зашла в тупик"
+              : "повтор без прогресса"}
+            . Итог — выше; уточни путь и продолжи.
           </div>
         ) : (
           <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-t2">

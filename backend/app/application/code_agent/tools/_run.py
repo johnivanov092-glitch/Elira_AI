@@ -24,6 +24,7 @@ from app.application.code_agent.tools._shell import (
     _new_process_group_kwargs,
     _register_shell_proc,
     _unregister_shell_proc,
+    raw_ssh_redirect,
 )
 
 
@@ -108,6 +109,12 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     blocked = _blocked_shell_fragment(cleaned_command)
     if blocked:
         return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}"}
+    # Redirect (not ban) raw `ssh host "…"` to the ssh_* tools — the quoting-hell
+    # trap that burned a whole run. ok=False so it reads as no-progress and the
+    # progress controller / loop-guard see a stuck strategy if the model ignores it.
+    redirect = raw_ssh_redirect(cleaned_command)
+    if redirect is not None:
+        return {"text": redirect, "ok": False}
     safe_timeout = max(1, min(int(timeout), _SHELL_TIMEOUT_MAX))
 
     run_id = _CURRENT_RUN_ID.get()
@@ -224,7 +231,12 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
         parts.append(f"STDOUT:\n{_truncate_middle(stdout.rstrip(), _SHELL_STDOUT_LIMIT)}")
     if stderr:
         parts.append(f"STDERR:\n{_truncate_middle(stderr.rstrip(), _SHELL_STDERR_LIMIT)}")
-    return {"text": "\n".join(parts)}
+    # exit_code travels in the meta so the UI can colour the call by SEMANTIC
+    # success (a non-zero exit reads as failure) instead of "the process ran".
+    # We keep the top-level `ok` unset (a non-zero exit isn't always a failure —
+    # grep/findstr return 1 for "no match") so the executor's approval/verify
+    # logic is unchanged; the UI decides how to render exit_code itself.
+    return {"text": "\n".join(parts), "exit_code": proc.returncode}
 
 
 # ─── run_server: background process launcher ────────────────────────────────

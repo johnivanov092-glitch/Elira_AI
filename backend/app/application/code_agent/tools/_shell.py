@@ -293,3 +293,48 @@ def is_shell_critical(command: str) -> bool:
         if any(seg.startswith(pat) for pat in _CRITICAL_SHELL_PREFIXES):
             return True
     return False
+
+
+# ─── Raw-SSH-via-run_bash redirect ──────────────────────────────────────────
+#
+# A raw `ssh <host> "<remote command>"` issued through run_bash is the quoting-
+# hell trap that burned a whole real run: the body is parsed by the LOCAL shell →
+# ssh → the REMOTE shell (cmd.exe → PowerShell on Windows), so every quote / pipe /
+# `$_` has to survive four layers. The ssh_* provider tools sidestep this entirely
+# (content over stdin for ssh_write; base64 EncodedCommand for ssh_run_ps/ssh_read),
+# turning ~80 escaping attempts into ONE clean call. So run_bash REDIRECTS a raw
+# ssh invocation to the right tool — it does NOT ban it: the model can still force
+# the raw pipe (tunnels, scp-style one-offs) with an explicit `#!raw-ssh` marker.
+_RAW_SSH_OVERRIDE = "#!raw-ssh"
+# Leading env-var assignments (FOO=bar ssh …) then a bare `ssh` whose next token
+# is a host (not an option like -V/-G). ssh-keygen/ssh-copy-id/ssh-add/sshpass/scp
+# are NOT the remote-exec trap and are left alone.
+_RAW_SSH_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*ssh\s+(?!-)\S", re.IGNORECASE)
+
+
+def raw_ssh_redirect(command: str) -> str | None:
+    """If *command* is a raw ``ssh <host> …`` remote-exec invocation, return an
+    actionable redirect message pointing at the ssh_* tools; else None. Returns
+    None when the explicit ``#!raw-ssh`` override marker is present (the model
+    deliberately wants the raw pipe)."""
+    cmd = (command or "").strip()
+    if not cmd or _RAW_SSH_OVERRIDE in cmd:
+        return None
+    low = cmd.lower()
+    if low.startswith(("ssh-", "sshpass", "scp ", "scp\t")):
+        return None
+    if not _RAW_SSH_RE.match(cmd):
+        return None
+    return (
+        "ERROR: raw `ssh …` через run_bash — ловушка экранирования: тело команды "
+        "проходит 4 слоя (локальный shell → ssh → cmd.exe → PowerShell), и кавычки/"
+        "пайпы/`$_` рвутся по дороге. Используй специализированные инструменты "
+        "(экранировать НЕ нужно):\n"
+        "• ssh_run(host, command) — команда на удалённом хосте;\n"
+        "• ssh_read(host, path) — прочитать удалённый файл;\n"
+        "• ssh_write(host, path, content) — записать файл (контент идёт через stdin);\n"
+        "• ssh_run_ps(host, script) — PowerShell-скрипт на Windows-хосте (base64, "
+        "без quoting).\n"
+        "host бери из ssh_list_hosts. Если raw ssh нужен ОСОЗНАННО (туннель/scp) — "
+        f"добавь в конец команды маркер {_RAW_SSH_OVERRIDE} ."
+    )

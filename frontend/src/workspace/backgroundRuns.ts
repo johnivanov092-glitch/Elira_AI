@@ -279,7 +279,10 @@ function wire(
           timestamp: Date.now(),
           type: "tool_call",
           action: e.tool,
-          result: e.ok === false || /^error\b/i.test(result) ? result.slice(0, 500) : `completed (${result.length} chars)`,
+          // Show the real output (not a bland "completed") when the call failed
+          // semantically: ok===false, an ERROR text, or a non-zero shell exit —
+          // so an `exit=1` no longer reads as a success in the ledger.
+          result: e.ok === false || /^error\b/i.test(result) || /\bexit=(?!0\b)\d+/.test(result) ? result.slice(0, 500) : `completed (${result.length} chars)`,
         });
       } else if (e.type === "approval_pending") {
         if (entry.autoApprove) {

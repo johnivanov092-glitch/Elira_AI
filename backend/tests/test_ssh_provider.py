@@ -269,6 +269,55 @@ class SshWriteTest(SshProviderTestBase):
         self.assertIn("ERROR", r["text"])
 
 
+# ── ssh_run_ps (Windows PowerShell, base64 EncodedCommand) ─────
+
+
+class SshRunPsTest(SshProviderTestBase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.ssh_acl.set_allowed_hosts(["prod-1"])
+
+    def test_script_sent_base64_utf16le_not_raw(self) -> None:
+        import base64
+
+        script = "Get-Content 'C:\\a.ps1' | Where-Object { $_ -notmatch 'X' } | Set-Content 'C:\\a.ps1'"
+        with patch("subprocess.run", return_value=_proc(0, "ok", "")) as mock:
+            r = self.ssh.tool_ssh_run_ps(host="prod-1", script=script)
+        cmd = mock.call_args[0][0][-1]
+        # The raw script (with its quotes/pipes/$_) must NOT be in the wire command —
+        # only the base64 blob is, so cmd.exe/ssh never parse the body.
+        self.assertNotIn("$_", cmd)
+        self.assertNotIn("Where-Object", cmd)
+        self.assertIn("-EncodedCommand", cmd)
+        expected_b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        self.assertIn(expected_b64, cmd)
+        self.assertEqual(r["touched_host"], "prod-1")
+
+    def test_batchmode_flags_present(self) -> None:
+        with patch("subprocess.run", return_value=_proc(0, "", "")) as mock:
+            self.ssh.tool_ssh_run_ps(host="prod-1", script="Get-Date")
+        argv = mock.call_args[0][0]
+        self.assertIn("BatchMode=yes", argv)
+        self.assertIn("StrictHostKeyChecking=accept-new", argv)
+
+    def test_host_not_in_allowlist_rejected_without_subprocess(self) -> None:
+        with patch("subprocess.run") as mock:
+            r = self.ssh.tool_ssh_run_ps(host="evil", script="Get-Date")
+        self.assertIn("ERROR", r["text"])
+        mock.assert_not_called()
+
+    def test_empty_script_rejected(self) -> None:
+        with patch("subprocess.run") as mock:
+            r = self.ssh.tool_ssh_run_ps(host="prod-1", script="   ")
+        self.assertIn("ERROR", r["text"])
+        mock.assert_not_called()
+
+    def test_timeout_clamped(self) -> None:
+        with patch("subprocess.run", return_value=_proc(0, "", "")) as mock:
+            self.ssh.tool_ssh_run_ps(host="prod-1", script="Get-Date", timeout=99999)
+        self.assertLessEqual(mock.call_args.kwargs["timeout"], 600)
+
+
 # ── ssh_list_hosts ─────────────────────────────────────────────
 
 
@@ -297,11 +346,13 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         provider = self.ssh.SshToolProvider()
         self.assertTrue(provider.is_enabled())
 
-    def test_provider_exposes_all_four_tools(self) -> None:
+    def test_provider_exposes_all_tools(self) -> None:
         self.ssh_acl.set_allowed_hosts(["x"])
         provider = self.ssh.SshToolProvider()
         names = {s["function"]["name"] for s in provider.get_schemas()}
-        self.assertEqual(names, {"ssh_run", "ssh_read", "ssh_write", "ssh_list_hosts"})
+        self.assertEqual(
+            names, {"ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_list_hosts"}
+        )
 
     def test_registry_skips_disabled_provider(self) -> None:
         from app.application.tool_providers import ToolRegistry

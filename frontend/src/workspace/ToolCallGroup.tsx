@@ -31,9 +31,26 @@ function errPlural(n: number): string {
   return "ошибок";
 }
 
-// `ok === false` is a real failure; undefined (older/streaming) stays green.
-function StatusDot({ ok }: { ok?: boolean }) {
-  return <span className={cn("h-[7px] w-[7px] shrink-0 rounded-full", ok === false ? "bg-danger" : "bg-success")} aria-hidden />;
+// A terminal stop that is NOT a clean answer — the run burned calls without
+// finishing. The header shows THIS instead of a green "N ok", so a loop_guard /
+// no_progress stop never masquerades as success.
+const FAILED_STOP_LABELS: Record<string, string> = {
+  loop_guard: "зациклилась",
+  no_progress: "нет прогресса",
+  timeout: "таймаут",
+  max_steps: "лимит шагов",
+  context_limit: "переполнен контекст",
+  error: "ошибка",
+  cancelled: "остановлено",
+};
+
+// `ok === false` is a real failure (red). A non-zero shell exit that isn't an
+// explicit ok is "ran, but not clean" (grey) — a bare exit=0 no longer reads as
+// verified success by omission. Everything else stays green.
+function StatusDot({ ok, exitCode }: { ok?: boolean; exitCode?: number }) {
+  const cls =
+    ok === false ? "bg-danger" : exitCode != null && exitCode !== 0 && ok !== true ? "bg-mut" : "bg-success";
+  return <span className={cn("h-[7px] w-[7px] shrink-0 rounded-full", cls)} aria-hidden />;
 }
 
 type Run = { tool: string; items: { call: CodeAgentToolCall; idx: number }[] };
@@ -48,7 +65,7 @@ function groupRuns(calls: CodeAgentToolCall[]): Run[] {
   return runs;
 }
 
-export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[]; activeTool?: string }) {
+export function ToolCallGroup({ calls, activeTool, stopReason }: { calls: CodeAgentToolCall[]; activeTool?: string; stopReason?: string }) {
   // Collapse big groups by default so they don't sprawl. A live run that starts
   // small stays expanded (you watch it grow); a large/historical group mounts
   // collapsed.
@@ -68,6 +85,9 @@ export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[
   const errors = useMemo(() => calls.filter((c) => c.ok === false).length, [calls]);
   const oks = calls.length - errors;
   const runs = useMemo(() => groupRuns(calls), [calls]);
+  // A terminal non-answer stop = the run ended without finishing. Surface it in
+  // the header (over the "N ok" summary) so a stopped run reads as stopped.
+  const failedLabel = stopReason ? FAILED_STOP_LABELS[stopReason] : undefined;
 
   if (calls.length === 0 && !activeTool) return null;
 
@@ -89,8 +109,14 @@ export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[
           {counts.length > 4 && <span className="text-[10.5px] text-mut">+{counts.length - 4}</span>}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-2 text-[11.5px]">
-          {oks > 0 && <span className="text-success">{oks} ok</span>}
-          {errors > 0 && <span className="text-danger">{errors} {errPlural(errors)}</span>}
+          {failedLabel ? (
+            <span className="font-medium text-danger">⛔ {failedLabel} · задача не завершена</span>
+          ) : (
+            <>
+              {oks > 0 && <span className="text-success">{oks} ok</span>}
+              {errors > 0 && <span className="text-danger">{errors} {errPlural(errors)}</span>}
+            </>
+          )}
         </span>
       </button>
       {open && (
@@ -157,7 +183,7 @@ function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }
           nested && "pl-9",
         )}
       >
-        <StatusDot ok={call.ok} />
+        <StatusDot ok={call.ok} exitCode={call.exit_code} />
         <span className="grid h-[23px] w-[23px] shrink-0 place-items-center rounded-md border border-line bg-surface text-t2">
           <Icon size={14} />
         </span>
