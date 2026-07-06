@@ -388,5 +388,60 @@ class NoProgressLoopTest(unittest.TestCase):
         self.assertEqual(done["stop_reason"], "answer")
 
 
+# ── coding strategy families (Ph7.1) ────────────────────────────
+
+
+class CodingFamiliesTest(unittest.TestCase):
+    def _fam(self, cmd):
+        return strategy_family("run_bash", {"command": cmd})
+
+    def test_family_classification(self):
+        self.assertEqual(self._fam("pytest tests/test_x.py::test_y"), "test:focused")
+        self.assertEqual(self._fam("pytest -k parser"), "test:focused")
+        self.assertEqual(self._fam("pytest"), "test:full")
+        self.assertEqual(self._fam("python -m pytest tests/"), "test:full")
+        self.assertEqual(self._fam("npm --prefix frontend run typecheck"), "verify:typecheck")
+        self.assertEqual(self._fam("npm --prefix frontend run build"), "verify:build")
+        self.assertEqual(self._fam("bash .elira/verify"), "verify:project")
+        self.assertEqual(self._fam('python -c "import app.main"'), "verify:import")
+        self.assertEqual(self._fam("npm run dev"), "run:app")
+
+    def test_run_bash_is_not_investigation(self):
+        # a coding test's changing stdout must NOT read as progress
+        from app.application.code_agent.progress import INVESTIGATION_TOOLS
+        self.assertNotIn("run_bash", INVESTIGATION_TOOLS)
+
+    def test_repeated_failing_test_redirects_not_loops(self):
+        ev = ProgressEvaluator()
+        a = {"command": "pytest tests/test_x.py"}
+        v1 = ev.evaluate(name="run_bash", args=a, tool_meta={"text": "F", "exit_code": 1}, fact=None)
+        self.assertIsNone(v1.redirect)
+        v2 = ev.evaluate(name="run_bash", args=a, tool_meta={"text": "F", "exit_code": 1}, fact=None)
+        self.assertTrue(v2.exhausted)
+        self.assertIsNotNone(v2.redirect)
+        self.assertIn("трейсбек", v2.redirect)  # coding-specific redirect
+
+    def test_green_test_after_edit_is_progress_not_exhaustion(self):
+        # edit → test-fail → edit → test-PASS must read the pass as progress, not
+        # exhaust the test strategy and fire a spurious redirect.
+        ev = ProgressEvaluator()
+        edit = {"path": "x.py"}
+        test = {"command": "pytest tests/test_x.py"}
+        ev.evaluate(name="write_file", args=edit, tool_meta={"text": "ok", "touched_path": "x.py"}, fact=None)
+        ev.evaluate(name="run_bash", args=test, tool_meta={"text": "F", "exit_code": 1}, fact=None)
+        ev.evaluate(name="write_file", args=edit, tool_meta={"text": "ok", "touched_path": "x.py"}, fact=None)
+        v = ev.evaluate(name="run_bash", args=test, tool_meta={"text": "8 passed", "exit_code": 0}, fact=None)
+        self.assertEqual(v.status, "progress")
+        self.assertFalse(v.should_stop)
+
+    def test_repeated_green_test_is_not_new_progress(self):
+        ev = ProgressEvaluator()
+        test = {"command": "pytest tests/test_x.py"}
+        v1 = ev.evaluate(name="run_bash", args=test, tool_meta={"text": "ok", "exit_code": 0}, fact=None)
+        self.assertEqual(v1.status, "progress")            # first green
+        v2 = ev.evaluate(name="run_bash", args=test, tool_meta={"text": "ok", "exit_code": 0}, fact=None)
+        self.assertEqual(v2.status, "no_progress")         # re-running green ≠ progress
+
+
 if __name__ == "__main__":
     unittest.main()

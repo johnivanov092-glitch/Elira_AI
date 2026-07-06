@@ -113,6 +113,36 @@ def _shell_family(command: str, *, remote: bool) -> str:
     return f"{prefix}_shell"
 
 
+# Coding-work families for a run_bash command — so the router understands
+# test/verify/run as distinct methods and can redirect a "same test, no edit"
+# spin instead of letting it churn. `low` = the lowercased, lstripped command.
+_TEST_TOOLS = ("pytest", "unittest", "npm test", "yarn test", "pnpm test",
+               "jest", "vitest", "mocha", "go test", "cargo test")
+_FOCUSED_TEST_RE = re.compile(r"::|(?:^|\s)-k\s|(?:^|\s)-t\s|-run\s|[\w./\\-]+\.(?:py|js|ts|tsx|jsx|go|rs)\b")
+
+
+def _coding_family(low: str) -> str | None:
+    if any(m in low for m in ("tsc", "typecheck", "type-check", "mypy", "pyright")):
+        return "verify:typecheck"
+    if any(m in low for m in ("run build", "vite build", "cargo build", "go build", "webpack", "rollup")):
+        return "verify:build"
+    if ".elira/verify" in low or "elira/verify" in low:
+        return "verify:project"
+    if re.search(r"python[0-9.]*\s+-c\b.*import", low):
+        return "verify:import"
+    if any(m in low for m in ("npm run dev", "yarn dev", "pnpm dev", "next dev", "vite dev",
+                              "uvicorn", "flask run", "manage.py runserver", "gunicorn", "nodemon")):
+        return "run:app"
+    if any(m in low for m in _TEST_TOOLS):
+        return "test:focused" if _FOCUSED_TEST_RE.search(low) else "test:full"
+    return None
+
+
+# Coding families whose exit_code==0 means "the check went green" — a real,
+# non-stdout progress signal (see ProgressEvaluator: only the FIRST green per key).
+_VERIFY_PASS_FAMILIES = ("test:", "verify:")
+
+
 def _first_str(args: dict, *keys: str) -> str:
     for k in keys:
         v = args.get(k)
@@ -143,6 +173,9 @@ def strategy_family(name: str, args: dict) -> str:
         if low.startswith("ssh ") and not low.startswith(("ssh-", "sshpass")):
             # raw ssh remote-exec through the shell — the quoting-hell family
             return "remote_edit:inline_ps" if any(m in low for m in _EDIT_MARKERS) else "remote_shell"
+        coding = _coding_family(low)
+        if coding is not None:
+            return coding  # test:* / verify:* / run:app
         return _shell_family(cmd, remote=False)
     return name  # any other tool: its own name is the family
 
@@ -173,6 +206,16 @@ def _suggest_alternatives(family: str) -> str:
         return ("ssh_replace(host,path,old,new) для точечной замены, "
                 "ssh_write(host,path,content) чтобы записать файл целиком, "
                 "или ssh_run_ps(host,script) для PowerShell без экранирования")
+    if family.startswith("test:"):
+        return ("прочитай трейсбек/вывод (read_file/grep), внеси точечную правку edit_file, "
+                "при необходимости сузь тест (-k / конкретный узел ::) — не гоняй тот же тест "
+                "без изменений в коде")
+    if family.startswith("verify:"):
+        return ("разбери причину из вывода проверки и внеси точечную правку, затем перезапусти — "
+                "не повторяй ту же проверку без изменений в коде")
+    if family == "run:app":
+        return ("если приложение не поднимается — прочитай лог/ошибку и правь код/конфиг, "
+                "а не перезапускай одинаково")
     if family in ("local_edit", "local_edit_shell"):
         return "прочитай файл (read_file) и сделай точечный edit_file, или проверь путь"
     if family in ("shell_check", "local_shell"):
@@ -203,9 +246,23 @@ class ProgressEvaluator:
     target_families: dict[str, set[str]] = field(default_factory=dict)
     tool_host_no_progress: dict[str, int] = field(default_factory=dict)
     last_exhausted_family: str | None = None
+    verified_ok_keys: set[str] = field(default_factory=set)  # test/verify keys already green
     progress_events: int = 0
     no_progress_total: int = 0        # cumulative — for the report only
     consecutive_no_progress: int = 0  # resets on ANY progress — drives the backstop stop
+
+    def _verify_pass_is_progress(self, name: str, family: str, key: str, tool_meta: dict) -> bool:
+        """A coding test/verify that went GREEN (exit_code==0) is real forward motion
+        — but only the FIRST green per key. This is progress from the EXIT CODE, not
+        from changing stdout (a failing/flaky test's shifting bytes never count)."""
+        if name != "run_bash" or not family.startswith(_VERIFY_PASS_FAMILIES):
+            return False
+        if tool_meta.get("exit_code") != 0:
+            return False  # a red check is not progress — you must edit
+        if key in self.verified_ok_keys:
+            return False  # re-running an already-green check isn't new progress
+        self.verified_ok_keys.add(key)
+        return True
 
     def evaluate(self, *, name: str, args: dict, tool_meta: dict, fact: str | None) -> ProgressVerdict:
         family = strategy_family(name, args)
@@ -216,7 +273,7 @@ class ProgressEvaluator:
 
         if step_made_progress(
             name=name, tool_meta=tool_meta, fact=fact, seen_fact_shapes=self.seen_fact_shapes,
-        ):
+        ) or self._verify_pass_is_progress(name, family, key, tool_meta):
             self.progress_events += 1
             self.consecutive_no_progress = 0  # any progress breaks the stuck streak
             # Movement re-arms this method: clear its no-progress counts and let the
