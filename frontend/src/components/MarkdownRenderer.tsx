@@ -91,6 +91,10 @@ const OUTER_FENCE_RE = /^```(?:markdown|text|md|)\s*\n([\s\S]*?)\n?```\s*$/;
 const THINK_TAG_RE = /<think>[\s\S]*?<\/think>/g;
 const HR_RE = /^[-*_]{3,}\s*$/;
 const HEADING_RE = /^(#{1,4})\s+(.+)/;
+// A heading marker with no text ("###" alone on a line) is not a valid heading.
+// Some models (e.g. Qwopus) emit these as section separators; render as a divider
+// instead of leaking literal "###".
+const EMPTY_HEADING_RE = /^#{1,6}\s*$/;
 const UL_RE = /^\s*[-*+]\s/;
 const OL_RE = /^\s*\d+[.)]\s/;
 const CODE_FENCE_SPLIT_RE = /(```[\s\S]*?```)/g;
@@ -316,6 +320,12 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
       i++; lineIdx++; continue;
     }
 
+    // Bare heading marker (e.g. "###" with no text) → divider, not literal "###".
+    if (EMPTY_HEADING_RE.test(line.trim())) {
+      elements.push(<hr key={`eh-${i}`} className="md-hr" />);
+      i++; lineIdx++; continue;
+    }
+
     if (/^\s*>\s?/.test(line)) {
       const quote: string[] = [];
       while (lineIdx < lines.length && /^\s*>\s?/.test(lines[lineIdx])) {
@@ -393,6 +403,7 @@ function MarkdownRendererInner({ content }: MarkdownRendererProps) {
       !UL_RE.test(lines[lineIdx]) &&
       !OL_RE.test(lines[lineIdx]) &&
       !HR_RE.test(lines[lineIdx].trim()) &&
+      !EMPTY_HEADING_RE.test(lines[lineIdx].trim()) &&
       // Stop before a table (header row + "|---|" separator on the next line),
       // even with no blank line above it — otherwise a bold heading like
       // "**192.168.88.1**" directly above the table swallows all its rows as
