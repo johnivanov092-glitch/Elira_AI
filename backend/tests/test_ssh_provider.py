@@ -151,6 +151,23 @@ class SshRunTest(SshProviderTestBase):
         self.assertEqual(r2["exit_code"], 3)
         self.assertFalse(r2["ok"])           # non-zero exit → failure, not "it ran"
 
+    def test_all_error_branches_return_ok_false(self) -> None:
+        # bad host / empty command — no subprocess at all
+        for r in (self.ssh.tool_ssh_run(host="evil", command="ls"),
+                  self.ssh.tool_ssh_run(host="prod-1", command="   ")):
+            self.assertIn("ERROR", r["text"])
+            self.assertFalse(r["ok"])
+        # timeout / ssh-missing / generic exception
+        for exc, needle in (
+            (TimeoutExpired(cmd="ssh", timeout=5), "timed out"),
+            (FileNotFoundError(), "not found"),
+            (RuntimeError("boom"), "ERROR"),
+        ):
+            with patch("subprocess.run", side_effect=exc):
+                r = self.ssh.tool_ssh_run(host="prod-1", command="ls")
+            self.assertIn(needle, r["text"])
+            self.assertFalse(r["ok"])
+
     def test_nonzero_exit_propagates(self) -> None:
         with patch("subprocess.run", return_value=_proc(2, "", "permission denied")):
             result = self.ssh.tool_ssh_run(host="prod-1", command="cat /etc/shadow")
@@ -342,6 +359,23 @@ class SshRunPsTest(SshProviderTestBase):
             r2 = self.ssh.tool_ssh_run_ps(host="prod-1", script="throw 'x'")
         self.assertEqual(r2["exit_code"], 1)
         self.assertFalse(r2["ok"])
+
+    def test_all_error_branches_return_ok_false(self) -> None:
+        # bad host / empty script — no subprocess at all
+        for r in (self.ssh.tool_ssh_run_ps(host="evil", script="Get-Date"),
+                  self.ssh.tool_ssh_run_ps(host="prod-1", script="   ")):
+            self.assertIn("ERROR", r["text"])
+            self.assertFalse(r["ok"])
+        # timeout / ssh-missing / generic exception
+        for exc, needle in (
+            (TimeoutExpired(cmd="ssh", timeout=5), "timed out"),
+            (FileNotFoundError(), "not found"),
+            (RuntimeError("boom"), "ERROR"),
+        ):
+            with patch("subprocess.run", side_effect=exc):
+                r = self.ssh.tool_ssh_run_ps(host="prod-1", script="Get-Date")
+            self.assertIn(needle, r["text"])
+            self.assertFalse(r["ok"])
 
 
 # ── high-level primitives: replace / assert / port_check ───────

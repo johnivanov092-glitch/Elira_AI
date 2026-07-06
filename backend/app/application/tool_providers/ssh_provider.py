@@ -95,9 +95,9 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
     other side."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(command, str) or not command.strip():
-        return {"text": "ERROR: command is empty"}
+        return {"text": "ERROR: command is empty", "ok": False}
 
     safe_timeout = max(5, min(int(timeout) if timeout else 60, 600))
     try:
@@ -107,12 +107,12 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
             timeout=safe_timeout,
         )
     except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} command timed out after {safe_timeout}s"}
+        return {"text": f"ERROR: ssh {host} command timed out after {safe_timeout}s", "ok": False}
     except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine"}
+        return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     except Exception as exc:
         logger.exception("ssh_run failed for host=%s", host)
-        return {"text": f"ERROR: {exc}"}
+        return {"text": f"ERROR: {exc}", "ok": False}
 
     _out, _err = decode_console(proc.stdout), decode_console(proc.stderr)
     parts = [f"$ ssh {host} -- {command}", f"exit={proc.returncode}"]
@@ -454,9 +454,9 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
     remote file prefer ssh_write; for POSIX remotes use ssh_run."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(script, str) or not script.strip():
-        return {"text": "ERROR: script is empty"}
+        return {"text": "ERROR: script is empty", "ok": False}
 
     safe_timeout = max(5, min(int(timeout) if timeout else 120, 600))
     b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -471,12 +471,12 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
             timeout=safe_timeout,
         )
     except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} PowerShell timed out after {safe_timeout}s"}
+        return {"text": f"ERROR: ssh {host} PowerShell timed out after {safe_timeout}s", "ok": False}
     except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine"}
+        return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     except Exception as exc:
         logger.exception("ssh_run_ps failed for host=%s", host)
-        return {"text": f"ERROR: {exc}"}
+        return {"text": f"ERROR: {exc}", "ok": False}
 
     _out, _err = decode_console(proc.stdout), decode_console(proc.stderr)
     parts = [
