@@ -1,40 +1,73 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import type { CodeAgentToolCall } from "../api/codeAgent";
 import { toolIcon } from "./toolIcon";
+import { cn } from "../ui/cn";
 
+// The single meaningful bit of an args object, flattened + capped — the "gist"
+// shown on a collapsed row instead of the raw command wall.
 function shortArg(args: Record<string, unknown>): string {
   for (const key of ["path", "command", "query", "pattern", "url", "task", "code", "host", "action", "text"]) {
     const value = args[key];
     if (typeof value === "string" && value) {
       const flat = value.replace(/\s+/g, " ").trim();
-      return flat.length > 60 ? flat.slice(0, 60) + "…" : flat;
+      return flat.length > 72 ? flat.slice(0, 72) + "…" : flat;
     }
   }
   return "";
 }
 
 function plural(n: number): string {
-  const a = n % 10;
-  const b = n % 100;
+  const a = n % 10, b = n % 100;
   if (a === 1 && b !== 11) return "вызов инструмента";
   if (a >= 2 && a <= 4 && (b < 10 || b >= 20)) return "вызова инструментов";
   return "вызовов инструментов";
 }
 
+function errPlural(n: number): string {
+  const a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return "ошибка";
+  if (a >= 2 && a <= 4 && (b < 10 || b >= 20)) return "ошибки";
+  return "ошибок";
+}
+
+// `ok === false` is a real failure; undefined (older/streaming) stays green.
+function StatusDot({ ok }: { ok?: boolean }) {
+  return <span className={cn("h-[7px] w-[7px] shrink-0 rounded-full", ok === false ? "bg-danger" : "bg-success")} aria-hidden />;
+}
+
+type Run = { tool: string; items: { call: CodeAgentToolCall; idx: number }[] };
+
+function groupRuns(calls: CodeAgentToolCall[]): Run[] {
+  const runs: Run[] = [];
+  calls.forEach((call, idx) => {
+    const last = runs[runs.length - 1];
+    if (last && last.tool === call.tool) last.items.push({ call, idx });
+    else runs.push({ tool: call.tool, items: [{ call, idx }] });
+  });
+  return runs;
+}
+
 export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[]; activeTool?: string }) {
-  // Collapse big groups by default so they don't sprawl across the chat. The
-  // initializer runs once at mount: a live run that starts small stays expanded
-  // (you watch it grow), while a large/historical group mounts collapsed.
+  // Collapse big groups by default so they don't sprawl. A live run that starts
+  // small stays expanded (you watch it grow); a large/historical group mounts
+  // collapsed.
   const [open, setOpen] = useState(() => calls.length <= 5);
-  // While a run is active, keep the (height-capped) list scrolled to the latest
-  // call so progress stays visible without the group eating the whole screen.
   const scrollRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (open && activeTool && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [calls.length, activeTool, open]);
+
+  const counts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of calls) m.set(c.tool, (m.get(c.tool) ?? 0) + 1);
+    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  }, [calls]);
+  const errors = useMemo(() => calls.filter((c) => c.ok === false).length, [calls]);
+  const oks = calls.length - errors;
+  const runs = useMemo(() => groupRuns(calls), [calls]);
 
   if (calls.length === 0 && !activeTool) return null;
 
@@ -45,15 +78,29 @@ export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[
         onClick={() => setOpen((o) => !o)}
         className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[12.5px]"
       >
-        {open ? <ChevronDown size={13} className="text-mut" /> : <ChevronRight size={13} className="text-mut" />}
-        <span className="font-medium">{calls.length} {plural(calls.length)}</span>
-        <span className="flex-1 truncate font-mono text-[11px] text-mut">{calls.map((c) => c.tool).join(" · ")}</span>
+        {open ? <ChevronDown size={13} className="shrink-0 text-mut" /> : <ChevronRight size={13} className="shrink-0 text-mut" />}
+        <span className="shrink-0 font-medium">{calls.length} {plural(calls.length)}</span>
+        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          {counts.slice(0, 4).map(([tool, n]) => (
+            <span key={tool} className="rounded-md border border-line bg-card px-1.5 py-px font-mono text-[10.5px] text-t2">
+              {n}× {tool}
+            </span>
+          ))}
+          {counts.length > 4 && <span className="text-[10.5px] text-mut">+{counts.length - 4}</span>}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-2 text-[11.5px]">
+          {oks > 0 && <span className="text-success">{oks} ok</span>}
+          {errors > 0 && <span className="text-danger">{errors} {errPlural(errors)}</span>}
+        </span>
       </button>
       {open && (
         <div>
-          {/* Bounded + scrollable so a long list never sprawls down the chat. */}
           <div ref={scrollRef} className="max-h-[46vh] overflow-y-auto">
-            {calls.map((call, i) => <ToolRow key={i} call={call} />)}
+            {runs.map((run, ri) =>
+              run.items.length >= 3
+                ? <RunGroup key={ri} run={run} />
+                : run.items.map(({ call, idx }) => <ToolRow key={idx} call={call} />),
+            )}
           </div>
           {activeTool && (
             <div className="flex items-center gap-2.5 border-t border-line px-3.5 py-2.5 text-[12.5px] text-t2">
@@ -66,22 +113,59 @@ export function ToolCallGroup({ calls, activeTool }: { calls: CodeAgentToolCall[
   );
 }
 
-function ToolRow({ call }: { call: CodeAgentToolCall }) {
-  const [exp, setExp] = useState(false);
-  const Icon = toolIcon(call.tool);
+// A run of 3+ consecutive calls of the same tool, collapsed to one line by
+// default so a storm of run_bash/ssh_read doesn't sprawl. Expands to the rows.
+function RunGroup({ run }: { run: Run }) {
+  const [open, setOpen] = useState(false);
+  const Icon = toolIcon(run.tool);
+  const errs = run.items.filter((x) => x.call.ok === false).length;
   return (
     <div className="border-t border-line">
       <button
         type="button"
-        onClick={() => setExp((e) => !e)}
-        className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-[12.5px] hover:bg-hover"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] hover:bg-hover"
       >
+        {open ? <ChevronDown size={13} className="shrink-0 text-mut" /> : <ChevronRight size={13} className="shrink-0 text-mut" />}
         <span className="grid h-[23px] w-[23px] shrink-0 place-items-center rounded-md border border-line bg-surface text-t2">
           <Icon size={14} />
         </span>
-        <span className="flex-1 truncate">
-          <span className="font-medium">{call.tool}</span> <span className="text-t2">{shortArg(call.arguments)}</span>
+        <span className="font-medium">{run.tool}</span>
+        <span className="rounded border border-line bg-card px-1 text-[10.5px] text-mut">×{run.items.length}</span>
+        {errs > 0 ? <span className="text-[11.5px] text-danger">{errs} {errPlural(errs)}</span> : <StatusDot ok />}
+        <span className="ml-auto shrink-0 text-[11px] text-mut">{open ? "свернуть" : "развернуть"}</span>
+      </button>
+      {open && run.items.map(({ call, idx }) => <ToolRow key={idx} call={call} nested />)}
+    </div>
+  );
+}
+
+function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }) {
+  const [exp, setExp] = useState(false);
+  const Icon = toolIcon(call.tool);
+  const err = call.ok === false;
+  return (
+    <div
+      className="border-t border-line"
+      style={err ? { background: "color-mix(in srgb, var(--color-danger) 9%, transparent)" } : undefined}
+    >
+      <button
+        type="button"
+        onClick={() => setExp((e) => !e)}
+        className={cn(
+          "flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[12.5px] hover:bg-hover",
+          nested && "pl-9",
+        )}
+      >
+        <StatusDot ok={call.ok} />
+        <span className="grid h-[23px] w-[23px] shrink-0 place-items-center rounded-md border border-line bg-surface text-t2">
+          <Icon size={14} />
         </span>
+        <span className="min-w-0 flex-1 truncate">
+          <span className={cn("font-medium", err && "text-danger")}>{call.tool}</span>{" "}
+          <span className={cn("font-mono text-[11.5px]", err ? "text-danger" : "text-t2")}>{shortArg(call.arguments)}</span>
+        </span>
+        <ChevronRight size={13} className="ml-auto shrink-0 text-mut" />
       </button>
       {exp && call.result && (
         <pre className="mx-3.5 mb-3 max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-[#121216] p-3 font-mono text-[11.5px] text-t2">
