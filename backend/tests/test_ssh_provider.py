@@ -32,6 +32,12 @@ def _proc(returncode: int = 0, stdout: str = "", stderr: str = "") -> CompletedP
     return CompletedProcess(args=["ssh"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _bproc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") -> CompletedProcess:
+    """capture_output=True yields BYTES — the read/write cores and verifiers all
+    consume raw bytes, so their tests must mock bytes, not str."""
+    return CompletedProcess(args=["ssh"], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
 class SshProviderTestBase(unittest.TestCase):
     """Common setup: every test gets a fresh ELIRA_DATA_DIR + a
     reloaded ssh_acl module, so persistence is isolated."""
@@ -318,6 +324,72 @@ class SshRunPsTest(SshProviderTestBase):
         self.assertLessEqual(mock.call_args.kwargs["timeout"], 600)
 
 
+# ── high-level primitives: replace / assert / port_check ───────
+
+
+class SshPrimitivesTest(SshProviderTestBase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.ssh_acl.set_allowed_hosts(["prod-1"])
+
+    def test_replace_reads_edits_and_writes_back(self) -> None:
+        content = b"line1\r\nContent-Length: 5\r\nline3\r\n"
+        with patch("subprocess.run", side_effect=[_bproc(0, content), _bproc(0, b"")]) as mock:
+            r = self.ssh.tool_ssh_replace(host="prod-1", path="/f", old="Content-Length: 5\r\n", new="")
+        self.assertEqual(r["touched_path"], "/f")
+        self.assertIn("заменено 1", r["text"])
+        # the write got the EDITED bytes via stdin, and Content-Length is gone
+        write_input = mock.call_args_list[1].kwargs["input"]
+        self.assertNotIn(b"Content-Length", write_input)
+
+    def test_replace_noop_when_pattern_absent_makes_no_write(self) -> None:
+        with patch("subprocess.run", side_effect=[_bproc(0, b"nothing here")]) as mock:
+            r = self.ssh.tool_ssh_replace(host="prod-1", path="/f", old="ZZZ", new="Y")
+        self.assertNotIn("touched_path", r)
+        self.assertFalse(r["ok"])
+        self.assertEqual(mock.call_count, 1)  # read only, no write attempted
+
+    def test_replace_rejects_bad_host_without_subprocess(self) -> None:
+        with patch("subprocess.run") as mock:
+            r = self.ssh.tool_ssh_replace(host="evil", path="/f", old="a", new="b")
+        self.assertIn("ERROR", r["text"])
+        mock.assert_not_called()
+
+    def test_replace_rejects_empty_old(self) -> None:
+        r = self.ssh.tool_ssh_replace(host="prod-1", path="/f", old="", new="x")
+        self.assertIn("ERROR", r["text"])
+
+    def test_assert_contains_true_and_false(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"has Content-Length here")):
+            self.assertTrue(self.ssh.tool_ssh_assert_contains(host="prod-1", path="/f", pattern="Content-Length")["ok"])
+        with patch("subprocess.run", return_value=_bproc(0, b"clean")):
+            self.assertFalse(self.ssh.tool_ssh_assert_contains(host="prod-1", path="/f", pattern="Content-Length")["ok"])
+
+    def test_assert_not_contains_is_the_inverse(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"clean file")):
+            self.assertTrue(self.ssh.tool_ssh_assert_not_contains(host="prod-1", path="/f", pattern="Content-Length")["ok"])
+        with patch("subprocess.run", return_value=_bproc(0, b"has Content-Length")):
+            self.assertFalse(self.ssh.tool_ssh_assert_not_contains(host="prod-1", path="/f", pattern="Content-Length")["ok"])
+
+    def test_port_check_listening_and_not(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"LISTENING 127.0.0.1:18080 pid=4488")):
+            r = self.ssh.tool_ssh_port_check(host="prod-1", port=18080)
+        self.assertTrue(r["ok"])
+        with patch("subprocess.run", return_value=_bproc(0, b"NOT-LISTENING")):
+            r2 = self.ssh.tool_ssh_port_check(host="prod-1", port=18080)
+        self.assertFalse(r2["ok"])
+
+    def test_port_check_rejects_out_of_range(self) -> None:
+        r = self.ssh.tool_ssh_port_check(host="prod-1", port=99999)
+        self.assertIn("ERROR", r["text"])
+
+    def test_port_check_encodes_powershell_base64(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"NOT-LISTENING")) as mock:
+            self.ssh.tool_ssh_port_check(host="prod-1", port=18080)
+        cmd = mock.call_args[0][0][-1]
+        self.assertIn("-EncodedCommand", cmd)  # no raw quoting on the wire
+
+
 # ── ssh_list_hosts ─────────────────────────────────────────────
 
 
@@ -351,7 +423,10 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         provider = self.ssh.SshToolProvider()
         names = {s["function"]["name"] for s in provider.get_schemas()}
         self.assertEqual(
-            names, {"ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_list_hosts"}
+            names,
+            {"ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
+             "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
+             "ssh_list_hosts"},
         )
 
     def test_registry_skips_disabled_provider(self) -> None:

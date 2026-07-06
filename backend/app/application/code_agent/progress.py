@@ -28,13 +28,12 @@ from dataclasses import dataclass, field
 ACTION_TOOLS: frozenset[str] = frozenset(
     {"run_bash", "run_server", "ssh_run", "ssh_run_ps", "ssh_write", "ssh_replace"}
 )
-# Reading/searching tools whose FRESH output is genuine new knowledge → progress
-# (so "go read the real file" is rewarded, not punished).
+# Reading/searching/verifier tools whose FRESH output is genuine new knowledge →
+# progress (so "go read the real file / run the verifier" is rewarded, not punished).
 INVESTIGATION_TOOLS: frozenset[str] = frozenset(
     {"read_file", "glob", "grep", "project_map", "recall",
      "web_search", "web_fetch", "http_api", "ssh_read",
-     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-     "ssh_process_find", "http_check"}
+     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"}
 )
 
 # Budgets (see docs/AGENT_RUNTIME_PLAN.md Phase 4). A strategy_key that produces
@@ -143,8 +142,7 @@ def strategy_target(name: str, args: dict) -> str:
     it forms the strategy_key, so 'edit file X two ways' and 'edit file Y' don't
     share a budget."""
     if name in ("ssh_run", "ssh_run_ps", "ssh_read", "ssh_write", "ssh_replace",
-                "ssh_port_check", "ssh_process_find", "ssh_assert_contains",
-                "ssh_assert_not_contains"):
+                "ssh_port_check", "ssh_assert_contains", "ssh_assert_not_contains"):
         # remote work keys on host:path when a path is present, else host
         host = _first_str(args, "host")
         path = _first_str(args, "path")

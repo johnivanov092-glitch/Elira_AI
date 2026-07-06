@@ -147,6 +147,54 @@ def _windows_read_encoded(path: str, limit: int) -> str:
     return f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
 
 
+# Shared read/write cores — used by ssh_read/ssh_write AND the higher-level
+# primitives (ssh_replace/ssh_assert_*), so the Windows byte-read fallback and the
+# stdin-write (no body escaping) live in ONE place, not copied per tool.
+
+
+def _read_remote_bytes(host: str, path: str, limit: int) -> tuple[bytes | None, str | None]:
+    """Fetch up to `limit` bytes of a remote file. Returns (bytes, None) or
+    (None, error). Auto-falls back to a base64 PowerShell byte-read on Windows
+    remotes (cmd.exe has no `head`)."""
+    remote_cmd = f"head -c {limit} -- {_shell_quote(path)}"
+    try:
+        proc = subprocess.run([*_ssh_args(host), remote_cmd], capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return None, f"ssh {host} read timed out"
+    except FileNotFoundError:
+        return None, "`ssh` binary not found on this machine"
+    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
+        try:
+            proc = subprocess.run(
+                [*_ssh_args(host), _windows_read_encoded(path, limit)],
+                capture_output=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return None, f"ssh {host} read timed out"
+    if proc.returncode != 0:
+        return None, f"remote read failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"
+    return proc.stdout or b"", None
+
+
+def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = False) -> str | None:
+    """Write raw bytes to a remote file via stdin (`cat > path`) — the body never
+    touches shell parsing, only the path is quoted. Returns None on success or an
+    error string."""
+    op = ">>" if append else ">"
+    remote_cmd = f"cat {op} {_shell_quote(path)}"
+    try:
+        proc = subprocess.run(
+            [*_ssh_args(host), remote_cmd], input=data, capture_output=True, timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return f"ssh {host} write timed out"
+    except FileNotFoundError:
+        return "`ssh` binary not found on this machine"
+    if proc.returncode != 0:
+        return f"remote write failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"
+    return None
+
+
 def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict[str, Any]:
     """Read a remote file by SSHing in and `cat`ing it. Capped at
     100KB by default — pipe a larger file through head/tail/grep on
@@ -158,37 +206,9 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
         return {"text": "ERROR: path is empty"}
 
     cap = max(100, min(int(max_chars) if max_chars else _MAX_READ_BYTES, _MAX_READ_BYTES))
-    # `head -c N` is a safe way to bound the wire transfer
-    remote_cmd = f"head -c {cap + 1} -- {_shell_quote(path)}"
-    try:
-        proc = subprocess.run(
-            [*_ssh_args(host), remote_cmd],
-            capture_output=True,  # bytes → decode_console
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} read timed out"}
-    except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine"}
-
-    # Windows remote: cmd.exe has no `head`, so the POSIX read above fails with a
-    # 'not recognized' error. Retry with a PowerShell byte-read (base64-encoded so
-    # no quote/pipe mangling), bounded to the same cap on the remote side. Without
-    # this, ssh_read is unusable on Windows hosts and the agent loops on the error.
-    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
-        try:
-            proc = subprocess.run(
-                [*_ssh_args(host), _windows_read_encoded(path, cap + 1)],
-                capture_output=True,
-                timeout=30,
-            )
-        except subprocess.TimeoutExpired:
-            return {"text": f"ERROR: ssh {host} read timed out"}
-
-    if proc.returncode != 0:
-        return {"text": f"ERROR: remote read failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"}
-
-    raw = proc.stdout or b""          # `head -c` / PS byte-read bounds the transfer
+    raw, rerr = _read_remote_bytes(host, path, cap + 1)  # +1 to detect truncation
+    if rerr is not None:
+        return {"text": f"ERROR: {rerr}"}
     truncated = len(raw) > cap
     body = decode_console(raw[:cap] if truncated else raw)
     head = f"[ssh:{host}:{path}]"
@@ -216,28 +236,139 @@ def tool_ssh_write(*, host: str, path: str, content: str, append: bool = False) 
     if len(content) > _MAX_WRITE_BYTES:
         return {"text": f"ERROR: content exceeds {_MAX_WRITE_BYTES} bytes (got {len(content)})"}
 
-    op = ">>" if append else ">"
-    remote_cmd = f"cat {op} {_shell_quote(path)}"
-    try:
-        proc = subprocess.run(
-            [*_ssh_args(host), remote_cmd],
-            input=content.encode("utf-8"),  # bytes in / bytes out (no text=True)
-            capture_output=True,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} write timed out"}
-    except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine"}
-
-    if proc.returncode != 0:
-        return {"text": f"ERROR: remote write failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"}
-
+    werr = _write_remote_bytes(host, path, content.encode("utf-8"), append=append)
+    if werr is not None:
+        return {"text": f"ERROR: {werr}"}
     verb = "Appended to" if append else "Wrote"
     return {
         "text": f"{verb} ssh:{host}:{path} ({len(content)} chars)",
         "touched_host": host,
         "touched_path": path,
+    }
+
+
+def tool_ssh_replace(*, host: str, path: str, old: str, new: str) -> dict[str, Any]:
+    """Replace every literal occurrence of `old` with `new` in a remote file — the
+    high-level primitive that removes the need to hand-build read/filter/write
+    PowerShell over ssh. Reads via the safe byte-read, edits locally, writes back
+    via stdin (no escaping). `touched_path` is set only when the file actually
+    changed, so a no-op (pattern absent) reads as no-progress, not success."""
+    err = _validate_host(host)
+    if err is not None:
+        return {"text": f"ERROR: {err}"}
+    if not isinstance(path, str) or not path.strip():
+        return {"text": "ERROR: path is empty"}
+    if not isinstance(old, str) or old == "":
+        return {"text": "ERROR: `old` must be a non-empty string"}
+    if not isinstance(new, str):
+        return {"text": "ERROR: `new` must be a string"}
+
+    raw, rerr = _read_remote_bytes(host, path, _MAX_READ_BYTES + 1)
+    if rerr is not None:
+        return {"text": f"ERROR: {rerr}"}
+    if len(raw) > _MAX_READ_BYTES:
+        return {"text": f"ERROR: file too large to edit safely (> {_MAX_READ_BYTES} bytes) — narrow it first"}
+    # surrogateescape round-trips arbitrary bytes losslessly, so untouched content
+    # keeps its exact encoding; only `old`→`new` is applied as UTF-8.
+    text = raw.decode("utf-8", errors="surrogateescape")
+    count = text.count(old)
+    if count == 0:
+        return {
+            "text": f"ssh_replace {host}:{path}: подстрока «{old[:60]}» НЕ найдена — файл не изменён.",
+            "ok": False,
+        }
+    new_bytes = text.replace(old, new).encode("utf-8", errors="surrogateescape")
+    werr = _write_remote_bytes(host, path, new_bytes)
+    if werr is not None:
+        return {"text": f"ERROR: {werr}"}
+    return {
+        "text": f"ssh_replace {host}:{path}: заменено {count}× «{old[:40]}» → «{new[:40]}».",
+        "touched_host": host,
+        "touched_path": path,
+    }
+
+
+def _ssh_assert(host: str, path: str, pattern: str, *, want: bool) -> dict[str, Any]:
+    err = _validate_host(host)
+    if err is not None:
+        return {"text": f"ERROR: {err}"}
+    if not isinstance(path, str) or not path.strip():
+        return {"text": "ERROR: path is empty"}
+    if not isinstance(pattern, str) or pattern == "":
+        return {"text": "ERROR: `pattern` must be a non-empty string"}
+    raw, rerr = _read_remote_bytes(host, path, _MAX_READ_BYTES + 1)
+    if rerr is not None:
+        return {"text": f"ERROR: {rerr}"}
+    present = pattern in decode_console(raw)
+    ok = present is want
+    verdict = "НАЙДЕНО" if present else "НЕ НАЙДЕНО"
+    kind = "contains" if want else "not_contains"
+    return {
+        "text": f"ssh_assert_{kind} {host}:{path} «{pattern[:60]}»: {verdict} → {'OK' if ok else 'FAIL'}",
+        "ok": ok,
+        "touched_host": host,
+    }
+
+
+def tool_ssh_assert_contains(*, host: str, path: str, pattern: str) -> dict[str, Any]:
+    """Verifier: assert a remote file CONTAINS `pattern`. Returns ok=True/False —
+    a real success criterion, not raw output the model has to eyeball."""
+    return _ssh_assert(host, path, pattern, want=True)
+
+
+def tool_ssh_assert_not_contains(*, host: str, path: str, pattern: str) -> dict[str, Any]:
+    """Verifier: assert a remote file does NOT contain `pattern` (e.g. proving a
+    line was removed). Returns ok=True/False."""
+    return _ssh_assert(host, path, pattern, want=False)
+
+
+def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
+    """Verifier: is `port` LISTENING on the remote host? Windows-first (PowerShell
+    Get-NetTCPConnection via base64, no quoting), with a POSIX `ss`/`netstat`
+    fallback. Returns ok=True when the port is listening, with the owning pid as
+    evidence."""
+    err = _validate_host(host)
+    if err is not None:
+        return {"text": f"ERROR: {err}"}
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        return {"text": "ERROR: `port` must be an integer"}
+    if not (1 <= p <= 65535):
+        return {"text": "ERROR: `port` out of range (1–65535)"}
+
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"$c=Get-NetTCPConnection -State Listen -LocalPort {p};"
+        "if($c){$c|ForEach-Object{'LISTENING '+$_.LocalAddress+':'+$_.LocalPort+' pid='+$_.OwningProcess}}"
+        "else{'NOT-LISTENING'}"
+    )
+    b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
+    try:
+        proc = subprocess.run([*_ssh_args(host), win_cmd], capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return {"text": f"ERROR: ssh {host} port check timed out"}
+    except FileNotFoundError:
+        return {"text": "ERROR: `ssh` binary not found on this machine"}
+    out = decode_console(proc.stdout)
+    # PowerShell missing (POSIX remote) → fall back to ss/netstat.
+    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
+        posix = f"ss -ltn 2>/dev/null | grep -w ':{p}' || netstat -ltn 2>/dev/null | grep -w ':{p}'"
+        try:
+            proc = subprocess.run([*_ssh_args(host), posix], capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return {"text": f"ERROR: ssh {host} port check timed out"}
+        out = decode_console(proc.stdout)
+        listening = bool(out.strip())
+    else:
+        # "NOT-LISTENING" contains "LISTENING" as a substring — check for the
+        # negative sentinel first so a not-listening port isn't read as listening.
+        listening = "NOT-LISTENING" not in out and "LISTENING" in out
+    return {
+        "text": f"ssh_port_check {host}:{p}: {'LISTENING' if listening else 'НЕ слушает'}\n{_truncate_for_llm(out.rstrip())}",
+        "ok": listening,
+        "touched_host": host,
     }
 
 
@@ -404,6 +535,85 @@ def _schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "ssh_replace",
+                "description": (
+                    "Replace every literal occurrence of `old` with `new` in a "
+                    "remote file. High-level edit primitive — use this instead of "
+                    "hand-building Get-Content|Where-Object|Set-Content over ssh. "
+                    "No-op (pattern absent) is reported, not a silent success."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "path": {"type": "string"},
+                        "old": {"type": "string", "description": "Literal substring to remove/replace."},
+                        "new": {"type": "string", "description": "Replacement (use \"\" to delete `old`)."},
+                    },
+                    "required": ["host", "path", "old", "new"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ssh_assert_contains",
+                "description": (
+                    "Verifier: assert a remote file CONTAINS a substring. Returns "
+                    "ok=true/false — a real pass/fail check, not raw text to eyeball."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "path": {"type": "string"},
+                        "pattern": {"type": "string"},
+                    },
+                    "required": ["host", "path", "pattern"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ssh_assert_not_contains",
+                "description": (
+                    "Verifier: assert a remote file does NOT contain a substring "
+                    "(e.g. proving a line was removed). Returns ok=true/false."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "path": {"type": "string"},
+                        "pattern": {"type": "string"},
+                    },
+                    "required": ["host", "path", "pattern"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ssh_port_check",
+                "description": (
+                    "Verifier: is a TCP port LISTENING on the remote host? "
+                    "Returns ok=true with the owning pid as evidence. Windows and "
+                    "POSIX remotes both handled."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "port": {"type": "integer"},
+                    },
+                    "required": ["host", "port"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "ssh_list_hosts",
                 "description": (
                     "Return the list of hosts the user has whitelisted for "
@@ -421,6 +631,10 @@ _DISPATCH = {
     "ssh_read": tool_ssh_read,
     "ssh_write": tool_ssh_write,
     "ssh_run_ps": tool_ssh_run_ps,
+    "ssh_replace": tool_ssh_replace,
+    "ssh_assert_contains": tool_ssh_assert_contains,
+    "ssh_assert_not_contains": tool_ssh_assert_not_contains,
+    "ssh_port_check": tool_ssh_port_check,
     "ssh_list_hosts": lambda **_: tool_ssh_list_hosts(),
 }
 

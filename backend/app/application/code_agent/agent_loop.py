@@ -207,7 +207,10 @@ _LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user", 
 # model reaches ssh_run/ssh_write/ssh_run_ps directly instead of drowning in raw
 # `ssh host "…"` through run_bash. Activated by intent (task mentions ssh / an
 # allowlisted host) so non-SSH runs — and the prompt canaries — pay zero tokens.
-_SSH_ACTIVATABLE_TOOLS = ("ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_list_hosts")
+_SSH_ACTIVATABLE_TOOLS = (
+    "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
+    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_list_hosts",
+)
 # Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
 # button, plus common free-text yes-words). Anything else = deny.
 _SSH_APPROVE_WORDS = frozenset({"одобрить", "approve", "yes", "да", "allow", "ok", "разрешить"})
