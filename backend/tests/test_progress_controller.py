@@ -121,6 +121,24 @@ class ProgressHelperTest(unittest.TestCase):
             fact=None, seen_fact_shapes=set(),
         ))
 
+    def test_remote_command_fresh_fact_is_progress_repeat_is_not(self) -> None:
+        seen: set[str] = set()
+        fact = (
+            "ssh_run(home-srv01): exit=0 STDOUT: "
+            "AgentLab service started PID 7684 WARNING: Port 18080 not found"
+        )
+        self.assertTrue(step_made_progress(
+            name="ssh_run", tool_meta={"text": "exit=0"}, fact=fact, seen_fact_shapes=seen,
+        ))
+        self.assertFalse(step_made_progress(
+            name="ssh_run", tool_meta={"text": "exit=0"}, fact=fact, seen_fact_shapes=seen,
+        ))
+
+        ps_fact = "ssh_run_ps(home-srv01): exit=0 STDOUT: start.ps1 header"
+        self.assertTrue(step_made_progress(
+            name="ssh_run_ps", tool_meta={"text": "exit=0"}, fact=ps_fact, seen_fact_shapes=seen,
+        ))
+
     def test_fact_shape_collapses_changing_numbers(self) -> None:
         a = _fact_shape("run_bash(netstat): TCP 127.0.0.1:18080 LISTENING 4488")
         b = _fact_shape("run_bash(netstat): TCP 127.0.0.1:18080 LISTENING 7488")
@@ -189,6 +207,50 @@ class StrategyRouterTest(unittest.TestCase):
         # a real change → the method is re-armed, exhaustion cleared.
         v = ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ok", "touched_path": "/f"}, fact=None)
         self.assertEqual(v.status, "progress")
+        self.assertEqual(ev.exhausted_summary(), [])
+
+    def test_remote_verify_facts_do_not_exhaust_host_strategies(self) -> None:
+        ev = ProgressEvaluator()
+        write = ev.evaluate(
+            name="ssh_write",
+            args={"host": "home-srv01", "path": "C:/AgentLab/start.ps1", "content": "x"},
+            tool_meta={"text": "Wrote", "touched_path": "ssh:home-srv01:C:/AgentLab/start.ps1"},
+            fact="ssh_write(C:/AgentLab/start.ps1): Wrote",
+        )
+        self.assertEqual(write.status, "progress")
+
+        ps_check = ev.evaluate(
+            name="ssh_run_ps",
+            args={"host": "home-srv01", "script": "Get-Content C:\\AgentLab\\start.ps1"},
+            tool_meta={"text": "exit=0\nSTDOUT: header"},
+            fact="ssh_run_ps(home-srv01): exit=0 STDOUT: header",
+        )
+        self.assertEqual(ps_check.status, "progress")
+        self.assertFalse(ps_check.should_stop)
+
+        start = ev.evaluate(
+            name="ssh_run",
+            args={
+                "host": "home-srv01",
+                "command": (
+                    "powershell.exe -NoProfile -ExecutionPolicy Bypass "
+                    "-File \"C:\\AgentLab\\start.ps1\""
+                ),
+            },
+            tool_meta={
+                "text": (
+                    "exit=0\nSTDOUT: AgentLab service started PID 7684\n"
+                    "WARNING: Port 18080 not found"
+                )
+            },
+            fact=(
+                "ssh_run(home-srv01): exit=0 STDOUT: AgentLab service started "
+                "PID 7684 WARNING: Port 18080 not found"
+            ),
+        )
+        self.assertEqual(start.status, "progress")
+        self.assertFalse(start.should_stop)
+        self.assertEqual(ev.consecutive_no_progress, 0)
         self.assertEqual(ev.exhausted_summary(), [])
 
     def test_tool_host_budget_stops_a_stuck_host(self) -> None:

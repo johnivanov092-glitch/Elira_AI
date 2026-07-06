@@ -703,11 +703,10 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
-        # TaskSpec verifier gate (Phase 6): fire once, on finalize, if the task has
-        # explicit success criteria that no verifier confirmed — "done by verifier,
-        # not by the model's word". criteria_confirmed flips when a verifier tool
-        # (ssh_assert_*/ssh_port_check) returns ok.
-        taskspec_gate_fired = False
+        # TaskSpec verifier state (Phase 6): criteria_confirmed flips when a
+        # verifier tool (ssh_assert_*/ssh_port_check) returns ok. We do NOT burn
+        # an extra LLM turn just to remind the model; unconfirmed criteria are
+        # reported deterministically at finalization.
         criteria_confirmed = False
         # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
         # loop RUNS that command on finalize-after-edits and refuses to close
@@ -768,9 +767,13 @@ def _stream_code_agent_core(
                 return
 
             if time.monotonic() >= deadline:
-                final_text = _wrap_up_text(
-                    chat, model, safe_num_ctx, messages, call_log,
-                    f"таймаут {execution_seconds}s",
+                final_text = _deterministic_stop_summary(
+                    f"timeout {execution_seconds}s",
+                    call_log,
+                    touched_files,
+                    established_facts,
+                    exhausted_strategies=progress.exhausted_summary(),
+                    next_step=progress.next_step_hint(),
                 )
                 yield {"type": "final_response", "step": step, "text": final_text}
                 yield {
@@ -1097,37 +1100,9 @@ def _stream_code_agent_core(
                             ),
                         })
                         continue
-                # TaskSpec verifier gate (Phase 6): the task has explicit success
-                # criteria, the run edited something, and NO verifier confirmed a
-                # criterion. Nudge ONCE to prove each with a verifier (or note it
-                # honestly) — "done by verifier, not by the model's word". Soft,
-                # once; supersedes the generic gate below when criteria exist.
-                if (
-                    task_spec is not None
-                    and task_spec.success_criteria
-                    and edited_in_run
-                    and not criteria_confirmed
-                    and not taskspec_gate_fired
-                ):
-                    taskspec_gate_fired = True
-                    verify_gate_fired = True  # don't also fire the generic gate
-                    if content:
-                        messages.append({"role": "assistant", "content": content})
-                    _crit = "\n".join(f"- {c}" for c in task_spec.success_criteria[:8])
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Перед завершением: подтверди критерии готовности "
-                            "verifier'ом (ssh_assert_contains / ssh_assert_not_contains "
-                            "/ ssh_port_check, либо прогони тест через run_bash) — НЕ "
-                            f"словами:\n{_crit}\nЧто verifier подтвердил — закрывай; что "
-                            "подтвердить не удаётся — отметь честно как «не "
-                            "подтверждено» и всё равно дай финальный ответ. Не "
-                            "останавливайся на полпути и не заявляй «готово» только по "
-                            "факту записи файлов — проверь и заверши."
-                        ),
-                    })
-                    continue
+                # TaskSpec does not inject an extra "prove it" user turn here.
+                # If no verifier confirmed the criteria, finalization below will
+                # mark that deterministically instead of spending another model call.
                 # Soft verification gate (Variant 2): the model edited files this
                 # run but never ran tests/lint or started the app, and is now
                 # trying to close. Nudge it once to verify before finishing —
@@ -1237,6 +1212,18 @@ def _stream_code_agent_core(
                         })
                         continue
                 final_text = _strip_tool_call_markup(content or last_text)
+                if (
+                    task_spec is not None
+                    and task_spec.success_criteria
+                    and edited_in_run
+                    and not criteria_confirmed
+                ):
+                    _crit = "\n".join(f"- {c}" for c in task_spec.success_criteria[:8])
+                    final_text = (
+                        final_text.rstrip()
+                        + "\n\nПроверка готовности: критерии не подтверждены verifier'ом.\n"
+                        + _crit
+                    )
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to
                 # Elira's reply. Fail-safe — never breaks the run.
@@ -1302,9 +1289,13 @@ def _stream_code_agent_core(
 
             for call in tool_calls:
                 if time.monotonic() >= deadline:
-                    final_text = _wrap_up_text(
-                        chat, model, safe_num_ctx, messages, call_log,
-                        f"таймаут {execution_seconds}s",
+                    final_text = _deterministic_stop_summary(
+                        f"timeout {execution_seconds}s",
+                        call_log,
+                        touched_files,
+                        established_facts,
+                        exhausted_strategies=progress.exhausted_summary(),
+                        next_step=progress.next_step_hint(),
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {

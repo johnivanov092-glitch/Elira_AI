@@ -32,7 +32,7 @@ ACTION_TOOLS: frozenset[str] = frozenset(
 # progress (so "go read the real file / run the verifier" is rewarded, not punished).
 INVESTIGATION_TOOLS: frozenset[str] = frozenset(
     {"read_file", "glob", "grep", "project_map", "recall",
-     "web_search", "web_fetch", "http_api", "ssh_read",
+     "web_search", "web_fetch", "http_api", "ssh_run", "ssh_run_ps", "ssh_read",
      "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"}
 )
 

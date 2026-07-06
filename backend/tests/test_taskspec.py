@@ -118,9 +118,10 @@ class VerifierGateTest(unittest.TestCase):
         for rid in ("ts-gate", "ts-confirmed"):
             deferred_tools.clear_run(rid)
 
-    def test_gate_nudges_once_when_criteria_unconfirmed(self):
-        # Model edits a file then tries to close WITHOUT any verifier → the gate
-        # injects a "prove the criteria" nudge; on the next turn it finalizes.
+    def test_unconfirmed_criteria_finalize_without_extra_llm_turn(self):
+        # Model edits a file then tries to close WITHOUT any verifier. Runtime must
+        # not burn another LLM turn for a reminder; it finalizes and marks the
+        # criteria as unconfirmed deterministically.
         chat = _SeqChat([_call("write_file", path="a.ps1", content="x"), _final("сделал")], _final("готово"))
         with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
              patch.object(agent_loop, "_kernel_exec",
@@ -133,8 +134,9 @@ class VerifierGateTest(unittest.TestCase):
         self.assertEqual(done["stop_reason"], "answer")
         self.assertIsNotNone(done.get("task_spec"))          # spec carried to the UI
         self.assertFalse(done.get("criteria_confirmed"))     # никакой verifier не прошёл
-        # the run took an extra turn because the gate fired (edit → nudge → finalize)
-        self.assertGreaterEqual(len([e for e in evs if e.get("type") == "step_started"]), 3)
+        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 2)
+        final = [e for e in evs if e.get("type") == "final_response"][-1]
+        self.assertIn("критерии не подтверждены verifier", final["text"])
 
     def test_passing_verifier_marks_criteria_confirmed(self):
         # A passing ssh_assert_not_contains confirms a criterion → done flags it.
