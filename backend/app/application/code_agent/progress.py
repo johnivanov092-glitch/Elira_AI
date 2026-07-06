@@ -44,6 +44,13 @@ INVESTIGATION_TOOLS: frozenset[str] = frozenset(
 STRATEGY_ATTEMPT_LIMIT = 2
 FAMILIES_PER_TARGET_LIMIT = 2
 GLOBAL_NO_PROGRESS_CAP = 10
+# A single remote host that eats N no-progress "doing" calls (even across
+# different command families) is a stuck host — stop rather than keep poking it.
+TOOL_HOST_ATTEMPT_LIMIT = 5
+# Soft turn-volume nudge: past this many tool calls, remind the model to converge
+# (a real cap, but a nudge — productive runs keep going; the no-progress budgets
+# above do the actual stopping). Applied in the loop against tool_round_trips.
+TURN_TOOL_CALL_SOFT_NUDGE = 25
 
 
 def _fact_shape(fact: str) -> str:
@@ -191,6 +198,8 @@ class ProgressEvaluator:
     strategy_no_progress: dict[str, int] = field(default_factory=dict)
     exhausted: set[str] = field(default_factory=set)
     target_families: dict[str, set[str]] = field(default_factory=dict)
+    tool_host_no_progress: dict[str, int] = field(default_factory=dict)
+    last_exhausted_family: str | None = None
     progress_events: int = 0
     no_progress_total: int = 0
 
@@ -198,18 +207,22 @@ class ProgressEvaluator:
         family = strategy_family(name, args)
         target = strategy_target(name, args)
         key = f"{family}@{target}"
+        host = args.get("host") if isinstance(args.get("host"), str) else ""
+        th_key = f"{name}@{host}" if host and name.startswith("ssh") else None
 
         if step_made_progress(
             name=name, tool_meta=tool_meta, fact=fact, seen_fact_shapes=self.seen_fact_shapes,
         ):
             self.progress_events += 1
-            # Movement re-arms this method: clear its no-progress count and let the
-            # family be tried again if needed.
+            # Movement re-arms this method: clear its no-progress counts and let the
+            # family / host be tried again if needed.
             self.strategy_no_progress[key] = 0
             self.exhausted.discard(key)
             fams = self.target_families.get(target)
             if fams:
                 fams.discard(family)
+            if th_key:
+                self.tool_host_no_progress[th_key] = 0
             return ProgressVerdict("progress", key, family, target, exhausted=False, should_stop=False)
 
         # No progress. Only THROTTLE "doing" tools — a read that returned nothing
@@ -223,12 +236,18 @@ class ProgressEvaluator:
         just_exhausted = n >= STRATEGY_ATTEMPT_LIMIT and key not in self.exhausted
         if just_exhausted:
             self.exhausted.add(key)
+            self.last_exhausted_family = family
             self.target_families.setdefault(target, set()).add(family)
+        th_n = 0
+        if th_key:
+            self.tool_host_no_progress[th_key] = self.tool_host_no_progress.get(th_key, 0) + 1
+            th_n = self.tool_host_no_progress[th_key]
 
         fams_for_target = len(self.target_families.get(target, ()))
         should_stop = (
             fams_for_target >= FAMILIES_PER_TARGET_LIMIT
             or self.no_progress_total >= GLOBAL_NO_PROGRESS_CAP
+            or th_n >= TOOL_HOST_ATTEMPT_LIMIT
         )
         redirect = None
         stop_detail = None
@@ -238,6 +257,8 @@ class ProgressEvaluator:
                     f"исчерпаны {fams_for_target} стратегии для «{target or 'цели'}» "
                     f"({', '.join(sorted(self.target_families.get(target, ())))}) — прогресса нет"
                 )
+            elif th_n >= TOOL_HOST_ATTEMPT_LIMIT:
+                stop_detail = f"{th_n} неудачных {name} к «{host}» подряд — хост не двигается"
             else:
                 stop_detail = f"{self.no_progress_total} действий подряд без сдвига состояния"
         elif key in self.exhausted:
@@ -255,3 +276,10 @@ class ProgressEvaluator:
     def exhausted_summary(self) -> list[str]:
         """Exhausted strategy_keys, for the deterministic final report."""
         return sorted(self.exhausted)
+
+    def next_step_hint(self) -> str:
+        """A safe next step for the final report — derived from the last method that
+        got stuck, so 'what to try next' is concrete, not boilerplate."""
+        if self.last_exhausted_family:
+            return _suggest_alternatives(self.last_exhausted_family)
+        return "уточни путь или спроси пользователя (ask_user), затем продолжи следующим сообщением"

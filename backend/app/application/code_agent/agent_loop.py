@@ -29,7 +29,7 @@ from app.application.tool_providers import (
     build_lsp_providers,
     build_mcp_providers,
 )
-from app.application.code_agent.progress import ProgressEvaluator
+from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
     ToolExecutionRequest,
@@ -739,6 +739,7 @@ def _stream_code_agent_core(
         # on exhaustion, and stops honestly only when families/budget are spent.
         progress = ProgressEvaluator()
         touched_files: list[str] = []  # every file the run mutated (for the report)
+        volume_nudge_fired = False     # one "converge, you're deep into the turn" nudge
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -1286,6 +1287,7 @@ def _stream_code_agent_core(
                         f"повтор одного и того же вызова: {name}",
                         call_log, touched_files, established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
+                        next_step=progress.next_step_hint(),
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -1314,6 +1316,7 @@ def _stream_code_agent_core(
                         f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",
                         call_log, touched_files, established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
+                        next_step=progress.next_step_hint(),
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -1807,6 +1810,14 @@ def _stream_code_agent_core(
                 # switch families. Injected once per exhaustion; movement re-arms it.
                 if verdict.redirect and not verdict.should_stop:
                     _tool_content += f"\n\n[strategy] {verdict.redirect}"
+                # Turn-volume nudge (SOFT, once): deep into the turn — converge.
+                if not volume_nudge_fired and tool_round_trips >= TURN_TOOL_CALL_SOFT_NUDGE:
+                    volume_nudge_fired = True
+                    _tool_content += (
+                        f"\n\n[budget] Уже {tool_round_trips} вызовов инструментов за ход. "
+                        "Если близко к цели — заканчивай и дай финальный ответ; если нет — "
+                        "смени подход, не накручивай вызовы."
+                    )
                 messages.append({
                     "role": "tool",
                     "content": _tool_content,
@@ -1825,6 +1836,7 @@ def _stream_code_agent_core(
                         f"нет прогресса — {verdict.stop_detail}",
                         call_log, touched_files, established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
+                        next_step=progress.next_step_hint(),
                     )
                     yield {"type": "final_response", "step": step, "text": _det}
                     yield {

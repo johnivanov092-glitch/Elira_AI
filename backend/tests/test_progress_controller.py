@@ -115,16 +115,20 @@ class ProgressHelperTest(unittest.TestCase):
         b = _fact_shape("run_bash(netstat): TCP 127.0.0.1:18080 LISTENING 7488")
         self.assertEqual(a, b)  # only the PID changed → same shape, not new knowledge
 
-    def test_deterministic_summary_reports_no_files_and_facts(self) -> None:
+    def test_deterministic_summary_is_a_structured_incomplete_report(self) -> None:
         out = _deterministic_stop_summary(
             "нет прогресса", ["run_bash(a) ok", "run_bash(b) ok"], [], ["read_file(x): hi"],
             exhausted_strategies=["remote_ps@h", "remote_edit:ssh_write@h:/f"],
+            next_step="ssh_replace / ssh_write",
         )
-        self.assertIn("Файлы НЕ изменены", out)
-        self.assertIn("2", out)  # call count
-        self.assertIn("read_file(x)", out)  # facts carried
-        self.assertIn("remote_ps@h", out)  # exhausted strategies named
-        self.assertIn("детерминированный", out)
+        self.assertIn("Не завершено", out)
+        self.assertIn("Файлы не изменены", out)
+        self.assertIn("2", out)                       # call count
+        self.assertIn("read_file(x)", out)            # facts carried
+        self.assertIn("remote_ps@h", out)             # exhausted strategies named
+        self.assertIn("Следующий безопасный шаг", out)
+        self.assertIn("ssh_replace / ssh_write", out)  # concrete next step
+        self.assertIn("Детерминированный", out)
 
 
 # ── strategy router (the core) ──────────────────────────────────
@@ -175,6 +179,26 @@ class StrategyRouterTest(unittest.TestCase):
         v = ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ok", "touched_path": "/f"}, fact=None)
         self.assertEqual(v.status, "progress")
         self.assertEqual(ev.exhausted_summary(), [])
+
+    def test_tool_host_budget_stops_a_stuck_host(self) -> None:
+        # A host that eats 5 failing ssh_run calls (one family) stops via the
+        # per-(tool,host) budget even though only ONE family is involved.
+        ev = ProgressEvaluator()
+        v = None
+        for i in range(5):
+            v = ev.evaluate(
+                name="ssh_run", args={"host": "h", "command": f"netstat {i}"},
+                tool_meta={"text": "exit=1"}, fact=None,
+            )
+        self.assertTrue(v.should_stop)
+        self.assertIn("h", v.stop_detail)
+
+    def test_next_step_hint_names_a_concrete_alternative(self) -> None:
+        ev = ProgressEvaluator()
+        a = {"host": "h", "path": "/f", "content": "x"}
+        ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR"}, fact=None)
+        ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR"}, fact=None)  # exhausted
+        self.assertIn("ssh_replace", ev.next_step_hint())
 
 
 # ── loop-level: no_progress stop ────────────────────────────────
@@ -244,9 +268,10 @@ class NoProgressLoopTest(unittest.TestCase):
         self.assertEqual(done["stop_reason"], "no_progress")
         self.assertIn("no verified progress", str(done.get("error")))
         self.assertLessEqual(done["steps"], GLOBAL_NO_PROGRESS_CAP + 1)
-        # Deterministic (not model-authored) closing summary.
+        # Deterministic (not model-authored) closing report.
         final = [e for e in evs if e.get("type") == "final_response"][-1]
-        self.assertIn("Файлы НЕ изменены", final["text"])
+        self.assertIn("Не завершено", final["text"])
+        self.assertIn("Файлы не изменены", final["text"])
 
     def test_calls_that_change_files_never_trip(self):
         # Every call reports a touched_path → real progress → streak resets, so a

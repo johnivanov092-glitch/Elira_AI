@@ -484,28 +484,44 @@ def _deterministic_stop_summary(
     established_facts: list[str],
     *,
     exhausted_strategies: list[str] | None = None,
+    next_step: str | None = None,
 ) -> str:
-    """Facts-from-the-journal summary for a controller-forced stop (loop / no
-    progress). Built deterministically from what ACTUALLY happened — never a model
-    retelling — so a stuck run can't confabulate success. LLM prose (if any) is
-    layered AFTER this as optional narrative, not as the source of truth."""
-    lines = [
-        f"⛔ Прогон остановлен контроллером: {reason}.",
-        f"Вызовов инструментов: {len(call_log)}.",
-    ]
+    """Engineering report for a controller-forced stop (loop / no progress). Built
+    deterministically from what ACTUALLY happened — never a retelling by the stuck
+    model — so it can't confabulate success. Structured as an incomplete-work
+    report (done / not done / why / next), the way a normal runtime closes a run.
+    LLM prose (if any) is an optional layer AFTER this, not the source of truth."""
     uniq = list(dict.fromkeys(f for f in (touched_files or []) if f))
+    digest = _facts_digest(established_facts)
+
+    lines = ["⛔ **Не завершено** — прогон остановлен контроллером.", ""]
+
+    lines.append("**Что сделано (по журналу):**")
     if uniq:
         shown = ", ".join(uniq[:12])
         more = f" (+{len(uniq) - 12})" if len(uniq) > 12 else ""
-        lines.append(f"Изменённые файлы: {shown}{more}.")
+        lines.append(f"- Изменённые файлы: {shown}{more}")
     else:
-        lines.append("Файлы НЕ изменены — задача не завершена.")
-    if exhausted_strategies:
-        lines.append("Исчерпанные стратегии (не дали прогресса): " + ", ".join(exhausted_strategies[:8]) + ".")
-    digest = _facts_digest(established_facts)
+        lines.append("- Файлы не изменены")
     if digest:
-        lines.append("Проверенные факты:\n" + digest[:900])
-    lines.append("Это детерминированный итог из журнала прогона (не пересказ модели).")
+        lines.append("- Проверенные факты:\n" + digest[:900])
+
+    if exhausted_strategies:
+        lines.append("")
+        lines.append("**Что не удалось (исчерпанные стратегии):**")
+        for s in exhausted_strategies[:8]:
+            lines.append(f"- {s}")
+
+    lines.append("")
+    lines.append("**Почему остановлено:**")
+    lines.append(f"- {reason}. Вызовов инструментов: {len(call_log)}.")
+
+    lines.append("")
+    lines.append("**Следующий безопасный шаг:**")
+    lines.append(f"- {next_step or 'уточни путь или спроси пользователя, затем продолжи следующим сообщением'}")
+
+    lines.append("")
+    lines.append("_Детерминированный итог из журнала прогона (не пересказ модели)._")
     return "\n".join(lines)
 
 
