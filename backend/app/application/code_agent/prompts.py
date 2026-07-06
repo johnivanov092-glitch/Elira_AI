@@ -282,6 +282,7 @@ def _build_system_prompt(
     active_tools: tuple[str, ...] | list[str] | None = None,
     model_name: str = "",
     profile_name: str = "Инженерный",
+    task_text: str = "",
 ) -> str:
     from app.application.instructions.loader import load_instructions
     from app.application.projects.scope import project_scope_id as _scope_id
@@ -332,5 +333,11 @@ def _build_system_prompt(
         import logging
 
         logging.getLogger(__name__).debug("user-facts injection failed", exc_info=exc)
+
+    # Intent-injected niche rules: only added when the task matches (SSH setup,
+    # …). Keeps the base prompt at capacity — normal runs (and canaries) add zero.
+    from app.application.code_agent.niche_rules import select_niche_rules
+    for _rule in select_niche_rules(task_text):
+        parts.append("--- Ниша-правило (по теме запроса) ---\n" + _rule)
 
     return "\n\n".join(parts)

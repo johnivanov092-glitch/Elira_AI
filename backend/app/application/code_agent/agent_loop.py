@@ -626,7 +626,7 @@ def _stream_code_agent_core(
 
         system_prompt = _build_system_prompt(
             root, working_dir=working_dir, active_tools=initial_tools, model_name=model,
-            profile_name=profile_name,
+            profile_name=profile_name, task_text=user_message,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
