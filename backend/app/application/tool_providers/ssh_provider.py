@@ -24,6 +24,7 @@ Security model:
 """
 from __future__ import annotations
 
+import base64
 import logging
 import subprocess
 from typing import Any
@@ -121,6 +122,31 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
     return {"text": "\n".join(parts), "touched_host": host}
 
 
+def _looks_like_windows_no_cmd(stderr: Any) -> bool:
+    """True when the remote cmd.exe rejected a POSIX tool (`head`) as an unknown
+    command — the tell that the host is Windows and we must read via PowerShell.
+    Matches the English and Russian cmd.exe 'not recognized' messages."""
+    text = decode_console(stderr) if isinstance(stderr, (bytes, bytearray)) else str(stderr or "")
+    low = text.lower()
+    return "is not recognized" in low or "не является внутренн" in low
+
+
+def _windows_read_encoded(path: str, limit: int) -> str:
+    """`powershell -EncodedCommand …` that reads `path` as bytes, bounded to
+    `limit`, and writes them raw to stdout. base64 (UTF-16LE) so cmd.exe on the
+    remote never mangles quotes/pipes — the same trap a raw PowerShell-over-ssh
+    command hits. This is what makes ssh_read work on Windows hosts."""
+    lit = path.replace("'", "''")  # PowerShell single-quoted literal
+    ps = (
+        "$ErrorActionPreference='Stop';"
+        f"$b=[System.IO.File]::ReadAllBytes('{lit}');"
+        f"$n=[Math]::Min($b.Length,{int(limit)});"
+        "$o=[Console]::OpenStandardOutput();$o.Write($b,0,$n);$o.Flush()"
+    )
+    b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    return f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
+
+
 def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict[str, Any]:
     """Read a remote file by SSHing in and `cat`ing it. Capped at
     100KB by default — pipe a larger file through head/tail/grep on
@@ -145,10 +171,24 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
     except FileNotFoundError:
         return {"text": "ERROR: `ssh` binary not found on this machine"}
 
+    # Windows remote: cmd.exe has no `head`, so the POSIX read above fails with a
+    # 'not recognized' error. Retry with a PowerShell byte-read (base64-encoded so
+    # no quote/pipe mangling), bounded to the same cap on the remote side. Without
+    # this, ssh_read is unusable on Windows hosts and the agent loops on the error.
+    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
+        try:
+            proc = subprocess.run(
+                [*_ssh_args(host), _windows_read_encoded(path, cap + 1)],
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return {"text": f"ERROR: ssh {host} read timed out"}
+
     if proc.returncode != 0:
         return {"text": f"ERROR: remote read failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"}
 
-    raw = proc.stdout or b""          # `head -c` bounds the transfer in BYTES
+    raw = proc.stdout or b""          # `head -c` / PS byte-read bounds the transfer
     truncated = len(raw) > cap
     body = decode_console(raw[:cap] if truncated else raw)
     head = f"[ssh:{host}:{path}]"
