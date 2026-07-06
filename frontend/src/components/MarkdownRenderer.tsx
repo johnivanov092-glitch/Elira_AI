@@ -102,6 +102,12 @@ const ITALIC_SECTION_RE = /(?<![*\w])\*[^*\n]{1,80}?:\s*\*(?![*\w])/g;
 // must NOT touch it: their "\n\n before **Heading:**" rewrite would eat the
 // bullet's trailing space and orphan a lone "*" on its own line.
 const LIST_LINE_IN_BLOCK_RE = /(?:^|\n)[ \t]*(?:[-*+]|\d{1,3}[.)])[ \t]+/;
+// A block that holds a GFM table row (`| … |`) is structured — the paragraph /
+// enumeration splitters below must NEVER touch it. Without this, a cell like
+// `(PID 5368)` matches the `\d+[.)]\s` enumeration marker, so the splitter injects
+// a newline before `5368)`, shattering the row and turning `5368)` into a bogus
+// "1." ordered-list item on its own line.
+const TABLE_LINE_IN_BLOCK_RE = /(?:^|\n)[ \t]*\|.*\|[ \t]*(?:\n|$)/;
 // GFM tables: a "| … |" row, then a "|---|---|" separator, then data rows. The
 // custom block renderer had no table branch, so tables fell into the paragraph
 // case and collapsed all rows onto one line.
@@ -112,6 +118,7 @@ const splitTableRow = (line: string): string[] =>
 
 function normalizeInlineEnumerations(block: string): string {
   if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
+  if (TABLE_LINE_IN_BLOCK_RE.test(block)) return block;
   const markers = block.match(/\d+[.)]\s/g) || [];
   if (markers.length < 2) return block;
 
@@ -129,6 +136,7 @@ function normalizeInlineBoldSections(block: string): string {
   // split into separate paragraphs at each marker.
   if (!block || DOUBLE_NEWLINE_RE.test(block)) return block;
   if (LIST_LINE_IN_BLOCK_RE.test(block)) return block;
+  if (TABLE_LINE_IN_BLOCK_RE.test(block)) return block;
   const matches = block.match(BOLD_SECTION_RE) || [];
   if (matches.length < 2) return block;
   // Insert '\n\n' before any bold-section marker that has content before it.
@@ -141,6 +149,7 @@ function normalizeInlineItalicSections(block: string): string {
   // lines so they read as sub-bullets, not run-on prose.
   if (!block) return block;
   if (LIST_LINE_IN_BLOCK_RE.test(block)) return block;
+  if (TABLE_LINE_IN_BLOCK_RE.test(block)) return block;
   const matches = block.match(ITALIC_SECTION_RE) || [];
   if (matches.length < 2) return block;
   return block.replace(/([.!?])\s+(\*[^*\n]{1,80}?:\s*\*)/g, "$1\n$2")
