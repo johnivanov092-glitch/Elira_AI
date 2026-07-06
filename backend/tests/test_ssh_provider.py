@@ -486,6 +486,25 @@ class SshPrimitivesTest(SshProviderTestBase):
         cmd = mock.call_args[0][0][-1]
         self.assertIn("-EncodedCommand", cmd)  # no raw quoting on the wire
 
+    def test_verifiers_carry_verifier_flag_and_evidence(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"has Content-Length here")):
+            r = self.ssh.tool_ssh_assert_contains(host="prod-1", path="/f", pattern="Content-Length")
+        self.assertTrue(r["verifier"])
+        self.assertIn("Content-Length", r["evidence"])
+        self.assertTrue(r["ok"])
+        with patch("subprocess.run", return_value=_bproc(0, b"LISTENING 0.0.0.0:18080 pid=5")):
+            r2 = self.ssh.tool_ssh_port_check(host="prod-1", port=18080)
+        self.assertTrue(r2["verifier"])
+        self.assertIn("18080", r2["evidence"])
+        self.assertTrue(r2["ok"])
+
+    def test_verifier_that_could_not_run_has_no_verdict(self) -> None:
+        # bad host → verifier couldn't run → ok=False but NO verifier flag (so a
+        # matched criterion stays unconfirmed, not marked failed).
+        r = self.ssh.tool_ssh_assert_contains(host="evil", path="/f", pattern="x")
+        self.assertFalse(r["ok"])
+        self.assertIsNone(r.get("verifier"))
+
 
 # ── ssh_list_hosts ─────────────────────────────────────────────
 

@@ -1804,7 +1804,7 @@ def _stream_code_agent_core(
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                 }
-                for opt in ("touched_path", "old_content", "new_content", "diff_action", "exit_code"):
+                for opt in ("touched_path", "old_content", "new_content", "diff_action", "exit_code", "verifier", "evidence"):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
                         val = tool_meta[opt]

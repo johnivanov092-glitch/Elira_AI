@@ -359,23 +359,29 @@ def tool_ssh_replace(*, host: str, path: str, old: str, new: str) -> dict[str, A
 
 
 def _ssh_assert(host: str, path: str, pattern: str, *, want: bool) -> dict[str, Any]:
+    # ERROR branches: ok=False but NO verifier flag — the verifier couldn't RUN, so
+    # it's not a verdict (a matched criterion stays unconfirmed, not failed).
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(path, str) or not path.strip():
-        return {"text": "ERROR: path is empty"}
+        return {"text": "ERROR: path is empty", "ok": False}
     if not isinstance(pattern, str) or pattern == "":
-        return {"text": "ERROR: `pattern` must be a non-empty string"}
+        return {"text": "ERROR: `pattern` must be a non-empty string", "ok": False}
     raw, rerr = _read_remote_bytes(host, path, _MAX_READ_BYTES + 1)
     if rerr is not None:
-        return {"text": f"ERROR: {rerr}"}
+        return {"text": f"ERROR: {rerr}", "ok": False}
     present = pattern in decode_console(raw)
     ok = present is want
     verdict = "НАЙДЕНО" if present else "НЕ НАЙДЕНО"
     kind = "contains" if want else "not_contains"
+    # A real verdict → verifier=True + evidence, so the criteria tracker can mark
+    # the matching criterion confirmed (ok) or failed (not ok).
     return {
         "text": f"ssh_assert_{kind} {host}:{path} «{pattern[:60]}»: {verdict} → {'OK' if ok else 'FAIL'}",
         "ok": ok,
+        "verifier": True,
+        "evidence": f"«{pattern[:60]}» {verdict} в {path}",
         "touched_host": host,
     }
 
@@ -399,13 +405,13 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     evidence."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"text": f"ERROR: {err}", "ok": False}
     try:
         p = int(port)
     except (TypeError, ValueError):
-        return {"text": "ERROR: `port` must be an integer"}
+        return {"text": "ERROR: `port` must be an integer", "ok": False}
     if not (1 <= p <= 65535):
-        return {"text": "ERROR: `port` out of range (1–65535)"}
+        return {"text": "ERROR: `port` out of range (1–65535)", "ok": False}
 
     ps = (
         "$ErrorActionPreference='SilentlyContinue';"
@@ -418,9 +424,9 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     try:
         proc = subprocess.run([*_ssh_args(host), win_cmd], capture_output=True, timeout=30)
     except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} port check timed out"}
+        return {"text": f"ERROR: ssh {host} port check timed out", "ok": False}
     except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine"}
+        return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     out = decode_console(proc.stdout)
     # PowerShell missing (POSIX remote) → fall back to ss/netstat.
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
@@ -428,7 +434,7 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
         try:
             proc = subprocess.run([*_ssh_args(host), posix], capture_output=True, timeout=30)
         except subprocess.TimeoutExpired:
-            return {"text": f"ERROR: ssh {host} port check timed out"}
+            return {"text": f"ERROR: ssh {host} port check timed out", "ok": False}
         out = decode_console(proc.stdout)
         listening = bool(out.strip())
     else:
@@ -438,6 +444,8 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     return {
         "text": f"ssh_port_check {host}:{p}: {'LISTENING' if listening else 'НЕ слушает'}\n{_truncate_for_llm(out.rstrip())}",
         "ok": listening,
+        "verifier": True,
+        "evidence": f"порт {p} {'LISTENING' if listening else 'не слушает'}: {out.strip()[:120]}",
         "touched_host": host,
     }
 
