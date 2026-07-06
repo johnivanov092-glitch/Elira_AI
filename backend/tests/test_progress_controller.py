@@ -54,6 +54,17 @@ class RawSshRedirectTest(unittest.TestCase):
         self.assertIn("ssh_write", msg)
         self.assertIn("ssh_run_ps", msg)
 
+    def test_raw_ssh_with_options_is_redirected(self) -> None:
+        # The live-run format the old regex missed: options before the host.
+        self.assertIsNotNone(raw_ssh_redirect('ssh -o BatchMode=yes home-srv01 "netstat -ano"'))
+        self.assertIsNotNone(raw_ssh_redirect('ssh -i ~/.ssh/id -p 2222 host "type C:\\a.ps1"'))
+        self.assertIsNotNone(raw_ssh_redirect("ssh -oStrictHostKeyChecking=no host cmd"))  # glued opt
+
+    def test_ssh_diagnostic_and_interactive_not_redirected(self) -> None:
+        self.assertIsNone(raw_ssh_redirect("ssh -V"))
+        self.assertIsNone(raw_ssh_redirect("ssh -G host"))
+        self.assertIsNone(raw_ssh_redirect("ssh home-srv01"))  # interactive, no remote command
+
     def test_explicit_override_marker_allows_raw_ssh(self) -> None:
         self.assertIsNone(raw_ssh_redirect('ssh host "curl x" #!raw-ssh'))
 

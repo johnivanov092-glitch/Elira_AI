@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import subprocess
 from typing import Any
 
@@ -176,10 +177,64 @@ def _read_remote_bytes(host: str, path: str, limit: int) -> tuple[bytes | None, 
     return proc.stdout or b"", None
 
 
+# A drive-letter path (`C:\…`, `C:/…`) or a UNC path (`\\host\share`) can only be
+# a Windows remote — so we write it via PowerShell WITHOUT ever probing with a
+# POSIX `cat >`, which on cmd.exe would truncate the target to empty before the
+# fallback even runs.
+_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def _is_windows_path(path: str) -> bool:
+    return bool(_WINDOWS_PATH_RE.match((path or "").strip()))
+
+
+def _windows_write_encoded(path: str, *, append: bool) -> str:
+    """`powershell -EncodedCommand …` that copies raw STDIN bytes into `path`. The
+    body travels via stdin (no command-line length limit, no quote mangling); only
+    the tiny script is base64'd. Overwrite is ATOMIC and non-destructive: it writes
+    a temp file and only then Move-replaces the target, so a failed/partial write
+    leaves the original untouched (never zeroed). Append opens-or-creates and seeks
+    to end (inherently additive)."""
+    lit = path.replace("'", "''")  # PowerShell single-quoted literal
+    if append:
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            f"$fs=[System.IO.File]::Open('{lit}',[System.IO.FileMode]::Append,[System.IO.FileAccess]::Write);"
+            "$in=[Console]::OpenStandardInput();$in.CopyTo($fs);$fs.Close()"
+        )
+    else:
+        ps = (
+            "$ErrorActionPreference='Stop';"
+            f"$t='{lit}.elira-tmp';"
+            "$fs=[System.IO.File]::Create($t);"
+            "$in=[Console]::OpenStandardInput();$in.CopyTo($fs);$fs.Close();"
+            f"Move-Item -LiteralPath $t -Destination '{lit}' -Force"
+        )
+    b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    return f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
+
+
 def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = False) -> str | None:
-    """Write raw bytes to a remote file via stdin (`cat > path`) — the body never
-    touches shell parsing, only the path is quoted. Returns None on success or an
-    error string."""
+    """Write raw bytes to a remote file via stdin — the body never touches shell
+    parsing, only the path is quoted. A Windows-looking path goes STRAIGHT to the
+    PowerShell writer (never a destructive `cat >` probe); a POSIX path uses
+    `cat > path`, with a PowerShell fallback ONLY when the remote turns out to have
+    no `cat` (and `cat` on a Windows-invalid POSIX path errors before truncating a
+    real target). Returns None on success or an error string."""
+    if _is_windows_path(path):
+        try:
+            proc = subprocess.run(
+                [*_ssh_args(host), _windows_write_encoded(path, append=append)],
+                input=data, capture_output=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return f"ssh {host} write timed out"
+        except FileNotFoundError:
+            return "`ssh` binary not found on this machine"
+        if proc.returncode != 0:
+            return f"remote write failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"
+        return None
+
     op = ">>" if append else ">"
     remote_cmd = f"cat {op} {_shell_quote(path)}"
     try:
@@ -190,6 +245,14 @@ def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = Fal
         return f"ssh {host} write timed out"
     except FileNotFoundError:
         return "`ssh` binary not found on this machine"
+    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
+        try:
+            proc = subprocess.run(
+                [*_ssh_args(host), _windows_write_encoded(path, append=append)],
+                input=data, capture_output=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return f"ssh {host} write timed out"
     if proc.returncode != 0:
         return f"remote write failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"
     return None

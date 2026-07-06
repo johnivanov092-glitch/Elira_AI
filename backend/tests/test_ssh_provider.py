@@ -359,6 +359,49 @@ class SshPrimitivesTest(SshProviderTestBase):
         r = self.ssh.tool_ssh_replace(host="prod-1", path="/f", old="", new="x")
         self.assertIn("ERROR", r["text"])
 
+    def test_windows_path_writes_via_powershell_no_cat_probe(self) -> None:
+        # A C:\ path goes STRAIGHT to PowerShell — never a destructive `cat >`.
+        with patch("subprocess.run", side_effect=[_bproc(0, b"")]) as mock:
+            r = self.ssh.tool_ssh_write(host="prod-1", path="C:\\a.txt", content="hi")
+        self.assertNotIn("ERROR", r["text"])
+        self.assertEqual(mock.call_count, 1)                       # one call, no probe
+        wire = mock.call_args_list[0][0][0][-1]
+        self.assertIn("-EncodedCommand", wire)                     # via PowerShell
+        self.assertNotIn("cat", wire)
+        self.assertEqual(mock.call_args_list[0].kwargs["input"], b"hi")  # content via stdin
+
+    def test_windows_write_failure_never_probes_with_cat(self) -> None:
+        # P1: even if the PowerShell write FAILS, a Windows path must NEVER be
+        # probed with `cat > C:\...` (which would truncate the target).
+        with patch("subprocess.run", side_effect=[_bproc(1, b"", b"Access is denied")]) as mock:
+            r = self.ssh.tool_ssh_write(host="prod-1", path="C:\\a.txt", content="hi")
+        self.assertIn("ERROR", r["text"])                          # failure reported honestly
+        self.assertEqual(mock.call_count, 1)                       # no second (cat) attempt
+        self.assertNotIn("cat", mock.call_args_list[0][0][0][-1])
+
+    def test_windows_overwrite_is_atomic_temp_then_move(self) -> None:
+        # P1(4): overwrite writes a temp then Move-replaces — a failed write leaves
+        # the original untouched (no zeroed target).
+        import base64 as _b64
+        with patch("subprocess.run", side_effect=[_bproc(0, b"")]) as mock:
+            self.ssh.tool_ssh_write(host="prod-1", path="C:\\a.txt", content="hi")
+        wire = mock.call_args_list[0][0][0][-1]
+        script = _b64.b64decode(wire.split("-EncodedCommand ", 1)[1].strip()).decode("utf-16-le")
+        self.assertIn(".elira-tmp", script)                        # writes to temp first
+        self.assertIn("Move-Item", script)                         # then atomic replace
+
+    def test_replace_on_windows_never_calls_cat(self) -> None:
+        content = b"Content-Length: 5\r\nok\r\n"
+        head_win = _bproc(1, b"", b"'head' is not recognized")     # POSIX read probe fails
+        read_ps = _bproc(0, content)                               # windows read fallback
+        write_ps = _bproc(0, b"")                                  # windows write (direct)
+        with patch("subprocess.run", side_effect=[head_win, read_ps, write_ps]) as mock:
+            r = self.ssh.tool_ssh_replace(host="prod-1", path="C:\\a.ps1", old="Content-Length: 5\r\n", new="")
+        self.assertEqual(r["touched_path"], "C:\\a.ps1")
+        for call in mock.call_args_list:
+            self.assertNotIn("cat >", call[0][0][-1])              # no destructive cat anywhere
+        self.assertIn("-EncodedCommand", mock.call_args_list[-1][0][0][-1])  # write via PS
+
     def test_assert_contains_true_and_false(self) -> None:
         with patch("subprocess.run", return_value=_bproc(0, b"has Content-Length here")):
             self.assertTrue(self.ssh.tool_ssh_assert_contains(host="prod-1", path="/f", pattern="Content-Length")["ok"])

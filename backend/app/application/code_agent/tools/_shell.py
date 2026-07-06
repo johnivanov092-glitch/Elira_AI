@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -306,24 +307,52 @@ def is_shell_critical(command: str) -> bool:
 # ssh invocation to the right tool — it does NOT ban it: the model can still force
 # the raw pipe (tunnels, scp-style one-offs) with an explicit `#!raw-ssh` marker.
 _RAW_SSH_OVERRIDE = "#!raw-ssh"
-# Leading env-var assignments (FOO=bar ssh …) then a bare `ssh` whose next token
-# is a host (not an option like -V/-G). ssh-keygen/ssh-copy-id/ssh-add/sshpass/scp
-# are NOT the remote-exec trap and are left alone.
-_RAW_SSH_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*ssh\s+(?!-)\S", re.IGNORECASE)
+_ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# ssh options that consume the NEXT token as their argument (so the host isn't
+# mistaken for an option value). `-p 22`, `-o BatchMode=yes`, `-i key`, `-J jump`…
+_SSH_OPTS_WITH_ARG = frozenset({
+    "-o", "-i", "-p", "-l", "-F", "-L", "-R", "-D", "-e", "-b", "-c", "-m",
+    "-O", "-S", "-W", "-J", "-B", "-E", "-I", "-Q",
+})
+# Diagnostic forms that never carry a remote command → not the trap.
+_SSH_DIAG_ONLY = frozenset({"-V", "-G"})
+
+
+def _ssh_is_remote_exec(command: str) -> bool:
+    """True when `command` is an ``ssh [opts] <host> <remote command>`` invocation —
+    the quoting-hell trap. Handles option flags (incl. arg-taking ones like -o/-i/
+    -p and their glued -oX/-p22 forms) and leading env assignments, so `ssh -o
+    BatchMode=yes host "cmd"` (the live-run format the old regex missed) is caught.
+    A bare `ssh host` (interactive, no command) and `ssh -V/-G` are NOT the trap."""
+    try:
+        toks = shlex.split(command, posix=True)
+    except ValueError:
+        toks = command.split()
+    i = 0
+    while i < len(toks) and _ENV_ASSIGN_RE.match(toks[i]):
+        i += 1
+    if i >= len(toks) or toks[i].lower() != "ssh":
+        return False  # not ssh (also excludes ssh-keygen/ssh-copy-id/scp/sshpass)
+    i += 1
+    while i < len(toks) and toks[i].startswith("-"):
+        opt = toks[i]
+        if opt in _SSH_DIAG_ONLY:
+            return False
+        i += 2 if opt in _SSH_OPTS_WITH_ARG else 1  # skip arg for -o/-i/-p/… (exact form)
+    if i >= len(toks):
+        return False  # options but no host
+    i += 1  # skip the host
+    return i < len(toks)  # a remote command follows the host → the trap
 
 
 def raw_ssh_redirect(command: str) -> str | None:
-    """If *command* is a raw ``ssh <host> …`` remote-exec invocation, return an
-    actionable redirect message pointing at the ssh_* tools; else None. Returns
-    None when the explicit ``#!raw-ssh`` override marker is present (the model
-    deliberately wants the raw pipe)."""
+    """If *command* is a raw ``ssh [opts] <host> <cmd>`` remote-exec invocation,
+    return an actionable redirect message pointing at the ssh_* tools; else None.
+    Returns None when the explicit ``#!raw-ssh`` override marker is present."""
     cmd = (command or "").strip()
     if not cmd or _RAW_SSH_OVERRIDE in cmd:
         return None
-    low = cmd.lower()
-    if low.startswith(("ssh-", "sshpass", "scp ", "scp\t")):
-        return None
-    if not _RAW_SSH_RE.match(cmd):
+    if not _ssh_is_remote_exec(cmd):
         return None
     return (
         "ERROR: raw `ssh …` через run_bash — ловушка экранирования: тело команды "
