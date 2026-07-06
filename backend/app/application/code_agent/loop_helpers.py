@@ -304,6 +304,10 @@ _GROUNDING_FACT_TOOLS = frozenset({
     # Remote work grounds facts too — a remote read/check/write must survive into
     # the next turn's digest, not vanish because it happened over SSH.
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps",
+    # FIX-4: verifier verdicts are grounded facts AND real progress — a fresh
+    # verdict (criterion transition) resets the stuck streak; a repeated identical
+    # verdict collapses to the same fact-shape and does NOT count as progress.
+    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
 })
 # Enumeration tools reveal the COMPLETE set of files/structure. Truncating their
 # result to a short snippet was the residual grounding leak (live: the model had a
@@ -311,6 +315,11 @@ _GROUNDING_FACT_TOOLS = frozenset({
 # Carry their listing in full so "what files exist / list all files" is grounded
 # authoritatively and the model stops padding the set with plausible inventions.
 _ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
+# Verifier tools whose FAILED verdict (verifier=True, ok=False) is STILL grounded
+# knowledge — a criterion transitioning unconfirmed→failed is a useful state change
+# and progress toward the next fix (rule 9). An ERROR-branch return (verifier
+# absent, e.g. bad host) is NOT a verdict and still grounds nothing.
+_VERIFIER_GROUNDING_TOOLS = frozenset({"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"})
 # Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
 # 3000→6000) now that the real window is 64k, not a tight small-model budget:
 # more of each verified tool result survives into the next turn's [ПРОВЕРЕННЫЕ
@@ -322,12 +331,17 @@ _FACTS_DIGEST_CHARS = 6000  # room for one full enumeration + several read facts
 FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
 
 
-def _fact_from_tool(name: str, arg_hint: str, text_result: str, *, ok: bool = True) -> str | None:
+def _fact_from_tool(
+    name: str, arg_hint: str, text_result: str, *, ok: bool = True, verifier: bool = False,
+) -> str | None:
     """One grounded-fact line from a discovery tool's result, or None when the
-    tool is not fact-bearing / failed / empty. Enumeration tools (project_map /
-    glob) carry a much larger snippet so their full file list survives — an
-    authoritative structure is what stops the model inventing extra files."""
-    if not ok or name not in _GROUNDING_FACT_TOOLS:
+    tool is not fact-bearing / failed / empty. A failed VERDICT from a verifier
+    (verifier=True, ok=False) is still grounded — the unconfirmed→failed transition
+    is progress for the next fix (rule 9) — but a failed read/run, or a verifier
+    that couldn't RUN, grounds nothing. Enumeration tools carry a larger snippet."""
+    if name not in _GROUNDING_FACT_TOOLS:
+        return None
+    if not ok and not (verifier and name in _VERIFIER_GROUNDING_TOOLS):
         return None
     cap = _ENUM_FACT_SNIPPET_CHARS if name in _ENUM_FACT_TOOLS else _FACT_SNIPPET_CHARS
     snippet = " ".join((text_result or "").split())[:cap]

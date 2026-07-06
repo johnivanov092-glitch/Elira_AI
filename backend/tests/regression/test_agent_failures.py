@@ -197,29 +197,21 @@ class AgentFailureRegressionTest(unittest.TestCase):
 
         self.assertNotEqual(result["stop_reason"], "loop_guard", result)
         self.assertEqual(result["stop_reason"], "max_steps")
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])  # FIX-5: budget exhaustion is a runtime stop
 
-    def test_max_steps_wrap_up_is_a_controlled_partial_result(self) -> None:
+    def test_max_steps_is_a_deterministic_partial_result(self) -> None:
+        # FIX-5: max_steps yields a DETERMINISTIC report (ok=False, partial=True) —
+        # NO extra model wrap-up call after the budget is spent.
         calls = 0
 
         def bounded_chat(**kwargs):
             nonlocal calls
-            if not kwargs.get("tools"):
-                return {
-                    "message": {
-                        "content": "PARTIAL RESULT\nСделано: анализ.\nНе сделано: правка.",
-                        "tool_calls": [],
-                    }
-                }
             calls += 1
             return {
                 "message": {
                     "content": "",
                     "tool_calls": [{
-                        "function": {
-                            "name": "glob",
-                            "arguments": {"pattern": f"step-{calls}-*"},
-                        }
+                        "function": {"name": "glob", "arguments": {"pattern": f"step-{calls}-*"}},
                     }],
                 }
             }
@@ -233,11 +225,12 @@ class AgentFailureRegressionTest(unittest.TestCase):
                 chat_fn=bounded_chat,
             )
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertIsNone(result["error"])
         self.assertTrue(result["partial"])
-        self.assertIn("PARTIAL RESULT", result["response"])
+        self.assertEqual(calls, 2)                       # exactly 2 loop steps, NO wrap-up call
+        self.assertIn("Не завершено", result["response"])  # deterministic report
 
     def test_long_llm_call_emits_heartbeat(self) -> None:
         def slow_chat(**kwargs):

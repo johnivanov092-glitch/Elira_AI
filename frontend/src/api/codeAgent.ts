@@ -513,7 +513,11 @@ export type CodeSessionFull = CodeSessionMeta & {
 
 export type TaskLedgerEntry = {
   timestamp: number;
-  type: "tool_call" | "final" | "error" | "compression";
+  // "final" is a SOLVED task (completion_status === "confirmed", or a no-criteria
+  // answer). "partial" = ran ok but the task is unverified/partial (NOT solved).
+  // "error" = runtime failure or a failed verifier. Consumers must never read
+  // "final" as solved unless it truly is.
+  type: "tool_call" | "final" | "partial" | "error" | "compression";
   action: string;
   result: string;
 };

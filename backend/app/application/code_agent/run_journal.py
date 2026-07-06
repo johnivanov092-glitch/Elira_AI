@@ -234,9 +234,21 @@ class RunJournal:
         if event_type == "done":
             stop_reason = str(event.get("stop_reason") or "error")
             resumable = bool(event.get("resumable"))
+            # FIX-3: "completed" is the TASK result, NOT runtime `ok`. A run is
+            # completed only when its criteria are verifier-confirmed, or when there
+            # are no criteria and it reached a clean answer. failed / unverified /
+            # partial and every runtime failure are NOT "completed".
+            completion = str(event.get("completion_status") or "none")
+            reached_answer = bool(event.get("ok")) and stop_reason == "answer"
+            if completion == "confirmed" or (completion == "none" and reached_answer):
+                status = "completed"
+            else:
+                status = stop_reason
             self._state.update({
-                "status": "completed" if event.get("ok") and not event.get("partial") else stop_reason,
+                "status": status,
                 "stop_reason": stop_reason,
+                "completion_status": completion,
+                "criteria": list(event.get("criteria") or []),
                 "resumable": resumable,
                 "error": event.get("error"),
                 "last_error": event.get("error"),

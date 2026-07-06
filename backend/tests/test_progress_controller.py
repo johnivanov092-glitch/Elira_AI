@@ -139,6 +139,45 @@ class ProgressHelperTest(unittest.TestCase):
             name="ssh_run_ps", tool_meta={"text": "exit=0"}, fact=ps_fact, seen_fact_shapes=seen,
         ))
 
+    def test_verifier_tools_ground_facts_and_are_progress(self) -> None:
+        # FIX-4: a verifier verdict is a grounded fact AND real progress; the same
+        # verdict repeated (same fact-shape) is NOT progress.
+        from app.application.code_agent.loop_helpers import _fact_from_tool
+        self.assertIsNotNone(_fact_from_tool("ssh_port_check", "home-srv01 18080", "порт 18080 LISTENING pid=604", ok=True))
+        self.assertIsNotNone(_fact_from_tool("ssh_assert_not_contains", "path Content-Length", "НЕ НАЙДЕНО", ok=True))
+        seen: set[str] = set()
+        fact = "ssh_port_check(home-srv01 18080): порт 18080 LISTENING pid=604"
+        self.assertTrue(step_made_progress(name="ssh_port_check", tool_meta={"text": "OK", "ok": True}, fact=fact, seen_fact_shapes=seen))
+        self.assertFalse(step_made_progress(name="ssh_port_check", tool_meta={"text": "OK", "ok": True}, fact=fact, seen_fact_shapes=seen))
+
+    def test_failed_verifier_verdict_grounds_fact_and_is_progress(self) -> None:
+        # A FAILED verdict (verifier=True, ok=False) is a criterion transition
+        # unconfirmed→failed — grounded knowledge and progress for the next fix
+        # (rule 9). An infra ERROR (verifier absent) grounds nothing.
+        from app.application.code_agent.loop_helpers import _fact_from_tool
+        f = _fact_from_tool("ssh_assert_not_contains", "path Content-Length",
+                            "«Content-Length» НАЙДЕНО → FAIL", ok=False, verifier=True)
+        self.assertIsNotNone(f)
+        self.assertIsNone(_fact_from_tool("ssh_assert_not_contains", "p",
+                          "ERROR: host not allowed", ok=False, verifier=False))
+        seen: set[str] = set()
+        self.assertTrue(step_made_progress(name="ssh_assert_not_contains",
+                        tool_meta={"text": "FAIL", "ok": False}, fact=f, seen_fact_shapes=seen))
+        self.assertFalse(step_made_progress(name="ssh_assert_not_contains",
+                         tool_meta={"text": "FAIL", "ok": False}, fact=f, seen_fact_shapes=seen))
+
+    def test_failed_verifier_resets_stuck_streak(self) -> None:
+        ev = ProgressEvaluator()
+        ev.evaluate(name="ssh_write", args={"host": "h", "path": "/f", "content": "x"},
+                    tool_meta={"text": "ERROR"}, fact=None)
+        v = ev.evaluate(
+            name="ssh_assert_not_contains", args={"host": "h", "path": "/f", "pattern": "X"},
+            tool_meta={"text": "FAIL", "ok": False, "verifier": True},
+            fact="ssh_assert_not_contains(h /f X): «X» НАЙДЕНО → FAIL",
+        )
+        self.assertEqual(v.status, "progress")             # failed verdict = progress
+        self.assertEqual(ev.consecutive_no_progress, 0)    # stuck streak reset
+
     def test_fact_shape_collapses_changing_numbers(self) -> None:
         a = _fact_shape("run_bash(netstat): TCP 127.0.0.1:18080 LISTENING 4488")
         b = _fact_shape("run_bash(netstat): TCP 127.0.0.1:18080 LISTENING 7488")

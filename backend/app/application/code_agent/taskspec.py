@@ -54,10 +54,43 @@ _CRITERIA_CUES = (
 )
 
 
+# Continuation signals — the ONLY case where a TaskSpec is restored from history
+# (FIX-8). "делай"/"продолжай" anywhere = continue the prior task; short
+# affirmatives (да/ок/go) only when the message is short. A NEW question after a
+# structured task ("привет", "объясни X") must NOT drag the old criteria back.
+_STRONG_CONTINUE_CUES = frozenset({
+    "делай", "продолжай", "продолжи", "продолжайте", "продолжаем", "доделай",
+    "доведи", "заверши", "закончи", "дальше", "далее",
+    "continue", "proceed", "finish", "resume",
+})
+_SHORT_AFFIRM_CUES = frozenset({
+    "да", "ок", "окей", "ага", "давай", "поехали", "го", "погнали", "ладно",
+    "yes", "ok", "okay", "go", "next",
+})
+
+
+def is_continuation_message(msg: str | None) -> bool:
+    """True when `msg` asks to CONTINUE the prior task — the gate for restoring a
+    TaskSpec from history (FIX-8). Conservative: a strong continue-imperative
+    (делай/продолжай) anywhere, or a short (≤4-word) affirmative (да/ок/go)."""
+    words = re.sub(r"[^\w\s]", " ", (msg or "").lower()).split()
+    if not words:
+        return False
+    if any(w in _STRONG_CONTINUE_CUES for w in words):
+        return True
+    return len(words) <= 4 and any(w in _SHORT_AFFIRM_CUES for w in words)
+
+
 def _match_header(token: str) -> str | None:
+    # Match the exact header OR its LAST word — so a phrased header like
+    # "После запуска проверить:" / "Что проверить:" is recognised, not only the
+    # bare "Проверить:". Only fires on a `<phrase>:` line, so it stays specific to
+    # structured tasks (a plain sentence is never a header).
     low = token.strip().lower().rstrip(":").strip()
+    words = low.split()
+    last = words[-1] if words else ""
     for section, keys in _HEADERS.items():
-        if low in keys:
+        if low in keys or (last and last in keys):
             return section
     return None
 

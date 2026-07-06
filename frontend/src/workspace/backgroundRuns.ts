@@ -325,14 +325,16 @@ function wire(
         }));
       } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput }));
       else if (e.type === "done") {
-        // The ledger reports the TASK outcome (completion_status), not just runtime
-        // ok — a run can be ok=true yet unverified/partial/failed. "solved" ⇔
-        // completion_status === "confirmed"; anything else is surfaced, not hidden.
+        // Ledger reports the TASK outcome (completion_status), not runtime ok — a
+        // run can be ok=true yet unverified/partial/failed. SOLVED ("final") ⇔
+        // completion_status === "confirmed", OR a no-criteria run that reached a
+        // clean answer. failed verifier / runtime failure = "error". Everything
+        // else that's ok-but-not-confirmed = "partial" (surfaced, never "solved").
         const cs = e.completion_status;
+        const solved = cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer");
+        const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
         const ledgerResult =
-          e.error ||
-          (cs && cs !== "none" && cs !== "confirmed" ? `задача: ${cs}` : "completed");
-        const ledgerType = !e.ok || cs === "failed" ? "error" : "final";
+          e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
         pushLedger({ timestamp: Date.now(), type: ledgerType, action: e.stop_reason, result: ledgerResult });
         patch((a) => ({
           ...a,

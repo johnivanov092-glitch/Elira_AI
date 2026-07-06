@@ -328,41 +328,39 @@ class AgentLoopTest(unittest.TestCase):
             chat_fn=looping_chat,
         )
 
-        self.assertTrue(result["ok"])
+        # FIX-5: max_steps is a runtime budget exhaustion (like timeout) →
+        # ok=False, partial=True, and a DETERMINISTIC report (no LLM wrap-up).
+        self.assertFalse(result["ok"])
         self.assertTrue(result["partial"])
         self.assertIsNone(result["error"])
         self.assertEqual(result["stop_reason"], "max_steps")
         self.assertEqual(result["steps"], 3)
-        # F2: wrap-up fallback (model kept tool-calling, no summary text) —
-        # the user still gets a deterministic «что сделано» response.
         self.assertIn("max_steps=3", result["response"])
-        self.assertIn("glob", result["response"])
+        self.assertIn("Не завершено", result["response"])          # deterministic report
+        self.assertEqual(result["completion_status"], "none")      # no TaskSpec on this task
 
-    def test_max_steps_wrap_up_uses_model_summary_when_available(self) -> None:
-        """F2: if the wrap-up call returns text, it becomes final_response."""
-        responses = iter([
-            {"message": {"content": "", "tool_calls": [{
+    def test_max_steps_is_deterministic_no_model_wrapup(self) -> None:
+        """FIX-5: after max_steps the runtime must NOT call the model again for a
+        wrap-up; the final report is deterministic from the journal."""
+        calls = {"n": 0}
+
+        def chat(**kw):
+            calls["n"] += 1
+            return {"message": {"content": "", "tool_calls": [{
                 "function": {"name": "glob", "arguments": {"pattern": "*"}},
-            }]}},
-            {"message": {"content": "", "tool_calls": [{
-                "function": {"name": "glob", "arguments": {"pattern": "*"}},
-            }]}},
-            # wrap-up (no-tools) call:
-            {"message": {"content": "Итог: посмотрел файлы, не успел правки.", "tool_calls": []}},
-        ])
+            }]}}
 
         result = run_code_agent(
             user_message="спин",
             project_root=self.root,
             model="test-model",
             max_steps=2,
-            chat_fn=lambda **kw: next(responses),
+            chat_fn=chat,
         )
-
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["partial"])
+        self.assertFalse(result["ok"])
         self.assertEqual(result["stop_reason"], "max_steps")
-        self.assertEqual(result["response"], "Итог: посмотрел файлы, не успел правки.")
+        self.assertEqual(calls["n"], 2)  # exactly the 2 loop steps — NO extra wrap-up call
+        self.assertNotIn("Итог:", result["response"])  # no model-authored wrap-up text
 
     def test_stream_reports_preflight_block(self) -> None:
         with patch(

@@ -62,6 +62,29 @@ class DeriveTest(unittest.TestCase):
         self.assertNotIn("agent-lab.ps1", joined)
         self.assertEqual(len(spec.constraints), 2)
 
+    def test_phrased_verification_header_yields_criteria(self) -> None:
+        # A real-task header "После запуска проверить:" (not the bare "Критерии
+        # готовности:") must still yield criteria — else a restored spec is empty.
+        task = ("Цель: тестовый стенд.\n"
+                "После запуска проверить:\n"
+                "- что процесс работает\n"
+                "- что порт 18080 слушается\n"
+                "- что /health отвечает")
+        spec = derive_task_spec(task)
+        self.assertIsNotNone(spec)
+        self.assertGreaterEqual(len(spec.success_criteria), 3)
+        self.assertTrue(any("порт" in c or "18080" in c for c in spec.success_criteria))
+
+    def test_is_continuation_message(self) -> None:
+        from app.application.code_agent.taskspec import is_continuation_message
+        for m in ("делай", "продолжай", "продолжи работу", "да", "ок", "поехали",
+                  "Длинный анализ... я бы начал с Windows Service. делай"):
+            self.assertTrue(is_continuation_message(m), m)
+        for m in ("привет", "объясни как работает docker", "что такое рекурсия",
+                  "напиши функцию сортировки", "давай сделаем большой калькулятор проекта",
+                  "сделай другой файл test2.py", "сделать start.ps1", "переделай агента", ""):
+            self.assertFalse(is_continuation_message(m), m)  # "сделай" != "делай" (word-level)
+
     def test_simple_task_yields_none(self) -> None:
         self.assertIsNone(derive_task_spec("почини баг в parser.py"))
         self.assertIsNone(derive_task_spec("привет, как дела?"))
@@ -277,6 +300,137 @@ class CodingLoopTest(unittest.TestCase):
         self.assertEqual(done["stop_reason"], "answer")          # runtime fine
         self.assertEqual(done.get("completion_status"), "confirmed")  # green test proved it
         self.assertTrue(done.get("criteria_confirmed"))
+
+
+# ── completion contract (FIX-1/2/3/8) ───────────────────────────
+
+
+def _exec_ok(**out):
+    def _f(request, **kw):
+        return SimpleNamespace(status="ok", output=out or {"text": "ok", "ok": True, "touched_path": "a.ps1"})
+    return _f
+
+
+class CompletionContractTest(unittest.TestCase):
+    def tearDown(self):
+        for rid in ("cc-done", "cc-cont", "cc-part", "cc-conf", "cc-fix9",
+                    "cc-nr0", "cc-nr1", "cc-nr2"):
+            deferred_tools.clear_run(rid)
+
+    def _stream(self, user_message, chat, rid, history=None, exec_side=None):
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          side_effect=exec_side or _exec_ok(text="ok", ok=True, touched_path="a.ps1")):
+            return list(agent_loop.stream_code_agent(
+                user_message=user_message, project_root=tmp, run_id=rid,
+                conversation_history=history or [], auto_remember=False,
+                permission_mode="bypass", max_steps=20, chat_fn=chat))
+
+    def test_done_carries_full_task_state(self):
+        chat = _SeqChat([_call("write_file", path="a.ps1", content="x"), _final("сделал")], _final())
+        done = [e for e in self._stream(_STRUCTURED, chat, "cc-done") if e.get("type") == "done"][-1]
+        for k in ("completion_status", "criteria", "criteria_confirmed", "partial", "task_spec", "task_spec_source"):
+            self.assertIn(k, done, f"done missing {k}")
+        self.assertTrue(done["ok"])                          # runtime health
+        self.assertEqual(done["completion_status"], "unverified")  # task NOT solved
+        self.assertTrue(done["partial"])
+        self.assertFalse(done["criteria_confirmed"])
+        self.assertEqual(done["task_spec_source"], "current_message")
+
+    def test_sync_run_code_agent_carries_task_state(self):
+        chat = _SeqChat([_call("write_file", path="a.ps1", content="x"), _final("сделал")], _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec_ok(text="ok", ok=True, touched_path="a.ps1")):
+            res = agent_loop.run_code_agent(user_message=_STRUCTURED, project_root=tmp,
+                                            run_id="cc-sync", auto_remember=False, max_steps=20, chat_fn=chat)
+        self.assertEqual(res["completion_status"], "unverified")
+        self.assertTrue(res["partial"])
+        self.assertTrue(res["criteria"])
+        self.assertIsNotNone(res["task_spec"])
+
+    def test_new_question_after_task_does_not_restore_taskspec(self):
+        # FIX-8 restore is gated on a continuation signal — a NEW question after a
+        # structured task must NOT drag the old task's criteria back.
+        history = [{"role": "user", "content": _STRUCTURED}, {"role": "assistant", "content": "сделал"}]
+        # incl. the "new sub-task" edge case: "сделай другой файл test2.py" must NOT
+        # be read as a continuation of the old structured task.
+        for i, msg in enumerate(("привет", "объясни как работает docker",
+                                 "сделай другой файл test2.py")):
+            chat = _SeqChat([_final("ответ")], _final())
+            done = [e for e in self._stream(msg, chat, f"cc-nr{i}", history=history) if e.get("type") == "done"][-1]
+            self.assertEqual(done["task_spec_source"], "none", f"falsely restored on {msg!r}")
+            self.assertIsNone(done["task_spec"])
+            self.assertEqual(done["completion_status"], "none")
+
+    def test_continuation_restores_taskspec_from_history(self):
+        history = [{"role": "user", "content": _STRUCTURED}, {"role": "assistant", "content": "частично"}]
+        chat = _SeqChat([_call("write_file", path="a.ps1", content="x"), _final("продолжил")], _final())
+        done = [e for e in self._stream("делай", chat, "cc-cont", history=history) if e.get("type") == "done"][-1]
+        self.assertEqual(done["task_spec_source"], "conversation_history")  # restored, gate NOT off
+        self.assertIsNotNone(done["task_spec"])
+        self.assertEqual(done["completion_status"], "unverified")           # no verifier ran
+        self.assertTrue(done["partial"])
+
+    def test_continuation_partial_via_verifiers(self):
+        history = [{"role": "user", "content": _STRUCTURED}]
+        chat = _SeqChat([
+            _call("write_file", path="a.ps1", content="x"),
+            _call("ssh_port_check", host="home-srv01", port=18080),
+            _call("ssh_assert_not_contains", host="home-srv01", path="C:\\agent-lab.ps1", pattern="Content-Length"),
+            _final("готово"),
+        ], _final())
+
+        def _exec(request, **kw):
+            t = getattr(request, "tool_name", "")
+            if t == "ssh_port_check":
+                return SimpleNamespace(status="ok", output={"text": "LISTENING", "ok": True, "verifier": True,
+                                                            "evidence": "порт 18080 LISTENING pid=5", "touched_host": "home-srv01"})
+            if "assert" in t:
+                return SimpleNamespace(status="ok", output={"text": "OK", "ok": True, "verifier": True,
+                                                            "evidence": "«Content-Length» НЕ НАЙДЕНО", "touched_host": "home-srv01"})
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True, "touched_path": "a.ps1"})
+
+        done = [e for e in self._stream("делай", chat, "cc-part", history=history, exec_side=_exec) if e.get("type") == "done"][-1]
+        # port + Content-Length confirmed, test.ps1 NOT → partial (2 of 3), NOT solved
+        self.assertEqual(done["completion_status"], "partial")
+        self.assertGreaterEqual(sum(1 for c in done["criteria"] if c["status"] == "confirmed"), 2)
+
+    def test_fix9_writing_test_script_does_not_confirm_its_criterion(self):
+        # FIX-9 slice: writing test.ps1 (a file edit) is NOT running it — the
+        # "test.ps1 проходит" criterion stays unconfirmed until a real verifier.
+        task = "Цель: стенд.\nКритерии готовности:\n- test.ps1 проходит\n- порт 18080 слушает"
+        chat = _SeqChat([
+            _call("ssh_write", host="h", path="test.ps1", content="..."),
+            _call("ssh_port_check", host="h", port=18080),
+            _final("готово"),
+        ], _final())
+
+        def _exec(request, **kw):
+            t = getattr(request, "tool_name", "")
+            if t == "ssh_port_check":
+                return SimpleNamespace(status="ok", output={"text": "LISTENING", "ok": True, "verifier": True,
+                                                            "evidence": "порт 18080 LISTENING", "touched_host": "h"})
+            return SimpleNamespace(status="ok", output={"text": "Wrote", "ok": True, "touched_path": "test.ps1", "touched_host": "h"})
+
+        done = [e for e in self._stream(task, chat, "cc-fix9", exec_side=_exec) if e.get("type") == "done"][-1]
+        crit = {c["text"]: c["status"] for c in done["criteria"]}
+        self.assertEqual(done["completion_status"], "partial")
+        self.assertEqual([s for t, s in crit.items() if "test.ps1" in t], ["unconfirmed"])
+
+
+class JournalCompletionTest(unittest.TestCase):
+    def _status(self, **done_extra):
+        from app.application.code_agent.run_journal import RunJournal
+        j = RunJournal(f"jtest-{done_extra.get('completion_status', 'x')}")
+        j.append_event({"type": "done", "ok": True, "stop_reason": "answer", "steps": 1, **done_extra})
+        return j.state.get("status")
+
+    def test_journal_completed_only_on_confirmed(self):
+        self.assertEqual(self._status(completion_status="confirmed", criteria=[]), "completed")
+        self.assertEqual(self._status(completion_status="none", criteria=[]), "completed")  # no-spec answer
+        self.assertNotEqual(self._status(completion_status="failed", criteria=[]), "completed")
+        self.assertNotEqual(self._status(completion_status="unverified", criteria=[]), "completed")
+        self.assertNotEqual(self._status(completion_status="partial", criteria=[]), "completed")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CAL
 from app.application.code_agent.taskspec import (
     CriteriaTracker,
     derive_task_spec,
+    is_continuation_message,
     taskspec_context,
     taskspec_report,
 )
@@ -674,8 +675,33 @@ def _stream_code_agent_core(
         # verifiers and keep them in focus. None for simple/conversational tasks —
         # so nothing is injected there (zero tokens, canaries untouched).
         task_spec = derive_task_spec(user_message, project_root=root)
+        task_spec_source = "current_message" if task_spec is not None else "none"
+        if task_spec is None and is_continuation_message(user_message):
+            # FIX-8: ONLY on an explicit continuation ("делай"/"продолжай"/"да") —
+            # restore the most recent STRUCTURED TaskSpec from the user's history so
+            # the verifier-gate/criteria don't silently switch off. A NEW question
+            # after a structured task must NOT drag the old task's criteria back.
+            for _m in reversed(conversation_history or []):
+                if isinstance(_m, dict) and _m.get("role") == "user":
+                    _hist_spec = derive_task_spec(str(_m.get("content") or ""), project_root=root)
+                    if _hist_spec is not None:
+                        task_spec = _hist_spec
+                        task_spec_source = "conversation_history"
+                        break
         if task_spec is not None:
             effective_user_message = f"{taskspec_context(task_spec)}\n\n{effective_user_message}"
+        # Bind the completion contract to THIS run's spec/source so every terminal
+        # done event carries uniform task-state (FIX-1/8).
+        def _completion_fields(crit, *, terminated_incomplete: bool = False) -> dict:
+            cs = crit.completion_status()
+            return {
+                "completion_status": cs,
+                "criteria": crit.report(),
+                "criteria_confirmed": cs == "confirmed",  # compat mirror only (FIX-6)
+                "partial": terminated_incomplete or cs in ("partial", "unverified", "failed"),
+                "task_spec": taskspec_report(task_spec) if task_spec else None,
+                "task_spec_source": task_spec_source,
+            }
         messages.append({"role": "user", "content": effective_user_message})
 
         yield {"type": "run_started", "run_id": rid}
@@ -766,6 +792,7 @@ def _stream_code_agent_core(
                     "steps": step - 1,
                     "stop_reason": "cancelled",
                     "error": "Cancelled by user",
+                    **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
 
@@ -785,6 +812,7 @@ def _stream_code_agent_core(
                     "steps": step - 1,
                     "stop_reason": "timeout",
                     "error": f"code-agent execution timed out after {execution_seconds}s",
+                    **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
 
@@ -807,6 +835,7 @@ def _stream_code_agent_core(
                     "steps": step - 1,
                     "stop_reason": "context_limit",
                     "error": str(exc),
+                    **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
             if _compacted:
@@ -923,6 +952,7 @@ def _stream_code_agent_core(
                     "steps": step - 1,
                     "stop_reason": "error",
                     "error": str(exc),
+                    **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
 
@@ -934,6 +964,7 @@ def _stream_code_agent_core(
                     "steps": step,
                     "stop_reason": "cancelled",
                     "error": "Cancelled by user",
+                    **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
 
@@ -962,6 +993,7 @@ def _stream_code_agent_core(
                         "steps": step,
                         "stop_reason": "loop_guard",
                         "error": "reasoning runaway repeated; run finalized early",
+                        **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
             step_usage = extract_llm_usage(response)
@@ -1045,6 +1077,7 @@ def _stream_code_agent_core(
                         "steps": step,
                         "stop_reason": "loop_guard",
                         "error": "malformed tool trace repeated; run finalized early",
+                        **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
                 messages.append({
@@ -1220,7 +1253,6 @@ def _stream_code_agent_core(
                 # Annotate what a verifier confirmed / failed / left unchecked, from
                 # the tracker, never the model's word.
                 _completion = criteria.completion_status()
-                criteria_confirmed = _completion == "confirmed"
                 if criteria.items and _completion != "confirmed":
                     _lines = []
                     for _it in criteria.report():
@@ -1287,11 +1319,7 @@ def _stream_code_agent_core(
                     "error": None,
                     "established_facts": _facts,
                     "recent_tool_output": _recent_digest,
-                    "task_spec": taskspec_report(task_spec) if task_spec else None,
-                    "criteria_confirmed": criteria_confirmed,
-                    "completion_status": _completion,
-                    "criteria": criteria.report(),
-                    "partial": _completion in ("partial", "unverified", "failed"),
+                    **_completion_fields(criteria),
                 }
                 return
 
@@ -1318,6 +1346,7 @@ def _stream_code_agent_core(
                         "steps": step,
                         "stop_reason": "timeout",
                         "error": f"code-agent execution timed out after {execution_seconds}s",
+                        **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
                 fn = call.get("function") or {}
@@ -1360,6 +1389,7 @@ def _stream_code_agent_core(
                         "stop_reason": "loop_guard",
                         "error": f"repeated identical tool call: {name}",
                         "established_facts": _facts_digest(established_facts),
+                        **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
                 # Near-duplicate loop: same tool, slightly-varying args (ping/recall
@@ -1392,6 +1422,7 @@ def _stream_code_agent_core(
                         # so the NEXT turn keeps its grounding instead of starting blind
                         # (the wrap-up summary alone used to be all that survived).
                         "established_facts": _facts_digest(established_facts),
+                        **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
                 if name == "tool_search":
@@ -1450,6 +1481,7 @@ def _stream_code_agent_core(
                         yield {
                             "type": "done", "ok": True, "steps": step,
                             "stop_reason": "answer",
+                            **_completion_fields(criteria),
                         }
                         return
                     _budget_spent = ask_user_count > _ASK_USER_MAX
@@ -1522,6 +1554,7 @@ def _stream_code_agent_core(
                         yield {
                             "type": "done", "ok": False, "steps": step,
                             "stop_reason": "cancelled", "error": "Cancelled by user",
+                            **_completion_fields(criteria, terminated_incomplete=True),
                         }
                         return
                     if _q_decision == "answered":
@@ -1618,6 +1651,7 @@ def _stream_code_agent_core(
                         yield {
                             "type": "done", "ok": False, "steps": step,
                             "stop_reason": "cancelled", "error": "Cancelled by user",
+                            **_completion_fields(criteria, terminated_incomplete=True),
                         }
                         return
                     _approved = (
@@ -1764,6 +1798,7 @@ def _stream_code_agent_core(
                             "steps": step,
                             "stop_reason": "cancelled",
                             "error": "Cancelled by user",
+                            **_completion_fields(criteria, terminated_incomplete=True),
                         }
                         return
                     if _decision == "approved":
@@ -1841,7 +1876,9 @@ def _stream_code_agent_core(
                 # Grounding fact from this call — computed HERE (before the tool
                 # message is appended) so the progress controller can judge whether
                 # the call revealed anything NEW.
-                _fact = _fact_from_tool(name, _hint, text_result, ok=_tool_ok)
+                _fact = _fact_from_tool(
+                    name, _hint, text_result, ok=_tool_ok, verifier=bool(tool_meta.get("verifier")),
+                )
                 if tool_meta.get("touched_path"):
                     touched_files.append(str(tool_meta.get("touched_path")))
                 # ── Strategy router ──────────────────────────────────────────
@@ -1917,7 +1954,6 @@ def _stream_code_agent_core(
                         next_step=progress.next_step_hint(),
                     )
                     yield {"type": "final_response", "step": step, "text": _det}
-                    _np_completion = criteria.completion_status()
                     yield {
                         "type": "done",
                         "ok": False,  # runtime failure — separate from completion_status
@@ -1928,26 +1964,28 @@ def _stream_code_agent_core(
                         "progress_events": progress.progress_events,
                         "no_progress_attempts": progress.no_progress_total,
                         "exhausted_strategies": progress.exhausted_summary(),
-                        "task_spec": taskspec_report(task_spec) if task_spec else None,
-                        "criteria_confirmed": _np_completion == "confirmed",
-                        "completion_status": _np_completion,
-                        "criteria": criteria.report(),
-                        "partial": _np_completion in ("partial", "unverified", "failed"),
+                        **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
 
-        final_text = _wrap_up_text(
-            chat, model, safe_num_ctx, messages, call_log,
+        # FIX-5: max_steps is a runtime budget exhaustion (like timeout) — a
+        # DETERMINISTIC report from the journal, no extra LLM wrap-up call, and
+        # ok=False (the runtime did not reach an answer). completion_status carries
+        # the task result separately.
+        final_text = _deterministic_stop_summary(
             f"достигнут max_steps={safe_max_steps}",
+            call_log, touched_files, established_facts,
+            exhausted_strategies=progress.exhausted_summary(),
+            next_step=progress.next_step_hint(),
         )
         yield {"type": "final_response", "step": safe_max_steps, "text": final_text}
         yield {
             "type": "done",
-            "ok": True,
-            "partial": True,
+            "ok": False,
             "steps": safe_max_steps,
             "stop_reason": "max_steps",
             "error": None,
+            **_completion_fields(criteria, terminated_incomplete=True),
         }
     finally:
         # P10.1: drop the run's deferred allowlist on EVERY terminal exit
@@ -2191,6 +2229,12 @@ def run_code_agent(
     error: str | None = None
     partial = False
     steps = 0
+    # FIX-2: task-state must survive the sync path so API/automation can't see
+    # only runtime `ok` without the task result.
+    completion_status = "none"
+    criteria: list[dict[str, Any]] = []
+    criteria_confirmed = False
+    task_spec: dict[str, Any] | None = None
 
     for event in stream_code_agent(
         user_message=user_message,
@@ -2218,7 +2262,10 @@ def run_code_agent(
                 "tool": event["tool"],
                 "arguments": event["arguments"],
                 "result": event["result"],
-                **{k: event[k] for k in ("touched_path", "old_content", "new_content", "diff_action") if k in event},
+                **{k: event[k] for k in (
+                    "ok", "exit_code", "verifier", "evidence",
+                    "touched_path", "old_content", "new_content", "diff_action",
+                ) if k in event},
             })
         elif et == "final_response":
             response_text = event.get("text", "")
@@ -2228,6 +2275,10 @@ def run_code_agent(
             stop_reason = str(event.get("stop_reason", "error"))
             error = event.get("error")
             steps = int(event.get("steps", 0))
+            completion_status = str(event.get("completion_status") or "none")
+            criteria = list(event.get("criteria") or [])
+            criteria_confirmed = bool(event.get("criteria_confirmed"))
+            task_spec = event.get("task_spec")
 
     return {
         "ok": ok,
@@ -2237,4 +2288,10 @@ def run_code_agent(
         "stop_reason": stop_reason,
         "error": error,
         "partial": partial,
+        # Task result — SEPARATE from runtime `ok`. Consumers must gate "solved"
+        # on completion_status == "confirmed", never on ok alone.
+        "completion_status": completion_status,
+        "criteria": criteria,
+        "criteria_confirmed": criteria_confirmed,
+        "task_spec": task_spec,
     }
