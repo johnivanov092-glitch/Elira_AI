@@ -27,16 +27,17 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.code_agent import agent_loop  # noqa: E402
-from app.application.code_agent.agent_loop import (  # noqa: E402
-    _CODE_AGENT_BASE_TOOLS,
-    _PROGRESS_STOP_AT,
-)
+from app.application.code_agent.agent_loop import _CODE_AGENT_BASE_TOOLS  # noqa: E402
 from app.application.code_agent.tools._shell import raw_ssh_redirect  # noqa: E402
 from app.application.code_agent.tools._run import tool_run_bash  # noqa: E402
-from app.application.code_agent.loop_helpers import (  # noqa: E402
-    _deterministic_stop_summary,
+from app.application.code_agent.loop_helpers import _deterministic_stop_summary  # noqa: E402
+from app.application.code_agent.progress import (  # noqa: E402
+    GLOBAL_NO_PROGRESS_CAP,
+    ProgressEvaluator,
     _fact_shape,
     step_made_progress,
+    strategy_family,
+    strategy_target,
 )
 from app.application.agent_kernel import deferred_tools  # noqa: E402
 from app.application.tool_providers import ToolRegistry  # noqa: E402
@@ -117,11 +118,63 @@ class ProgressHelperTest(unittest.TestCase):
     def test_deterministic_summary_reports_no_files_and_facts(self) -> None:
         out = _deterministic_stop_summary(
             "нет прогресса", ["run_bash(a) ok", "run_bash(b) ok"], [], ["read_file(x): hi"],
+            exhausted_strategies=["remote_ps@h", "remote_edit:ssh_write@h:/f"],
         )
         self.assertIn("Файлы НЕ изменены", out)
         self.assertIn("2", out)  # call count
         self.assertIn("read_file(x)", out)  # facts carried
+        self.assertIn("remote_ps@h", out)  # exhausted strategies named
         self.assertIn("детерминированный", out)
+
+
+# ── strategy router (the core) ──────────────────────────────────
+
+
+class StrategyRouterTest(unittest.TestCase):
+    def test_strategy_family_and_target_derivation(self) -> None:
+        self.assertEqual(strategy_family("ssh_write", {"host": "h", "path": "/f"}), "remote_edit:ssh_write")
+        self.assertEqual(strategy_family("ssh_replace", {"host": "h", "path": "/f"}), "remote_edit:ssh_replace")
+        self.assertEqual(strategy_family("ssh_run_ps", {"host": "h", "script": "x"}), "remote_ps")
+        self.assertEqual(strategy_family("write_file", {"path": "a.py"}), "local_edit")
+        # raw ssh with an edit marker → the inline-powershell quoting family
+        self.assertEqual(
+            strategy_family("run_bash", {"command": 'ssh h "Set-Content C:\\a.ps1"'}),
+            "remote_edit:inline_ps",
+        )
+        self.assertEqual(strategy_target("ssh_write", {"host": "h", "path": "/f"}), "h:/f")
+
+    def test_same_method_exhausts_in_two_then_redirects(self) -> None:
+        ev = ProgressEvaluator()
+        a = {"host": "h", "path": "/f", "content": "x"}
+        v1 = ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR: remote write failed"}, fact=None)
+        self.assertFalse(v1.exhausted)
+        self.assertIsNone(v1.redirect)
+        v2 = ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR: remote write failed"}, fact=None)
+        self.assertTrue(v2.exhausted)
+        self.assertIsNotNone(v2.redirect)      # redirect, NOT stop
+        self.assertFalse(v2.should_stop)
+
+    def test_two_exhausted_families_same_target_stops(self) -> None:
+        ev = ProgressEvaluator()
+        t = {"host": "h", "path": "/f"}
+        for _ in range(2):
+            ev.evaluate(name="ssh_write", args={**t, "content": "x"}, tool_meta={"text": "ERROR"}, fact=None)
+        # second family on the SAME target — exhausting it stops the run honestly.
+        ev.evaluate(name="ssh_replace", args={**t, "old": "a", "new": "b"}, tool_meta={"text": "ERROR"}, fact=None)
+        v = ev.evaluate(name="ssh_replace", args={**t, "old": "c", "new": "d"}, tool_meta={"text": "ERROR"}, fact=None)
+        self.assertTrue(v.should_stop)
+        self.assertIn("remote_edit:ssh_write@h:/f", ev.exhausted_summary())
+        self.assertIn("remote_edit:ssh_replace@h:/f", ev.exhausted_summary())
+
+    def test_progress_resets_the_strategy(self) -> None:
+        ev = ProgressEvaluator()
+        a = {"host": "h", "path": "/f", "content": "x"}
+        ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR"}, fact=None)
+        ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR"}, fact=None)  # exhausted
+        # a real change → the method is re-armed, exhaustion cleared.
+        v = ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ok", "touched_path": "/f"}, fact=None)
+        self.assertEqual(v.status, "progress")
+        self.assertEqual(ev.exhausted_summary(), [])
 
 
 # ── loop-level: no_progress stop ────────────────────────────────
@@ -190,7 +243,7 @@ class NoProgressLoopTest(unittest.TestCase):
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "no_progress")
         self.assertIn("no verified progress", str(done.get("error")))
-        self.assertLessEqual(done["steps"], _PROGRESS_STOP_AT + 1)
+        self.assertLessEqual(done["steps"], GLOBAL_NO_PROGRESS_CAP + 1)
         # Deterministic (not model-authored) closing summary.
         final = [e for e in evs if e.get("type") == "final_response"][-1]
         self.assertIn("Файлы НЕ изменены", final["text"])

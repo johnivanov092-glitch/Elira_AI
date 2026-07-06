@@ -471,69 +471,10 @@ def _is_near_dup(name: str, tokens: frozenset[str], recent: list[tuple[str, froz
     return any(rn == name and _jaccard(tokens, rt) >= _NEAR_DUP_JACCARD for rn, rt in recent)
 
 
-# --- Progress controller ----------------------------------------------------
-# The loop-guards above catch REPETITION (same / near-same call). They do NOT
-# catch a model that issues visibly-DIFFERENT calls that all fail to move the
-# world — the raw-ssh escaping spiral (80 distinct commands, zero file changed,
-# test still 7/8) evaded near-dup for ~55 steps. The progress controller closes
-# that: after each ACTION-tool call it asks "did state actually advance?" (a file
-# created/edited, a NEW verified observation from a read, verification flipped
-# green, a server started). N action calls with no advance = a stuck strategy —
-# first REDIRECT (tell it to switch strategy families), only stop honestly if it
-# keeps digging the same dry hole. A soft redirect, not a hard block.
-#
-# Tools that DO work when they succeed (a mutation is inherently progress) and
-# tools whose fresh output is genuine new knowledge (reading/searching) reset the
-# streak; pure "doing" tools (run_bash/ssh_run/ssh_run_ps) only count as progress
-# when they change a file / flip verification, so re-running a check that returns
-# different bytes but the same state does NOT read as progress (semantic ok).
-_INVESTIGATION_TOOLS = frozenset({
-    "read_file", "glob", "grep", "project_map", "recall",
-    "web_search", "web_fetch", "http_api", "ssh_read",
-})
-PROGRESS_REDIRECT_MSG = (
-    "Последние вызовы НЕ сдвинули состояние (файл не изменён, новых фактов нет, "
-    "проверка не пройдена). Текущая стратегия исчерпана — СМЕНИ СЕМЕЙСТВО подхода, "
-    "не повторяй то же самое: другой инструмент, прочитай реальный файл/вывод, а "
-    "для удалённой правки — ssh_write / ssh_run_ps вместо ручного shell-quoting. "
-    "Если не ясно как двигаться дальше — спроси пользователя (ask_user)."
-)
-
-
-def _fact_shape(fact: str) -> str:
-    """Digit-normalised shape of a grounded fact, for "is this NEW knowledge or a
-    re-run of the same check?". A churning netstat/curl/findstr whose only diff is
-    a changing PID/port collapses to ONE shape, so it stops reading as progress."""
-    low = " ".join((fact or "").split()).lower()
-    return re.sub(r"\d+", "N", low)[:160]
-
-
-def step_made_progress(
-    *,
-    name: str,
-    tool_meta: dict,
-    fact: str | None,
-    seen_fact_shapes: set[str],
-) -> bool:
-    """True when this tool call advanced the run toward the goal. Mutates
-    `seen_fact_shapes` (records a newly-seen investigation fact). See the block
-    comment above for the design.
-
-    A "doing" tool (run_bash / ssh_run / ssh_run_ps) counts as progress ONLY when
-    it changes a file — re-running a check that returns different bytes but the
-    same state is deliberately NOT progress (semantic ok). Mutations (touched_path)
-    and a server starting are progress; fresh knowledge from a read/search resets
-    the streak so "go read the real file" is rewarded, not punished."""
-    if tool_meta.get("touched_path"):
-        return True  # a file was created / edited / written (local or remote)
-    if name == "run_server" and tool_meta.get("ok", True):
-        return True  # running state changed
-    if name in _INVESTIGATION_TOOLS and fact:
-        shape = _fact_shape(fact)
-        if shape not in seen_fact_shapes:
-            seen_fact_shapes.add(shape)
-            return True
-    return False
+# Progress control (the strategy router) lives in code_agent.progress. This file
+# keeps only the DETERMINISTIC final report used when the router / repetition
+# guards force a stop — built from the journal, never a retelling by the stuck
+# model. See docs/AGENT_RUNTIME_PLAN.md.
 
 
 def _deterministic_stop_summary(
@@ -541,6 +482,8 @@ def _deterministic_stop_summary(
     call_log: list[str],
     touched_files: list[str],
     established_facts: list[str],
+    *,
+    exhausted_strategies: list[str] | None = None,
 ) -> str:
     """Facts-from-the-journal summary for a controller-forced stop (loop / no
     progress). Built deterministically from what ACTUALLY happened — never a model
@@ -557,6 +500,8 @@ def _deterministic_stop_summary(
         lines.append(f"Изменённые файлы: {shown}{more}.")
     else:
         lines.append("Файлы НЕ изменены — задача не завершена.")
+    if exhausted_strategies:
+        lines.append("Исчерпанные стратегии (не дали прогресса): " + ", ".join(exhausted_strategies[:8]) + ".")
     digest = _facts_digest(established_facts)
     if digest:
         lines.append("Проверенные факты:\n" + digest[:900])
