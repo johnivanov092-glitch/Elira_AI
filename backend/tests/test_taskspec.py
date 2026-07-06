@@ -75,6 +75,32 @@ class DeriveTest(unittest.TestCase):
         self.assertIn("18080", block)
         self.assertIn("verifier", block.lower())
 
+    def test_coding_verifiers_from_task_text(self) -> None:
+        task = ("Цель: почини типизацию фронта.\n"
+                "Критерии готовности:\n"
+                "- npm run typecheck проходит без ошибок\n"
+                "- pytest tests/test_x.py зелёный")
+        spec = derive_task_spec(task)
+        self.assertIsNotNone(spec)
+        j = " ".join(spec.verifiers).lower()
+        self.assertIn("typecheck", j)
+        self.assertIn("pytest", j)
+
+    def test_project_verifiers_enrich_but_never_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".elira").mkdir()
+            (root / ".elira" / "verify").write_text("echo ok", encoding="utf-8")
+            (root / "package.json").write_text(
+                '{"scripts": {"typecheck": "tsc --noEmit", "build": "vite build"}}', encoding="utf-8")
+            spec = derive_task_spec("Цель: X.\nКритерии готовности:\n- сервис работает", project_root=root)
+            self.assertIsNotNone(spec)
+            j = " ".join(spec.verifiers)
+            self.assertIn(".elira/verify", j)
+            self.assertIn("typecheck", j)
+            # a SIMPLE task in the same project must still be None — project doesn't trigger
+            self.assertIsNone(derive_task_spec("почини баг", project_root=root))
+
 
 # ── loop-level: the verifier gate ───────────────────────────────
 

@@ -67,9 +67,11 @@ def _looks_like_criterion(line: str) -> bool:
     return any(cue in low for cue in _CRITERIA_CUES)
 
 
-def derive_task_spec(task_text: str | None) -> TaskSpec | None:
+def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | None:
     """Heuristic TaskSpec, or None when the task isn't structured enough to bother
-    (simple/conversational). Never raises; conservative on purpose."""
+    (simple/conversational). Never raises; conservative on purpose. `project_root`
+    (optional) enriches an already-firing spec with project verifiers (.elira/verify,
+    package.json typecheck/build) — it never turns a simple task into a spec."""
     text = (task_text or "").strip()
     if not text:
         return None
@@ -122,11 +124,23 @@ def derive_task_spec(task_text: str | None) -> TaskSpec | None:
         if t.lower() not in seen_tests:
             seen_tests.add(t.lower())
             verifiers.append(f"прогнать {t} и убедиться, что проходит")
+    # coding checks named in the task text
+    low = text.lower()
+    if any(k in low for k in ("typecheck", "type-check", "tsc")):
+        verifiers.append("npm run typecheck → 0 ошибок типов")
+    if "build" in low and any(k in low for k in ("npm", "vite", "сборк", "собира")):
+        verifiers.append("npm run build → успешная сборка")
+    if "pytest" in low and not any("прогнать" in v for v in verifiers):
+        verifiers.append("pytest → все тесты зелёные")
 
     # Fire only on a genuinely structured task: explicit criteria, OR a stated goal
     # backed by a hard verifier. Otherwise None (no spec, no gate, no tokens).
     if not criteria and not (saw_goal_header and verifiers):
         return None
+
+    # Enrich an already-firing spec with project-derived verifiers (never a trigger).
+    if project_root is not None:
+        verifiers += _project_verifiers(project_root)
 
     return TaskSpec(
         goal=goal,
@@ -135,6 +149,31 @@ def derive_task_spec(task_text: str | None) -> TaskSpec | None:
         verifiers=_dedupe(verifiers),
         stop_conditions=_dedupe(stop),
     )
+
+
+def _project_verifiers(project_root) -> list[str]:
+    """Verifiers the PROJECT itself implies — the runtime knows the checks, not just
+    the task text. Best-effort; never raises."""
+    out: list[str] = []
+    try:
+        from pathlib import Path
+
+        root = Path(project_root)
+        if (root / ".elira" / "verify").exists():
+            out.append(".elira/verify → exit 0")
+        for pkg in (root / "package.json", root / "frontend" / "package.json"):
+            if pkg.exists():
+                import json
+
+                scripts = (json.loads(pkg.read_text(encoding="utf-8")) or {}).get("scripts", {})
+                if "typecheck" in scripts:
+                    out.append("npm run typecheck → 0 ошибок типов")
+                if "build" in scripts:
+                    out.append("npm run build → успешная сборка")
+                break
+    except Exception:
+        pass
+    return out
 
 
 def _route(section: str, line: str, goal, criteria, constraints, stop) -> None:

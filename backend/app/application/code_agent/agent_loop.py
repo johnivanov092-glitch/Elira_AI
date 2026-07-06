@@ -671,7 +671,7 @@ def _stream_code_agent_core(
         # TaskSpec (Phase 6): on a STRUCTURED task, derive goal + success criteria +
         # verifiers and keep them in focus. None for simple/conversational tasks —
         # so nothing is injected there (zero tokens, canaries untouched).
-        task_spec = derive_task_spec(user_message)
+        task_spec = derive_task_spec(user_message, project_root=root)
         if task_spec is not None:
             effective_user_message = f"{taskspec_context(task_spec)}\n\n{effective_user_message}"
         messages.append({"role": "user", "content": effective_user_message})
