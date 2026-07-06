@@ -30,6 +30,7 @@ from app.application.tool_providers import (
     build_mcp_providers,
 )
 from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE
+from app.application.code_agent.taskspec import derive_task_spec, taskspec_context, taskspec_report
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
     ToolExecutionRequest,
@@ -211,6 +212,9 @@ _SSH_ACTIVATABLE_TOOLS = (
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_list_hosts",
 )
+# Verifier tools whose ok result CONFIRMS a success criterion (TaskSpec gate):
+# a passing assert / port check is real evidence, not the model's word.
+_VERIFIER_TOOLS = frozenset({"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"})
 # Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
 # button, plus common free-text yes-words). Anything else = deny.
 _SSH_APPROVE_WORDS = frozenset({"одобрить", "approve", "yes", "да", "allow", "ok", "разрешить"})
@@ -664,6 +668,12 @@ def _stream_code_agent_core(
         messages.extend(_coerce_history(conversation_history))
         # Anti-refusal nudge: if user clearly asks to execute, remind the model.
         effective_user_message = _maybe_inject_execution_reminder(user_message)
+        # TaskSpec (Phase 6): on a STRUCTURED task, derive goal + success criteria +
+        # verifiers and keep them in focus. None for simple/conversational tasks —
+        # so nothing is injected there (zero tokens, canaries untouched).
+        task_spec = derive_task_spec(user_message)
+        if task_spec is not None:
+            effective_user_message = f"{taskspec_context(task_spec)}\n\n{effective_user_message}"
         messages.append({"role": "user", "content": effective_user_message})
 
         yield {"type": "run_started", "run_id": rid}
@@ -693,6 +703,12 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
+        # TaskSpec verifier gate (Phase 6): fire once, on finalize, if the task has
+        # explicit success criteria that no verifier confirmed — "done by verifier,
+        # not by the model's word". criteria_confirmed flips when a verifier tool
+        # (ssh_assert_*/ssh_port_check) returns ok.
+        taskspec_gate_fired = False
+        criteria_confirmed = False
         # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
         # loop RUNS that command on finalize-after-edits and refuses to close
         # until it exits 0 — no rubber-stamped "проверено". Bounded so a
@@ -1081,12 +1097,46 @@ def _stream_code_agent_core(
                             ),
                         })
                         continue
+                # TaskSpec verifier gate (Phase 6): the task has explicit success
+                # criteria, the run edited something, and NO verifier confirmed a
+                # criterion. Nudge ONCE to prove each with a verifier (or note it
+                # honestly) — "done by verifier, not by the model's word". Soft,
+                # once; supersedes the generic gate below when criteria exist.
+                if (
+                    task_spec is not None
+                    and task_spec.success_criteria
+                    and edited_in_run
+                    and not criteria_confirmed
+                    and not taskspec_gate_fired
+                ):
+                    taskspec_gate_fired = True
+                    verify_gate_fired = True  # don't also fire the generic gate
+                    if content:
+                        messages.append({"role": "assistant", "content": content})
+                    _crit = "\n".join(f"- {c}" for c in task_spec.success_criteria[:8])
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Стоп: у задачи есть критерии готовности, а ты закрываешь "
+                            "её без подтверждения. Подтверди КАЖДЫЙ verifier'ом "
+                            "(ssh_assert_contains / ssh_assert_not_contains / "
+                            "ssh_port_check, либо прогони тест через run_bash) — НЕ "
+                            f"словами:\n{_crit}\nЧто подтвердить не удаётся — отметь "
+                            "честно как «не подтверждено». Не заявляй «готово» только "
+                            "по факту записи файлов."
+                        ),
+                    })
+                    continue
                 # Soft verification gate (Variant 2): the model edited files this
                 # run but never ran tests/lint or started the app, and is now
                 # trying to close. Nudge it once to verify before finishing —
                 # reminder-injection, not a hard block, fires at most once, and
-                # never on a no-edit (conversational/read-only) run.
-                if edited_in_run and not ran_verification and not verify_gate_fired:
+                # never on a no-edit (conversational/read-only) run. Skipped when a
+                # TaskSpec with criteria is driving verification (handled above).
+                if (
+                    edited_in_run and not ran_verification and not verify_gate_fired
+                    and not (task_spec is not None and task_spec.success_criteria)
+                ):
                     verify_gate_fired = True
                     if content:
                         messages.append({"role": "assistant", "content": content})
@@ -1238,6 +1288,8 @@ def _stream_code_agent_core(
                     "error": None,
                     "established_facts": _facts,
                     "recent_tool_output": _recent_digest,
+                    "task_spec": taskspec_report(task_spec) if task_spec else None,
+                    "criteria_confirmed": criteria_confirmed,
                 }
                 return
 
@@ -1266,9 +1318,14 @@ def _stream_code_agent_core(
                 name = fn.get("name") or ""
                 # Track verification-gate signals from the tool stream itself,
                 # before any dispatch branch, so it sees every call uniformly.
-                if name in ("write_file", "edit_file"):
+                # Remote edits (ssh_write/ssh_replace) count as edits; remote
+                # commands and verifiers count as "ran something to check".
+                if name in ("write_file", "edit_file", "ssh_write", "ssh_replace"):
                     edited_in_run = True
-                elif name in ("run_bash", "run_server"):
+                elif name in (
+                    "run_bash", "run_server", "ssh_run", "ssh_run_ps",
+                    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
+                ):
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
@@ -1775,6 +1832,10 @@ def _stream_code_agent_core(
                 # prompt off the front of the context.
                 _tool_content = _truncate_for_llm(text_result)
                 _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
+                # A passing verifier CONFIRMS a criterion (TaskSpec gate) — real
+                # evidence, so the "prove it" nudge won't fire.
+                if name in _VERIFIER_TOOLS and _tool_ok:
+                    criteria_confirmed = True
                 # Grounding fact from this call — computed HERE (before the tool
                 # message is appended) so the progress controller can judge whether
                 # the call revealed anything NEW.
@@ -1849,6 +1910,8 @@ def _stream_code_agent_core(
                         "progress_events": progress.progress_events,
                         "no_progress_attempts": progress.no_progress_total,
                         "exhausted_strategies": progress.exhausted_summary(),
+                        "task_spec": taskspec_report(task_spec) if task_spec else None,
+                        "criteria_confirmed": criteria_confirmed,
                     }
                     return
 
