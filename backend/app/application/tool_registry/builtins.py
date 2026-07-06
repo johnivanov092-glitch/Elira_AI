@@ -584,6 +584,16 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 30, "max_output_chars": 5000,
         },
+        {
+            "name": "ssh_exists", "handler": _noop,
+            "display_name": "SSH Exists", "display_name_ru": "SSH существует",
+            "category": "ssh",
+            "description": "Check whether a file/directory EXISTS on a remote host (verifier)",
+            "source": "ssh",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound", "fs.read"],
+            "timeout_seconds": 30, "max_output_chars": 5000,
+        },
     ]
 
 

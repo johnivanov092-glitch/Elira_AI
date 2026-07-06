@@ -23,6 +23,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.code_agent import agent_loop  # noqa: E402
 from app.application.code_agent.agent_loop import _CODE_AGENT_BASE_TOOLS  # noqa: E402
 from app.application.code_agent.taskspec import (  # noqa: E402
+    CriteriaTracker,
     TaskSpec,
     derive_task_spec,
     taskspec_context,
@@ -195,8 +196,8 @@ class VerifierGateTest(unittest.TestCase):
         # matching criterion (per-criterion) → completion_status = partial, one
         # criterion confirmed with evidence, the other two still unconfirmed.
         chat = _SeqChat([
-            _call("write_file", path="a.ps1", content="x"),
-            _call("ssh_assert_not_contains", host="home-srv01", path="C:\\a.ps1", pattern="Content-Length"),
+            _call("write_file", path="agent-lab.ps1", content="x"),
+            _call("ssh_assert_not_contains", host="home-srv01", path="C:\\agent-lab.ps1", pattern="Content-Length"),
             _final("готово, проверено"),
         ], _final())
 
@@ -205,8 +206,8 @@ class VerifierGateTest(unittest.TestCase):
             if "assert" in str(tool):
                 return SimpleNamespace(status="ok", output={
                     "text": "OK", "ok": True, "verifier": True,
-                    "evidence": "«Content-Length» НЕ НАЙДЕНО в C:\\a.ps1", "touched_host": "home-srv01"})
-            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True, "touched_path": "a.ps1"})
+                    "evidence": "«Content-Length» НЕ НАЙДЕНО в C:\\agent-lab.ps1", "touched_host": "home-srv01"})
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True, "touched_path": "agent-lab.ps1"})
 
         with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
              patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
@@ -231,37 +232,116 @@ class CriteriaTrackerTest(unittest.TestCase):
     def _spec(self):
         return TaskSpec(success_criteria=[
             "Сервис слушает порт 18080",
-            "файл не содержит Content-Length",
-            "test_x.py проходит",
+            "agent-lab.ps1 не содержит Content-Length",
+            "pytest tests/test_x.py проходит",
         ])
 
-    def test_status_transitions_and_completion(self):
+    # ── canary-shaped criteria (the live over-match bug) ────────────
+    _CANARY = "C:\\AgentLabCanary"
+    _HEALTH = "C:\\AgentLabCanary\\health.txt"
+
+    def _canary_tracker(self):
         from app.application.code_agent.taskspec import CriteriaTracker
+        return CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "папка C:\\AgentLabCanary существует",     # exists (directory)
+            "health.txt существует",                    # exists (file)
+            "health.txt содержит status=ok",            # contains
+            "health.txt не содержит status=fail",       # not_contains
+        ]))
+
+    def _status(self, t, needle):
+        return next(it["status"] for it in t.items if needle in it["text"])
+
+    def test_status_transitions_and_completion(self):
         t = CriteriaTracker.from_spec(self._spec())
         self.assertEqual(t.completion_status(), "unverified")
-        t.record(tool_name="ssh_port_check", ok=True, evidence="18080 LISTENING", arg_text="host 18080")
+        t.record(tool_name="ssh_port_check", args={"host": "h", "port": 18080},
+                 ok=True, evidence="18080 LISTENING")
         self.assertEqual(t.completion_status(), "partial")  # 1/3
-        t.record(tool_name="ssh_assert_not_contains", ok=True, evidence="", arg_text="Content-Length")
+        t.record(tool_name="ssh_assert_not_contains",
+                 args={"host": "h", "path": "C:\\AgentLab\\agent-lab.ps1", "pattern": "Content-Length"},
+                 ok=True, evidence="")
         self.assertEqual(t.completion_status(), "partial")  # 2/3
-        t.record(tool_name="run_bash", ok=False, evidence="", arg_text="test_x.py")
+        t.record(tool_name="run_bash", args={"command": "pytest tests/test_x.py"},
+                 ok=False, evidence="")
         self.assertEqual(t.completion_status(), "failed")   # a verifier ran red
 
-    def test_no_shared_token_never_falsely_confirms(self):
-        from app.application.code_agent.taskspec import CriteriaTracker
-        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["порт 18080 слушает"]))
-        t.record(tool_name="ssh_port_check", ok=True, evidence="9999 LISTENING", arg_text="host 9999")
-        self.assertEqual(t.items[0]["status"], "unconfirmed")  # 9999 != 18080
-
     def test_all_confirmed(self):
-        from app.application.code_agent.taskspec import CriteriaTracker
         t = CriteriaTracker.from_spec(self._spec())
-        t.record(tool_name="ssh_port_check", ok=True, evidence="", arg_text="18080")
-        t.record(tool_name="v", ok=True, evidence="", arg_text="Content-Length")
-        t.record(tool_name="v", ok=True, evidence="", arg_text="test_x.py")
+        t.record(tool_name="ssh_port_check", args={"host": "h", "port": 18080}, ok=True, evidence="")
+        t.record(tool_name="ssh_assert_not_contains",
+                 args={"host": "h", "path": "C:\\AgentLab\\agent-lab.ps1", "pattern": "Content-Length"},
+                 ok=True, evidence="")
+        t.record(tool_name="run_bash", args={"command": "pytest tests/test_x.py"}, ok=True, evidence="")
         self.assertEqual(t.completion_status(), "confirmed")
 
+    def test_port_mismatch_never_confirms(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["порт 18080 слушает"]))
+        t.record(tool_name="ssh_port_check", args={"host": "h", "port": 9999}, ok=True, evidence="")
+        self.assertEqual(t.items[0]["status"], "unconfirmed")  # 9999 != 18080
+
+    # ── FIX-9: intent+target matching (the live over-match) ─────────
+
+    def test_not_contains_confirms_only_matching_not_contains(self):
+        # ssh_assert_not_contains(health.txt, status=fail) confirms ONLY the
+        # not_contains criterion — not exists, not contains (the live bug).
+        t = self._canary_tracker()
+        t.record(tool_name="ssh_assert_not_contains",
+                 args={"host": "h", "path": self._HEALTH, "pattern": "status=fail"},
+                 ok=True, evidence="«status=fail» НЕ НАЙДЕНО")
+        self.assertEqual(self._status(t, "не содержит status=fail"), "confirmed")
+
+    def test_not_contains_does_not_confirm_exists(self):
+        t = self._canary_tracker()
+        t.record(tool_name="ssh_assert_not_contains",
+                 args={"host": "h", "path": self._HEALTH, "pattern": "status=fail"},
+                 ok=True, evidence="")
+        self.assertEqual(self._status(t, "health.txt существует"), "unconfirmed")
+        self.assertEqual(self._status(t, "AgentLabCanary существует"), "unconfirmed")
+
+    def test_not_contains_does_not_confirm_contains(self):
+        t = self._canary_tracker()
+        t.record(tool_name="ssh_assert_not_contains",
+                 args={"host": "h", "path": self._HEALTH, "pattern": "status=fail"},
+                 ok=True, evidence="")
+        self.assertEqual(self._status(t, "содержит status=ok"), "unconfirmed")
+
+    def test_exists_dir_confirms_directory_exists(self):
+        # ssh_exists on the directory confirms the directory criterion, NOT the
+        # file-exists criterion (different salient target).
+        t = self._canary_tracker()
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": self._CANARY},
+                 ok=True, evidence="существует (директория)")
+        self.assertEqual(self._status(t, "AgentLabCanary существует"), "confirmed")
+        self.assertEqual(self._status(t, "health.txt существует"), "unconfirmed")
+
+    def test_exists_file_confirms_file_exists(self):
+        t = self._canary_tracker()
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": self._HEALTH},
+                 ok=True, evidence="существует (файл)")
+        self.assertEqual(self._status(t, "health.txt существует"), "confirmed")
+        self.assertEqual(self._status(t, "AgentLabCanary существует"), "unconfirmed")
+
+    def test_report_requirement_excluded_from_criteria(self):
+        # A report-only section (and inline "cleanup описана в отчёте") must NOT
+        # become a verifier criterion — only the real port criterion survives.
+        task = ("Цель: тестовый стенд.\n"
+                "Критерии готовности:\n"
+                "- порт 18080 слушает\n"
+                "- команда cleanup описана в финальном отчёте\n"
+                "Финальный отчёт:\n"
+                "- какие команды очистки (cleanup) были выполнены\n"
+                "- какие файлы созданы")
+        spec = derive_task_spec(task)
+        self.assertIsNotNone(spec)
+        joined = " ".join(spec.success_criteria).lower()
+        self.assertIn("18080", joined)
+        self.assertNotIn("cleanup", joined)
+        self.assertNotIn("какие", joined)
+        self.assertNotIn("созданы", joined)
+        self.assertEqual(len(spec.success_criteria), 1)
+
     def test_no_criteria_is_none(self):
-        from app.application.code_agent.taskspec import CriteriaTracker
         self.assertEqual(CriteriaTracker.from_spec(None).completion_status(), "none")
 
 

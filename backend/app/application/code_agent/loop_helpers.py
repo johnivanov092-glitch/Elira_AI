@@ -307,7 +307,7 @@ _GROUNDING_FACT_TOOLS = frozenset({
     # FIX-4: verifier verdicts are grounded facts AND real progress — a fresh
     # verdict (criterion transition) resets the stuck streak; a repeated identical
     # verdict collapses to the same fact-shape and does NOT count as progress.
-    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
+    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
 })
 # Enumeration tools reveal the COMPLETE set of files/structure. Truncating their
 # result to a short snippet was the residual grounding leak (live: the model had a
@@ -319,7 +319,7 @@ _ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
 # knowledge — a criterion transitioning unconfirmed→failed is a useful state change
 # and progress toward the next fix (rule 9). An ERROR-branch return (verifier
 # absent, e.g. bad host) is NOT a verdict and still grounds nothing.
-_VERIFIER_GROUNDING_TOOLS = frozenset({"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"})
+_VERIFIER_GROUNDING_TOOLS = frozenset({"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists"})
 # Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
 # 3000→6000) now that the real window is 64k, not a tight small-model budget:
 # more of each verified tool result survives into the next turn's [ПРОВЕРЕННЫЕ

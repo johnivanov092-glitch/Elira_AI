@@ -36,6 +36,10 @@ _HEADERS: dict[str, tuple[str, ...]] = {
     "criteria": ("критерии", "критерии готовности", "success criteria", "проверить",
                  "definition of done", "готовность", "acceptance", "checks"),
     "stop": ("условия остановки", "stop conditions", "стоп-условия"),
+    # Report-only sections: their items describe WHAT TO REPORT, not verifiable
+    # success criteria (FIX-9 #3), so they are routed away from criteria. Header
+    # detection only fires on a `<phrase>:` line, so bare "Отчёт:" is safe here.
+    "report": ("финальный отчёт", "финальный отчет", "отчёт", "отчет", "report"),
 }
 _BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)")
 _PORT_RE = re.compile(r"(?:порт|port)\s*[:#№]?\s*(\d{2,5})", re.IGNORECASE)
@@ -216,7 +220,11 @@ def _route(section: str, line: str, goal, criteria, constraints, stop) -> None:
         constraints.append(line)
     elif section == "stop":
         stop.append(line)
+    elif section == "report":
+        return  # report-only requirement (FIX-9 #3) — not a verifiable criterion
     else:  # criteria
+        if _criterion_intent(line) == "report":
+            return  # inline "описано в отчёте / что создано" — a report requirement, not a criterion
         if _BULLET_RE.match(line) or _looks_like_criterion(line) or section == "criteria":
             criteria.append(line)
         else:
@@ -255,53 +263,131 @@ def taskspec_report(spec: TaskSpec) -> dict:
 # ── per-criterion state (Ph7.4/7.5) ─────────────────────────────
 
 _SALIENT_RE_NUM = re.compile(r"\d{2,5}")
-_SALIENT_RE_QUOTED = re.compile(r"[«\"']([^«»\"']{2,})[»\"']")
-_SALIENT_RE_FILE = re.compile(r"[\w.\-/\\]+\.\w{1,5}")
-# Hyphenated tech identifiers (Content-Length, Get-Content, agent-lab) — distinctive
-# enough to match on, and ordinary prose words are not hyphenated, so it stays safe.
-_SALIENT_RE_HYPHEN = re.compile(r"[A-Za-z]+(?:-[A-Za-z]+)+")
+# File/path targets: a Windows drive path (dirs too — `C:\AgentLabCanary` has no
+# extension), a multi-segment POSIX path, or a bare filename with an extension.
+# The drive/POSIX alternatives cover directory criteria; the extension form covers
+# bare names like `health.txt`. Single-segment `и/или`-style prose is NOT captured.
+_SALIENT_RE_FILE = re.compile(
+    r"[A-Za-z]:\\[^\s'\"<>|]+"        # C:\AgentLabCanary  or  C:\AgentLab\agent-lab.ps1
+    r"|(?:/[\w.\-]+){2,}"              # /var/agent/health.txt
+    r"|[\w\-]+\.\w{1,5}"              # health.txt, test.ps1
+)
 
 
-def _salient_tokens(text: str) -> set[str]:
-    """Distinctive tokens for matching a criterion to a verifier result: numbers
-    (ports), quoted strings, filenames, hyphenated identifiers. Deliberately NARROW
-    — no bare prose words — so a criterion is only ever matched on a real shared
-    token. Conservative on purpose: an ambiguous match must not falsely confirm."""
-    t = text or ""
-    toks: set[str] = set(_SALIENT_RE_NUM.findall(t))
-    toks |= {m.strip().lower() for m in _SALIENT_RE_QUOTED.findall(t)}
-    toks |= {m.lower() for m in _SALIENT_RE_FILE.findall(t)}
-    toks |= {m.lower() for m in _SALIENT_RE_HYPHEN.findall(t)}
-    return {x for x in toks if x}
+def _file_tokens(text: str) -> set[str]:
+    """File/path targets in `text` — full path AND basename, so a criterion naming
+    `agent-lab.ps1` matches a verifier on `C:\\AgentLab\\agent-lab.ps1`, and a
+    directory criterion `C:\\AgentLabCanary` matches an ssh_exists on the same dir."""
+    toks: set[str] = set()
+    for m in _SALIENT_RE_FILE.findall(text or ""):
+        m = m.rstrip(".,;:!?)»\"'").lower()  # drop trailing prose punctuation
+        if not m:
+            continue
+        toks.add(m)
+        toks.add(re.split(r"[\\/]", m)[-1])  # basename
+    return toks
+
+
+# Criterion / verifier INTENT — a path alone must NOT confirm a content criterion.
+# not_contains is checked before contains ("не содержит" ⊃ "содержит"). Order matters.
+_INTENT_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # report intent = "state it in the report", NOT anything with the word "отчёт":
+    # a criterion may legitimately verify a report file's content. Cues are the
+    # report-REQUIREMENT phrasings only (John's canonical: "cleanup описана в
+    # финальном отчёте"), so a real verifiable criterion is never dropped.
+    ("report", ("в отчёт", "в отчет", "в финальном отч", "какие команды", "какие файлы",
+                "что создано", "что было создано", "перечисл", "report-only",
+                "описан в отч", "описать в отч", "команды очистки опис")),
+    ("not_contains", ("не содержит", "не должно быть", "не должен содержать", "does not contain",
+                      "not contain", "убран", "удал", "отсутствует", "нет строки", "без строки", "removed")),
+    ("contains", ("содержит", "contains", "включает", "есть строка", "должен быть", "должна быть",
+                  "возвращает", "returns", "отвечает", "responds")),
+    ("port", ("порт", "port", "listening", "слушает")),
+    ("process", ("процесс", "process", "запущен", "running", "работает", "сервис поднят")),
+    ("test", ("pytest", "unittest", "проходит", "зелён", "8/8", "passes", "тест ", "test ", ".ps1 проход")),
+    ("exists", ("существует", "создан", "создана", "создать", "exists", "присутствует",
+                "папк", "директор", "directory", "файл создан")),
+)
+
+
+def _criterion_intent(text: str) -> str:
+    low = (text or "").lower()
+    for intent, cues in _INTENT_CUES:
+        if any(c in low for c in cues):
+            return intent
+    return "generic"
+
+
+def _verifier_verdict(tool_name: str, args: dict) -> dict | None:
+    """Classify a verifier tool call into an INTENT + target (path/port/pattern),
+    or None when the tool is not a verifier verdict. A path alone never carries
+    intent — the tool determines it."""
+    a = args or {}
+    if tool_name == "ssh_assert_contains":
+        return {"intent": "contains", "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+    if tool_name == "ssh_assert_not_contains":
+        return {"intent": "not_contains", "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+    if tool_name == "ssh_port_check":
+        return {"intent": "port", "port": str(a.get("port", "")), "files": set()}
+    if tool_name == "ssh_exists":  # dedicated exists verifier (Test-Path / test -e)
+        return {"intent": "exists", "files": _file_tokens(str(a.get("path", "")))}
+    if tool_name == "run_bash":
+        cmd = str(a.get("command", "")).lower()
+        if any(t in cmd for t in ("pytest", "unittest", "npm test", "jest", "go test", "vitest")) or ".test." in cmd:
+            return {"intent": "test", "files": _file_tokens(cmd)}
+    return None
+
+
+def _verdict_confirms(item: dict, v: dict) -> bool:
+    """A verdict confirms/refutes a criterion ONLY on matching INTENT + salient
+    target. Path alone never confirms a content or existence claim."""
+    if item["intent"] != v["intent"]:
+        return False
+    intent = v["intent"]
+    if intent == "port":
+        return bool(item.get("port")) and item["port"] == v.get("port")
+    if intent in ("contains", "not_contains"):
+        # same file (if both name one) AND the verifier's pattern appears in the criterion
+        if item["files"] and v.get("files") and not (item["files"] & v["files"]):
+            return False
+        pat = v.get("pattern", "")
+        return bool(pat) and pat in item["text_low"]
+    if intent in ("exists", "test", "process"):
+        return bool(item["files"] and v.get("files") and (item["files"] & v["files"]))
+    return False
+
+
+def _criterion_item(text: str) -> dict:
+    low = (text or "").lower()
+    ports = _SALIENT_RE_NUM.findall(text or "")
+    return {
+        "text": text, "text_low": low, "status": "unconfirmed", "verifier": None, "evidence": None,
+        "intent": _criterion_intent(text), "files": _file_tokens(text), "port": ports[0] if ports else "",
+    }
 
 
 @dataclass
 class CriteriaTracker:
     """Per-criterion verification state for ONE run. DONE is decided here, from
-    verifier verdicts — not from the model's word. Status per criterion is
-    `unconfirmed` (no matching verifier ran), `confirmed` (a matching verifier
-    passed) or `failed` (a matching verifier ran red)."""
+    verifier verdicts — not from the model's word. A verdict confirms a criterion
+    ONLY when their INTENT (exists/contains/not_contains/port/test) AND salient
+    target match — a shared path alone never confirms a semantic claim."""
 
     items: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_spec(cls, spec: TaskSpec | None) -> "CriteriaTracker":
         crits = spec.success_criteria if spec else []
-        return cls(items=[
-            {"text": c, "status": "unconfirmed", "verifier": None, "evidence": None,
-             "tokens": _salient_tokens(c)}
-            for c in crits
-        ])
+        return cls(items=[_criterion_item(c) for c in crits])
 
-    def record(self, *, tool_name: str, ok: bool, evidence: str, arg_text: str) -> None:
-        """Feed a verifier verdict. Matches a criterion only on a SHARED salient
-        token (conservative); passing → confirmed, red → failed. No shared token →
-        nothing touched (the criterion stays unconfirmed)."""
-        vtokens = _salient_tokens(arg_text) | _salient_tokens(evidence)
-        if not vtokens:
+    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str) -> None:
+        """Feed a verifier verdict (classified by tool + args). Confirms/refutes a
+        criterion only on matching intent + target; unrelated criteria are untouched."""
+        v = _verifier_verdict(tool_name, args)
+        if v is None:
             return
         for it in self.items:
-            if not (it["tokens"] & vtokens):
+            if not _verdict_confirms(it, v):
                 continue
             if ok and it["status"] != "confirmed":
                 it.update(status="confirmed", verifier=tool_name, evidence=evidence or None)

@@ -486,6 +486,31 @@ class SshPrimitivesTest(SshProviderTestBase):
         cmd = mock.call_args[0][0][-1]
         self.assertIn("-EncodedCommand", cmd)  # no raw quoting on the wire
 
+    def test_exists_confirms_file_and_dir(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"EXISTS FILE")) as mock:
+            r = self.ssh.tool_ssh_exists(host="prod-1", path="C:\\AgentLabCanary\\health.txt")
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["verifier"])
+        self.assertIn("файл", r["evidence"])
+        self.assertIn("-EncodedCommand", mock.call_args[0][0][-1])  # no raw quoting on the wire
+        with patch("subprocess.run", return_value=_bproc(0, b"EXISTS DIR")):
+            r2 = self.ssh.tool_ssh_exists(host="prod-1", path="C:\\AgentLabCanary")
+        self.assertTrue(r2["ok"])
+        self.assertIn("директория", r2["evidence"])
+
+    def test_exists_missing_is_a_fail_verdict(self) -> None:
+        # A real "not there" verdict → ok=False WITH the verifier flag, so it can
+        # transition a matching criterion unconfirmed→failed.
+        with patch("subprocess.run", return_value=_bproc(0, b"MISSING")):
+            r = self.ssh.tool_ssh_exists(host="prod-1", path="C:\\nope")
+        self.assertFalse(r["ok"])
+        self.assertTrue(r["verifier"])
+
+    def test_exists_bad_host_has_no_verdict(self) -> None:
+        r = self.ssh.tool_ssh_exists(host="evil", path="/f")
+        self.assertFalse(r["ok"])
+        self.assertIsNone(r.get("verifier"))  # couldn't run → not a verdict
+
     def test_verifiers_carry_verifier_flag_and_evidence(self) -> None:
         with patch("subprocess.run", return_value=_bproc(0, b"has Content-Length here")):
             r = self.ssh.tool_ssh_assert_contains(host="prod-1", path="/f", pattern="Content-Length")
@@ -542,7 +567,7 @@ class SshProviderIntegrationTest(SshProviderTestBase):
             names,
             {"ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
              "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-             "ssh_list_hosts"},
+             "ssh_exists", "ssh_list_hosts"},
         )
 
     def test_registry_skips_disabled_provider(self) -> None:

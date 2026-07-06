@@ -33,7 +33,7 @@ ACTION_TOOLS: frozenset[str] = frozenset(
 INVESTIGATION_TOOLS: frozenset[str] = frozenset(
     {"read_file", "glob", "grep", "project_map", "recall",
      "web_search", "web_fetch", "http_api", "ssh_run", "ssh_run_ps", "ssh_read",
-     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"}
+     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists"}
 )
 
 # Budgets (see docs/AGENT_RUNTIME_PLAN.md Phase 4). A strategy_key that produces
@@ -185,7 +185,7 @@ def strategy_target(name: str, args: dict) -> str:
     it forms the strategy_key, so 'edit file X two ways' and 'edit file Y' don't
     share a budget."""
     if name in ("ssh_run", "ssh_run_ps", "ssh_read", "ssh_write", "ssh_replace",
-                "ssh_port_check", "ssh_assert_contains", "ssh_assert_not_contains"):
+                "ssh_port_check", "ssh_assert_contains", "ssh_assert_not_contains", "ssh_exists"):
         # remote work keys on host:path when a path is present, else host
         host = _first_str(args, "host")
         path = _first_str(args, "path")

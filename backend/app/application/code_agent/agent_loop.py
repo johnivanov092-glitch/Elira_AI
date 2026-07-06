@@ -216,7 +216,8 @@ _LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user", 
 # allowlisted host) so non-SSH runs — and the prompt canaries — pay zero tokens.
 _SSH_ACTIVATABLE_TOOLS = (
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
-    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_list_hosts",
+    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
+    "ssh_list_hosts",
 )
 # Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
 # button, plus common free-text yes-words). Anything else = deny.
@@ -1360,6 +1361,7 @@ def _stream_code_agent_core(
                 elif name in (
                     "run_bash", "run_server", "ssh_run", "ssh_run_ps",
                     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
+                    "ssh_exists",
                 ):
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
@@ -1894,16 +1896,15 @@ def _stream_code_agent_core(
                 # tool (verifier=True) confirms/fails a matching criterion; a coding
                 # test/verify that went GREEN (exit 0) counts as a passing check too.
                 if criteria.items:
-                    _arg_text = " ".join(str(v) for v in parsed_args.values())[:300]
                     if tool_meta.get("verifier"):
                         criteria.record(
-                            tool_name=name, ok=_tool_ok,
-                            evidence=str(tool_meta.get("evidence") or ""), arg_text=_arg_text,
+                            tool_name=name, args=parsed_args, ok=_tool_ok,
+                            evidence=str(tool_meta.get("evidence") or ""),
                         )
                     elif verdict.family.startswith(("test:", "verify:")) and tool_meta.get("exit_code") == 0:
                         criteria.record(
-                            tool_name=name, ok=True, evidence="проверка прошла (exit 0)",
-                            arg_text=_arg_text,
+                            tool_name=name, args=parsed_args, ok=True,
+                            evidence="проверка прошла (exit 0)",
                         )
                 # Repetition nudges (exact / near-dup) — orthogonal to the router.
                 _rc = repeated_tool_calls.get(fingerprint, 0)

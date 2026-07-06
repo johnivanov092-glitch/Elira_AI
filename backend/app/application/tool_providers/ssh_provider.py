@@ -450,6 +450,56 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     }
 
 
+def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
+    """Verifier: does `path` EXIST on the remote host (file or directory)?
+    Windows-first (PowerShell Test-Path via base64, no quoting) with a POSIX
+    `test`-based fallback. Returns ok=True when the path exists, with the kind
+    (file/directory) as evidence — so a "файл создан"/"папка существует" criterion
+    is confirmed by a verdict, not by the model's word. The ERROR branch (bad host /
+    empty path) returns ok=False WITHOUT a verifier flag: the check couldn't run, so
+    a matching criterion stays unconfirmed rather than being marked failed."""
+    err = _validate_host(host)
+    if err is not None:
+        return {"text": f"ERROR: {err}", "ok": False}
+    if not isinstance(path, str) or not path.strip():
+        return {"text": "ERROR: path is empty", "ok": False}
+
+    esc = path.replace("'", "''")  # PowerShell single-quote literal escaping
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"if(Test-Path -LiteralPath '{esc}'){{"
+        f"if(Test-Path -LiteralPath '{esc}' -PathType Container){{'EXISTS DIR'}}else{{'EXISTS FILE'}}"
+        "}else{'MISSING'}"
+    )
+    b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
+    try:
+        proc = subprocess.run([*_ssh_args(host), win_cmd], capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
+    except FileNotFoundError:
+        return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
+    out = decode_console(proc.stdout)
+    # PowerShell missing (POSIX remote) → fall back to `test`.
+    if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
+        q = _shell_quote(path)
+        posix = f"if [ -d {q} ]; then echo 'EXISTS DIR'; elif [ -e {q} ]; then echo 'EXISTS FILE'; else echo 'MISSING'; fi"
+        try:
+            proc = subprocess.run([*_ssh_args(host), posix], capture_output=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
+        out = decode_console(proc.stdout)
+    exists = "EXISTS" in out
+    kind = "директория" if "EXISTS DIR" in out else ("файл" if "EXISTS FILE" in out else "нет")
+    return {
+        "text": f"ssh_exists {host}:{path}: {'ЕСТЬ (' + kind + ')' if exists else 'НЕ найден'} → {'OK' if exists else 'FAIL'}",
+        "ok": exists,
+        "verifier": True,
+        "evidence": f"{path}: {'существует (' + kind + ')' if exists else 'не найден'}",
+        "touched_host": host,
+    }
+
+
 def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, Any]:
     """Run a PowerShell SCRIPT on a remote Windows host — the safe way.
 
@@ -697,6 +747,26 @@ def _schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "ssh_exists",
+                "description": (
+                    "Verifier: does a path EXIST on the remote host (file or "
+                    "directory)? Returns ok=true with the kind as evidence — use "
+                    "this to prove a file/folder was actually created, instead of "
+                    "eyeballing a Test-Path in ssh_run_ps."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["host", "path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "ssh_list_hosts",
                 "description": (
                     "Return the list of hosts the user has whitelisted for "
@@ -718,6 +788,7 @@ _DISPATCH = {
     "ssh_assert_contains": tool_ssh_assert_contains,
     "ssh_assert_not_contains": tool_ssh_assert_not_contains,
     "ssh_port_check": tool_ssh_port_check,
+    "ssh_exists": tool_ssh_exists,
     "ssh_list_hosts": lambda **_: tool_ssh_list_hosts(),
 }
 
