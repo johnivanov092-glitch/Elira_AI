@@ -141,6 +141,16 @@ class SshRunTest(SshProviderTestBase):
         self.assertIn("prod-1", argv)
         self.assertIn("echo hello", argv)
 
+    def test_run_returns_exit_code_and_semantic_ok(self) -> None:
+        with patch("subprocess.run", return_value=_proc(0, "hi", "")):
+            r = self.ssh.tool_ssh_run(host="prod-1", command="echo hi")
+        self.assertEqual(r["exit_code"], 0)
+        self.assertTrue(r["ok"])
+        with patch("subprocess.run", return_value=_proc(3, "", "boom")):
+            r2 = self.ssh.tool_ssh_run(host="prod-1", command="does-not-exist")
+        self.assertEqual(r2["exit_code"], 3)
+        self.assertFalse(r2["ok"])           # non-zero exit → failure, not "it ran"
+
     def test_nonzero_exit_propagates(self) -> None:
         with patch("subprocess.run", return_value=_proc(2, "", "permission denied")):
             result = self.ssh.tool_ssh_run(host="prod-1", command="cat /etc/shadow")
@@ -322,6 +332,16 @@ class SshRunPsTest(SshProviderTestBase):
         with patch("subprocess.run", return_value=_proc(0, "", "")) as mock:
             self.ssh.tool_ssh_run_ps(host="prod-1", script="Get-Date", timeout=99999)
         self.assertLessEqual(mock.call_args.kwargs["timeout"], 600)
+
+    def test_run_ps_returns_exit_code_and_semantic_ok(self) -> None:
+        with patch("subprocess.run", return_value=_proc(0, "ok", "")):
+            r = self.ssh.tool_ssh_run_ps(host="prod-1", script="Get-Date")
+        self.assertEqual(r["exit_code"], 0)
+        self.assertTrue(r["ok"])
+        with patch("subprocess.run", return_value=_proc(1, "", "err")):
+            r2 = self.ssh.tool_ssh_run_ps(host="prod-1", script="throw 'x'")
+        self.assertEqual(r2["exit_code"], 1)
+        self.assertFalse(r2["ok"])
 
 
 # ── high-level primitives: replace / assert / port_check ───────

@@ -43,7 +43,10 @@ INVESTIGATION_TOOLS: frozenset[str] = frozenset(
 # exhausted (e.g. every call lands in a slightly different family).
 STRATEGY_ATTEMPT_LIMIT = 2
 FAMILIES_PER_TARGET_LIMIT = 2
-GLOBAL_NO_PROGRESS_CAP = 10
+# Backstop: this many CONSECUTIVE no-progress "doing" calls (reset by ANY progress)
+# stops the run. Consecutive, not cumulative — a productive long run that racks up
+# scattered no-progress calls between real progress must NOT be cut.
+CONSECUTIVE_NO_PROGRESS_CAP = 10
 # A single remote host that eats N no-progress "doing" calls (even across
 # different command families) is a stuck host — stop rather than keep poking it.
 TOOL_HOST_ATTEMPT_LIMIT = 5
@@ -201,7 +204,8 @@ class ProgressEvaluator:
     tool_host_no_progress: dict[str, int] = field(default_factory=dict)
     last_exhausted_family: str | None = None
     progress_events: int = 0
-    no_progress_total: int = 0
+    no_progress_total: int = 0        # cumulative — for the report only
+    consecutive_no_progress: int = 0  # resets on ANY progress — drives the backstop stop
 
     def evaluate(self, *, name: str, args: dict, tool_meta: dict, fact: str | None) -> ProgressVerdict:
         family = strategy_family(name, args)
@@ -214,6 +218,7 @@ class ProgressEvaluator:
             name=name, tool_meta=tool_meta, fact=fact, seen_fact_shapes=self.seen_fact_shapes,
         ):
             self.progress_events += 1
+            self.consecutive_no_progress = 0  # any progress breaks the stuck streak
             # Movement re-arms this method: clear its no-progress counts and let the
             # family / host be tried again if needed.
             self.strategy_no_progress[key] = 0
@@ -231,6 +236,7 @@ class ProgressEvaluator:
             return ProgressVerdict("no_progress", key, family, target, exhausted=False, should_stop=False)
 
         self.no_progress_total += 1
+        self.consecutive_no_progress += 1
         self.strategy_no_progress[key] = self.strategy_no_progress.get(key, 0) + 1
         n = self.strategy_no_progress[key]
         just_exhausted = n >= STRATEGY_ATTEMPT_LIMIT and key not in self.exhausted
@@ -246,7 +252,7 @@ class ProgressEvaluator:
         fams_for_target = len(self.target_families.get(target, ()))
         should_stop = (
             fams_for_target >= FAMILIES_PER_TARGET_LIMIT
-            or self.no_progress_total >= GLOBAL_NO_PROGRESS_CAP
+            or self.consecutive_no_progress >= CONSECUTIVE_NO_PROGRESS_CAP
             or th_n >= TOOL_HOST_ATTEMPT_LIMIT
         )
         redirect = None
@@ -260,7 +266,7 @@ class ProgressEvaluator:
             elif th_n >= TOOL_HOST_ATTEMPT_LIMIT:
                 stop_detail = f"{th_n} неудачных {name} к «{host}» подряд — хост не двигается"
             else:
-                stop_detail = f"{self.no_progress_total} действий подряд без сдвига состояния"
+                stop_detail = f"{self.consecutive_no_progress} действий ПОДРЯД без сдвига состояния"
         elif key in self.exhausted:
             redirect = (
                 f"Стратегия «{family}» для «{target or 'цели'}» исчерпана "

@@ -32,7 +32,7 @@ from app.application.code_agent.tools._shell import raw_ssh_redirect  # noqa: E4
 from app.application.code_agent.tools._run import tool_run_bash  # noqa: E402
 from app.application.code_agent.loop_helpers import _deterministic_stop_summary  # noqa: E402
 from app.application.code_agent.progress import (  # noqa: E402
-    GLOBAL_NO_PROGRESS_CAP,
+    CONSECUTIVE_NO_PROGRESS_CAP,
     ProgressEvaluator,
     _fact_shape,
     step_made_progress,
@@ -211,6 +211,31 @@ class StrategyRouterTest(unittest.TestCase):
         ev.evaluate(name="ssh_write", args=a, tool_meta={"text": "ERROR"}, fact=None)  # exhausted
         self.assertIn("ssh_replace", ev.next_step_hint())
 
+    def test_consecutive_not_cumulative_no_progress_stop(self) -> None:
+        # A productive run: many no-progress calls BROKEN UP by real progress must
+        # never hit the backstop — the cap is on CONSECUTIVE no-progress, not total.
+        ev = ProgressEvaluator()
+        for _ in range(3):
+            for i in range(CONSECUTIVE_NO_PROGRESS_CAP - 1):
+                v = ev.evaluate(name="run_bash", args={"command": f"probe {i}"},
+                                tool_meta={"text": "x"}, fact=None)
+                self.assertFalse(v.should_stop)
+            # a real change resets the consecutive streak
+            p = ev.evaluate(name="write_file", args={"path": "f"},
+                            tool_meta={"text": "ok", "touched_path": "f"}, fact=None)
+            self.assertEqual(p.status, "progress")
+        self.assertGreater(ev.no_progress_total, CONSECUTIVE_NO_PROGRESS_CAP)  # cumulative is high…
+        self.assertEqual(ev.consecutive_no_progress, 0)                         # …but consecutive reset
+
+    def test_consecutive_streak_stops_when_uninterrupted(self) -> None:
+        ev = ProgressEvaluator()
+        v = None
+        for i in range(CONSECUTIVE_NO_PROGRESS_CAP):
+            v = ev.evaluate(name="run_bash", args={"command": f"probe {i}"},
+                            tool_meta={"text": "x"}, fact=None)
+        self.assertTrue(v.should_stop)
+        self.assertIn("ПОДРЯД", v.stop_detail)
+
 
 # ── loop-level: no_progress stop ────────────────────────────────
 
@@ -278,7 +303,7 @@ class NoProgressLoopTest(unittest.TestCase):
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "no_progress")
         self.assertIn("no verified progress", str(done.get("error")))
-        self.assertLessEqual(done["steps"], GLOBAL_NO_PROGRESS_CAP + 1)
+        self.assertLessEqual(done["steps"], CONSECUTIVE_NO_PROGRESS_CAP + 1)
         # Deterministic (not model-authored) closing report.
         final = [e for e in evs if e.get("type") == "final_response"][-1]
         self.assertIn("Не завершено", final["text"])

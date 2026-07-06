@@ -120,7 +120,14 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
         parts.append(f"STDOUT:\n{_truncate_for_llm(_out.rstrip())}")
     if _err:
         parts.append(f"STDERR:\n{_truncate_for_llm(_err.rstrip())}")
-    return {"text": "\n".join(parts), "touched_host": host}
+    # exit_code + semantic ok so a non-zero remote command reads as a FAILURE
+    # (red dot / no false grounding fact), not "it ran".
+    return {
+        "text": "\n".join(parts),
+        "touched_host": host,
+        "exit_code": proc.returncode,
+        "ok": proc.returncode == 0,
+    }
 
 
 def _looks_like_windows_no_cmd(stderr: Any) -> bool:
@@ -480,7 +487,12 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
         parts.append(f"STDOUT:\n{_truncate_for_llm(_out.rstrip())}")
     if _err:
         parts.append(f"STDERR:\n{_truncate_for_llm(_err.rstrip())}")
-    return {"text": "\n".join(parts), "touched_host": host}
+    return {
+        "text": "\n".join(parts),
+        "touched_host": host,
+        "exit_code": proc.returncode,
+        "ok": proc.returncode == 0,
+    }
 
 
 def tool_ssh_list_hosts() -> dict[str, Any]:
