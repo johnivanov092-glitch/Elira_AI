@@ -217,3 +217,75 @@ def taskspec_report(spec: TaskSpec) -> dict:
         "success_criteria": spec.success_criteria[:10],
         "verifiers": spec.verifiers[:8],
     }
+
+
+# ── per-criterion state (Ph7.4/7.5) ─────────────────────────────
+
+_SALIENT_RE_NUM = re.compile(r"\d{2,5}")
+_SALIENT_RE_QUOTED = re.compile(r"[«\"']([^«»\"']{2,})[»\"']")
+_SALIENT_RE_FILE = re.compile(r"[\w.\-/\\]+\.\w{1,5}")
+# Hyphenated tech identifiers (Content-Length, Get-Content, agent-lab) — distinctive
+# enough to match on, and ordinary prose words are not hyphenated, so it stays safe.
+_SALIENT_RE_HYPHEN = re.compile(r"[A-Za-z]+(?:-[A-Za-z]+)+")
+
+
+def _salient_tokens(text: str) -> set[str]:
+    """Distinctive tokens for matching a criterion to a verifier result: numbers
+    (ports), quoted strings, filenames, hyphenated identifiers. Deliberately NARROW
+    — no bare prose words — so a criterion is only ever matched on a real shared
+    token. Conservative on purpose: an ambiguous match must not falsely confirm."""
+    t = text or ""
+    toks: set[str] = set(_SALIENT_RE_NUM.findall(t))
+    toks |= {m.strip().lower() for m in _SALIENT_RE_QUOTED.findall(t)}
+    toks |= {m.lower() for m in _SALIENT_RE_FILE.findall(t)}
+    toks |= {m.lower() for m in _SALIENT_RE_HYPHEN.findall(t)}
+    return {x for x in toks if x}
+
+
+@dataclass
+class CriteriaTracker:
+    """Per-criterion verification state for ONE run. DONE is decided here, from
+    verifier verdicts — not from the model's word. Status per criterion is
+    `unconfirmed` (no matching verifier ran), `confirmed` (a matching verifier
+    passed) or `failed` (a matching verifier ran red)."""
+
+    items: list[dict] = field(default_factory=list)
+
+    @classmethod
+    def from_spec(cls, spec: TaskSpec | None) -> "CriteriaTracker":
+        crits = spec.success_criteria if spec else []
+        return cls(items=[
+            {"text": c, "status": "unconfirmed", "verifier": None, "evidence": None,
+             "tokens": _salient_tokens(c)}
+            for c in crits
+        ])
+
+    def record(self, *, tool_name: str, ok: bool, evidence: str, arg_text: str) -> None:
+        """Feed a verifier verdict. Matches a criterion only on a SHARED salient
+        token (conservative); passing → confirmed, red → failed. No shared token →
+        nothing touched (the criterion stays unconfirmed)."""
+        vtokens = _salient_tokens(arg_text) | _salient_tokens(evidence)
+        if not vtokens:
+            return
+        for it in self.items:
+            if not (it["tokens"] & vtokens):
+                continue
+            if ok and it["status"] != "confirmed":
+                it.update(status="confirmed", verifier=tool_name, evidence=evidence or None)
+            elif not ok and it["status"] == "unconfirmed":
+                it.update(status="failed", verifier=tool_name, evidence=evidence or None)
+
+    def completion_status(self) -> str:
+        if not self.items:
+            return "none"  # no criteria → task-completion axis is n/a
+        st = [it["status"] for it in self.items]
+        if "failed" in st:
+            return "failed"
+        if all(s == "confirmed" for s in st):
+            return "confirmed"
+        if any(s == "confirmed" for s in st):
+            return "partial"
+        return "unverified"
+
+    def report(self) -> list[dict]:
+        return [{k: it[k] for k in ("text", "status", "verifier", "evidence")} for it in self.items]

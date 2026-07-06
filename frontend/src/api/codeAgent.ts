@@ -18,6 +18,8 @@ export type CodeAgentToolCall = {
   result: string;
   ok?: boolean;
   exit_code?: number;
+  verifier?: boolean;
+  evidence?: string;
   touched_path?: string;
   old_content?: string;
   new_content?: string;
@@ -153,7 +155,21 @@ export type CodeAgentStreamEvent =
       run_id?: string;
       established_facts?: string;
       recent_tool_output?: string;
+      // Task-completion axis — SEPARATE from runtime `ok`. "confirmed" means every
+      // success criterion was proven by a verifier; consumers must gate "solved"
+      // on this, not on `ok`.
+      completion_status?: CompletionStatus;
+      criteria?: CriterionState[];
     };
+
+export type CompletionStatus = "confirmed" | "partial" | "unverified" | "failed" | "none";
+
+export type CriterionState = {
+  text: string;
+  status: "confirmed" | "unconfirmed" | "failed";
+  verifier?: string | null;
+  evidence?: string | null;
+};
 
 export type ContextUsage = {
   current_tokens: number;

@@ -2,6 +2,7 @@ import { Brain, ChevronDown, Loader2, MessageCircleQuestion, RotateCcw, Send, Sh
 import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { ToolCallGroup } from "./ToolCallGroup";
+import type { CompletionStatus, CriterionState } from "../api/codeAgent";
 import type { AgentTurnData, PendingApproval, PendingQuestion } from "./types";
 import { getAutoSpeak, speak } from "./voice";
 import { cn } from "../ui/cn";
@@ -82,6 +83,10 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
         </div>
       )}
 
+      {!turn.running && turn.criteria && turn.criteria.length > 0 && (
+        <CriteriaPanel criteria={turn.criteria} status={turn.completionStatus} />
+      )}
+
       {turn.error && (
         turn.stopReason === "loop_guard" || turn.stopReason === "no_progress" ? (
           // Engineering status, not a first-person "I stopped myself" — the run
@@ -116,6 +121,47 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
     </div>
   );
 });
+
+/** Task-completion panel — per-criterion verification state (Ph7.4/7.5). Shown
+ *  from the done event's `criteria`, coloured by verifier verdict. This is the
+ *  consumer that makes `completion_status` honest: "solved" is green ONLY when a
+ *  verifier confirmed each criterion — never on the model's word. */
+const COMPLETION_LABEL: Record<CompletionStatus, { text: string; cls: string } | undefined> = {
+  confirmed: { text: "подтверждено", cls: "text-success" },
+  partial: { text: "частично подтверждено", cls: "text-mut" },
+  unverified: { text: "не подтверждено verifier'ом", cls: "text-mut" },
+  failed: { text: "проверка НЕ пройдена", cls: "text-danger" },
+  none: undefined,
+};
+
+function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; status?: CompletionStatus }) {
+  const badge = status ? COMPLETION_LABEL[status] : undefined;
+  return (
+    <div className="mt-2 rounded-xl border border-line bg-surface px-3 py-2.5 text-[12.5px]">
+      <div className="mb-1.5 flex flex-wrap items-center gap-x-2">
+        <span className="font-medium text-t2">Готовность задачи</span>
+        {badge && <span className={cn("text-[11.5px] font-medium", badge.cls)}>· {badge.text}</span>}
+      </div>
+      <ul className="space-y-1">
+        {criteria.map((c, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <span
+              className={cn(
+                "mt-[5px] h-[7px] w-[7px] shrink-0 rounded-full",
+                c.status === "confirmed" ? "bg-success" : c.status === "failed" ? "bg-danger" : "bg-mut",
+              )}
+              aria-hidden
+            />
+            <span className="min-w-0">
+              <span className={cn(c.status === "failed" && "text-danger")}>{c.text}</span>
+              {c.evidence && <span className="text-[11px] text-mut"> — {c.evidence}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 /** Collapsible «Рассуждение» block — the model's chain-of-thought streamed on
  *  the separate reasoning channel (when the composer's think toggle is on).

@@ -158,14 +158,19 @@ class VerifierGateTest(unittest.TestCase):
             ))
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "answer")
-        self.assertIsNotNone(done.get("task_spec"))          # spec carried to the UI
-        self.assertFalse(done.get("criteria_confirmed"))     # никакой verifier не прошёл
-        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 2)
+        self.assertTrue(done.get("ok"))                      # runtime health = OK …
+        self.assertEqual(done.get("completion_status"), "unverified")  # … but task NOT verified
+        self.assertTrue(done.get("partial"))
+        self.assertFalse(done.get("criteria_confirmed"))
+        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 2)  # no extra turn
         final = [e for e in evs if e.get("type") == "final_response"][-1]
-        self.assertIn("критерии не подтверждены verifier", final["text"])
+        self.assertIn("Проверка готовности", final["text"])
+        self.assertIn("не подтверждено", final["text"])
 
-    def test_passing_verifier_marks_criteria_confirmed(self):
-        # A passing ssh_assert_not_contains confirms a criterion → done flags it.
+    def test_passing_verifier_confirms_its_matching_criterion(self):
+        # A passing ssh_assert_not_contains(Content-Length) confirms ONLY the
+        # matching criterion (per-criterion) → completion_status = partial, one
+        # criterion confirmed with evidence, the other two still unconfirmed.
         chat = _SeqChat([
             _call("write_file", path="a.ps1", content="x"),
             _call("ssh_assert_not_contains", host="home-srv01", path="C:\\a.ps1", pattern="Content-Length"),
@@ -175,7 +180,9 @@ class VerifierGateTest(unittest.TestCase):
         def _exec(request, **kw):
             tool = getattr(request, "tool_name", "")
             if "assert" in str(tool):
-                return SimpleNamespace(status="ok", output={"text": "OK", "ok": True, "touched_host": "home-srv01"})
+                return SimpleNamespace(status="ok", output={
+                    "text": "OK", "ok": True, "verifier": True,
+                    "evidence": "«Content-Length» НЕ НАЙДЕНО в C:\\a.ps1", "touched_host": "home-srv01"})
             return SimpleNamespace(status="ok", output={"text": "ok", "ok": True, "touched_path": "a.ps1"})
 
         with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
@@ -186,6 +193,89 @@ class VerifierGateTest(unittest.TestCase):
             ))
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "answer")
+        self.assertEqual(done.get("completion_status"), "partial")   # 1 of 3 proven
+        self.assertFalse(done.get("criteria_confirmed"))             # NOT all confirmed
+        confirmed = [c for c in done["criteria"] if c["status"] == "confirmed"]
+        self.assertEqual(len(confirmed), 1)
+        self.assertIn("Content-Length", confirmed[0]["text"])
+        self.assertIsNotNone(confirmed[0]["evidence"])
+
+
+# ── per-criterion tracker (Ph7.4/7.5) ───────────────────────────
+
+
+class CriteriaTrackerTest(unittest.TestCase):
+    def _spec(self):
+        return TaskSpec(success_criteria=[
+            "Сервис слушает порт 18080",
+            "файл не содержит Content-Length",
+            "test_x.py проходит",
+        ])
+
+    def test_status_transitions_and_completion(self):
+        from app.application.code_agent.taskspec import CriteriaTracker
+        t = CriteriaTracker.from_spec(self._spec())
+        self.assertEqual(t.completion_status(), "unverified")
+        t.record(tool_name="ssh_port_check", ok=True, evidence="18080 LISTENING", arg_text="host 18080")
+        self.assertEqual(t.completion_status(), "partial")  # 1/3
+        t.record(tool_name="ssh_assert_not_contains", ok=True, evidence="", arg_text="Content-Length")
+        self.assertEqual(t.completion_status(), "partial")  # 2/3
+        t.record(tool_name="run_bash", ok=False, evidence="", arg_text="test_x.py")
+        self.assertEqual(t.completion_status(), "failed")   # a verifier ran red
+
+    def test_no_shared_token_never_falsely_confirms(self):
+        from app.application.code_agent.taskspec import CriteriaTracker
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["порт 18080 слушает"]))
+        t.record(tool_name="ssh_port_check", ok=True, evidence="9999 LISTENING", arg_text="host 9999")
+        self.assertEqual(t.items[0]["status"], "unconfirmed")  # 9999 != 18080
+
+    def test_all_confirmed(self):
+        from app.application.code_agent.taskspec import CriteriaTracker
+        t = CriteriaTracker.from_spec(self._spec())
+        t.record(tool_name="ssh_port_check", ok=True, evidence="", arg_text="18080")
+        t.record(tool_name="v", ok=True, evidence="", arg_text="Content-Length")
+        t.record(tool_name="v", ok=True, evidence="", arg_text="test_x.py")
+        self.assertEqual(t.completion_status(), "confirmed")
+
+    def test_no_criteria_is_none(self):
+        from app.application.code_agent.taskspec import CriteriaTracker
+        self.assertEqual(CriteriaTracker.from_spec(None).completion_status(), "none")
+
+
+class CodingLoopTest(unittest.TestCase):
+    def tearDown(self):
+        deferred_tools.clear_run("coding-loop")
+
+    def test_edit_fail_edit_pass_confirms_via_green_test(self):
+        task = ("Цель: почини сломанный тест.\n"
+                "Критерии готовности:\n- pytest tests/test_x.py проходит")
+        chat = _SeqChat([
+            _call("write_file", path="x.py", content="a"),
+            _call("run_bash", command="pytest tests/test_x.py"),   # fail
+            _call("write_file", path="x.py", content="b"),
+            _call("run_bash", command="pytest tests/test_x.py"),   # pass
+            _final("починил"),
+        ], _final())
+        state = {"pytest": 0}
+
+        def _exec(request, **kw):
+            tool = getattr(request, "tool_name", "")
+            args = getattr(request, "args", {})
+            if tool == "run_bash":
+                state["pytest"] += 1
+                ec = 0 if state["pytest"] >= 2 else 1
+                return SimpleNamespace(status="ok", output={"text": f"exit {ec}", "ok": ec == 0, "exit_code": ec})
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True, "touched_path": args.get("path", "x.py")})
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="coding-loop",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")          # runtime fine
+        self.assertEqual(done.get("completion_status"), "confirmed")  # green test proved it
         self.assertTrue(done.get("criteria_confirmed"))
 
 

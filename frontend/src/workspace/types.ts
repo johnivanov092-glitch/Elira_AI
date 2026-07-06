@@ -1,4 +1,4 @@
-import type { CodeAgentToolCall } from "../api/codeAgent";
+import type { CodeAgentToolCall, CompletionStatus, CriterionState } from "../api/codeAgent";
 
 export type UserTurnData = { kind: "user"; id: string; text: string };
 
@@ -41,6 +41,11 @@ export type AgentTurnData = {
   activeTool?: string;
   error?: string | null;
   stopReason?: string;
+  /** Task-completion axis — SEPARATE from runtime success. "confirmed" = every
+   *  success criterion proven by a verifier; UI shows "solved" only on this. */
+  completionStatus?: CompletionStatus;
+  /** Per-criterion verification state for the task panel. */
+  criteria?: CriterionState[];
   runId?: string;
   resumable?: boolean;
   pendingApproval?: PendingApproval;

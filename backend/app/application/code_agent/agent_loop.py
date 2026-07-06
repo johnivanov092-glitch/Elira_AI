@@ -30,7 +30,12 @@ from app.application.tool_providers import (
     build_mcp_providers,
 )
 from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE
-from app.application.code_agent.taskspec import derive_task_spec, taskspec_context, taskspec_report
+from app.application.code_agent.taskspec import (
+    CriteriaTracker,
+    derive_task_spec,
+    taskspec_context,
+    taskspec_report,
+)
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
     ToolExecutionRequest,
@@ -212,9 +217,6 @@ _SSH_ACTIVATABLE_TOOLS = (
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_list_hosts",
 )
-# Verifier tools whose ok result CONFIRMS a success criterion (TaskSpec gate):
-# a passing assert / port check is real evidence, not the model's word.
-_VERIFIER_TOOLS = frozenset({"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check"})
 # Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
 # button, plus common free-text yes-words). Anything else = deny.
 _SSH_APPROVE_WORDS = frozenset({"одобрить", "approve", "yes", "да", "allow", "ok", "разрешить"})
@@ -703,11 +705,12 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
-        # TaskSpec verifier state (Phase 6): criteria_confirmed flips when a
-        # verifier tool (ssh_assert_*/ssh_port_check) returns ok. We do NOT burn
-        # an extra LLM turn just to remind the model; unconfirmed criteria are
-        # reported deterministically at finalization.
-        criteria_confirmed = False
+        # TaskSpec per-criterion state (Ph7.4/7.5): DONE is decided by verifiers,
+        # not the model's word. Each criterion is unconfirmed → confirmed (a matching
+        # verifier passed) / failed (matching verifier red). completion_status is a
+        # deterministic function of this — kept SEPARATE from runtime `ok`. We never
+        # burn an extra LLM turn to nag; unconfirmed criteria are reported at finalize.
+        criteria = CriteriaTracker.from_spec(task_spec)
         # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
         # loop RUNS that command on finalize-after-edits and refuses to close
         # until it exits 0 — no rubber-stamped "проверено". Bounded so a
@@ -1212,18 +1215,26 @@ def _stream_code_agent_core(
                         })
                         continue
                 final_text = _strip_tool_call_markup(content or last_text)
-                if (
-                    task_spec is not None
-                    and task_spec.success_criteria
-                    and edited_in_run
-                    and not criteria_confirmed
-                ):
-                    _crit = "\n".join(f"- {c}" for c in task_spec.success_criteria[:8])
-                    final_text = (
-                        final_text.rstrip()
-                        + "\n\nПроверка готовности: критерии не подтверждены verifier'ом.\n"
-                        + _crit
-                    )
+                # Per-criterion verification (Ph7.5): completion_status is a
+                # deterministic function of the tracker — SEPARATE from runtime `ok`.
+                # Annotate what a verifier confirmed / failed / left unchecked, from
+                # the tracker, never the model's word.
+                _completion = criteria.completion_status()
+                criteria_confirmed = _completion == "confirmed"
+                if criteria.items and _completion != "confirmed":
+                    _lines = []
+                    for _it in criteria.report():
+                        if _it["status"] == "confirmed":
+                            continue
+                        _mark = "✗ НЕ ПРОЙДЕН" if _it["status"] == "failed" else "? не подтверждено"
+                        _ev = f" — {_it['evidence']}" if _it["evidence"] else ""
+                        _lines.append(f"- [{_mark}] {_it['text']}{_ev}")
+                    if _lines:
+                        final_text = (
+                            final_text.rstrip()
+                            + f"\n\nПроверка готовности ({_completion}) — не всё подтверждено verifier'ом:\n"
+                            + "\n".join(_lines)
+                        )
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to
                 # Elira's reply. Fail-safe — never breaks the run.
@@ -1270,7 +1281,7 @@ def _stream_code_agent_core(
                     )
                 yield {
                     "type": "done",
-                    "ok": True,
+                    "ok": True,  # runtime health — NOT "task solved"; see completion_status
                     "steps": step,
                     "stop_reason": "answer",
                     "error": None,
@@ -1278,6 +1289,9 @@ def _stream_code_agent_core(
                     "recent_tool_output": _recent_digest,
                     "task_spec": taskspec_report(task_spec) if task_spec else None,
                     "criteria_confirmed": criteria_confirmed,
+                    "completion_status": _completion,
+                    "criteria": criteria.report(),
+                    "partial": _completion in ("partial", "unverified", "failed"),
                 }
                 return
 
@@ -1824,10 +1838,6 @@ def _stream_code_agent_core(
                 # prompt off the front of the context.
                 _tool_content = _truncate_for_llm(text_result)
                 _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
-                # A passing verifier CONFIRMS a criterion (TaskSpec gate) — real
-                # evidence, so the "prove it" nudge won't fire.
-                if name in _VERIFIER_TOOLS and _tool_ok:
-                    criteria_confirmed = True
                 # Grounding fact from this call — computed HERE (before the tool
                 # message is appended) so the progress controller can judge whether
                 # the call revealed anything NEW.
@@ -1843,6 +1853,21 @@ def _stream_code_agent_core(
                 verdict = progress.evaluate(
                     name=name, args=parsed_args, tool_meta=tool_meta, fact=_fact,
                 )
+                # Per-criterion state (Ph7.4): feed verifier verdicts. A verifier
+                # tool (verifier=True) confirms/fails a matching criterion; a coding
+                # test/verify that went GREEN (exit 0) counts as a passing check too.
+                if criteria.items:
+                    _arg_text = " ".join(str(v) for v in parsed_args.values())[:300]
+                    if tool_meta.get("verifier"):
+                        criteria.record(
+                            tool_name=name, ok=_tool_ok,
+                            evidence=str(tool_meta.get("evidence") or ""), arg_text=_arg_text,
+                        )
+                    elif verdict.family.startswith(("test:", "verify:")) and tool_meta.get("exit_code") == 0:
+                        criteria.record(
+                            tool_name=name, ok=True, evidence="проверка прошла (exit 0)",
+                            arg_text=_arg_text,
+                        )
                 # Repetition nudges (exact / near-dup) — orthogonal to the router.
                 _rc = repeated_tool_calls.get(fingerprint, 0)
                 if name not in _LOOP_GUARD_EXEMPT_TOOLS and _REPEATED_TOOL_CALL_NUDGE_AT <= _rc < _REPEATED_TOOL_CALL_LIMIT:
@@ -1892,9 +1917,10 @@ def _stream_code_agent_core(
                         next_step=progress.next_step_hint(),
                     )
                     yield {"type": "final_response", "step": step, "text": _det}
+                    _np_completion = criteria.completion_status()
                     yield {
                         "type": "done",
-                        "ok": False,
+                        "ok": False,  # runtime failure — separate from completion_status
                         "steps": step,
                         "stop_reason": "no_progress",
                         "error": f"no verified progress: {verdict.stop_detail}",
@@ -1903,7 +1929,10 @@ def _stream_code_agent_core(
                         "no_progress_attempts": progress.no_progress_total,
                         "exhausted_strategies": progress.exhausted_summary(),
                         "task_spec": taskspec_report(task_spec) if task_spec else None,
-                        "criteria_confirmed": criteria_confirmed,
+                        "criteria_confirmed": _np_completion == "confirmed",
+                        "completion_status": _np_completion,
+                        "criteria": criteria.report(),
+                        "partial": _np_completion in ("partial", "unverified", "failed"),
                     }
                     return
 

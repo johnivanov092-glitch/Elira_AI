@@ -325,7 +325,15 @@ function wire(
         }));
       } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput }));
       else if (e.type === "done") {
-        pushLedger({ timestamp: Date.now(), type: e.ok ? "final" : "error", action: e.stop_reason, result: e.error || "completed" });
+        // The ledger reports the TASK outcome (completion_status), not just runtime
+        // ok — a run can be ok=true yet unverified/partial/failed. "solved" ⇔
+        // completion_status === "confirmed"; anything else is surfaced, not hidden.
+        const cs = e.completion_status;
+        const ledgerResult =
+          e.error ||
+          (cs && cs !== "none" && cs !== "confirmed" ? `задача: ${cs}` : "completed");
+        const ledgerType = !e.ok || cs === "failed" ? "error" : "final";
+        pushLedger({ timestamp: Date.now(), type: ledgerType, action: e.stop_reason, result: ledgerResult });
         patch((a) => ({
           ...a,
           running: false,
@@ -333,6 +341,8 @@ function wire(
           pendingApproval: undefined,
           stopReason: e.stop_reason,
           error: e.error,
+          completionStatus: e.completion_status,
+          criteria: e.criteria,
           resumable: Boolean(e.resumable),
           runId: e.run_id || a.runId,
         }));
