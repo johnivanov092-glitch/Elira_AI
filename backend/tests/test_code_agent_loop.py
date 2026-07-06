@@ -379,6 +379,12 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIn("preflight blocked", events[-1]["error"])
 
     def test_stream_stops_at_wall_clock_boundary(self) -> None:
+        chat_calls = []
+
+        def chat_after_deadline(**kw):
+            chat_calls.append(kw)
+            return {"message": {"content": "unused", "tool_calls": []}}
+
         with patch(
             "app.application.agent_registry.sandbox.preflight_or_raise",
             return_value={"limit": {"max_execution_seconds": 10}},
@@ -397,10 +403,10 @@ class AgentLoopTest(unittest.TestCase):
             events = list(stream_code_agent(
                 user_message="x",
                 project_root=self.root,
-                chat_fn=lambda **kw: {"message": {"content": "unused", "tool_calls": []}},
+                chat_fn=chat_after_deadline,
             ))
-        # F2: deadline now emits a wrap-up final_response before done, and the
-        # stop_reason is the honest "timeout" instead of generic "error".
+        # Deadline emits a deterministic final_response before done, without
+        # spending another LLM call after the execution budget is exhausted.
         self.assertEqual(
             [event["type"] for event in events],
             ["run_started", "final_response", "done"],
@@ -408,7 +414,8 @@ class AgentLoopTest(unittest.TestCase):
         self.assertFalse(events[-1]["ok"])
         self.assertEqual(events[-1]["stop_reason"], "timeout")
         self.assertIn("timed out", events[-1]["error"])
-        self.assertEqual(events[1]["text"], "unused")  # wrap-up call answer
+        self.assertIn("timeout 10s", events[1]["text"])
+        self.assertEqual(chat_calls, [])
 
     def test_loop_rejects_invalid_project_root(self) -> None:
         result = run_code_agent(

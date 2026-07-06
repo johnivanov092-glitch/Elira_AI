@@ -251,6 +251,18 @@ class ProgressEvaluator:
     no_progress_total: int = 0        # cumulative — for the report only
     consecutive_no_progress: int = 0  # resets on ANY progress — drives the backstop stop
 
+    def _clear_exhaustion_for_target(self, target: str) -> None:
+        if not target:
+            return
+        fams = self.target_families.get(target)
+        if fams:
+            fams.clear()
+        suffix = f"@{target}"
+        for stale_key in list(self.exhausted):
+            if stale_key.endswith(suffix):
+                self.exhausted.discard(stale_key)
+                self.strategy_no_progress[stale_key] = 0
+
     def _verify_pass_is_progress(self, name: str, family: str, key: str, tool_meta: dict) -> bool:
         """A coding test/verify that went GREEN (exit_code==0) is real forward motion
         — but only the FIRST green per key. This is progress from the EXIT CODE, not
@@ -280,9 +292,9 @@ class ProgressEvaluator:
             # family / host be tried again if needed.
             self.strategy_no_progress[key] = 0
             self.exhausted.discard(key)
-            fams = self.target_families.get(target)
-            if fams:
-                fams.discard(family)
+            self._clear_exhaustion_for_target(target)
+            if th_key:
+                self._clear_exhaustion_for_target(host)
             if th_key:
                 self.tool_host_no_progress[th_key] = 0
             return ProgressVerdict("progress", key, family, target, exhausted=False, should_stop=False)

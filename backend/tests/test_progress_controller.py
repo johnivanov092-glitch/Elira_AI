@@ -253,6 +253,42 @@ class StrategyRouterTest(unittest.TestCase):
         self.assertEqual(ev.consecutive_no_progress, 0)
         self.assertEqual(ev.exhausted_summary(), [])
 
+    def test_host_progress_clears_stale_exhausted_remote_families(self) -> None:
+        ev = ProgressEvaluator()
+        for _ in range(2):
+            ev.evaluate(
+                name="ssh_run",
+                args={"host": "home-srv01", "command": "powershell.exe -File C:\\AgentLab\\start.ps1"},
+                tool_meta={"text": "exit=1"},
+                fact=None,
+            )
+        self.assertIn("remote_shell@home-srv01", ev.exhausted_summary())
+
+        progress = ev.evaluate(
+            name="ssh_run_ps",
+            args={"host": "home-srv01", "script": "Get-NetTCPConnection -LocalPort 18080"},
+            tool_meta={"text": "exit=0"},
+            fact="ssh_run_ps(home-srv01): exit=0 STDOUT: Port 18080 LISTENING PID 604",
+        )
+        self.assertEqual(progress.status, "progress")
+        self.assertEqual(ev.exhausted_summary(), [])
+
+        ev.evaluate(
+            name="ssh_run_ps",
+            args={"host": "home-srv01", "script": "$bad = '$pos:'"},
+            tool_meta={"text": "exit=1"},
+            fact=None,
+        )
+        second_ps = ev.evaluate(
+            name="ssh_run_ps",
+            args={"host": "home-srv01", "script": "while($true){}"},
+            tool_meta={"text": "exit=1"},
+            fact=None,
+        )
+        self.assertTrue(second_ps.exhausted)
+        self.assertFalse(second_ps.should_stop)
+        self.assertEqual(ev.exhausted_summary(), ["remote_ps@home-srv01"])
+
     def test_tool_host_budget_stops_a_stuck_host(self) -> None:
         # A host that eats 5 failing ssh_run calls (one family) stops via the
         # per-(tool,host) budget even though only ONE family is involved.
