@@ -198,12 +198,18 @@ def _resolve_locator(page, selector: str, *, kind: str):
     strategies = []
     if looks_css:
         strategies.append(lambda: page.locator(sel))
-    if kind == "fill":
+    if kind == "check":
+        strategies += [
+            lambda: page.get_by_role("checkbox", name=sel),
+            lambda: page.get_by_label(sel, exact=False),
+            lambda: page.locator(f"input[type='checkbox'][name='{sel}'], #{sel}"),
+        ]
+    elif kind == "fill":
         strategies += [
             lambda: page.get_by_label(sel, exact=False),
             lambda: page.get_by_placeholder(sel),
             lambda: page.get_by_role("textbox", name=sel),
-            lambda: page.locator(f"input[name='{sel}'], textarea[name='{sel}'], #{sel}"),
+            lambda: page.locator(f"input[name='{sel}'], textarea[name='{sel}'], select[name='{sel}'], #{sel}"),
         ]
     else:  # click
         strategies += [
@@ -224,9 +230,14 @@ def _resolve_locator(page, selector: str, *, kind: str):
 
 
 def _apply_action(page, act: dict) -> None:
-    """Apply one interaction step: {"fill": <label|css>, "value": ...}, {"click":
-    <text|css>}, or {"wait": <ms>}. Best-effort and non-fatal — a bad step is skipped so
-    a later assertion still reflects the real DOM."""
+    """Apply one interaction step before the DOM is captured:
+      {"fill": <label|css>, "value": ...}    type into an input (value "" clears it)
+      {"select": <label|css>, "value": ...}  choose a <select> option (by label/value/text)
+      {"check": <label|css>} / {"uncheck": …} toggle a checkbox
+      {"click": <text|css>}                   click a button/link
+      {"wait": <ms>}                          pause
+    fill/select accept a CSS selector OR a human label; best-effort and non-fatal — a bad
+    step is skipped so a later assertion still reflects the REAL post-interaction DOM."""
     if not isinstance(act, dict):
         return
     try:
@@ -234,6 +245,21 @@ def _apply_action(page, act: dict) -> None:
             loc = _resolve_locator(page, str(act.get("fill") or ""), kind="fill")
             if loc is not None:
                 loc.fill(str(act.get("value", "") if act.get("value") is not None else ""))
+        elif "select" in act:
+            loc = _resolve_locator(page, str(act.get("select") or ""), kind="fill")
+            if loc is not None:
+                opt = str(act.get("value", act.get("option", "")) or "")
+                for kw in ("label", "value", None):
+                    try:
+                        loc.select_option(**({kw: opt} if kw else {})) if kw else loc.select_option(opt)
+                        break
+                    except Exception:
+                        continue
+        elif "check" in act or "uncheck" in act:
+            want = "check" in act
+            loc = _resolve_locator(page, str(act.get("check") or act.get("uncheck") or ""), kind="check")
+            if loc is not None:
+                (loc.check if want else loc.uncheck)(timeout=8000)
         elif "click" in act:
             loc = _resolve_locator(page, str(act.get("click") or ""), kind="click")
             if loc is not None:

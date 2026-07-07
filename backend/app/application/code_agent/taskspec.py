@@ -767,7 +767,9 @@ def _criterion_intent(text: str) -> str:
         return "generic"
     # positive: a rendered-page claim with either a visibility verb OR named tokens
     # (a UI section listing `Inventory`,`Backups`,… is a dom_contains without a verb).
-    if dom and (_has(low, _DOM_VERB) or targets):
+    # An INTERACTION that asserts a result ("browser interaction: … `Validate` показывает
+    # `Job name required`") is a DOM claim too, even without a rendered/DOM/на-экране word.
+    if (dom or _is_interaction(text)) and (_has(low, _DOM_VERB) or targets):
         return "dom_contains"
     if _has(low, _VIEWPORT_CTX):
         return "viewport_layout"

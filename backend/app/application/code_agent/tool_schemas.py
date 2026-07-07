@@ -400,10 +400,13 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                         "actions": {
                             "type": "array",
                             "description": (
-                                "Optional interaction steps performed in order before reading the DOM. "
-                                "Each: {\"fill\": \"<label|placeholder|css>\", \"value\": \"...\"} to type, "
-                                "{\"click\": \"<button text|css>\"} to click, or {\"wait\": <ms>}. "
-                                "Example: [{\"fill\": \"CIDR\", \"value\": \"192.168.1.0/24\"}, {\"click\": \"Calculate\"}]."
+                                "Optional interaction steps performed in order before reading the DOM. Each: "
+                                "{\"fill\": \"<label|placeholder|css>\", \"value\": \"...\"} to type (value \"\" clears it), "
+                                "{\"select\": \"<label|css>\", \"value\": \"<option>\"} to pick a dropdown option, "
+                                "{\"check\": \"<label|css>\"} / {\"uncheck\": ...} to toggle a checkbox, "
+                                "{\"click\": \"<button text|css>\"} to click, or {\"wait\": <ms>}. Then the returned DOM "
+                                "reflects the result. Example: [{\"fill\": \"Job name\", \"value\": \"nas-backup\"}, "
+                                "{\"select\": \"Schedule\", \"value\": \"Daily\"}, {\"check\": \"Encryption\"}, {\"click\": \"Validate\"}]."
                             ),
                             "items": {"type": "object"},
                         },

@@ -33,7 +33,7 @@ Support: **✅ supported** (classified + verifier + evidence + regression test) 
 | `server.started` | `server_started` | `run_server` / `ssh_port_check` | actual_url/LISTENING | ✅ | — |
 | `http.page_open` | `page_open` | `http_api` / `browser` | 2xx / render | ✅ | — |
 | `browser.dom_contains` | `dom_contains` | `browser` | tokens in rendered DOM (boundary-anchored) | ✅ | prefix-match **resolved** |
-| `browser.interaction.fill_click_assert` | `dom_contains`+interaction | `browser(actions)` | post-action DOM has result | ◐ | — |
+| `browser.interaction.fill_click_assert` | `dom_contains`+interaction | `browser(actions)` | post-action DOM has result | ✅ | — |
 | `project.scope.created_under` | `file_exists` | `path_exists` | present | ✅ | — |
 | `cleanup.confirmed` | `file_not_exists` | `ssh_not_exists` | absent | ✅ | — |
 | `viewport_layout` | `viewport_layout` | `browser` | viewport meta | ◐ | — |
@@ -41,7 +41,7 @@ Support: **✅ supported** (classified + verifier + evidence + regression test) 
 | `cli.output.contains` — `cmd` выводит `INFO: 2` | `command_output` | `run_bash` | stdout/stderr contains text (one run closes many) | ✅ | — |
 | `cli.command.fails_with_output` — выводит X и падает | `command_output`+nonzero | `run_bash` | text + exit≠0 | ✅ | — |
 | `cli.output.not_contains` | `command_output` | `run_bash` | text absent | ◐ | — |
-| **`browser.form.select_checkbox_assert`** — fill/select/checkbox/empty + click | `generic` ⚠ | `browser(actions)` | multi-step post-action DOM | ✗ | — |
+| `browser.form.select_checkbox_assert` — fill/select/checkbox/empty + click | `dom_contains`+interaction | `browser(actions)` | multi-step post-action DOM | ✅ | — |
 
 ⚠ = today classifies as `generic` (or misses the interaction flag) → the criterion can
 never be confirmed and the run ends honest-partial.
@@ -77,11 +77,13 @@ honest instead of a rubber stamp.
    `log-summarizer` (INFO/WARN/ERROR/TOTAL + missing.log) and `csv-inventory-checker`
    (OK/WARN/DOWN/SUBNET). *Known limit:* an abstract `verifier видит X` with no run
    reference (the csv `OUT_OF_SCOPE` line) stays `generic` — phrase it with a run verb.
-2. **Browser form grammar — MISSING** (`backup-form-checker`, 2 criteria). Two problems:
-   (a) `browser interaction: … показывает X` **without** a DOM-context word (`rendered`/`DOM`/
-   `на экране`) classifies `generic`; (b) `interaction_spec` models only a single fill+click —
-   no `select`, `checkbox`, empty-field, or multi-step sequence, and `_apply_action` has no
-   `select`/`check` action type.
+2. **Browser form grammar — ✅ DONE (Batch B).**
+   `browser interaction: … показывает X` now classifies as `dom_contains`+interaction even
+   without a rendered/DOM/на-экране word; the browser tool gained `select`/`check`/`uncheck`
+   (empty-field is `fill value:""`), so a multi-step fill/select/check/click sequence runs
+   for real and the post-interaction DOM (not text/grep) confirms the result token. Covers
+   `backup-form-checker`. Verdict is positive-evidence: the tool executes the actions and
+   returns the real DOM (verified with a live Playwright form test).
 3. **Final-report honesty — PARTIAL.** The scrub neutralises status headers, model count
    claims ("17 verifier criteria"), and universal "all passed" claims when not confirmed —
    but a model **✅-checkmark table/row** ("interaction … ✅") survives. The deterministic

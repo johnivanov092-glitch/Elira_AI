@@ -128,8 +128,9 @@ def _interaction_group_actions(items: list[dict], url: str) -> list[dict]:
         click_step = f'{{"click":"{click}"}}' if click else '{"click":"<кнопка>"}'
         out.append({
             "tool": "browser",
-            "call": (f"browser(url={url}, actions=[{fill_step},{click_step}]) — ОДИН вызов "
-                     f"закрывает всё это; в DOM после действий должно быть {show}; "
+            "call": (f"browser(url={url}, actions=[{fill_step},…,{click_step}]) — ОДИН вызов "
+                     f"закрывает всё это; собери шаги из критерия (fill/select/check по надобности) "
+                     f"и заверши click; в DOM после действий должно быть {show}; "
                      f"НЕ перезапускай сервер (он уже поднят), НЕ используй grep/node."),
             "why": "; ".join(it["text"] for it in its)[:200],
         })

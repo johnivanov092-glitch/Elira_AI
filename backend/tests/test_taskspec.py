@@ -313,6 +313,38 @@ class BrowserInteractionLiveTest(unittest.TestCase):
         self.assertIn("Invalid CIDR", dom)
         self.assertNotIn("Network: 192.168.1.0", dom)
 
+    _FORM = (
+        "<!doctype html><html><body><h1>Backup Form Checker</h1>"
+        "<label for=j>Job name</label><input id=j>"
+        "<label for=s>Schedule</label><select id=s><option>Weekly</option><option>Daily</option></select>"
+        "<label><input type=checkbox id=e> Encryption</label>"
+        "<button onclick=\"var j=document.getElementById('j').value,s=document.getElementById('s').value,"
+        "e=document.getElementById('e').checked;document.getElementById('o').innerText="
+        "j===''?'Job name required':(j==='nas-backup'&&s==='Daily'&&e?'Backup job valid':'Invalid');\">Validate</button>"
+        "<div id=o></div></body></html>"
+    )
+
+    def _form_url(self):
+        d = Path(tempfile.mkdtemp())
+        f = d / "form.html"
+        f.write_text(self._FORM, encoding="utf-8")
+        return f.as_uri()
+
+    def test_form_fill_select_check_click_drive_the_dom(self):
+        from app.application.code_agent.tools._web import _browser_render
+        url = self._form_url()
+        _t, _u, empty = _browser_render(url, None, 4000, [{"click": "Validate"}])
+        self.assertIn("Job name required", empty)                       # empty field → required
+        _t, _u, ok = _browser_render(url, None, 4000, [
+            {"fill": "Job name", "value": "nas-backup"}, {"select": "Schedule", "value": "Daily"},
+            {"check": "Encryption"}, {"click": "Validate"}])
+        self.assertIn("Backup job valid", ok)                           # fill+select+check+click
+        self.assertNotIn("Invalid", ok)
+        _t, _u, noenc = _browser_render(url, None, 4000, [
+            {"fill": "Job name", "value": "nas-backup"}, {"select": "Schedule", "value": "Daily"},
+            {"click": "Validate"}])
+        self.assertNotIn("Backup job valid", noenc)                     # the checkbox genuinely mattered
+
 
 class ToolSearchEconomyTest(unittest.TestCase):
     def tearDown(self):
@@ -944,6 +976,29 @@ class VaultDeskVerificationTest(unittest.TestCase):
         ]))
         t.record(tool_name="run_bash", args={"command": "npm run typecheck"}, ok=True, evidence="exit 0")
         self.assertEqual(t.items[0]["status"], "confirmed")      # present + green → confirmed
+
+    def test_browser_interaction_without_dom_word_classifies_and_confirms(self):
+        # Batch B: 'browser interaction: … `Validate` показывает `X`' (no rendered/DOM/на-экране
+        # word) is a DOM claim; the result token is the only target, and the real post-action
+        # DOM (from the browser tool executing fill/select/check/click) confirms it.
+        c1 = "browser interaction: пустой `Job name` + `Validate` показывает `Job name required`"
+        c2 = "browser interaction: `nas-backup` + `Daily` + включённый `Encryption` + `Validate` показывает `Backup job valid`"
+        from app.application.code_agent.taskspec import _criterion_intent, _dom_targets
+        self.assertEqual(_criterion_intent(c1), "dom_contains")
+        self.assertEqual(_criterion_intent(c2), "dom_contains")
+        self.assertEqual(_dom_targets(c1), {"job name required"})   # only the RESULT, not Job name/Validate
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c1, c2]))
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True,
+                 evidence="[fill Job name=; click Validate]\nBackup Form Checker\nJob name required")
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True,
+                 evidence="[fill nas-backup; select Daily; check Encryption; click Validate]\nBackup job valid")
+        self.assertEqual(t.items[0]["status"], "confirmed")
+        self.assertEqual(t.items[1]["status"], "confirmed")
+        # a bundle grep of the source does NOT confirm an interaction criterion
+        t2 = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c1]))
+        t2.record(tool_name="run_bash", args={"command": "grep 'Job name required' src/"},
+                  ok=True, evidence="app.js: Job name required", meta={"exit_code": 0})
+        self.assertEqual(t2.items[0]["status"], "unconfirmed")
 
     def test_grep_and_node_script_never_confirm_interaction(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[

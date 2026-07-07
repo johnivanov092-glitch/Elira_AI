@@ -173,20 +173,23 @@ categories:
 
   - id: browser.form.select_checkbox_assert
     domain: browser
-    support: missing
+    support: supported            # Batch B
     criterion_patterns:
-      - "пустой `Job name` + `Validate` показывает `Job name required`"
+      - "browser interaction: пустой `Job name` + `Validate` показывает `Job name required`"
       - "`nas-backup` + `Daily` + включённый `Encryption` + `Validate` показывает `Backup job valid`"
-    intent: generic          # <-- misclassified today; SHOULD be dom_contains+interaction
+    intent: dom_contains          # +interaction flag
     verifier_tools: [browser]
-    evidence_required: ["browser(url, actions=[{fill,value:''},{select,option},{check},{click}]) then DOM contains result"]
-    closes: []               # nothing today
-    missing_reason: >
-      Three gaps: (1) 'browser interaction: … показывает X' without a _DOM_CTX word ->
-      classified generic. (2) interaction_spec models only single fill+click — no select,
-      checkbox, empty-value, or multi-step sequence. (3) tools/_web.py:_apply_action has no
-      'select' or 'check' action type. Live backup-form left these 2 criteria unverified.
-    code: "GAP — extend _is_interaction context, interaction_spec -> action LIST, _apply_action select/check"
+    evidence_required:
+      - "browser(url, actions=[{fill,value:''},{select,value},{check},{click}]) — the tool ACTUALLY performs the steps and returns the real post-interaction DOM; the RESULT token (after показывает/содержит) must be present (boundary-anchored)."
+    closes: [dom_contains]
+    grammar: >
+      An interaction criterion asserting a result classifies as dom_contains even WITHOUT a
+      rendered/DOM/на-экране word (the 'browser interaction:'/показывает form). The target is
+      the result token only; the input value / dropdown option / checkbox / button are the
+      ACTION. The verdict is positive-evidence — a real browser render of the post-action DOM;
+      grep/source-read/HTTP-200 never confirm it.
+    regression: "tests/test_taskspec.py: backup-form classify+confirm; live Playwright fill/select/check/click form test."
+    code: "taskspec.py:_criterion_intent (interaction→dom_contains), _dom_targets, _is_interaction; tools/_web.py:_apply_action(fill|select|check|uncheck|click), _resolve_locator(check)"
 
   - id: cli.output.contains
     domain: cli
