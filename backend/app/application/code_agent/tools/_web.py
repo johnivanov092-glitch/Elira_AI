@@ -229,7 +229,7 @@ def _resolve_locator(page, selector: str, *, kind: str):
     return None
 
 
-def _apply_action(page, act: dict) -> None:
+def _apply_action(page, act: dict) -> bool:
     """Apply one interaction step before the DOM is captured:
       {"fill": <label|css>, "value": ...}    type into an input (value "" clears it)
       {"select": <label|css>, "value": ...}  choose a <select> option (by label/value/text)
@@ -237,22 +237,29 @@ def _apply_action(page, act: dict) -> None:
       {"click": <text|css>}                   click a button/link
       {"wait": <ms>}                          pause
     fill/select accept a CSS selector OR a human label; best-effort and non-fatal — a bad
-    step is skipped so a later assertion still reflects the REAL post-interaction DOM."""
+    step is skipped so a later assertion still reflects the REAL post-interaction DOM.
+    Returns True only when a real INTERACTION (fill/select/check/click) resolved and ran —
+    so the caller can tell an actual interaction from a no-op / plain render (a bare `wait`
+    returns False). Each locator action is time-bounded so one miss can't stall the render."""
     if not isinstance(act, dict):
-        return
+        return False
     try:
         if "fill" in act:
             loc = _resolve_locator(page, str(act.get("fill") or ""), kind="fill")
             if loc is not None:
-                loc.fill(str(act.get("value", "") if act.get("value") is not None else ""))
+                loc.fill(str(act.get("value", "") if act.get("value") is not None else ""), timeout=8000)
+                return True
         elif "select" in act:
             loc = _resolve_locator(page, str(act.get("select") or ""), kind="fill")
             if loc is not None:
                 opt = str(act.get("value", act.get("option", "")) or "")
                 for kw in ("label", "value", None):
                     try:
-                        loc.select_option(**({kw: opt} if kw else {})) if kw else loc.select_option(opt)
-                        break
+                        if kw:
+                            loc.select_option(**{kw: opt}, timeout=8000)
+                        else:
+                            loc.select_option(opt, timeout=8000)
+                        return True
                     except Exception:
                         continue
         elif "check" in act or "uncheck" in act:
@@ -260,24 +267,28 @@ def _apply_action(page, act: dict) -> None:
             loc = _resolve_locator(page, str(act.get("check") or act.get("uncheck") or ""), kind="check")
             if loc is not None:
                 (loc.check if want else loc.uncheck)(timeout=8000)
+                return True
         elif "click" in act:
             loc = _resolve_locator(page, str(act.get("click") or ""), kind="click")
             if loc is not None:
                 loc.click(timeout=8000)
+                return True
         elif "wait" in act:
             page.wait_for_timeout(max(0, min(int(act.get("wait") or 500), 10000)))
     except Exception:
-        pass
+        return False
+    return False
 
 
 def _browser_render(url: str, wait_selector: str | None, limit: int,
-                    actions: list[dict] | None = None) -> tuple[str, str, str]:
+                    actions: list[dict] | None = None) -> tuple[str, str, str, int]:
     """Render a page with Playwright, optionally performing interaction steps (fill /
-    click / wait) before capturing the DOM — so an interaction criterion ("after typing
-    X and clicking Calculate the DOM shows Network: …") is verified against the ACTUAL
-    post-interaction DOM, not a static render. Runs in a worker thread (see
-    tool_browser): the Playwright sync API must not be called from inside an asyncio
-    loop."""
+    select / check / click / wait) before capturing the DOM — so an interaction criterion
+    ("after typing X and clicking Calculate the DOM shows Network: …") is verified against
+    the ACTUAL post-interaction DOM, not a static render. Returns (title, url, body,
+    applied) where `applied` counts real interactions that resolved+ran. Runs in a worker
+    thread (see tool_browser): the Playwright sync API must not be called from inside an
+    asyncio loop."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -289,11 +300,13 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
                     page.wait_for_selector(wait_selector, timeout=8000)
                 except Exception:
                     pass
+            applied = 0
             if actions:
                 for act in actions:
-                    _apply_action(page, act)
+                    if _apply_action(page, act):
+                        applied += 1
                 page.wait_for_timeout(300)  # let the DOM settle after interactions
-            return page.title(), page.url, (page.inner_text("body") or "")[:limit]
+            return page.title(), page.url, (page.inner_text("body") or "")[:limit], applied
         finally:
             browser.close()
 
@@ -307,7 +320,7 @@ def _render_fallback(url: str, limit: int) -> str:
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            _title, _final_url, text = ex.submit(_browser_render, url, None, limit).result(timeout=45)
+            _title, _final_url, text, _applied = ex.submit(_browser_render, url, None, limit).result(timeout=45)
         return (text or "").strip()
     except Exception:
         return ""
@@ -344,7 +357,7 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            title, final_url, text = ex.submit(
+            title, final_url, text, applied = ex.submit(
                 _browser_render, cleaned_url, wait_selector, limit, steps
             ).result(timeout=60 if steps else 50)
     except Exception as exc:
@@ -353,23 +366,28 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     text = (text or "").strip()
     if not text:
         return {"text": f"[browser: {final_url}] страница отрендерилась, но видимого текста нет", "ok": False}
-    # A real render IS a verdict: the page LOADED (page_open) and the returned DOM
-    # text is genuine visible-text evidence (text_visible) — unlike a bundle grep. After
-    # interaction steps the DOM reflects them, so an interaction criterion verifies here.
-    # The evidence carries the rendered text so the criteria matcher can check which
-    # named tokens (`VaultDesk`, `Network: 192.168.1.0`) are actually on the page.
+    # A real render IS a verdict: the page LOADED (page_open) and the returned DOM text is
+    # genuine visible-text evidence — unlike a bundle grep. `interacted` = a real fill/
+    # select/check/click actually resolved and ran, so an interaction criterion can require
+    # the actions to have happened (not a plain render). The action summary goes ONLY in the
+    # human `text` field — NEVER in `evidence`, so a criterion token can't match the echoed
+    # fill value instead of the real rendered DOM.
+    interacted = bool(steps) and applied >= 1
     act_note = ""
     if steps:
         done = "; ".join(
             (f"fill {a.get('fill')}={a.get('value')}" if "fill" in a else
+             f"select {a.get('select')}={a.get('value')}" if "select" in a else
+             f"check {a.get('check')}" if "check" in a else
+             f"uncheck {a.get('uncheck')}" if "uncheck" in a else
              f"click {a.get('click')}" if "click" in a else f"wait {a.get('wait')}")
             for a in steps if isinstance(a, dict)
         )
-        act_note = f"[после действий: {done}]\n"
-    rendered = f"{act_note}TITLE: {title}\n{text}"
+        act_note = f"[после действий ({applied}): {done}]\n"
     return {
         "text": f"[browser: {final_url}]\n{act_note}TITLE: {title}\n\n{text}",
         "ok": True,
         "verifier": True,
-        "evidence": rendered[:8000],
+        "evidence": (f"TITLE: {title}\n{text}")[:8000],   # DOM only — no action echo
+        "interacted": interacted,
     }

@@ -299,16 +299,16 @@ class BrowserInteractionLiveTest(unittest.TestCase):
     def test_fill_and_click_reveal_result_in_dom(self):
         from app.application.code_agent.tools._web import _browser_render
         url = self._page_url()
-        _t, _u, dom0 = _browser_render(url, None, 4000, None)
+        _t, _u, dom0, _a = _browser_render(url, None, 4000, None)
         self.assertNotIn("Network: 192.168.1.0", dom0)          # result hidden until interaction
-        _t, _u, dom1 = _browser_render(
+        _t, _u, dom1, _a = _browser_render(
             url, None, 4000, [{"fill": "CIDR", "value": "192.168.1.0/24"}, {"click": "Calculate"}])
         self.assertIn("Network: 192.168.1.0", dom1)             # fill-by-label + click-by-text worked
 
     def test_bad_input_interaction_shows_error_only(self):
         from app.application.code_agent.tools._web import _browser_render
         url = self._page_url()
-        _t, _u, dom = _browser_render(
+        _t, _u, dom, _a = _browser_render(
             url, None, 4000, [{"fill": "CIDR", "value": "bad-input"}, {"click": "Calculate"}])
         self.assertIn("Invalid CIDR", dom)
         self.assertNotIn("Network: 192.168.1.0", dom)
@@ -333,14 +333,14 @@ class BrowserInteractionLiveTest(unittest.TestCase):
     def test_form_fill_select_check_click_drive_the_dom(self):
         from app.application.code_agent.tools._web import _browser_render
         url = self._form_url()
-        _t, _u, empty = _browser_render(url, None, 4000, [{"click": "Validate"}])
+        _t, _u, empty, _a = _browser_render(url, None, 4000, [{"click": "Validate"}])
         self.assertIn("Job name required", empty)                       # empty field → required
-        _t, _u, ok = _browser_render(url, None, 4000, [
+        _t, _u, ok, _a = _browser_render(url, None, 4000, [
             {"fill": "Job name", "value": "nas-backup"}, {"select": "Schedule", "value": "Daily"},
             {"check": "Encryption"}, {"click": "Validate"}])
         self.assertIn("Backup job valid", ok)                           # fill+select+check+click
         self.assertNotIn("Invalid", ok)
-        _t, _u, noenc = _browser_render(url, None, 4000, [
+        _t, _u, noenc, _a = _browser_render(url, None, 4000, [
             {"fill": "Job name", "value": "nas-backup"}, {"select": "Schedule", "value": "Daily"},
             {"click": "Validate"}])
         self.assertNotIn("Backup job valid", noenc)                     # the checkbox genuinely mattered
@@ -882,7 +882,7 @@ class VaultDeskVerificationTest(unittest.TestCase):
         ]))
         dom = ("[после действий: fill CIDR=192.168.1.0/24; click Calculate]\n"
                "TITLE: Subnet Helper\nNetwork: 192.168.1.0\nMask: 255.255.255.0\nHosts: 254")
-        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom, meta={"interacted": True})
         self.assertEqual(t.items[0]["status"], "confirmed")       # result present in post-action DOM
         self.assertEqual(t.items[1]["status"], "unconfirmed")     # bad-input path not exercised → honest
 
@@ -896,7 +896,7 @@ class VaultDeskVerificationTest(unittest.TestCase):
             "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Hosts: 254`",
         ]))
         dom = "TITLE: Subnet Helper\nNetwork:\n192.168.88.0\nMask:\n255.255.255.0\nHosts:\n254"
-        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom, meta={"interacted": True})
         self.assertTrue(all(it["status"] == "confirmed" for it in t.items))
 
     def test_colonless_label_dom_confirms_interaction(self):
@@ -908,7 +908,7 @@ class VaultDeskVerificationTest(unittest.TestCase):
             "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Hosts: 254`",
         ]))
         dom = "TITLE: Subnet Helper\nNetwork\n192.168.88.0\nMask\n255.255.255.0\nHosts\n254"
-        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom, meta={"interacted": True})
         self.assertTrue(all(it["status"] == "confirmed" for it in t.items))
 
     def test_dom_match_still_rejects_wrong_value(self):
@@ -989,16 +989,33 @@ class VaultDeskVerificationTest(unittest.TestCase):
         self.assertEqual(_dom_targets(c1), {"job name required"})   # only the RESULT, not Job name/Validate
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c1, c2]))
         t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True,
-                 evidence="[fill Job name=; click Validate]\nBackup Form Checker\nJob name required")
+                 evidence="Backup Form Checker\nJob name required", meta={"interacted": True})
         t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True,
-                 evidence="[fill nas-backup; select Daily; check Encryption; click Validate]\nBackup job valid")
+                 evidence="Backup job valid", meta={"interacted": True})
         self.assertEqual(t.items[0]["status"], "confirmed")
         self.assertEqual(t.items[1]["status"], "confirmed")
+        # a PLAIN render (no interaction ran) does NOT confirm an interaction criterion,
+        # even if the token is statically present (attribution — Batch B review).
+        t3 = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c1]))
+        t3.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True,
+                  evidence="Backup Form Checker\nJob name required")  # no meta → interacted False
+        self.assertEqual(t3.items[0]["status"], "unconfirmed")
         # a bundle grep of the source does NOT confirm an interaction criterion
         t2 = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c1]))
         t2.record(tool_name="run_bash", args={"command": "grep 'Job name required' src/"},
                   ok=True, evidence="app.js: Job name required", meta={"exit_code": 0})
         self.assertEqual(t2.items[0]["status"], "unconfirmed")
+
+    def test_interaction_cue_without_browser_context_is_not_dom(self):
+        # Batch B review: a fill/ввод cue must NOT hijack a FILE or CLI criterion into
+        # browser-only dom_contains — the interaction→dom path needs a browser/page word.
+        for c in ("заполните файл `config.ini` строкой `mode=prod`, файл содержит `mode=prod`",
+                  "введите команду `node app.js`, вывод содержит `OK`"):
+            self.assertNotEqual(_criterion_intent(c), "dom_contains", c)
+        # the file one stays verifiable by ssh_assert_contains (content_contains), not browser
+        self.assertEqual(
+            _criterion_intent("заполните файл `config.ini` строкой `mode=prod`, файл содержит `mode=prod`"),
+            "content_contains")
 
     def test_grep_and_node_script_never_confirm_interaction(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[

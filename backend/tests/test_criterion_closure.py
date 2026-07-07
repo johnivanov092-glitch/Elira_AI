@@ -266,7 +266,7 @@ class InteractionGroupingTest(unittest.TestCase):
     def test_confirmed_interaction_not_re_listed(self):
         t = self._three()
         dom = "Network\n192.168.88.0\nMask\n255.255.255.0\nHosts\n254"
-        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom, meta={"interacted": True})
         self.assertEqual(cc.missing_verifier_actions(t, url="http://localhost:5173"), [])
 
 

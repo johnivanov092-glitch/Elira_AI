@@ -184,10 +184,20 @@ categories:
     closes: [dom_contains]
     grammar: >
       An interaction criterion asserting a result classifies as dom_contains even WITHOUT a
-      rendered/DOM/на-экране word (the 'browser interaction:'/показывает form). The target is
-      the result token only; the input value / dropdown option / checkbox / button are the
-      ACTION. The verdict is positive-evidence — a real browser render of the post-action DOM;
-      grep/source-read/HTTP-200 never confirm it.
+      rendered/DOM/на-экране word — but ONLY when it names a browser/page surface (the
+      'browser interaction:'/страниц/форм form), so a file-write or CLI criterion that merely
+      uses a fill/ввод cue isn't hijacked into browser-only. The target is the result token
+      only; input value / option / checkbox / button are the ACTION. The verdict is
+      positive-evidence — a real browser render of the post-action DOM AND the browser tool
+      reports `interacted` (a real fill/select/check/click resolved and ran), so a plain
+      render (no actions, or all locators missed) can't confirm it. The action summary is
+      kept OUT of the matched evidence (only the real DOM is matched). grep/source-read/
+      HTTP-200 never confirm it.
+    limits: >
+      Attribution residual (same inherent class as cli.output): `interacted` proves the
+      actions RAN, not that the matched token was CAUSED by them — a form that statically
+      renders the result token before any interaction could still confirm. Bounded, not
+      eliminated; a before/after DOM diff would close it if a live case ever needs it.
     regression: "tests/test_taskspec.py: backup-form classify+confirm; live Playwright fill/select/check/click form test."
     code: "taskspec.py:_criterion_intent (interaction→dom_contains), _dom_targets, _is_interaction; tools/_web.py:_apply_action(fill|select|check|uncheck|click), _resolve_locator(check)"
 

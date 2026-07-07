@@ -686,6 +686,12 @@ _CMD_CTX = ("typecheck", "type-check", "tsc", "mypy", "pyright", "npm run", "npm
             "доступные провер", "exit 0", "линт", "lint", "тесты проход", "ошибок типов")
 _VIEWPORT_CTX = ("viewport", "адаптив", "responsive", "mobile", "desktop", "мобильн", "десктоп",
                  "overflow", "переполн", "горизонтальн скролл", "раскладк", "layout")
+# A rendered-surface context that promotes an INTERACTION criterion to dom_contains even
+# without a _DOM_CTX word ("browser interaction: … показывает X"). NOT added to _DOM_CTX
+# itself — "browser" appears in the page_open criterion too, which must stay page_open;
+# the interaction gate only fires when _is_interaction is already true (fill/click/…).
+_BROWSER_CTX = ("browser", "браузер", "страниц", "rendered", "dom", "на экране",
+                "ui ", "форм", "интерфейс", "отрисов", "верстк", "лендинг")
 # Absence: STRONG cues mean the path is gone; WEAK cues ("cleanup") are usually
 # TEMPORAL ("существует ДО cleanup") — they only imply absence when there is no
 # explicit exist verb, so "директория существует ДО cleanup" is file_exists, not a
@@ -768,8 +774,10 @@ def _criterion_intent(text: str) -> str:
     # positive: a rendered-page claim with either a visibility verb OR named tokens
     # (a UI section listing `Inventory`,`Backups`,… is a dom_contains without a verb).
     # An INTERACTION that asserts a result ("browser interaction: … `Validate` показывает
-    # `Job name required`") is a DOM claim too, even without a rendered/DOM/на-экране word.
-    if (dom or _is_interaction(text)) and (_has(low, _DOM_VERB) or targets):
+    # `Job name required`") is a DOM claim too, even without a rendered/DOM word — BUT only
+    # when it names a browser/page surface, so a file-write ("заполните файл X … содержит
+    # Y") or a CLI ("введите команду … вывод содержит Z") isn't hijacked into browser-only.
+    if (dom or (_is_interaction(text) and _has(low, _BROWSER_CTX))) and (_has(low, _DOM_VERB) or targets):
         return "dom_contains"
     if _has(low, _VIEWPORT_CTX):
         return "viewport_layout"
@@ -898,9 +906,11 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
         return {"intents": {"page_open"}, "files": set()}
     if tool_name == "browser":
         # A real render → the page loaded (page_open) AND its DOM text is genuine
-        # visible-text evidence (dom_contains) — unlike a bundle grep.
+        # visible-text evidence (dom_contains) — unlike a bundle grep. `interacted` says a
+        # real fill/select/check/click actually ran, so an INTERACTION criterion can require
+        # the actions to have happened rather than confirm off a plain render.
         return {"intents": {"page_open", "dom_contains"}, "text": (evidence or "").lower(),
-                "viewport": bool(m.get("viewport")), "files": set()}
+                "viewport": bool(m.get("viewport")), "interacted": bool(m.get("interacted")), "files": set()}
     return None
 
 
@@ -931,6 +941,10 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         # sample.log`, but `cat index.js` or a run with a different arg does not.
         return _run_invokes(cmd_c, v.get("command", ""))
     if it == "dom_contains":
+        if item.get("interaction") and not v.get("interacted"):
+            return False   # an interaction criterion needs the fill/click to have ACTUALLY
+            # run — a plain render (or one whose locators all missed) can't confirm it, even
+            # if the token is statically present (attribution — Batch B review).
         toks = item.get("targets") or set()
         if not toks:
             return False
