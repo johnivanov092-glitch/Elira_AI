@@ -166,7 +166,7 @@ export type CompletionStatus = "confirmed" | "partial" | "unverified" | "failed"
 
 export type CriterionState = {
   text: string;
-  status: "confirmed" | "unconfirmed" | "failed";
+  status: "confirmed" | "unconfirmed" | "failed" | "skipped";
   verifier?: string | null;
   evidence?: string | null;
 };

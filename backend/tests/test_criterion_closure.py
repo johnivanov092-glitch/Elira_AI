@@ -136,7 +136,7 @@ class FinalReportTest(unittest.TestCase):
         t.record(tool_name="ssh_exists", args={"host": "h", "path": SNAP}, ok=True, evidence="ok")
         rep = cc.runtime_final_report(t)
         self.assertIn("confirmed", rep)
-        self.assertIn("Все критерии подтверждены", rep)
+        self.assertIn("Все обязательные критерии подтверждены", rep)
 
 
 class HappyPathTest(unittest.TestCase):
@@ -151,7 +151,7 @@ class HappyPathTest(unittest.TestCase):
         t.record(tool_name="ssh_not_exists", args={"host": "h", "path": DIR}, ok=True, evidence="gone")
         self.assertEqual(t.completion_status(), "confirmed")
         self.assertEqual(cc.missing_verifier_actions(t), [])
-        self.assertIn("Все критерии подтверждены", cc.runtime_final_report(t))
+        self.assertIn("Все обязательные критерии подтверждены", cc.runtime_final_report(t))
 
 
 class ReportCountsTest(unittest.TestCase):
@@ -231,6 +231,24 @@ class MinimalPlanTest(unittest.TestCase):
         acts = cc.missing_verifier_actions(t)
         self.assertEqual(len(acts), 1)
         self.assertIn("http_api", acts[0]["call"])   # unchanged when there is no DOM criterion
+
+
+class SubnetOpenStateClosureTest(unittest.TestCase):
+    def test_missing_actions_cover_local_typecheck_and_interaction(self):
+        # The exact 6-open Subnet state: closure must name path_exists (local dir),
+        # run_bash (conditional typecheck), and browser-with-actions (interaction).
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "создана новая папка `subnet-helper`",
+            "если в проекте есть `npm run typecheck`, он проходит без ошибок",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.88.0`",
+        ]))
+        acts = cc.missing_verifier_actions(t, url="http://localhost:5173")
+        tools = {a["tool"] for a in acts}
+        self.assertIn("path_exists", tools)
+        self.assertIn("run_bash", tools)      # conditional typecheck still offered (run it if present)
+        self.assertIn("browser", tools)
+        browser_act = next(a for a in acts if a["tool"] == "browser")
+        self.assertIn("actions", browser_act["call"])
 
 
 class LocalAndInteractionActionTest(unittest.TestCase):

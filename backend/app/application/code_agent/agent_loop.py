@@ -1278,11 +1278,24 @@ def _stream_code_agent_core(
                     if _acts and _mkey not in closure_fired_sets:
                         closure_fired_sets.add(_mkey)
                         closure_turns += 1
+                        # Deterministically ACTIVATE the tools the closure asks for
+                        # (path_exists, browser, ssh_*, …) so the model can call them
+                        # directly this turn — tool_search activation was too weak (live:
+                        # path_exists was never searched, so local criteria never closed).
+                        try:
+                            from app.application.agent_kernel.deferred_tools import activate_tools
+                            activate_tools(rid, [a["tool"] for a in _acts if a.get("tool")])
+                        except Exception:
+                            pass
                         if content:
                             messages.append({"role": "assistant", "content": content})
                         messages.append({"role": "user", "content": criterion_closure.closure_nudge_text(_acts)})
                         continue
                 final_text = _strip_tool_call_markup(content or last_text)
+                # Finalizing for real (closure gate is done): a conditional criterion
+                # still open is n/a (e.g. no `npm run typecheck` script) → mark skipped so
+                # it isn't reported as an unanswered failure.
+                criteria.finalize_conditionals()
                 # Deterministic Final Report (Ph7.12): the model may DESCRIBE what it
                 # did, but the completion STATUS is runtime-owned — never its word.
                 _completion = criteria.completion_status()

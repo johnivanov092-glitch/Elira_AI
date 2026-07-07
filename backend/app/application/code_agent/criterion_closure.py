@@ -275,13 +275,14 @@ def scrub_manual_criteria_counts(text: str) -> str:
 
 
 def report_counts(report: list[dict]) -> dict[str, int]:
-    """The four counts, computed ONCE from criteria.report() — the single source the
-    final block agrees with (total / confirmed / failed / unconfirmed)."""
+    """The counts, computed ONCE from criteria.report() — the single source the final
+    block agrees with. `skipped` = conditional criteria that were n/a."""
     return {
         "total": len(report),
         "confirmed": sum(1 for it in report if it["status"] == "confirmed"),
         "failed": sum(1 for it in report if it["status"] == "failed"),
         "unconfirmed": sum(1 for it in report if it["status"] == "unconfirmed"),
+        "skipped": sum(1 for it in report if it["status"] == "skipped"),
     }
 
 
@@ -294,14 +295,22 @@ def runtime_final_report(tracker: CriteriaTracker) -> str:
     c = report_counts(report)
     failed = [it for it in report if it["status"] == "failed"]
     unconf = [it for it in report if it["status"] == "unconfirmed"]
+    skipped = [it for it in report if it["status"] == "skipped"]
+    # confirmed out of the MANDATORY total (skipped conditionals excluded from the denom)
+    mandatory = c["total"] - c["skipped"]
+    head = f"Статус: {tracker.completion_status()} · подтверждено {c['confirmed']}/{mandatory}"
+    if c["skipped"]:
+        head += f" (+{c['skipped']} n/a)"
     lines = [
         "[Готовность задачи — по verifier'у (runtime, не по словам модели)]",
-        f"Статус: {tracker.completion_status()} · подтверждено {c['confirmed']}/{c['total']}",
+        head,
     ]
     if failed:
         lines.append("Провалено (verifier red): " + "; ".join(it["text"] for it in failed))
     if unconf:
         lines.append("Не подтверждено verifier'ом: " + "; ".join(it["text"] for it in unconf))
+    if skipped:
+        lines.append("Пропущено (условные, n/a): " + "; ".join(it["text"] for it in skipped))
     if not failed and not unconf:
-        lines.append("Все критерии подтверждены verifier'ом.")
+        lines.append("Все обязательные критерии подтверждены verifier'ом.")
     return "\n".join(lines)

@@ -669,6 +669,41 @@ class VaultDeskVerificationTest(unittest.TestCase):
         self.assertEqual(t.items[0]["status"], "confirmed")       # result present in post-action DOM
         self.assertEqual(t.items[1]["status"], "unconfirmed")     # bad-input path not exercised → honest
 
+    def test_whitespace_separated_dom_confirms_interaction(self):
+        # Live 7/13: the app renders label and value in separate elements, so inner_text
+        # is "Network:\n192.168.88.0" while the token is "Network: 192.168.88.0". One
+        # valid browser call must confirm all three interaction criteria.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.88.0`",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Mask: 255.255.255.0`",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Hosts: 254`",
+        ]))
+        dom = "TITLE: Subnet Helper\nNetwork:\n192.168.88.0\nMask:\n255.255.255.0\nHosts:\n254"
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        self.assertTrue(all(it["status"] == "confirmed" for it in t.items))
+
+    def test_conditional_typecheck_skipped_not_unverified_when_absent(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "`npm run build` проходит без ошибок",
+            "если в проекте есть `npm run typecheck`, он проходит без ошибок",
+        ]))
+        cond = t.items[1]
+        self.assertTrue(cond["conditional"])
+        t.record(tool_name="run_bash", args={"command": "npm run build"}, ok=True, evidence="exit 0")
+        # model runs typecheck but the script is absent → npm exits non-zero
+        t.record(tool_name="run_bash", args={"command": "npm run typecheck"}, ok=False, evidence="Missing script: typecheck")
+        self.assertEqual(cond["status"], "unconfirmed")          # conditional never hard-fails
+        t.finalize_conditionals()
+        self.assertEqual(cond["status"], "skipped")              # n/a, not unverified
+        self.assertEqual(t.completion_status(), "confirmed")     # the mandatory build is done
+
+    def test_conditional_typecheck_confirms_when_script_runs_green(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "если в проекте есть `npm run typecheck`, он проходит без ошибок",
+        ]))
+        t.record(tool_name="run_bash", args={"command": "npm run typecheck"}, ok=True, evidence="exit 0")
+        self.assertEqual(t.items[0]["status"], "confirmed")      # present + green → confirmed
+
     def test_grep_and_node_script_never_confirm_interaction(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
             "browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.1.0`",
@@ -1091,7 +1126,7 @@ class ClosureBarrierLoopTest(unittest.TestCase):
         self.assertFalse(any(e.get("type") == "tool_call" and "не удаляй" in str(e.get("result", "")).lower()
                              for e in evs))
         final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
-        self.assertIn("Все критерии подтверждены verifier", final)   # runtime report, confirmed
+        self.assertIn("Все обязательные критерии подтверждены verifier", final)   # runtime report, confirmed
 
 
 if __name__ == "__main__":

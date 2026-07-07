@@ -155,7 +155,8 @@ function CriterionRow({ c, duplicate }: { c: CriterionState; duplicate?: boolean
         aria-hidden
       />
       <span className="min-w-0">
-        <span className={cn(c.status === "failed" && "text-danger")}>{c.text}</span>
+        <span className={cn(c.status === "failed" && "text-danger", c.status === "skipped" && "text-mut")}>{c.text}</span>
+        {c.status === "skipped" && <span className="ml-1 text-[10.5px] text-mut">— n/a (условный)</span>}
         {/* Same evidence shared across criteria (e.g. one rendered-DOM verdict covering
             several dom_contains checks) is shown once — later rows just point back. */}
         {evidence && duplicate && <span className="ml-1 text-[10.5px] text-mut">— то же evidence, см. выше</span>}
@@ -185,7 +186,10 @@ function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; statu
   const total = criteria.length;
   const confirmed = criteria.filter((c) => c.status === "confirmed").length;
   const failed = criteria.filter((c) => c.status === "failed").length;
-  const unconfirmed = total - confirmed - failed;
+  const skipped = criteria.filter((c) => c.status === "skipped").length;
+  const unconfirmed = total - confirmed - failed - skipped;
+  // conditional (n/a) criteria are excluded from the mandatory denominator
+  const mandatory = total - skipped;
   return (
     <div className="mt-2 rounded-xl border border-line bg-surface text-[12.5px]">
       <button
@@ -196,9 +200,10 @@ function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; statu
       >
         <span className="font-medium text-t2">Готовность задачи</span>
         {badge && <span className={cn("text-[11.5px] font-medium", badge.cls)}>· {badge.text}</span>}
-        <span className="text-[11.5px] text-mut">· {confirmed}/{total}</span>
+        <span className="text-[11.5px] text-mut">· {confirmed}/{mandatory}</span>
         {failed > 0 && <span className="text-[11.5px] font-medium text-danger">· провалено: {failed}</span>}
         {unconfirmed > 0 && <span className="text-[11.5px] text-mut">· не подтв.: {unconfirmed}</span>}
+        {skipped > 0 && <span className="text-[11.5px] text-mut">· n/a: {skipped}</span>}
         <ChevronDown size={12} className={cn("ml-auto shrink-0 text-mut transition-transform", open ? "" : "-rotate-90")} />
       </button>
       {open && (

@@ -418,6 +418,19 @@ def _is_interaction(text: str) -> bool:
     return _has((text or "").lower(), _INTERACTION_CUES)
 
 
+# A criterion whose applicability depends on the PROJECT having something ("если в
+# проекте есть npm run typecheck, он проходит") — optional, not a hard deliverable.
+# Deliberately specific so it never catches an interaction "если ввести bad-input".
+_CONDITIONAL_CUES = ("если в проекте", "при наличии", "если имеется", "если существует",
+                     "если присутству", "if present", "if the project has", "if it exists",
+                     "опционал", "optional", "по возможности", "если доступ", "если есть скрипт",
+                     "если есть script", "если есть команда")
+
+
+def _is_conditional(text: str) -> bool:
+    return _has((text or "").lower(), _CONDITIONAL_CUES)
+
+
 def _dom_targets(text: str) -> set[str]:
     """The literal strings a DOM criterion says must be on the page. Quoted/back-ticked
     tokens first (`VaultDesk`, `Start local audit`); else the phrase after a
@@ -700,8 +713,13 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         return ck == "any" or vk == "any" or ck == vk
     if it == "dom_contains":
         toks = item.get("targets") or set()
-        text = v.get("text") or ""
-        return bool(toks) and all(t in text for t in toks)
+        # Whitespace-insensitive: a UI often renders label and value as SEPARATE
+        # elements, so inner_text yields "Network:\n192.168.88.0" while the criterion
+        # token is "Network: 192.168.88.0" (one space). Collapse runs of whitespace on
+        # both sides before the substring check, else a valid interaction stays
+        # unconfirmed on a newline (live Subnet: 3 interaction criteria hung on this).
+        text = " ".join((v.get("text") or "").split())
+        return bool(toks) and all(" ".join(t.split()) in text for t in toks)
     if it == "viewport_layout":
         return bool(v.get("viewport"))
     if it in ("content_contains", "content_not_contains"):
@@ -751,7 +769,7 @@ def _criterion_item(text: str) -> dict:
         "text": text, "text_low": low, "status": "unconfirmed", "verifier": None, "evidence": None,
         "intent": _criterion_intent(text), "files": _path_tokens_from_text(text), "port": ports[0] if ports else "",
         "targets": _dom_targets(text), "command_kind": _command_kind(text),
-        "interaction": _is_interaction(text),
+        "interaction": _is_interaction(text), "conditional": _is_conditional(text),
     }
 
 
@@ -789,7 +807,10 @@ class CriteriaTracker:
             if outcome == "confirm" and it["status"] != "confirmed":
                 it.update(status="confirmed", verifier=tool_name, evidence=evidence or None)
                 transitioned = True
-            elif outcome == "fail" and it["status"] == "unconfirmed":
+            elif outcome == "fail" and it["status"] == "unconfirmed" and not it.get("conditional"):
+                # A conditional criterion never hard-FAILS — e.g. `npm run typecheck`
+                # exiting non-zero because the script is absent must not fail the task;
+                # it stays unconfirmed and finalize_conditionals() marks it skipped.
                 it.update(status="failed", verifier=tool_name, evidence=evidence or None)
                 transitioned = True
         return transitioned
@@ -797,14 +818,24 @@ class CriteriaTracker:
     def completion_status(self) -> str:
         if not self.items:
             return "none"  # no criteria → task-completion axis is n/a
-        st = [it["status"] for it in self.items]
-        if "failed" in st:
+        # A conditional criterion that isn't confirmed is SKIPPED (n/a), never a blocker
+        # — it can't fail the whole task ("если в проекте есть typecheck …").
+        blocking = [it for it in self.items if it["status"] != "confirmed" and not it.get("conditional")]
+        if any(it["status"] == "failed" and not it.get("conditional") for it in self.items):
             return "failed"
-        if all(s == "confirmed" for s in st):
-            return "confirmed"
-        if any(s == "confirmed" for s in st):
+        if not blocking:
+            return "confirmed"   # every MANDATORY criterion is confirmed
+        if any(it["status"] == "confirmed" for it in self.items):
             return "partial"
         return "unverified"
+
+    def finalize_conditionals(self) -> None:
+        """At run end, a conditional criterion still unconfirmed is n/a (its precondition
+        wasn't met / wasn't exercised) — mark it 'skipped' so the report shows it
+        honestly, not as an unanswered failure. Call once when actually finalizing."""
+        for it in self.items:
+            if it.get("conditional") and it["status"] in ("unconfirmed", "failed"):
+                it["status"] = "skipped"
 
     def report(self) -> list[dict]:
         return [{k: it[k] for k in ("text", "status", "verifier", "evidence")} for it in self.items]
