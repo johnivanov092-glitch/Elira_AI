@@ -1291,10 +1291,13 @@ def _stream_code_agent_core(
                     if _completion != "confirmed":
                         final_text = gate_completion_claims(final_text, _completion)
                     # (2) strip the model's own status/unverified/failed sections and
-                    # append the deterministic status block computed from criteria state
-                    # (the full per-criterion detail + evidence also ships structured in
-                    # the done event and renders in the collapsible readiness panel).
+                    # (3) drop model-authored criteria/verifier COUNT claims (so its "17"
+                    # can't sit beside runtime "19/19"), then append the deterministic
+                    # status block built from criteria.report() (full per-criterion detail
+                    # + evidence also ships structured in the done event and renders in the
+                    # collapsible readiness panel). Steps 2-3 run even when confirmed.
                     final_text = criterion_closure.strip_model_status_sections(final_text)
+                    final_text = criterion_closure.scrub_manual_criteria_counts(final_text)
                     _report = criterion_closure.runtime_final_report(criteria)
                     if _report:
                         final_text = final_text.rstrip() + "\n\n" + _report

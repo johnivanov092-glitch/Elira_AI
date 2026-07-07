@@ -207,18 +207,60 @@ def strip_model_status_sections(text: str) -> str:
     return "\n".join(out).rstrip()
 
 
+# Model-authored COUNT claims about criteria/verifier-checks in the final prose
+# (e.g. "17 verifier criteria — all passed", "Verifier checks: 17/17", "проверено 17
+# критериев"). The ONLY authority on how many criteria exist / passed is the runtime
+# block, so a model-written number is dropped — it can't be allowed to print "17"
+# beside runtime "подтверждено 19/19". A number NOT tied to criteria/verifier/checks
+# vocabulary (e.g. "17 files", pytest "17 passed") is left untouched.
+_CRIT_NOUN = (
+    r"(?:verifier(?:['’\s-]*(?:criteri\w+|checks?|провер\w+))?"
+    r"|criteri\w+|критери\w+|checks?|проверк\w+|проверок)"
+)
+# "<n> [/m | of m | из m] <noun>", with optional leading all/все — drop the count.
+_COUNT_BEFORE_RE = re.compile(
+    r"(?<![\w./])(?:all\s+|все\s+)?\d+(?:\s*/\s*\d+|\s+(?:of|из|out\s+of)\s+\d+)?\s+(" + _CRIT_NOUN + r")",
+    re.IGNORECASE,
+)
+# "<noun>: n/m" — drop the trailing count (require a slash so we don't eat prose).
+_COUNT_AFTER_RE = re.compile(r"(" + _CRIT_NOUN + r")\s*[:=]?\s*\d+\s*/\s*\d+", re.IGNORECASE)
+
+
+def scrub_manual_criteria_counts(text: str) -> str:
+    """Strip model-authored criteria/verifier-check COUNT claims, leaving the noun so the
+    sentence still reads. The count lives ONLY in the runtime block, so the model's word
+    can never contradict it. Runs regardless of completion status (a confirmed run can
+    still misreport the number)."""
+    if not text:
+        return text
+    text = _COUNT_BEFORE_RE.sub(r"\1", text)
+    text = _COUNT_AFTER_RE.sub(r"\1", text)
+    return text
+
+
+def report_counts(report: list[dict]) -> dict[str, int]:
+    """The four counts, computed ONCE from criteria.report() — the single source the
+    final block agrees with (total / confirmed / failed / unconfirmed)."""
+    return {
+        "total": len(report),
+        "confirmed": sum(1 for it in report if it["status"] == "confirmed"),
+        "failed": sum(1 for it in report if it["status"] == "failed"),
+        "unconfirmed": sum(1 for it in report if it["status"] == "unconfirmed"),
+    }
+
+
 def runtime_final_report(tracker: CriteriaTracker) -> str:
-    """The deterministic status block — from criteria state, never the model's word."""
-    items = tracker.items
-    if not items:
+    """The deterministic status block — built ONLY from criteria.report(), never the
+    model's word. Counts come from report_counts() so they're computed one time."""
+    report = tracker.report()
+    if not report:
         return ""
-    total = len(items)
-    confirmed = sum(1 for it in items if it["status"] == "confirmed")
-    failed = [it for it in items if it["status"] == "failed"]
-    unconf = [it for it in items if it["status"] == "unconfirmed"]
+    c = report_counts(report)
+    failed = [it for it in report if it["status"] == "failed"]
+    unconf = [it for it in report if it["status"] == "unconfirmed"]
     lines = [
         "[Готовность задачи — по verifier'у (runtime, не по словам модели)]",
-        f"Статус: {tracker.completion_status()} · подтверждено {confirmed}/{total}",
+        f"Статус: {tracker.completion_status()} · подтверждено {c['confirmed']}/{c['total']}",
     ]
     if failed:
         lines.append("Провалено (verifier red): " + "; ".join(it["text"] for it in failed))

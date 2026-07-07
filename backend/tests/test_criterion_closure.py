@@ -154,5 +154,62 @@ class HappyPathTest(unittest.TestCase):
         self.assertIn("Все критерии подтверждены", cc.runtime_final_report(t))
 
 
+class ReportCountsTest(unittest.TestCase):
+    def test_counts_come_from_report_and_sum_to_total(self):
+        t = CriteriaTracker.from_spec(_live_spec())  # 6 criteria
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": DIR}, ok=True, evidence="dir")
+        c = cc.report_counts(t.report())
+        self.assertEqual(c["total"], 6)
+        self.assertEqual(c["confirmed"], 1)
+        self.assertEqual(c["confirmed"] + c["failed"] + c["unconfirmed"], c["total"])
+
+
+class ScrubManualCountsTest(unittest.TestCase):
+    def test_drops_verifier_criteria_count_keeps_noun_and_claim(self):
+        out = cc.scrub_manual_criteria_counts("Прогнал 17 verifier criteria checks — all passed.")
+        self.assertNotIn("17", out)
+        self.assertIn("verifier criteria", out.lower())
+        self.assertIn("all passed", out.lower())
+
+    def test_drops_slashed_before_and_after_forms(self):
+        self.assertNotIn("17", cc.scrub_manual_criteria_counts("17/17 criteria met"))
+        self.assertNotIn("17", cc.scrub_manual_criteria_counts("Verifier checks: 17/17 passed"))
+
+    def test_drops_russian_of_form(self):
+        out = cc.scrub_manual_criteria_counts("проверено 17 из 19 критериев")
+        self.assertNotIn("17", out)
+        self.assertNotIn("19", out)
+        self.assertIn("критери", out)
+
+    def test_leaves_non_criteria_numbers_alone(self):
+        self.assertIn("17", cc.scrub_manual_criteria_counts("изменил 17 файлов"))
+        self.assertIn("17", cc.scrub_manual_criteria_counts("17 tests passed"))
+
+
+class FinalAssemblyCountTest(unittest.TestCase):
+    """Live bug: model prints 17 while runtime has 19 confirmed → final must say 19/19."""
+
+    def _confirmed_tracker(self, n):
+        spec = TaskSpec(success_criteria=[f"файл `C:\\X\\f{i}.txt` существует" for i in range(n)])
+        t = CriteriaTracker.from_spec(spec)
+        for it in t.items:
+            it["status"] = "confirmed"
+        return t
+
+    def test_model_17_becomes_runtime_19_of_19(self):
+        t = self._confirmed_tracker(19)
+        self.assertEqual(t.completion_status(), "confirmed")
+        # model prose (in a non-status section, so it survives stripping) claims 17
+        model = "## Что сделано\n- собрал фронт\nПрогнал 17 verifier criteria checks — all passed.\n"
+        # mirror the agent_loop finalization order: strip → scrub → append runtime block
+        final = cc.strip_model_status_sections(model)
+        final = cc.scrub_manual_criteria_counts(final)
+        rep = cc.runtime_final_report(t)
+        if rep:
+            final = final.rstrip() + "\n\n" + rep
+        self.assertIn("подтверждено 19/19", final)
+        self.assertNotIn("17", final)
+
+
 if __name__ == "__main__":
     unittest.main()
