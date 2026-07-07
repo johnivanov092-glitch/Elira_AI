@@ -20,9 +20,35 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import tempfile  # noqa: E402
+
 from app.application.code_agent.tools import _run  # noqa: E402
 from app.application.code_agent.tools._run import _parse_server_url, active_server_ports  # noqa: E402
 from app.application.web.ssrf_guard import check_ssrf  # noqa: E402
+
+
+class DestructiveDeleteHonestyTest(unittest.TestCase):
+    """FIX #4: a recursive local delete (the `run_bash rmdir /s /q C:\\AgentLab…` from
+    the live run) is already BLOCKED by the shell-safety guard — but it was returning
+    a missing `ok`, so a refused command read as success. It must be ok=False, and for
+    a delete the refusal points at the ssh_* tools for remote cleanup."""
+
+    def test_blocked_delete_is_ok_false_with_ssh_hint(self):
+        with tempfile.TemporaryDirectory() as ws:
+            out = _run.tool_run_bash(Path(ws), command='rmdir /s /q "C:\\AgentLabGlobalCanary"')
+        self.assertFalse(out["ok"])              # refused ≠ success
+        self.assertIn("ssh_", out["text"])       # guided to the remote tools
+        self.assertIn("blocked", out["text"].lower())
+
+    def test_rm_rf_root_blocked_ok_false(self):
+        with tempfile.TemporaryDirectory() as ws:
+            out = _run.tool_run_bash(Path(ws), command="rm -rf /var/tmp/canary")
+        self.assertFalse(out["ok"])
+
+    def test_empty_command_is_ok_false(self):
+        with tempfile.TemporaryDirectory() as ws:
+            out = _run.tool_run_bash(Path(ws), command="   ")
+        self.assertFalse(out["ok"])
 
 
 class ParseServerUrlTest(unittest.TestCase):

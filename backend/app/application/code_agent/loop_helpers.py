@@ -494,16 +494,29 @@ def _is_near_dup(name: str, tokens: frozenset[str], recent: list[tuple[str, froz
 # model. See docs/AGENT_RUNTIME_PLAN.md.
 
 
-# Task-completion CLAIMS the model must not make while the deterministic verifier
-# says the task is NOT confirmed. Targets status-marker words + all/every-passed
-# phrasings (RU/EN), NOT ordinary factual statements about a single step — so
-# "прочитал файл" stays, but "все критерии выполнены" / "COMPLETED" is neutralised.
+# UNIVERSAL task-completion claims the model must not make while the deterministic
+# verifier says the task is NOT confirmed. Targets status markers + universal
+# "all/every ... passed", "no unverified", "все … критерии подтверждены" phrasings
+# (with intervening words like "все frontend и SSH критерии …"). It deliberately
+# does NOT match a SINGULAR factual statement ("критерий build подтверждён",
+# "прочитал файл") — only the sweeping "everything passed" claims are neutralised.
 _COMPLETION_CLAIM_RE = re.compile(
     r"\bCOMPLETED\b"
-    r"|\ball\s+(?:criteria|checks|tests|requirements)\s+(?:passed|met|green|are\s+met|confirmed)"
-    r"|\btask\s+(?:is\s+)?(?:complete|completed|done|fully\s+done)\b"
     r"|completion[_\s]?status\s*[:=]\s*(?:confirmed|done|complete)"
-    r"|все\s+критери\w+\s+(?:выполнен\w+|пройден\w+|подтвержден\w+|соблюден\w+)"
+    r"|\btask\s+(?:is\s+)?(?:complete|completed|fully\s+done|verified)\b"
+    # EN universal: "all [frontend and SSH] criteria/checks are passed/confirmed"
+    r"|\ball\s+(?:the\s+)?(?:\w+\s+(?:and|or|,|/)?\s*){0,5}(?:criteria|checks?|tests?|requirements)"
+    r"\s+(?:are\s+|were\s+)?(?:passed|pass|met|green|confirmed|verified|ok)"
+    r"|\bevery\s+(?:criterion|check|test)\s+(?:passed|met|confirmed|green|verified)"
+    r"|\bno\s+(?:unverified|failed|unconfirmed|pending)\b"
+    # RU universal: "все [frontend и SSH] критерии подтверждены/выполнены/пройдены"
+    r"|все\s+(?:\w+\s+(?:и|или|,|/)?\s*){0,5}критери\w*"
+    r"\s+(?:подтвержд\w+|выполнен\w+|пройден\w+|проверен\w+|зелён\w+|соблюден\w+|met|passed|ok)"
+    # RU universal: "все [verifier] проверки/checks прошли/пройдены"
+    r"|все\s+(?:\w+\s+){0,4}(?:проверки|verifier[\s'\w-]*checks?|checks?)"
+    r"\s+(?:прошл\w+|пройден\w+|passed|зелён\w+|met|ok|подтвержд\w+)"
+    r"|нет\s+(?:не\s*подтвержд\w+|unverified|failed|провален\w+|unconfirmed|незакрыт\w+)"
+    r"|(?:unverified|failed|не\s*подтвержд\w+|провален\w+)\s+нет\b"
     r"|(?:задача|работа)\s+(?:полностью\s+)?(?:выполнена|завершена|решена|готова)"
     r"|полностью\s+готов\w*",
     re.IGNORECASE,

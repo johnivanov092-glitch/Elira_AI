@@ -293,26 +293,89 @@ class MultilineContentSplitTest(unittest.TestCase):
 
 
 class CompletionClaimGateTest(unittest.TestCase):
-    """FIX #1: the model can't claim done while the verifier says otherwise."""
+    """FIX #1: the model can't make a UNIVERSAL 'everything passed' claim while the
+    verifier says otherwise — including phrasings with words between (the live miss
+    "все frontend и SSH критерии подтверждены verifier'ом")."""
 
-    def test_claims_neutralized_when_not_confirmed(self):
-        for status in ("partial", "unverified", "failed"):
-            out = gate_completion_claims(
-                "Всё сделано! Все критерии выполнены. COMPLETED.", status)
-            self.assertNotIn("COMPLETED", out)
-            self.assertNotIn("все критерии выполнены", out.lower())
-        out = gate_completion_claims("Done — all criteria passed. Task completed.", "partial")
-        self.assertNotIn("all criteria passed", out.lower())
-        self.assertNotIn("task completed", out.lower())
+    UNIVERSAL_CLAIMS = [
+        "все frontend и SSH критерии подтверждены verifier'ом",   # exact live phrase
+        "Всё сделано! Все критерии выполнены. COMPLETED.",
+        "all frontend and SSH criteria are confirmed",
+        "Done — all criteria passed. Task completed.",
+        "все verifier checks прошли",
+        "все проверки пройдены",
+        "нет unverified",
+        "no failed or unverified",
+        "задача полностью выполнена",
+    ]
+    FACTUAL_SURVIVORS = [
+        "критерий build подтверждён verifier'ом",                 # singular fact
+        "typecheck и build подтверждены",
+        "все стили, включая .snapshot-grid, .snapshot-card",
+        "Я прочитал health.txt и создал tmp.txt, запустил typecheck.",
+        "snapshot.txt содержит project=frontend-global-live",
+    ]
+
+    def test_universal_claims_neutralized_when_not_confirmed(self):
+        for s in self.UNIVERSAL_CLAIMS:
+            for status in ("partial", "unverified", "failed"):
+                out = gate_completion_claims(s, status)
+                self.assertNotEqual(out, s, msg=f"[{status}] not scrubbed: {s!r}")
+
+    def test_live_phrase_specifically(self):
+        out = gate_completion_claims(
+            "**COMPLETED** — все frontend и SSH критерии подтверждены verifier'ом.", "partial")
+        self.assertNotIn("COMPLETED", out)
+        self.assertNotIn("критерии подтверждены", out.lower())
+
+    def test_factual_statements_survive(self):
+        for s in self.FACTUAL_SURVIVORS:
+            self.assertEqual(gate_completion_claims(s, "partial"), s, msg=f"over-scrubbed: {s!r}")
 
     def test_confirmed_leaves_text_intact(self):
         s = "Готово! Все критерии выполнены. COMPLETED."
         self.assertEqual(gate_completion_claims(s, "confirmed"), s)
 
-    def test_factual_step_statements_survive(self):
-        # A factual statement about a step is NOT a completion claim — keep it.
-        s = "Я прочитал health.txt и создал tmp.txt, запустил typecheck."
-        self.assertEqual(gate_completion_claims(s, "partial"), s)
+
+class LiveGlobalCanaryRegressionTest(unittest.TestCase):
+    """Exact live case (run d8cd3092): agent ran `ssh_read snapshot.txt` and claimed
+    the 3 content lines verified — but ssh_read proves file_exists, NOT content. The
+    runtime must stay partial, and the final text must not claim universal success."""
+
+    def _spec(self):
+        return TaskSpec(success_criteria=[
+            "директория `C:\\AgentLabGlobalCanary` существует",
+            "файл `C:\\AgentLabGlobalCanary\\snapshot.txt` существует",
+            "файл `snapshot.txt` содержит строку `project=frontend-global-live`",
+            "файл `snapshot.txt` содержит строку `status=ok`",
+            "файл `snapshot.txt` содержит строку `dom=verified`",
+        ])
+
+    def test_ssh_read_alone_leaves_content_unverified_partial(self):
+        t = CriteriaTracker.from_spec(self._spec())
+        # a successful read → file_exists only; NO ssh_assert_contains was called.
+        t.record(tool_name="ssh_read", args={"host": "home-srv01", "path": "C:\\AgentLabGlobalCanary\\snapshot.txt"},
+                 ok=True, evidence="прочитан — существует")
+        self.assertEqual(t.completion_status(), "partial")
+        statuses = {it["text"]: it["status"] for it in t.items}
+        # file exists confirmed; the 3 content lines stay unconfirmed
+        self.assertEqual(statuses["файл `C:\\AgentLabGlobalCanary\\snapshot.txt` существует"], "confirmed")
+        for line in ("project=frontend-global-live", "status=ok", "dom=verified"):
+            self.assertTrue(any(line in txt and st == "unconfirmed"
+                                for txt, st in statuses.items()), line)
+
+    def test_mkdir_without_ssh_exists_leaves_dir_unverified(self):
+        t = CriteriaTracker.from_spec(self._spec())
+        # ssh_run mkdir is not a verifier → the "directory exists" criterion is not
+        # confirmed until an ssh_exists/ssh_read verdict lands.
+        self.assertEqual(t.items[0]["status"], "unconfirmed")
+
+    def test_final_text_cannot_claim_all_confirmed_on_this_run(self):
+        # With completion=partial, the model's universal claim is neutralised.
+        out = gate_completion_claims(
+            "Готово. Все frontend и SSH критерии подтверждены verifier'ом.", "partial")
+        self.assertNotIn("критерии подтверждены", out.lower())
+        self.assertNotIn("all criteria", out.lower())
 
 
 if __name__ == "__main__":

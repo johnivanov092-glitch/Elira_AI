@@ -102,13 +102,26 @@ def _inline_script_argv(command: str) -> list[str] | None:
     return None
 
 
+# Recursive-delete fragments (already blocked by _blocked_shell_fragment) whose
+# refusal message should also point at the ssh_* tools — a remote-task cleanup must
+# not be attempted through the LOCAL shell.
+_DELETE_FRAGMENTS = ("rmdir", "rd /s", "del /s", "rm -rf", "rm -fr", "remove-item")
+
+
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
     cleaned_command = (command or "").strip()
     if not cleaned_command:
-        return {"text": "ERROR: command is empty"}
+        return {"text": "ERROR: command is empty", "ok": False}
     blocked = _blocked_shell_fragment(cleaned_command)
     if blocked:
-        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}"}
+        # A refused command is NOT ok — otherwise the loop reads a missing `ok` as
+        # True and a blocked destructive delete looks like it succeeded. For a remote
+        # cleanup, guide to the ssh_* tools instead of the local shell (FIX #4).
+        hint = ""
+        if any(f in blocked for f in _DELETE_FRAGMENTS):
+            hint = (" Если это очистка на удалённом хосте — используй "
+                    "ssh_run_ps / ssh_not_exists на нужном host, не локальный shell.")
+        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}.{hint}", "ok": False}
     # Redirect (not ban) raw `ssh host "…"` to the ssh_* tools — the quoting-hell
     # trap that burned a whole run. ok=False so it reads as no-progress and the
     # progress controller / loop-guard see a stuck strategy if the model ignores it.
