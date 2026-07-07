@@ -554,6 +554,27 @@ class VaultDeskVerificationTest(unittest.TestCase):
         self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
         self.assertEqual(self._st(t, "Start local audit"), "unconfirmed")
 
+    def test_bundle_grep_and_read_file_never_confirm_dom_text(self):
+        # Tool-economy honesty lock: finding the token in the bundle (grep) or a source
+        # file (read_file) is NOT a rendered-DOM proof — only browser confirms visibility.
+        t = self._vault()
+        t.record(tool_name="run_bash", args={"command": "grep -r VaultDesk dist/"}, ok=True,
+                 evidence="dist/app.js: VaultDesk")
+        t.record(tool_name="read_file", args={"path": "dist/index.html"}, ok=True,
+                 evidence="<title>VaultDesk</title>")
+        self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
+
+    def test_context_adds_economy_route_for_dom_task_only(self):
+        dom_block = taskspec_context(derive_task_spec(self._VAULT))
+        self.assertIn("Экономный маршрут", dom_block)
+        self.assertIn("http_api для тех же DOM-критериев не нужен", dom_block)
+        # a pure ssh/file task gets NO frontend route injected
+        ssh_block = taskspec_context(TaskSpec(success_criteria=[
+            "файл `C:\\lab\\snapshot.txt` существует",
+            "файл `C:\\lab\\snapshot.txt` содержит строку `ok`",
+        ]))
+        self.assertNotIn("Экономный маршрут", ssh_block)
+
     def test_bundle_findstr_does_not_confirm_visibility(self):
         # findstr finds the tokens in the built bundle — that is NOT "visible on the
         # first screen". A bundle grep must confirm neither text nor page-open.

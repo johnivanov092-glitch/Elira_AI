@@ -211,5 +211,27 @@ class FinalAssemblyCountTest(unittest.TestCase):
         self.assertNotIn("17", final)
 
 
+class MinimalPlanTest(unittest.TestCase):
+    """Tool-economy: a browser render proves page_open too, so the missing-verifier
+    plan must not also demand http_api for the same page."""
+
+    def test_browser_dom_subsumes_page_open_no_http_api(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "первая страница открывается без ошибок",
+            "на первом экране явно видно название `VaultDesk`",
+        ]))
+        acts = cc.missing_verifier_actions(t)
+        tools = [a["tool"] for a in acts]
+        self.assertIn("browser", tools)
+        self.assertNotIn("http_api", tools)   # page_open subsumed by the browser render
+        self.assertEqual(len(acts), 1)         # one call closes both criteria
+
+    def test_page_open_alone_still_offers_http_api(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["первая страница открывается без ошибок"]))
+        acts = cc.missing_verifier_actions(t)
+        self.assertEqual(len(acts), 1)
+        self.assertIn("http_api", acts[0]["call"])   # unchanged when there is no DOM criterion
+
+
 if __name__ == "__main__":
     unittest.main()

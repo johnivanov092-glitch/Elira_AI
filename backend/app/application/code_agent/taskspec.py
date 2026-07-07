@@ -266,6 +266,17 @@ def taskspec_context(spec: TaskSpec) -> str:
         parts.append("Чем проверять: " + "; ".join(spec.verifiers[:8]))
     if spec.constraints:
         parts.append("Ограничения: " + "; ".join(spec.constraints[:8]))
+    # Tool-economy route — only on a browser-observable (frontend/page) task, so it
+    # never nudges ssh/backend runs. browser proves page_open AND the visible text in
+    # one call; a bundle grep proves neither. Keeps a small frontend verify lean.
+    if {_criterion_intent(c) for c in spec.success_criteria} & {"dom_contains", "page_open"}:
+        parts.append(
+            "Экономный маршрут проверки (небольшой фронт): typecheck → build → run_server → "
+            "browser(actual_url) для DOM/интеракций → stop. browser доказывает И открытие "
+            "страницы, И видимый текст — http_api для тех же DOM-критериев не нужен; grep по "
+            "бандлу видимый текст НЕ доказывает. Получив actual_url, не повторяй run_server "
+            "list/logs на живом сервере — иди в browser."
+        )
     return "\n".join(parts)
 
 

@@ -91,14 +91,29 @@ def _action_for(item: dict, *, host: str, url: str) -> dict | None:
 def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLACEHOLDER,
                              url: str = _URL_PLACEHOLDER) -> list[dict]:
     """Concrete verifier calls still missing for each unconfirmed/failed criterion whose
-    verifier is unambiguous. Criteria with no deterministic verifier are omitted."""
-    out = []
+    verifier is unambiguous. Criteria with no deterministic verifier are omitted.
+
+    MINIMAL plan (tool-economy): a browser render proves BOTH page_open and the DOM
+    text, so if we're already asking for a browser check we don't separately demand an
+    http_api page_open on the same run — one call closes both. Duplicate calls collapse."""
+    pairs = []
     for it in tracker.items:
         if it["status"] == "confirmed":
             continue
         act = _action_for(it, host=host, url=url)
         if act is not None:
-            out.append(act)
+            pairs.append((it, act))
+    # A browser DOM verifier is in the plan → page_open is subsumed by it; drop the
+    # separate http_api/browser page_open ask so the model doesn't call both.
+    has_browser_dom = any(it["intent"] == "dom_contains" for it, _ in pairs)
+    out, seen = [], set()
+    for it, act in pairs:
+        if has_browser_dom and it["intent"] == "page_open":
+            continue
+        if act["call"] in seen:
+            continue
+        seen.add(act["call"])
+        out.append(act)
     return out
 
 
