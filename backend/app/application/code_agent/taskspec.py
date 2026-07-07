@@ -418,6 +418,30 @@ def _is_interaction(text: str) -> bool:
     return _has((text or "").lower(), _INTERACTION_CUES)
 
 
+_FILL_CUES = ("ввод", "введ", "впиш", "заполн", "type ", "fill", "в поле")
+_CLICK_CUES = ("нажат", "нажми", "клик", "click", "кнопк", "button", "submit")
+
+
+def interaction_spec(text: str) -> dict:
+    """The (fill value, click target) an interaction criterion implies — the quoted
+    token right after a fill cue ("после ввода `X`") and after a click cue ("нажатия
+    `Calculate`"). Empty strings when absent. Used to build ONE concrete grouped
+    browser(actions=…) call that closes every interaction sharing the same input+click."""
+    low = (text or "").lower()
+
+    def _after(cues: tuple[str, ...]) -> str:
+        positions = [low.find(c) for c in cues if c in low]
+        if not positions:
+            return ""
+        pos = min(positions)
+        for m in _QUOTED_RE.finditer(text or ""):
+            if m.start() > pos:
+                return m.group(1).strip()
+        return ""
+
+    return {"fill": _after(_FILL_CUES), "click": _after(_CLICK_CUES)}
+
+
 # A criterion whose applicability depends on the PROJECT having something ("если в
 # проекте есть npm run typecheck, он проходит") — optional, not a hard deliverable.
 # Deliberately narrow: only project-/tooling-presence and explicit-optional phrasings.
@@ -465,6 +489,15 @@ def _dom_targets(text: str) -> set[str]:
 
 def _has(low: str, cues: tuple[str, ...]) -> bool:
     return any(c in low for c in cues)
+
+
+def _norm_dom(s: str) -> str:
+    """Normalise text for DOM-token matching: lowercase, and collapse every run of
+    non-(word/dot) characters — colons, pipes, newlines, punctuation — to one space.
+    Keeps letters/digits/underscore/dot, so IP/mask values survive while a label
+    rendered without its colon ("Network 192.168.88.0") matches a token with one
+    ("Network: 192.168.88.0"). Adjacency is preserved (substring check on the result)."""
+    return re.sub(r"[^\w.]+", " ", (s or "").lower()).strip()
 
 
 # Context cue groups — WHAT a criterion is about (a rendered page vs a file vs a
@@ -716,13 +749,15 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         return ck == "any" or vk == "any" or ck == vk
     if it == "dom_contains":
         toks = item.get("targets") or set()
-        # Whitespace-insensitive: a UI often renders label and value as SEPARATE
-        # elements, so inner_text yields "Network:\n192.168.88.0" while the criterion
-        # token is "Network: 192.168.88.0" (one space). Collapse runs of whitespace on
-        # both sides before the substring check, else a valid interaction stays
-        # unconfirmed on a newline (live Subnet: 3 interaction criteria hung on this).
-        text = " ".join((v.get("text") or "").split())
-        return bool(toks) and all(" ".join(t.split()) in text for t in toks)
+        # Punctuation- and whitespace-insensitive: a UI renders a label as a SEPARATE
+        # element and often WITHOUT its colon, so inner_text is "Network 192.168.88.0"
+        # (label | value, no colon) while the criterion token is "Network: 192.168.88.0".
+        # _norm_dom drops non-`\w.` chars (colon, pipe, newline) to a single space on
+        # BOTH sides — keeping adjacency and dots (IP/mask) — else a valid interaction
+        # stays unconfirmed and the model spins (live Subnet: 3 criteria hung, then a
+        # run_server loop → loop_guard stop).
+        text = _norm_dom(v.get("text") or "")
+        return bool(toks) and all(_norm_dom(t) in text for t in toks)
     if it == "viewport_layout":
         return bool(v.get("viewport"))
     if it in ("content_contains", "content_not_contains"):

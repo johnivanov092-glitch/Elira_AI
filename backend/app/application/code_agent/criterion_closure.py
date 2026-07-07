@@ -18,6 +18,7 @@ from app.application.code_agent.taskspec import (
     _QUOTED_RE,
     _file_tokens,
     _path_tokens_from_text,
+    interaction_spec,
 )
 
 _HOST_PLACEHOLDER = "<host>"
@@ -109,26 +110,55 @@ def _action_for(item: dict, *, host: str, url: str) -> dict | None:
     return None  # generic / viewport_layout → no deterministic verifier
 
 
+def _interaction_group_actions(items: list[dict], url: str) -> list[dict]:
+    """GROUP open interaction criteria by (fill value, click target) into ONE concrete
+    browser(actions=…) call per group — Network/Mask/Hosts after the SAME fill+click
+    close in a single call. The call carries the exact value + button + all expected
+    result tokens, and tells the model NOT to restart the server (the live 10/13 spun
+    into a run_server loop instead of doing this one call)."""
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for it in items:
+        spec = interaction_spec(it["text"])
+        groups.setdefault((spec["fill"], spec["click"]), []).append(it)
+    out = []
+    for (fill, click), its in groups.items():
+        toks = sorted({t for it in its for t in (it.get("targets") or set())})
+        show = ", ".join(f"`{t}`" for t in toks) if toks else "нужный текст"
+        fill_step = f'{{"fill":"<поле ввода>","value":"{fill}"}}' if fill else '{"fill":"<поле>","value":"<значение>"}'
+        click_step = f'{{"click":"{click}"}}' if click else '{"click":"<кнопка>"}'
+        out.append({
+            "tool": "browser",
+            "call": (f"browser(url={url}, actions=[{fill_step},{click_step}]) — ОДИН вызов "
+                     f"закрывает всё это; в DOM после действий должно быть {show}; "
+                     f"НЕ перезапускай сервер (он уже поднят), НЕ используй grep/node."),
+            "why": "; ".join(it["text"] for it in its)[:200],
+        })
+    return out
+
+
 def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLACEHOLDER,
                              url: str = _URL_PLACEHOLDER) -> list[dict]:
     """Concrete verifier calls still missing for each unconfirmed/failed criterion whose
     verifier is unambiguous. Criteria with no deterministic verifier are omitted.
 
-    MINIMAL plan (tool-economy): a browser render proves BOTH page_open and the DOM
-    text, so if we're already asking for a browser check we don't separately demand an
-    http_api page_open on the same run — one call closes both. Duplicate calls collapse."""
-    pairs = []
-    for it in tracker.items:
-        if it["status"] == "confirmed":
-            continue
-        act = _action_for(it, host=host, url=url)
-        if act is not None:
-            pairs.append((it, act))
-    # A browser DOM verifier is in the plan → page_open is subsumed by it; drop the
-    # separate http_api/browser page_open ask so the model doesn't call both.
-    has_browser_dom = any(it["intent"] == "dom_contains" for it, _ in pairs)
+    MINIMAL plan (tool-economy): interaction criteria sharing one fill+click GROUP into a
+    single browser(actions=…) call; a browser render proves page_open too, so we never
+    also demand an http_api page_open. Duplicate calls collapse."""
+    open_items = [it for it in tracker.items if it["status"] != "confirmed"]
+    interaction = [it for it in open_items if it["intent"] == "dom_contains" and it.get("interaction")]
+    rest = [it for it in open_items if not (it["intent"] == "dom_contains" and it.get("interaction"))]
     out, seen = [], set()
-    for it, act in pairs:
+    grouped = _interaction_group_actions(interaction, url)
+    # a browser DOM verifier (grouped or plain) subsumes page_open → don't also ask http_api
+    has_browser_dom = bool(grouped) or any(it["intent"] == "dom_contains" for it in rest)
+    for a in grouped:
+        if a["call"] not in seen:
+            seen.add(a["call"])
+            out.append(a)
+    for it in rest:
+        act = _action_for(it, host=host, url=url)
+        if act is None:
+            continue
         if has_browser_dom and it["intent"] == "page_open":
             continue
         if act["call"] in seen:
@@ -136,6 +166,22 @@ def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLAC
         seen.add(act["call"])
         out.append(act)
     return out
+
+
+def browser_interaction_redirect(tracker: CriteriaTracker, url: str) -> str | None:
+    """When a server is ALREADY up and the only open work is browser interaction, a
+    run_server restart is the wrong next step — return the exact grouped browser call(s)
+    to redirect the model there instead of letting it loop on run_server."""
+    open_inter = [it for it in tracker.items
+                  if it["status"] != "confirmed" and it["intent"] == "dom_contains" and it.get("interaction")]
+    if not open_inter:
+        return None
+    calls = "\n".join(f"- {a['call']}" for a in _interaction_group_actions(open_inter, url))
+    return (
+        "Сервер уже запущен (actual_url известен) — НЕ перезапускай его через run_server. "
+        "Оставшиеся критерии закрываются интеракцией в браузере, вот точный вызов:\n"
+        f"{calls}"
+    )
 
 
 def missing_set_key(actions: list[dict]) -> str:

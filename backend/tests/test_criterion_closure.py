@@ -233,6 +233,43 @@ class MinimalPlanTest(unittest.TestCase):
         self.assertIn("http_api", acts[0]["call"])   # unchanged when there is no DOM criterion
 
 
+class InteractionGroupingTest(unittest.TestCase):
+    def _three(self):
+        return CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.88.0`",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Mask: 255.255.255.0`",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Hosts: 254`",
+        ]))
+
+    def test_three_interactions_group_into_one_concrete_browser_call(self):
+        acts = cc.missing_verifier_actions(self._three(), url="http://localhost:5173")
+        self.assertEqual(len(acts), 1)                       # ONE grouped call, not three
+        call = acts[0]["call"].lower()
+        self.assertIn("192.168.88.0/24", call)               # exact fill value
+        self.assertIn("calculate", call)                     # exact click target
+        for tok in ("network: 192.168.88.0", "mask: 255.255.255.0", "hosts: 254"):
+            self.assertIn(tok, call)                          # all expected result tokens
+        self.assertIn("actions", call)
+        self.assertIn("не перезапускай сервер", call)
+
+    def test_redirect_points_to_browser_not_run_server(self):
+        msg = cc.browser_interaction_redirect(self._three(), "http://localhost:5173")
+        self.assertIsNotNone(msg)
+        self.assertIn("НЕ перезапускай", msg)
+        self.assertIn("192.168.88.0/24", msg)
+        self.assertIn("Calculate", msg)
+
+    def test_redirect_none_when_no_open_interactions(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["`npm run build` проходит без ошибок"]))
+        self.assertIsNone(cc.browser_interaction_redirect(t, "http://localhost:5173"))
+
+    def test_confirmed_interaction_not_re_listed(self):
+        t = self._three()
+        dom = "Network\n192.168.88.0\nMask\n255.255.255.0\nHosts\n254"
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        self.assertEqual(cc.missing_verifier_actions(t, url="http://localhost:5173"), [])
+
+
 class SubnetOpenStateClosureTest(unittest.TestCase):
     def test_missing_actions_cover_local_typecheck_and_interaction(self):
         # The exact 6-open Subnet state: closure must name path_exists (local dir),

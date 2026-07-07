@@ -339,6 +339,43 @@ class ToolSearchEconomyTest(unittest.TestCase):
         )
 
 
+class ServerRedirectTest(unittest.TestCase):
+    _SPEC = (
+        "Цель:\nСделай мини-фронт.\n\n"
+        "Критерии готовности:\n"
+        "- dev server запускается через `run_server`\n"
+        "- browser interaction: после ввода `x` и нажатия `Go` rendered DOM содержит `Result`\n"
+    )
+
+    def tearDown(self):
+        deferred_tools.clear_run("ts-redir")
+
+    def test_repeat_run_server_redirected_to_browser_when_server_up(self):
+        # server starts once (actual_url known); a SECOND run_server(start) while a
+        # browser-interaction criterion is still open must be redirected to browser,
+        # not executed — the live 10/13 looped run_server into a loop_guard stop.
+        chat = _SeqChat([
+            _call("run_server", action="start", command="npm run dev", port=5173),
+            _call("run_server", action="start", command="npm run dev", port=5173),
+            _final("готово"),
+        ], _final())
+
+        def _exec(request, **kw):
+            return SimpleNamespace(status="ok", output={
+                "text": "up", "ok": True, "actual_url": "http://localhost:5173",
+                "server_started": True, "actual_port": 5173})
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=self._SPEC, project_root=tmp, run_id="ts-redir",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        rs = [e for e in evs if e.get("type") == "tool_call" and e.get("tool") == "run_server"]
+        self.assertTrue(any("НЕ перезапускай" in str(e.get("result", "")) for e in rs),
+                        f"expected a run_server→browser redirect; got {[str(e.get('result',''))[:60] for e in rs]}")
+
+
 class VerifierGateTest(unittest.TestCase):
     def tearDown(self):
         for rid in ("ts-gate", "ts-confirmed"):
@@ -681,6 +718,23 @@ class VaultDeskVerificationTest(unittest.TestCase):
         dom = "TITLE: Subnet Helper\nNetwork:\n192.168.88.0\nMask:\n255.255.255.0\nHosts:\n254"
         t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
         self.assertTrue(all(it["status"] == "confirmed" for it in t.items))
+
+    def test_colonless_label_dom_confirms_interaction(self):
+        # Live 10/13: the app renders the label WITHOUT a colon → DOM "Network 192.168.88.0"
+        # while the token is "Network: 192.168.88.0". Punct-insensitive match must confirm.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.88.0`",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Mask: 255.255.255.0`",
+            "browser interaction: после ввода `192.168.88.0/24` и нажатия `Calculate` rendered DOM содержит `Hosts: 254`",
+        ]))
+        dom = "TITLE: Subnet Helper\nNetwork\n192.168.88.0\nMask\n255.255.255.0\nHosts\n254"
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        self.assertTrue(all(it["status"] == "confirmed" for it in t.items))
+
+    def test_dom_match_still_rejects_wrong_value(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["на экране `Network: 10.0.0.0`"]))
+        t.record(tool_name="browser", args={"url": "x"}, ok=True, evidence="Network\n192.168.88.0")
+        self.assertEqual(t.items[0]["status"], "unconfirmed")   # different value → no false match
 
     def test_conditional_typecheck_skipped_not_unverified_when_absent(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[

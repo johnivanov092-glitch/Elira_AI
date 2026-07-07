@@ -749,6 +749,8 @@ def _stream_code_agent_core(
         closure_turns = 0
         _CLOSURE_GATE_MAX = 2
         cleanup_barrier_fired = False
+        server_redirect_fired = 0
+        _SERVER_REDIRECT_MAX = 2
         _last_ssh_host = ""      # for concrete closure/barrier call hints
         _last_server_url = ""
         # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
@@ -1430,6 +1432,29 @@ def _stream_code_agent_core(
                         messages.append({"role": "tool", "content": _barrier, "name": name})
                         tool_round_trips += 1
                         call_log.append(f"{name}(cleanup-barrier)")
+                        continue
+                # Browser-interaction redirect: the model tries to (re)start the dev
+                # server while one is already up and the only open work is browser
+                # interaction — restarting is the wrong step (live 10/13 spun into a
+                # run_server loop → loop_guard). Redirect (bounded) to the exact grouped
+                # browser(actions=…) call instead of running run_server.
+                if (
+                    name == "run_server"
+                    and str(parsed_args.get("action") or "start").lower() == "start"
+                    and _last_server_url
+                    and criteria.items
+                    and server_redirect_fired < _SERVER_REDIRECT_MAX
+                ):
+                    _redir = criterion_closure.browser_interaction_redirect(criteria, _last_server_url)
+                    if _redir is not None:
+                        server_redirect_fired += 1
+                        yield {
+                            "type": "tool_call", "step": step, "tool": name,
+                            "arguments": parsed_args, "result": _redir, "ok": False,
+                        }
+                        messages.append({"role": "tool", "content": _redir, "name": name})
+                        tool_round_trips += 1
+                        call_log.append(f"{name}(→browser-interaction)")
                         continue
                 # Whitespace-normalized fingerprint: a stray space/newline in a
                 # retried argument no longer evades the repeat counter.
