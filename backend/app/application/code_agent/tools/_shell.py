@@ -308,6 +308,10 @@ def is_shell_critical(command: str) -> bool:
 # the raw pipe (tunnels, scp-style one-offs) with an explicit `#!raw-ssh` marker.
 _RAW_SSH_OVERRIDE = "#!raw-ssh"
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_WRAPPED_RAW_SSH_RE = re.compile(
+    r"(?:^|\s)(?:-command|-c|/c)\s+[`\"']*\s*(ssh\s+.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
 # ssh options that consume the NEXT token as their argument (so the host isn't
 # mistaken for an option value). `-p 22`, `-o BatchMode=yes`, `-i key`, `-J jump`…
 _SSH_OPTS_WITH_ARG = frozenset({
@@ -345,6 +349,31 @@ def _ssh_is_remote_exec(command: str) -> bool:
     return i < len(toks)  # a remote command follows the host → the trap
 
 
+def _wrapped_raw_ssh_payload(command: str) -> str | None:
+    """Return the nested `ssh ...` payload from shell wrappers such as
+    `powershell.exe -Command "ssh host 'cmd ...'"` or `cmd /c ssh host ...`.
+
+    This intentionally does NOT scan arbitrary command strings for `ssh`; it only
+    fires when the wrapper payload itself starts with ssh, which is the same raw
+    remote-exec trap hidden one shell layer deeper.
+    """
+    try:
+        toks = shlex.split(command, posix=True)
+    except ValueError:
+        toks = command.split()
+    if not toks:
+        return None
+    exe = toks[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
+    if exe.endswith(".exe"):
+        exe = exe[:-4]
+    if exe not in {"powershell", "pwsh", "cmd"}:
+        return None
+    m = _WRAPPED_RAW_SSH_RE.search(command)
+    if not m:
+        return None
+    return m.group(1).strip().strip("\"'")
+
+
 def raw_ssh_redirect(command: str) -> str | None:
     """If *command* is a raw ``ssh [opts] <host> <cmd>`` remote-exec invocation,
     return an actionable redirect message pointing at the ssh_* tools; else None.
@@ -352,7 +381,8 @@ def raw_ssh_redirect(command: str) -> str | None:
     cmd = (command or "").strip()
     if not cmd or _RAW_SSH_OVERRIDE in cmd:
         return None
-    if not _ssh_is_remote_exec(cmd):
+    wrapped = _wrapped_raw_ssh_payload(cmd)
+    if not (_ssh_is_remote_exec(cmd) or (wrapped and _ssh_is_remote_exec(wrapped))):
         return None
     return (
         "ERROR: raw `ssh …` через run_bash — ловушка экранирования: тело команды "

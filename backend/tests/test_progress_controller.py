@@ -60,6 +60,18 @@ class RawSshRedirectTest(unittest.TestCase):
         self.assertIsNotNone(raw_ssh_redirect('ssh -i ~/.ssh/id -p 2222 host "type C:\\a.ps1"'))
         self.assertIsNotNone(raw_ssh_redirect("ssh -oStrictHostKeyChecking=no host cmd"))  # glued opt
 
+    def test_raw_ssh_wrapped_in_powershell_command_is_redirected(self) -> None:
+        cmd = (
+            'powershell.exe -NoProfile -NonInteractive -Command '
+            '"ssh home-srv01 \'cmd /c \"mkdir C:\\AgentLabCanary2 & echo DONE\"\'"'
+        )
+        msg = raw_ssh_redirect(cmd)
+        self.assertIsNotNone(msg)
+        self.assertIn("ssh_run_ps", msg)
+
+    def test_non_ssh_powershell_command_is_not_redirected(self) -> None:
+        self.assertIsNone(raw_ssh_redirect('powershell.exe -Command "Write-Host ssh home-srv01 cmd"'))
+
     def test_ssh_diagnostic_and_interactive_not_redirected(self) -> None:
         self.assertIsNone(raw_ssh_redirect("ssh -V"))
         self.assertIsNone(raw_ssh_redirect("ssh -G host"))
