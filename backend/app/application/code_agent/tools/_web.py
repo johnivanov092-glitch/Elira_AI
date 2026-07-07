@@ -186,9 +186,72 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000) ->
     return {"text": _fetch_one(url, limit)}
 
 
-def _browser_render(url: str, wait_selector: str | None, limit: int) -> tuple[str, str, str]:
-    """Render a page with Playwright. Runs in a worker thread (see tool_browser):
-    the Playwright sync API must not be called from inside an asyncio loop."""
+def _resolve_locator(page, selector: str, *, kind: str):
+    """Best-effort locator for an interaction step. Accepts a raw CSS selector, or a
+    human label / button text / placeholder / input name — trying each strategy so the
+    model can say `fill: "CIDR"` (a label) or `click: "Calculate"` (button text) without
+    knowing the DOM. Returns a Playwright locator with ≥1 match, or None."""
+    sel = (selector or "").strip()
+    if not sel:
+        return None
+    looks_css = sel[0] in "#.[" or (" " not in sel and any(c in sel for c in "#.>[]="))
+    strategies = []
+    if looks_css:
+        strategies.append(lambda: page.locator(sel))
+    if kind == "fill":
+        strategies += [
+            lambda: page.get_by_label(sel, exact=False),
+            lambda: page.get_by_placeholder(sel),
+            lambda: page.get_by_role("textbox", name=sel),
+            lambda: page.locator(f"input[name='{sel}'], textarea[name='{sel}'], #{sel}"),
+        ]
+    else:  # click
+        strategies += [
+            lambda: page.get_by_role("button", name=sel),
+            lambda: page.get_by_role("link", name=sel),
+            lambda: page.get_by_text(sel, exact=False),
+        ]
+    if not looks_css:
+        strategies.append(lambda: page.locator(sel))
+    for make in strategies:
+        try:
+            loc = make().first
+            if loc.count() > 0:
+                return loc
+        except Exception:
+            continue
+    return None
+
+
+def _apply_action(page, act: dict) -> None:
+    """Apply one interaction step: {"fill": <label|css>, "value": ...}, {"click":
+    <text|css>}, or {"wait": <ms>}. Best-effort and non-fatal — a bad step is skipped so
+    a later assertion still reflects the real DOM."""
+    if not isinstance(act, dict):
+        return
+    try:
+        if "fill" in act:
+            loc = _resolve_locator(page, str(act.get("fill") or ""), kind="fill")
+            if loc is not None:
+                loc.fill(str(act.get("value", "") if act.get("value") is not None else ""))
+        elif "click" in act:
+            loc = _resolve_locator(page, str(act.get("click") or ""), kind="click")
+            if loc is not None:
+                loc.click(timeout=8000)
+        elif "wait" in act:
+            page.wait_for_timeout(max(0, min(int(act.get("wait") or 500), 10000)))
+    except Exception:
+        pass
+
+
+def _browser_render(url: str, wait_selector: str | None, limit: int,
+                    actions: list[dict] | None = None) -> tuple[str, str, str]:
+    """Render a page with Playwright, optionally performing interaction steps (fill /
+    click / wait) before capturing the DOM — so an interaction criterion ("after typing
+    X and clicking Calculate the DOM shows Network: …") is verified against the ACTUAL
+    post-interaction DOM, not a static render. Runs in a worker thread (see
+    tool_browser): the Playwright sync API must not be called from inside an asyncio
+    loop."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -200,6 +263,10 @@ def _browser_render(url: str, wait_selector: str | None, limit: int) -> tuple[st
                     page.wait_for_selector(wait_selector, timeout=8000)
                 except Exception:
                     pass
+            if actions:
+                for act in actions:
+                    _apply_action(page, act)
+                page.wait_for_timeout(300)  # let the DOM settle after interactions
             return page.title(), page.url, (page.inner_text("body") or "")[:limit]
         finally:
             browser.close()
@@ -220,11 +287,17 @@ def _render_fallback(url: str, limit: int) -> str:
         return ""
 
 
-def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000) -> dict[str, Any]:
+def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000,
+                 actions: list[dict] | None = None) -> dict[str, Any]:
     """Open a URL in a real headless browser (Playwright/Chromium), render
-    JavaScript, and return the visible page text. Use when `web_fetch` is not
-    enough — pages that need JS to render, SPAs, or to verify how a page
-    actually looks/behaves.
+    JavaScript, optionally perform interaction steps, and return the visible page
+    text. Use when `web_fetch` is not enough — pages that need JS to render, SPAs,
+    or to verify how a page actually looks/behaves.
+
+    `actions` drives real interaction in ONE session so an "after clicking Calculate
+    the DOM shows Network: …" criterion is verified against the post-interaction DOM:
+      actions=[{"fill": "CIDR", "value": "192.168.1.0/24"}, {"click": "Calculate"}]
+    fill/click accept a CSS selector OR a human label / button text.
     """
     cleaned_url = (url or "").strip()
     # ERROR branches return ok=False WITHOUT a verifier flag: the render couldn't
@@ -240,11 +313,14 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     if reason:
         return {"text": f"ERROR: SSRF blocked — {reason}", "ok": False}
 
+    steps = actions if isinstance(actions, list) else None
     limit = max(500, min(int(max_chars), 50000))
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            title, final_url, text = ex.submit(_browser_render, cleaned_url, wait_selector, limit).result(timeout=50)
+            title, final_url, text = ex.submit(
+                _browser_render, cleaned_url, wait_selector, limit, steps
+            ).result(timeout=60 if steps else 50)
     except Exception as exc:
         return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}
 
@@ -252,12 +328,21 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     if not text:
         return {"text": f"[browser: {final_url}] страница отрендерилась, но видимого текста нет", "ok": False}
     # A real render IS a verdict: the page LOADED (page_open) and the returned DOM
-    # text is genuine visible-text evidence (text_visible) — unlike a bundle grep.
+    # text is genuine visible-text evidence (text_visible) — unlike a bundle grep. After
+    # interaction steps the DOM reflects them, so an interaction criterion verifies here.
     # The evidence carries the rendered text so the criteria matcher can check which
-    # named tokens (`VaultDesk`, `Start local audit`) are actually on the page.
-    rendered = f"TITLE: {title}\n{text}"
+    # named tokens (`VaultDesk`, `Network: 192.168.1.0`) are actually on the page.
+    act_note = ""
+    if steps:
+        done = "; ".join(
+            (f"fill {a.get('fill')}={a.get('value')}" if "fill" in a else
+             f"click {a.get('click')}" if "click" in a else f"wait {a.get('wait')}")
+            for a in steps if isinstance(a, dict)
+        )
+        act_note = f"[после действий: {done}]\n"
+    rendered = f"{act_note}TITLE: {title}\n{text}"
     return {
-        "text": f"[browser: {final_url}]\nTITLE: {title}\n\n{text}",
+        "text": f"[browser: {final_url}]\n{act_note}TITLE: {title}\n\n{text}",
         "ok": True,
         "verifier": True,
         "evidence": rendered[:8000],

@@ -6,6 +6,7 @@ from typing import Any, Callable
 from app.application.code_agent.tools._files import (
     tool_edit_file,
     tool_glob,
+    tool_path_exists,
     tool_read_file,
     tool_write_file,
 )
@@ -63,6 +64,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "write_file": lambda **kw: tool_write_file(project_root, **kw),
         "edit_file": lambda **kw: tool_edit_file(project_root, **kw),
         "glob": lambda **kw: tool_glob(project_root, **kw),
+        "path_exists": lambda **kw: tool_path_exists(project_root, **kw),
         "grep": lambda **kw: tool_grep(project_root, **kw),
         "project_map": lambda **kw: tool_project_map(project_root, **kw),
         "recall": lambda **kw: tool_recall(project_root, **kw),

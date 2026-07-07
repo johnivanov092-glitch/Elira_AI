@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import re
 
-from app.application.code_agent.taskspec import CriteriaTracker, _QUOTED_RE, _file_tokens
+from app.application.code_agent.taskspec import (
+    CriteriaTracker,
+    _QUOTED_RE,
+    _file_tokens,
+    _path_tokens_from_text,
+)
 
 _HOST_PLACEHOLDER = "<host>"
 _URL_PLACEHOLDER = "<actual_url от run_server>"
@@ -29,14 +34,21 @@ _COMMAND_FOR_KIND = {
 
 
 def _criterion_path(item: dict) -> str:
-    """The file/dir path a criterion is about — a quoted path token, else the longest
-    path in item['files']."""
-    quoted_paths = [q.strip() for q in _QUOTED_RE.findall(item.get("text") or "") if _file_tokens(q)]
+    """The file/dir path a criterion is about — a quoted path token (incl. a bare dir
+    like `subnet-helper`), else the longest path in item['files']."""
+    quoted_paths = [q.strip() for q in _QUOTED_RE.findall(item.get("text") or "") if _path_tokens_from_text(q)]
     if quoted_paths:
         return quoted_paths[0]
     paths = [f for f in (item.get("files") or ()) if "/" in f or "\\" in f]
     pool = paths or list(item.get("files") or ())
     return max(pool, key=len) if pool else ""
+
+
+def _looks_local_path(path: str) -> bool:
+    """A relative path (no Windows drive, no POSIX-absolute) is local project FS →
+    verified with path_exists; an absolute/remote path uses ssh_exists on the host."""
+    p = (path or "").strip()
+    return not (re.match(r"^[A-Za-z]:[\\/]", p) or p.startswith("/"))
 
 
 def _content_pattern(item: dict) -> str:
@@ -65,15 +77,24 @@ def _action_for(item: dict, *, host: str, url: str) -> dict | None:
                     "call": f"ssh_assert_not_contains(host={host}, path=`{path}`, pattern=`{pat}`)", "why": text}
     elif intent == "file_exists":
         path = _criterion_path(item)
+        if path and _looks_local_path(path):
+            return {"tool": "path_exists", "call": f"path_exists(path=`{path}`)", "why": text}
         if path:
             return {"tool": "ssh_exists", "call": f"ssh_exists(host={host}, path=`{path}`)", "why": text}
     elif intent == "file_not_exists":
         path = _criterion_path(item)
+        if path and _looks_local_path(path):
+            return {"tool": "path_exists", "call": f"path_exists(path=`{path}`) — должен отсутствовать", "why": text}
         if path:
             return {"tool": "ssh_not_exists", "call": f"ssh_not_exists(host={host}, path=`{path}`)", "why": text}
     elif intent == "dom_contains":
         toks = item.get("targets") or set()
         show = ", ".join(f"`{t}`" for t in sorted(toks)) if toks else "нужный текст"
+        if item.get("interaction"):
+            return {"tool": "browser",
+                    "call": (f"browser(url={url}, actions=[…fill поля, click кнопки…]) — выполни "
+                             f"ввод и клик, затем в DOM должно быть {show} (НЕ grep/не node-скрипт)"),
+                    "why": text}
         return {"tool": "browser",
                 "call": f"browser(url={url}) — в отрисованном DOM должно быть {show} (НЕ grep по бандлу)", "why": text}
     elif intent == "page_open":

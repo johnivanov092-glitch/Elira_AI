@@ -294,6 +294,12 @@ def taskspec_context(spec: TaskSpec) -> str:
         parts.append("Чем проверять: " + "; ".join(spec.verifiers[:8]))
     if spec.constraints:
         parts.append("Ограничения: " + "; ".join(spec.constraints[:8]))
+    _intents = {_criterion_intent(c) for c in spec.success_criteria}
+    if _intents & {"file_exists", "file_not_exists"}:
+        parts.append(
+            "Существование локальных файлов/папок доказывай инструментом `path_exists` "
+            "(read-only; если его нет в списке — активируй через tool_search), а не grep/read."
+        )
     # Tool-economy route — only on a browser-observable (frontend/page) task, so it
     # never nudges ssh/backend runs. browser proves page_open AND the visible text in
     # one call; a bundle grep proves neither. Keeps a small frontend verify lean.
@@ -345,6 +351,33 @@ def _file_tokens(text: str) -> set[str]:
     return toks
 
 
+# A quoted name is path-like when it has an extension, a separator, or a hyphen —
+# so a bare directory `subnet-helper` (no dot/slash → missed by _SALIENT_RE_FILE) is
+# still captured as a file target for a local file_exists criterion.
+_QUOTED_NAME_RE = re.compile(r"^[\w][\w.\-]*(?:[\\/][\w.\-]+)*$")
+
+
+def _path_tokens_from_text(text: str) -> set[str]:
+    """File/dir targets a criterion is about — _file_tokens plus quoted names that look
+    path-like (`subnet-helper`, `subnet-helper/package.json`). Full token + basename."""
+    toks = _file_tokens(text)
+    for q in _QUOTED_RE.findall(text or ""):
+        q = q.strip().rstrip(".,;:!?)»").lower()
+        if q and _QUOTED_NAME_RE.match(q) and any(ch in q for ch in "./\\-"):
+            toks.add(q)
+            toks.add(re.split(r"[\\/]", q)[-1])
+    return toks
+
+
+def _path_tokens_from_arg(path: str) -> set[str]:
+    """File/dir tokens from a raw tool path argument (`subnet-helper`,
+    `subnet-helper/package.json`) — full normalised token + basename."""
+    p = (path or "").strip().strip("`\"'").replace("\\", "/").rstrip("/").lower()
+    if not p:
+        return set()
+    return {p, p.split("/")[-1]}
+
+
 # ── generic verifier contract (Ph7.9) ───────────────────────────
 #
 # DONE is decided by INTENT + TARGET + verifier EVIDENCE, never by the task's words
@@ -368,25 +401,47 @@ def _file_tokens(text: str) -> set[str]:
 
 _QUOTED_RE = re.compile(r"[`«\"']([^`«»\"']{1,60})[`»\"']")
 _AFTER_TEXT_MARKERS = ("текст ", "надпись ", "надписи ", "text ", "label ", "заголовок ", "кнопк")
+# A criterion that requires a user ACTION before the DOM shows the result.
+_INTERACTION_CUES = ("нажат", "нажми", "клик", "click", "ввод", "введ", "type ", "fill",
+                     "заполн", "interaction", "интеракц", "submit")
+# Where the EXPECTED result begins — tokens after this are what must be on the page;
+# tokens before (the input value, the button) are the action, not a DOM assertion.
+_RESULT_MARKERS = ("содержит", "contains", "показать", "показыва", "появ", "appears",
+                   "выводит", "отобража", "результат", "→", "->", "then ", "затем ")
 
 
 def _quoted_tokens(text: str) -> set[str]:
     return {m.strip().lower() for m in _QUOTED_RE.findall(text or "") if m.strip()}
 
 
+def _is_interaction(text: str) -> bool:
+    return _has((text or "").lower(), _INTERACTION_CUES)
+
+
 def _dom_targets(text: str) -> set[str]:
     """The literal strings a DOM criterion says must be on the page. Quoted/back-ticked
     tokens first (`VaultDesk`, `Start local audit`); else the phrase after a
-    'текст…/text…' marker. Domain-agnostic — any task's tokens, never hardcoded."""
+    'текст…/text…' marker. Domain-agnostic — any task's tokens, never hardcoded.
+
+    For an INTERACTION criterion ("после ввода `X` и нажатия `Calculate` DOM содержит
+    `Network: …`") only the EXPECTED RESULT after the last result marker is required —
+    the input value `X` and the button `Calculate` are the action, and demanding them
+    in the body text wrongly kept every interaction criterion unconfirmed (Subnet)."""
+    low = (text or "").lower()
+    if _is_interaction(text):
+        cut = max((low.rfind(m) for m in _RESULT_MARKERS), default=-1)
+        if cut >= 0:
+            res = _quoted_tokens(text[cut:])
+            if res:
+                return res
     toks = _quoted_tokens(text)
     if toks:
         return toks
-    low = (text or "")
-    ll = low.lower()
+    ll = low
     for marker in _AFTER_TEXT_MARKERS:
         i = ll.rfind(marker)
         if i >= 0:
-            rest = low[i + len(marker):].strip().strip("`«»\"'.,;:()").lower()
+            rest = (text or "")[i + len(marker):].strip().strip("`«»\"'.,;:()").lower()
             if rest and len(rest) <= 40:
                 return {rest}
     return set()
@@ -434,7 +489,8 @@ _ABSENT_STRONG = ("удал", "removed", "deleted", "не существует",
                   "больше нет", "gone", "стёрт", "стерт", "снесён", "снесен")
 _ABSENT_WEAK = ("cleanup", "очищ")
 _EXIST_CTX = ("существует", "создан", "создана", "создать", "exists", "присутству", "появил",
-              "есть файл", "папк", "директор", "directory")
+              "есть файл", "папк", "директор", "directory", "внутри", "находится в",
+              "находится именно", "расположен", "лежит в")
 # Scope/safety RULES — not verifiable outcomes. They may sit inside a "Критерии
 # готовности" section ("изменения внесены именно в текущий проект, без создания нового
 # Vite/React проекта"), but they belong in constraints: a verify-only run (no edits)
@@ -494,7 +550,7 @@ def _criterion_intent(text: str) -> str:
     unquoted = _QUOTED_RE.sub(" ", text or "").lower()
     dom = _has(unquoted, _DOM_CTX)
     targets = _dom_targets(text)
-    has_path = bool(_file_tokens(text))
+    has_path = bool(_path_tokens_from_text(text))
     fil = _has(unquoted, _FILE_CTX) or (has_path and not dom)
     negative = _has(low, _NEG_CTX)
 
@@ -598,6 +654,9 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
     if tool_name == "ssh_exists":  # present(ok)→file_exists, absent(not ok)→file_not_exists
         return {"intents": {"file_exists", "file_not_exists"},
                 "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
+    if tool_name == "path_exists":  # LOCAL existence probe — same contract as ssh_exists
+        return {"intents": {"file_exists", "file_not_exists"},
+                "files": _path_tokens_from_arg(str(a.get("path", ""))), "present_when_ok": True}
     if tool_name == "ssh_not_exists":  # EXPLICIT cleanup assertion: absent (ok) proves
         # file_not_exists, and a still-present path is a real FAIL (asserts="absent").
         return {"intents": {"file_not_exists"}, "files": _file_tokens(str(a.get("path", ""))),
@@ -690,8 +749,9 @@ def _criterion_item(text: str) -> dict:
     ports = _SALIENT_RE_NUM.findall(text or "")
     return {
         "text": text, "text_low": low, "status": "unconfirmed", "verifier": None, "evidence": None,
-        "intent": _criterion_intent(text), "files": _file_tokens(text), "port": ports[0] if ports else "",
+        "intent": _criterion_intent(text), "files": _path_tokens_from_text(text), "port": ports[0] if ports else "",
         "targets": _dom_targets(text), "command_kind": _command_kind(text),
+        "interaction": _is_interaction(text),
     }
 
 

@@ -424,6 +424,25 @@ def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
     return {"text": "\n".join(matches[:200])}
 
 
+def tool_path_exists(project_root: Path, *, path: str) -> dict[str, Any]:
+    """Deterministically check whether a LOCAL file or directory exists — the verifier
+    for "создана папка X" / "файл X существует" / "проект внутри X" criteria on a local
+    project (the local counterpart of ssh_exists). Read-only; resolves inside the project
+    root. `ok` reflects presence, so a matching file_exists criterion confirms on
+    presence and a file_not_exists (cleanup) criterion confirms on absence."""
+    raw = (path or "").strip().strip("`\"'")
+    if not raw:
+        return {"text": "ERROR: path is empty", "ok": False}
+    try:
+        target = (project_root / raw)
+        exists = target.exists()
+        kind = "каталог" if target.is_dir() else ("файл" if target.is_file() else "")
+    except Exception as exc:
+        return {"text": f"ERROR: {exc}", "ok": False}
+    note = f"{raw}: {('существует (' + kind + ')') if exists else 'НЕ найден'}"
+    return {"text": note, "ok": exists, "verifier": True, "evidence": note}
+
+
 # Directories the internal grep never descends into. These are dependency,
 # build, VCS and agent-runtime trees: scanning them is never what the model
 # wants and they hold the huge/binary files that previously made grep hang for

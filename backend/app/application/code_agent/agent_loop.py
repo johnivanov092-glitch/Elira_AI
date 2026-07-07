@@ -1394,7 +1394,7 @@ def _stream_code_agent_core(
                 elif name in (
                     "run_bash", "run_server", "ssh_run", "ssh_run_ps",
                     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-                    "ssh_exists", "ssh_not_exists", "ssh_read",
+                    "ssh_exists", "ssh_not_exists", "ssh_read", "path_exists", "browser",
                 ):
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
@@ -1480,6 +1480,29 @@ def _stream_code_agent_core(
                     }
                     return
                 if name == "tool_search":
+                    # Tool-economy: browser is a run-scoped activation — once it's on,
+                    # re-searching "browser / playwright / evaluate" is a wasted round
+                    # trip (the Subnet run spent 4 tool_search calls hunting it). Redirect
+                    # to using browser (with actions) instead of searching again.
+                    _q = str(parsed_args.get("query", "")).lower()
+                    _browser_q = any(k in _q for k in (
+                        "browser", "playwright", "evaluate", "interact", "интеракц",
+                        "клик", "click", "fill", "заполн", "dom",
+                    ))
+                    _active_now = get_active_tools(rid)
+                    _browser_on = "browser" in _active_now or any(t.startswith("playwright") for t in _active_now)
+                    if _browser_q and _browser_on:
+                        _msg = (
+                            "`browser` уже активен — не ищи его повторно. Проверяй DOM и "
+                            "интеракции через `browser(url, actions=[{fill:…,value:…},{click:…}])` "
+                            "(он рендерит страницу и выполняет ввод/клик), НЕ через grep/node-скрипты."
+                        )
+                        yield {"type": "tool_call", "step": step, "tool": name,
+                               "arguments": parsed_args, "result": _msg, "ok": True}
+                        messages.append({"role": "tool", "content": _msg, "name": name})
+                        tool_round_trips += 1
+                        call_log.append("tool_search(browser: уже активен)")
+                        continue
                     # P10.1 meta-tool: inject the current run_id (the model never
                     # supplies it), search + activate eligible tools for this run.
                     # Read-only; not routed through the provider/executor path.

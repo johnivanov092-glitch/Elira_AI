@@ -233,5 +233,44 @@ class MinimalPlanTest(unittest.TestCase):
         self.assertIn("http_api", acts[0]["call"])   # unchanged when there is no DOM criterion
 
 
+class LocalAndInteractionActionTest(unittest.TestCase):
+    def test_local_file_criterion_suggests_path_exists_not_ssh(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["создана новая папка `subnet-helper`"]))
+        acts = cc.missing_verifier_actions(t)
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["tool"], "path_exists")
+        self.assertIn("subnet-helper", acts[0]["call"])
+
+    def test_remote_file_criterion_still_suggests_ssh_exists(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["файл `C:\\AgentLab\\snapshot.txt` существует"]))
+        acts = cc.missing_verifier_actions(t, host="home-srv01")
+        self.assertEqual(acts[0]["tool"], "ssh_exists")
+
+    def test_plan_never_asks_to_re_search_a_tool(self):
+        # tool-economy: the planned closure actions name the verifier tool directly
+        # (browser / path_exists) — they never tell the model to tool_search again.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "rendered DOM содержит текст `Subnet Helper`",
+            "первая страница открывается без ошибок",
+            "создана новая папка `subnet-helper`",
+        ]))
+        acts = cc.missing_verifier_actions(t, url="http://localhost:5173")
+        calls = " ".join(a["call"] for a in acts)
+        self.assertNotIn("tool_search", calls)
+        tools = [a["tool"] for a in acts]
+        self.assertNotIn("http_api", tools)     # page_open subsumed by the browser render
+        self.assertIn("path_exists", tools)     # local folder via local verifier
+
+    def test_interaction_dom_action_asks_for_browser_actions(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.1.0`",
+        ]))
+        acts = cc.missing_verifier_actions(t, url="http://localhost:5173")
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["tool"], "browser")
+        self.assertIn("actions", acts[0]["call"])          # steers to fill/click, not a static render
+        self.assertIn("network: 192.168.1.0", acts[0]["call"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

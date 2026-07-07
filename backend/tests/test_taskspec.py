@@ -260,6 +260,32 @@ def _final(text="готово"):
     return {"message": {"content": text, "tool_calls": []}}
 
 
+class ToolSearchEconomyTest(unittest.TestCase):
+    def tearDown(self):
+        deferred_tools.clear_run("ts-econ")
+
+    def test_browser_tool_search_redirected_once_browser_is_active(self):
+        # Once `browser` is activated for the run, a repeat browser/playwright tool_search
+        # is a wasted round trip (Subnet spent 4). The loop redirects it instead of
+        # re-searching, and steers the model to browser(actions=…).
+        chat = _SeqChat([
+            _call("tool_search", query="browser"),
+            _call("tool_search", query="playwright browser evaluate"),
+            _final("готово"),
+        ], _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env():
+            evs = list(agent_loop.stream_code_agent(
+                user_message="открой локальную страницу в браузере и проверь DOM",
+                project_root=tmp, run_id="ts-econ",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        ts = [e for e in evs if e.get("type") == "tool_call" and e.get("tool") == "tool_search"]
+        self.assertTrue(
+            any("уже активен" in str(e.get("result", "")) for e in ts),
+            f"expected a browser re-search redirect; got {[e.get('result') for e in ts]}",
+        )
+
+
 class VerifierGateTest(unittest.TestCase):
     def tearDown(self):
         for rid in ("ts-gate", "ts-confirmed"):
@@ -553,6 +579,51 @@ class VaultDeskVerificationTest(unittest.TestCase):
         t.record(tool_name="browser", args={"url": "http://localhost:5173/"}, ok=True, evidence=elira_dom)
         self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
         self.assertEqual(self._st(t, "Start local audit"), "unconfirmed")
+
+    def test_path_exists_confirms_local_file_criteria(self):
+        # local FS verifier: "создана папка X" / "проект внутри X" close via path_exists,
+        # not ssh (remote) — the bare dir name `subnet-helper` is now a real file target.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "создана новая папка `subnet-helper`",
+            "проект находится именно внутри `subnet-helper`",
+        ]))
+        self.assertEqual(t.items[0]["intent"], "file_exists")
+        self.assertEqual(t.items[1]["intent"], "file_exists")
+        t.record(tool_name="path_exists", args={"path": "subnet-helper"}, ok=True, evidence="ok (каталог)")
+        self.assertEqual(t.items[0]["status"], "confirmed")
+        self.assertEqual(t.items[1]["status"], "confirmed")
+
+    def test_path_exists_missing_does_not_fail_file_exists(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["создана новая папка `subnet-helper`"]))
+        t.record(tool_name="path_exists", args={"path": "subnet-helper"}, ok=False, evidence="НЕ найден")
+        self.assertEqual(t.items[0]["status"], "unconfirmed")   # absence is neutral, never a hard fail
+
+    def test_interaction_criterion_targets_only_the_result_token(self):
+        from app.application.code_agent.taskspec import _dom_targets
+        c = ("browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` "
+             "rendered DOM содержит `Network: 192.168.1.0`")
+        # the input value and the button are the ACTION — only the result is required
+        self.assertEqual(_dom_targets(c), {"network: 192.168.1.0"})
+
+    def test_browser_post_interaction_dom_confirms_interaction_only(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.1.0`",
+            "browser interaction: после ввода `bad-input` и нажатия `Calculate` rendered DOM содержит `Invalid CIDR`",
+        ]))
+        dom = ("[после действий: fill CIDR=192.168.1.0/24; click Calculate]\n"
+               "TITLE: Subnet Helper\nNetwork: 192.168.1.0\nMask: 255.255.255.0\nHosts: 254")
+        t.record(tool_name="browser", args={"url": "http://localhost:5173"}, ok=True, evidence=dom)
+        self.assertEqual(t.items[0]["status"], "confirmed")       # result present in post-action DOM
+        self.assertEqual(t.items[1]["status"], "unconfirmed")     # bad-input path not exercised → honest
+
+    def test_grep_and_node_script_never_confirm_interaction(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.1.0`",
+        ]))
+        # a bundle grep that "finds" the string, or a node script printing it, is NOT a verdict
+        t.record(tool_name="run_bash", args={"command": "grep -r 'Network: 192.168.1.0' dist/"}, ok=True, evidence="found")
+        t.record(tool_name="run_bash", args={"command": "node verify.cjs"}, ok=True, evidence="Network: 192.168.1.0")
+        self.assertEqual(t.items[0]["status"], "unconfirmed")
 
     def test_bundle_grep_and_read_file_never_confirm_dom_text(self):
         # Tool-economy honesty lock: finding the token in the bundle (grep) or a source

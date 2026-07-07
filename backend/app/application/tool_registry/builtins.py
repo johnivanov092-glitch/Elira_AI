@@ -389,6 +389,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     auto_tools = [
         ("read_file",   "Read File",    "project", "Read a file in the project root",         15, 50000, True),
         ("glob",        "Glob",         "project", "List files matching a glob pattern",       15, 20000, True),
+        ("path_exists", "Path Exists",  "project", "Check whether a local file or directory exists (verifier for 'папка/файл создан')", 15, 5000, True),
         ("grep",        "Grep",         "project", "Search files by content pattern",          15, 20000, True),
         ("project_map", "Project Map",  "project", "Structural overview: tree + entry points + signatures", 30, 30000, True),
         ("recall",      "Recall",       "memory",  "Recall from project RAG memory",           15, 20000, True),
@@ -428,6 +429,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     # P9.2A2: declared scopes (from the fixed vocabulary) for native tools.
     _native_scopes = {
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
+        "path_exists": ["fs.read"],
         "project_map": ["fs.read"], "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"], "browser": ["net.outbound"],
         "csv": ["fs.read"], "converter": ["fs.read", "fs.write"],

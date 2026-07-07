@@ -31,6 +31,11 @@ BASE_TOOLS: tuple[str, ...] = (
     "write_file", "edit_file", "run_bash", "run_server",
     "web_search", "web_fetch", "http_api",
 )
+# NOTE: `path_exists` is deliberately NOT in BASE_TOOLS — the base prompt is at the
+# compaction-canary capacity (see memory: any base growth flips the 8192-ctx canary).
+# It is a read-only tool, so tool_search activates it on demand; the closure plan and
+# route guidance name it, and the base prompt already tells the model to tool_search a
+# tool that isn't in the current list.
 
 # Narrowed base for the read-only persona posture (mode "Личный").
 READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")

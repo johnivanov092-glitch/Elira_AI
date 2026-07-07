@@ -43,7 +43,7 @@ def _is_action_attempt(name: str, args: dict) -> bool:
 # Reading/searching/verifier tools whose FRESH output is genuine new knowledge →
 # progress (so "go read the real file / run the verifier" is rewarded, not punished).
 INVESTIGATION_TOOLS: frozenset[str] = frozenset(
-    {"read_file", "glob", "grep", "project_map", "recall",
+    {"read_file", "glob", "grep", "project_map", "recall", "path_exists",
      "web_search", "web_fetch", "http_api", "browser", "ssh_run", "ssh_run_ps", "ssh_read",
      "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists", "ssh_not_exists"}
 )
@@ -221,7 +221,7 @@ def strategy_target(name: str, args: dict) -> str:
         host = _first_str(args, "host")
         path = _first_str(args, "path")
         return f"{host}:{path}" if path else host
-    if name in ("write_file", "edit_file", "read_file"):
+    if name in ("write_file", "edit_file", "read_file", "path_exists"):
         return _first_str(args, "path")
     if name == "run_bash":
         cmd = _first_str(args, "command")

@@ -91,6 +91,25 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "path_exists",
+                "description": (
+                    "Check whether a LOCAL file or directory exists. Deterministic "
+                    "verifier for 'создана папка X' / 'файл X существует' / 'проект "
+                    "внутри X' criteria — the local counterpart of ssh_exists. Use this "
+                    "(not grep/read) to prove a path was created."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File or directory path, relative to the project root."},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "grep",
                 "description": "Search file contents for a regex pattern. Returns 'file:line:match' lines.",
                 "parameters": {
@@ -364,9 +383,13 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 "name": "browser",
                 "description": (
                     "Open a URL in a REAL headless browser (Chromium) that runs "
-                    "JavaScript, then return the visible page text. Use when "
-                    "`web_fetch` is not enough: JS-rendered pages / SPAs, or to "
-                    "verify how a page actually looks and behaves."
+                    "JavaScript, optionally interact (fill/click), then return the "
+                    "visible page text. Use when `web_fetch` is not enough: JS-rendered "
+                    "pages / SPAs, to verify how a page looks, OR to verify an "
+                    "INTERACTION criterion — pass `actions` to type into a field and "
+                    "click a button, then the returned DOM reflects the result. This is "
+                    "the ONLY honest verifier for 'after clicking X the page shows Y' — "
+                    "a grep or node script does NOT count."
                 ),
                 "parameters": {
                     "type": "object",
@@ -374,6 +397,16 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                         "url": {"type": "string", "description": "Full http(s) URL."},
                         "wait_selector": {"type": "string", "description": "Optional CSS selector to wait for before reading."},
                         "max_chars": {"type": "integer", "description": "Truncate body text to this many chars (default 8000, max 50000)."},
+                        "actions": {
+                            "type": "array",
+                            "description": (
+                                "Optional interaction steps performed in order before reading the DOM. "
+                                "Each: {\"fill\": \"<label|placeholder|css>\", \"value\": \"...\"} to type, "
+                                "{\"click\": \"<button text|css>\"} to click, or {\"wait\": <ms>}. "
+                                "Example: [{\"fill\": \"CIDR\", \"value\": \"192.168.1.0/24\"}, {\"click\": \"Calculate\"}]."
+                            ),
+                            "items": {"type": "object"},
+                        },
                     },
                     "required": ["url"],
                 },
