@@ -260,8 +260,8 @@ categories:
     verifier_tools: [ssh_not_exists]
     evidence_required: ["ssh_not_exists absent"]
     closes: [file_not_exists]
-    notes: "Cleanup Barrier: a delete of a path with still-OPEN criteria under it is redirected to verify those FIRST."
-    code: "criterion_closure.py:cleanup_barrier_violation"
+    notes: "Cleanup Barrier (criterion_closure.py:cleanup_barrier_violation) only REDIRECTS a premature delete of a path with still-OPEN criteria under it — it does NOT confirm this criterion."
+    code: "taskspec.py:_verifier_verdict(ssh_not_exists); _verdict_outcome"
 
   - id: viewport_layout
     domain: browser
