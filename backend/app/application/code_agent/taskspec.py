@@ -27,6 +27,7 @@ class TaskSpec:
     success_criteria: list[str] = field(default_factory=list)  # how DONE is proven
     verifiers: list[str] = field(default_factory=list)        # concrete checks to run
     stop_conditions: list[str] = field(default_factory=list)
+    details: list[str] = field(default_factory=list)          # spec/behaviour — NOT criteria
 
 
 # Section headers (case-insensitive, exact match on the pre-colon token).
@@ -40,6 +41,13 @@ _HEADERS: dict[str, tuple[str, ...]] = {
     ),
     "criteria": ("критерии", "критерии готовности", "success criteria", "проверить",
                  "definition of done", "готовность", "acceptance", "checks"),
+    # SPEC/behaviour sections — describe WHAT to build, NOT how DONE is proven. Their
+    # bullets ("Поле ввода с label CIDR", "После нажатия Calculate показать …") are
+    # implementation detail, not verifiable readiness criteria, so they are routed to
+    # `details` and never inflate success_criteria (Subnet Helper: 10 such lines leaked).
+    "details": ("функциональность", "функционал", "программа", "описание",
+                "функциональные требования", "спецификация", "specification", "spec",
+                "features", "поведение", "что делает", "что должно делать", "фичи"),
     "stop": ("условия остановки", "stop conditions", "стоп-условия"),
     # Report-only sections: their items describe WHAT TO REPORT, not verifiable
     # success criteria (FIX-9 #3), so they are routed away from criteria. Header
@@ -125,8 +133,19 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
     criteria: list[str] = []
     constraints: list[str] = []
     stop: list[str] = []
+    details: list[str] = []
     section = "goal"
     saw_goal_header = False
+
+    # An EXPLICIT "Критерии готовности" header means the criteria are enumerated in
+    # their own section — so free-floating bullets under the goal / an unrecognised
+    # section must NOT be scooped up as criteria too (Subnet Helper: "Функциональность"
+    # bullets became criteria only because there was no header above them).
+    has_explicit_criteria = any(
+        (not _BULLET_RE.match(raw)) and ":" in (ln := raw.strip())
+        and _match_header(ln.partition(":")[0]) == "criteria"
+        for raw in text.splitlines()
+    )
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -146,13 +165,16 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
                     saw_goal_header = True
                 rest = rest.strip()
                 if rest:
-                    _route(section, rest, goal_lines, criteria, constraints, stop)
+                    _route(section, rest, goal_lines, criteria, constraints, stop, details)
                 continue
+        # A bullet under the goal (no section header yet) is a criterion ONLY when the
+        # task has no explicit criteria section; otherwise it's spec/detail, not a gate.
+        goal_bullet_target = "details" if has_explicit_criteria else "criteria"
         if bullet:
-            _route(section if section != "goal" else "criteria",
-                   bullet.group(1).strip(), goal_lines, criteria, constraints, stop)
+            _route(section if section != "goal" else goal_bullet_target,
+                   bullet.group(1).strip(), goal_lines, criteria, constraints, stop, details)
             continue
-        _route(section, line, goal_lines, criteria, constraints, stop)
+        _route(section, line, goal_lines, criteria, constraints, stop, details)
 
     goal = " ".join(goal_lines).strip()[:300]
 
@@ -200,6 +222,7 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
         success_criteria=_dedupe(criteria),
         verifiers=_dedupe(verifiers),
         stop_conditions=_dedupe(stop),
+        details=_dedupe(details),
     )
 
 
@@ -228,13 +251,15 @@ def _project_verifiers(project_root) -> list[str]:
     return out
 
 
-def _route(section: str, line: str, goal, criteria, constraints, stop) -> None:
+def _route(section: str, line: str, goal, criteria, constraints, stop, details) -> None:
     if section == "goal":
         goal.append(line)
     elif section == "constraints":
         constraints.append(line)
     elif section == "stop":
         stop.append(line)
+    elif section == "details":
+        details.append(line)  # spec/behaviour — never a readiness criterion
     elif section == "report":
         return  # report-only requirement (FIX-9 #3) — not a verifiable criterion
     else:  # criteria
@@ -259,6 +284,9 @@ def taskspec_context(spec: TaskSpec) -> str:
     parts = ["[ЗАДАЧА — держи цель и критерии в фокусе весь прогон]"]
     if spec.goal:
         parts.append(f"Цель: {spec.goal}")
+    if spec.details:
+        parts.append("Что реализовать (описание/поведение — это НЕ критерии готовности):")
+        parts.extend(f"- {d}" for d in spec.details[:12])
     if spec.success_criteria:
         parts.append("Критерии готовности (докажи verifier'ом, НЕ словами):")
         parts.extend(f"- {c}" for c in spec.success_criteria[:10])
@@ -419,6 +447,11 @@ _SCOPE_RULE_CUES = (
     "только текущий проект", "только в текущем проект", "только в текущий проект",
     "если нужны изменения", "если изменения нужны", "если это реально нужно",
     "изменения внесены именно", "изменения вносятся только", "менять только",
+    # non-mutation guarantees: "родительский проект не изменён, кроме создания X" is a
+    # scope rule — a verify-only run can't "confirm" it, so it belongs in constraints.
+    "не изменён", "не изменена", "не изменены", "не изменять файл", "не менять файл",
+    "не затрагива", "не затронут", "родительск", "кроме создания", "кроме папк",
+    "unchanged", "not modified", "not changed",
 )
 
 

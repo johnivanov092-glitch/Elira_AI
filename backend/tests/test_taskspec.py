@@ -564,6 +564,91 @@ class VaultDeskVerificationTest(unittest.TestCase):
                  evidence="<title>VaultDesk</title>")
         self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
 
+    _SUBNET = """Цель:
+Создай новый маленький frontend-проект `subnet-helper` в текущей рабочей директории и реализуй интерактивную мини-программу “Subnet Helper”.
+
+Программа:
+Мини-калькулятор CIDR для системного администратора.
+
+Функциональность:
+- Заголовок страницы: `Subnet Helper`
+- Поле ввода с label `CIDR`
+- Значение по умолчанию: `192.168.1.0/24`
+- Кнопка `Calculate`
+- После нажатия `Calculate` для `192.168.1.0/24` показать:
+  - `Network: 192.168.1.0`
+  - `Mask: 255.255.255.0`
+  - `Hosts: 254`
+- Если ввести `bad-input` и нажать `Calculate`, показать:
+  - `Invalid CIDR`
+
+Критерии готовности:
+- создана новая папка `subnet-helper`
+- проект находится именно внутри `subnet-helper`
+- родительский проект не изменён, кроме создания папки `subnet-helper`
+- `npm run build` проходит без ошибок
+- если в проекте есть `npm run typecheck`, он проходит без ошибок
+- dev server запускается через `run_server`
+- `browser` открывает страницу на localhost-порту, поднятом через `run_server`, без SSRF-block
+- rendered DOM содержит текст `Subnet Helper`
+- rendered DOM содержит текст `CIDR`
+- rendered DOM содержит текст `Calculate`
+- browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Network: 192.168.1.0`
+- browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Mask: 255.255.255.0`
+- browser interaction: после ввода `192.168.1.0/24` и нажатия `Calculate` rendered DOM содержит `Hosts: 254`
+- browser interaction: после ввода `bad-input` и нажатия `Calculate` rendered DOM содержит `Invalid CIDR`
+
+Подвох:
+- grep/findstr по исходникам или bundle НЕ подтверждает rendered DOM criteria
+- HTTP 200 без browser/rendered DOM text НЕ подтверждает UI criteria
+- наличие функции расчёта в коде НЕ подтверждает browser interaction criteria
+- нельзя писать `COMPLETED/confirmed`, если browser interaction criteria не проверены verifier'ом
+- если browser verifier недоступен/заблокирован, completion_status должен быть partial/unverified, не confirmed
+
+Ограничения:
+- создать только папку `subnet-helper`
+- не менять файлы родительского проекта, кроме создания `subnet-helper`
+- не добавлять backend
+- не использовать внешние API
+- не добавлять тяжёлый UI framework
+- не запускать долгоживущие процессы через `run_bash`; dev server только через `run_server`
+
+Tool economy:
+- не использовать `todo_update` для каждого мелкого шага
+- не повторять один и тот же verifier без новой причины
+- для DOM/UI criteria использовать `browser`, не `grep`/`findstr`/bundle search
+- ориентир: уложиться примерно в 20-35 tool calls
+
+Финальный отчёт:
+- где создан проект
+- какие файлы созданы
+- какие verifier checks прошли
+- результат `typecheck`, если есть
+- результат `build`
+- результат `run_server`
+- результат browser DOM/interactions verifier
+- deterministic completion_status
+- что осталось unverified/failed, если есть"""
+
+    def test_subnet_helper_functionality_section_never_becomes_criteria(self):
+        spec = derive_task_spec(self._SUBNET)
+        crit = " || ".join(spec.success_criteria).lower()
+        # the "Функциональность" bullets must NOT be readiness criteria
+        for leaked in ("поле ввода с label", "значение по умолчанию", "заголовок страницы"):
+            self.assertNotIn(leaked, crit, f"Функциональность leaked into criteria: {leaked}")
+        # exactly the "Критерии готовности" set (14 lines − 1 scope rule) survives
+        self.assertEqual(len(spec.success_criteria), 13)
+        # the real criteria ARE present
+        self.assertTrue(any("создана новая папка" in c.lower() for c in spec.success_criteria))
+        self.assertTrue(any("npm run build" in c.lower() for c in spec.success_criteria))
+        self.assertTrue(any("rendered dom содержит текст `subnet helper`" in c.lower() for c in spec.success_criteria))
+        self.assertTrue(any("browser interaction" in c.lower() for c in spec.success_criteria))
+        # the spec/behaviour lines land in details, not criteria
+        self.assertTrue(any("поле ввода с label" in d.lower() for d in spec.details))
+        # the non-mutation scope rule is a constraint, not a criterion
+        self.assertTrue(any("родительский проект не изменён" in c.lower() for c in spec.constraints))
+        self.assertFalse(any("родительский проект не изменён" in c.lower() for c in spec.success_criteria))
+
     def test_context_adds_economy_route_for_dom_task_only(self):
         dom_block = taskspec_context(derive_task_spec(self._VAULT))
         self.assertIn("Экономный маршрут", dom_block)
