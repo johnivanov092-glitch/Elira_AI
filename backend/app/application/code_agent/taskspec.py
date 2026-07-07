@@ -34,8 +34,9 @@ _HEADERS: dict[str, tuple[str, ...]] = {
     "goal": ("цель", "goal", "задача", "task", "objective"),
     "constraints": (
         "ограничения", "constraints", "нельзя", "запрещено",
-        "подвох", "важно", "guardrails", "проверка логики",
-        "проверка рантайма", "логика проверки",
+        "подвох", "подвохи", "важно", "guardrails", "проверка логики",
+        "проверка рантайма", "логика проверки", "tool economy",
+        "экономия инструментов", "правила", "notes", "заметки",
     ),
     "criteria": ("критерии", "критерии готовности", "success criteria", "проверить",
                  "definition of done", "готовность", "acceptance", "checks"),
@@ -90,15 +91,18 @@ def is_continuation_message(msg: str | None) -> bool:
 
 
 def _match_header(token: str) -> str | None:
-    # Match the exact header OR its LAST word — so a phrased header like
-    # "После запуска проверить:" / "Что проверить:" is recognised, not only the
-    # bare "Проверить:". Only fires on a `<phrase>:` line, so it stays specific to
-    # structured tasks (a plain sentence is never a header).
+    # Match the exact header, its LAST word, or a phrase that BEGINS with a known
+    # header — so "После запуска проверить:" (last word), "Критерии готовности
+    # frontend:" / "Критерии готовности SSH/home-srv01:" (prefix) are all recognised,
+    # not only the bare "Критерии готовности:". Fires only on a non-bullet `<phrase>:`
+    # line (the caller guards that), so a plain sentence is never a header.
     low = token.strip().lower().rstrip(":").strip()
     words = low.split()
     last = words[-1] if words else ""
     for section, keys in _HEADERS.items():
         if low in keys or (last and last in keys):
+            return section
+        if any(low.startswith(k + " ") for k in keys):   # "<known header> <suffix>:"
             return section
     return None
 
@@ -128,9 +132,12 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
         line = raw.strip()
         if not line:
             continue
-        # Header line ("Цель:", "Ограничения:", "Критерии готовности:") — may carry
-        # inline text after the colon.
-        if ":" in line:
+        bullet = _BULLET_RE.match(raw)
+        # A section HEADER is a NON-bullet `<phrase>:` line. A bullet is CONTENT even
+        # when it contains a colon — "- content criteria … verifier checks:
+        # `ssh_assert_contains`" must NOT be read as a 'checks' header that flips the
+        # section and dumps a Подвох rule in as a success criterion.
+        if not bullet and ":" in line:
             head, _, rest = line.partition(":")
             sec = _match_header(head)
             if sec is not None:
@@ -141,7 +148,6 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
                 if rest:
                     _route(section, rest, goal_lines, criteria, constraints, stop)
                 continue
-        bullet = _BULLET_RE.match(raw)
         if bullet:
             _route(section if section != "goal" else "criteria",
                    bullet.group(1).strip(), goal_lines, criteria, constraints, stop)

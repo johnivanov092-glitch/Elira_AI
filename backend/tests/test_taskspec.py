@@ -48,7 +48,56 @@ _STRUCTURED = """Создай тестовый стенд agent-lab на Windows
 """
 
 
+_MULTI_SECTION_TASK = (
+    "Цель:\nПроверить стенд frontend + SSH.\n\n"
+    "Важно:\n- не переписывай Ops Snapshot без необходимости\n\n"
+    "Критерии готовности frontend:\n"
+    "- `npm run typecheck` проходит без ошибок\n"
+    "- rendered DOM содержит текст `Ops Snapshot`\n\n"
+    "Критерии готовности SSH/home-srv01:\n"
+    "- verifier подтверждает, что директория `C:\\AgentLabGlobalCanary` существует\n"
+    "- verifier подтверждает, что `snapshot.txt` содержит строку `status=ok`\n\n"
+    "Подвох:\n"
+    "- content criteria требуют отдельных verifier checks: `ssh_assert_contains`\n"
+    "- `ssh_assert_not_contains` по `snapshot.txt` НЕ подтверждает contains criteria\n"
+    "- нельзя писать `COMPLETED`, если хоть один criterion не подтверждён\n\n"
+    "Tool economy:\n- не спамить todo_update на каждом шаге\n\n"
+    "Ограничения:\n- не трогать backend/API\n"
+)
+
+
 class DeriveTest(unittest.TestCase):
+    def test_multi_section_criteria_headers_no_podvokh_leak(self) -> None:
+        # Live d9ee69b9 bug: phrased "Критерии готовности frontend/SSH:" headers were
+        # unrecognised, and a Подвох bullet "…verifier checks: `ssh_assert_contains`"
+        # (colon + last word "checks") flipped the section and dumped anti-rules in as
+        # success criteria. Both must be fixed.
+        spec = derive_task_spec(_MULTI_SECTION_TASK)
+        crit = " ".join(spec.success_criteria).lower()
+        # both explicit success sections contributed their real criteria
+        self.assertIn("typecheck", crit)
+        self.assertIn("ops snapshot", crit)
+        self.assertIn("директория", crit)
+        self.assertIn("status=ok", crit)
+        # NO Подвох anti-rule leaked as a criterion (the exact live symptom)
+        for c in spec.success_criteria:
+            self.assertNotIn("не подтверждает", c.lower())
+            self.assertNotIn("нельзя писать", c.lower())
+            self.assertNotEqual(c.strip("` "), "ssh_assert_contains")
+        # Подвох / Tool economy / Ограничения all landed in constraints
+        cons = " ".join(spec.constraints).lower()
+        self.assertIn("не подтверждает", cons)      # Подвох rule
+        self.assertIn("todo_update", cons)          # Tool economy
+        self.assertIn("backend", cons)              # Ограничения
+
+    def test_closure_actions_never_target_instruction_lines(self) -> None:
+        from app.application.code_agent import criterion_closure as cc
+        spec = derive_task_spec(_MULTI_SECTION_TASK)
+        t = CriteriaTracker.from_spec(spec)
+        for why in (a["why"] for a in cc.missing_verifier_actions(t)):
+            self.assertNotIn("не подтверждает", why.lower())     # not a Подвох line
+            self.assertNotEqual(why.strip("` "), "ssh_assert_contains")
+
     def test_structured_task_yields_goal_criteria_verifiers(self) -> None:
         spec = derive_task_spec(_STRUCTURED)
         self.assertIsNotNone(spec)
