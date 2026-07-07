@@ -260,6 +260,59 @@ def _final(text="готово"):
     return {"message": {"content": text, "tool_calls": []}}
 
 
+def _playwright_ready() -> bool:
+    try:
+        from playwright.sync_api import sync_playwright  # noqa: F401
+        with sync_playwright() as p:
+            b = p.chromium.launch(headless=True)
+            b.close()
+        return True
+    except Exception:
+        return False
+
+
+_PLAYWRIGHT = _playwright_ready()
+
+
+@unittest.skipUnless(_PLAYWRIGHT, "playwright/chromium not installed")
+class BrowserInteractionLiveTest(unittest.TestCase):
+    """Happy path for the browser interaction verifier — real Chromium fill+click on a
+    local calculator page (file://, no server). Proves _resolve_locator (by label / by
+    text) + _apply_action drive the DOM, so an interaction criterion verifies for real."""
+
+    _HTML = (
+        "<!doctype html><html><body><h1>Subnet Helper</h1>"
+        "<label for=c>CIDR</label><input id=c value='192.168.1.0/24'>"
+        "<button id=b onclick=\"document.getElementById('o').innerText="
+        "document.getElementById('c').value==='192.168.1.0/24'?"
+        "'Network: 192.168.1.0 Mask: 255.255.255.0 Hosts: 254':'Invalid CIDR'\">Calculate</button>"
+        "<div id=o></div></body></html>"
+    )
+
+    def _page_url(self):
+        d = Path(tempfile.mkdtemp())
+        f = d / "index.html"
+        f.write_text(self._HTML, encoding="utf-8")
+        return f.as_uri()
+
+    def test_fill_and_click_reveal_result_in_dom(self):
+        from app.application.code_agent.tools._web import _browser_render
+        url = self._page_url()
+        _t, _u, dom0 = _browser_render(url, None, 4000, None)
+        self.assertNotIn("Network: 192.168.1.0", dom0)          # result hidden until interaction
+        _t, _u, dom1 = _browser_render(
+            url, None, 4000, [{"fill": "CIDR", "value": "192.168.1.0/24"}, {"click": "Calculate"}])
+        self.assertIn("Network: 192.168.1.0", dom1)             # fill-by-label + click-by-text worked
+
+    def test_bad_input_interaction_shows_error_only(self):
+        from app.application.code_agent.tools._web import _browser_render
+        url = self._page_url()
+        _t, _u, dom = _browser_render(
+            url, None, 4000, [{"fill": "CIDR", "value": "bad-input"}, {"click": "Calculate"}])
+        self.assertIn("Invalid CIDR", dom)
+        self.assertNotIn("Network: 192.168.1.0", dom)
+
+
 class ToolSearchEconomyTest(unittest.TestCase):
     def tearDown(self):
         deferred_tools.clear_run("ts-econ")
