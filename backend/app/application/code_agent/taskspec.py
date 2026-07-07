@@ -460,8 +460,6 @@ _OUTPUT_CUES = ("выводит", "выведет", "печатает", "выв�
 # (stdout/output/в выводе), so the expected token anchors on the verb, not a trailing
 # 'в stdout' that has no quote after it (which would drop the token).
 _OUTPUT_VERB_CUES = ("выводит", "выведет", "печатает", "prints", "outputs")
-_RUN_VERB_CUES = ("запуск", "запуст", "выполн", "прогон", "run ", "node ", "python",
-                  "npm ", "pnpm", "yarn ", "./", "cargo ", "go run", "deno", "ts-node", "bash ")
 _NONZERO_CUES = ("завершается с ошибк", "с ошибкой", "non-zero", "ненулев", "падает",
                  "exits non-zero", "exit code 1", "код возврата", "с ненулевым", "ненулевым кодом")
 _RUNNABLE_RE = re.compile(
@@ -477,17 +475,23 @@ def _runnable_quote(text: str) -> str:
     return ""
 
 
-# Passthrough / generic build commands whose output does NOT prove the program under
-# test actually ran (echo/cat print any text; npm run build prints its own banner) —
-# for a PROSE command_output criterion (no named command) these must not confirm.
-_PASSTHROUGH_RE = re.compile(r"^(?:echo|cat|type|printf|head|tail|more|less|Get-Content|write-host)\b", re.IGNORECASE)
+# Commands whose stdout does NOT prove the named program ran — they only PRINT text
+# (echo/cat/sed/awk/tee/…) or eval a literal (python -c/node -e). A run matching these
+# can't confirm a command_output criterion even if its output contains the token.
+_PASSTHROUGH_RE = re.compile(
+    r"^(?:echo|cat|type|printf|head|tail|more|less|sed|awk|tee|nl|strings|od|xxd|hexdump"
+    r"|Get-Content|write-host)\b", re.IGNORECASE)
 _GENERIC_PKG_RE = re.compile(r"^(?:npm|pnpm|yarn|npx)\s+(?:run\s+)?(?:build|test|start|dev|lint|install|ci)\b", re.IGNORECASE)
-# Inline-eval one-liners (`python -c "print('OK')"`, `node -e …`, `bash -c "echo OK"`,
-# `deno eval`, …) print a literal like echo — they must NOT stand in for running the checker.
+# Inline-eval one-liners (`python -c "print('OK')"`, `node -e …`, `deno eval`, …) print a
+# literal like echo. `bash -c "<inner>"` / `sh -c` are UNWRAPPED first (see _clean_run)
+# so a legit `bash -c "node app.js"` is judged by its inner command, not blanket-rejected.
 _INLINE_EVAL_RE = re.compile(
-    r"^(?:python3?\s+-\w*c|node\s+(?:-e|--eval)|deno\s+eval|(?:bash|sh)\s+-\w*c"
-    r"|ruby\s+-\w*e|php\s+-r|perl\s+-\w*e)\b", re.IGNORECASE)
+    r"^(?:python3?\s+-\w*c|node\s+(?:-e|--eval)|deno\s+eval|ruby\s+-\w*e|php\s+-r|perl\s+-\w*e)\b",
+    re.IGNORECASE)
 _ENV_PREFIX_RE = re.compile(r"^(?:\s*env\s+)?(?:\s*[A-Za-z_]\w*=\S*\s+)+", re.IGNORECASE)
+_SHELL_WRAP_RE = re.compile(r"""^(?:bash|sh)\s+-\w*c\s+["']?(.+?)["']?\s*$""", re.IGNORECASE)
+_INTERPRETERS = frozenset({"node", "python", "python3", "npm", "pnpm", "yarn", "npx",
+                           "deno", "ts-node", "tsx", "bash", "sh", "go", "cargo", "php", "ruby", "perl", "env"})
 
 
 def command_spec(text: str) -> dict:
@@ -498,54 +502,92 @@ def command_spec(text: str) -> dict:
     low = (text or "").lower()
     command = _runnable_quote(text)
     output_expected = ""
-    # anchor on the LAST output VERB (the value follows it: 'печатает `DONE`'); fall back
-    # to the first of any output cue when there is no verb ('в stdout `X`').
-    verb_pos = [low.rfind(c) for c in _OUTPUT_VERB_CUES if c in low]
-    anchor = max(verb_pos) if verb_pos else min([low.find(c) for c in _OUTPUT_CUES if c in low] or [-1])
-    if anchor >= 0:
+    # Anchor on an output VERB and take the quote right after it — trying verbs in order
+    # so the value after the FIRST verb wins ('выводит `2` и печатает …' → `2`, not '');
+    # fall back to any output cue when there is no verb ('в stdout `X`').
+    anchors = sorted(low.find(c) for c in _OUTPUT_VERB_CUES if c in low) \
+        or sorted(low.find(c) for c in _OUTPUT_CUES if c in low)
+    for anchor in anchors:
         for m in _QUOTED_RE.finditer(text or ""):
             q = m.group(1).strip()
             if m.start() > anchor and q and q != command:
                 output_expected = q
                 break
+        if output_expected:
+            break
     return {"command": command, "output_expected": output_expected,
             "expect_nonzero": _has(low, _NONZERO_CUES)}
 
 
 def _is_command_output(text: str) -> bool:
-    """A CLI-output criterion: an output verb + a command signal (a runnable quoted
-    command OR a run verb) AND a concrete expected-output token. A bare 'видит `X`' with
-    no run reference, or an output mention with no quoted expected text ('build produces
-    no errors' → that's command_check), is NOT command_output."""
+    """A CLI-output criterion — requires an output cue, a NAMED runnable command (a
+    runnable quoted token like `node index.js sample.log`), AND a concrete expected token.
+    A PROSE-described run with no named command ('запуск с CSV выводит `OK`') is NOT
+    verifiable this way — it stays generic (honest) rather than being confirmable by any
+    run that prints the token. An output mention with no expected token → command_check."""
     low = (text or "").lower()
-    if not (_has(low, _OUTPUT_CUES) and (bool(_runnable_quote(text)) or _has(low, _RUN_VERB_CUES))):
+    if not _has(low, _OUTPUT_CUES):
         return False
-    return bool(command_spec(text)["output_expected"])
-
-
-def _norm_cmd(s: str) -> str:
-    return " ".join((s or "").lower().split())
+    spec = command_spec(text)
+    return bool(spec["command"]) and bool(spec["output_expected"])
 
 
 def _strip_cd_prefix(cmd: str) -> str:
     return re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd or "", flags=re.IGNORECASE).strip()
 
 
-def _is_program_run(cmd: str) -> bool:
-    """True when a run_bash command is a genuine PROGRAM invocation — the only thing that
-    can confirm a PROSE command_output criterion (one with no named command), so a run
-    that merely PRINTS the token can't stand in for actually running the checker.
+def _clean_run(cmd: str) -> str:
+    """Normalise a run command for matching: strip a leading `cd x &&`, `env`/`VAR=val`
+    prefix, and unwrap `bash -c "<inner>"` / `sh -c` so the inner command is judged."""
+    core = _ENV_PREFIX_RE.sub("", _strip_cd_prefix(cmd or ""))
+    m = _SHELL_WRAP_RE.match(core)
+    if m:
+        core = _ENV_PREFIX_RE.sub("", _strip_cd_prefix(m.group(1)))
+    return core.strip()
 
-    Rejects: passthroughs (echo/cat/…), generic npm/yarn build|test banners, and
-    inline-eval one-liners (`python -c`/`node -e`/`bash -c "echo …"`). Accepts an
-    env-prefixed / `cd &&`-prefixed real invocation (`NODE_ENV=x node server`,
-    `python -m app`, `node check.js …`)."""
-    core = _ENV_PREFIX_RE.sub("", _strip_cd_prefix(cmd))   # drop `cd x &&` then `VAR=y env`
+
+def _proves_nothing(core: str) -> bool:
+    """A cleaned run command that only PRINTS text / evals a literal — can't prove the
+    named program ran (denylist, not an allowlist, so any real invocation — node ./x,
+    python3, ./bin, module runs — is trusted; only known text-dumpers are rejected)."""
+    return bool(_PASSTHROUGH_RE.match(core) or _GENERIC_PKG_RE.match(core) or _INLINE_EVAL_RE.match(core))
+
+
+def _cmd_significant_tokens(cmd: str) -> list[str]:
+    """The distinguishing tokens of a command — its script basename + args, with the
+    interpreter and any dir/`./` prefix dropped, so `node index.js sample.log`,
+    `node ./index.js sample.log` and `python3 app.py` normalise to their script+args and
+    an equivalent invocation matches while a different arg (missing.log) does not."""
+    toks = _clean_run(cmd).split()
+    out = []
+    for t in toks:
+        if t in _INTERPRETERS or t.startswith("-"):
+            continue
+        out.append(re.split(r"[\\/]", t)[-1])  # basename
+    return out
+
+
+def _head(cmd: str) -> str:
+    parts = _clean_run(cmd).split()
+    return parts[0].lower() if parts else ""
+
+
+def _run_invokes(criterion_cmd: str, run_cmd: str) -> bool:
+    """The recorded run actually invokes the command the criterion names: every
+    significant token of the criterion command (script + args) is present in the run
+    (interpreter/path/env/wrapper differences ignored), and the run isn't a DIFFERENT
+    tool merely printing/reading the script. A same-tool run is trusted — so `npm test`
+    confirms an `npm test` criterion, while `cat index.js` / `sed '' index.js` (a
+    different, non-executing tool) does not confirm a `node index.js` criterion."""
+    core = _clean_run(run_cmd)
     if not core:
         return False
-    if _PASSTHROUGH_RE.match(core) or _GENERIC_PKG_RE.match(core) or _INLINE_EVAL_RE.match(core):
+    run_toks = set(_cmd_significant_tokens(run_cmd))
+    if not all(t in run_toks for t in _cmd_significant_tokens(criterion_cmd)):
         return False
-    return bool(_RUNNABLE_RE.search(core))
+    if _proves_nothing(core) and _head(core) != _head(criterion_cmd):
+        return False
+    return True
 
 
 # A criterion whose applicability depends on the PROJECT having something ("если в
@@ -871,23 +913,16 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         return ck == "any" or vk == "any" or ck == vk
     if it == "command_output":
         exp = item.get("output_expected", "")
-        if not exp:
-            return False
+        cmd_c = item.get("command", "")
+        if not exp or not cmd_c:
+            return False       # command_output needs a NAMED command + a concrete expected token
         ne = _norm_dom(exp)
         if not ne or (" " + ne + " ") not in (" " + _norm_dom(v.get("output", "")) + " "):
             return False       # expected text must be in the run's stdout/stderr (boundary-anchored)
-        cmd_c = item.get("command", "")
-        run_cmd = v.get("command", "")
-        if cmd_c:
-            # named command: the run must actually invoke it (boundary-anchored, not a bare
-            # substring, so `node index.js` doesn't match an unrelated `node index.js x`)
-            if (" " + _norm_cmd(cmd_c) + " ") not in (" " + _norm_cmd(run_cmd) + " "):
-                return False
-        elif not _is_program_run(run_cmd):
-            # PROSE criterion (no named command): only a genuine program run can confirm it
-            # — an echo/cat/build printing the token proves nothing (review of 053f8e1).
-            return False
-        return True
+        # the run must actually invoke the named command (interpreter/path/env-agnostic) and
+        # not be a text-dumper — so `node ./index.js sample.log` confirms `node index.js
+        # sample.log`, but `cat index.js` or a run with a different arg does not.
+        return _run_invokes(cmd_c, v.get("command", ""))
     if it == "dom_contains":
         toks = item.get("targets") or set()
         if not toks:
