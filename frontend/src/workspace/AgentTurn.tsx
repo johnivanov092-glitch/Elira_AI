@@ -138,11 +138,13 @@ const COMPLETION_LABEL: Record<CompletionStatus, { text: string; cls: string } |
  *  toggle — so a huge rendered-DOM verdict never floods the chat. */
 const CRITERION_EVIDENCE_MAX = 220;
 
-function CriterionRow({ c }: { c: CriterionState }) {
+function CriterionRow({ c, duplicate }: { c: CriterionState; duplicate?: boolean }) {
   const [showEvidence, setShowEvidence] = useState(false);
   const evidence = c.evidence ?? "";
-  const long = evidence.length > CRITERION_EVIDENCE_MAX;
-  const shown = long && !showEvidence ? `${evidence.slice(0, CRITERION_EVIDENCE_MAX).trimEnd()}…` : evidence;
+  // Evidence is hidden by default (reveal on click) and always capped, so a rendered-
+  // DOM verdict never floods the chat even when shown.
+  const shown =
+    evidence.length > CRITERION_EVIDENCE_MAX ? `${evidence.slice(0, CRITERION_EVIDENCE_MAX).trimEnd()}…` : evidence;
   return (
     <li className="flex items-start gap-2">
       <span
@@ -154,18 +156,19 @@ function CriterionRow({ c }: { c: CriterionState }) {
       />
       <span className="min-w-0">
         <span className={cn(c.status === "failed" && "text-danger")}>{c.text}</span>
-        {evidence && (
+        {/* Same evidence shared across criteria (e.g. one rendered-DOM verdict covering
+            several dom_contains checks) is shown once — later rows just point back. */}
+        {evidence && duplicate && <span className="ml-1 text-[10.5px] text-mut">— то же evidence, см. выше</span>}
+        {evidence && !duplicate && (
           <>
-            <span className="break-words text-[11px] text-mut"> — {shown}</span>
-            {long && (
-              <button
-                type="button"
-                onClick={() => setShowEvidence((v) => !v)}
-                className="ml-1 shrink-0 text-[10.5px] text-mut underline decoration-dotted underline-offset-2 hover:text-tx"
-              >
-                {showEvidence ? "скрыть" : "показать evidence"}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setShowEvidence((v) => !v)}
+              className="ml-1 shrink-0 text-[10.5px] text-mut underline decoration-dotted underline-offset-2 hover:text-tx"
+            >
+              {showEvidence ? "скрыть evidence" : "показать evidence"}
+            </button>
+            {showEvidence && <span className="mt-0.5 block break-words text-[11px] text-mut">{shown}</span>}
           </>
         )}
       </span>
@@ -200,9 +203,15 @@ function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; statu
       </button>
       {open && (
         <ul className="space-y-1 border-t border-line px-3 py-2">
-          {criteria.map((c, i) => (
-            <CriterionRow key={i} c={c} />
-          ))}
+          {(() => {
+            const seen = new Set<string>();
+            return criteria.map((c, i) => {
+              const ev = c.evidence ?? "";
+              const duplicate = ev !== "" && seen.has(ev);
+              if (ev !== "") seen.add(ev);
+              return <CriterionRow key={i} c={c} duplicate={duplicate} />;
+            });
+          })()}
         </ul>
       )}
     </div>
