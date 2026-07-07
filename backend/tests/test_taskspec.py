@@ -451,6 +451,40 @@ class CliOutputVerifierTest(unittest.TestCase):
         for tok in ("OK: 1", "WARN: 1", "DOWN: 1", "SUBNET: 192.168.88.0/24"):
             self.assertEqual(self._st(t, tok), "confirmed", tok)
 
+    def _rec(self, crit, cmd, out, ec):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[crit]))
+        t.record(tool_name="run_bash", args={"command": cmd}, ok=(ec == 0), evidence=out, meta={"exit_code": ec})
+        return t.items[0]["status"]
+
+    def test_prose_output_needs_a_real_program_run_not_echo_cat_build(self):
+        # review of 053f8e1: a prose criterion (no named command) must NOT be confirmed by
+        # echo/cat/build printing the token — only a genuine program run.
+        crit = "запуск с исходным CSV выводит `OK: 1`"
+        self.assertEqual(self._rec(crit, "echo OK: 1", "STDOUT:\nOK: 1", 0), "unconfirmed")
+        self.assertEqual(self._rec(crit, "cat expected.txt", "STDOUT:\nOK: 1", 0), "unconfirmed")
+        self.assertEqual(self._rec(crit, "npm run build", "STDOUT:\nOK: 1 done", 0), "unconfirmed")
+        # a real checker run confirms it
+        self.assertEqual(self._rec(crit, "node check.js inventory.csv", "STDOUT:\nOK: 1", 0), "confirmed")
+
+    def test_prose_positive_not_confirmed_by_unrelated_build_banner(self):
+        self.assertEqual(self._rec("при запуске программа выводит `Done`",
+                                   "npm run build", "STDOUT:\nDone in 3.2s", 0), "unconfirmed")
+
+    def test_prose_negative_not_confirmed_by_unrelated_failed_build(self):
+        self.assertEqual(self._rec("при запуске с несуществующим файлом завершается с ошибкой и печатает `Error`",
+                                   "npm run build", "STDERR:\nError: Cannot find module", 1), "unconfirmed")
+
+    def test_positive_output_requires_exit_zero(self):
+        # a RED run whose output contains the token (failing test printing "N passing")
+        # must NOT confirm a positive output criterion.
+        crit = "`npm test` выводит `passing`"
+        self.assertEqual(self._rec(crit, "npm test", "STDOUT:\n12 passing\n3 failing", 1), "unconfirmed")
+        self.assertEqual(self._rec(crit, "npm test", "STDOUT:\n15 passing", 0), "confirmed")
+
+    def test_output_mention_without_expected_token_is_command_check(self):
+        from app.application.code_agent.taskspec import _criterion_intent
+        self.assertEqual(_criterion_intent("`npm run build` produces no errors in the output"), "command_check")
+
     def test_closure_groups_output_criteria_by_command(self):
         from app.application.code_agent import criterion_closure as cc
         acts = cc.missing_verifier_actions(CriteriaTracker.from_spec(derive_task_spec(self._LOGSUM)))

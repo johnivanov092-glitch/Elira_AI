@@ -473,25 +473,24 @@ def _runnable_quote(text: str) -> str:
     return ""
 
 
-def _is_command_output(text: str) -> bool:
-    """A CLI-output criterion: an output verb + a command signal (a runnable quoted
-    command OR a run verb 'запуск'/'node'/…). A bare 'видит `X`' without a run reference
-    is NOT command_output (stays generic — honest)."""
-    low = (text or "").lower()
-    return _has(low, _OUTPUT_CUES) and (bool(_runnable_quote(text)) or _has(low, _RUN_VERB_CUES))
+# Passthrough / generic build commands whose output does NOT prove the program under
+# test actually ran (echo/cat print any text; npm run build prints its own banner) —
+# for a PROSE command_output criterion (no named command) these must not confirm.
+_PASSTHROUGH_RE = re.compile(r"^(?:echo|cat|type|printf|head|tail|more|less|Get-Content|write-host)\b", re.IGNORECASE)
+_GENERIC_PKG_RE = re.compile(r"^(?:npm|pnpm|yarn|npx)\s+(?:run\s+)?(?:build|test|start|dev|lint|install|ci)\b", re.IGNORECASE)
 
 
 def command_spec(text: str) -> dict:
     """(command, expected output, expect_nonzero) for a CLI-output criterion. command is
     the runnable quoted token (may be '' when the run is described in prose); the expected
-    output is the quoted token after the output cue; expect_nonzero when a failure cue is
-    present ('завершается с ошибкой')."""
+    output is the quoted token after the LAST output cue (so an unrelated quote before the
+    cue isn't mistaken for it); expect_nonzero when a failure cue is present."""
     low = (text or "").lower()
     command = _runnable_quote(text)
     output_expected = ""
-    positions = [low.find(c) for c in _OUTPUT_CUES if c in low]
+    positions = [low.rfind(c) for c in _OUTPUT_CUES if c in low]
     if positions:
-        pos = min(positions)
+        pos = max(positions)
         for m in _QUOTED_RE.finditer(text or ""):
             q = m.group(1).strip()
             if m.start() > pos and q and q != command:
@@ -501,8 +500,34 @@ def command_spec(text: str) -> dict:
             "expect_nonzero": _has(low, _NONZERO_CUES)}
 
 
+def _is_command_output(text: str) -> bool:
+    """A CLI-output criterion: an output verb + a command signal (a runnable quoted
+    command OR a run verb) AND a concrete expected-output token. A bare 'видит `X`' with
+    no run reference, or an output mention with no quoted expected text ('build produces
+    no errors' → that's command_check), is NOT command_output."""
+    low = (text or "").lower()
+    if not (_has(low, _OUTPUT_CUES) and (bool(_runnable_quote(text)) or _has(low, _RUN_VERB_CUES))):
+        return False
+    return bool(command_spec(text)["output_expected"])
+
+
 def _norm_cmd(s: str) -> str:
     return " ".join((s or "").lower().split())
+
+
+def _strip_cd_prefix(cmd: str) -> str:
+    return re.sub(r"^\s*cd\s+\S+\s*&&\s*", "", cmd or "", flags=re.IGNORECASE).strip()
+
+
+def _is_program_run(cmd: str) -> bool:
+    """True when a run_bash command is a genuine PROGRAM invocation (not a passthrough
+    like echo/cat, not a generic npm build/test banner) — the only thing that can confirm
+    a PROSE command_output criterion (one with no named command), so echo/cat/build can't
+    stand in for actually running the checker."""
+    core = _strip_cd_prefix(cmd)
+    if not core or _PASSTHROUGH_RE.match(core) or _GENERIC_PKG_RE.match(core):
+        return False
+    return bool(_RUNNABLE_RE.search(core))
 
 
 # A criterion whose applicability depends on the PROJECT having something ("если в
@@ -834,8 +859,16 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         if not ne or (" " + ne + " ") not in (" " + _norm_dom(v.get("output", "")) + " "):
             return False       # expected text must be in the run's stdout/stderr (boundary-anchored)
         cmd_c = item.get("command", "")
-        if cmd_c and _norm_cmd(cmd_c) not in _norm_cmd(v.get("command", "")):
-            return False       # if the criterion names a command, the run must be OF that command
+        run_cmd = v.get("command", "")
+        if cmd_c:
+            # named command: the run must actually invoke it (boundary-anchored, not a bare
+            # substring, so `node index.js` doesn't match an unrelated `node index.js x`)
+            if (" " + _norm_cmd(cmd_c) + " ") not in (" " + _norm_cmd(run_cmd) + " "):
+                return False
+        elif not _is_program_run(run_cmd):
+            # PROSE criterion (no named command): only a genuine program run can confirm it
+            # — an echo/cat/build printing the token proves nothing (review of 053f8e1).
+            return False
         return True
     if it == "dom_contains":
         toks = item.get("targets") or set()
@@ -894,10 +927,12 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
     if it == "command_output":
         if not _verdict_target_matches(item, v):
             return None
+        ec = v.get("exit_code")
         if item.get("expect_nonzero"):
-            ec = v.get("exit_code")
             return "confirm" if isinstance(ec, int) and ec != 0 else None
-        return "confirm"                # positive: expected text present in the run's output
+        # positive: the run must have SUCCEEDED — a RED run whose output merely contains
+        # the token (e.g. a failing test printing "12 passing 3 failing") must NOT confirm.
+        return "confirm" if (ec is None or ec == 0) else None
     if it == "command_check":
         # Pass/fail by EXIT CODE when known (a real run always carries it): green→confirm,
         # red→fail. This is what stops a broadened run_bash record from false-confirming a
