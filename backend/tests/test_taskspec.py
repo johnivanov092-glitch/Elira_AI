@@ -736,6 +736,32 @@ class VaultDeskVerificationTest(unittest.TestCase):
         t.record(tool_name="browser", args={"url": "x"}, ok=True, evidence="Network\n192.168.88.0")
         self.assertEqual(t.items[0]["status"], "unconfirmed")   # different value → no false match
 
+    def _dom_confirms(self, target, dom):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[f"на экране `{target}`"]))
+        t.record(tool_name="browser", args={"url": "x"}, ok=True, evidence=dom)
+        return t.items[0]["status"] == "confirmed"
+
+    def test_ip_value_does_not_prefix_match_a_longer_value(self):
+        # Ph6 review: boundary-anchored match — a value must not prefix-match a longer one,
+        # else the verifier certifies a WRONG rendered value (.1 inside .10, .25 in .255).
+        self.assertFalse(self._dom_confirms("Network: 192.168.88.1", "Network\n192.168.88.10"))
+        self.assertFalse(self._dom_confirms("192.168.88.25", "Broadcast\n192.168.88.255"))
+        self.assertTrue(self._dom_confirms("Last: 192.168.88.254", "Last\n192.168.88.254"))  # exact ok
+
+    def test_interaction_spec_ignores_field_name_and_result_tokens(self):
+        from app.application.code_agent.taskspec import interaction_spec
+        # field name quoted before the value → fill is the VALUE, not the field name
+        s1 = interaction_spec("В поле `CIDR` введите `192.168.88.0/24`, нажать `Calculate`, содержит `Network`")
+        self.assertEqual(s1["fill"], "192.168.88.0/24")
+        self.assertEqual(s1["click"], "Calculate")
+        # value in prose, only the button quoted → fill empty, NOT the button
+        s2 = interaction_spec("Введите CIDR и нажмите `Calculate` — содержит `Network`")
+        self.assertEqual(s2["fill"], "")
+        self.assertEqual(s2["click"], "Calculate")
+        # button in prose, only the result quoted → click empty, NOT the result token
+        s3 = interaction_spec("нажмите кнопку расчёта, DOM содержит `Network`")
+        self.assertEqual(s3["click"], "")
+
     def test_conditional_typecheck_skipped_not_unverified_when_absent(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
             "`npm run build` проходит без ошибок",

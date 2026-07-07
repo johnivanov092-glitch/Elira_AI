@@ -418,28 +418,37 @@ def _is_interaction(text: str) -> bool:
     return _has((text or "").lower(), _INTERACTION_CUES)
 
 
-_FILL_CUES = ("ввод", "введ", "впиш", "заполн", "type ", "fill", "в поле")
+# Value-introducing cues only — NOT "в поле" (that locates the FIELD, not the value:
+# "в поле `CIDR` введите `X`" — the value is after "введите", the quote after "в поле"
+# is the field name).
+_FILL_CUES = ("ввод", "введ", "впиш", "заполн", "type ", "fill", "набер")
 _CLICK_CUES = ("нажат", "нажми", "клик", "click", "кнопк", "button", "submit")
 
 
 def interaction_spec(text: str) -> dict:
     """The (fill value, click target) an interaction criterion implies — the quoted
-    token right after a fill cue ("после ввода `X`") and after a click cue ("нажатия
-    `Calculate`"). Empty strings when absent. Used to build ONE concrete grouped
-    browser(actions=…) call that closes every interaction sharing the same input+click."""
+    token right after a fill/click cue. Result tokens (the expected DOM text) are
+    excluded from both, and the click target is excluded from the fill, so a prose value
+    with only the button quoted ("Введите CIDR и нажмите `Calculate`") doesn't grab the
+    button, and a prose button with only the result quoted doesn't grab the result.
+    Empty when absent → the closure emits a `<value>`/`<кнопка>` placeholder."""
     low = (text or "").lower()
+    quotes = [(m.start(), m.group(1).strip()) for m in _QUOTED_RE.finditer(text or "")]
+    result_toks = {t.lower() for t in _dom_targets(text)}  # expected DOM text — never fill/click
 
-    def _after(cues: tuple[str, ...]) -> str:
+    def _after(cues: tuple[str, ...], exclude: set[str]) -> str:
         positions = [low.find(c) for c in cues if c in low]
         if not positions:
             return ""
         pos = min(positions)
-        for m in _QUOTED_RE.finditer(text or ""):
-            if m.start() > pos:
-                return m.group(1).strip()
+        for start, q in quotes:
+            if start > pos and q and q.lower() not in exclude:
+                return q
         return ""
 
-    return {"fill": _after(_FILL_CUES), "click": _after(_CLICK_CUES)}
+    click = _after(_CLICK_CUES, result_toks)
+    fill = _after(_FILL_CUES, result_toks | ({click.lower()} if click else set()))
+    return {"fill": fill, "click": click}
 
 
 # A criterion whose applicability depends on the PROJECT having something ("если в
@@ -492,12 +501,15 @@ def _has(low: str, cues: tuple[str, ...]) -> bool:
 
 
 def _norm_dom(s: str) -> str:
-    """Normalise text for DOM-token matching: lowercase, and collapse every run of
-    non-(word/dot) characters — colons, pipes, newlines, punctuation — to one space.
-    Keeps letters/digits/underscore/dot, so IP/mask values survive while a label
-    rendered without its colon ("Network 192.168.88.0") matches a token with one
-    ("Network: 192.168.88.0"). Adjacency is preserved (substring check on the result)."""
-    return re.sub(r"[^\w.]+", " ", (s or "").lower()).strip()
+    """Normalise text for DOM-token matching: lowercase; collapse every run of
+    non-(word/dot) chars (colons, pipes, newlines, punctuation) to one space; and turn a
+    dot that is NOT between two digits into a space too. So an IP/mask keeps its dots
+    (192.168.88.0) and boundary-matches exactly, while a sentence/label period ("alerts.")
+    becomes a word boundary — a label rendered without its colon still matches
+    ("Network 192.168.88.0" ↔ token "Network: 192.168.88.0")."""
+    low = re.sub(r"[^\w.]+", " ", (s or "").lower())
+    low = re.sub(r"(?<!\d)\.|\.(?!\d)", " ", low)   # dot not between digits → space
+    return re.sub(r"\s+", " ", low).strip()
 
 
 # Context cue groups — WHAT a criterion is about (a rendered page vs a file vs a
@@ -749,15 +761,21 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         return ck == "any" or vk == "any" or ck == vk
     if it == "dom_contains":
         toks = item.get("targets") or set()
-        # Punctuation- and whitespace-insensitive: a UI renders a label as a SEPARATE
-        # element and often WITHOUT its colon, so inner_text is "Network 192.168.88.0"
-        # (label | value, no colon) while the criterion token is "Network: 192.168.88.0".
-        # _norm_dom drops non-`\w.` chars (colon, pipe, newline) to a single space on
-        # BOTH sides — keeping adjacency and dots (IP/mask) — else a valid interaction
-        # stays unconfirmed and the model spins (live Subnet: 3 criteria hung, then a
-        # run_server loop → loop_guard stop).
-        text = _norm_dom(v.get("text") or "")
-        return bool(toks) and all(_norm_dom(t) in text for t in toks)
+        if not toks:
+            return False
+        # Punctuation- and whitespace-insensitive (a UI renders a label as a SEPARATE
+        # element, often WITHOUT its colon: "Network 192.168.88.0" vs token "Network:
+        # 192.168.88.0"). _norm_dom collapses non-`\w.` runs to one space on both sides,
+        # keeping adjacency and dots. The match is BOUNDARY-anchored (both sides padded
+        # with spaces) so a numeric value can't prefix-match a longer one — else
+        # `192.168.88.1` would wrongly confirm against a DOM showing `192.168.88.10`,
+        # certifying a WRONG subnet value (Ph6 review).
+        text = " " + _norm_dom(v.get("text") or "") + " "
+        for t in toks:
+            nt = _norm_dom(t)
+            if not nt or (" " + nt + " ") not in text:
+                return False
+        return True
     if it == "viewport_layout":
         return bool(v.get("viewport"))
     if it in ("content_contains", "content_not_contains"):
