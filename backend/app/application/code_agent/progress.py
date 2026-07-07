@@ -28,6 +28,18 @@ from dataclasses import dataclass, field
 ACTION_TOOLS: frozenset[str] = frozenset(
     {"run_bash", "run_server", "ssh_run", "ssh_run_ps", "ssh_write", "ssh_replace"}
 )
+
+
+def _is_action_attempt(name: str, args: dict) -> bool:
+    """True when a tool call is a goal ATTEMPT the router should throttle. A
+    run_server `list`/`logs`/`stop` is status/teardown, not an attempt — counting it
+    as a no-progress action wrongly exhausted `service_start@` and stopped a healthy
+    run (live: 2 logs/stop calls burned the family after a single real start)."""
+    if name not in ACTION_TOOLS:
+        return False
+    if name == "run_server" and str((args or {}).get("action") or "start").lower() != "start":
+        return False
+    return True
 # Reading/searching/verifier tools whose FRESH output is genuine new knowledge →
 # progress (so "go read the real file / run the verifier" is rewarded, not punished).
 INVESTIGATION_TOOLS: frozenset[str] = frozenset(
@@ -270,6 +282,16 @@ class ProgressEvaluator:
     no_progress_total: int = 0        # cumulative — for the report only
     consecutive_no_progress: int = 0  # resets on ANY progress — drives the backstop stop
 
+    def _rearm_run(self) -> None:
+        """Clear ALL stale exhaustion after a success criterion flips. Bounded by the
+        number of criteria (each flips at most once), so this can't let a truly-stuck
+        run churn forever — it only forgives families that earlier noise burned."""
+        self.exhausted.clear()
+        self.strategy_no_progress.clear()
+        self.target_families.clear()
+        self.tool_host_no_progress.clear()
+        self.last_exhausted_family = None
+
     def _clear_exhaustion_for_target(self, target: str) -> None:
         if not target:
             return
@@ -295,14 +317,23 @@ class ProgressEvaluator:
         self.verified_ok_keys.add(key)
         return True
 
-    def evaluate(self, *, name: str, args: dict, tool_meta: dict, fact: str | None) -> ProgressVerdict:
+    def evaluate(
+        self, *, name: str, args: dict, tool_meta: dict, fact: str | None,
+        criterion_progress: bool = False,
+    ) -> ProgressVerdict:
         family = strategy_family(name, args)
         target = strategy_target(name, args)
         key = f"{family}@{target}"
         host = args.get("host") if isinstance(args.get("host"), str) else ""
         th_key = f"{name}@{host}" if host and name.startswith("ssh") else None
 
-        if step_made_progress(
+        # A success CRITERION flipping (unconfirmed→confirmed/failed) is the strongest
+        # goal-level progress there is — stronger than any per-tool heuristic. It must
+        # count as progress AND re-arm the whole run, else a family exhausted by early
+        # shell noise (dir/where/npm install) can stop a run that is now provably
+        # advancing (live: typecheck+build confirmed, yet local_shell@/service_start@
+        # stayed exhausted and the router stopped it as no_progress).
+        if criterion_progress or step_made_progress(
             name=name, args=args, tool_meta=tool_meta, fact=fact, seen_fact_shapes=self.seen_fact_shapes,
         ) or self._verify_pass_is_progress(name, family, key, tool_meta):
             self.progress_events += 1
@@ -316,11 +347,14 @@ class ProgressEvaluator:
                 self._clear_exhaustion_for_target(host)
             if th_key:
                 self.tool_host_no_progress[th_key] = 0
+            if criterion_progress:
+                self._rearm_run()  # a criterion flipped → clear ALL stale exhaustion
             return ProgressVerdict("progress", key, family, target, exhausted=False, should_stop=False)
 
-        # No progress. Only THROTTLE "doing" tools — a read that returned nothing
-        # new is minor churn, handled by the near-dup guard, not the strategy router.
-        if name not in ACTION_TOOLS:
+        # No progress. Only THROTTLE goal ATTEMPTS — a read that returned nothing
+        # new, or a run_server status/teardown call, is minor churn (near-dup guard),
+        # not a strategy attempt, so it must not burn the family's budget.
+        if not _is_action_attempt(name, args):
             return ProgressVerdict("no_progress", key, family, target, exhausted=False, should_stop=False)
 
         self.no_progress_total += 1

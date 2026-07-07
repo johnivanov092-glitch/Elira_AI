@@ -467,6 +467,16 @@ class VaultDeskVerificationTest(unittest.TestCase):
         t.record(tool_name="browser", args={"url": "http://x"}, ok=True, evidence=self._DOM)
         self.assertEqual(t.items[0]["status"], "unconfirmed")          # token not in rendered DOM
 
+    def test_wrong_server_dom_does_not_confirm_vaultdesk_text(self):
+        # Live d1511484: the requested port was taken by Elira's own dev server, so a
+        # render 'worked' but returned Elira's DOM. Token matching keeps the VaultDesk
+        # text criteria unconfirmed even against a live-but-wrong server.
+        t = self._vault()
+        elira_dom = "TITLE: Elira AI\nЭлира Новый чат ДИАЛОГИ Настройки"
+        t.record(tool_name="browser", args={"url": "http://localhost:5173/"}, ok=True, evidence=elira_dom)
+        self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
+        self.assertEqual(self._st(t, "Start local audit"), "unconfirmed")
+
     def test_bundle_findstr_does_not_confirm_visibility(self):
         # findstr finds the tokens in the built bundle — that is NOT "visible on the
         # first screen". A bundle grep must confirm neither text nor page-open.

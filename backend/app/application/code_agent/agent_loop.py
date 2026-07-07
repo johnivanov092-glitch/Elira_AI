@@ -29,7 +29,7 @@ from app.application.tool_providers import (
     build_lsp_providers,
     build_mcp_providers,
 )
-from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE
+from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE, strategy_family
 from app.application.code_agent.taskspec import (
     CriteriaTracker,
     derive_task_spec,
@@ -1889,23 +1889,29 @@ def _stream_code_agent_core(
                 # FAMILY (not a stop); families/budget spent → honest stop. Catches
                 # the different-looking-but-going-nowhere spiral (raw-ssh escaping)
                 # that the repetition guards miss.
-                verdict = progress.evaluate(
-                    name=name, args=parsed_args, tool_meta=tool_meta, fact=_fact,
-                )
-                # Per-criterion state (Ph7.4): feed verifier verdicts. A verifier
-                # tool (verifier=True) confirms/fails a matching criterion; a coding
-                # test/verify that went GREEN (exit 0) counts as a passing check too.
+                # Per-criterion state (Ph7.4): feed verifier verdicts BEFORE the
+                # router evaluates, so a criterion flip counts as progress this step.
+                # A verifier tool (verifier=True) confirms/fails a matching criterion;
+                # a coding test/verify that went GREEN (exit 0) is a passing check too.
+                _family = strategy_family(name, parsed_args)
+                criterion_progress = False
                 if criteria.items:
                     if tool_meta.get("verifier"):
-                        criteria.record(
+                        criterion_progress = criteria.record(
                             tool_name=name, args=parsed_args, ok=_tool_ok,
                             evidence=str(tool_meta.get("evidence") or ""),
                         )
-                    elif verdict.family.startswith(("test:", "verify:")) and tool_meta.get("exit_code") == 0:
-                        criteria.record(
+                    elif _family.startswith(("test:", "verify:")) and tool_meta.get("exit_code") == 0:
+                        criterion_progress = criteria.record(
                             tool_name=name, args=parsed_args, ok=True,
                             evidence="проверка прошла (exit 0)",
                         )
+                # Strategy router — a criterion flip (criterion_progress) is the
+                # strongest progress signal and re-arms the run.
+                verdict = progress.evaluate(
+                    name=name, args=parsed_args, tool_meta=tool_meta, fact=_fact,
+                    criterion_progress=criterion_progress,
+                )
                 # Repetition nudges (exact / near-dup) — orthogonal to the router.
                 _rc = repeated_tool_calls.get(fingerprint, 0)
                 if name not in _LOOP_GUARD_EXEMPT_TOOLS and _REPEATED_TOOL_CALL_NUDGE_AT <= _rc < _REPEATED_TOOL_CALL_LIMIT:

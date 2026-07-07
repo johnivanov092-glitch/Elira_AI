@@ -250,19 +250,72 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
 
 _SERVER_LOG_DIRNAME = ".elira/servers"
 _SERVER_STARTUP_GRACE = 1.5  # seconds to let the process crash-or-bind before reporting
+_SERVER_URL_WAIT = 6.0       # extra seconds to wait for a dev server to PRINT its URL
 _SERVER_LOG_TAIL_CHARS = 4000
+
+# A dev server prints the URL it ACTUALLY bound — which differs from the requested
+# port when it was taken (Vite auto-increments 5173→5174). Parsing the real URL is
+# what lets the loopback verifier reach the agent's OWN server instead of guessing
+# ports (or hitting a different app already on the requested port).
+_SERVER_URL_RE = re.compile(
+    r"https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[\w.-]+):(\d{2,5})", re.IGNORECASE
+)
+_LOOPBACK_URL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "[::1]"})
+
+
+def _parse_server_url(log_text: str) -> tuple[str, int] | None:
+    """Extract the (canonical loopback URL, port) a dev server printed. Prefers a
+    loopback 'Local:' URL over a LAN 'Network:' one, and the LAST match (so a Vite
+    auto-increment to 5174 wins over the initial 5173 attempt). 0.0.0.0 is normalised
+    to localhost for verification."""
+    loopback: tuple[str, int] | None = None
+    other: tuple[str, int] | None = None
+    for m in _SERVER_URL_RE.finditer(log_text or ""):
+        host, port = m.group(1).lower(), int(m.group(2))
+        if host in _LOOPBACK_URL_HOSTS:
+            loopback = (f"http://localhost:{port}", port)   # last loopback wins
+        elif other is None:
+            other = (f"http://{host}:{port}", port)
+    return loopback or other
+
+
+_WEB_DEV_MARKERS = (
+    "vite", "next", "nuxt", "npm run dev", "yarn dev", "pnpm dev", "npm start",
+    "webpack", "ng serve", "astro", "remix", "serve", "http-server", "live-server",
+    "uvicorn", "flask run", "runserver", "gunicorn", "rails s", "php -s",
+)
+
+
+def _expects_web_url(command: str, port: int | None) -> bool:
+    """Whether a run_server start is likely to bind an HTTP URL worth waiting for."""
+    if port:
+        return True
+    low = (command or "").lower()
+    return any(m in low for m in _WEB_DEV_MARKERS)
+
+
+def _await_server_url(log_path: Path, deadline: float) -> tuple[str, int] | None:
+    """Poll the server log for its bound URL until `deadline` (monotonic seconds)."""
+    while True:
+        found = _parse_server_url(_read_log_tail(log_path))
+        if found:
+            return found
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.3)
 
 
 class _ServerHandle:
-    __slots__ = ("pid", "command", "proc", "log_path", "port", "started_at")
+    __slots__ = ("pid", "command", "proc", "log_path", "port", "url", "started_at")
 
     def __init__(self, pid: int, command: str, proc: subprocess.Popen,
-                 log_path: Path, port: int | None) -> None:
+                 log_path: Path, port: int | None, url: str | None = None) -> None:
         self.pid = pid
         self.command = command
         self.proc = proc
         self.log_path = log_path
         self.port = port
+        self.url = url
         self.started_at = time.time()
 
 
@@ -568,9 +621,38 @@ def tool_run_server(
             f"$ {cleaned_command}{body}"
         )}
 
-    port_s = f" on port {port}" if port else ""
+    # Learn the URL the server ACTUALLY bound (Vite may have auto-incremented off a
+    # taken port). This becomes the canonical URL: the loopback allowlist keys on the
+    # REAL port, so the verifier reaches THIS server — not a guessed port or a
+    # different app already on the requested one. Only wait when a web URL is expected
+    # (a port was requested or the command is a known dev server) so a plain
+    # background process doesn't pay the poll.
+    parsed = None
+    if _expects_web_url(cleaned_command, port):
+        parsed = _await_server_url(handle.log_path, time.monotonic() + _SERVER_URL_WAIT)
+    if parsed:
+        actual_url, actual_port = parsed
+        handle.url, handle.port = actual_url, actual_port
+    elif port:
+        handle.url = f"http://localhost:{port}"
+    actual_url = handle.url
+    actual_port = handle.port
+
+    if actual_url:
+        url_line = (
+            f"  URL: {actual_url}  ← verify against THIS url (browser/http_api). "
+            f"Do NOT guess other ports.\n"
+        )
+        if port and actual_port and int(actual_port) != int(port):
+            url_line += (
+                f"  (note: requested port {port} was taken — the server bound "
+                f"{actual_port} instead)\n"
+            )
+    else:
+        url_line = ""
     text = (
-        f"Server started in background{port_s}.\n"
+        f"Server started in background.\n"
+        f"{url_line}"
         f"  pid={proc.pid}\n"
         f"  $ {cleaned_command}\n"
         f"Use run_server(action='logs', pid={proc.pid}) to read output, "
@@ -587,4 +669,16 @@ def tool_run_server(
     if gui_block:
         text = f"{text}\n\n{gui_block}"
 
-    return {"text": text}
+    # Structured evidence: the loop/UI and the progress router get the actual URL +
+    # a first-start signal without re-parsing the text.
+    return {
+        "text": text,
+        "ok": True,
+        "action": "start",
+        "server_started": True,
+        "pid": proc.pid,
+        "port": actual_port,
+        "actual_port": actual_port,
+        "actual_url": actual_url,
+        "local_url": actual_url,
+    }

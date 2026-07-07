@@ -446,20 +446,28 @@ class CriteriaTracker:
         crits = spec.success_criteria if spec else []
         return cls(items=[_criterion_item(c) for c in crits])
 
-    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str) -> None:
+    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str) -> bool:
         """Feed a verifier verdict (classified by tool + args + evidence). Confirms/
         refutes a criterion only on matching intent + target; unrelated criteria are
-        untouched. `evidence` doubles as the rendered DOM text for a browser verdict."""
+        untouched. `evidence` doubles as the rendered DOM text for a browser verdict.
+
+        Returns True if a criterion changed status (unconfirmed→confirmed/failed) —
+        the strongest goal-level progress signal there is, which the strategy router
+        uses to re-arm the run (a confirmed criterion is real forward motion)."""
         v = _verifier_verdict(tool_name, args, evidence=evidence)
         if v is None:
-            return
+            return False
+        transitioned = False
         for it in self.items:
             if not _verdict_confirms(it, v):
                 continue
             if ok and it["status"] != "confirmed":
                 it.update(status="confirmed", verifier=tool_name, evidence=evidence or None)
+                transitioned = True
             elif not ok and it["status"] == "unconfirmed":
                 it.update(status="failed", verifier=tool_name, evidence=evidence or None)
+                transitioned = True
+        return transitioned
 
     def completion_status(self) -> str:
         if not self.items:
