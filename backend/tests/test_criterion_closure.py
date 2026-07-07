@@ -211,6 +211,20 @@ class FinalAssemblyCountTest(unittest.TestCase):
         self.assertNotIn("17", final)
 
 
+class SuccessMarkScrubTest(unittest.TestCase):
+    def test_neutralises_success_glyphs_keeps_text(self):
+        txt = "| interaction | ✅ |\n✔ typecheck passed\n✓ done\n☑ ok\n🟢 up\n👍"
+        out = cc.scrub_success_marks(txt)
+        for g in ("✅", "✔", "✓", "☑", "🟢", "👍"):
+            self.assertNotIn(g, out, g)
+        self.assertIn("▫", out)
+        self.assertIn("typecheck passed", out)   # only the mark is neutralised, text kept
+
+    def test_empty_and_no_marks_unchanged(self):
+        self.assertEqual(cc.scrub_success_marks(""), "")
+        self.assertEqual(cc.scrub_success_marks("plain report, no marks"), "plain report, no marks")
+
+
 class MinimalPlanTest(unittest.TestCase):
     """Tool-economy: a browser render proves page_open too, so the missing-verifier
     plan must not also demand http_api for the same page."""

@@ -347,6 +347,21 @@ def scrub_manual_criteria_counts(text: str) -> str:
     return text
 
 
+# Model success glyphs (✅/✔/✓/☑/🟢/👍, with optional VS16) — neutralised to ▫ when the
+# run is NOT confirmed, so a model checkmark can't make a partial run LOOK done beside the
+# runtime status block. The deterministic panel is the only source of "готово".
+_SUCCESS_MARK_RE = re.compile("[✅✔✓☑\U0001F7E2\U0001F44D]️?")
+
+
+def scrub_success_marks(text: str) -> str:
+    """Replace the model's success/✅ marks with a neutral ▫ — call ONLY when
+    completion_status != confirmed. A ✅ next to a criterion/interaction row on a partial
+    run is misleading; the runtime block + readiness panel own the verdict."""
+    if not text:
+        return text
+    return _SUCCESS_MARK_RE.sub("▫", text)
+
+
 def report_counts(report: list[dict]) -> dict[str, int]:
     """The counts, computed ONCE from criteria.report() — the single source the final
     block agrees with. `skipped` = conditional criteria that were n/a."""

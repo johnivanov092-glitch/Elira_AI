@@ -84,10 +84,12 @@ honest instead of a rubber stamp.
    for real and the post-interaction DOM (not text/grep) confirms the result token. Covers
    `backup-form-checker`. Verdict is positive-evidence: the tool executes the actions and
    returns the real DOM (verified with a live Playwright form test).
-3. **Final-report honesty — PARTIAL.** The scrub neutralises status headers, model count
-   claims ("17 verifier criteria"), and universal "all passed" claims when not confirmed —
-   but a model **✅-checkmark table/row** ("interaction … ✅") survives. The deterministic
-   panel is correct (partial), but the prose can still *look* done.
+3. **Final-report honesty — ✅ DONE (Batch C).** The scrub neutralises status headers, model
+   count claims ("17 verifier criteria"), and universal "all passed" claims when not confirmed
+   — and now `scrub_success_marks` also neutralises the model **✅/✔/✓/☑/🟢/👍 glyphs → ▫**
+   (only when `completion_status != confirmed`), so a model checkmark table/row can no longer
+   *look* done beside the runtime "подтверждено N/M" block. The deterministic panel is the only
+   source of "готово". `code: criterion_closure.scrub_success_marks`.
 4. **`viewport_layout` — PARTIAL** (no deterministic closure suggestion) and
    **`project.scope.no_parent_changes` — PARTIAL** (a diff/changed-paths verifier would be
    needed; today it's routed to constraints so it doesn't hang). Both are honest today — low
@@ -120,10 +122,11 @@ changed until this catalog is approved.**
 - `_apply_action`: add `select` (Playwright `select_option`/`get_by_label`) and `check`
   (`check()`/`set_checked`). Result-token still the only asserted DOM text.
 
-**Batch C — final-report ✅ scrub (closes gap 3).**
-- When `completion_status != confirmed`, neutralise model ✅/✓ rows that assert a
-  verifier/interaction/criterion passed (append the runtime correction / strip the mark),
-  so the deterministic panel is the only source of "done".
+**Batch C — final-report ✅ scrub (closes gap 3). ✅ DONE.**
+- `criterion_closure.scrub_success_marks(text)` replaces ✅/✔/✓/☑/🟢/👍 (with optional VS16)
+  by a neutral `▫`; the finalizer calls it **only** when `completion_status != confirmed`
+  (right after `gate_completion_claims`), so the deterministic panel is the only source of
+  "done". Surrounding text is preserved; a confirmed run keeps its marks (scrub not called).
 
 **Batch D (optional, low priority).** `viewport_layout` closure hint; a `changed_paths`
 scope verifier for `no_parent_changes`.

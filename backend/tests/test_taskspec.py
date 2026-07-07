@@ -558,8 +558,30 @@ class CliOutputVerifierTest(unittest.TestCase):
 
 class VerifierGateTest(unittest.TestCase):
     def tearDown(self):
-        for rid in ("ts-gate", "ts-confirmed"):
+        for rid in ("ts-gate", "ts-confirmed", "ts-scrub"):
             deferred_tools.clear_run(rid)
+
+    def test_model_success_marks_scrubbed_when_not_confirmed(self):
+        # Batch C: on a partial/unverified run the model may still write a ✅ table/row.
+        # The finalizer neutralises those glyphs (→ ▫) so no green check implies "done"
+        # beside the runtime status block — the readiness panel owns the verdict.
+        marky = _final("Итог:\n| Проверка | Статус |\n| typecheck | ✅ |\n✔ Все действия выполнены")
+        chat = _SeqChat([_call("write_file", path="a.ps1", content="x"), _final("сделал")], marky)
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(status="ok", output={"text": "ok", "ok": True, "touched_path": "a.ps1"})):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=_STRUCTURED, project_root=tmp, run_id="ts-scrub",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertNotEqual(done.get("completion_status"), "confirmed")   # precondition: partial
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        for g in ("✅", "✔"):
+            self.assertNotIn(g, final, g)                                  # model marks neutralised
+        self.assertIn("▫", final)                                          # replaced, not deleted
+        self.assertIn("typecheck", final)                                  # surrounding text kept
+        self.assertIn("Готовность задачи — по verifier", final)            # runtime block present
 
     def test_open_criteria_get_one_bounded_closure_turn_then_partial(self):
         # Model edits a file then tries to close WITHOUT any verifier. The Criterion

@@ -1302,9 +1302,12 @@ def _stream_code_agent_core(
                 # did, but the completion STATUS is runtime-owned — never its word.
                 _completion = criteria.completion_status()
                 if criteria.items:
-                    # (1) neutralise universal completion claims when not confirmed;
+                    # (1) neutralise universal completion claims AND success ✅/✓ marks
+                    # when not confirmed — a model checkmark row must not look done beside
+                    # the runtime "подтверждено N/M" block (the panel owns the verdict).
                     if _completion != "confirmed":
                         final_text = gate_completion_claims(final_text, _completion)
+                        final_text = criterion_closure.scrub_success_marks(final_text)
                     # (2) strip the model's own status/unverified/failed sections and
                     # (3) drop model-authored criteria/verifier COUNT claims (so its "17"
                     # can't sit beside runtime "19/19"), then append the deterministic
