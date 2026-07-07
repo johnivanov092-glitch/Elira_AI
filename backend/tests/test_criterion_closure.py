@@ -213,12 +213,18 @@ class FinalAssemblyCountTest(unittest.TestCase):
 
 class SuccessMarkScrubTest(unittest.TestCase):
     def test_neutralises_success_glyphs_keeps_text(self):
-        txt = "| interaction | ✅ |\n✔ typecheck passed\n✓ done\n☑ ok\n🟢 up\n👍"
+        txt = "| interaction | ✅ |\n✔ typecheck passed\n✓ done\n☑ ok\n🟢 up\n🟩 pass\n👍"
         out = cc.scrub_success_marks(txt)
-        for g in ("✅", "✔", "✓", "☑", "🟢", "👍"):
+        for g in ("✅", "✔", "✓", "☑", "🟢", "🟩", "👍"):
             self.assertNotIn(g, out, g)
         self.assertIn("▫", out)
         self.assertIn("typecheck passed", out)   # only the mark is neutralised, text kept
+
+    def test_red_yellow_squares_preserved(self):
+        # 🟥 (fail) / 🟨 (partial) are HONEST signals — must NOT be scrubbed away.
+        out = cc.scrub_success_marks("| a | 🟥 |\n| b | 🟨 |")
+        self.assertIn("🟥", out)
+        self.assertIn("🟨", out)
 
     def test_empty_and_no_marks_unchanged(self):
         self.assertEqual(cc.scrub_success_marks(""), "")

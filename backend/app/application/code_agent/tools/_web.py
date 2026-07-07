@@ -280,20 +280,49 @@ def _apply_action(page, act: dict) -> bool:
     return False
 
 
+# Named viewport sizes (px) — a layout criterion ("no horizontal scroll on mobile") is
+# only meaningfully tested at the width it names, so the model (steered by the closure
+# hint) picks a preset and we measure horizontal overflow at THAT width.
+_VIEWPORT_PRESETS = {
+    "mobile": {"width": 375, "height": 812},
+    "tablet": {"width": 768, "height": 1024},
+    "desktop": {"width": 1280, "height": 800},
+}
+
+
+def _coerce_viewport(value: Any) -> dict | None:
+    """Normalize the `viewport` arg → {'width':W,'height':H} or None. Accepts a preset
+    name ('mobile'/'tablet'/'desktop') or an explicit {'width':…,'height':…}."""
+    if isinstance(value, str):
+        return _VIEWPORT_PRESETS.get(value.strip().lower())
+    if isinstance(value, dict):
+        try:
+            w = int(value.get("width") or 0)
+            h = int(value.get("height") or 0)
+        except (TypeError, ValueError):
+            return None
+        if w >= 200 and h >= 200:
+            return {"width": min(w, 4096), "height": min(h, 4096)}
+    return None
+
+
 def _browser_render(url: str, wait_selector: str | None, limit: int,
-                    actions: list[dict] | None = None) -> tuple[str, str, str, int]:
+                    actions: list[dict] | None = None,
+                    viewport: dict | None = None) -> tuple[str, str, str, int, dict | None]:
     """Render a page with Playwright, optionally performing interaction steps (fill /
     select / check / click / wait) before capturing the DOM — so an interaction criterion
     ("after typing X and clicking Calculate the DOM shows Network: …") is verified against
-    the ACTUAL post-interaction DOM, not a static render. Returns (title, url, body,
-    applied) where `applied` counts real interactions that resolved+ran. Runs in a worker
-    thread (see tool_browser): the Playwright sync API must not be called from inside an
-    asyncio loop."""
+    the ACTUAL post-interaction DOM, not a static render. When `viewport` is given, the page
+    is sized to it and horizontal overflow is measured (positive layout evidence). Returns
+    (title, url, body, applied, viewport_signal) where `applied` counts real interactions
+    that resolved+ran and `viewport_signal` is {'checked':True,'width':W,'no_hoverflow':bool}
+    (or None when no viewport was requested). Runs in a worker thread (see tool_browser):
+    the Playwright sync API must not be called from inside an asyncio loop."""
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         try:
-            page = browser.new_page()
+            page = browser.new_page(viewport=viewport) if viewport else browser.new_page()
             page.goto(url, wait_until="networkidle", timeout=30000)
             if wait_selector:
                 try:
@@ -306,7 +335,18 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
                     if _apply_action(page, act):
                         applied += 1
                 page.wait_for_timeout(300)  # let the DOM settle after interactions
-            return page.title(), page.url, (page.inner_text("body") or "")[:limit], applied
+            vp_signal = None
+            if viewport:
+                try:
+                    # No horizontal overflow at the tested width = layout fits (real signal,
+                    # not "a render happened"). +1 tolerates sub-pixel rounding.
+                    fits = bool(page.evaluate(
+                        "() => document.documentElement.scrollWidth <= window.innerWidth + 1"))
+                    inner = int(page.evaluate("() => window.innerWidth") or viewport["width"])
+                    vp_signal = {"checked": True, "width": inner, "no_hoverflow": fits}
+                except Exception:
+                    vp_signal = None   # measurement failed → no viewport verdict (honest)
+            return page.title(), page.url, (page.inner_text("body") or "")[:limit], applied, vp_signal
         finally:
             browser.close()
 
@@ -320,14 +360,14 @@ def _render_fallback(url: str, limit: int) -> str:
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            _title, _final_url, text, _applied = ex.submit(_browser_render, url, None, limit).result(timeout=45)
+            _title, _final_url, text, _applied, _vp = ex.submit(_browser_render, url, None, limit).result(timeout=45)
         return (text or "").strip()
     except Exception:
         return ""
 
 
 def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int = 8000,
-                 actions: list[dict] | None = None) -> dict[str, Any]:
+                 actions: list[dict] | None = None, viewport: Any = None) -> dict[str, Any]:
     """Open a URL in a real headless browser (Playwright/Chromium), render
     JavaScript, optionally perform interaction steps, and return the visible page
     text. Use when `web_fetch` is not enough — pages that need JS to render, SPAs,
@@ -337,6 +377,11 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     the DOM shows Network: …" criterion is verified against the post-interaction DOM:
       actions=[{"fill": "CIDR", "value": "192.168.1.0/24"}, {"click": "Calculate"}]
     fill/click accept a CSS selector OR a human label / button text.
+
+    `viewport` sizes the page and measures horizontal overflow — use it to verify a
+    layout / responsive criterion ("no horizontal scroll on mobile"): pass a preset
+    ("mobile"/"tablet"/"desktop") or {"width":375,"height":812}. The result carries a
+    `viewport` signal {checked,width,no_hoverflow} used by the layout verifier.
     """
     cleaned_url = (url or "").strip()
     # ERROR branches return ok=False WITHOUT a verifier flag: the render couldn't
@@ -353,13 +398,14 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
         return {"text": f"ERROR: SSRF blocked — {reason}", "ok": False}
 
     steps = actions if isinstance(actions, list) else None
+    vp = _coerce_viewport(viewport)
     limit = max(500, min(int(max_chars), 50000))
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            title, final_url, text, applied = ex.submit(
-                _browser_render, cleaned_url, wait_selector, limit, steps
-            ).result(timeout=60 if steps else 50)
+            title, final_url, text, applied, vp_signal = ex.submit(
+                _browser_render, cleaned_url, wait_selector, limit, steps, vp
+            ).result(timeout=60 if (steps or vp) else 50)
     except Exception as exc:
         return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}
 
@@ -384,10 +430,15 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
             for a in steps if isinstance(a, dict)
         )
         act_note = f"[после действий ({applied}): {done}]\n"
+    vp_note = ""
+    if vp_signal:
+        fit = "нет горизонтального переполнения" if vp_signal["no_hoverflow"] else "ЕСТЬ горизонтальный скролл"
+        vp_note = f"[viewport {vp_signal['width']}px: {fit}]\n"
     return {
-        "text": f"[browser: {final_url}]\n{act_note}TITLE: {title}\n\n{text}",
+        "text": f"[browser: {final_url}]\n{vp_note}{act_note}TITLE: {title}\n\n{text}",
         "ok": True,
         "verifier": True,
         "evidence": (f"TITLE: {title}\n{text}")[:8000],   # DOM only — no action echo
         "interacted": interacted,
+        "viewport": vp_signal,   # {checked,width,no_hoverflow} or None — drives layout verdict
     }

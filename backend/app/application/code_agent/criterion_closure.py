@@ -347,10 +347,12 @@ def scrub_manual_criteria_counts(text: str) -> str:
     return text
 
 
-# Model success glyphs (✅/✔/✓/☑/🟢/👍, with optional VS16) — neutralised to ▫ when the
-# run is NOT confirmed, so a model checkmark can't make a partial run LOOK done beside the
-# runtime status block. The deterministic panel is the only source of "готово".
-_SUCCESS_MARK_RE = re.compile("[✅✔✓☑\U0001F7E2\U0001F44D]️?")
+# Model success glyphs (✅/✔/✓/☑/🟢 circle/🟩 square/👍, with optional VS16) — neutralised
+# to ▫ when the run is NOT confirmed, so a model checkmark can't make a partial run LOOK done
+# beside the runtime status block. The deterministic panel is the only source of "готово".
+# NOTE: only "pass/done" glyphs are here — the red 🟥 / yellow 🟨 squares are deliberately
+# NOT scrubbed (they mean fail/partial, which are honest signals worth preserving).
+_SUCCESS_MARK_RE = re.compile("[✅✔✓☑\U0001F7E2\U0001F7E9\U0001F44D]️?")
 
 
 def scrub_success_marks(text: str) -> str:

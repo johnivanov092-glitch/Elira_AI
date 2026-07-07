@@ -909,8 +909,9 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
         # visible-text evidence (dom_contains) — unlike a bundle grep. `interacted` says a
         # real fill/select/check/click actually ran, so an INTERACTION criterion can require
         # the actions to have happened rather than confirm off a plain render.
-        return {"intents": {"page_open", "dom_contains"}, "text": (evidence or "").lower(),
-                "viewport": bool(m.get("viewport")), "interacted": bool(m.get("interacted")), "files": set()}
+        return {"intents": {"page_open", "dom_contains", "viewport_layout"},
+                "text": (evidence or "").lower(),
+                "viewport": m.get("viewport"), "interacted": bool(m.get("interacted")), "files": set()}
     return None
 
 
@@ -962,7 +963,20 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
                 return False
         return True
     if it == "viewport_layout":
-        return bool(v.get("viewport"))
+        # Positive layout evidence: a real viewport measurement must have RUN (checked),
+        # not just a render. Attribution — a "mobile" layout claim can't be confirmed by a
+        # desktop-width measurement (and vice-versa); on a width-bucket mismatch we return
+        # False so it stays unconfirmed (honest), never a false confirm and never a fail.
+        vp = v.get("viewport") or {}
+        if not vp.get("checked"):
+            return False
+        want = item.get("viewport_width")
+        w = vp.get("width") or 0
+        if want == "narrow" and w > 600:
+            return False
+        if want == "wide" and w < 900:
+            return False
+        return True
     if it in ("content_contains", "content_not_contains"):
         if item["files"] and v.get("files") and not (item["files"] & v["files"]):
             return False
@@ -1017,6 +1031,13 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
         ec = v.get("exit_code")
         succeeded = (ec == 0) if isinstance(ec, int) else bool(ok)
         return "confirm" if succeeded else "fail"
+    if it == "viewport_layout":
+        # A measured viewport is a real verdict: no horizontal overflow → confirm; overflow
+        # at the tested width → FAIL (broken layout is a genuine red, like a failing test).
+        if not _verdict_target_matches(item, v):
+            return None
+        vp = v.get("viewport") or {}
+        return "confirm" if vp.get("no_hoverflow") else "fail"
     if not _verdict_target_matches(item, v):
         return None
     return "confirm" if ok else "fail"
