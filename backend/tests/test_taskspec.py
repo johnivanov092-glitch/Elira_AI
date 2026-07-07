@@ -480,6 +480,18 @@ class CliOutputVerifierTest(unittest.TestCase):
         self.assertEqual(self._rec(crit, "node index.js missing.log", "STDOUT:\nINFO: 2", 0), "unconfirmed")  # wrong arg
         self.assertEqual(self._rec(crit, "node index.js sample.log", "STDOUT:\nINFO: 2", 1), "unconfirmed")   # red exit
 
+    def test_composite_run_does_not_confirm_token_from_another_command(self):
+        # round-5 (novel class): a chained/piped/substituted run mixes other commands'
+        # output, so a token can't be attributed to the named program. `node index.js &&
+        # echo OK` (echo fabricates OK) must NOT confirm; a plain / leading-`cd &&` run does.
+        crit = "`node index.js` выводит `OK`"
+        for cmd in ("node index.js && echo OK", "node index.js ; echo OK",
+                    "node index.js || echo OK", "node index.js | grep OK",
+                    "echo $(node index.js) OK", "node index.js|tee out.log"):
+            self.assertEqual(self._rec(crit, cmd, "STDOUT:\nstarting\nOK", 0), "unconfirmed", cmd)
+        self.assertEqual(self._rec(crit, "node index.js", "STDOUT:\nOK", 0), "confirmed")
+        self.assertEqual(self._rec(crit, "cd app && node index.js", "STDOUT:\nOK", 0), "confirmed")  # leading cd ok
+
     def test_positive_output_requires_exit_zero(self):
         crit = "`npm test` выводит `passing`"
         self.assertEqual(self._rec(crit, "npm test", "STDOUT:\n12 passing\n3 failing", 1), "unconfirmed")

@@ -483,6 +483,11 @@ _SHELL_WRAP_RE = re.compile(r"""^(?:bash|sh)\s+-\w*c\s+["']?(.+?)["']?\s*$""", r
 _INTERP_RE = re.compile(r"^(?:node|python3?|deno|ts-node|tsx|ruby|php|perl|go|bash|sh)$", re.IGNORECASE)
 _EVAL_FLAGS = frozenset({"-e", "--eval", "-c", "-r", "-p", "--print", "eval", "-"})  # inline eval → runs no file
 _PKG_MGRS = frozenset({"npm", "pnpm", "yarn", "npx"})
+# Shell composition (after the leading `cd &&`/`bash -c` are unwrapped): a chained/piped/
+# redirected/substituted run mixes other commands' output, so a matched token can't be
+# ATTRIBUTED to the named program (`node index.js && echo OK` — echo fabricates it). Such
+# a run does not confirm command_output — run the program on its own to verify its output.
+_COMPOSITE_RE = re.compile(r"&&|\|\||;|\||\$\(|`|>>|>|<")
 
 
 def command_spec(text: str) -> dict:
@@ -580,7 +585,11 @@ def _run_invokes(criterion_cmd: str, run_cmd: str) -> bool:
     of the run's. Interpreter/path/env/`bash -c` wrapper differences are ignored, so
     `node ./index.js sample.log` ≡ `node index.js sample.log` and `python3` ≡ `python`;
     an inline-eval (`node -e … index.js`), a text-dump (`cat index.js`), or a different
-    arg does NOT — its run target is '' or a different program."""
+    arg does NOT — its run target is '' or a different program. A composite run
+    (`node index.js && echo OK`, `… | tee`) is rejected: the token can't be attributed
+    to the named program."""
+    if _COMPOSITE_RE.search(_clean_run(run_cmd)):
+        return False
     ct, cargs = _run_target_and_args(criterion_cmd)
     rt, rargs = _run_target_and_args(run_cmd)
     return bool(ct) and ct == rt and cargs.issubset(rargs)
