@@ -475,23 +475,14 @@ def _runnable_quote(text: str) -> str:
     return ""
 
 
-# Commands whose stdout does NOT prove the named program ran — they only PRINT text
-# (echo/cat/sed/awk/tee/…) or eval a literal (python -c/node -e). A run matching these
-# can't confirm a command_output criterion even if its output contains the token.
-_PASSTHROUGH_RE = re.compile(
-    r"^(?:echo|cat|type|printf|head|tail|more|less|sed|awk|tee|nl|strings|od|xxd|hexdump"
-    r"|Get-Content|write-host)\b", re.IGNORECASE)
-_GENERIC_PKG_RE = re.compile(r"^(?:npm|pnpm|yarn|npx)\s+(?:run\s+)?(?:build|test|start|dev|lint|install|ci)\b", re.IGNORECASE)
-# Inline-eval one-liners (`python -c "print('OK')"`, `node -e …`, `deno eval`, …) print a
-# literal like echo. `bash -c "<inner>"` / `sh -c` are UNWRAPPED first (see _clean_run)
-# so a legit `bash -c "node app.js"` is judged by its inner command, not blanket-rejected.
-_INLINE_EVAL_RE = re.compile(
-    r"^(?:python3?\s+-\w*c|node\s+(?:-e|--eval)|deno\s+eval|ruby\s+-\w*e|php\s+-r|perl\s+-\w*e)\b",
-    re.IGNORECASE)
+# Positive-evidence command matching (a denylist of "printers" can never be complete —
+# adversarial review kept finding new ones — so instead REQUIRE that the run EXECUTES the
+# named program: its script/module is the interpreter's run target).
 _ENV_PREFIX_RE = re.compile(r"^(?:\s*env\s+)?(?:\s*[A-Za-z_]\w*=\S*\s+)+", re.IGNORECASE)
 _SHELL_WRAP_RE = re.compile(r"""^(?:bash|sh)\s+-\w*c\s+["']?(.+?)["']?\s*$""", re.IGNORECASE)
-_INTERPRETERS = frozenset({"node", "python", "python3", "npm", "pnpm", "yarn", "npx",
-                           "deno", "ts-node", "tsx", "bash", "sh", "go", "cargo", "php", "ruby", "perl", "env"})
+_INTERP_RE = re.compile(r"^(?:node|python3?|deno|ts-node|tsx|ruby|php|perl|go|bash|sh)$", re.IGNORECASE)
+_EVAL_FLAGS = frozenset({"-e", "--eval", "-c", "-r", "-p", "--print", "eval", "-"})  # inline eval → runs no file
+_PKG_MGRS = frozenset({"npm", "pnpm", "yarn", "npx"})
 
 
 def command_spec(text: str) -> dict:
@@ -546,48 +537,53 @@ def _clean_run(cmd: str) -> str:
     return core.strip()
 
 
-def _proves_nothing(core: str) -> bool:
-    """A cleaned run command that only PRINTS text / evals a literal — can't prove the
-    named program ran (denylist, not an allowlist, so any real invocation — node ./x,
-    python3, ./bin, module runs — is trusted; only known text-dumpers are rejected)."""
-    return bool(_PASSTHROUGH_RE.match(core) or _GENERIC_PKG_RE.match(core) or _INLINE_EVAL_RE.match(core))
+def _base(tok: str) -> str:
+    return re.split(r"[\\/]", tok.strip())[-1].lower()
 
 
-def _cmd_significant_tokens(cmd: str) -> list[str]:
-    """The distinguishing tokens of a command — its script basename + args, with the
-    interpreter and any dir/`./` prefix dropped, so `node index.js sample.log`,
-    `node ./index.js sample.log` and `python3 app.py` normalise to their script+args and
-    an equivalent invocation matches while a different arg (missing.log) does not."""
+def _run_target_and_args(cmd: str) -> tuple[str, set[str]]:
+    """(executed target basename, arg basenames) — the script/module the command RUNS
+    and its args. ('' , set()) when nothing verifiable is executed: an inline-eval
+    one-liner (`node -e`/`python -c`) or a command with no positional program. This is
+    POSITIVE evidence (the run must execute the named program) — not a denylist of
+    printers, so echo/cat/sed/jq/cut/… naturally fail: they become their OWN target, not
+    the criterion's script."""
     toks = _clean_run(cmd).split()
-    out = []
-    for t in toks:
-        if t in _INTERPRETERS or t.startswith("-"):
-            continue
-        out.append(re.split(r"[\\/]", t)[-1])  # basename
-    return out
-
-
-def _head(cmd: str) -> str:
-    parts = _clean_run(cmd).split()
-    return parts[0].lower() if parts else ""
+    if not toks:
+        return "", set()
+    head = toks[0].lower()
+    if head in _PKG_MGRS:                       # npm [run] <script> → the script name is the target
+        rest = [t for t in toks[1:] if t.lower() != "run" and not t.startswith("-")]
+        return (_base(rest[0]), set()) if rest else ("", set())
+    if _INTERP_RE.match(head):                  # interpreter → first non-flag positional is the script
+        i = 1
+        while i < len(toks):
+            t = toks[i]
+            tl = t.lower()
+            if tl in _EVAL_FLAGS:               # -e/-c/-p/eval → runs a literal, no file executed
+                return "", set()
+            if tl == "-m":                      # module run: `python -m app`
+                return (_base(toks[i + 1]), {_base(x) for x in toks[i + 2:] if not x.startswith("-")}) \
+                    if i + 1 < len(toks) else ("", set())
+            if t.startswith("-"):
+                i += 1
+                continue
+            return _base(t), {_base(x) for x in toks[i + 1:] if not x.startswith("-")}
+        return "", set()
+    # a direct program: ./bin, script.py, or an unknown binary → it IS the target
+    return _base(head), {_base(x) for x in toks[1:] if not x.startswith("-")}
 
 
 def _run_invokes(criterion_cmd: str, run_cmd: str) -> bool:
-    """The recorded run actually invokes the command the criterion names: every
-    significant token of the criterion command (script + args) is present in the run
-    (interpreter/path/env/wrapper differences ignored), and the run isn't a DIFFERENT
-    tool merely printing/reading the script. A same-tool run is trusted — so `npm test`
-    confirms an `npm test` criterion, while `cat index.js` / `sed '' index.js` (a
-    different, non-executing tool) does not confirm a `node index.js` criterion."""
-    core = _clean_run(run_cmd)
-    if not core:
-        return False
-    run_toks = set(_cmd_significant_tokens(run_cmd))
-    if not all(t in run_toks for t in _cmd_significant_tokens(criterion_cmd)):
-        return False
-    if _proves_nothing(core) and _head(core) != _head(criterion_cmd):
-        return False
-    return True
+    """The recorded run actually EXECUTES the program the criterion names: same run
+    target (script basename / module / pkg-script) and the criterion's args are a subset
+    of the run's. Interpreter/path/env/`bash -c` wrapper differences are ignored, so
+    `node ./index.js sample.log` ≡ `node index.js sample.log` and `python3` ≡ `python`;
+    an inline-eval (`node -e … index.js`), a text-dump (`cat index.js`), or a different
+    arg does NOT — its run target is '' or a different program."""
+    ct, cargs = _run_target_and_args(criterion_cmd)
+    rt, rargs = _run_target_and_args(run_cmd)
+    return bool(ct) and ct == rt and cargs.issubset(rargs)
 
 
 # A criterion whose applicability depends on the PROJECT having something ("если в

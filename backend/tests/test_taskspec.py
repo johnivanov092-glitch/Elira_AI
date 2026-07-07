@@ -467,11 +467,15 @@ class CliOutputVerifierTest(unittest.TestCase):
         self.assertEqual(self._rec("`python app.py` выводит `Ready`", "python3 app.py", "STDOUT:\nReady", 0), "confirmed")
 
     def test_named_output_rejects_dumps_wrong_arg_and_red(self):
-        # a run that only PRINTS the token (echo/cat/sed/awk/inline-eval), a DIFFERENT
-        # invocation (wrong arg), or a RED run must NOT confirm a named criterion.
+        # POSITIVE-evidence: only a run that EXECUTES the named script confirms. A run that
+        # merely prints/reads the token — echo/cat/sed/awk, an inline-eval EVEN WITH the
+        # script files appended (node -e "…" index.js sample.log — node never runs them),
+        # or an unknown text tool (jq/cut) — does not; nor does a wrong arg or a red run.
         crit = "`node index.js sample.log` выводит `INFO: 2`"
         for cmd in ("echo INFO: 2", "cat index.js", "sed '' index.js", "awk '1' index.js",
-                    'bash -c "echo INFO: 2"', "node -e \"console.log('INFO: 2')\""):
+                    'bash -c "echo INFO: 2"', "node -e \"console.log('INFO: 2')\"",
+                    "node -e \"console.log('INFO: 2')\" index.js sample.log",  # eval + files appended
+                    "jq . index.js sample.log", "cut -f1 index.js"):            # unknown text tools
             self.assertEqual(self._rec(crit, cmd, "STDOUT:\nINFO: 2", 0), "unconfirmed", cmd)
         self.assertEqual(self._rec(crit, "node index.js missing.log", "STDOUT:\nINFO: 2", 0), "unconfirmed")  # wrong arg
         self.assertEqual(self._rec(crit, "node index.js sample.log", "STDOUT:\nINFO: 2", 1), "unconfirmed")   # red exit
