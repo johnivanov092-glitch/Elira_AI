@@ -227,15 +227,18 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     actually looks/behaves.
     """
     cleaned_url = (url or "").strip()
+    # ERROR branches return ok=False WITHOUT a verifier flag: the render couldn't
+    # run, so a matched page_open/text_visible criterion stays unconfirmed (not failed).
     if not cleaned_url:
-        return {"text": "ERROR: url is empty"}
+        return {"text": "ERROR: url is empty", "ok": False}
     if not (cleaned_url.startswith("http://") or cleaned_url.startswith("https://")):
-        return {"text": f"ERROR: url must start with http:// or https:// — got '{cleaned_url[:80]}'"}
+        return {"text": f"ERROR: url must start with http:// or https:// — got '{cleaned_url[:80]}'", "ok": False}
 
+    from app.application.code_agent.tools._run import active_server_ports
     from app.application.web.ssrf_guard import check_ssrf
-    reason = check_ssrf(cleaned_url)
+    reason = check_ssrf(cleaned_url, allow_loopback_ports=active_server_ports())
     if reason:
-        return {"text": f"ERROR: SSRF blocked — {reason}"}
+        return {"text": f"ERROR: SSRF blocked — {reason}", "ok": False}
 
     limit = max(500, min(int(max_chars), 50000))
     import concurrent.futures
@@ -243,9 +246,19 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             title, final_url, text = ex.submit(_browser_render, cleaned_url, wait_selector, limit).result(timeout=50)
     except Exception as exc:
-        return {"text": f"ERROR: browser failed: {str(exc)[:300]}"}
+        return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}
 
     text = (text or "").strip()
     if not text:
-        return {"text": f"[browser: {final_url}] страница отрендерилась, но видимого текста нет"}
-    return {"text": f"[browser: {final_url}]\nTITLE: {title}\n\n{text}"}
+        return {"text": f"[browser: {final_url}] страница отрендерилась, но видимого текста нет", "ok": False}
+    # A real render IS a verdict: the page LOADED (page_open) and the returned DOM
+    # text is genuine visible-text evidence (text_visible) — unlike a bundle grep.
+    # The evidence carries the rendered text so the criteria matcher can check which
+    # named tokens (`VaultDesk`, `Start local audit`) are actually on the page.
+    rendered = f"TITLE: {title}\n{text}"
+    return {
+        "text": f"[browser: {final_url}]\nTITLE: {title}\n\n{text}",
+        "ok": True,
+        "verifier": True,
+        "evidence": rendered[:8000],
+    }

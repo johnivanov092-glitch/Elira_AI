@@ -79,6 +79,24 @@ class TestCheckSsrf(unittest.TestCase):
     def test_public_ip_allowed(self):
         self.assertIsNone(check_ssrf("https://8.8.8.8/"))
 
+    # ── Scoped loopback allowance (verify the agent's OWN dev server) ──────────
+
+    def test_loopback_allowed_only_for_started_port(self):
+        # localhost / 127.0.0.1 on a port the agent started → allowed…
+        self.assertIsNone(check_ssrf("http://localhost:3000", allow_loopback_ports={3000}))
+        self.assertIsNone(check_ssrf("http://127.0.0.1:3000/", allow_loopback_ports={3000}))
+        # …but a DIFFERENT loopback port is still blocked
+        self.assertIsNotNone(check_ssrf("http://localhost:9999", allow_loopback_ports={3000}))
+        # …and with no allowlist it stays blocked
+        self.assertIsNotNone(check_ssrf("http://localhost:3000"))
+
+    def test_loopback_allowance_does_not_open_lan_or_metadata(self):
+        # The allowance is loopback-ONLY: private LAN, link-local and the cloud
+        # metadata address stay blocked even if their port is in the allowlist.
+        self.assertIsNotNone(check_ssrf("http://192.168.1.5:3000/", allow_loopback_ports={3000}))
+        self.assertIsNotNone(check_ssrf("http://10.0.0.9:3000/", allow_loopback_ports={3000}))
+        self.assertIsNotNone(check_ssrf("http://169.254.169.254:80/", allow_loopback_ports={80}))
+
     def test_dns_failure_does_not_block(self):
         # When DNS resolution fails (empty list), we allow — blocking is best-effort
         with mock.patch("app.application.web.ssrf_guard._resolve_host",

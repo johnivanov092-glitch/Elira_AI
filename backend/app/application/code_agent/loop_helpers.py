@@ -300,7 +300,7 @@ def _looks_like_intent_without_action(text: str) -> bool:
 # guessing. Read/inspect tools only — pure actions add no facts worth carrying.
 _GROUNDING_FACT_TOOLS = frozenset({
     "project_map", "glob", "grep", "read_file", "run_bash", "run_server",
-    "web_search", "web_fetch", "http_api", "recall", "write_file", "edit_file",
+    "web_search", "web_fetch", "http_api", "browser", "recall", "write_file", "edit_file",
     # Remote work grounds facts too — a remote read/check/write must survive into
     # the next turn's digest, not vanish because it happened over SSH.
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps",
@@ -319,7 +319,10 @@ _ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
 # knowledge — a criterion transitioning unconfirmed→failed is a useful state change
 # and progress toward the next fix (rule 9). An ERROR-branch return (verifier
 # absent, e.g. bad host) is NOT a verdict and still grounds nothing.
-_VERIFIER_GROUNDING_TOOLS = frozenset({"ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists"})
+_VERIFIER_GROUNDING_TOOLS = frozenset({
+    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
+    "http_api", "browser",
+})
 # Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
 # 3000→6000) now that the real window is 64k, not a tight small-model budget:
 # more of each verified tool result survives into the next turn's [ПРОВЕРЕННЫЕ

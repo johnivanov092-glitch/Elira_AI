@@ -62,6 +62,12 @@ _BLOCKED_HOSTNAMES: frozenset[str] = frozenset({
 
 _DNS_TIMEOUT: float = 2.0  # seconds
 
+# Loopback host aliases (a subset of _BLOCKED_HOSTNAMES). Only these may be opened
+# up by `allow_loopback_ports` — the cloud-metadata / broadcast aliases never are.
+_LOOPBACK_HOSTNAMES: frozenset[str] = frozenset({
+    "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
+})
+
 
 def _ip_is_blocked(addr: str) -> str | None:
     """Return a reason string if *addr* (IP string) is in a blocked network."""
@@ -92,7 +98,7 @@ def _resolve_host(hostname: str) -> list[str]:
         socket.setdefaulttimeout(old)
 
 
-def check_ssrf(url: str) -> str | None:
+def check_ssrf(url: str, *, allow_loopback_ports: set[int] | None = None) -> str | None:
     """Return a blocking reason string if *url* should not be fetched, else None.
 
     Call this before any outbound HTTP request. If a non-None value is
@@ -102,6 +108,11 @@ def check_ssrf(url: str) -> str | None:
     ----------
     url:
         The full URL string to validate.
+    allow_loopback_ports:
+        Ports on the LOOPBACK interface (127.0.0.1 / ::1 / localhost) that are
+        permitted despite the loopback block — used so the agent can verify a dev
+        server IT started on that port. This ONLY relaxes loopback; private-LAN,
+        link-local, and cloud-metadata targets stay blocked regardless.
 
     Returns
     -------
@@ -125,14 +136,33 @@ def check_ssrf(url: str) -> str | None:
     if not hostname:
         return "URL has no hostname"
 
+    # Scoped loopback allowance: a loopback host on a port the agent started. Never
+    # opens up cloud-metadata / broadcast aliases or private-LAN addresses.
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    def _loopback_permitted(host_is_loopback: bool) -> bool:
+        return bool(
+            host_is_loopback
+            and allow_loopback_ports
+            and port is not None
+            and int(port) in allow_loopback_ports
+        )
+
     # 1. Known-blocked hostnames (fast path, no DNS needed).
     if hostname in _BLOCKED_HOSTNAMES:
+        if hostname in _LOOPBACK_HOSTNAMES and _loopback_permitted(True):
+            return None
         return f"blocked hostname: {hostname}"
 
     # 2. Try to parse the hostname directly as an IP first.
     try:
         direct_reason = _ip_is_blocked(hostname)
         if direct_reason:
+            if _is_loopback_ip(hostname) and _loopback_permitted(True):
+                return None
             return direct_reason
     except Exception:
         pass
@@ -142,6 +172,15 @@ def check_ssrf(url: str) -> str | None:
     for addr in addrs:
         reason = _ip_is_blocked(addr)
         if reason:
+            if _is_loopback_ip(addr) and _loopback_permitted(True):
+                continue
             return f"hostname {hostname!r} resolves to {reason}"
 
     return None
+
+
+def _is_loopback_ip(addr: str) -> bool:
+    try:
+        return ipaddress.ip_address(addr).is_loopback
+    except ValueError:
+        return False

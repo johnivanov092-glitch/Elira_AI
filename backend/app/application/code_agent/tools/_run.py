@@ -278,6 +278,15 @@ def _reap_dead_servers() -> None:
             _LIVE_SERVERS.pop(pid, None)
 
 
+def active_server_ports() -> set[int]:
+    """Loopback ports of dev servers THIS agent started and are still alive. The
+    SSRF guard uses this to let http_api/browser verify the agent's OWN dev server
+    on localhost — and nothing else (arbitrary internal infra stays blocked)."""
+    _reap_dead_servers()
+    with _SERVERS_LOCK:
+        return {int(h.port) for h in _LIVE_SERVERS.values() if h.port}
+
+
 def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
     try:
         # The server child writes RAW bytes to the log fd (OEM codepage on

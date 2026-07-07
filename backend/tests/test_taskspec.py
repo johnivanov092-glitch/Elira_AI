@@ -76,6 +76,30 @@ class DeriveTest(unittest.TestCase):
         self.assertGreaterEqual(len(spec.success_criteria), 3)
         self.assertTrue(any("порт" in c or "18080" in c for c in spec.success_criteria))
 
+    def test_podvoh_section_is_constraints_not_success_criteria(self) -> None:
+        task = r"""Цель:
+Через SSH на `home-srv01` создай безопасный тестовый стенд в `C:\AgentLabCanary2`.
+
+Критерии готовности:
+- директория `C:\AgentLabCanary2` существует
+- файл `C:\AgentLabCanary2\health.txt` существует
+- файл `C:\AgentLabCanary2\health.txt` содержит строку `status=ok`
+- файл `C:\AgentLabCanary2\health.txt` НЕ содержит строку `status=fail`
+- файл `C:\AgentLabCanary2\other.txt` существует
+- файл `C:\AgentLabCanary2\other.txt` содержит строку `other=ok`
+
+Подвох:
+- `health.txt` и `other.txt` должны проверяться отдельно.
+- `ssh_assert_not_contains` по `health.txt` НЕ должен подтверждать критерии для `other.txt`.
+- `ssh_exists` директории НЕ должен подтверждать существование файлов.
+- Нельзя писать в финале `COMPLETED`, если хотя бы один criterion не подтверждён verifier'ом.
+"""
+        spec = derive_task_spec(task)
+        self.assertIsNotNone(spec)
+        self.assertEqual(len(spec.success_criteria), 6)
+        self.assertFalse(any("Подвох" in c or "ssh_exists директории" in c for c in spec.success_criteria))
+        self.assertTrue(any("health.txt" in c and "other.txt" in c for c in spec.constraints))
+
     def test_is_continuation_message(self) -> None:
         from app.application.code_agent.taskspec import is_continuation_message
         for m in ("делай", "продолжай", "продолжи работу", "да", "ок", "поехали",
@@ -322,6 +346,30 @@ class CriteriaTrackerTest(unittest.TestCase):
         self.assertEqual(self._status(t, "health.txt существует"), "confirmed")
         self.assertEqual(self._status(t, "AgentLabCanary существует"), "unconfirmed")
 
+    def test_live_canary_markdown_paths_confirm_all_real_criteria(self):
+        # Regression from live run 1cabd332...: Markdown backticks were captured
+        # into the path token (`health.txt`), so verifier paths never matched.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "директория `C:\\AgentLabCanary` существует",
+            "файл `C:\\AgentLabCanary\\health.txt` существует",
+            "файл `C:\\AgentLabCanary\\health.txt` содержит строку `status=ok`",
+            "verifier подтверждает, что `C:\\AgentLabCanary\\health.txt` НЕ содержит строку `status=fail`",
+        ]))
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": self._CANARY},
+                 ok=True, evidence="существует (директория)")
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": self._HEALTH},
+                 ok=True, evidence="существует (файл)")
+        t.record(tool_name="ssh_assert_contains",
+                 args={"host": "h", "path": self._HEALTH, "pattern": "status=ok"},
+                 ok=True, evidence="«status=ok» НАЙДЕНО")
+        t.record(tool_name="ssh_assert_not_contains",
+                 args={"host": "h", "path": self._HEALTH, "pattern": "status=fail"},
+                 ok=True, evidence="«status=fail» НЕ НАЙДЕНО")
+        # A later cleanup check must not undo already-confirmed creation criteria.
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": self._CANARY},
+                 ok=False, evidence="не найден")
+        self.assertEqual(t.completion_status(), "confirmed")
+
     def test_report_requirement_excluded_from_criteria(self):
         # A report-only section (and inline "cleanup описана в отчёте") must NOT
         # become a verifier criterion — only the real port criterion survives.
@@ -343,6 +391,138 @@ class CriteriaTrackerTest(unittest.TestCase):
 
     def test_no_criteria_is_none(self):
         self.assertEqual(CriteriaTracker.from_spec(None).completion_status(), "none")
+
+
+# ── coding/frontend verification (VaultDesk live run b51697e7) ───
+#
+# The run made 51 tool calls, really ran typecheck/build/http/browser, yet every
+# criterion stayed unconfirmed because coding/frontend evidence wasn't mapped to
+# CriteriaTracker. These pin: real checks confirm their OWN criteria; a bundle grep
+# never confirms visibility; text is confirmed only by rendered DOM; and a run
+# without DOM evidence stays honestly partial (not COMPLETED).
+
+
+class VaultDeskVerificationTest(unittest.TestCase):
+    _VAULT = (
+        "Цель:\n"
+        "Создай landing page для `VaultDesk`.\n\n"
+        "Критерии готовности:\n"
+        "- первая страница открывается без ошибок\n"
+        "- на первом экране явно видно название `VaultDesk`\n"
+        "- есть секция с 3 преимуществами: `Inventory`, `Backups`, `Alerts`\n"
+        "- есть CTA-кнопка `Start local audit`\n"
+        "- проект проходит доступные проверки сборки/typecheck\n\n"
+        "Подвох:\n"
+        "- не делай маркетинговую пустышку без реальной структуры\n"
+        "- если проверки не запускаются, не пиши `готово`\n"
+    )
+    _DOM = "TITLE: VaultDesk\nvaultdesk — local dashboard. inventory backups alerts. start local audit."
+
+    def _st(self, t, needle):
+        return next(it["status"] for it in t.items if needle.lower() in it["text"].lower())
+
+    def _vault(self):
+        return CriteriaTracker.from_spec(derive_task_spec(self._VAULT))
+
+    def test_podvokh_not_in_success_criteria(self):
+        spec = derive_task_spec(self._VAULT)
+        joined = " ".join(spec.success_criteria).lower()
+        self.assertNotIn("пустышк", joined)          # Подвох item, not a criterion
+        self.assertNotIn("не пиши", joined)
+        self.assertTrue(any("пустышк" in c.lower() for c in spec.constraints))
+        self.assertEqual(len(spec.success_criteria), 5)
+
+    def test_typecheck_and_build_confirm_only_their_criteria(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "npm run typecheck проходит без ошибок",
+            "проект успешно собирается (build)",
+            "pytest tests/test_x.py проходит",
+        ]))
+        t.record(tool_name="run_bash", args={"command": "npm run typecheck"}, ok=True, evidence="exit 0")
+        self.assertEqual(self._st(t, "typecheck"), "confirmed")
+        self.assertEqual(self._st(t, "собирается"), "unconfirmed")   # build not run yet
+        self.assertEqual(self._st(t, "pytest"), "unconfirmed")       # test not run
+        t.record(tool_name="run_bash", args={"command": "npm run build"}, ok=True, evidence="exit 0")
+        self.assertEqual(self._st(t, "собирается"), "confirmed")
+        self.assertEqual(self._st(t, "pytest"), "unconfirmed")       # still only its own verdict confirms
+
+    def test_http_200_confirms_page_open_only(self):
+        t = self._vault()
+        t.record(tool_name="http_api", args={"url": "http://localhost:3000"}, ok=True, evidence="HTTP 200")
+        self.assertEqual(self._st(t, "открывается"), "confirmed")
+        self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")    # page-open ≠ text visible
+        self.assertEqual(self._st(t, "typecheck"), "unconfirmed")
+
+    def test_browser_dom_confirms_only_matching_text(self):
+        t = self._vault()
+        t.record(tool_name="browser", args={"url": "http://localhost:3000"}, ok=True, evidence=self._DOM)
+        self.assertEqual(self._st(t, "VaultDesk"), "confirmed")
+        self.assertEqual(self._st(t, "преимуществами"), "confirmed")   # inventory/backups/alerts all present
+        self.assertEqual(self._st(t, "Start local audit"), "confirmed")
+        self.assertEqual(self._st(t, "открывается"), "confirmed")       # a render proves the page loaded
+        self.assertEqual(self._st(t, "typecheck"), "unconfirmed")       # browser is not a build check
+
+    def test_browser_missing_token_does_not_confirm(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["на экране видно `Nonexistent`"]))
+        t.record(tool_name="browser", args={"url": "http://x"}, ok=True, evidence=self._DOM)
+        self.assertEqual(t.items[0]["status"], "unconfirmed")          # token not in rendered DOM
+
+    def test_bundle_findstr_does_not_confirm_visibility(self):
+        # findstr finds the tokens in the built bundle — that is NOT "visible on the
+        # first screen". A bundle grep must confirm neither text nor page-open.
+        t = self._vault()
+        t.record(tool_name="run_bash",
+                 args={"command": 'findstr /C:"VaultDesk" /C:"Start local audit" dist\\assets\\index.js'},
+                 ok=True, evidence="VaultDesk ... Start local audit ... Inventory Backups Alerts")
+        self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
+        self.assertEqual(self._st(t, "Start local audit"), "unconfirmed")
+        self.assertEqual(self._st(t, "открывается"), "unconfirmed")
+
+    def test_full_run_with_real_evidence_reaches_confirmed(self):
+        spec = TaskSpec(success_criteria=[
+            "первая страница открывается без ошибок",
+            "на первом экране видно `VaultDesk`",
+            "проект проходит доступные проверки сборки/typecheck",
+        ])
+        t = CriteriaTracker.from_spec(spec)
+        t.record(tool_name="run_bash", args={"command": "npm run typecheck"}, ok=True, evidence="exit 0")
+        t.record(tool_name="http_api", args={"url": "http://localhost:3000"}, ok=True, evidence="HTTP 200")
+        t.record(tool_name="browser", args={"url": "http://localhost:3000"}, ok=True, evidence=self._DOM)
+        self.assertEqual(t.completion_status(), "confirmed")
+
+    def test_run_without_dom_evidence_stays_partial_not_completed(self):
+        # Same spec, but the text criterion never gets DOM evidence (browser blocked
+        # / not run). It must stay unconfirmed → partial, NOT confirmed/"COMPLETED".
+        spec = TaskSpec(success_criteria=[
+            "первая страница открывается без ошибок",
+            "на первом экране видно `VaultDesk`",
+            "проект проходит доступные проверки сборки/typecheck",
+        ])
+        t = CriteriaTracker.from_spec(spec)
+        t.record(tool_name="run_bash", args={"command": "npm run typecheck"}, ok=True, evidence="exit 0")
+        t.record(tool_name="http_api", args={"url": "http://localhost:3000"}, ok=True, evidence="HTTP 200")
+        self.assertEqual(t.completion_status(), "partial")
+        self.assertEqual(self._st(t, "VaultDesk"), "unconfirmed")
+
+    def test_full_vaultdesk_spec_stays_partial_when_criteria_are_unverifiable(self):
+        # The REAL 9-criterion spec includes hero/adaptive/no-break criteria that no
+        # deterministic verifier can prove — so even a fully-checked run is honestly
+        # `partial`, never a false `confirmed`.
+        from app.application.code_agent.taskspec import _criterion_intent
+        real = derive_task_spec(
+            "Цель: landing.\nКритерии готовности:\n"
+            "- первая страница открывается без ошибок\n"
+            "- есть hero-секция с коротким описанием\n"
+            "- страница адаптивна для desktop и mobile\n"
+            "- проект проходит доступные проверки сборки/typecheck"
+        )
+        # hero (no quoted token) and adaptive have no verifier → they never confirm
+        self.assertEqual(_criterion_intent("страница адаптивна для desktop и mobile"), "generic")
+        t = CriteriaTracker.from_spec(real)
+        t.record(tool_name="run_bash", args={"command": "npm run build"}, ok=True, evidence="exit 0")
+        t.record(tool_name="http_api", args={"url": "http://localhost:3000"}, ok=True, evidence="HTTP 200")
+        t.record(tool_name="browser", args={"url": "http://localhost:3000"}, ok=True, evidence="hero desc")
+        self.assertEqual(t.completion_status(), "partial")
 
 
 class CodingLoopTest(unittest.TestCase):

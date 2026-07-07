@@ -204,12 +204,26 @@ def describe_db(db_path: str) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254"}
+# Loopback hosts that `allow_loopback_ports` may re-open (never 0.0.0.0 / metadata).
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1"}
 
-def http_request(url: str, method: str = "GET", headers: dict = None, body: Any = None, timeout: int = 15) -> dict:
+def http_request(url: str, method: str = "GET", headers: dict = None, body: Any = None,
+                 timeout: int = 15, allow_loopback_ports: set = None) -> dict:
     from urllib.parse import urlparse
     parsed = urlparse(url)
-    if parsed.hostname in BLOCKED_HOSTS:
-        return {"ok": False, "error": f"Заблокирован: {parsed.hostname}"}
+    host = parsed.hostname
+    if host in BLOCKED_HOSTS:
+        # Scoped exception: a loopback host on a port the agent started (so it can
+        # verify its OWN dev server). 0.0.0.0 / metadata stay blocked.
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        loopback_ok = bool(
+            host in _LOOPBACK_HOSTS and allow_loopback_ports and port in allow_loopback_ports
+        )
+        if not loopback_ok:
+            return {"ok": False, "error": f"Заблокирован: {host}"}
 
     try:
         kw = {"url": url, "headers": headers or {}, "timeout": timeout}

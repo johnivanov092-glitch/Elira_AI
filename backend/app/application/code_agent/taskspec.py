@@ -32,7 +32,11 @@ class TaskSpec:
 # Section headers (case-insensitive, exact match on the pre-colon token).
 _HEADERS: dict[str, tuple[str, ...]] = {
     "goal": ("цель", "goal", "задача", "task", "objective"),
-    "constraints": ("ограничения", "constraints", "нельзя", "запрещено"),
+    "constraints": (
+        "ограничения", "constraints", "нельзя", "запрещено",
+        "подвох", "важно", "guardrails", "проверка логики",
+        "проверка рантайма", "логика проверки",
+    ),
     "criteria": ("критерии", "критерии готовности", "success criteria", "проверить",
                  "definition of done", "готовность", "acceptance", "checks"),
     "stop": ("условия остановки", "stop conditions", "стоп-условия"),
@@ -268,7 +272,7 @@ _SALIENT_RE_NUM = re.compile(r"\d{2,5}")
 # The drive/POSIX alternatives cover directory criteria; the extension form covers
 # bare names like `health.txt`. Single-segment `и/или`-style prose is NOT captured.
 _SALIENT_RE_FILE = re.compile(
-    r"[A-Za-z]:\\[^\s'\"<>|]+"        # C:\AgentLabCanary  or  C:\AgentLab\agent-lab.ps1
+    r"[A-Za-z]:\\[^\s`'\"<>|]+"       # C:\AgentLabCanary  or  C:\AgentLab\agent-lab.ps1
     r"|(?:/[\w.\-]+){2,}"              # /var/agent/health.txt
     r"|[\w\-]+\.\w{1,5}"              # health.txt, test.ps1
 )
@@ -280,7 +284,7 @@ def _file_tokens(text: str) -> set[str]:
     directory criterion `C:\\AgentLabCanary` matches an ssh_exists on the same dir."""
     toks: set[str] = set()
     for m in _SALIENT_RE_FILE.findall(text or ""):
-        m = m.rstrip(".,;:!?)»\"'").lower()  # drop trailing prose punctuation
+        m = m.rstrip(".,;:!?)»`\"'").lower()  # drop trailing prose punctuation
         if not m:
             continue
         toks.add(m)
@@ -288,8 +292,22 @@ def _file_tokens(text: str) -> set[str]:
     return toks
 
 
-# Criterion / verifier INTENT — a path alone must NOT confirm a content criterion.
-# not_contains is checked before contains ("не содержит" ⊃ "содержит"). Order matters.
+# Quoted/back-ticked target tokens in a criterion — the literal strings a text
+# criterion says must be VISIBLE (`VaultDesk`, `Start local audit`). Used only for
+# the text_visible intent: a browser DOM verdict confirms it iff every named token
+# is actually in the rendered text.
+_QUOTED_RE = re.compile(r"[`«\"']([^`«»\"']{1,60})[`»\"']")
+
+
+def _quoted_tokens(text: str) -> set[str]:
+    return {m.strip().lower() for m in _QUOTED_RE.findall(text or "") if m.strip()}
+
+
+# Criterion / verifier INTENT — a path/text alone must NOT confirm a criterion; the
+# TOOL determines intent. Order matters: not_contains ⊃ contains; the coding checks
+# (checks/typecheck/build) sit BEFORE the generic "test" because "проходит" is a
+# test cue yet "проходит проверки сборки" is a checks criterion; page_open before
+# text_visible ("открывается" = загрузка страницы, "видно на экране" = текст).
 _INTENT_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # report intent = "state it in the report", NOT anything with the word "отчёт":
     # a criterion may legitimately verify a report file's content. Cues are the
@@ -302,6 +320,24 @@ _INTENT_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
                       "not contain", "убран", "удал", "отсутствует", "нет строки", "без строки", "removed")),
     ("contains", ("содержит", "contains", "включает", "есть строка", "должен быть", "должна быть",
                   "возвращает", "returns", "отвечает", "responds")),
+    # checks = "the project's available checks pass" — confirmed by ANY green
+    # typecheck/build/test (a verdict carries "checks" alongside its specific kind).
+    ("checks", ("доступные провер", "проверки сбор", "проходит провер", "проходят провер",
+                "проект проходит", "сборки/typecheck", "сборки / typecheck", "checks pass",
+                "все проверки", "проверки проход")),
+    ("typecheck", ("typecheck", "type-check", "type check", " tsc", "mypy", "pyright",
+                   "ошибок типов", "проверка типов", "типизац")),
+    ("build", ("build", "сборка", "собира", "билд", "компил", "bundl")),
+    # page_open = the first page actually LOADS (http 2xx / a real browser render).
+    ("page_open", ("открывается", "открылась", "открыть страниц", "загружается", "загрузилась",
+                   "рендерится", "opens", "loads", "page load", "доступна по", "отдаёт 200",
+                   "http 200", "200 ok", "без ошибок консол", "первая страница")),
+    # text_visible = a named string is on the rendered page (browser DOM only —
+    # NEVER a bundle grep). Needs `targets`; a "hero section exists" claim with no
+    # quoted token stays honestly unverified.
+    ("text_visible", ("видно", "виден", "видна", "отображ", "visible", "первом экране",
+                      "на экране", "секция", "hero", "pricing", "cta", "кнопк",
+                      "преимуществ", "название", "заголов", "надпись")),
     ("port", ("порт", "port", "listening", "слушает")),
     ("process", ("процесс", "process", "запущен", "running", "работает", "сервис поднят")),
     ("test", ("pytest", "unittest", "проходит", "зелён", "8/8", "passes", "тест ", "test ", ".ps1 проход")),
@@ -318,42 +354,70 @@ def _criterion_intent(text: str) -> str:
     return "generic"
 
 
-def _verifier_verdict(tool_name: str, args: dict) -> dict | None:
-    """Classify a verifier tool call into an INTENT + target (path/port/pattern),
-    or None when the tool is not a verifier verdict. A path alone never carries
-    intent — the tool determines it."""
+def _run_bash_verdict(cmd: str) -> dict | None:
+    """A green run_bash command → a coding verdict. typecheck/build/test each also
+    carry the generic `checks` intent, so a "проект проходит проверки" criterion is
+    confirmed by any one of them. A bundle grep (findstr/grep) is NOT a verdict — it
+    proves a string is in the bundle, not that anything passed or is visible."""
+    low = (cmd or "").lower()
+    if any(m in low for m in ("tsc", "typecheck", "type-check", "mypy", "pyright")):
+        return {"intents": {"typecheck", "checks"}, "files": set()}
+    if any(m in low for m in ("run build", "vite build", "cargo build", "go build", "webpack", "rollup", "npm build")):
+        return {"intents": {"build", "checks"}, "files": set()}
+    if any(m in low for m in ("pytest", "unittest", "npm test", "jest", "go test", "vitest")) or ".test." in low:
+        return {"intents": {"test", "checks"}, "files": _file_tokens(low)}
+    return None
+
+
+def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "") -> dict | None:
+    """Classify a verifier tool call into INTENT(s) + target, or None when it is not
+    a verdict. Intent comes from the TOOL, never from a shared path/text alone.
+    `evidence` carries the rendered DOM text for the browser (text_visible)."""
     a = args or {}
     if tool_name == "ssh_assert_contains":
-        return {"intent": "contains", "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+        return {"intents": {"contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
     if tool_name == "ssh_assert_not_contains":
-        return {"intent": "not_contains", "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+        return {"intents": {"not_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
     if tool_name == "ssh_port_check":
-        return {"intent": "port", "port": str(a.get("port", "")), "files": set()}
+        return {"intents": {"port"}, "port": str(a.get("port", "")), "files": set()}
     if tool_name == "ssh_exists":  # dedicated exists verifier (Test-Path / test -e)
-        return {"intent": "exists", "files": _file_tokens(str(a.get("path", "")))}
+        return {"intents": {"exists"}, "files": _file_tokens(str(a.get("path", "")))}
     if tool_name == "run_bash":
-        cmd = str(a.get("command", "")).lower()
-        if any(t in cmd for t in ("pytest", "unittest", "npm test", "jest", "go test", "vitest")) or ".test." in cmd:
-            return {"intent": "test", "files": _file_tokens(cmd)}
+        return _run_bash_verdict(str(a.get("command", "")))
+    if tool_name == "http_api":
+        # A real HTTP 2xx (the tool returns ok=False on block/4xx/5xx) → the page loads.
+        return {"intents": {"page_open"}, "files": set()}
+    if tool_name == "browser":
+        # A real headless render → the page loaded AND its DOM text is genuine
+        # visible-text evidence (unlike a bundle grep).
+        return {"intents": {"page_open", "text_visible"}, "text": (evidence or "").lower(), "files": set()}
     return None
 
 
 def _verdict_confirms(item: dict, v: dict) -> bool:
     """A verdict confirms/refutes a criterion ONLY on matching INTENT + salient
-    target. Path alone never confirms a content or existence claim."""
-    if item["intent"] != v["intent"]:
+    target. Path/text alone never confirms a semantic claim."""
+    intents = v.get("intents") or set()
+    it = item["intent"]
+    if it not in intents:
         return False
-    intent = v["intent"]
-    if intent == "port":
+    if it == "port":
         return bool(item.get("port")) and item["port"] == v.get("port")
-    if intent in ("contains", "not_contains"):
+    if it in ("contains", "not_contains"):
         # same file (if both name one) AND the verifier's pattern appears in the criterion
         if item["files"] and v.get("files") and not (item["files"] & v["files"]):
             return False
         pat = v.get("pattern", "")
         return bool(pat) and pat in item["text_low"]
-    if intent in ("exists", "test", "process"):
+    if it in ("exists", "test", "process"):
         return bool(item["files"] and v.get("files") and (item["files"] & v["files"]))
+    if it in ("typecheck", "build", "checks", "page_open"):
+        return True  # a project-/page-wide green check — intent match IS the proof
+    if it == "text_visible":
+        # every named token must be in the rendered DOM text; no tokens → unverifiable
+        toks = item.get("targets") or set()
+        text = v.get("text") or ""
+        return bool(toks) and all(t in text for t in toks)
     return False
 
 
@@ -363,6 +427,7 @@ def _criterion_item(text: str) -> dict:
     return {
         "text": text, "text_low": low, "status": "unconfirmed", "verifier": None, "evidence": None,
         "intent": _criterion_intent(text), "files": _file_tokens(text), "port": ports[0] if ports else "",
+        "targets": _quoted_tokens(text),
     }
 
 
@@ -370,8 +435,9 @@ def _criterion_item(text: str) -> dict:
 class CriteriaTracker:
     """Per-criterion verification state for ONE run. DONE is decided here, from
     verifier verdicts — not from the model's word. A verdict confirms a criterion
-    ONLY when their INTENT (exists/contains/not_contains/port/test) AND salient
-    target match — a shared path alone never confirms a semantic claim."""
+    ONLY when their INTENT (exists/contains/not_contains/port/test/typecheck/build/
+    checks/page_open/text_visible) AND salient target match — a shared path or a
+    bundle grep never confirms a semantic or visibility claim."""
 
     items: list[dict] = field(default_factory=list)
 
@@ -381,9 +447,10 @@ class CriteriaTracker:
         return cls(items=[_criterion_item(c) for c in crits])
 
     def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str) -> None:
-        """Feed a verifier verdict (classified by tool + args). Confirms/refutes a
-        criterion only on matching intent + target; unrelated criteria are untouched."""
-        v = _verifier_verdict(tool_name, args)
+        """Feed a verifier verdict (classified by tool + args + evidence). Confirms/
+        refutes a criterion only on matching intent + target; unrelated criteria are
+        untouched. `evidence` doubles as the rendered DOM text for a browser verdict."""
+        v = _verifier_verdict(tool_name, args, evidence=evidence)
         if v is None:
             return
         for it in self.items:

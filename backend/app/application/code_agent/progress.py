@@ -32,7 +32,7 @@ ACTION_TOOLS: frozenset[str] = frozenset(
 # progress (so "go read the real file / run the verifier" is rewarded, not punished).
 INVESTIGATION_TOOLS: frozenset[str] = frozenset(
     {"read_file", "glob", "grep", "project_map", "recall",
-     "web_search", "web_fetch", "http_api", "ssh_run", "ssh_run_ps", "ssh_read",
+     "web_search", "web_fetch", "http_api", "browser", "ssh_run", "ssh_run_ps", "ssh_read",
      "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists"}
 )
 
@@ -70,24 +70,43 @@ def step_made_progress(
     tool_meta: dict,
     fact: str | None,
     seen_fact_shapes: set[str],
+    args: dict | None = None,
 ) -> bool:
     """True when this tool call advanced the run toward the goal.
 
     A "doing" tool counts as progress ONLY when it changes a file — re-running a
     check that returns different bytes but the same state is deliberately NOT
-    progress (semantic ok). Mutations (touched_path) and a server starting are
-    progress; fresh knowledge from a read/search resets the streak. Mutates
-    `seen_fact_shapes`."""
+    progress (semantic ok). Mutations (touched_path) and a server FIRST starting on
+    a port are progress; fresh knowledge from a read/search resets the streak.
+    Mutates `seen_fact_shapes`."""
     if tool_meta.get("touched_path"):
         return True  # a file was created / edited / written (local or remote)
     if name == "run_server" and tool_meta.get("ok", True):
-        return True  # running state changed
+        # Only STARTING a server on a NEW port changes the running state. `list`/
+        # `stop`/`logs` and a repeated start on an already-served port don't — else
+        # 6 run_server calls each read as progress and mask a churning verify loop
+        # (the VaultDesk run).
+        if _server_start_is_progress(args or {}, seen_fact_shapes):
+            return True
     if name in INVESTIGATION_TOOLS and fact:
         shape = _fact_shape(fact)
         if shape not in seen_fact_shapes:
             seen_fact_shapes.add(shape)
             return True
     return False
+
+
+def _server_start_is_progress(args: dict, seen_fact_shapes: set[str]) -> bool:
+    """A run_server call is progress only when it starts a server on a port not
+    started before this run. Non-start actions and repeated starts are not."""
+    action = str(args.get("action") or "start").lower()
+    if action != "start":
+        return False
+    key = f"server-start:{args.get('port') or _fact_shape(str(args.get('command') or ''))}"
+    if key in seen_fact_shapes:
+        return False
+    seen_fact_shapes.add(key)
+    return True
 
 
 # ── strategy classification ─────────────────────────────────────
@@ -284,7 +303,7 @@ class ProgressEvaluator:
         th_key = f"{name}@{host}" if host and name.startswith("ssh") else None
 
         if step_made_progress(
-            name=name, tool_meta=tool_meta, fact=fact, seen_fact_shapes=self.seen_fact_shapes,
+            name=name, args=args, tool_meta=tool_meta, fact=fact, seen_fact_shapes=self.seen_fact_shapes,
         ) or self._verify_pass_is_progress(name, family, key, tool_meta):
             self.progress_events += 1
             self.consecutive_no_progress = 0  # any progress breaks the stuck streak
