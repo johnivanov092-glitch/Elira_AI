@@ -1899,12 +1899,12 @@ def _stream_code_agent_core(
                     if tool_meta.get("verifier"):
                         criterion_progress = criteria.record(
                             tool_name=name, args=parsed_args, ok=_tool_ok,
-                            evidence=str(tool_meta.get("evidence") or ""),
+                            evidence=str(tool_meta.get("evidence") or ""), meta=tool_meta,
                         )
                     elif _family.startswith(("test:", "verify:")) and tool_meta.get("exit_code") == 0:
                         criterion_progress = criteria.record(
                             tool_name=name, args=parsed_args, ok=True,
-                            evidence="проверка прошла (exit 0)",
+                            evidence="проверка прошла (exit 0)", meta=tool_meta,
                         )
                 # Strategy router — a criterion flip (criterion_progress) is the
                 # strongest progress signal and re-arms the run.

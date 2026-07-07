@@ -488,6 +488,20 @@ def stop_all_servers() -> int:
     return killed
 
 
+def _server_verdict(text: str, handle: "_ServerHandle | None", action: str) -> dict[str, Any]:
+    """Wrap a run_server result as a server_started VERIFIER verdict when a live server
+    with a real URL is known (list/logs of a running server). No live server → a plain
+    status result (ok True, no verifier), so it can't confirm a server criterion."""
+    if handle is None or not handle.port:
+        return {"text": text, "ok": True}
+    url = handle.url or f"http://localhost:{handle.port}"
+    return {
+        "text": text, "ok": True, "verifier": True, "action": action,
+        "server_started": True, "actual_port": handle.port, "actual_url": url,
+        "evidence": f"dev server running via run_server: {url} (pid={handle.pid})",
+    }
+
+
 def tool_run_server(
     project_root: Path,
     *,
@@ -512,13 +526,16 @@ def tool_run_server(
         with _SERVERS_LOCK:
             handles = list(_LIVE_SERVERS.values())
         if not handles:
-            return {"text": "No background servers are running."}
+            return {"text": "No background servers are running.", "ok": False}
         lines = ["Running background servers:"]
+        canonical = None
         for h in sorted(handles, key=lambda x: x.started_at):
             age = int(time.time() - h.started_at)
             port_s = f" port={h.port}" if h.port else ""
             lines.append(f"  pid={h.pid}{port_s} age={age}s — {h.command}")
-        return {"text": "\n".join(lines)}
+            if h.port and h.proc.poll() is None:
+                canonical = h
+        return _server_verdict("\n".join(lines), canonical, "list")
 
     if act == "stop_all":
         n = stop_all_servers()
@@ -526,15 +543,23 @@ def tool_run_server(
 
     if act == "logs":
         if pid is None:
-            return {"text": "ERROR: action 'logs' requires a pid."}
+            return {"text": "ERROR: action 'logs' requires a pid.", "ok": False}
         with _SERVERS_LOCK:
             h = _LIVE_SERVERS.get(int(pid))
         if h is None:
-            return {"text": f"ERROR: no tracked server with pid={pid}."}
+            return {"text": f"ERROR: no tracked server with pid={pid}.", "ok": False}
         tail = _read_log_tail(h.log_path)
-        status = "running" if h.proc.poll() is None else f"exited (code={h.proc.returncode})"
+        running = h.proc.poll() is None
+        status = "running" if running else f"exited (code={h.proc.returncode})"
         body = tail or "(no output captured yet)"
-        return {"text": f"server pid={pid} [{status}]\n$ {h.command}\n\n{body}"}
+        # A log tail may reveal the URL a still-running server bound (e.g. Vite's
+        # "Local:" line) — adopt it so the verifier reaches the right port.
+        if running and not h.url:
+            parsed = _parse_server_url(tail)
+            if parsed:
+                h.url, h.port = parsed
+        text = f"server pid={pid} [{status}]\n$ {h.command}\n\n{body}"
+        return _server_verdict(text, h if (running and h.port) else None, "logs")
 
     if act == "stop":
         if pid is None:
@@ -559,16 +584,16 @@ def tool_run_server(
 
     cleaned_command = (command or "").strip()
     if not cleaned_command:
-        return {"text": "ERROR: action 'start' requires a command."}
+        return {"text": "ERROR: action 'start' requires a command.", "ok": False}
     blocked = _blocked_shell_fragment(cleaned_command)
     if blocked:
-        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}"}
+        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}", "ok": False}
 
     log_dir = (project_root.resolve() / _SERVER_LOG_DIRNAME)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except Exception as exc:
-        return {"text": f"ERROR: cannot create server log dir: {exc}"}
+        return {"text": f"ERROR: cannot create server log dir: {exc}", "ok": False}
     log_path = log_dir / f"server-{int(time.time() * 1000)}.log"
 
     try:
@@ -576,7 +601,7 @@ def tool_run_server(
         # decode on read (_read_log_tail) so Windows OEM output isn't mangled.
         log_fh = open(log_path, "wb")
     except Exception as exc:
-        return {"text": f"ERROR: cannot open log file: {exc}"}
+        return {"text": f"ERROR: cannot open log file: {exc}", "ok": False}
 
     try:
         proc = subprocess.Popen(
@@ -598,7 +623,7 @@ def tool_run_server(
             log_fh.close()
         except Exception:
             pass
-        return {"text": f"ERROR: {exc}"}
+        return {"text": f"ERROR: {exc}", "ok": False}
 
     handle = _ServerHandle(proc.pid, cleaned_command, proc, log_path, port)
     with _SERVERS_LOCK:
@@ -616,10 +641,13 @@ def tool_run_server(
             pass
         tail = _read_log_tail(log_path)
         body = f"\n{tail}" if tail else ""
+        # A start that died (incl. "Port … is already in use") is NOT ok — otherwise
+        # the loop reads a missing `ok` as True and a failed start looks like success,
+        # and a server_started criterion would falsely confirm.
         return {"text": (
             f"ERROR: server exited immediately (code={proc.returncode}).\n"
             f"$ {cleaned_command}{body}"
-        )}
+        ), "ok": False}
 
     # Learn the URL the server ACTUALLY bound (Vite may have auto-incremented off a
     # taken port). This becomes the canonical URL: the loopback allowlist keys on the
@@ -669,11 +697,13 @@ def tool_run_server(
     if gui_block:
         text = f"{text}\n\n{gui_block}"
 
-    # Structured evidence: the loop/UI and the progress router get the actual URL +
-    # a first-start signal without re-parsing the text.
+    # Structured evidence: the process survived the crash-grace → a real server
+    # started. verifier=True + actual_url makes this a server_started verdict the
+    # CriteriaTracker can confirm (a failed start above returned ok=False, no verifier).
     return {
         "text": text,
         "ok": True,
+        "verifier": True,
         "action": "start",
         "server_started": True,
         "pid": proc.pid,
@@ -681,4 +711,8 @@ def tool_run_server(
         "actual_port": actual_port,
         "actual_url": actual_url,
         "local_url": actual_url,
+        "evidence": (
+            f"dev server started via run_server: {actual_url or '(no url)'} "
+            f"(pid={proc.pid}, port={actual_port or '?'})"
+        ),
     }

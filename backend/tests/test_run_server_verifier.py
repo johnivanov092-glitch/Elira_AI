@@ -13,6 +13,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
@@ -86,6 +87,57 @@ class LoopbackVerifierUsesActualPortTest(unittest.TestCase):
         with _run._SERVERS_LOCK:
             _run._LIVE_SERVERS[999002] = h
         self.assertEqual(active_server_ports(), set())  # reaped → nothing allowed
+
+
+class RunServerHonestyTest(unittest.TestCase):
+    def tearDown(self):
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS.clear()
+
+    def test_server_verdict_helper(self):
+        h = _run._ServerHandle(pid=1, command="npm run dev", proc=_AliveProc(),
+                               log_path=Path("."), port=3000, url="http://localhost:3000")
+        out = _run._server_verdict("running...", h, "list")
+        self.assertTrue(out["ok"] and out["verifier"] and out["server_started"])
+        self.assertEqual(out["actual_port"], 3000)
+        self.assertIn("3000", out["evidence"])
+        # no live handle → plain status, NOT a verdict
+        plain = _run._server_verdict("nothing", None, "list")
+        self.assertTrue(plain["ok"])
+        self.assertIsNone(plain.get("verifier"))
+
+    def test_list_of_running_server_is_a_verifier(self):
+        h = _run._ServerHandle(pid=18588, command="npm run dev", proc=_AliveProc(),
+                               log_path=Path("."), port=3000, url="http://localhost:3000")
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS[18588] = h
+        out = _run.tool_run_server(Path("."), action="list")
+        self.assertTrue(out.get("verifier"))
+        self.assertEqual(out.get("actual_port"), 3000)
+
+    def test_failed_start_is_ok_false_without_verifier(self):
+        # A server that dies immediately (e.g. "Port in use") must be ok=False and NOT
+        # a verifier — otherwise the loop reads a failed start as success.
+        import subprocess
+
+        class _ExitedProc:
+            pid = 4242
+            returncode = 1
+
+            def poll(self):
+                return 1
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("subprocess.Popen", return_value=_ExitedProc()):
+            out = _run.tool_run_server(Path(tmp), action="start", command="npm run dev", port=3000)
+        self.assertFalse(out["ok"])
+        self.assertIsNone(out.get("verifier"))
+        self.assertIn("ERROR", out["text"])
+
+    def test_start_requires_command_is_ok_false(self):
+        out = _run.tool_run_server(Path("."), action="start", command="")
+        self.assertFalse(out["ok"])
 
 
 if __name__ == "__main__":

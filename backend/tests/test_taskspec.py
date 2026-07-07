@@ -526,8 +526,9 @@ class VaultDeskVerificationTest(unittest.TestCase):
             "- страница адаптивна для desktop и mobile\n"
             "- проект проходит доступные проверки сборки/typecheck"
         )
-        # hero (no quoted token) and adaptive have no verifier → they never confirm
-        self.assertEqual(_criterion_intent("страница адаптивна для desktop и mobile"), "generic")
+        # hero (no quoted token) and adaptive (viewport_layout, no viewport evidence)
+        # have no verifier verdict → they never confirm
+        self.assertEqual(_criterion_intent("страница адаптивна для desktop и mobile"), "viewport_layout")
         t = CriteriaTracker.from_spec(real)
         t.record(tool_name="run_bash", args={"command": "npm run build"}, ok=True, evidence="exit 0")
         t.record(tool_name="http_api", args={"url": "http://localhost:3000"}, ok=True, evidence="HTTP 200")

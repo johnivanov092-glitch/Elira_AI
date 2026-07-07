@@ -292,133 +292,248 @@ def _file_tokens(text: str) -> set[str]:
     return toks
 
 
-# Quoted/back-ticked target tokens in a criterion — the literal strings a text
-# criterion says must be VISIBLE (`VaultDesk`, `Start local audit`). Used only for
-# the text_visible intent: a browser DOM verdict confirms it iff every named token
-# is actually in the rendered text.
+# ── generic verifier contract (Ph7.9) ───────────────────────────
+#
+# DONE is decided by INTENT + TARGET + verifier EVIDENCE, never by the task's words
+# or the model's final text. The intents below are DOMAIN-AGNOSTIC — there is no
+# `if "VaultDesk"` anywhere; the same set verifies a landing page, a dashboard, a
+# backend smoke test, an SSH file/cleanup task, or a plain coding task:
+#
+#   command_check       run_bash exit 0            typecheck/build/test/import/smoke passed
+#   server_started      run_server / ssh_port_check a dev/app server is up on a URL/port
+#   page_open           http_api 2xx / browser      a URL actually opened (not blocked)
+#   dom_contains        browser rendered DOM        the page's TEXT contains a token
+#   viewport_layout     browser viewport evidence   loaded, nonblank, no h-overflow
+#   file_exists         ssh_exists (present)        a path exists
+#   file_not_exists     ssh_exists (absent)         a path is gone (cleanup)
+#   content_contains    ssh_assert_contains         a FILE contains a pattern
+#   content_not_contains ssh_assert_not_contains    a FILE does not contain a pattern
+#
+# The hard disambiguation: "содержит текст X" is dom_contains when the criterion is
+# about the rendered page, but content_contains when it's about a file — the TARGET
+# CONTEXT decides, not the verb.
+
 _QUOTED_RE = re.compile(r"[`«\"']([^`«»\"']{1,60})[`»\"']")
+_AFTER_TEXT_MARKERS = ("текст ", "надпись ", "надписи ", "text ", "label ", "заголовок ", "кнопк")
 
 
 def _quoted_tokens(text: str) -> set[str]:
     return {m.strip().lower() for m in _QUOTED_RE.findall(text or "") if m.strip()}
 
 
-# Criterion / verifier INTENT — a path/text alone must NOT confirm a criterion; the
-# TOOL determines intent. Order matters: not_contains ⊃ contains; the coding checks
-# (checks/typecheck/build) sit BEFORE the generic "test" because "проходит" is a
-# test cue yet "проходит проверки сборки" is a checks criterion; page_open before
-# text_visible ("открывается" = загрузка страницы, "видно на экране" = текст).
-_INTENT_CUES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # report intent = "state it in the report", NOT anything with the word "отчёт":
-    # a criterion may legitimately verify a report file's content. Cues are the
-    # report-REQUIREMENT phrasings only (John's canonical: "cleanup описана в
-    # финальном отчёте"), so a real verifiable criterion is never dropped.
-    ("report", ("в отчёт", "в отчет", "в финальном отч", "какие команды", "какие файлы",
-                "что создано", "что было создано", "перечисл", "report-only",
-                "описан в отч", "описать в отч", "команды очистки опис")),
-    ("not_contains", ("не содержит", "не должно быть", "не должен содержать", "does not contain",
-                      "not contain", "убран", "удал", "отсутствует", "нет строки", "без строки", "removed")),
-    ("contains", ("содержит", "contains", "включает", "есть строка", "должен быть", "должна быть",
-                  "возвращает", "returns", "отвечает", "responds")),
-    # checks = "the project's available checks pass" — confirmed by ANY green
-    # typecheck/build/test (a verdict carries "checks" alongside its specific kind).
-    ("checks", ("доступные провер", "проверки сбор", "проходит провер", "проходят провер",
-                "проект проходит", "сборки/typecheck", "сборки / typecheck", "checks pass",
-                "все проверки", "проверки проход")),
-    ("typecheck", ("typecheck", "type-check", "type check", " tsc", "mypy", "pyright",
-                   "ошибок типов", "проверка типов", "типизац")),
-    ("build", ("build", "сборка", "собира", "билд", "компил", "bundl")),
-    # page_open = the first page actually LOADS (http 2xx / a real browser render).
-    ("page_open", ("открывается", "открылась", "открыть страниц", "загружается", "загрузилась",
-                   "рендерится", "opens", "loads", "page load", "доступна по", "отдаёт 200",
-                   "http 200", "200 ok", "без ошибок консол", "первая страница")),
-    # text_visible = a named string is on the rendered page (browser DOM only —
-    # NEVER a bundle grep). Needs `targets`; a "hero section exists" claim with no
-    # quoted token stays honestly unverified.
-    ("text_visible", ("видно", "виден", "видна", "отображ", "visible", "первом экране",
-                      "на экране", "секция", "hero", "pricing", "cta", "кнопк",
-                      "преимуществ", "название", "заголов", "надпись")),
-    ("port", ("порт", "port", "listening", "слушает")),
-    ("process", ("процесс", "process", "запущен", "running", "работает", "сервис поднят")),
-    ("test", ("pytest", "unittest", "проходит", "зелён", "8/8", "passes", "тест ", "test ", ".ps1 проход")),
-    ("exists", ("существует", "создан", "создана", "создать", "exists", "присутствует",
-                "папк", "директор", "directory", "файл создан")),
-)
+def _dom_targets(text: str) -> set[str]:
+    """The literal strings a DOM criterion says must be on the page. Quoted/back-ticked
+    tokens first (`VaultDesk`, `Start local audit`); else the phrase after a
+    'текст…/text…' marker. Domain-agnostic — any task's tokens, never hardcoded."""
+    toks = _quoted_tokens(text)
+    if toks:
+        return toks
+    low = (text or "")
+    ll = low.lower()
+    for marker in _AFTER_TEXT_MARKERS:
+        i = ll.rfind(marker)
+        if i >= 0:
+            rest = low[i + len(marker):].strip().strip("`«»\"'.,;:()").lower()
+            if rest and len(rest) <= 40:
+                return {rest}
+    return set()
+
+
+def _has(low: str, cues: tuple[str, ...]) -> bool:
+    return any(c in low for c in cues)
+
+
+# Context cue groups — WHAT a criterion is about (a rendered page vs a file vs a
+# server vs a command). These pick the intent; none of them names a product.
+_NEG_CTX = ("не содержит", "не должно", "не должен", "does not", "not contain", "без строки",
+            "без текста", "отсутству", "нет строки")
+# DOM/rendered-page context — a criterion is about what the page SHOWS. Includes the
+# UI-element nouns (секция/кнопка/pricing/hero) so "есть секция с `X`" is a visibility
+# claim, verifiable only by a browser DOM render (never a bundle grep).
+_DOM_CTX = ("dom", "rendered", "на первом экране", "на экране", "первом экране", "на страниц",
+            "на странице", "в браузере", "визуальн", "отобража", "видно", "виден", "видна",
+            "отрисов", "интерфейс", "верстк", "hero", "pricing", "cta", "секц", "преимуществ",
+            "кнопк", "название", "заголов", "надпись", "карточк", "меню", "навигац", "dashboard",
+            "экран", "ui ", "лендинг", "landing")
+_DOM_VERB = ("содержит", "contains", "включает", "видно", "виден", "видна", "показыва",
+             "отобража", "visible", "есть текст", "есть надпись", "текст ", "надпись", "есть ")
+_FILE_CTX = ("файл", "file", "путь ", "path", "каталог", "директор", "папк", ".ps1", ".txt",
+             ".py", ".json", ".log", ".conf", ".cfg", ".xml", ".ini")
+_SERVER_CTX = ("dev server", "dev-server", "run_server", "запуска", "запущен", "поднят",
+               "стартова", "server start", "started", "listening", "слушает", "порт ", "port ",
+               "actual_url", "actual_port", "возвращает actual", "returns actual",
+               "url доступен", "сервер запущ", "сервер работает")
+_OPEN_CTX = ("открыва", "открыл", "открыть страниц", "opens", "open the", "loads", "load page",
+             "загружа", "reachable", "доступна по", "доступен по", "рендерится", "без ssrf", "без блок",
+             "http 200", "200 ok", "отдаёт 200", "возвращает 200", "отвечает 200", "статус 200",
+             "status 200", "→ 200", "-> 200", "endpoint откр", "url откр")
+_CMD_CTX = ("typecheck", "type-check", "tsc", "mypy", "pyright", "npm run", "npm test", "yarn ",
+            "pnpm ", "pytest", "unittest", "jest", "vitest", "go test", "cargo ", "build", "сборк",
+            "собира", "билд", "компил", "import", "smoke", "проходит провер", "проходят провер",
+            "доступные провер", "exit 0", "линт", "lint", "тесты проход", "ошибок типов")
+_VIEWPORT_CTX = ("viewport", "адаптив", "responsive", "mobile", "desktop", "мобильн", "десктоп",
+                 "overflow", "переполн", "горизонтальн скролл", "раскладк", "layout")
+_ABSENT_CTX = ("удал", "removed", "deleted", "cleanup", "очищ", "не существует", "not exist",
+               "больше нет", "gone", "стёрт", "стерт", "снесён", "снесен")
+_EXIST_CTX = ("существует", "создан", "создана", "создать", "exists", "присутству", "появил",
+              "есть файл", "папк", "директор", "directory")
+
+
+def _command_kind(text: str) -> str:
+    """The specific command a command_check criterion/verdict is about, or 'any' for a
+    generic 'the available checks pass'. So a green typecheck confirms a typecheck
+    criterion but NOT a separate build criterion."""
+    low = (text or "").lower()
+    if _has(low, ("доступные провер", "проходят провер", "проверки проход", "все проверки",
+                  "сборки/typecheck", "сборки / typecheck", "проект проходит провер", "проходит провер")):
+        return "any"
+    if _has(low, ("tsc", "typecheck", "type-check", "mypy", "pyright", "ошибок типов", "типизац")):
+        return "typecheck"
+    if _has(low, ("run build", "vite build", "cargo build", "go build", "webpack", "rollup",
+                  "npm build", "сборк", "собира", "билд", "компил", "bundl", "build")):
+        return "build"
+    if _has(low, ("pytest", "unittest", "npm test", "jest", "go test", "vitest", ".test.", "тест", "test")):
+        return "test"
+    if "import" in low:
+        return "import"
+    if "smoke" in low:
+        return "smoke"
+    if _has(low, ("lint", "линт")):
+        return "lint"
+    return "any"
 
 
 def _criterion_intent(text: str) -> str:
+    """Domain-agnostic intent from the criterion's TARGET CONTEXT (page/file/server/
+    command), not from a product name and not from a bare verb."""
     low = (text or "").lower()
-    for intent, cues in _INTENT_CUES:
-        if any(c in low for c in cues):
-            return intent
+    if _has(low, ("в отчёт", "в отчет", "в финальном отч", "какие команды", "какие файлы",
+                  "что создано", "что было создано", "перечисл", "report-only",
+                  "описан в отч", "описать в отч", "команды очистки опис")):
+        return "report"
+    dom = _has(low, _DOM_CTX)
+    targets = _dom_targets(text)
+    has_path = bool(_file_tokens(text))
+    fil = _has(low, _FILE_CTX) or (has_path and not dom)
+    negative = _has(low, _NEG_CTX)
+
+    if negative:
+        # A file NOT containing a pattern is verifiable; a "DOM must NOT show X" is not
+        # (no absence-of-render verifier) → generic/unverified, honestly.
+        if fil:
+            return "content_not_contains"
+        return "generic"
+    # positive: a rendered-page claim with either a visibility verb OR named tokens
+    # (a UI section listing `Inventory`,`Backups`,… is a dom_contains without a verb).
+    if dom and (_has(low, _DOM_VERB) or targets):
+        return "dom_contains"
+    if _has(low, _VIEWPORT_CTX):
+        return "viewport_layout"
+    if fil and _has(low, ("содержит", "contains", "включает", "есть строка")):
+        return "content_contains"
+    # server BEFORE page_open, but a "browser opens URL" claim is page_open not server
+    if _has(low, _SERVER_CTX) and not (_has(low, _OPEN_CTX) and _has(low, ("browser", "http", "браузер"))):
+        return "server_started"
+    if _has(low, _OPEN_CTX):
+        return "page_open"
+    if _has(low, _CMD_CTX):
+        return "command_check"
+    if _has(low, _ABSENT_CTX) and (fil or has_path):
+        return "file_not_exists"
+    if _has(low, _EXIST_CTX) and (fil or has_path):
+        return "file_exists"
     return "generic"
 
 
 def _run_bash_verdict(cmd: str) -> dict | None:
-    """A green run_bash command → a coding verdict. typecheck/build/test each also
-    carry the generic `checks` intent, so a "проект проходит проверки" criterion is
-    confirmed by any one of them. A bundle grep (findstr/grep) is NOT a verdict — it
-    proves a string is in the bundle, not that anything passed or is visible."""
+    """A green run_bash command → a command_check verdict tagged with its kind. A
+    bundle grep (findstr/grep) is NOT a verdict — it proves a string is in the bundle,
+    not that anything passed or is visible."""
     low = (cmd or "").lower()
-    if any(m in low for m in ("tsc", "typecheck", "type-check", "mypy", "pyright")):
-        return {"intents": {"typecheck", "checks"}, "files": set()}
-    if any(m in low for m in ("run build", "vite build", "cargo build", "go build", "webpack", "rollup", "npm build")):
-        return {"intents": {"build", "checks"}, "files": set()}
-    if any(m in low for m in ("pytest", "unittest", "npm test", "jest", "go test", "vitest")) or ".test." in low:
-        return {"intents": {"test", "checks"}, "files": _file_tokens(low)}
-    return None
+    if _has(low, ("findstr", "grep ", "select-string")) and not _has(low, ("pytest", "npm test", "&&")):
+        return None
+    kind = _command_kind(low)
+    if kind == "any":
+        # bare run_bash with no recognisable check verb is not a verdict
+        if not _has(low, ("tsc", "typecheck", "build", "test", "pytest", "vitest", "jest",
+                          "import", "smoke", "lint", "npm run", "cargo", "go ")):
+            return None
+    return {"intents": {"command_check"}, "command_kind": kind, "files": set()}
 
 
-def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "") -> dict | None:
-    """Classify a verifier tool call into INTENT(s) + target, or None when it is not
-    a verdict. Intent comes from the TOOL, never from a shared path/text alone.
-    `evidence` carries the rendered DOM text for the browser (text_visible)."""
+def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: dict | None = None) -> dict | None:
+    """Classify a verifier tool call into generic INTENT(s) + target, or None when it
+    is not a verdict. Intent comes from the TOOL; targets from its structured evidence
+    — NEVER from a shared path/text alone or the model's words."""
     a = args or {}
+    m = meta or {}
     if tool_name == "ssh_assert_contains":
-        return {"intents": {"contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+        return {"intents": {"content_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
     if tool_name == "ssh_assert_not_contains":
-        return {"intents": {"not_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
+        return {"intents": {"content_not_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
     if tool_name == "ssh_port_check":
-        return {"intents": {"port"}, "port": str(a.get("port", "")), "files": set()}
-    if tool_name == "ssh_exists":  # dedicated exists verifier (Test-Path / test -e)
-        return {"intents": {"exists"}, "files": _file_tokens(str(a.get("path", "")))}
+        return {"intents": {"server_started"}, "port": str(a.get("port", "")), "files": set()}
+    if tool_name == "ssh_exists":  # present→file_exists, absent→file_not_exists (record uses ok)
+        return {"intents": {"file_exists", "file_not_exists"}, "files": _file_tokens(str(a.get("path", "")))}
     if tool_name == "run_bash":
         return _run_bash_verdict(str(a.get("command", "")))
+    if tool_name == "run_server":
+        # A dev/app server is up on a real URL/port — structured evidence, not words.
+        # A failed start (no server_started/actual_url in meta) is NOT a verdict, so it
+        # leaves a server criterion unconfirmed (recoverable), never failed.
+        if not (m.get("server_started") or m.get("actual_url") or m.get("verifier")):
+            return None
+        port = str(m.get("actual_port") or m.get("port") or "")
+        return {"intents": {"server_started"}, "port": port, "files": set()}
     if tool_name == "http_api":
-        # A real HTTP 2xx (the tool returns ok=False on block/4xx/5xx) → the page loads.
         return {"intents": {"page_open"}, "files": set()}
     if tool_name == "browser":
-        # A real headless render → the page loaded AND its DOM text is genuine
-        # visible-text evidence (unlike a bundle grep).
-        return {"intents": {"page_open", "text_visible"}, "text": (evidence or "").lower(), "files": set()}
+        # A real render → the page loaded (page_open) AND its DOM text is genuine
+        # visible-text evidence (dom_contains) — unlike a bundle grep.
+        return {"intents": {"page_open", "dom_contains"}, "text": (evidence or "").lower(),
+                "viewport": bool(m.get("viewport")), "files": set()}
     return None
 
 
-def _verdict_confirms(item: dict, v: dict) -> bool:
-    """A verdict confirms/refutes a criterion ONLY on matching INTENT + salient
-    target. Path/text alone never confirms a semantic claim."""
+def _verdict_target_matches(item: dict, v: dict) -> bool:
+    """INTENT + TARGET match (ignores pass/fail — record() applies ok separately)."""
     intents = v.get("intents") or set()
     it = item["intent"]
     if it not in intents:
         return False
-    if it == "port":
-        return bool(item.get("port")) and item["port"] == v.get("port")
-    if it in ("contains", "not_contains"):
-        # same file (if both name one) AND the verifier's pattern appears in the criterion
+    if it == "server_started":
+        cp, vp = item.get("port"), v.get("port")
+        return (cp == vp) if cp else True   # named port must match; else any server
+    if it == "page_open":
+        return True
+    if it == "command_check":
+        ck, vk = item.get("command_kind") or "any", v.get("command_kind") or "any"
+        return ck == "any" or vk == "any" or ck == vk
+    if it == "dom_contains":
+        toks = item.get("targets") or set()
+        text = v.get("text") or ""
+        return bool(toks) and all(t in text for t in toks)
+    if it == "viewport_layout":
+        return bool(v.get("viewport"))
+    if it in ("content_contains", "content_not_contains"):
         if item["files"] and v.get("files") and not (item["files"] & v["files"]):
             return False
         pat = v.get("pattern", "")
         return bool(pat) and pat in item["text_low"]
-    if it in ("exists", "test", "process"):
+    if it in ("file_exists", "file_not_exists"):
         return bool(item["files"] and v.get("files") and (item["files"] & v["files"]))
-    if it in ("typecheck", "build", "checks", "page_open"):
-        return True  # a project-/page-wide green check — intent match IS the proof
-    if it == "text_visible":
-        # every named token must be in the rendered DOM text; no tokens → unverifiable
-        toks = item.get("targets") or set()
-        text = v.get("text") or ""
-        return bool(toks) and all(t in text for t in toks)
     return False
+
+
+def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
+    """'confirm' / 'fail' / None for a criterion given a matching verdict and its ok.
+    file_not_exists inverts ok (ssh_exists reports PRESENCE: absent→cleanup confirmed);
+    every other intent takes the tool's ok as the criterion's pass/fail."""
+    if not _verdict_target_matches(item, v):
+        return None
+    if item["intent"] == "file_not_exists":
+        return "confirm" if not ok else "fail"
+    return "confirm" if ok else "fail"
 
 
 def _criterion_item(text: str) -> dict:
@@ -427,17 +542,18 @@ def _criterion_item(text: str) -> dict:
     return {
         "text": text, "text_low": low, "status": "unconfirmed", "verifier": None, "evidence": None,
         "intent": _criterion_intent(text), "files": _file_tokens(text), "port": ports[0] if ports else "",
-        "targets": _quoted_tokens(text),
+        "targets": _dom_targets(text), "command_kind": _command_kind(text),
     }
 
 
 @dataclass
 class CriteriaTracker:
     """Per-criterion verification state for ONE run. DONE is decided here, from
-    verifier verdicts — not from the model's word. A verdict confirms a criterion
-    ONLY when their INTENT (exists/contains/not_contains/port/test/typecheck/build/
-    checks/page_open/text_visible) AND salient target match — a shared path or a
-    bundle grep never confirms a semantic or visibility claim."""
+    verifier verdicts — not from the model's word. A verdict confirms a criterion ONLY
+    when their generic INTENT (command_check/server_started/page_open/dom_contains/
+    viewport_layout/file_exists/file_not_exists/content_contains/content_not_contains)
+    AND target match — a shared path, a bundle grep, or the model's text never
+    confirms a semantic/visibility claim."""
 
     items: list[dict] = field(default_factory=list)
 
@@ -446,25 +562,25 @@ class CriteriaTracker:
         crits = spec.success_criteria if spec else []
         return cls(items=[_criterion_item(c) for c in crits])
 
-    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str) -> bool:
-        """Feed a verifier verdict (classified by tool + args + evidence). Confirms/
-        refutes a criterion only on matching intent + target; unrelated criteria are
-        untouched. `evidence` doubles as the rendered DOM text for a browser verdict.
+    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str, meta: dict | None = None) -> bool:
+        """Feed a verifier verdict (classified by tool + args + structured evidence).
+        Confirms/refutes a criterion only on matching intent + target; unrelated
+        criteria are untouched. `evidence` carries the rendered DOM text for a browser
+        verdict; `meta` carries structured fields (actual_port/viewport).
 
         Returns True if a criterion changed status (unconfirmed→confirmed/failed) —
         the strongest goal-level progress signal there is, which the strategy router
         uses to re-arm the run (a confirmed criterion is real forward motion)."""
-        v = _verifier_verdict(tool_name, args, evidence=evidence)
+        v = _verifier_verdict(tool_name, args, evidence=evidence, meta=meta)
         if v is None:
             return False
         transitioned = False
         for it in self.items:
-            if not _verdict_confirms(it, v):
-                continue
-            if ok and it["status"] != "confirmed":
+            outcome = _verdict_outcome(it, v, ok)
+            if outcome == "confirm" and it["status"] != "confirmed":
                 it.update(status="confirmed", verifier=tool_name, evidence=evidence or None)
                 transitioned = True
-            elif not ok and it["status"] == "unconfirmed":
+            elif outcome == "fail" and it["status"] == "unconfirmed":
                 it.update(status="failed", verifier=tool_name, evidence=evidence or None)
                 transitioned = True
         return transitioned
