@@ -211,9 +211,15 @@ class VerifierGateTest(unittest.TestCase):
         self.assertTrue(done.get("partial"))
         self.assertFalse(done.get("criteria_confirmed"))
         self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 2)  # no extra turn
+        # The chat text carries only a short pointer to the readiness panel — the
+        # full per-criterion breakdown lives in the structured `criteria` (done event),
+        # not duplicated into the message.
         final = [e for e in evs if e.get("type") == "final_response"][-1]
-        self.assertIn("Проверка готовности", final["text"])
-        self.assertIn("не подтверждено", final["text"])
+        self.assertIn("Готовность задачи: unverified", final["text"])
+        self.assertIn("детали в панели проверки", final["text"])
+        self.assertNotIn("НЕ ПРОЙДЕН", final["text"])          # no bullet dump in chat
+        # criteria still fully available in the done event for the panel / audit
+        self.assertEqual(len(done.get("criteria") or []), 3)
 
     def test_passing_verifier_confirms_its_matching_criterion(self):
         # A passing ssh_assert_not_contains(Content-Length) confirms ONLY the

@@ -134,31 +134,77 @@ const COMPLETION_LABEL: Record<CompletionStatus, { text: string; cls: string } |
   none: undefined,
 };
 
-function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; status?: CompletionStatus }) {
-  const badge = status ? COMPLETION_LABEL[status] : undefined;
+/** Evidence longer than this is truncated in the list and revealed by a per-row
+ *  toggle — so a huge rendered-DOM verdict never floods the chat. */
+const CRITERION_EVIDENCE_MAX = 220;
+
+function CriterionRow({ c }: { c: CriterionState }) {
+  const [showEvidence, setShowEvidence] = useState(false);
+  const evidence = c.evidence ?? "";
+  const long = evidence.length > CRITERION_EVIDENCE_MAX;
+  const shown = long && !showEvidence ? `${evidence.slice(0, CRITERION_EVIDENCE_MAX).trimEnd()}…` : evidence;
   return (
-    <div className="mt-2 rounded-xl border border-line bg-surface px-3 py-2.5 text-[12.5px]">
-      <div className="mb-1.5 flex flex-wrap items-center gap-x-2">
+    <li className="flex items-start gap-2">
+      <span
+        className={cn(
+          "mt-[5px] h-[7px] w-[7px] shrink-0 rounded-full",
+          c.status === "confirmed" ? "bg-success" : c.status === "failed" ? "bg-danger" : "bg-mut",
+        )}
+        aria-hidden
+      />
+      <span className="min-w-0">
+        <span className={cn(c.status === "failed" && "text-danger")}>{c.text}</span>
+        {evidence && (
+          <>
+            <span className="break-words text-[11px] text-mut"> — {shown}</span>
+            {long && (
+              <button
+                type="button"
+                onClick={() => setShowEvidence((v) => !v)}
+                className="ml-1 shrink-0 text-[10.5px] text-mut underline decoration-dotted underline-offset-2 hover:text-tx"
+              >
+                {showEvidence ? "скрыть" : "показать evidence"}
+              </button>
+            )}
+          </>
+        )}
+      </span>
+    </li>
+  );
+}
+
+/** Collapsed by default, one line in the chat. The header carries the whole summary
+ *  (status · X/Y confirmed · failed/unverified counts); the full per-criterion list
+ *  + evidence stays available for audit on expand. */
+function CriteriaPanel({ criteria, status }: { criteria: CriterionState[]; status?: CompletionStatus }) {
+  const [open, setOpen] = useState(false);
+  const badge = status ? COMPLETION_LABEL[status] : undefined;
+  const total = criteria.length;
+  const confirmed = criteria.filter((c) => c.status === "confirmed").length;
+  const failed = criteria.filter((c) => c.status === "failed").length;
+  const unconfirmed = total - confirmed - failed;
+  return (
+    <div className="mt-2 rounded-xl border border-line bg-surface text-[12.5px]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-x-2 px-3 py-2 text-left text-[12px] transition-colors hover:text-tx"
+      >
         <span className="font-medium text-t2">Готовность задачи</span>
         {badge && <span className={cn("text-[11.5px] font-medium", badge.cls)}>· {badge.text}</span>}
-      </div>
-      <ul className="space-y-1">
-        {criteria.map((c, i) => (
-          <li key={i} className="flex items-start gap-2">
-            <span
-              className={cn(
-                "mt-[5px] h-[7px] w-[7px] shrink-0 rounded-full",
-                c.status === "confirmed" ? "bg-success" : c.status === "failed" ? "bg-danger" : "bg-mut",
-              )}
-              aria-hidden
-            />
-            <span className="min-w-0">
-              <span className={cn(c.status === "failed" && "text-danger")}>{c.text}</span>
-              {c.evidence && <span className="text-[11px] text-mut"> — {c.evidence}</span>}
-            </span>
-          </li>
-        ))}
-      </ul>
+        <span className="text-[11.5px] text-mut">· {confirmed}/{total}</span>
+        {failed > 0 && <span className="text-[11.5px] font-medium text-danger">· провалено: {failed}</span>}
+        {unconfirmed > 0 && <span className="text-[11.5px] text-mut">· не подтв.: {unconfirmed}</span>}
+        <ChevronDown size={12} className={cn("ml-auto shrink-0 text-mut transition-transform", open ? "" : "-rotate-90")} />
+      </button>
+      {open && (
+        <ul className="space-y-1 border-t border-line px-3 py-2">
+          {criteria.map((c, i) => (
+            <CriterionRow key={i} c={c} />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

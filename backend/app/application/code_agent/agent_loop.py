@@ -1255,19 +1255,14 @@ def _stream_code_agent_core(
                 # the tracker, never the model's word.
                 _completion = criteria.completion_status()
                 if criteria.items and _completion != "confirmed":
-                    _lines = []
-                    for _it in criteria.report():
-                        if _it["status"] == "confirmed":
-                            continue
-                        _mark = "✗ НЕ ПРОЙДЕН" if _it["status"] == "failed" else "? не подтверждено"
-                        _ev = f" — {_it['evidence']}" if _it["evidence"] else ""
-                        _lines.append(f"- [{_mark}] {_it['text']}{_ev}")
-                    if _lines:
-                        final_text = (
-                            final_text.rstrip()
-                            + f"\n\nПроверка готовности ({_completion}) — не всё подтверждено verifier'ом:\n"
-                            + "\n".join(_lines)
-                        )
+                    # The full per-criterion breakdown + evidence already ships in the
+                    # done event's structured `criteria` and renders in the collapsible
+                    # readiness panel — don't duplicate it into the chat text (it dwarfs
+                    # the answer with rendered-DOM evidence). One short pointer is enough.
+                    final_text = (
+                        final_text.rstrip()
+                        + f"\n\nГотовность задачи: {_completion} — детали в панели проверки."
+                    )
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to
                 # Elira's reply. Fail-safe — never breaks the run.
