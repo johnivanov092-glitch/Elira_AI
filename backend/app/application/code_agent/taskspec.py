@@ -456,6 +456,10 @@ def interaction_spec(text: str) -> dict:
 # `INFO: 2`"), verified by run_bash stdout/stderr — NOT a bundle grep or a code read.
 _OUTPUT_CUES = ("выводит", "выведет", "печатает", "вывод", "на выходе", "в выводе",
                 "в stdout", "prints", "outputs", "output", "stdout")
+# Output VERBS a value follows ("выводит `X`") — distinct from location nouns
+# (stdout/output/в выводе), so the expected token anchors on the verb, not a trailing
+# 'в stdout' that has no quote after it (which would drop the token).
+_OUTPUT_VERB_CUES = ("выводит", "выведет", "печатает", "prints", "outputs")
 _RUN_VERB_CUES = ("запуск", "запуст", "выполн", "прогон", "run ", "node ", "python",
                   "npm ", "pnpm", "yarn ", "./", "cargo ", "go run", "deno", "ts-node", "bash ")
 _NONZERO_CUES = ("завершается с ошибк", "с ошибкой", "non-zero", "ненулев", "падает",
@@ -478,6 +482,12 @@ def _runnable_quote(text: str) -> str:
 # for a PROSE command_output criterion (no named command) these must not confirm.
 _PASSTHROUGH_RE = re.compile(r"^(?:echo|cat|type|printf|head|tail|more|less|Get-Content|write-host)\b", re.IGNORECASE)
 _GENERIC_PKG_RE = re.compile(r"^(?:npm|pnpm|yarn|npx)\s+(?:run\s+)?(?:build|test|start|dev|lint|install|ci)\b", re.IGNORECASE)
+# Inline-eval one-liners (`python -c "print('OK')"`, `node -e …`, `bash -c "echo OK"`,
+# `deno eval`, …) print a literal like echo — they must NOT stand in for running the checker.
+_INLINE_EVAL_RE = re.compile(
+    r"^(?:python3?\s+-\w*c|node\s+(?:-e|--eval)|deno\s+eval|(?:bash|sh)\s+-\w*c"
+    r"|ruby\s+-\w*e|php\s+-r|perl\s+-\w*e)\b", re.IGNORECASE)
+_ENV_PREFIX_RE = re.compile(r"^(?:\s*env\s+)?(?:\s*[A-Za-z_]\w*=\S*\s+)+", re.IGNORECASE)
 
 
 def command_spec(text: str) -> dict:
@@ -488,12 +498,14 @@ def command_spec(text: str) -> dict:
     low = (text or "").lower()
     command = _runnable_quote(text)
     output_expected = ""
-    positions = [low.rfind(c) for c in _OUTPUT_CUES if c in low]
-    if positions:
-        pos = max(positions)
+    # anchor on the LAST output VERB (the value follows it: 'печатает `DONE`'); fall back
+    # to the first of any output cue when there is no verb ('в stdout `X`').
+    verb_pos = [low.rfind(c) for c in _OUTPUT_VERB_CUES if c in low]
+    anchor = max(verb_pos) if verb_pos else min([low.find(c) for c in _OUTPUT_CUES if c in low] or [-1])
+    if anchor >= 0:
         for m in _QUOTED_RE.finditer(text or ""):
             q = m.group(1).strip()
-            if m.start() > pos and q and q != command:
+            if m.start() > anchor and q and q != command:
                 output_expected = q
                 break
     return {"command": command, "output_expected": output_expected,
@@ -520,12 +532,18 @@ def _strip_cd_prefix(cmd: str) -> str:
 
 
 def _is_program_run(cmd: str) -> bool:
-    """True when a run_bash command is a genuine PROGRAM invocation (not a passthrough
-    like echo/cat, not a generic npm build/test banner) — the only thing that can confirm
-    a PROSE command_output criterion (one with no named command), so echo/cat/build can't
-    stand in for actually running the checker."""
-    core = _strip_cd_prefix(cmd)
-    if not core or _PASSTHROUGH_RE.match(core) or _GENERIC_PKG_RE.match(core):
+    """True when a run_bash command is a genuine PROGRAM invocation — the only thing that
+    can confirm a PROSE command_output criterion (one with no named command), so a run
+    that merely PRINTS the token can't stand in for actually running the checker.
+
+    Rejects: passthroughs (echo/cat/…), generic npm/yarn build|test banners, and
+    inline-eval one-liners (`python -c`/`node -e`/`bash -c "echo …"`). Accepts an
+    env-prefixed / `cd &&`-prefixed real invocation (`NODE_ENV=x node server`,
+    `python -m app`, `node check.js …`)."""
+    core = _ENV_PREFIX_RE.sub("", _strip_cd_prefix(cmd))   # drop `cd x &&` then `VAR=y env`
+    if not core:
+        return False
+    if _PASSTHROUGH_RE.match(core) or _GENERIC_PKG_RE.match(core) or _INLINE_EVAL_RE.match(core):
         return False
     return bool(_RUNNABLE_RE.search(core))
 

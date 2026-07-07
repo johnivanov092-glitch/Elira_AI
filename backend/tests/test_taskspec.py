@@ -485,6 +485,26 @@ class CliOutputVerifierTest(unittest.TestCase):
         from app.application.code_agent.taskspec import _criterion_intent
         self.assertEqual(_criterion_intent("`npm run build` produces no errors in the output"), "command_check")
 
+    def test_inline_eval_oneliner_does_not_confirm_prose_output(self):
+        # re-review: python -c / node -e / bash -c "echo" print a literal like echo —
+        # they must NOT stand in for running the checker for a prose criterion.
+        crit = "при запуске проверочного скрипта в stdout выводится `ALL OK`"
+        self.assertEqual(self._rec(crit, "python -c \"print('ALL OK')\"", "STDOUT:\nALL OK", 0), "unconfirmed")
+        self.assertEqual(self._rec(crit, "node -e \"console.log('ALL OK')\"", "STDOUT:\nALL OK", 0), "unconfirmed")
+        self.assertEqual(self._rec(crit, "bash -c \"echo ALL OK\"", "STDOUT:\nALL OK", 0), "unconfirmed")
+
+    def test_env_prefixed_program_run_confirms_prose_output(self):
+        # re-review: an env-prefixed / module program run is a REAL run and must confirm.
+        crit = "при запуске приложение выводит `Server ready`"
+        self.assertEqual(self._rec(crit, "NODE_ENV=production node server", "STDOUT:\nServer ready", 0), "confirmed")
+        self.assertEqual(self._rec(crit, "PYTHONPATH=. python -m app", "STDOUT:\nServer ready", 0), "confirmed")
+
+    def test_trailing_location_cue_still_classifies_and_confirms(self):
+        from app.application.code_agent.taskspec import _criterion_intent
+        crit = "`node index.js sample.log` выводит `INFO: 2` в stdout"
+        self.assertEqual(_criterion_intent(crit), "command_output")
+        self.assertEqual(self._rec(crit, "node index.js sample.log", "STDOUT:\nINFO: 2", 0), "confirmed")
+
     def test_closure_groups_output_criteria_by_command(self):
         from app.application.code_agent import criterion_closure as cc
         acts = cc.missing_verifier_actions(CriteriaTracker.from_spec(derive_task_spec(self._LOGSUM)))
