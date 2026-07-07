@@ -98,6 +98,30 @@ class DeriveTest(unittest.TestCase):
             self.assertNotIn("не подтверждает", why.lower())     # not a Подвох line
             self.assertNotEqual(why.strip("` "), "ssh_assert_contains")
 
+    def test_scope_rules_route_to_constraints_not_criteria(self) -> None:
+        # Live f478c61a: a scope rule sitting in a criteria section ("изменения внесены
+        # именно в текущий проект, без создания нового Vite/React проекта") hung as an
+        # unverifiable criterion. Scope/safety rules belong in constraints.
+        task = (
+            "Цель: verify-only прогон.\n"
+            "Критерии готовности frontend:\n"
+            "- изменения внесены именно в текущий проект, без создания нового Vite/React проекта\n"
+            "- `npm run typecheck` проходит без ошибок\n"
+            "- не трогать backend/API\n"
+            "- rendered DOM содержит текст `Ops Snapshot`\n"
+        )
+        spec = derive_task_spec(task)
+        crit = " ".join(spec.success_criteria).lower()
+        cons = " ".join(spec.constraints).lower()
+        self.assertIn("typecheck", crit)                    # verifiable outcome-fact
+        self.assertIn("ops snapshot", crit)
+        self.assertNotIn("изменения внесены", crit)         # scope rule NOT a criterion
+        self.assertNotIn("не трогать backend", crit)
+        self.assertIn("изменения внесены", cons)            # → constraints
+        self.assertIn("backend", cons)
+        # only the two real outcome criteria remain
+        self.assertEqual(len(spec.success_criteria), 2)
+
     def test_structured_task_yields_goal_criteria_verifiers(self) -> None:
         spec = derive_task_spec(_STRUCTURED)
         self.assertIsNotNone(spec)

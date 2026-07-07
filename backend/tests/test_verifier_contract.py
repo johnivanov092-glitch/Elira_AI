@@ -247,6 +247,32 @@ class FileExistenceLifecycleTest(unittest.TestCase):
         self.assertTrue(ch)
         self.assertEqual(t.items[0]["status"], "confirmed")
 
+    def test_exists_before_cleanup_is_positive_and_reports_confirming_evidence(self):
+        # Live f478c61a: "директория … существует ДО cleanup" was misclassified as a
+        # cleanup criterion and confirmed with evidence "не найден". The temporal
+        # "cleanup" must not flip a POSITIVE existence claim → it's file_exists, and a
+        # confirmed criterion reports the CONFIRMING evidence, not a stale precheck one.
+        from app.application.code_agent.taskspec import _criterion_intent
+        c = "verifier подтверждает, что директория `C:\\AgentLabGlobalCanary` существует ДО cleanup"
+        self.assertEqual(_criterion_intent(c), "file_exists")
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[c]))
+        # a pre-creation absence check is neutral (never confirms/fails with "не найден")
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\AgentLabGlobalCanary"},
+                 ok=False, evidence="C:\\AgentLabGlobalCanary: не найден")
+        self.assertEqual(t.items[0]["status"], "unconfirmed")
+        self.assertIsNone(t.items[0]["evidence"])
+        # after creation, ssh_exists(present) confirms it with the CONFIRMING evidence
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\AgentLabGlobalCanary"},
+                 ok=True, evidence="C:\\AgentLabGlobalCanary: существует (директория)")
+        self.assertEqual(t.items[0]["status"], "confirmed")
+        self.assertIn("существует", t.items[0]["evidence"])
+        self.assertNotIn("не найден", t.items[0]["evidence"])
+        # a later post-cleanup absence must NOT flip it back or overwrite the evidence
+        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\AgentLabGlobalCanary"},
+                 ok=True, evidence="отсутствует — cleanup ок")
+        self.assertEqual(t.items[0]["status"], "confirmed")
+        self.assertIn("существует", t.items[0]["evidence"])
+
     def test_full_setup_verify_cleanup_reaches_confirmed(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
             "директория `C:\\lab` существует",

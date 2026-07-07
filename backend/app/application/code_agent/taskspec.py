@@ -240,6 +240,9 @@ def _route(section: str, line: str, goal, criteria, constraints, stop) -> None:
     else:  # criteria
         if _criterion_intent(line) == "report":
             return  # inline "описано в отчёте / что создано" — a report requirement, not a criterion
+        if _is_scope_rule(line):
+            constraints.append(line)  # a scope/safety rule sitting in a criteria section
+            return
         if _BULLET_RE.match(line) or _looks_like_criterion(line) or section == "criteria":
             criteria.append(line)
         else:
@@ -384,10 +387,28 @@ _CMD_CTX = ("typecheck", "type-check", "tsc", "mypy", "pyright", "npm run", "npm
             "доступные провер", "exit 0", "линт", "lint", "тесты проход", "ошибок типов")
 _VIEWPORT_CTX = ("viewport", "адаптив", "responsive", "mobile", "desktop", "мобильн", "десктоп",
                  "overflow", "переполн", "горизонтальн скролл", "раскладк", "layout")
-_ABSENT_CTX = ("удал", "removed", "deleted", "cleanup", "очищ", "не существует", "not exist",
-               "больше нет", "gone", "стёрт", "стерт", "снесён", "снесен")
+# Absence: STRONG cues mean the path is gone; WEAK cues ("cleanup") are usually
+# TEMPORAL ("существует ДО cleanup") — they only imply absence when there is no
+# explicit exist verb, so "директория существует ДО cleanup" is file_exists, not a
+# cleanup criterion confirmed with a "не найден" evidence.
+_ABSENT_STRONG = ("удал", "removed", "deleted", "не существует", "not exist",
+                  "больше нет", "gone", "стёрт", "стерт", "снесён", "снесен")
+_ABSENT_WEAK = ("cleanup", "очищ")
 _EXIST_CTX = ("существует", "создан", "создана", "создать", "exists", "присутству", "появил",
               "есть файл", "папк", "директор", "directory")
+# Scope/safety RULES — not verifiable outcomes. They may sit inside a "Критерии
+# готовности" section ("изменения внесены именно в текущий проект, без создания нового
+# Vite/React проекта"), but they belong in constraints: a verify-only run (no edits)
+# can never "confirm" them, so they'd hang forever as unverified.
+_SCOPE_RULE_CUES = (
+    "без создания", "без создани", "не создавай", "не создавать", "не создавая",
+    "не трогай", "не трогать", "не меняй package", "не менять package",
+    "не добавляй нов", "не добавлять нов", "не удаляй существ", "не удалять существ",
+    "не переписывай", "не переписыв",
+    "только текущий проект", "только в текущем проект", "только в текущий проект",
+    "если нужны изменения", "если изменения нужны", "если это реально нужно",
+    "изменения внесены именно", "изменения вносятся только", "менять только",
+)
 
 
 def _command_kind(text: str) -> str:
@@ -454,11 +475,20 @@ def _criterion_intent(text: str) -> str:
         return "page_open"
     if _has(low, _CMD_CTX):
         return "command_check"
-    if _has(low, _ABSENT_CTX) and (fil or has_path):
+    exists_verb = _has(unquoted, _EXIST_CTX)
+    absent = _has(unquoted, _ABSENT_STRONG) or (_has(unquoted, _ABSENT_WEAK) and not exists_verb)
+    if absent and (fil or has_path):
         return "file_not_exists"
-    if _has(low, _EXIST_CTX) and (fil or has_path):
+    if exists_verb and (fil or has_path):
         return "file_exists"
     return "generic"
+
+
+def _is_scope_rule(line: str) -> bool:
+    """A scope/safety RULE (change only the current project, don't create a new one),
+    even when written inside a criteria section — it's a constraint, not a verifiable
+    success criterion."""
+    return _has((line or "").lower(), _SCOPE_RULE_CUES)
 
 
 # A criterion enumerating several required strings — ONLY an explicit "keyword: a, b,
