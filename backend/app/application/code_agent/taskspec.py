@@ -420,11 +420,14 @@ def _is_interaction(text: str) -> bool:
 
 # A criterion whose applicability depends on the PROJECT having something ("если в
 # проекте есть npm run typecheck, он проходит") — optional, not a hard deliverable.
-# Deliberately specific so it never catches an interaction "если ввести bad-input".
-_CONDITIONAL_CUES = ("если в проекте", "при наличии", "если имеется", "если существует",
-                     "если присутству", "if present", "if the project has", "if it exists",
-                     "опционал", "optional", "по возможности", "если доступ", "если есть скрипт",
-                     "если есть script", "если есть команда")
+# Deliberately narrow: only project-/tooling-presence and explicit-optional phrasings.
+# Bare "если существует"/"если доступ"/"если имеется"/"if it exists" are EXCLUDED —
+# they over-match a MANDATORY existence/availability criterion casually written with a
+# leading "если …" ("проверь, если существует файл X"), which would then be silently
+# skipped and drop out of the mandatory denominator (review of 6a47eaa flagged this).
+_CONDITIONAL_CUES = ("если в проекте", "при наличии", "if present", "if the project has",
+                     "опционал", "optional", "по возможности",
+                     "если есть скрипт", "если есть script", "если есть команда")
 
 
 def _is_conditional(text: str) -> bool:

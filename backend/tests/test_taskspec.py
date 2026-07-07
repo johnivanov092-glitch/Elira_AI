@@ -697,6 +697,19 @@ class VaultDeskVerificationTest(unittest.TestCase):
         self.assertEqual(cond["status"], "skipped")              # n/a, not unverified
         self.assertEqual(t.completion_status(), "confirmed")     # the mandatory build is done
 
+    def test_mandatory_existence_with_leading_esli_is_not_conditional(self):
+        # Review of 6a47eaa: a mandatory existence/availability criterion casually written
+        # with a leading "если существует…"/"если доступ…" must NOT be demoted to optional
+        # (else a real miss is silently skipped → false "confirmed").
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "проверь, если существует файл `health.txt`",
+        ]))
+        self.assertFalse(t.items[0]["conditional"])              # not optional
+        self.assertEqual(t.items[0]["intent"], "file_exists")    # a real, blocking criterion
+        t.finalize_conditionals()
+        self.assertEqual(t.items[0]["status"], "unconfirmed")    # stays open (never skipped)
+        self.assertEqual(t.completion_status(), "unverified")
+
     def test_conditional_typecheck_confirms_when_script_runs_green(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
             "если в проекте есть `npm run typecheck`, он проходит без ошибок",
