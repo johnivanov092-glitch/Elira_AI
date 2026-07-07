@@ -136,21 +136,47 @@ def _interaction_group_actions(items: list[dict], url: str) -> list[dict]:
     return out
 
 
+def _command_group_actions(items: list[dict]) -> list[dict]:
+    """GROUP open command_output criteria by command into ONE run_bash action — one run
+    closes INFO/WARN/ERROR/TOTAL for the same command (don't re-run it 5-10×). Carries
+    the exact command + all expected output tokens + a non-zero-exit note when needed."""
+    groups: dict[str, list[dict]] = {}
+    for it in items:
+        groups.setdefault(it.get("command", ""), []).append(it)
+    out = []
+    for cmd, its in groups.items():
+        exps = sorted({it.get("output_expected", "") for it in its if it.get("output_expected")})
+        show = ", ".join(f"`{e}`" for e in exps) if exps else "нужный вывод"
+        neg = any(it.get("expect_nonzero") for it in its)
+        cmd_show = cmd or "команду из задачи"
+        out.append({
+            "tool": "run_bash",
+            "call": (f"run_bash(`{cmd_show}`) — ОДИН запуск; в stdout/stderr должно быть {show}"
+                     + ("; и НЕнулевой код выхода" if neg else "")
+                     + " (grep/read_file НЕ доказывают вывод команды)."),
+            "why": "; ".join(it["text"] for it in its)[:200],
+        })
+    return out
+
+
 def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLACEHOLDER,
                              url: str = _URL_PLACEHOLDER) -> list[dict]:
     """Concrete verifier calls still missing for each unconfirmed/failed criterion whose
     verifier is unambiguous. Criteria with no deterministic verifier are omitted.
 
     MINIMAL plan (tool-economy): interaction criteria sharing one fill+click GROUP into a
-    single browser(actions=…) call; a browser render proves page_open too, so we never
-    also demand an http_api page_open. Duplicate calls collapse."""
+    single browser(actions=…) call; command_output criteria sharing one command GROUP into
+    a single run_bash call; a browser render proves page_open too, so we never also demand
+    an http_api page_open. Duplicate calls collapse."""
     open_items = [it for it in tracker.items if it["status"] != "confirmed"]
     interaction = [it for it in open_items if it["intent"] == "dom_contains" and it.get("interaction")]
-    rest = [it for it in open_items if not (it["intent"] == "dom_contains" and it.get("interaction"))]
+    cmd_output = [it for it in open_items if it["intent"] == "command_output"]
+    rest = [it for it in open_items
+            if not (it["intent"] == "dom_contains" and it.get("interaction")) and it["intent"] != "command_output"]
     out, seen = [], set()
-    grouped = _interaction_group_actions(interaction, url)
+    grouped = _interaction_group_actions(interaction, url) + _command_group_actions(cmd_output)
     # a browser DOM verifier (grouped or plain) subsumes page_open → don't also ask http_api
-    has_browser_dom = bool(grouped) or any(it["intent"] == "dom_contains" for it in rest)
+    has_browser_dom = bool(interaction) or any(it["intent"] == "dom_contains" for it in rest)
     for a in grouped:
         if a["call"] not in seen:
             seen.add(a["call"])

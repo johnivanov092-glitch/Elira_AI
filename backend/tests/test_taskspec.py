@@ -376,6 +376,92 @@ class ServerRedirectTest(unittest.TestCase):
                         f"expected a run_server→browser redirect; got {[str(e.get('result',''))[:60] for e in rs]}")
 
 
+class CliOutputVerifierTest(unittest.TestCase):
+    """Batch A: a command's stdout/stderr closes command_output criteria — one run closes
+    several; grep/read_file do not; the negative case needs text + non-zero exit."""
+
+    _LOGSUM = """Цель:
+Создай новый маленький CLI-проект `log-summarizer` в текущей рабочей директории.
+
+Критерии готовности:
+- создана папка `log-summarizer`
+- `log-summarizer/index.js` существует
+- `log-summarizer/sample.log` существует
+- `node index.js sample.log` выводит `INFO: 2`
+- `node index.js sample.log` выводит `WARN: 1`
+- `node index.js sample.log` выводит `ERROR: 2`
+- `node index.js sample.log` выводит `TOTAL: 5`
+- `node index.js missing.log` выводит `File not found` и завершается с ошибкой
+
+Подвох:
+- grep/read_file по исходникам НЕ подтверждает output criteria
+"""
+
+    _CSV = """Цель:
+Создай CLI-проект `csv-inventory-checker`.
+
+Критерии готовности:
+- создана папка `csv-inventory-checker`
+- запуск с исходным CSV выводит `OK: 1`
+- запуск с исходным CSV выводит `WARN: 1`
+- запуск с исходным CSV выводит `DOWN: 1`
+- запуск с исходным CSV выводит `SUBNET: 192.168.88.0/24`
+"""
+
+    def _st(self, t, needle):
+        return next((it["status"] for it in t.items if needle in it["text"]), "?")
+
+    def test_one_run_closes_all_output_criteria_for_a_command(self):
+        t = CriteriaTracker.from_spec(derive_task_spec(self._LOGSUM))
+        # every 'node index.js sample.log выводит X' is command_output
+        cmd_out = [it for it in t.items if it["intent"] == "command_output"]
+        self.assertEqual(len(cmd_out), 5)   # 4 positive + 1 negative
+        out = "STDOUT:\nINFO: 2\nWARN: 1\nERROR: 2\nTOTAL: 5"
+        t.record(tool_name="run_bash", args={"command": "cd log-summarizer && node index.js sample.log"},
+                 ok=True, evidence=out, meta={"exit_code": 0})
+        for tok in ("INFO: 2", "WARN: 1", "ERROR: 2", "TOTAL: 5"):
+            self.assertEqual(self._st(t, tok), "confirmed", tok)
+        self.assertEqual(self._st(t, "File not found"), "unconfirmed")  # negative not run yet
+
+    def test_negative_case_needs_text_and_nonzero_exit(self):
+        spec = derive_task_spec(self._LOGSUM)
+        # exit 0 with the text must NOT confirm the fails-with-output criterion
+        t0 = CriteriaTracker.from_spec(spec)
+        t0.record(tool_name="run_bash", args={"command": "node index.js missing.log"},
+                  ok=True, evidence="STDERR:\nFile not found", meta={"exit_code": 0})
+        self.assertEqual(self._st(t0, "File not found"), "unconfirmed")
+        # text + non-zero exit confirms it
+        t1 = CriteriaTracker.from_spec(spec)
+        t1.record(tool_name="run_bash", args={"command": "node index.js missing.log"},
+                  ok=False, evidence="STDERR:\nFile not found", meta={"exit_code": 1})
+        self.assertEqual(self._st(t1, "File not found"), "confirmed")
+
+    def test_grep_does_not_close_command_output(self):
+        t = CriteriaTracker.from_spec(derive_task_spec(self._LOGSUM))
+        t.record(tool_name="run_bash", args={"command": "grep -r 'INFO: 2' ."},
+                 ok=True, evidence="index.js: INFO: 2", meta={"exit_code": 0})
+        self.assertEqual(self._st(t, "INFO: 2"), "unconfirmed")
+
+    def test_csv_prose_command_output_closes_from_one_run(self):
+        t = CriteriaTracker.from_spec(derive_task_spec(self._CSV))
+        cmd_out = [it for it in t.items if it["intent"] == "command_output"]
+        self.assertEqual(len(cmd_out), 4)
+        t.record(tool_name="run_bash", args={"command": "node check.js inventory.csv"}, ok=True,
+                 evidence="STDOUT:\nOK: 1\nWARN: 1\nDOWN: 1\nSUBNET: 192.168.88.0/24", meta={"exit_code": 0})
+        for tok in ("OK: 1", "WARN: 1", "DOWN: 1", "SUBNET: 192.168.88.0/24"):
+            self.assertEqual(self._st(t, tok), "confirmed", tok)
+
+    def test_closure_groups_output_criteria_by_command(self):
+        from app.application.code_agent import criterion_closure as cc
+        acts = cc.missing_verifier_actions(CriteriaTracker.from_spec(derive_task_spec(self._LOGSUM)))
+        run_bash_acts = [a for a in acts if a["tool"] == "run_bash"]
+        # ONE run_bash per distinct command (sample.log group + missing.log), not one per token
+        self.assertEqual(len(run_bash_acts), 2)
+        sample = next(a for a in run_bash_acts if "sample.log" in a["call"])
+        for tok in ("INFO: 2", "WARN: 1", "ERROR: 2", "TOTAL: 5"):
+            self.assertIn(tok, sample["call"])
+
+
 class VerifierGateTest(unittest.TestCase):
     def tearDown(self):
         for rid in ("ts-gate", "ts-confirmed"):

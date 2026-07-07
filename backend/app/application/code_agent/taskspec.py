@@ -451,6 +451,60 @@ def interaction_spec(text: str) -> dict:
     return {"fill": fill, "click": click}
 
 
+# ── CLI command-output (Batch A) ─────────────────────────────────
+# A criterion asserting a COMMAND prints something ("`node index.js sample.log` выводит
+# `INFO: 2`"), verified by run_bash stdout/stderr — NOT a bundle grep or a code read.
+_OUTPUT_CUES = ("выводит", "выведет", "печатает", "вывод", "на выходе", "в выводе",
+                "в stdout", "prints", "outputs", "output", "stdout")
+_RUN_VERB_CUES = ("запуск", "запуст", "выполн", "прогон", "run ", "node ", "python",
+                  "npm ", "pnpm", "yarn ", "./", "cargo ", "go run", "deno", "ts-node", "bash ")
+_NONZERO_CUES = ("завершается с ошибк", "с ошибкой", "non-zero", "ненулев", "падает",
+                 "exits non-zero", "exit code 1", "код возврата", "с ненулевым", "ненулевым кодом")
+_RUNNABLE_RE = re.compile(
+    r"^(?:node|python3?|npm|pnpm|yarn|deno|ts-node|bash|sh|go|cargo|php|ruby|\./)\b"
+    r"|\.(?:js|mjs|cjs|py|sh|ts)\b", re.IGNORECASE)
+
+
+def _runnable_quote(text: str) -> str:
+    """A quoted token that looks like a runnable command (`node index.js sample.log`)."""
+    for q in _QUOTED_RE.findall(text or ""):
+        if _RUNNABLE_RE.search(q.strip()):
+            return q.strip()
+    return ""
+
+
+def _is_command_output(text: str) -> bool:
+    """A CLI-output criterion: an output verb + a command signal (a runnable quoted
+    command OR a run verb 'запуск'/'node'/…). A bare 'видит `X`' without a run reference
+    is NOT command_output (stays generic — honest)."""
+    low = (text or "").lower()
+    return _has(low, _OUTPUT_CUES) and (bool(_runnable_quote(text)) or _has(low, _RUN_VERB_CUES))
+
+
+def command_spec(text: str) -> dict:
+    """(command, expected output, expect_nonzero) for a CLI-output criterion. command is
+    the runnable quoted token (may be '' when the run is described in prose); the expected
+    output is the quoted token after the output cue; expect_nonzero when a failure cue is
+    present ('завершается с ошибкой')."""
+    low = (text or "").lower()
+    command = _runnable_quote(text)
+    output_expected = ""
+    positions = [low.find(c) for c in _OUTPUT_CUES if c in low]
+    if positions:
+        pos = min(positions)
+        for m in _QUOTED_RE.finditer(text or ""):
+            q = m.group(1).strip()
+            if m.start() > pos and q and q != command:
+                output_expected = q
+                break
+    return {"command": command, "output_expected": output_expected,
+            "expect_nonzero": _has(low, _NONZERO_CUES)}
+
+
+def _norm_cmd(s: str) -> str:
+    return " ".join((s or "").lower().split())
+
+
 # A criterion whose applicability depends on the PROJECT having something ("если в
 # проекте есть npm run typecheck, он проходит") — optional, not a hard deliverable.
 # Deliberately narrow: only project-/tooling-presence and explicit-optional phrasings.
@@ -634,6 +688,8 @@ def _criterion_intent(text: str) -> str:
         return "server_started"
     if _has(low, _OPEN_CTX):
         return "page_open"
+    if _is_command_output(text):
+        return "command_output"        # a command prints text — proven by run_bash stdout
     if _has(low, _CMD_CTX):
         return "command_check"
     exists_verb = _has(unquoted, _EXIST_CTX)
@@ -726,7 +782,18 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
         return {"intents": {"file_exists"},
                 "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
     if tool_name == "run_bash":
-        return _run_bash_verdict(str(a.get("command", "")))
+        cmd = str(a.get("command", ""))
+        low = cmd.lower()
+        is_grep = _has(low, ("findstr", "grep ", "select-string")) and not _has(low, ("pytest", "npm test", "&&"))
+        base = _run_bash_verdict(cmd)                      # command_check (exit-code kind) or None
+        intents = set((base or {}).get("intents") or set())
+        if not is_grep:                                    # a bundle-grep proves neither check nor output
+            intents.add("command_output")
+        if not intents:
+            return None
+        return {"intents": intents, "command_kind": (base or {}).get("command_kind", "any"),
+                "files": set(), "command": cmd, "output": (evidence or "").lower(),
+                "exit_code": (meta or {}).get("exit_code")}
     if tool_name == "run_server":
         # A dev/app server is up on a real URL/port — structured evidence, not words.
         # A failed start (no server_started/actual_url in meta) is NOT a verdict, so it
@@ -759,6 +826,17 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
     if it == "command_check":
         ck, vk = item.get("command_kind") or "any", v.get("command_kind") or "any"
         return ck == "any" or vk == "any" or ck == vk
+    if it == "command_output":
+        exp = item.get("output_expected", "")
+        if not exp:
+            return False
+        ne = _norm_dom(exp)
+        if not ne or (" " + ne + " ") not in (" " + _norm_dom(v.get("output", "")) + " "):
+            return False       # expected text must be in the run's stdout/stderr (boundary-anchored)
+        cmd_c = item.get("command", "")
+        if cmd_c and _norm_cmd(cmd_c) not in _norm_cmd(v.get("command", "")):
+            return False       # if the criterion names a command, the run must be OF that command
+        return True
     if it == "dom_contains":
         toks = item.get("targets") or set()
         if not toks:
@@ -813,6 +891,23 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
         if not present:
             return "confirm"
         return "fail" if v.get("asserts") == "absent" else None
+    if it == "command_output":
+        if not _verdict_target_matches(item, v):
+            return None
+        if item.get("expect_nonzero"):
+            ec = v.get("exit_code")
+            return "confirm" if isinstance(ec, int) and ec != 0 else None
+        return "confirm"                # positive: expected text present in the run's output
+    if it == "command_check":
+        # Pass/fail by EXIT CODE when known (a real run always carries it): green→confirm,
+        # red→fail. This is what stops a broadened run_bash record from false-confirming a
+        # red build via ok=True (the tool ran even though the command exited non-zero). When
+        # exit_code is absent (a unit test recording only ok=…) fall back to ok.
+        if not _verdict_target_matches(item, v):
+            return None
+        ec = v.get("exit_code")
+        succeeded = (ec == 0) if isinstance(ec, int) else bool(ok)
+        return "confirm" if succeeded else "fail"
     if not _verdict_target_matches(item, v):
         return None
     return "confirm" if ok else "fail"
@@ -821,11 +916,14 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
 def _criterion_item(text: str) -> dict:
     low = (text or "").lower()
     ports = _SALIENT_RE_NUM.findall(text or "")
+    cmd = command_spec(text)
     return {
         "text": text, "text_low": low, "status": "unconfirmed", "verifier": None, "evidence": None,
         "intent": _criterion_intent(text), "files": _path_tokens_from_text(text), "port": ports[0] if ports else "",
         "targets": _dom_targets(text), "command_kind": _command_kind(text),
         "interaction": _is_interaction(text), "conditional": _is_conditional(text),
+        "command": cmd["command"], "output_expected": cmd["output_expected"],
+        "expect_nonzero": cmd["expect_nonzero"],
     }
 
 

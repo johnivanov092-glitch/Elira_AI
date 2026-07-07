@@ -38,9 +38,9 @@ Support: **✅ supported** (classified + verifier + evidence + regression test) 
 | `cleanup.confirmed` | `file_not_exists` | `ssh_not_exists` | absent | ✅ | — |
 | `viewport_layout` | `viewport_layout` | `browser` | viewport meta | ◐ | — |
 | `project.scope.no_parent_changes` | *(→ constraint)* | — | *(can't verify without diff)* | ◐ | — |
-| **`cli.output.contains`** — `cmd` выводит `INFO: 2` | `generic` ⚠ | `run_bash` | stdout/stderr contains text | ✗ | — |
-| **`cli.output.not_contains`** | `generic` ⚠ | `run_bash` | text absent | ✗ | — |
-| **`cli.command.fails_with_output`** — выводит X и падает | `generic` ⚠ | `run_bash` | text + exit≠0 | ✗ | — |
+| `cli.output.contains` — `cmd` выводит `INFO: 2` | `command_output` | `run_bash` | stdout/stderr contains text (one run closes many) | ✅ | — |
+| `cli.command.fails_with_output` — выводит X и падает | `command_output`+nonzero | `run_bash` | text + exit≠0 | ✅ | — |
+| `cli.output.not_contains` | `command_output` | `run_bash` | text absent | ◐ | — |
 | **`browser.form.select_checkbox_assert`** — fill/select/checkbox/empty + click | `generic` ⚠ | `browser(actions)` | multi-step post-action DOM | ✗ | — |
 
 ⚠ = today classifies as `generic` (or misses the interaction flag) → the criterion can
@@ -70,13 +70,13 @@ honest instead of a rubber stamp.
 
 ## Gaps, ranked (evidence = the live smoke runs)
 
-1. **CLI stdout/stderr verifier — MISSING** (biggest; 9 criteria across 2 runs).
-   `log-summarizer` (`INFO/WARN/ERROR/TOTAL`, + `missing.log` → File not found + non-zero)
-   and `csv-inventory-checker` (`OK/WARN/DOWN/SUBNET/OUT_OF_SCOPE`) both had files/folders
-   confirmed but every `cmd выводит X` criterion stuck as `generic`. `run_bash` only carries
-   an exit-code (`command_check`); its stdout never reaches `record()`, and there is no
-   `command_output` intent. Also a tool-economy tail (26 calls / 13× run_bash) because the
-   closure can't tell the model "one run closes all four".
+1. **CLI stdout/stderr verifier — ✅ DONE (Batch A).**
+   New `command_output` intent + `run_bash` stdout/stderr/exit_code threaded to `record()`;
+   one run closes several output criteria for the same command; negative case needs text +
+   non-zero exit; closure groups by command; grep/read_file still prove nothing. Covers
+   `log-summarizer` (INFO/WARN/ERROR/TOTAL + missing.log) and `csv-inventory-checker`
+   (OK/WARN/DOWN/SUBNET). *Known limit:* an abstract `verifier видит X` with no run
+   reference (the csv `OUT_OF_SCOPE` line) stays `generic` — phrase it with a run verb.
 2. **Browser form grammar — MISSING** (`backup-form-checker`, 2 criteria). Two problems:
    (a) `browser interaction: … показывает X` **without** a DOM-context word (`rendered`/`DOM`/
    `на экране`) classifies `generic`; (b) `interaction_spec` models only a single fill+click —

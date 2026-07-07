@@ -2016,10 +2016,14 @@ def _stream_code_agent_core(
                             tool_name=name, args=parsed_args, ok=_tool_ok,
                             evidence=str(tool_meta.get("evidence") or ""), meta=tool_meta,
                         )
-                    elif _family.startswith(("test:", "verify:")) and tool_meta.get("exit_code") == 0:
+                    elif name == "run_bash":
+                        # Feed the REAL stdout/stderr + exit_code so command_output
+                        # criteria (expected text in output) AND command_check (exit 0 +
+                        # known kind) both match — one run can close several output
+                        # criteria. Both are confirm-only on success (never a hard fail).
                         criterion_progress = criteria.record(
-                            tool_name=name, args=parsed_args, ok=True,
-                            evidence="проверка прошла (exit 0)", meta=tool_meta,
+                            tool_name=name, args=parsed_args, ok=_tool_ok,
+                            evidence=text_result, meta=tool_meta,
                         )
                 # Strategy router — a criterion flip (criterion_progress) is the
                 # strongest progress signal and re-arms the run.

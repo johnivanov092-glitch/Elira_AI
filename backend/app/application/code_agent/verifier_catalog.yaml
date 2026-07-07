@@ -190,43 +190,43 @@ categories:
 
   - id: cli.output.contains
     domain: cli
-    support: missing
+    support: supported            # Batch A
     criterion_patterns:
       - "`node index.js sample.log` выводит `INFO: 2`"
       - "запуск с исходным CSV выводит `OK: 1`"
-    intent: generic          # <-- misclassified today; SHOULD be a new command_output intent
+    intent: command_output
     verifier_tools: [run_bash]
-    evidence_required: ["run_bash stdout/stderr contains expected text (+ exit_code condition); ONE run closes several output criteria for the same command"]
-    closes: []               # nothing today
-    does_not_close_target: [file_exists, dom_contains]
-    missing_reason: >
-      run_bash yields only command_check (exit-code for typecheck/build/test kinds); it does
-      NOT carry stdout to record(), and there is no command_output intent. So 'cmd выводит X'
-      classifies generic and is never verified (live log-summarizer + csv-inventory, 9 criteria).
-    negative: "grep/read_file do NOT prove command output."
-    code: "GAP — new command_output intent + run_bash stdout as evidence to record()"
+    evidence_required: ["run_bash stdout/stderr contains the expected text (boundary-anchored _norm_dom); if the criterion names a command, the run's command must contain it (normalised); ONE run closes several output criteria for the same command"]
+    closes: [command_output]
+    does_not_close: [file_exists, dom_contains]
+    grammar: "output cue (выводит/печатает/prints/outputs/на выходе/в выводе/stdout) + command signal (a runnable quoted command OR a run verb запуск/выполн/run/node/python/npm/./…). A quoted command before the cue is the command; the quoted token after the cue is the expected output."
+    limits: "an abstract 'verifier видит `X`' with NO command/run reference stays `generic` (honest) — phrase it with a run verb to make it verifiable."
+    negative: "grep/findstr/read_file do NOT prove command output (a pure bundle-grep run yields no verdict)."
+    regression: "tests/test_taskspec.py: log-summarizer + csv-inventory exact-prompt output criteria close from one run."
+    code: "taskspec.py:_criterion_intent(command_output), command_spec, _verifier_verdict(run_bash), _verdict_target_matches/_verdict_outcome(command_output); agent_loop.py run_bash record; criterion_closure.py:_command_group_actions"
 
   - id: cli.output.not_contains
     domain: cli
-    support: missing
+    support: partial
     criterion_patterns: ["вывод НЕ содержит `X`"]
-    intent: generic
+    intent: command_output       # detected only via the negative-content path today
     verifier_tools: [run_bash]
-    evidence_required: ["expected text absent from stdout/stderr"]
+    evidence_required: ["expected text ABSENT from stdout/stderr"]
     closes: []
-    missing_reason: "same as cli.output.contains"
-    code: "GAP"
+    partial_reason: "the command_output matcher confirms on PRESENCE; an explicit 'output does NOT contain X' negative-content variant is not yet wired (no live case needed it). Left partial deliberately."
+    code: "GAP (deferred — no live case)"
 
   - id: cli.command.fails_with_output
     domain: cli
-    support: missing
+    support: supported            # Batch A
     criterion_patterns: ["`node index.js missing.log` выводит `File not found` и завершается с ошибкой"]
-    intent: generic          # negative-case command_output
+    intent: command_output       # +expect_nonzero flag
     verifier_tools: [run_bash]
     evidence_required: ["stdout/stderr contains expected text AND exit_code != 0"]
-    closes: []
-    missing_reason: "negative command_output — needs the (text + nonzero-exit) matcher; unsupported today."
-    code: "GAP"
+    closes: [command_output]
+    grammar: "output cue + expected token + a failure cue (завершается с ошибкой / non-zero / падает / ненулевой) sets expect_nonzero."
+    regression: "tests/test_taskspec.py: log-summarizer missing.log closes only on text + non-zero exit."
+    code: "taskspec.py:command_spec(expect_nonzero); _verdict_outcome(command_output)"
 
   - id: project.scope.created_under
     domain: project
