@@ -594,6 +594,16 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound", "fs.read"],
             "timeout_seconds": 30, "max_output_chars": 5000,
         },
+        {
+            "name": "ssh_not_exists", "handler": _noop,
+            "display_name": "SSH Not Exists", "display_name_ru": "SSH удалён",
+            "category": "ssh",
+            "description": "Assert a file/directory is GONE on a remote host — cleanup verifier",
+            "source": "ssh",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound", "fs.read"],
+            "timeout_seconds": 30, "max_output_chars": 5000,
+        },
     ]
 
 

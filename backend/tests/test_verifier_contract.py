@@ -26,6 +26,7 @@ from app.application.code_agent.taskspec import (  # noqa: E402
     _criterion_intent,
     derive_task_spec,
 )
+from app.application.code_agent.loop_helpers import gate_completion_claims  # noqa: E402
 
 
 class IntentClassificationTest(unittest.TestCase):
@@ -188,13 +189,130 @@ class CleanupIntentTest(unittest.TestCase):
                  ok=False, evidence="C:\\lab\\tmp.txt: не найден")
         self.assertEqual(t.items[0]["status"], "confirmed")
 
-    def test_ssh_exists_present_fails_cleanup(self):
+    def test_passive_exists_present_does_not_fail_cleanup(self):
+        # A PASSIVE ssh_exists that sees the file (e.g. a pre-cleanup check) must not
+        # FAIL a "removed" criterion — it stays unconfirmed (lifecycle-safe).
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
             "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
         ]))
         t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
                  ok=True, evidence="C:\\lab\\tmp.txt: существует (файл)")
-        self.assertEqual(t.items[0]["status"], "failed")        # still there → cleanup failed
+        self.assertEqual(t.items[0]["status"], "unconfirmed")
+
+    def test_explicit_not_exists_still_present_fails_cleanup(self):
+        # An EXPLICIT ssh_not_exists assertion that finds the file still there IS a
+        # real cleanup failure.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
+        ]))
+        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
+                 ok=False, evidence="C:\\lab\\tmp.txt: всё ещё существует (файл)")
+        self.assertEqual(t.items[0]["status"], "failed")
+
+    def test_not_exists_absent_confirms_cleanup(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
+        ]))
+        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
+                 ok=True, evidence="C:\\lab\\tmp.txt: отсутствует — cleanup ок")
+        self.assertEqual(t.items[0]["status"], "confirmed")
+
+    def test_post_cleanup_absence_does_not_fail_setup_exists(self):
+        # FIX #2: setup-exists confirmed during setup, then a post-cleanup absence
+        # check must NOT flip it to failed.
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "файл `C:\\lab\\tmp.txt` существует",           # setup criterion
+        ]))
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
+                 ok=True, evidence="существует")            # setup: confirmed
+        self.assertEqual(t.items[0]["status"], "confirmed")
+        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
+                 ok=True, evidence="отсутствует")           # post-cleanup: absent
+        self.assertEqual(t.items[0]["status"], "confirmed")  # NOT failed
+        # and even an unconfirmed setup-exists is only neutral on a later absence
+        t2 = CriteriaTracker.from_spec(TaskSpec(success_criteria=["файл `C:\\lab\\tmp.txt` существует"]))
+        t2.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"},
+                  ok=False, evidence="не найден")
+        self.assertEqual(t2.items[0]["status"], "unconfirmed")  # neutral, not failed
+
+
+class FileExistenceLifecycleTest(unittest.TestCase):
+    """A whole setup→verify→cleanup lifecycle confirms without cross-phase false fails."""
+
+    def test_ssh_read_success_confirms_file_exists(self):
+        # FIX #3: a successful read proves the file exists (no separate ssh_exists needed).
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=["файл `C:\\lab\\health.txt` существует"]))
+        ch = t.record(tool_name="ssh_read", args={"host": "h", "path": "C:\\lab\\health.txt"},
+                      ok=True, evidence="C:\\lab\\health.txt: прочитан (42 байт) — существует")
+        self.assertTrue(ch)
+        self.assertEqual(t.items[0]["status"], "confirmed")
+
+    def test_full_setup_verify_cleanup_reaches_confirmed(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "директория `C:\\lab` существует",
+            "файл `C:\\lab\\health.txt` существует",
+            "файл `C:\\lab\\health.txt` содержит строку `status=ok`",
+            "временный файл `C:\\lab\\tmp.txt` удалён после cleanup",
+        ]))
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": "C:\\lab"}, ok=True, evidence="dir")
+        t.record(tool_name="ssh_read", args={"host": "h", "path": "C:\\lab\\health.txt"}, ok=True, evidence="read")
+        t.record(tool_name="ssh_assert_contains",
+                 args={"host": "h", "path": "C:\\lab\\health.txt", "pattern": "status=ok"}, ok=True, evidence="found")
+        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": "C:\\lab\\tmp.txt"}, ok=True, evidence="gone")
+        self.assertEqual(t.completion_status(), "confirmed")
+
+
+class MultilineContentSplitTest(unittest.TestCase):
+    """FIX #4: 'file contains lines: A, B, C' → one criterion per line."""
+
+    def test_colon_list_splits_into_per_line_criteria(self):
+        spec = derive_task_spec(
+            "Цель: наполнить лог.\nКритерии готовности:\n"
+            "- файл `C:\\lab\\out.txt` содержит строки: `READY`, `OK`, `DONE`"
+        )
+        crits = spec.success_criteria
+        self.assertEqual(len(crits), 3)
+        for tok in ("READY", "OK", "DONE"):
+            self.assertTrue(any(f"`{tok}`" in c for c in crits), tok)
+        for c in crits:
+            self.assertEqual(_criterion_intent(c), "content_contains")
+        # each split keeps the file, and is confirmed by its own ssh_assert_contains
+        t = CriteriaTracker.from_spec(spec)
+        for tok in ("READY", "OK", "DONE"):
+            t.record(tool_name="ssh_assert_contains",
+                     args={"host": "h", "path": "C:\\lab\\out.txt", "pattern": tok}, ok=True, evidence="found")
+        self.assertEqual(t.completion_status(), "confirmed")
+
+    def test_single_path_plus_pattern_criterion_not_split(self):
+        # `path` + `pattern` (two quotes, no colon-list) must stay ONE criterion.
+        spec = derive_task_spec(
+            "Цель: X.\nКритерии готовности:\n"
+            "- файл `C:\\lab\\h.txt` содержит строку `status=ok`"
+        )
+        self.assertEqual(len(spec.success_criteria), 1)
+
+
+class CompletionClaimGateTest(unittest.TestCase):
+    """FIX #1: the model can't claim done while the verifier says otherwise."""
+
+    def test_claims_neutralized_when_not_confirmed(self):
+        for status in ("partial", "unverified", "failed"):
+            out = gate_completion_claims(
+                "Всё сделано! Все критерии выполнены. COMPLETED.", status)
+            self.assertNotIn("COMPLETED", out)
+            self.assertNotIn("все критерии выполнены", out.lower())
+        out = gate_completion_claims("Done — all criteria passed. Task completed.", "partial")
+        self.assertNotIn("all criteria passed", out.lower())
+        self.assertNotIn("task completed", out.lower())
+
+    def test_confirmed_leaves_text_intact(self):
+        s = "Готово! Все критерии выполнены. COMPLETED."
+        self.assertEqual(gate_completion_claims(s, "confirmed"), s)
+
+    def test_factual_step_statements_survive(self):
+        # A factual statement about a step is NOT a completion claim — keep it.
+        s = "Я прочитал health.txt и создал tmp.txt, запустил typecheck."
+        self.assertEqual(gate_completion_claims(s, "partial"), s)
 
 
 if __name__ == "__main__":

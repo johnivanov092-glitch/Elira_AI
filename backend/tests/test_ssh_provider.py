@@ -511,6 +511,39 @@ class SshPrimitivesTest(SshProviderTestBase):
         self.assertFalse(r["ok"])
         self.assertIsNone(r.get("verifier"))  # couldn't run → not a verdict
 
+    def test_not_exists_absent_is_ok_and_verifier(self) -> None:
+        # Cleanup verifier: absent → ok=True (PASS), a verdict with evidence.
+        with patch("subprocess.run", return_value=_bproc(0, b"MISSING")):
+            r = self.ssh.tool_ssh_not_exists(host="prod-1", path="C:\\lab\\tmp.txt")
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["verifier"])
+        self.assertIn("cleanup", r["evidence"].lower())
+
+    def test_not_exists_still_present_is_fail_verdict(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"EXISTS FILE")):
+            r = self.ssh.tool_ssh_not_exists(host="prod-1", path="C:\\lab\\tmp.txt")
+        self.assertFalse(r["ok"])           # still there → cleanup fail
+        self.assertTrue(r["verifier"])
+
+    def test_not_exists_bad_host_has_no_verdict(self) -> None:
+        r = self.ssh.tool_ssh_not_exists(host="evil", path="/f")
+        self.assertFalse(r["ok"])
+        self.assertIsNone(r.get("verifier"))
+
+    def test_read_success_is_a_file_exists_verifier(self) -> None:
+        with patch("subprocess.run", return_value=_bproc(0, b"file body here")):
+            r = self.ssh.tool_ssh_read(host="prod-1", path="/etc/hosts")
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["verifier"])
+        self.assertIn("существует", r["evidence"])
+
+    def test_read_missing_is_ok_false_without_verifier(self) -> None:
+        # A read that couldn't run (missing / permission) → ok=False, NOT a verdict.
+        with patch("subprocess.run", return_value=_bproc(1, b"", b"No such file")):
+            r = self.ssh.tool_ssh_read(host="prod-1", path="/nope")
+        self.assertFalse(r["ok"])
+        self.assertIsNone(r.get("verifier"))
+
     def test_verifiers_carry_verifier_flag_and_evidence(self) -> None:
         with patch("subprocess.run", return_value=_bproc(0, b"has Content-Length here")):
             r = self.ssh.tool_ssh_assert_contains(host="prod-1", path="/f", pattern="Content-Length")
@@ -567,7 +600,7 @@ class SshProviderIntegrationTest(SshProviderTestBase):
             names,
             {"ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
              "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-             "ssh_exists", "ssh_list_hosts"},
+             "ssh_exists", "ssh_not_exists", "ssh_list_hosts"},
         )
 
     def test_registry_skips_disabled_provider(self) -> None:

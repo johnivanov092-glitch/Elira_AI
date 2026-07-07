@@ -271,21 +271,27 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
     the remote side instead of pulling it all back."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}"}
+        return {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(path, str) or not path.strip():
-        return {"text": "ERROR: path is empty"}
+        return {"text": "ERROR: path is empty", "ok": False}
 
     cap = max(100, min(int(max_chars) if max_chars else _MAX_READ_BYTES, _MAX_READ_BYTES))
     raw, rerr = _read_remote_bytes(host, path, cap + 1)  # +1 to detect truncation
     if rerr is not None:
-        return {"text": f"ERROR: {rerr}"}
+        # Couldn't read (missing / permission) → ok=False, NO verifier: not a verdict,
+        # so it neither confirms nor fails a file_exists criterion.
+        return {"text": f"ERROR: {rerr}", "ok": False}
     truncated = len(raw) > cap
     body = decode_console(raw[:cap] if truncated else raw)
     head = f"[ssh:{host}:{path}]"
     if truncated:
         head += f"  (truncated at {cap} bytes — file is longer)"
+    # A successful read PROVES the file exists — a file_exists verdict (never absence).
     return {
         "text": f"{head}\n\n{body}",
+        "ok": True,
+        "verifier": True,
+        "evidence": f"{path}: прочитан ({len(raw)} байт) — существует",
         "touched_host": host,
         "touched_path": path,
     }
@@ -450,19 +456,16 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     }
 
 
-def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
-    """Verifier: does `path` EXIST on the remote host (file or directory)?
-    Windows-first (PowerShell Test-Path via base64, no quoting) with a POSIX
-    `test`-based fallback. Returns ok=True when the path exists, with the kind
-    (file/directory) as evidence — so a "файл создан"/"папка существует" criterion
-    is confirmed by a verdict, not by the model's word. The ERROR branch (bad host /
-    empty path) returns ok=False WITHOUT a verifier flag: the check couldn't run, so
-    a matching criterion stays unconfirmed rather than being marked failed."""
+def _ssh_probe_exists(host: str, path: str) -> tuple[bool | None, str, dict[str, Any] | None]:
+    """Probe whether `path` exists on `host` (file or directory). Windows-first
+    (PowerShell Test-Path via base64, no quoting) with a POSIX `test` fallback.
+    Returns (exists, kind, error_result): a real verdict → (True/False, kind, None);
+    couldn't run → (None, "", {ERROR result, ok=False, no verifier})."""
     err = _validate_host(host)
     if err is not None:
-        return {"text": f"ERROR: {err}", "ok": False}
+        return None, "", {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(path, str) or not path.strip():
-        return {"text": "ERROR: path is empty", "ok": False}
+        return None, "", {"text": "ERROR: path is empty", "ok": False}
 
     esc = path.replace("'", "''")  # PowerShell single-quote literal escaping
     ps = (
@@ -476,9 +479,9 @@ def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
     try:
         proc = subprocess.run([*_ssh_args(host), win_cmd], capture_output=True, timeout=30)
     except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
+        return None, "", {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
     except FileNotFoundError:
-        return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
+        return None, "", {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     out = decode_console(proc.stdout)
     # PowerShell missing (POSIX remote) → fall back to `test`.
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
@@ -487,15 +490,45 @@ def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
         try:
             proc = subprocess.run([*_ssh_args(host), posix], capture_output=True, timeout=30)
         except subprocess.TimeoutExpired:
-            return {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
+            return None, "", {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
         out = decode_console(proc.stdout)
     exists = "EXISTS" in out
     kind = "директория" if "EXISTS DIR" in out else ("файл" if "EXISTS FILE" in out else "нет")
+    return exists, kind, None
+
+
+def tool_ssh_exists(*, host: str, path: str) -> dict[str, Any]:
+    """Verifier: does `path` EXIST on the remote host (file or directory)? Returns
+    ok=True when the path exists, with the kind as evidence — so a "файл создан"/"папка
+    существует" criterion is confirmed by a verdict, not the model's word. The ERROR
+    branch (bad host / empty path / probe failed) returns ok=False WITHOUT a verifier
+    flag, so a matching criterion stays unconfirmed rather than marked failed."""
+    exists, kind, err = _ssh_probe_exists(host, path)
+    if err is not None:
+        return err
     return {
         "text": f"ssh_exists {host}:{path}: {'ЕСТЬ (' + kind + ')' if exists else 'НЕ найден'} → {'OK' if exists else 'FAIL'}",
-        "ok": exists,
+        "ok": bool(exists),
         "verifier": True,
         "evidence": f"{path}: {'существует (' + kind + ')' if exists else 'не найден'}",
+        "touched_host": host,
+    }
+
+
+def tool_ssh_not_exists(*, host: str, path: str) -> dict[str, Any]:
+    """Verifier for CLEANUP: assert `path` is GONE. Returns ok=True when the path is
+    ABSENT (cleanup succeeded) — so a "временный файл удалён" criterion is confirmed by
+    a verdict, and a still-present path is a real FAIL, not a tool error. The mirror of
+    ssh_exists; ERROR branch (couldn't probe) → ok=False, no verifier."""
+    exists, kind, err = _ssh_probe_exists(host, path)
+    if err is not None:
+        return err
+    gone = not exists
+    return {
+        "text": f"ssh_not_exists {host}:{path}: {'УДАЛЁН' if gone else 'НЕ УДАЛЁН (' + kind + ')'} → {'OK' if gone else 'FAIL'}",
+        "ok": gone,
+        "verifier": True,
+        "evidence": f"{path}: {'отсутствует — cleanup ок' if gone else 'ещё существует (' + kind + ')'}",
         "touched_host": host,
     }
 
@@ -767,6 +800,26 @@ def _schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "ssh_not_exists",
+                "description": (
+                    "Verifier for CLEANUP: assert a path is GONE on the remote host. "
+                    "Returns ok=true when the path is ABSENT (cleanup succeeded) — use "
+                    "this after deleting a file/folder so the absence is a PASS, not a "
+                    "tool error. A still-present path is a real fail."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "host": {"type": "string"},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["host", "path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "ssh_list_hosts",
                 "description": (
                     "Return the list of hosts the user has whitelisted for "
@@ -789,6 +842,7 @@ _DISPATCH = {
     "ssh_assert_not_contains": tool_ssh_assert_not_contains,
     "ssh_port_check": tool_ssh_port_check,
     "ssh_exists": tool_ssh_exists,
+    "ssh_not_exists": tool_ssh_not_exists,
     "ssh_list_hosts": lambda **_: tool_ssh_list_hosts(),
 }
 

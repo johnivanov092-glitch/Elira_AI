@@ -307,7 +307,7 @@ _GROUNDING_FACT_TOOLS = frozenset({
     # FIX-4: verifier verdicts are grounded facts AND real progress — a fresh
     # verdict (criterion transition) resets the stuck streak; a repeated identical
     # verdict collapses to the same fact-shape and does NOT count as progress.
-    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
+    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists", "ssh_not_exists",
 })
 # Enumeration tools reveal the COMPLETE set of files/structure. Truncating their
 # result to a short snippet was the residual grounding leak (live: the model had a
@@ -321,7 +321,7 @@ _ENUM_FACT_TOOLS = frozenset({"project_map", "glob"})
 # absent, e.g. bad host) is NOT a verdict and still grounds nothing.
 _VERIFIER_GROUNDING_TOOLS = frozenset({
     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
-    "http_api", "browser",
+    "ssh_not_exists", "http_api", "browser",
 })
 # Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
 # 3000→6000) now that the real window is 64k, not a tight small-model budget:
@@ -492,6 +492,33 @@ def _is_near_dup(name: str, tokens: frozenset[str], recent: list[tuple[str, froz
 # keeps only the DETERMINISTIC final report used when the router / repetition
 # guards force a stop — built from the journal, never a retelling by the stuck
 # model. See docs/AGENT_RUNTIME_PLAN.md.
+
+
+# Task-completion CLAIMS the model must not make while the deterministic verifier
+# says the task is NOT confirmed. Targets status-marker words + all/every-passed
+# phrasings (RU/EN), NOT ordinary factual statements about a single step — so
+# "прочитал файл" stays, but "все критерии выполнены" / "COMPLETED" is neutralised.
+_COMPLETION_CLAIM_RE = re.compile(
+    r"\bCOMPLETED\b"
+    r"|\ball\s+(?:criteria|checks|tests|requirements)\s+(?:passed|met|green|are\s+met|confirmed)"
+    r"|\btask\s+(?:is\s+)?(?:complete|completed|done|fully\s+done)\b"
+    r"|completion[_\s]?status\s*[:=]\s*(?:confirmed|done|complete)"
+    r"|все\s+критери\w+\s+(?:выполнен\w+|пройден\w+|подтвержден\w+|соблюден\w+)"
+    r"|(?:задача|работа)\s+(?:полностью\s+)?(?:выполнена|завершена|решена|готова)"
+    r"|полностью\s+готов\w*",
+    re.IGNORECASE,
+)
+_COMPLETION_CLAIM_MASK = "(не подтверждено verifier'ом — см. панель проверки)"
+
+
+def gate_completion_claims(text: str, completion_status: str) -> str:
+    """Guard: when the deterministic completion is NOT `confirmed`, the model's final
+    text may not assert the task is COMPLETED / all criteria passed. Such claims are
+    neutralised so the model's word can never contradict the verifier — the structured
+    criteria (done event) + readiness panel remain the source of truth."""
+    if completion_status == "confirmed" or not text:
+        return text
+    return _COMPLETION_CLAIM_RE.sub(_COMPLETION_CLAIM_MASK, text)
 
 
 def _deterministic_stop_summary(

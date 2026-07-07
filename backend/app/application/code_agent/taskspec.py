@@ -183,6 +183,11 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
     if project_root is not None:
         verifiers += _project_verifiers(project_root)
 
+    # A criterion that enumerates several required strings ("file contains lines: A,
+    # B, C") becomes one criterion PER string, so each is verified independently and
+    # earns partial credit — instead of one all-or-nothing criterion (FIX #4).
+    criteria = [part for c in criteria for part in _split_multi_target(c)]
+
     return TaskSpec(
         goal=goal,
         constraints=_dedupe(constraints),
@@ -445,6 +450,38 @@ def _criterion_intent(text: str) -> str:
     return "generic"
 
 
+# A criterion enumerating several required strings — ONLY an explicit "keyword: a, b,
+# c" colon-list (never a bare two-quote criterion, which is usually `path` + `pattern`).
+_LIST_MARKER_RE = re.compile(
+    r"(?:содержит|contains|includ\w*|строки|строчки|lines|значени\w*|записи|поля|following)\s*:\s*(.+)$",
+    re.IGNORECASE,
+)
+_LIST_SPLIT_RE = re.compile(r"\s*[,/;\n]\s*|\s+и\s+|\s+and\s+")
+
+
+def _split_multi_target(c: str) -> list[str]:
+    """Split a FILE-content criterion that enumerates several required strings ("file
+    contains lines: A, B, C") into one criterion per string, so each is verified
+    independently. Fires ONLY on an explicit colon-list and only for content_contains
+    — DOM (all-tokens-visible), single-target, and `path`+`pattern` criteria are
+    untouched. Each split keeps the named file. Domain-agnostic — no product words."""
+    if _criterion_intent(c) != "content_contains":
+        return [c]
+    m = _LIST_MARKER_RE.search(c or "")
+    if not m:
+        return [c]
+    items = [x.strip().strip("`«»\"'.") for x in _LIST_SPLIT_RE.split(m.group(1))]
+    items = [x for x in items if x and len(x) <= 60]
+    if len(items) < 2:
+        return [c]
+    # keep the file the criterion is about, so each split still targets that file
+    file_ref = next((t.strip() for t in _QUOTED_RE.findall(c or "") if _file_tokens(t)), "")
+    if not file_ref:
+        file_ref = next((t for t in _file_tokens(c) if "/" in t or "\\" in t or "." in t), "")
+    base = f"файл `{file_ref}`" if file_ref else "файл"
+    return [f"{base} содержит `{it}`" for it in items]
+
+
 def _run_bash_verdict(cmd: str) -> dict | None:
     """A green run_bash command → a command_check verdict tagged with its kind. A
     bundle grep (findstr/grep) is NOT a verdict — it proves a string is in the bundle,
@@ -473,8 +510,16 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
         return {"intents": {"content_not_contains"}, "files": _file_tokens(str(a.get("path", ""))), "pattern": str(a.get("pattern", "")).lower()}
     if tool_name == "ssh_port_check":
         return {"intents": {"server_started"}, "port": str(a.get("port", "")), "files": set()}
-    if tool_name == "ssh_exists":  # present→file_exists, absent→file_not_exists (record uses ok)
-        return {"intents": {"file_exists", "file_not_exists"}, "files": _file_tokens(str(a.get("path", "")))}
+    if tool_name == "ssh_exists":  # present(ok)→file_exists, absent(not ok)→file_not_exists
+        return {"intents": {"file_exists", "file_not_exists"},
+                "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
+    if tool_name == "ssh_not_exists":  # EXPLICIT cleanup assertion: absent (ok) proves
+        # file_not_exists, and a still-present path is a real FAIL (asserts="absent").
+        return {"intents": {"file_not_exists"}, "files": _file_tokens(str(a.get("path", ""))),
+                "present_when_ok": False, "asserts": "absent"}
+    if tool_name == "ssh_read":  # a successful read proves the file EXISTS (never absence)
+        return {"intents": {"file_exists"},
+                "files": _file_tokens(str(a.get("path", ""))), "present_when_ok": True}
     if tool_name == "run_bash":
         return _run_bash_verdict(str(a.get("command", "")))
     if tool_name == "run_server":
@@ -527,12 +572,31 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
 
 def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
     """'confirm' / 'fail' / None for a criterion given a matching verdict and its ok.
-    file_not_exists inverts ok (ssh_exists reports PRESENCE: absent→cleanup confirmed);
-    every other intent takes the tool's ok as the criterion's pass/fail."""
+
+    Existence intents (file_exists / file_not_exists) are CONFIRM-ONLY, keyed on the
+    OBSERVED presence — never on a phase we can't see. A post-cleanup absence must not
+    FAIL a setup 'file exists' criterion (it existed during setup; it's gone now on
+    purpose), and a pre-cleanup presence must not fail a 'file removed' criterion. So
+    an existence check only ever confirms the matching state; a mismatch is neutral
+    (stays unconfirmed → honest partial), never a hard failure. Every other intent
+    takes the tool's ok as the criterion's pass/fail."""
+    it = item["intent"]
+    if it in ("file_exists", "file_not_exists"):
+        if not _verdict_target_matches(item, v):
+            return None
+        present = ok if v.get("present_when_ok", True) else (not ok)
+        if it == "file_exists":
+            # A PASSIVE existence probe: presence confirms; absence is neutral (never
+            # fail — the file may be legitimately gone post-cleanup).
+            return "confirm" if present else None
+        # file_not_exists: absence confirms; presence only FAILS for an EXPLICIT
+        # cleanup assertion (ssh_not_exists) — a passive ssh_exists that happens to
+        # see the file (e.g. a pre-cleanup check) leaves it unconfirmed, not failed.
+        if not present:
+            return "confirm"
+        return "fail" if v.get("asserts") == "absent" else None
     if not _verdict_target_matches(item, v):
         return None
-    if item["intent"] == "file_not_exists":
-        return "confirm" if not ok else "fail"
     return "confirm" if ok else "fail"
 
 

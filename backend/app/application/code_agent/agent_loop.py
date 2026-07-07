@@ -217,7 +217,7 @@ _LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user", 
 _SSH_ACTIVATABLE_TOOLS = (
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
-    "ssh_list_hosts",
+    "ssh_not_exists", "ssh_list_hosts",
 )
 # Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
 # button, plus common free-text yes-words). Anything else = deny.
@@ -472,6 +472,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _deterministic_stop_summary,
     _fact_from_tool,
     _facts_digest,
+    gate_completion_claims,
     _recent_tool_snippet,
     _recent_tools_digest,
     RECENT_TOOLS_PREFIX,
@@ -1255,7 +1256,11 @@ def _stream_code_agent_core(
                 # the tracker, never the model's word.
                 _completion = criteria.completion_status()
                 if criteria.items and _completion != "confirmed":
-                    # The full per-criterion breakdown + evidence already ships in the
+                    # (1) Guard: the model may not claim COMPLETED / all criteria passed
+                    # while the deterministic verifier says otherwise — neutralise such
+                    # claims so its word can't contradict the verdict.
+                    final_text = gate_completion_claims(final_text, _completion)
+                    # (2) The full per-criterion breakdown + evidence already ships in the
                     # done event's structured `criteria` and renders in the collapsible
                     # readiness panel — don't duplicate it into the chat text (it dwarfs
                     # the answer with rendered-DOM evidence). One short pointer is enough.
@@ -1356,7 +1361,7 @@ def _stream_code_agent_core(
                 elif name in (
                     "run_bash", "run_server", "ssh_run", "ssh_run_ps",
                     "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-                    "ssh_exists",
+                    "ssh_exists", "ssh_not_exists", "ssh_read",
                 ):
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
