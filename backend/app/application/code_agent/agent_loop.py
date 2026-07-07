@@ -37,6 +37,7 @@ from app.application.code_agent.taskspec import (
     taskspec_context,
     taskspec_report,
 )
+from app.application.code_agent import criterion_closure
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
     ToolExecutionRequest,
@@ -739,6 +740,17 @@ def _stream_code_agent_core(
         # deterministic function of this — kept SEPARATE from runtime `ok`. We never
         # burn an extra LLM turn to nag; unconfirmed criteria are reported at finalize.
         criteria = CriteriaTracker.from_spec(task_spec)
+        # Criterion Closure state-machine (Ph7.12): before a run with OPEN criteria
+        # finalizes, spend ONE bounded turn asking for the exact missing verifier calls
+        # (once per distinct missing-set, capped total); a Cleanup Barrier blocks a
+        # delete while criteria that live under that path are still open (once). Both
+        # are BOUNDED — no infinite guard loop; then the run finalizes honest-partial.
+        closure_fired_sets: set[str] = set()
+        closure_turns = 0
+        _CLOSURE_GATE_MAX = 2
+        cleanup_barrier_fired = False
+        _last_ssh_host = ""      # for concrete closure/barrier call hints
+        _last_server_url = ""
         # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
         # loop RUNS that command on finalize-after-edits and refuses to close
         # until it exits 0 — no rubber-stamped "проверено". Bounded so a
@@ -1249,25 +1261,43 @@ def _stream_code_agent_core(
                             ),
                         })
                         continue
-                final_text = _strip_tool_call_markup(content or last_text)
-                # Per-criterion verification (Ph7.5): completion_status is a
-                # deterministic function of the tracker — SEPARATE from runtime `ok`.
-                # Annotate what a verifier confirmed / failed / left unchecked, from
-                # the tracker, never the model's word.
-                _completion = criteria.completion_status()
-                if criteria.items and _completion != "confirmed":
-                    # (1) Guard: the model may not claim COMPLETED / all criteria passed
-                    # while the deterministic verifier says otherwise — neutralise such
-                    # claims so its word can't contradict the verdict.
-                    final_text = gate_completion_claims(final_text, _completion)
-                    # (2) The full per-criterion breakdown + evidence already ships in the
-                    # done event's structured `criteria` and renders in the collapsible
-                    # readiness panel — don't duplicate it into the chat text (it dwarfs
-                    # the answer with rendered-DOM evidence). One short pointer is enough.
-                    final_text = (
-                        final_text.rstrip()
-                        + f"\n\nГотовность задачи: {_completion} — детали в панели проверки."
+                # Criterion Closure Gate (Ph7.12): before finalizing a run with OPEN
+                # criteria, if there are concrete missing verifier calls, spend ONE
+                # bounded turn asking for exactly those — once per distinct missing-set,
+                # capped total. Then finalize honest-partial (never an infinite loop).
+                if (
+                    task_spec is not None and criteria.items
+                    and criteria.completion_status() != "confirmed"
+                    and closure_turns < _CLOSURE_GATE_MAX
+                ):
+                    _acts = criterion_closure.missing_verifier_actions(
+                        criteria, host=_last_ssh_host or "<host>",
+                        url=_last_server_url or "<actual_url от run_server>",
                     )
+                    _mkey = criterion_closure.missing_set_key(_acts)
+                    if _acts and _mkey not in closure_fired_sets:
+                        closure_fired_sets.add(_mkey)
+                        closure_turns += 1
+                        if content:
+                            messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": criterion_closure.closure_nudge_text(_acts)})
+                        continue
+                final_text = _strip_tool_call_markup(content or last_text)
+                # Deterministic Final Report (Ph7.12): the model may DESCRIBE what it
+                # did, but the completion STATUS is runtime-owned — never its word.
+                _completion = criteria.completion_status()
+                if criteria.items:
+                    # (1) neutralise universal completion claims when not confirmed;
+                    if _completion != "confirmed":
+                        final_text = gate_completion_claims(final_text, _completion)
+                    # (2) strip the model's own status/unverified/failed sections and
+                    # append the deterministic status block computed from criteria state
+                    # (the full per-criterion detail + evidence also ships structured in
+                    # the done event and renders in the collapsible readiness panel).
+                    final_text = criterion_closure.strip_model_status_sections(final_text)
+                    _report = criterion_closure.runtime_final_report(criteria)
+                    if _report:
+                        final_text = final_text.rstrip() + "\n\n" + _report
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to
                 # Elira's reply. Fail-safe — never breaks the run.
@@ -1366,6 +1396,25 @@ def _stream_code_agent_core(
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
+                # Remember the host for concrete closure/barrier call hints.
+                if name.startswith("ssh") and parsed_args.get("host"):
+                    _last_ssh_host = str(parsed_args.get("host"))
+                # Cleanup Barrier (Ph7.12): a delete of a path with still-OPEN criteria
+                # living under it would make them permanently unverifiable — redirect
+                # ONCE to verify those first, then let deletes through (bounded, not an
+                # infinite guard). Skips execution and feeds the redirect back.
+                if criteria.items and not cleanup_barrier_fired:
+                    _barrier = criterion_closure.cleanup_barrier_violation(criteria, name, parsed_args)
+                    if _barrier is not None:
+                        cleanup_barrier_fired = True
+                        yield {
+                            "type": "tool_call", "step": step, "tool": name,
+                            "arguments": parsed_args, "result": _barrier, "ok": False,
+                        }
+                        messages.append({"role": "tool", "content": _barrier, "name": name})
+                        tool_round_trips += 1
+                        call_log.append(f"{name}(cleanup-barrier)")
+                        continue
                 # Whitespace-normalized fingerprint: a stray space/newline in a
                 # retried argument no longer evades the repeat counter.
                 fingerprint = _normalized_fingerprint(name, parsed_args)
@@ -1846,6 +1895,8 @@ def _stream_code_agent_core(
                             error="approval_timeout",
                         )
                 tool_meta = _exec_result.output
+                if name == "run_server" and tool_meta.get("actual_url"):
+                    _last_server_url = str(tool_meta.get("actual_url"))
                 text_result = str(tool_meta.get("text", ""))
                 event: dict[str, Any] = {
                     "type": "tool_call",

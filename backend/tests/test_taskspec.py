@@ -192,10 +192,11 @@ class VerifierGateTest(unittest.TestCase):
         for rid in ("ts-gate", "ts-confirmed"):
             deferred_tools.clear_run(rid)
 
-    def test_unconfirmed_criteria_finalize_without_extra_llm_turn(self):
-        # Model edits a file then tries to close WITHOUT any verifier. Runtime must
-        # not burn another LLM turn for a reminder; it finalizes and marks the
-        # criteria as unconfirmed deterministically.
+    def test_open_criteria_get_one_bounded_closure_turn_then_partial(self):
+        # Model edits a file then tries to close WITHOUT any verifier. The Criterion
+        # Closure Gate (Ph7.12) spends exactly ONE bounded turn asking for the missing
+        # verifier calls; the model still doesn't verify, so the run finalizes
+        # honest-partial with a RUNTIME-owned status block (not the model's word).
         chat = _SeqChat([_call("write_file", path="a.ps1", content="x"), _final("сделал")], _final("готово"))
         with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
              patch.object(agent_loop, "_kernel_exec",
@@ -206,19 +207,16 @@ class VerifierGateTest(unittest.TestCase):
             ))
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "answer")
-        self.assertTrue(done.get("ok"))                      # runtime health = OK …
-        self.assertEqual(done.get("completion_status"), "unverified")  # … but task NOT verified
+        self.assertTrue(done.get("ok"))                                # runtime health OK …
+        self.assertEqual(done.get("completion_status"), "unverified")  # … task NOT verified
         self.assertTrue(done.get("partial"))
         self.assertFalse(done.get("criteria_confirmed"))
-        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 2)  # no extra turn
-        # The chat text carries only a short pointer to the readiness panel — the
-        # full per-criterion breakdown lives in the structured `criteria` (done event),
-        # not duplicated into the message.
+        # exactly ONE bounded closure turn (edit → closure nudge → final) — not a loop
+        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 3)
         final = [e for e in evs if e.get("type") == "final_response"][-1]
-        self.assertIn("Готовность задачи: unverified", final["text"])
-        self.assertIn("детали в панели проверки", final["text"])
-        self.assertNotIn("НЕ ПРОЙДЕН", final["text"])          # no bullet dump in chat
-        # criteria still fully available in the done event for the panel / audit
+        self.assertIn("Готовность задачи — по verifier", final["text"])   # runtime report
+        self.assertIn("Не подтверждено verifier", final["text"])
+        self.assertNotIn("Все критерии подтверждены", final["text"])      # never claims all-passed
         self.assertEqual(len(done.get("criteria") or []), 3)
 
     def test_passing_verifier_confirms_its_matching_criterion(self):
@@ -708,6 +706,89 @@ class JournalCompletionTest(unittest.TestCase):
         self.assertNotEqual(self._status(completion_status="failed", criteria=[]), "completed")
         self.assertNotEqual(self._status(completion_status="unverified", criteria=[]), "completed")
         self.assertNotEqual(self._status(completion_status="partial", criteria=[]), "completed")
+
+
+# ── Criterion Closure + Cleanup Barrier, end-to-end (Ph7.12) ─────
+
+_DIR = "C:\\AgentLabGlobalCanary"
+_SNAP = "C:\\AgentLabGlobalCanary\\snapshot.txt"
+_CANARY_TASK = (
+    "Цель: канарейка на home-srv01.\n"
+    "Критерии готовности:\n"
+    f"- директория `{_DIR}` существует\n"
+    f"- файл `{_SNAP}` существует\n"
+    f"- файл `{_SNAP}` содержит строку `project=frontend-global-live`\n"
+    f"- файл `{_SNAP}` содержит строку `status=ok`\n"
+    f"- файл `{_SNAP}` содержит строку `dom=verified`\n"
+    f"- временный файл `{_DIR}` удалён после cleanup"
+)
+
+
+def _verifier_exec(request, **kw):
+    """Mock kernel exec: ssh verifier tools pass with a verifier verdict; a delete
+    (ssh_run_ps) runs plainly. The matcher keys pattern/path off the call args."""
+    tool = getattr(request, "tool_name", "")
+    if tool in ("ssh_exists", "ssh_read", "ssh_assert_contains", "ssh_assert_not_contains", "ssh_not_exists"):
+        return SimpleNamespace(status="ok", output={
+            "text": "OK", "ok": True, "verifier": True, "evidence": "verified", "touched_host": "home-srv01"})
+    return SimpleNamespace(status="ok", output={"text": "done", "ok": True, "touched_host": "home-srv01"})
+
+
+class ClosureBarrierLoopTest(unittest.TestCase):
+    def tearDown(self):
+        for rid in ("cb-partial", "cb-happy"):
+            deferred_tools.clear_run(rid)
+
+    def _run(self, chat, rid):
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_verifier_exec):
+            return list(agent_loop.stream_code_agent(
+                user_message=_CANARY_TASK, project_root=tmp, run_id=rid,
+                auto_remember=False, permission_mode="bypass", max_steps=25, chat_fn=chat))
+
+    def test_ssh_read_then_early_cleanup_stays_partial(self):
+        # Live shape: read the file (proves existence, NOT content), try to delete the
+        # dir early → Cleanup Barrier redirects, then finalize without the asserts →
+        # Closure Gate asks once → honest partial, runtime-owned status, no false claim.
+        chat = _SeqChat([
+            _call("ssh_read", host="home-srv01", path=_SNAP),
+            _call("ssh_run_ps", host="home-srv01", script=f'Remove-Item -Recurse -Force "{_DIR}"'),
+            _final("Готово. Все frontend и SSH критерии подтверждены verifier'ом. COMPLETED."),
+        ], _final("COMPLETED"))
+        evs = self._run(chat, "cb-partial")
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "partial")
+        # the barrier fired (a delete was refused with a redirect)
+        self.assertTrue(any(e.get("type") == "tool_call" and e.get("tool") == "ssh_run_ps"
+                            and e.get("ok") is False and "не удаляй" in str(e.get("result", "")).lower()
+                            for e in evs))
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertNotIn("COMPLETED", final)                        # gated
+        self.assertNotIn("критерии подтверждены", final.lower())    # universal claim gated
+        self.assertIn("Готовность задачи — по verifier", final)     # runtime report
+        self.assertIn("Не подтверждено verifier", final)
+
+    def test_happy_path_full_verify_then_cleanup_confirmed(self):
+        chat = _SeqChat([
+            _call("ssh_exists", host="home-srv01", path=_DIR),
+            _call("ssh_read", host="home-srv01", path=_SNAP),
+            _call("ssh_assert_contains", host="home-srv01", path=_SNAP, pattern="project=frontend-global-live"),
+            _call("ssh_assert_contains", host="home-srv01", path=_SNAP, pattern="status=ok"),
+            _call("ssh_assert_contains", host="home-srv01", path=_SNAP, pattern="dom=verified"),
+            _call("ssh_run_ps", host="home-srv01", script=f'Remove-Item -Recurse "{_DIR}"'),
+            _call("ssh_not_exists", host="home-srv01", path=_DIR),
+            _final("Отчёт: создал стенд, проверил, очистил."),
+        ], _final())
+        evs = self._run(chat, "cb-happy")
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "confirmed")
+        crits = done.get("criteria") or []
+        self.assertTrue(crits and all(c["status"] == "confirmed" for c in crits))
+        # cleanup was NOT blocked (all non-cleanup criteria were closed first)
+        self.assertFalse(any(e.get("type") == "tool_call" and "не удаляй" in str(e.get("result", "")).lower()
+                             for e in evs))
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertIn("Все критерии подтверждены verifier", final)   # runtime report, confirmed
 
 
 if __name__ == "__main__":

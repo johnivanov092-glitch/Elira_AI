@@ -416,10 +416,15 @@ def _criterion_intent(text: str) -> str:
                   "что создано", "что было создано", "перечисл", "report-only",
                   "описан в отч", "описать в отч", "команды очистки опис")):
         return "report"
-    dom = _has(low, _DOM_CTX)
+    # Context comes from the criterion's PROSE, not from the target strings: a file
+    # criterion "содержит строку `dom=verified`" must not read as a DOM criterion just
+    # because the pattern contains "dom". So detect the DOM/file context on the text
+    # with quoted spans stripped.
+    unquoted = _QUOTED_RE.sub(" ", text or "").lower()
+    dom = _has(unquoted, _DOM_CTX)
     targets = _dom_targets(text)
     has_path = bool(_file_tokens(text))
-    fil = _has(low, _FILE_CTX) or (has_path and not dom)
+    fil = _has(unquoted, _FILE_CTX) or (has_path and not dom)
     negative = _has(low, _NEG_CTX)
 
     if negative:
