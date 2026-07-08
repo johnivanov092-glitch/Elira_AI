@@ -19,11 +19,13 @@ from pathlib import Path, PurePath
 
 from app.application.code_agent.taskspec import (
     CriteriaTracker,
+    _PKG_MGRS,
     _QUOTED_RE,
     _base,
     _clean_run,
     _file_tokens,
     _path_tokens_from_text,
+    _run_bash_verdict,
     _run_target_and_args,
     interaction_spec,
 )
@@ -140,15 +142,19 @@ _AUTO_SAFE_TOOLS = frozenset({
 })
 
 
-def _auto_spec(item: dict, *, host: str, url: str) -> dict | None:
+def _auto_spec(item: dict, *, host: str, url: str, allow_ssh: bool = True) -> dict | None:
     """Executable {'tool','args'} closing this criterion, or None when the call is not
-    fully concrete (placeholder host/url, unknown selectors) or not in the safe set."""
+    fully concrete (placeholder host/url, unknown selectors) or not in the safe set.
+    `allow_ssh=False` disables remote probes — the loop passes it when the run touched
+    more than one ssh host (a probe against the WRONG host could record a false red)."""
     intent = item["intent"]
-    host_ok = bool(host) and host != _HOST_PLACEHOLDER
+    host_ok = allow_ssh and bool(host) and host != _HOST_PLACEHOLDER
     url_ok = bool(url) and url.startswith("http")
     if intent in ("content_contains", "content_not_contains"):
         path, pat = _criterion_path(item), _content_pattern(item)
-        if path and pat and host_ok:
+        # remote-looking paths only: a LOCAL file criterion in a run that also used ssh
+        # must not be asserted against a remote mirror (stale copy → false red).
+        if path and pat and host_ok and not _looks_local_path(path):
             tool = "ssh_assert_contains" if intent == "content_contains" else "ssh_assert_not_contains"
             return {"tool": tool, "args": {"host": host, "path": path, "pattern": pat}}
         return None
@@ -157,7 +163,9 @@ def _auto_spec(item: dict, *, host: str, url: str) -> dict | None:
         if path and _looks_local_path(path):
             # path_exists is a PASSIVE probe (presence confirms exists; absence confirms
             # not_exists; the mismatching state is NEUTRAL) — an auto-probe can never
-            # wrongly FAIL a criterion, only confirm or leave it open.
+            # wrongly FAIL a criterion, only confirm or leave it open. Probed EXACTLY as
+            # the criterion names it — no basename redirect (a same-named file elsewhere
+            # must not certify a path that doesn't exist as written).
             return {"tool": "path_exists", "args": {"path": path}}
         if path and intent == "file_exists" and host_ok:
             return {"tool": "ssh_exists", "args": {"host": host, "path": path}}
@@ -169,11 +177,21 @@ def _auto_spec(item: dict, *, host: str, url: str) -> dict | None:
     if intent == "viewport_layout":
         preset = "desktop" if item.get("viewport_width") == "wide" else "mobile"
         return {"tool": "browser", "args": {"url": url, "viewport": preset}} if url_ok else None
-    if intent in ("command_output", "command_check"):
+    if intent == "command_output":
         cmd = item.get("command") or ""
         # only a command NAMED in the criterion (runnable quote) — never a kind-inferred
-        # guess; agent_loop still resolves cwd via resolve_auto_command before running.
-        return {"tool": "run_bash", "args": {"command": cmd}} if cmd else None
+        # guess. allow_cd: a red command_output is NEUTRAL (can't false-fail), so the
+        # deterministic `cd <dir> &&` cwd inference is safe here.
+        return {"tool": "run_bash", "args": {"command": cmd}, "allow_cd": True} if cmd else None
+    if intent == "command_check":
+        cmd = item.get("command") or ""
+        # a red command_check HARD-fails the criterion, so the bar is higher: the named
+        # command must itself carry a recognizable check kind (its verdict can actually
+        # close a command_check — `node server.js` can't and would just burn a slot or
+        # hang the gate), and NO cwd inference (a wrong cwd would record a false red).
+        if cmd and _run_bash_verdict(cmd) is not None:
+            return {"tool": "run_bash", "args": {"command": cmd}, "allow_cd": False}
+        return None
     return None
 
 
@@ -183,11 +201,15 @@ def resolve_auto_command(command: str, project_root, touched_files) -> str | Non
     when the target was created in exactly ONE directory this run (`node index.js
     sample.log` after writing `log-summarizer/index.js`); None when the target can't be
     located — the model keeps the wheel rather than the runtime recording a false red
-    from a wrong cwd."""
+    from a wrong cwd. A pkg-manager script (`npm test`) runs as-is: its target is a
+    script NAME, not a file — a filesystem precheck would wrongly reject it."""
+    toks = _clean_run(command).split()
+    if toks and toks[0].lower() in _PKG_MGRS:
+        return command   # pkg script → project root is the right cwd by definition
     target, _args = _run_target_and_args(command)
     if not target:
         return None
-    raw = next((t for t in _clean_run(command).split() if _base(t) == target), "")
+    raw = next((t for t in toks if _base(t) == target), "")
     try:
         if raw and (Path(project_root) / raw).exists():
             return command
@@ -201,28 +223,16 @@ def resolve_auto_command(command: str, project_root, touched_files) -> str | Non
     return None
 
 
-def resolve_auto_path(path: str, project_root, touched_files) -> str:
-    """The path the auto pass should probe: as given when it resolves under the project
-    root; else the unique touched file with the same basename (criterion says `index.js`,
-    the run created `log-summarizer/index.js`). Falls back to the original — an absent
-    probe is neutral, never a false verdict."""
-    try:
-        if (Path(project_root) / path).exists():
-            return path
-    except OSError:
-        return path
-    matches = {str(p) for p in (touched_files or ()) if _base(str(p)) == _base(path)}
-    return matches.pop() if len(matches) == 1 else path
-
-
 def auto_close_summary(results: list[dict]) -> str:
     """Short runtime report of the auto-verifier pass for the model's closure turn.
-    Each result: {'label', 'ok', 'confirmed', 'evidence'}. Green (criterion confirmed) =
-    don't redo it; red (verifier ran and said no) = fix the code, then re-run exactly
-    that check. ok-but-unmatched runs are omitted (their criteria stay in the missing
-    list naturally)."""
-    green = [r for r in results if r.get("ok") and r.get("confirmed")]
-    red = [r for r in results if not r.get("ok")]
+    Each result: {'label', 'green', 'red', 'evidence'} — classified by the LOOP from
+    actual criterion TRANSITIONS (confirmed → green; failed / ran-red-without-closing →
+    red), NOT from the tool's ok flag (run_bash deliberately has no `ok`, and a
+    passive probe's ok=False can itself CONFIRM a cleanup criterion). Green = don't
+    redo it; red = fix the cause, then re-run exactly that check. Neutral no-ops are
+    omitted (their criteria stay in the missing list naturally)."""
+    green = [r for r in results if r.get("green")]
+    red = [r for r in results if r.get("red")]
     lines = []
     if green:
         lines.append("Runtime уже ВЫПОЛНИЛ проверки и подтвердил критерии — НЕ повторяй их: "
@@ -282,14 +292,15 @@ def _command_group_actions(items: list[dict]) -> list[dict]:
                      + " (grep/read_file НЕ доказывают вывод команды)."),
             "why": "; ".join(it["text"] for it in its)[:200],
         }
-        if cmd:   # a NAMED command is runtime-executable (auto-verifier pass)
-            act["auto"] = {"tool": "run_bash", "args": {"command": cmd}}
+        if cmd:   # a NAMED command is runtime-executable (auto-verifier pass); a red
+            # command_output is neutral, so cwd inference (cd-prefix) is allowed.
+            act["auto"] = {"tool": "run_bash", "args": {"command": cmd}, "allow_cd": True}
         out.append(act)
     return out
 
 
 def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLACEHOLDER,
-                             url: str = _URL_PLACEHOLDER) -> list[dict]:
+                             url: str = _URL_PLACEHOLDER, auto_ssh: bool = True) -> list[dict]:
     """Concrete verifier calls still missing for each unconfirmed/failed criterion whose
     verifier is unambiguous. Criteria with no deterministic verifier are omitted.
 
@@ -318,7 +329,7 @@ def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLAC
             continue
         if act["call"] in seen:
             continue
-        auto = _auto_spec(it, host=host, url=url)
+        auto = _auto_spec(it, host=host, url=url, allow_ssh=auto_ssh)
         if auto:   # runtime can execute this one itself (auto-verifier pass)
             act["auto"] = auto
         seen.add(act["call"])

@@ -592,6 +592,18 @@ def _mark_approval_approved(approval_id: str) -> bool:
         return False
 
 
+def _mark_approval_expired(approval_id: str) -> bool:
+    """Expire an approval row the runtime ABANDONS (auto-verifier pass skipping a
+    call that would park on a human) — otherwise a dead pending card lingers in the
+    approvals panel for a run that has already moved on."""
+    try:
+        from app.application.monitoring import runtime as _mon
+        _mon.update_approval_status(approval_id, status="expired")
+        return True
+    except Exception:
+        return False
+
+
 def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """F3.1: convert in-loop messages (assistant with tool_calls, role="tool"
     results) into plain text turns the summarizer keeps. Without this,

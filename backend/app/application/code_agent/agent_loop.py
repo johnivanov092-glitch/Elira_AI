@@ -506,6 +506,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _looks_like_intent_without_action,
     _looks_like_repeat_request,
     _mark_approval_approved,
+    _mark_approval_expired,
     _maybe_inject_execution_reminder,
     _messages_char_count,
     _mode_auto_approves,
@@ -775,6 +776,7 @@ def _stream_code_agent_core(
         server_redirect_fired = 0
         _SERVER_REDIRECT_MAX = 2
         _last_ssh_host = ""      # for concrete closure/barrier call hints
+        _ssh_hosts_seen: set[str] = set()   # >1 host → auto-ssh probes disabled
         _last_server_url = ""
         # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
         # loop RUNS that command on finalize-after-edits and refuses to close
@@ -1295,23 +1297,30 @@ def _stream_code_agent_core(
                     and criteria.completion_status() != "confirmed"
                     and closure_turns < _CLOSURE_GATE_MAX
                 ):
+                    _auto_ssh_ok = len(_ssh_hosts_seen) <= 1
                     _acts = criterion_closure.missing_verifier_actions(
                         criteria, host=_last_ssh_host or "<host>",
                         url=_last_server_url or "<actual_url от run_server>",
+                        auto_ssh=_auto_ssh_ok,
                     )
                     # ── Auto-verifier pass (runtime-owned closure) ────────────────
                     # missing_verifier_actions already KNOWS the exact calls — for the
                     # safe, fully-concrete subset the runtime executes them ITSELF
                     # instead of asking the model; the model then sees only the result
                     # (green → criterion confirmed silently; red → short report below).
-                    # Bounded: once per run, ≤ _AUTO_VERIFIER_MAX_CALLS calls. Kernel
-                    # policy fully applies (same request path as model calls); a call
-                    # that would park on a human approval is skipped, not waited on.
+                    # Bounded: once per run (consumed only when something actually
+                    # runs), ≤ _AUTO_VERIFIER_MAX_CALLS calls. Kernel policy fully
+                    # applies (same request path as model calls); a call that would
+                    # park on a human approval is skipped, not waited on.
                     _auto_results: list[dict] = []
                     if _acts and not auto_verifier_done:
-                        auto_verifier_done = True
                         _autoable = [a for a in _acts if a.get("auto")
                                      and a["auto"].get("tool") in criterion_closure._AUTO_SAFE_TOOLS]
+                        if _autoable:
+                            # consume the once-per-run pass only when there IS something
+                            # to run — a first finalize with no concrete calls (e.g. no
+                            # server url yet) must not burn it (review F11).
+                            auto_verifier_done = True
                         for _a in _autoable[:_AUTO_VERIFIER_MAX_CALLS]:
                             if cancel_event.is_set():
                                 break
@@ -1322,10 +1331,10 @@ def _stream_code_agent_core(
                                     _a_args.get("command", ""), project_root, touched_files)
                                 if not _cmd:
                                     continue   # target not locatable — model keeps the wheel
+                                if not _a["auto"].get("allow_cd") and _cmd != _a_args.get("command"):
+                                    continue   # command_check: no cwd inference — a wrong
+                                    # cwd would record a false hard-red (review F9)
                                 _a_args["command"] = _cmd
-                            elif _a_tool == "path_exists":
-                                _a_args["path"] = criterion_closure.resolve_auto_path(
-                                    _a_args.get("path", ""), project_root, touched_files)
                             try:
                                 from app.application.agent_kernel.deferred_tools import activate_tools
                                 activate_tools(rid, [_a_tool])
@@ -1339,6 +1348,7 @@ def _stream_code_agent_core(
                                 args=_a_args, source="code_agent",
                             )
                             _a_result = None
+                            _a_approval = ""
                             try:
                                 for _hb in _exec_with_heartbeat(
                                     lambda: _kernel_exec(_a_request, dispatch_fn=registry.dispatch_raw), step):
@@ -1372,13 +1382,25 @@ def _stream_code_agent_core(
                             if _a_result.status == "waiting_approval":
                                 # A runtime-initiated call must NEVER park the run on a
                                 # human prompt — this check stays with the model's turn.
+                                # Expire the abandoned approval row so no dead pending
+                                # card lingers in the approvals panel (review F5/F10).
+                                if _a_approval:
+                                    _mark_approval_expired(_a_approval)
                                 yield {"type": "tool_call", "step": step, "tool": _a_tool,
                                        "arguments": _a_args, "ok": False, "auto_verifier": True,
                                        "result": "auto-verifier: нужно подтверждение — оставлено модели"}
                                 continue
                             _a_meta = _a_result.output or {}
                             _a_text = str(_a_meta.get("text", ""))
-                            _a_ok = bool(_a_meta.get("ok", _a_result.status == "ok"))
+                            if _a_result.status != "ok":
+                                # blocked/error (rate-limit, scope, disabled tool): the
+                                # command NEVER RAN — recording it would fail a criterion
+                                # on a non-verdict (review F2). Report + leave to model.
+                                yield {"type": "tool_call", "step": step, "tool": _a_tool,
+                                       "arguments": _a_args, "ok": False, "auto_verifier": True,
+                                       "result": _truncate(_a_text) or f"auto-verifier: {_a_result.status}"}
+                                continue
+                            _a_ok = bool(_a_meta.get("ok", True))
                             _a_event: dict[str, Any] = {
                                 "type": "tool_call", "step": step, "tool": _a_tool,
                                 "arguments": _a_args, "result": _truncate(_a_text),
@@ -1390,10 +1412,25 @@ def _stream_code_agent_core(
                             yield _a_event
                             _a_hint = _short_arg_hint(_a_args)
                             call_log.append(f"[auto] {_a_tool}({_a_hint}) {'ok' if _a_ok else 'error'}")
-                            _a_conf = _record_criterion_verdict(
+                            # Classify by actual criterion TRANSITIONS, not the tool's ok
+                            # flag: run_bash deliberately has no `ok` (red exit ≠ ok=False),
+                            # and a probe's ok=False can itself CONFIRM a cleanup criterion
+                            # (review F6/F7/F8). green = closed something (and broke
+                            # nothing); red = failed something, or ran red without closing.
+                            _st_before = [it["status"] for it in criteria.items]
+                            _record_criterion_verdict(
                                 criteria, _a_tool, _a_args, _a_meta, _a_text, _a_ok)
+                            _st_after = [it["status"] for it in criteria.items]
+                            _n_conf = sum(1 for b, a in zip(_st_before, _st_after)
+                                          if a == "confirmed" and b != "confirmed")
+                            _n_fail = sum(1 for b, a in zip(_st_before, _st_after)
+                                          if a == "failed" and b != "failed")
+                            _ec = _a_meta.get("exit_code")
+                            _ran_red = (isinstance(_ec, int) and _ec != 0) or (_a_meta.get("ok") is False)
                             _auto_results.append({
-                                "label": f"{_a_tool}({_a_hint})", "ok": _a_ok, "confirmed": _a_conf,
+                                "label": f"{_a_tool}({_a_hint})",
+                                "green": _n_conf > 0 and _n_fail == 0,
+                                "red": _n_fail > 0 or (_n_conf == 0 and _ran_red),
                                 "evidence": str(_a_meta.get("evidence") or _a_text or ""),
                             })
                         # Recompute what's STILL missing after the pass — everything the
@@ -1401,6 +1438,7 @@ def _stream_code_agent_core(
                         _acts = criterion_closure.missing_verifier_actions(
                             criteria, host=_last_ssh_host or "<host>",
                             url=_last_server_url or "<actual_url от run_server>",
+                            auto_ssh=_auto_ssh_ok,
                         )
                     _mkey = criterion_closure.missing_set_key(_acts)
                     if _acts and _mkey not in closure_fired_sets:
@@ -1547,9 +1585,12 @@ def _stream_code_agent_core(
                     ran_verification = True
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
-                # Remember the host for concrete closure/barrier call hints.
+                # Remember the host for concrete closure/barrier call hints. The full
+                # SET gates the auto-verifier pass: with >1 host in the run, a probe
+                # against the "last" one could hit the WRONG machine → no auto-ssh.
                 if name.startswith("ssh") and parsed_args.get("host"):
                     _last_ssh_host = str(parsed_args.get("host"))
+                    _ssh_hosts_seen.add(_last_ssh_host)
                 # Cleanup Barrier (Ph7.12): a delete of a path with still-OPEN criteria
                 # living under it would make them permanently unverifiable — redirect
                 # ONCE to verify those first, then let deletes through (bounded, not an

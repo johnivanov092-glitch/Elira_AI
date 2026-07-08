@@ -784,7 +784,8 @@ class AutoVerifierClosureTest(unittest.TestCase):
     )
 
     def tearDown(self):
-        for rid in ("ts-auto-green", "ts-auto-red", "ts-auto-budget", "ts-auto-skip"):
+        for rid in ("ts-auto-green", "ts-auto-red", "ts-auto-budget", "ts-auto-skip",
+                    "ts-auto-blocked", "ts-auto-cleanup"):
             deferred_tools.clear_run(rid)
 
     @staticmethod
@@ -809,7 +810,9 @@ class AutoVerifierClosureTest(unittest.TestCase):
             "write_file": {"text": "ok", "ok": True, "touched_path": "log-summarizer/index.js"},
             "path_exists": {"text": "log-summarizer/index.js: существует (файл)", "ok": True,
                             "verifier": True, "evidence": "log-summarizer/index.js: существует (файл)"},
-            "run_bash": {"text": "INFO: 2\nTOTAL: 5", "ok": True, "exit_code": 0},
+            # REAL tool shape: run_bash returns text+exit_code with NO `ok` key
+            "run_bash": {"text": "$ node index.js sample.log\nexit=0\nSTDOUT:\nINFO: 2\nTOTAL: 5",
+                         "exit_code": 0},
         }
         with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
              patch.object(agent_loop, "_kernel_exec", side_effect=self._exec_for(outputs, calls)):
@@ -831,7 +834,9 @@ class AutoVerifierClosureTest(unittest.TestCase):
     def test_red_pass_gives_short_report_then_honest_partial(self):
         # The auto run goes RED → the model gets ONE short report turn with the
         # evidence; it doesn't fix anything → the run ends honestly unverified
-        # (command_output red is neutral, never a false hard-fail).
+        # (command_output red is neutral, never a false hard-fail). The mock uses
+        # the REAL run_bash shape — text+exit_code, NO `ok` key — the review found
+        # the red path only worked against an impossible {"ok": False} mock (F7).
         calls: list = []
         chat = _RecordingChat(
             [_call("write_file", path="index.js", content="x"), _final("сделал")],
@@ -840,7 +845,8 @@ class AutoVerifierClosureTest(unittest.TestCase):
             "write_file": {"text": "ok", "ok": True, "touched_path": "index.js"},
             "path_exists": {"text": "index.js: существует (файл)", "ok": True,
                             "verifier": True, "evidence": "index.js: существует (файл)"},
-            "run_bash": {"text": "Error: boom", "ok": False, "exit_code": 1},
+            "run_bash": {"text": "$ node index.js sample.log\nexit=1\nSTDERR:\nError: boom",
+                         "exit_code": 1},
         }
         task = ("Цель:\nCLI.\n\nКритерии готовности:\n"
                 "1. `node index.js sample.log` выводит `TOTAL: 5`\n")
@@ -876,6 +882,65 @@ class AutoVerifierClosureTest(unittest.TestCase):
                 auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
             ))
         self.assertEqual(len([1 for t, _ in calls if t == "path_exists"]), 5)  # 7 criteria, cap 5
+
+    def test_blocked_call_is_not_recorded_as_verdict(self):
+        # Review F2: a kernel-BLOCKED run (rate limit / scope) never RAN — it must not
+        # fail the criterion. The pass reports it and leaves the call to the model.
+        calls: list = []
+        task = "Цель:\nПроверки.\n\nКритерии готовности:\n1. `npm test` проходит\n"
+        chat = _RecordingChat([_final("готово")], _final("готово"))
+
+        def _exec(request, **kw):
+            calls.append(str(getattr(request, "tool_name", "")))
+            return SimpleNamespace(status="blocked",
+                                   output={"text": "rate limited", "ok": False})
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-auto-blocked",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        self.assertIn("run_bash", calls)                                   # the pass did try
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "unverified")      # NOT failed
+        self.assertTrue(all(c["status"] != "failed" for c in done["criteria"]))
+
+    def test_cleanup_confirm_via_absent_probe_reported_green(self):
+        # Review F8: path_exists ok=False (file absent) CONFIRMS a local cleanup
+        # criterion — the report must list it GREEN («НЕ повторяй»), not tell the
+        # model the check failed (which would invite re-creating the deleted file).
+        task = ("Цель:\nCleanup.\n\nКритерии готовности:\n"
+                "1. временный файл `tmp-data.txt` удалён\n"
+                "2. `node index.js sample.log` выводит `TOTAL: 5`\n")
+        chat = _RecordingChat(
+            [_call("write_file", path="index.js", content="x"), _final("сделал")],
+            _final("готово"))
+        outputs = {
+            "write_file": {"text": "ok", "ok": True, "touched_path": "index.js"},
+            "path_exists": {"text": "tmp-data.txt: НЕ найден", "ok": False,
+                            "verifier": True, "evidence": "tmp-data.txt: НЕ найден"},
+            "run_bash": {"text": "$ node index.js sample.log\nexit=1\nSTDERR:\nboom",
+                         "exit_code": 1},
+        }
+        calls: list = []
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=self._exec_for(outputs, calls)):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-auto-cleanup",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        cleanup = next(c for c in done["criteria"] if "tmp-data" in c["text"])
+        self.assertEqual(cleanup["status"], "confirmed")
+        nudges = [m["content"] for ms in chat.seen_messages for m in ms
+                  if m.get("role") == "user" and "Runtime" in str(m.get("content"))]
+        self.assertTrue(nudges)
+        note = nudges[-1]
+        self.assertIn("НЕ повторяй", note)                    # cleanup probe listed green…
+        self.assertIn("path_exists", note.split("НЕ повторяй")[1].split("\n")[0])
+        self.assertNotIn("path_exists", "".join(line for line in note.splitlines()
+                                                if "НЕ прошла" in line))   # …never as red
 
     def test_interaction_and_remote_cleanup_stay_model_directed(self):
         # No auto spec for a browser interaction (selectors unknown) or a remote cleanup

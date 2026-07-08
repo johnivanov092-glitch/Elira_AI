@@ -236,24 +236,41 @@ class AutoSpecTest(unittest.TestCase):
         self.assertEqual(acts[0]["auto"], {"tool": "path_exists",
                                            "args": {"path": "log-summarizer/index.js"}})
 
-    def test_ssh_content_requires_real_host(self):
+    def test_ssh_content_requires_real_host_remote_path_and_single_host(self):
         crit = ["файл C:\\Lab\\a.ps1 содержит `status=ok`"]
         self.assertNotIn("auto", self._acts(crit)[0])                      # placeholder host
         acts = self._acts(crit, host="home-srv01")
         self.assertEqual(acts[0]["auto"]["tool"], "ssh_assert_contains")
         self.assertEqual(acts[0]["auto"]["args"]["host"], "home-srv01")
+        # multi-host run (auto_ssh=False): the probe could hit the WRONG machine → no auto
+        self.assertNotIn("auto", self._acts(crit, host="home-srv01", auto_ssh=False)[0])
+        # a LOCAL-looking path must not be asserted against a remote mirror (F3)
+        local = self._acts(["файл `config.json` содержит `status=ok`"], host="home-srv01")
+        self.assertNotIn("auto", local[0])
 
     def test_named_command_gets_run_bash_auto(self):
         acts = self._acts(["`node index.js sample.log` выводит `TOTAL: 5`"])
         self.assertEqual(acts[0]["auto"],
-                         {"tool": "run_bash", "args": {"command": "node index.js sample.log"}})
+                         {"tool": "run_bash", "args": {"command": "node index.js sample.log"},
+                          "allow_cd": True})
+
+    def test_command_check_auto_needs_checkable_kind_and_forbids_cd(self):
+        # `npm test` carries a check kind → auto, but with allow_cd=False (a red
+        # command_check HARD-fails, so no cwd inference — F9).
+        acts = self._acts(["`npm test` проходит"])
+        self.assertEqual(acts[0]["auto"]["args"]["command"], "npm test")
+        self.assertFalse(acts[0]["auto"]["allow_cd"])
+        # a named command with NO recognizable check kind can never close a
+        # command_check → no auto (it would burn a slot / hang the gate — F4).
+        acts = self._acts(["`node server.js` проходит проверку"])
+        self.assertNotIn("auto", acts[0])
 
     def test_interaction_remote_cleanup_and_inferred_command_have_no_auto(self):
         acts = self._acts([
             "browser interaction: заполни `CIDR` значением `10.0.0.0/24`, нажми `Calculate` "
             "— на странице показывает `Network: 10.0.0.0`",
             "файл C:\\Lab\\agent.ps1 удалён после проверки",   # remote cleanup → ssh_not_exists
-            "npm run typecheck проходит",                       # kind-inferred, not named
+            "npm run typecheck проходит",   # UNQUOTED → not named → kind-inferred → no auto
         ], host="home-srv01", url="http://127.0.0.1:3000")
         for a in acts:
             self.assertNotIn("auto", a, a["tool"])
@@ -288,18 +305,20 @@ class AutoResolveTest(unittest.TestCase):
             self.assertIsNone(cc.resolve_auto_command(
                 "node index.js", tmp, ["a/index.js", "b/index.js"]))     # two candidate dirs
             self.assertIsNone(cc.resolve_auto_command("node index.js", tmp, []))
-            self.assertIsNone(cc.resolve_auto_command("npm run typecheck", tmp, []))
+            self.assertIsNone(cc.resolve_auto_command("node -e \"x\"", tmp, []))  # inline eval
 
-    def test_path_resolves_via_unique_touched_basename(self):
+    def test_pkg_script_runs_as_is_without_fs_precheck(self):
+        # `npm test`'s target is a script NAME, not a file — must not be rejected by
+        # the filesystem precheck (review F9-2), and never gets a cd prefix.
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(cc.resolve_auto_path("index.js", tmp, ["log-summarizer/index.js"]),
-                             "log-summarizer/index.js")
-            self.assertEqual(cc.resolve_auto_path("missing.txt", tmp, []), "missing.txt")
+            self.assertEqual(cc.resolve_auto_command("npm test", tmp, []), "npm test")
+            self.assertEqual(cc.resolve_auto_command("npm run build", tmp, ["app/x.js"]),
+                             "npm run build")
 
     def test_auto_close_summary_green_and_red(self):
         txt = cc.auto_close_summary([
-            {"label": "path_exists(index.js)", "ok": True, "confirmed": True, "evidence": "есть"},
-            {"label": "run_bash(node index.js)", "ok": False, "confirmed": False,
+            {"label": "path_exists(index.js)", "green": True, "red": False, "evidence": "есть"},
+            {"label": "run_bash(node index.js)", "green": False, "red": True,
              "evidence": "Error: boom"},
         ])
         self.assertIn("НЕ повторяй", txt)

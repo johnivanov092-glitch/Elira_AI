@@ -170,8 +170,9 @@ sees the result: green → criterion confirmed silently (straight to a confirmed
 no closure turn); red/remaining → ONE short report turn ("Runtime выполнил X — НЕ прошла,
 evidence: …, исправь") on top of the usual nudge.
 
-**Bounds & safety:**
-- at most **1 auto pass per run**, at most **5 calls** in it;
+**Bounds & safety (tightened by the adversarial review round):**
+- at most **1 auto pass per run** (consumed only when something actually RUNS — a first
+  finalize with no concrete calls doesn't burn it), at most **5 calls** in it;
 - safe set only: `path_exists`, `ssh_exists`, `ssh_assert_contains`, `ssh_assert_not_contains`,
   `browser` (render / viewport — **no** actions), `run_bash` **only for a command NAMED in the
   criterion** (never kind-inferred — a guessed command in the wrong project would record a
@@ -179,19 +180,39 @@ evidence: …, исправь") on top of the usual nudge.
 - **stays model-directed:** browser interactions (field selectors unknown at criterion level),
   `run_server` (side-effectful), remote cleanup `ssh_not_exists` (delete-then-verify is the
   model's flow);
+- **ssh probes only in single-host runs** and only for **remote-looking paths** — with >1 host
+  the "last host" could be the wrong machine, and a LOCAL file criterion must not be asserted
+  against a remote mirror (both would record a false red);
+- **command_check** (whose red HARD-fails) auto-runs only when the named command itself carries
+  a recognizable check kind (`npm test`, `pytest …` — else it can't close the criterion and
+  would just burn a slot / hang the gate) and **never with cwd inference**; **command_output**
+  (red is neutral) allows the deterministic `cd <dir> && …` prefix when the script target was
+  created in exactly ONE directory this run; pkg-manager scripts run as-is from project root;
+- probes hit the **exact path the criterion names** — no basename redirect (a same-named file
+  elsewhere must not certify a path that doesn't exist as written);
+- **only `status == "ok"` results record a verdict** — a kernel-blocked call (rate limit,
+  scope, disabled tool) never ran and must not fail a criterion;
+- report classification comes from **criterion transitions**, not the tool's `ok` flag
+  (`run_bash` deliberately has no `ok`; a probe's `ok=False` can itself CONFIRM a cleanup
+  criterion): green = closed something; red = failed something or ran red without closing;
 - runs through the SAME kernel/permission path as model calls; a call that would park on a
-  human approval is **skipped**, never waited on; criticals are never auto-approved;
-- cwd resolution for named commands is deterministic (`resolve_auto_command`): as-is when the
-  script target resolves from the project root, `cd <dir> && …` when the target was created in
-  exactly ONE directory this run, otherwise skipped (a wrong cwd would record a false red);
+  human approval is **skipped** (its abandoned approval row is expired — no dead card), never
+  waited on; criticals are never auto-approved; an exception in a runtime-initiated call never
+  crashes the run;
 - `path_exists` probes are passive (presence-confirms / absence-confirms, mismatch neutral) —
   an auto-probe can never wrongly FAIL a criterion;
 - UI honesty: every auto call is emitted as a normal `tool_started`/`tool_call` event with
   `auto_verifier: true`.
 
-`code:` `criterion_closure._auto_spec` / `resolve_auto_command` / `resolve_auto_path` /
-`auto_close_summary`; execution in `agent_loop` closure gate (`_AUTO_VERIFIER_MAX_CALLS`);
-shared verdict recording via `agent_loop._record_criterion_verdict`.
+`code:` `criterion_closure._auto_spec` / `resolve_auto_command` / `auto_close_summary`;
+execution in `agent_loop` closure gate (`_AUTO_VERIFIER_MAX_CALLS`); shared verdict recording
+via `agent_loop._record_criterion_verdict`.
+
+**Live re-run of the smokes (after the layer landed):** CLI 7/8 → **8/8 confirmed** (the runtime
+itself ran the negative `node index.js missing.log`); CSV prose 3/8 → 3/8 honest partial with
+tool calls 28 → 17 (documented trade-off; the **named** rephrasing → **8/8 in 56s**, one auto
+`run_bash` closing 4 output criteria); browser form 6/8 → **8/8** (interactions really executed;
+residual `run_server` churn is a model-economy tail, not a verifier gap).
 
 ---
 
