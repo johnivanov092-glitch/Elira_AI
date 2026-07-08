@@ -359,6 +359,28 @@ def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
 _CANCEL_REGISTRY: dict[str, threading.Event] = {}
 _REGISTRY_LOCK = threading.Lock()
 
+# Auto-verifier pass (runtime-owned closure): at most ONE pass per run, at most
+# this many verifier calls in it — a hard bound on runtime-initiated work.
+_AUTO_VERIFIER_MAX_CALLS = 5
+
+
+def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
+                              text_result: str, tool_ok: bool) -> bool:
+    """Feed one EXECUTED tool call into the per-criterion tracker — the single source
+    for both the model-called path and the runtime auto-verifier pass, so verdict
+    semantics can never drift between them. A verifier tool records its structured
+    evidence; run_bash records real stdout/stderr + exit_code (command_output /
+    command_check). Returns True when a criterion changed status."""
+    if not criteria.items:
+        return False
+    if tool_meta.get("verifier"):
+        return criteria.record(tool_name=name, args=args, ok=tool_ok,
+                               evidence=str(tool_meta.get("evidence") or ""), meta=tool_meta)
+    if name == "run_bash":
+        return criteria.record(tool_name=name, args=args, ok=tool_ok,
+                               evidence=text_result, meta=tool_meta)
+    return False
+
 
 def _exec_with_heartbeat(thunk, step):
     """Run a blocking tool call (thunk) in a daemon thread, yielding `heartbeat`
@@ -748,6 +770,7 @@ def _stream_code_agent_core(
         closure_fired_sets: set[str] = set()
         closure_turns = 0
         _CLOSURE_GATE_MAX = 2
+        auto_verifier_done = False   # runtime-owned verifier pass: at most ONCE per run
         cleanup_barrier_fired = False
         server_redirect_fired = 0
         _SERVER_REDIRECT_MAX = 2
@@ -1276,6 +1299,109 @@ def _stream_code_agent_core(
                         criteria, host=_last_ssh_host or "<host>",
                         url=_last_server_url or "<actual_url от run_server>",
                     )
+                    # ── Auto-verifier pass (runtime-owned closure) ────────────────
+                    # missing_verifier_actions already KNOWS the exact calls — for the
+                    # safe, fully-concrete subset the runtime executes them ITSELF
+                    # instead of asking the model; the model then sees only the result
+                    # (green → criterion confirmed silently; red → short report below).
+                    # Bounded: once per run, ≤ _AUTO_VERIFIER_MAX_CALLS calls. Kernel
+                    # policy fully applies (same request path as model calls); a call
+                    # that would park on a human approval is skipped, not waited on.
+                    _auto_results: list[dict] = []
+                    if _acts and not auto_verifier_done:
+                        auto_verifier_done = True
+                        _autoable = [a for a in _acts if a.get("auto")
+                                     and a["auto"].get("tool") in criterion_closure._AUTO_SAFE_TOOLS]
+                        for _a in _autoable[:_AUTO_VERIFIER_MAX_CALLS]:
+                            if cancel_event.is_set():
+                                break
+                            _a_tool = str(_a["auto"]["tool"])
+                            _a_args = dict(_a["auto"].get("args") or {})
+                            if _a_tool == "run_bash":
+                                _cmd = criterion_closure.resolve_auto_command(
+                                    _a_args.get("command", ""), project_root, touched_files)
+                                if not _cmd:
+                                    continue   # target not locatable — model keeps the wheel
+                                _a_args["command"] = _cmd
+                            elif _a_tool == "path_exists":
+                                _a_args["path"] = criterion_closure.resolve_auto_path(
+                                    _a_args.get("path", ""), project_root, touched_files)
+                            try:
+                                from app.application.agent_kernel.deferred_tools import activate_tools
+                                activate_tools(rid, [_a_tool])
+                            except Exception:
+                                pass
+                            yield {"type": "tool_started", "step": step, "tool": _a_tool,
+                                   "arguments": _a_args, "auto_verifier": True}
+                            _a_request = ToolExecutionRequest(
+                                run_id=rid, agent_id=effective_agent_id,
+                                project_scope_id=scope_id, tool_name=_a_tool,
+                                args=_a_args, source="code_agent",
+                            )
+                            _a_result = None
+                            try:
+                                for _hb in _exec_with_heartbeat(
+                                    lambda: _kernel_exec(_a_request, dispatch_fn=registry.dispatch_raw), step):
+                                    if "__result__" in _hb:
+                                        _a_result = _hb["__result__"]
+                                    else:
+                                        yield _hb
+                                _a_approval = str((_a_result.output or {}).get("approval_id") or "")
+                                if (
+                                    _a_result.status == "waiting_approval"
+                                    and _a_approval
+                                    and _mode_auto_approves(permission_mode, _a_tool)
+                                    and not _is_critical_call(_a_tool, _a_args)
+                                ):
+                                    _mark_approval_approved(_a_approval)
+                                    for _hb in _exec_with_heartbeat(
+                                        lambda: _kernel_exec(_a_request, dispatch_fn=registry.dispatch_raw), step):
+                                        if "__result__" in _hb:
+                                            _a_result = _hb["__result__"]
+                                        else:
+                                            yield _hb
+                            except Exception as _a_exc:  # noqa: BLE001 — runtime-initiated
+                                # work must NEVER crash a run that would otherwise finalize
+                                _a_result = None
+                                logger.warning("auto-verifier %s failed: %s", _a_tool, _a_exc)
+                            if _a_result is None:
+                                yield {"type": "tool_call", "step": step, "tool": _a_tool,
+                                       "arguments": _a_args, "ok": False, "auto_verifier": True,
+                                       "result": "auto-verifier: вызов не выполнился — оставлено модели"}
+                                continue
+                            if _a_result.status == "waiting_approval":
+                                # A runtime-initiated call must NEVER park the run on a
+                                # human prompt — this check stays with the model's turn.
+                                yield {"type": "tool_call", "step": step, "tool": _a_tool,
+                                       "arguments": _a_args, "ok": False, "auto_verifier": True,
+                                       "result": "auto-verifier: нужно подтверждение — оставлено модели"}
+                                continue
+                            _a_meta = _a_result.output or {}
+                            _a_text = str(_a_meta.get("text", ""))
+                            _a_ok = bool(_a_meta.get("ok", _a_result.status == "ok"))
+                            _a_event: dict[str, Any] = {
+                                "type": "tool_call", "step": step, "tool": _a_tool,
+                                "arguments": _a_args, "result": _truncate(_a_text),
+                                "ok": _a_ok, "auto_verifier": True,
+                            }
+                            for opt in ("exit_code", "verifier", "evidence"):
+                                if opt in _a_meta:
+                                    _a_event[opt] = _a_meta[opt]
+                            yield _a_event
+                            _a_hint = _short_arg_hint(_a_args)
+                            call_log.append(f"[auto] {_a_tool}({_a_hint}) {'ok' if _a_ok else 'error'}")
+                            _a_conf = _record_criterion_verdict(
+                                criteria, _a_tool, _a_args, _a_meta, _a_text, _a_ok)
+                            _auto_results.append({
+                                "label": f"{_a_tool}({_a_hint})", "ok": _a_ok, "confirmed": _a_conf,
+                                "evidence": str(_a_meta.get("evidence") or _a_text or ""),
+                            })
+                        # Recompute what's STILL missing after the pass — everything the
+                        # runtime closed drops out; all-green → no nudge, straight to final.
+                        _acts = criterion_closure.missing_verifier_actions(
+                            criteria, host=_last_ssh_host or "<host>",
+                            url=_last_server_url or "<actual_url от run_server>",
+                        )
                     _mkey = criterion_closure.missing_set_key(_acts)
                     if _acts and _mkey not in closure_fired_sets:
                         closure_fired_sets.add(_mkey)
@@ -1291,7 +1417,11 @@ def _stream_code_agent_core(
                             pass
                         if content:
                             messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": criterion_closure.closure_nudge_text(_acts)})
+                        _nudge = criterion_closure.closure_nudge_text(_acts)
+                        _auto_note = criterion_closure.auto_close_summary(_auto_results)
+                        if _auto_note:
+                            _nudge = _auto_note + "\n\n" + _nudge
+                        messages.append({"role": "user", "content": _nudge})
                         continue
                 final_text = _strip_tool_call_markup(content or last_text)
                 # Finalizing for real (closure gate is done): a conditional criterion
@@ -2012,22 +2142,11 @@ def _stream_code_agent_core(
                 # A verifier tool (verifier=True) confirms/fails a matching criterion;
                 # a coding test/verify that went GREEN (exit 0) is a passing check too.
                 _family = strategy_family(name, parsed_args)
-                criterion_progress = False
-                if criteria.items:
-                    if tool_meta.get("verifier"):
-                        criterion_progress = criteria.record(
-                            tool_name=name, args=parsed_args, ok=_tool_ok,
-                            evidence=str(tool_meta.get("evidence") or ""), meta=tool_meta,
-                        )
-                    elif name == "run_bash":
-                        # Feed the REAL stdout/stderr + exit_code so command_output
-                        # criteria (expected text in output) AND command_check (exit 0 +
-                        # known kind) both match — one run can close several output
-                        # criteria. Both are confirm-only on success (never a hard fail).
-                        criterion_progress = criteria.record(
-                            tool_name=name, args=parsed_args, ok=_tool_ok,
-                            evidence=text_result, meta=tool_meta,
-                        )
+                # A verifier tool records structured evidence; run_bash records real
+                # stdout/stderr + exit_code (command_output / command_check) — shared
+                # with the auto-verifier pass via _record_criterion_verdict.
+                criterion_progress = _record_criterion_verdict(
+                    criteria, name, parsed_args, tool_meta, text_result, _tool_ok)
                 # Strategy router — a criterion flip (criterion_progress) is the
                 # strongest progress signal and re-arms the run.
                 verdict = progress.evaluate(

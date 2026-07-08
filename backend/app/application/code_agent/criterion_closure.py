@@ -5,19 +5,26 @@ EXACT verifier calls → cleanup → final. This module reads the CriteriaTracke
 computes, deterministically, which verifier calls are still MISSING for criteria
 whose verifier is unambiguous — so the loop can spend ONE bounded closure turn asking
 for those exact calls instead of letting the model finalize a partial run while
-claiming success. It also owns the FINAL status block (runtime-generated, never the
-model's word) and the CLEANUP barrier (don't delete a path while criteria that live
-under it are still open). Pure: it never executes tools; it returns text/data.
+claiming success. For the SAFE, fully-concrete subset it also emits an executable
+`auto` spec so the runtime runs the verifier ITSELF (auto-verifier pass in agent_loop)
+instead of hoping the model guesses the right call. It also owns the FINAL status
+block (runtime-generated, never the model's word) and the CLEANUP barrier (don't
+delete a path while criteria that live under it are still open). Pure: it never
+executes tools; it returns text/data/specs.
 """
 from __future__ import annotations
 
 import re
+from pathlib import Path, PurePath
 
 from app.application.code_agent.taskspec import (
     CriteriaTracker,
     _QUOTED_RE,
+    _base,
+    _clean_run,
     _file_tokens,
     _path_tokens_from_text,
+    _run_target_and_args,
     interaction_spec,
 )
 
@@ -119,6 +126,115 @@ def _action_for(item: dict, *, host: str, url: str) -> dict | None:
     return None  # generic → no deterministic verifier
 
 
+# ── Auto-verifier closure (runtime-owned execution) ─────────────
+# The subset of missing-verifier calls the RUNTIME may execute ITSELF instead of asking
+# the model (the model then only sees the result): read-only(-ish) probes whose args are
+# fully concrete. Everything else stays model-directed by design — browser interactions
+# (field selectors unknown at criterion level), run_server (side-effectful), remote
+# cleanup ssh_not_exists (delete-then-verify is the model's flow), and kind-INFERRED
+# commands (a guessed `npm run typecheck` in the wrong project would record a false red).
+# Execution itself lives in agent_loop; this module stays pure (specs + text only).
+_AUTO_SAFE_TOOLS = frozenset({
+    "path_exists", "ssh_exists", "ssh_assert_contains", "ssh_assert_not_contains",
+    "browser", "run_bash",
+})
+
+
+def _auto_spec(item: dict, *, host: str, url: str) -> dict | None:
+    """Executable {'tool','args'} closing this criterion, or None when the call is not
+    fully concrete (placeholder host/url, unknown selectors) or not in the safe set."""
+    intent = item["intent"]
+    host_ok = bool(host) and host != _HOST_PLACEHOLDER
+    url_ok = bool(url) and url.startswith("http")
+    if intent in ("content_contains", "content_not_contains"):
+        path, pat = _criterion_path(item), _content_pattern(item)
+        if path and pat and host_ok:
+            tool = "ssh_assert_contains" if intent == "content_contains" else "ssh_assert_not_contains"
+            return {"tool": tool, "args": {"host": host, "path": path, "pattern": pat}}
+        return None
+    if intent in ("file_exists", "file_not_exists"):
+        path = _criterion_path(item)
+        if path and _looks_local_path(path):
+            # path_exists is a PASSIVE probe (presence confirms exists; absence confirms
+            # not_exists; the mismatching state is NEUTRAL) — an auto-probe can never
+            # wrongly FAIL a criterion, only confirm or leave it open.
+            return {"tool": "path_exists", "args": {"path": path}}
+        if path and intent == "file_exists" and host_ok:
+            return {"tool": "ssh_exists", "args": {"host": host, "path": path}}
+        return None   # remote cleanup (ssh_not_exists) stays model-owned: delete → verify
+    if intent == "dom_contains" and not item.get("interaction"):
+        return {"tool": "browser", "args": {"url": url}} if url_ok else None
+    if intent == "page_open":
+        return {"tool": "browser", "args": {"url": url}} if url_ok else None
+    if intent == "viewport_layout":
+        preset = "desktop" if item.get("viewport_width") == "wide" else "mobile"
+        return {"tool": "browser", "args": {"url": url, "viewport": preset}} if url_ok else None
+    if intent in ("command_output", "command_check"):
+        cmd = item.get("command") or ""
+        # only a command NAMED in the criterion (runnable quote) — never a kind-inferred
+        # guess; agent_loop still resolves cwd via resolve_auto_command before running.
+        return {"tool": "run_bash", "args": {"command": cmd}} if cmd else None
+    return None
+
+
+def resolve_auto_command(command: str, project_root, touched_files) -> str | None:
+    """Make a criterion-NAMED command runnable for the auto pass: as-is when its script
+    target resolves from the project root; with a deterministic `cd <dir> && ` prefix
+    when the target was created in exactly ONE directory this run (`node index.js
+    sample.log` after writing `log-summarizer/index.js`); None when the target can't be
+    located — the model keeps the wheel rather than the runtime recording a false red
+    from a wrong cwd."""
+    target, _args = _run_target_and_args(command)
+    if not target:
+        return None
+    raw = next((t for t in _clean_run(command).split() if _base(t) == target), "")
+    try:
+        if raw and (Path(project_root) / raw).exists():
+            return command
+    except OSError:
+        return None
+    dirs = {PurePath(str(p).replace("\\", "/")).parent.as_posix()
+            for p in (touched_files or ()) if _base(str(p)) == target}
+    if len(dirs) == 1:
+        d = dirs.pop()
+        return command if d in ("", ".") else f"cd {d} && {command}"
+    return None
+
+
+def resolve_auto_path(path: str, project_root, touched_files) -> str:
+    """The path the auto pass should probe: as given when it resolves under the project
+    root; else the unique touched file with the same basename (criterion says `index.js`,
+    the run created `log-summarizer/index.js`). Falls back to the original — an absent
+    probe is neutral, never a false verdict."""
+    try:
+        if (Path(project_root) / path).exists():
+            return path
+    except OSError:
+        return path
+    matches = {str(p) for p in (touched_files or ()) if _base(str(p)) == _base(path)}
+    return matches.pop() if len(matches) == 1 else path
+
+
+def auto_close_summary(results: list[dict]) -> str:
+    """Short runtime report of the auto-verifier pass for the model's closure turn.
+    Each result: {'label', 'ok', 'confirmed', 'evidence'}. Green (criterion confirmed) =
+    don't redo it; red (verifier ran and said no) = fix the code, then re-run exactly
+    that check. ok-but-unmatched runs are omitted (their criteria stay in the missing
+    list naturally)."""
+    green = [r for r in results if r.get("ok") and r.get("confirmed")]
+    red = [r for r in results if not r.get("ok")]
+    lines = []
+    if green:
+        lines.append("Runtime уже ВЫПОЛНИЛ проверки и подтвердил критерии — НЕ повторяй их: "
+                     + "; ".join(r["label"] for r in green) + ".")
+    for r in red:
+        ev = " ".join((r.get("evidence") or "").split())[:300]
+        lines.append(f"Runtime выполнил {r['label']} — проверка НЕ прошла"
+                     + (f" (evidence: {ev})" if ev else "")
+                     + ". Исправь причину и перезапусти именно эту проверку.")
+    return "\n".join(lines)
+
+
 def _interaction_group_actions(items: list[dict], url: str) -> list[dict]:
     """GROUP open interaction criteria by (fill value, click target) into ONE concrete
     browser(actions=…) call per group — Network/Mask/Hosts after the SAME fill+click
@@ -159,13 +275,16 @@ def _command_group_actions(items: list[dict]) -> list[dict]:
         show = ", ".join(f"`{e}`" for e in exps) if exps else "нужный вывод"
         neg = any(it.get("expect_nonzero") for it in its)
         cmd_show = cmd or "команду из задачи"
-        out.append({
+        act = {
             "tool": "run_bash",
             "call": (f"run_bash(`{cmd_show}`) — ОДИН запуск; в stdout/stderr должно быть {show}"
                      + ("; и НЕнулевой код выхода" if neg else "")
                      + " (grep/read_file НЕ доказывают вывод команды)."),
             "why": "; ".join(it["text"] for it in its)[:200],
-        })
+        }
+        if cmd:   # a NAMED command is runtime-executable (auto-verifier pass)
+            act["auto"] = {"tool": "run_bash", "args": {"command": cmd}}
+        out.append(act)
     return out
 
 
@@ -199,6 +318,9 @@ def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLAC
             continue
         if act["call"] in seen:
             continue
+        auto = _auto_spec(it, host=host, url=url)
+        if auto:   # runtime can execute this one itself (auto-verifier pass)
+            act["auto"] = auto
         seen.add(act["call"])
         out.append(act)
     return out

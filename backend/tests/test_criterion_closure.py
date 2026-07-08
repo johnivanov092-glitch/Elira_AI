@@ -9,6 +9,7 @@ calls, (2) block a premature cleanup, and (3) own the final status block.
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -219,6 +220,93 @@ class FinalAssemblyCountTest(unittest.TestCase):
             final = final.rstrip() + "\n\n" + rep
         self.assertIn("подтверждено 19/19", final)
         self.assertNotIn("17", final)
+
+
+class AutoSpecTest(unittest.TestCase):
+    """The `auto` executable spec attached to missing-verifier actions: present ONLY
+    for safe, fully-concrete calls; placeholders / interactions / cleanup / inferred
+    commands get none (they stay model-directed)."""
+
+    def _acts(self, crits, **kw):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=list(crits)))
+        return cc.missing_verifier_actions(t, **kw)
+
+    def test_local_file_gets_path_exists_auto(self):
+        acts = self._acts(["файл `log-summarizer/index.js` существует"])
+        self.assertEqual(acts[0]["auto"], {"tool": "path_exists",
+                                           "args": {"path": "log-summarizer/index.js"}})
+
+    def test_ssh_content_requires_real_host(self):
+        crit = ["файл C:\\Lab\\a.ps1 содержит `status=ok`"]
+        self.assertNotIn("auto", self._acts(crit)[0])                      # placeholder host
+        acts = self._acts(crit, host="home-srv01")
+        self.assertEqual(acts[0]["auto"]["tool"], "ssh_assert_contains")
+        self.assertEqual(acts[0]["auto"]["args"]["host"], "home-srv01")
+
+    def test_named_command_gets_run_bash_auto(self):
+        acts = self._acts(["`node index.js sample.log` выводит `TOTAL: 5`"])
+        self.assertEqual(acts[0]["auto"],
+                         {"tool": "run_bash", "args": {"command": "node index.js sample.log"}})
+
+    def test_interaction_remote_cleanup_and_inferred_command_have_no_auto(self):
+        acts = self._acts([
+            "browser interaction: заполни `CIDR` значением `10.0.0.0/24`, нажми `Calculate` "
+            "— на странице показывает `Network: 10.0.0.0`",
+            "файл C:\\Lab\\agent.ps1 удалён после проверки",   # remote cleanup → ssh_not_exists
+            "npm run typecheck проходит",                       # kind-inferred, not named
+        ], host="home-srv01", url="http://127.0.0.1:3000")
+        for a in acts:
+            self.assertNotIn("auto", a, a["tool"])
+
+    def test_browser_needs_real_url(self):
+        crit = ["на странице отображается `Subnet Helper`"]
+        self.assertNotIn("auto", self._acts(crit)[0])                      # placeholder url
+        acts = self._acts(crit, url="http://127.0.0.1:3000")
+        self.assertEqual(acts[0]["auto"], {"tool": "browser",
+                                           "args": {"url": "http://127.0.0.1:3000"}})
+
+    def test_viewport_auto_carries_preset(self):
+        acts = self._acts(["нет горизонтального скролла на mobile"], url="http://127.0.0.1:3000")
+        self.assertEqual(acts[0]["auto"]["args"]["viewport"], "mobile")
+
+
+class AutoResolveTest(unittest.TestCase):
+    def test_command_as_is_when_target_at_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "index.js").write_text("x", encoding="utf-8")
+            self.assertEqual(cc.resolve_auto_command("node index.js sample.log", tmp, []),
+                             "node index.js sample.log")
+
+    def test_command_gets_cd_prefix_from_unique_touched_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = cc.resolve_auto_command("node index.js sample.log", tmp,
+                                          ["log-summarizer/index.js", "log-summarizer/sample.log"])
+            self.assertEqual(out, "cd log-summarizer && node index.js sample.log")
+
+    def test_command_none_when_ambiguous_or_unlocatable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(cc.resolve_auto_command(
+                "node index.js", tmp, ["a/index.js", "b/index.js"]))     # two candidate dirs
+            self.assertIsNone(cc.resolve_auto_command("node index.js", tmp, []))
+            self.assertIsNone(cc.resolve_auto_command("npm run typecheck", tmp, []))
+
+    def test_path_resolves_via_unique_touched_basename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(cc.resolve_auto_path("index.js", tmp, ["log-summarizer/index.js"]),
+                             "log-summarizer/index.js")
+            self.assertEqual(cc.resolve_auto_path("missing.txt", tmp, []), "missing.txt")
+
+    def test_auto_close_summary_green_and_red(self):
+        txt = cc.auto_close_summary([
+            {"label": "path_exists(index.js)", "ok": True, "confirmed": True, "evidence": "есть"},
+            {"label": "run_bash(node index.js)", "ok": False, "confirmed": False,
+             "evidence": "Error: boom"},
+        ])
+        self.assertIn("НЕ повторяй", txt)
+        self.assertIn("path_exists(index.js)", txt)
+        self.assertIn("НЕ прошла", txt)
+        self.assertIn("Error: boom", txt)
+        self.assertEqual(cc.auto_close_summary([]), "")
 
 
 class SuccessMarkScrubTest(unittest.TestCase):

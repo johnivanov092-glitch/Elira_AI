@@ -161,11 +161,46 @@ row has a regression test.
 
 ---
 
+## Auto-verifier closure (runtime-owned execution)
+
+`missing_verifier_actions()` knows the exact calls — so for the SAFE, fully-concrete subset
+the **runtime executes them itself** at the closure gate instead of asking the model
+(removing the dependency on the model guessing the right verifier call). The model only
+sees the result: green → criterion confirmed silently (straight to a confirmed final,
+no closure turn); red/remaining → ONE short report turn ("Runtime выполнил X — НЕ прошла,
+evidence: …, исправь") on top of the usual nudge.
+
+**Bounds & safety:**
+- at most **1 auto pass per run**, at most **5 calls** in it;
+- safe set only: `path_exists`, `ssh_exists`, `ssh_assert_contains`, `ssh_assert_not_contains`,
+  `browser` (render / viewport — **no** actions), `run_bash` **only for a command NAMED in the
+  criterion** (never kind-inferred — a guessed command in the wrong project would record a
+  false red);
+- **stays model-directed:** browser interactions (field selectors unknown at criterion level),
+  `run_server` (side-effectful), remote cleanup `ssh_not_exists` (delete-then-verify is the
+  model's flow);
+- runs through the SAME kernel/permission path as model calls; a call that would park on a
+  human approval is **skipped**, never waited on; criticals are never auto-approved;
+- cwd resolution for named commands is deterministic (`resolve_auto_command`): as-is when the
+  script target resolves from the project root, `cd <dir> && …` when the target was created in
+  exactly ONE directory this run, otherwise skipped (a wrong cwd would record a false red);
+- `path_exists` probes are passive (presence-confirms / absence-confirms, mismatch neutral) —
+  an auto-probe can never wrongly FAIL a criterion;
+- UI honesty: every auto call is emitted as a normal `tool_started`/`tool_call` event with
+  `auto_verifier: true`.
+
+`code:` `criterion_closure._auto_spec` / `resolve_auto_command` / `resolve_auto_path` /
+`auto_close_summary`; execution in `agent_loop` closure gate (`_AUTO_VERIFIER_MAX_CALLS`);
+shared verdict recording via `agent_loop._record_criterion_verdict`.
+
+---
+
 ## Where the runtime uses (or should use) this
 
 1. **TaskSpec derivation** — pick the right intent for a criterion (and flag `generic`/
    unsupported early instead of implying it's verifiable).
 2. **Closure gate** — emit the exact missing verifier + what it closes
    ("`run_bash(node index.js sample.log)` → closes INFO/WARN/ERROR/TOTAL").
-3. **Coverage-gap honesty** — if a criterion maps to no catalog verifier, report it
+3. **Auto-verifier closure** — execute the safe concrete subset directly (see above).
+4. **Coverage-gap honesty** — if a criterion maps to no catalog verifier, report it
    `unsupported/unverifiable` and stop hammering tools.

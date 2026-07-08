@@ -754,6 +754,151 @@ class VerifierGateTest(unittest.TestCase):
 # ── per-criterion tracker (Ph7.4/7.5) ───────────────────────────
 
 
+class _RecordingChat(_SeqChat):
+    """_SeqChat that also captures the message list of every LLM call, so a test can
+    assert on the closure nudge / auto-verifier report the runtime injected."""
+
+    def __init__(self, responses, fallback):
+        super().__init__(responses, fallback)
+        self.seen_messages: list[list[dict]] = []
+
+    def __call__(self, **kw):
+        self.seen_messages.append(list(kw.get("messages") or []))
+        return super().__call__(**kw)
+
+
+class AutoVerifierClosureTest(unittest.TestCase):
+    """Runtime-owned auto-verifier pass: when missing_verifier_actions() knows the exact
+    safe calls (path_exists / named run_bash / browser / ssh_assert*), the RUNTIME
+    executes them itself at the closure gate — the model only sees the result. Green →
+    criteria confirmed with no extra model turn; red → one short report turn; bounded
+    (once per run, ≤5 calls); interactions / cleanup / inferred commands stay
+    model-directed."""
+
+    _LOCAL_TASK = (
+        "Создай CLI-утилиту log-summarizer в подпапке log-summarizer.\n\n"
+        "Цель:\nУтилита считает уровни логов.\n\n"
+        "Критерии готовности:\n"
+        "1. файл `log-summarizer/index.js` существует\n"
+        "2. `node index.js sample.log` выводит `TOTAL: 5`\n"
+    )
+
+    def tearDown(self):
+        for rid in ("ts-auto-green", "ts-auto-red", "ts-auto-budget", "ts-auto-skip"):
+            deferred_tools.clear_run(rid)
+
+    @staticmethod
+    def _exec_for(outputs: dict, calls: list):
+        """kernel-exec mock: routes by tool_name, logs (tool, args) into `calls`."""
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            calls.append((tool, dict(getattr(request, "args", {}) or {})))
+            out = outputs.get(tool, {"text": "ok", "ok": True})
+            return SimpleNamespace(status="ok", output=dict(out))
+        return _exec
+
+    def test_green_pass_confirms_without_extra_model_turn(self):
+        # Model writes the file and finalizes WITHOUT verifying. The runtime executes
+        # path_exists + the named run_bash itself → both criteria confirm → the run
+        # finalizes CONFIRMED with zero closure turns (2 model steps total).
+        calls: list = []
+        chat = _RecordingChat(
+            [_call("write_file", path="log-summarizer/index.js", content="x"), _final("готово")],
+            _final("готово"))
+        outputs = {
+            "write_file": {"text": "ok", "ok": True, "touched_path": "log-summarizer/index.js"},
+            "path_exists": {"text": "log-summarizer/index.js: существует (файл)", "ok": True,
+                            "verifier": True, "evidence": "log-summarizer/index.js: существует (файл)"},
+            "run_bash": {"text": "INFO: 2\nTOTAL: 5", "ok": True, "exit_code": 0},
+        }
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=self._exec_for(outputs, calls)):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=self._LOCAL_TASK, project_root=tmp, run_id="ts-auto-green",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "confirmed")
+        self.assertTrue(done.get("criteria_confirmed"))
+        # no closure nudge turn: write → final, the pass isn't a model step
+        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 2)
+        auto = [e for e in evs if e.get("type") == "tool_call" and e.get("auto_verifier")]
+        self.assertEqual({e["tool"] for e in auto}, {"path_exists", "run_bash"})
+        # cwd resolution: the named command ran with the deterministic cd prefix
+        run_cmds = [a.get("command") for t, a in calls if t == "run_bash"]
+        self.assertEqual(run_cmds, ["cd log-summarizer && node index.js sample.log"])
+
+    def test_red_pass_gives_short_report_then_honest_partial(self):
+        # The auto run goes RED → the model gets ONE short report turn with the
+        # evidence; it doesn't fix anything → the run ends honestly unverified
+        # (command_output red is neutral, never a false hard-fail).
+        calls: list = []
+        chat = _RecordingChat(
+            [_call("write_file", path="index.js", content="x"), _final("сделал")],
+            _final("готово"))
+        outputs = {
+            "write_file": {"text": "ok", "ok": True, "touched_path": "index.js"},
+            "path_exists": {"text": "index.js: существует (файл)", "ok": True,
+                            "verifier": True, "evidence": "index.js: существует (файл)"},
+            "run_bash": {"text": "Error: boom", "ok": False, "exit_code": 1},
+        }
+        task = ("Цель:\nCLI.\n\nКритерии готовности:\n"
+                "1. `node index.js sample.log` выводит `TOTAL: 5`\n")
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=self._exec_for(outputs, calls)):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-auto-red",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "unverified")   # red run = not proven, not failed
+        self.assertEqual(len([e for e in evs if e.get("type") == "step_started"]), 3)  # one report turn
+        # the report turn carries the runtime's evidence, not a bare nudge
+        nudges = [m["content"] for ms in chat.seen_messages for m in ms
+                  if m.get("role") == "user" and "Runtime выполнил" in str(m.get("content"))]
+        self.assertTrue(nudges)
+        self.assertIn("Error: boom", nudges[-1])
+        self.assertIn("НЕ прошла", nudges[-1])
+        # the auto pass ran ONCE: exactly one run_bash across the whole run
+        self.assertEqual(len([1 for t, _ in calls if t == "run_bash"]), 1)
+
+    def test_budget_caps_auto_calls_at_five(self):
+        calls: list = []
+        crits = "\n".join(f"{i}. файл `f{i}.txt` существует" for i in range(1, 8))
+        task = f"Цель:\nФайлы.\n\nКритерии готовности:\n{crits}\n"
+        chat = _RecordingChat([_final("готово")], _final("готово"))
+        outputs = {"path_exists": {"text": "НЕ найден", "ok": False, "verifier": True,
+                                   "evidence": "НЕ найден"}}
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=self._exec_for(outputs, calls)):
+            list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-auto-budget",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        self.assertEqual(len([1 for t, _ in calls if t == "path_exists"]), 5)  # 7 criteria, cap 5
+
+    def test_interaction_and_remote_cleanup_stay_model_directed(self):
+        # No auto spec for a browser interaction (selectors unknown) or a remote cleanup
+        # (delete-then-verify is the model's flow) → the pass executes NOTHING and the
+        # nudge still lists both calls, exactly like before the auto layer.
+        calls: list = []
+        task = ("Цель:\nФорма.\n\nКритерии готовности:\n"
+                "1. browser interaction: заполни `CIDR` значением `10.0.0.0/24`, нажми "
+                "`Calculate` — на странице показывает `Network: 10.0.0.0`\n"
+                "2. файл C:\\Lab\\agent.ps1 удалён после проверки\n")
+        chat = _RecordingChat([_final("готово")], _final("готово"))
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=self._exec_for({}, calls)):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-auto-skip",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        self.assertEqual([e for e in evs if e.get("auto_verifier")], [])   # nothing auto-ran
+        self.assertEqual(calls, [])                                        # kernel untouched
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertNotEqual(done.get("completion_status"), "confirmed")
+
+
 class CriteriaTrackerTest(unittest.TestCase):
     def _spec(self):
         return TaskSpec(success_criteria=[
