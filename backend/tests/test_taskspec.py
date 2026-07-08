@@ -1000,6 +1000,66 @@ class AutoVerifierClosureTest(unittest.TestCase):
         self.assertNotEqual(done.get("completion_status"), "confirmed")
 
 
+class CliOutputAbsentTest(unittest.TestCase):
+    """R6 cli.output.not_contains: «`cmd` НЕ выводит `X`» — proven by RUNNING the named
+    command (attribution as everywhere), token must be ABSENT from a GREEN run. A green
+    run that DOES print it fails honestly; a red run is neutral; a file-level assert
+    never closes an output claim."""
+
+    _CRIT = "`node check.js inventory.csv` НЕ выводит `OUT_OF_SCOPE`"
+
+    def _tracker(self):
+        return CriteriaTracker.from_spec(TaskSpec(success_criteria=[self._CRIT]))
+
+    def test_classification_and_polarity(self):
+        from app.application.code_agent.taskspec import _criterion_intent, command_spec
+        self.assertEqual(_criterion_intent(self._CRIT), "command_output")
+        spec = command_spec(self._CRIT)
+        self.assertTrue(spec["output_absent"])
+        self.assertEqual(spec["command"], "node check.js inventory.csv")
+        self.assertEqual(spec["output_expected"], "OUT_OF_SCOPE")
+        # a file not-contains criterion is NOT hijacked into command_output
+        self.assertEqual(_criterion_intent("файл `app.js` не содержит `debugger`"),
+                         "content_not_contains")
+        # positive phrasing keeps positive polarity
+        self.assertFalse(command_spec("`node check.js bad.csv` выводит `OUT_OF_SCOPE`")["output_absent"])
+
+    def test_green_run_without_token_confirms(self):
+        t = self._tracker()
+        t.record(tool_name="run_bash", args={"command": "node check.js inventory.csv"},
+                 ok=True, evidence="OK: 1\nWARN: 1\nDOWN: 1\nSUBNET: 192.168.88.0/24",
+                 meta={"exit_code": 0})
+        self.assertEqual(t.items[0]["status"], "confirmed")
+
+    def test_green_run_with_token_fails_honestly(self):
+        t = self._tracker()
+        t.record(tool_name="run_bash", args={"command": "node check.js inventory.csv"},
+                 ok=True, evidence="OK: 0\nOUT_OF_SCOPE", meta={"exit_code": 0})
+        self.assertEqual(t.items[0]["status"], "failed")
+
+    def test_red_run_is_neutral(self):
+        t = self._tracker()
+        t.record(tool_name="run_bash", args={"command": "node check.js inventory.csv"},
+                 ok=True, evidence="Error: boom", meta={"exit_code": 1})
+        self.assertEqual(t.items[0]["status"], "unconfirmed")
+
+    def test_foreign_run_or_dump_never_closes(self):
+        t = self._tracker()
+        t.record(tool_name="run_bash", args={"command": "cat check.js"},
+                 ok=True, evidence="clean output", meta={"exit_code": 0})
+        t.record(tool_name="run_bash", args={"command": "node other.js inventory.csv"},
+                 ok=True, evidence="clean output", meta={"exit_code": 0})
+        self.assertEqual(t.items[0]["status"], "unconfirmed")   # attribution holds
+
+    def test_auto_spec_and_group_text(self):
+        import app.application.code_agent.criterion_closure as cc
+        t = self._tracker()
+        acts = cc.missing_verifier_actions(t)
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["auto"]["args"]["command"], "node check.js inventory.csv")
+        self.assertIn("НЕ должно быть `OUT_OF_SCOPE`", acts[0]["call"])
+
+
 class TargetTokenHijackTest(unittest.TestCase):
     """Intent context comes from the criterion's PROSE — a TARGET string (path/filename)
     must not hijack classification. Live SSH canary: «файл C:\\AgentLab\\smoke-canary.txt

@@ -10,10 +10,10 @@
   "csv_named": {
     "task": "tasks/csv_named.txt",
     "expect_completion": "confirmed",
-    "expect_confirmed": 8,
+    "expect_confirmed": 9,
     "max_tool_calls": 22,
     "artifacts": ["csv-inventory-checker/check.js", "csv-inventory-checker/inventory.csv"],
-    "note": "baseline live 2026-07-08: 8/8, 17 tools, 56s (named phrasing; 1 auto run_bash closes 4 output-crits)"
+    "note": "baseline live 2026-07-08/09: 17-19 tools; 9th criterion = R6 absent-polarity («НЕ выводит OUT_OF_SCOPE»)"
   },
   "form": {
     "task": "tasks/form.txt",

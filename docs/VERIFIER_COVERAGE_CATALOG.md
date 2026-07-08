@@ -40,7 +40,7 @@ Support: **✅ supported** (classified + verifier + evidence + regression test) 
 | `project.scope.no_parent_changes` | *(→ constraint)* | — | *(can't verify without diff)* | ◐ | — |
 | `cli.output.contains` — `cmd` выводит `INFO: 2` | `command_output` | `run_bash` | stdout/stderr contains text (one run closes many) | ✅ | — |
 | `cli.command.fails_with_output` — выводит X и падает | `command_output`+nonzero | `run_bash` | text + exit≠0 | ✅ | — |
-| `cli.output.not_contains` | `command_output` | `run_bash` | text absent | ◐ | — |
+| `cli.output.not_contains` — `cmd` НЕ выводит `X` | `command_output` (absent) | `run_bash` | named run, exit 0, token ABSENT (green run WITH token → fail) | ✅ | red run neutral; file-assert never closes an output claim |
 | `browser.form.select_checkbox_assert` — fill/select/checkbox/empty + click | `dom_contains`+interaction | `browser(actions)` | multi-step post-action DOM | ✅ | — |
 
 ⚠ = today classifies as `generic` (or misses the interaction flag) → the criterion can

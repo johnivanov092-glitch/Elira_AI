@@ -462,6 +462,13 @@ _OUTPUT_CUES = ("выводит", "выведет", "печатает", "выв�
 _OUTPUT_VERB_CUES = ("выводит", "выведет", "печатает", "prints", "outputs")
 _NONZERO_CUES = ("завершается с ошибк", "с ошибкой", "non-zero", "ненулев", "падает",
                  "exits non-zero", "exit code 1", "код возврата", "с ненулевым", "ненулевым кодом")
+# R6 cli.output.not_contains: the output verb NEGATED («НЕ выводит `X`», "does not
+# print") — the token must be ABSENT from the named run's output.
+_ABSENT_OUTPUT_RE = re.compile(
+    r"(?:\bне\b|never|does\s+not|doesn['’]t)\s+(?:долж\w+\s+)?"
+    r"(?:выводить|выводит|выведет|печатать|печатает|пишет|prints?|outputs?)",
+    re.IGNORECASE,
+)
 _RUNNABLE_RE = re.compile(
     r"^(?:node|python3?|npm|pnpm|yarn|deno|ts-node|bash|sh|go|cargo|php|ruby|\./)\b"
     r"|\.(?:js|mjs|cjs|py|sh|ts)\b", re.IGNORECASE)
@@ -512,7 +519,8 @@ def command_spec(text: str) -> dict:
         if output_expected:
             break
     return {"command": command, "output_expected": output_expected,
-            "expect_nonzero": _has(low, _NONZERO_CUES)}
+            "expect_nonzero": _has(low, _NONZERO_CUES),
+            "output_absent": bool(_ABSENT_OUTPUT_RE.search(low))}
 
 
 def _is_command_output(text: str) -> bool:
@@ -795,6 +803,12 @@ def _criterion_intent(text: str) -> str:
         prose = prose.replace(_tok.lower(), " ")
 
     if negative:
+        # A NAMED command that must NOT print a token is a command_output criterion
+        # (absent polarity) — proven by RUNNING it, never by a file assert (R6):
+        # without this, the command's own path tokens made it content_not_contains,
+        # and a file-level not-contains could wrongly close an OUTPUT claim.
+        if _is_command_output(text):
+            return "command_output"
         # A file NOT containing a pattern is verifiable; a "DOM must NOT show X" is not
         # (no absence-of-render verifier) → generic/unverified, honestly.
         if fil:
@@ -969,13 +983,17 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         cmd_c = item.get("command", "")
         if not exp or not cmd_c:
             return False       # command_output needs a NAMED command + a concrete expected token
-        ne = _norm_dom(exp)
-        if not ne or (" " + ne + " ") not in (" " + _norm_dom(v.get("output", "")) + " "):
-            return False       # expected text must be in the run's stdout/stderr (boundary-anchored)
         # the run must actually invoke the named command (interpreter/path/env-agnostic) and
         # not be a text-dumper — so `node ./index.js sample.log` confirms `node index.js
         # sample.log`, but `cat index.js` or a run with a different arg does not.
-        return _run_invokes(cmd_c, v.get("command", ""))
+        if not _run_invokes(cmd_c, v.get("command", "")):
+            return False
+        if item.get("output_absent"):
+            return True        # absent polarity: the named RUN is the verdict; presence
+            # vs absence of the token decides confirm/fail in _verdict_outcome (R6)
+        ne = _norm_dom(exp)
+        # positive: expected text must be in the run's stdout/stderr (boundary-anchored)
+        return bool(ne) and (" " + ne + " ") in (" " + _norm_dom(v.get("output", "")) + " ")
     if it == "dom_contains":
         if item.get("interaction") and not v.get("interacted"):
             return False   # an interaction criterion needs the fill/click to have ACTUALLY
@@ -1051,6 +1069,15 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
         if not _verdict_target_matches(item, v):
             return None
         ec = v.get("exit_code")
+        if item.get("output_absent"):
+            # R6 absent polarity: a GREEN run WITHOUT the token confirms; a GREEN run
+            # that DOES print it falsifies the criterion (honest, attributable fail);
+            # a red run is neutral — crashing is not evidence about the token.
+            if not (ec is None or ec == 0):
+                return None
+            ne = _norm_dom(item.get("output_expected", ""))
+            present = bool(ne) and (" " + ne + " ") in (" " + _norm_dom(v.get("output", "")) + " ")
+            return "fail" if present else "confirm"
         if item.get("expect_nonzero"):
             return "confirm" if isinstance(ec, int) and ec != 0 else None
         # positive: the run must have SUCCEEDED — a RED run whose output merely contains
@@ -1088,7 +1115,8 @@ def _criterion_item(text: str) -> dict:
         "targets": _dom_targets(text), "command_kind": _command_kind(text),
         "interaction": _is_interaction(text), "conditional": _is_conditional(text),
         "command": cmd["command"], "output_expected": cmd["output_expected"],
-        "expect_nonzero": cmd["expect_nonzero"], "viewport_width": _viewport_target(text),
+        "expect_nonzero": cmd["expect_nonzero"], "output_absent": cmd["output_absent"],
+        "viewport_width": _viewport_target(text),
     }
 
 

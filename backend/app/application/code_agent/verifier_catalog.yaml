@@ -233,14 +233,15 @@ categories:
 
   - id: cli.output.not_contains
     domain: cli
-    support: missing
-    criterion_patterns: ["вывод НЕ содержит `X`"]
-    intent: generic              # a negative ('НЕ содержит') hits the _NEG_CTX branch → generic
+    support: supported            # R6
+    criterion_patterns: ["`node check.js inventory.csv` НЕ выводит `OUT_OF_SCOPE`", "does not print `X`"]
+    intent: command_output (output_absent)
     verifier_tools: [run_bash]
-    evidence_required: ["expected text ABSENT from stdout/stderr"]
-    closes: []
-    missing_reason: "'вывод не содержит X' matches _NEG_CTX with no file → _criterion_intent returns generic (never reaches command_output). No absence-of-output matcher; no live case needed it."
-    code: "GAP (deferred — no live case)"
+    evidence_required: ["the NAMED run executes (attribution via _run_invokes) with exit 0 and the token ABSENT from stdout/stderr (boundary-anchored)"]
+    closes: [command_output absent-polarity]
+    does_not_close: ["a RED run (crash is not evidence about the token — neutral)", "a file-level not-contains assert (an OUTPUT claim is proven by RUNNING, not by grepping the file; the negative branch checks _is_command_output BEFORE the fil branch)"]
+    notes: "a GREEN run that DOES print the token FAILS the criterion (honest, attributable red). Prose without a named command stays generic as everywhere."
+    code: "taskspec.py:_ABSENT_OUTPUT_RE, command_spec(output_absent), _criterion_intent (negative branch), _verdict_target_matches/_verdict_outcome(command_output)"
 
   - id: cli.command.fails_with_output
     domain: cli

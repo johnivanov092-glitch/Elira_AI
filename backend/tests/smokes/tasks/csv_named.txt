@@ -28,6 +28,7 @@ CLI parser для CSV-инвентаризации.
 - `node check.js inventory.csv` выводит `WARN: 1`
 - `node check.js inventory.csv` выводит `DOWN: 1`
 - `node check.js inventory.csv` выводит `SUBNET: 192.168.88.0/24`
+- `node check.js inventory.csv` НЕ выводит `OUT_OF_SCOPE`
 - `node check.js bad.csv` выводит `OUT_OF_SCOPE`
 
 Подвох:

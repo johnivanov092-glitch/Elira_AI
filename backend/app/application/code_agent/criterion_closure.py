@@ -281,8 +281,14 @@ def _command_group_actions(items: list[dict]) -> list[dict]:
         groups.setdefault(it.get("command", ""), []).append(it)
     out = []
     for cmd, its in groups.items():
-        exps = sorted({it.get("output_expected", "") for it in its if it.get("output_expected")})
-        show = ", ".join(f"`{e}`" for e in exps) if exps else "нужный вывод"
+        exps = sorted({it.get("output_expected", "") for it in its
+                       if it.get("output_expected") and not it.get("output_absent")})
+        absents = sorted({it.get("output_expected", "") for it in its
+                          if it.get("output_expected") and it.get("output_absent")})
+        show = ", ".join(f"`{e}`" for e in exps) if exps else ""
+        if absents:
+            show += ("; " if show else "") + "НЕ должно быть " + ", ".join(f"`{e}`" for e in absents)
+        show = show or "нужный вывод"
         neg = any(it.get("expect_nonzero") for it in its)
         cmd_show = cmd or "команду из задачи"
         act = {
