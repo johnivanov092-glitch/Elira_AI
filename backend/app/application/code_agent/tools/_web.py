@@ -339,11 +339,16 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
             if viewport:
                 try:
                     # No horizontal overflow at the tested width = layout fits (real signal,
-                    # not "a render happened"). +1 tolerates sub-pixel rounding.
-                    fits = bool(page.evaluate(
-                        "() => document.documentElement.scrollWidth <= window.innerWidth + 1"))
-                    inner = int(page.evaluate("() => window.innerWidth") or viewport["width"])
-                    vp_signal = {"checked": True, "width": inner, "no_hoverflow": fits}
+                    # not "a render happened"). Compare scrollWidth against documentElement.
+                    # clientWidth — BOTH exclude the vertical scrollbar, so a page that reserves
+                    # scrollbar space (window.innerWidth would include it) can't mask a genuine
+                    # overflow up to the scrollbar width (Batch D review, finding 2). +1 tolerates
+                    # sub-pixel rounding. Report the requested DEVICE width for bucket matching.
+                    m = page.evaluate(
+                        "() => ({sw: document.documentElement.scrollWidth,"
+                        " cw: document.documentElement.clientWidth})")
+                    fits = bool(int(m["sw"]) <= int(m["cw"]) + 1)
+                    vp_signal = {"checked": True, "width": int(viewport["width"]), "no_hoverflow": fits}
                 except Exception:
                     vp_signal = None   # measurement failed → no viewport verdict (honest)
             return page.title(), page.url, (page.inner_text("body") or "")[:limit], applied, vp_signal

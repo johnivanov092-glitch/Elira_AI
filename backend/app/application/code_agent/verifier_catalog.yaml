@@ -297,8 +297,10 @@ categories:
     verifier_tools: ["browser(viewport=…)"]
     evidence_required: ["measured no-horizontal-overflow at the tested width (meta.viewport.checked + no_hoverflow)"]
     closes: [viewport_layout]
-    does_not_close: ["a plain render with NO viewport requested (viewport=None) — never measured, stays unconfirmed", "a desktop-width measurement for a `mobile` claim (width-bucket mismatch, attribution)"]
-    residual_limit: "measures horizontal overflow at whatever width the model set; does not cross-check that the DOM at that width IS the responsive layout (same class as Batch B statically-present token)."
+    does_not_close: ["a plain render with NO viewport requested (viewport=None) — never measured, stays unconfirmed", "a mobile-width measurement for a `desktop` claim (and vice-versa) — width-bucket mismatch, attribution both directions"]
+    width_bucket: "from EXPLICIT device keywords only (mobile/telefon vs desktop); NOT from prose 'NNpx' (those are CSS sizes, not viewport widths — Batch D review). both-named or neither → any width confirms."
+    overflow_measure: "documentElement.scrollWidth <= documentElement.clientWidth + 1 (both scrollbar-exclusive — innerWidth would mask overflow up to the scrollbar width; Batch D review)."
+    residual_limit: "(1) measures overflow at the set width, doesn't cross-check the DOM there IS the responsive layout (Batch B class). (2) a multi-width criterion ('mobile и desktop') is confirmed by whichever single width the model measured — closure steers to mobile (the stricter); we don't require both."
     code: "tools/_web.py:tool_browser(viewport)+_browser_render; taskspec.py:_verdict_target_matches/_verdict_outcome(viewport_layout), _viewport_target; criterion_closure.py:_action_for(viewport_layout)"
 
 # ── Negative rules (invariants the verifier layer MUST keep) ─────────────────

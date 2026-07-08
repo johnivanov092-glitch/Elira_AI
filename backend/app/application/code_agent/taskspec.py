@@ -687,22 +687,24 @@ _CMD_CTX = ("typecheck", "type-check", "tsc", "mypy", "pyright", "npm run", "npm
 _VIEWPORT_CTX = ("viewport", "адаптив", "responsive", "mobile", "desktop", "мобильн", "десктоп",
                  "overflow", "переполн", "горизонтальн скролл", "раскладк", "layout")
 # A layout criterion is only meaningfully proven at the width it names — so classify the
-# intended viewport bucket. narrow ("mobile"/"телефон"/≤600px) must be measured narrow, wide
-# ("desktop"/≥900px) wide; ambiguous → None (any measured width confirms). This ties the
-# overflow signal to the criterion's intent (a desktop measurement can't confirm "mobile").
+# intended viewport bucket from EXPLICIT device keywords only. narrow ("mobile"/"телефон")
+# must be measured narrow, wide ("desktop") wide; both-named or neither → None (any measured
+# width confirms). Deliberately NOT parsing "NNpx" from prose: a criterion's px values are
+# usually CSS sizes (font 16px, gap 24px, card 280px), NOT a viewport width — inferring a
+# bucket from them mis-routed a desktop criterion to a mobile render (Batch D review, 3 finds).
 _VP_NARROW = ("мобиль", "телефон", "смартфон", "mobile", "phone")
-_VP_WIDE = ("десктоп", "desktop", "широк", "large screen", "wide screen")
-_PX_RE = re.compile(r"(\d{2,4})\s*px")
+_VP_WIDE = ("десктоп", "desktop", "широкий экран", "большой экран", "large screen", "wide screen")
 
 
 def _viewport_target(text: str) -> str | None:
     low = (text or "").lower()
-    px = [int(x) for x in _PX_RE.findall(low)]
-    if any(c in low for c in _VP_NARROW) or any(p <= 600 for p in px):
+    narrow = any(c in low for c in _VP_NARROW)
+    wide = any(c in low for c in _VP_WIDE)
+    if narrow and not wide:
         return "narrow"
-    if any(c in low for c in _VP_WIDE) or any(p >= 900 for p in px):
+    if wide and not narrow:
         return "wide"
-    return None
+    return None   # both device widths named, or neither → any real measurement confirms
 # A rendered-surface context that promotes an INTERACTION criterion to dom_contains even
 # without a _DOM_CTX word ("browser interaction: … показывает X"). NOT added to _DOM_CTX
 # itself — "browser" appears in the page_open criterion too, which must stay page_open;
@@ -787,6 +789,12 @@ def _criterion_intent(text: str) -> str:
         # (no absence-of-render verifier) → generic/unverified, honestly.
         if fil:
             return "content_not_contains"
+        # A layout/overflow criterion is INHERENTLY an absence-assertion ("не должно быть
+        # горизонтального скролла") — and no_hoverflow IS a direct verifier for it, so route
+        # it to viewport_layout instead of the generic fallback (Batch D review, finding 4).
+        # fil-first above keeps a "файл … не содержит `mobile`" as content_not_contains.
+        if _has(low, _VIEWPORT_CTX):
+            return "viewport_layout"
         return "generic"
     # positive: a rendered-page claim with either a visibility verb OR named tokens
     # (a UI section listing `Inventory`,`Backups`,… is a dom_contains without a verb).

@@ -36,7 +36,7 @@ Support: **✅ supported** (classified + verifier + evidence + regression test) 
 | `browser.interaction.fill_click_assert` | `dom_contains`+interaction | `browser(actions)` | post-action DOM has result | ✅ | — |
 | `project.scope.created_under` | `file_exists` | `path_exists` | present | ✅ | — |
 | `cleanup.confirmed` | `file_not_exists` | `ssh_not_exists` | absent | ✅ | — |
-| `viewport_layout` — нет горизонтального скролла на mobile | `viewport_layout` | `browser(viewport=…)` | measured no-horizontal-overflow at the tested width | ✅ | width-bucket attribution (narrow≠desktop) |
+| `viewport_layout` — нет горизонтального скролла на mobile (pos OR neg phrasing) | `viewport_layout` | `browser(viewport=…)` | scrollWidth ≤ clientWidth (scrollbar-excl) at the tested width | ✅ | width bucket from device keywords only (both dirs); dual-width = single-measure residual |
 | `project.scope.no_parent_changes` | *(→ constraint)* | — | *(can't verify without diff)* | ◐ | — |
 | `cli.output.contains` — `cmd` выводит `INFO: 2` | `command_output` | `run_bash` | stdout/stderr contains text (one run closes many) | ✅ | — |
 | `cli.command.fails_with_output` — выводит X и падает | `command_output`+nonzero | `run_bash` | text + exit≠0 | ✅ | — |
@@ -135,13 +135,22 @@ changed until this catalog is approved.**
   (right after `gate_completion_claims`), so the deterministic panel is the only source of
   "done". Surrounding text is preserved; a confirmed run keeps its marks (scrub not called).
 
-**Batch D — viewport layout verifier (closes gap 4). ✅ DONE.**
+**Batch D — viewport layout verifier (closes gap 4). ✅ DONE (1 review round, 5 finds fixed).**
 - `browser` gains a `viewport` param (preset or `{width,height}`); `_browser_render` sizes the
-  page and measures `document.documentElement.scrollWidth <= innerWidth + 1` → emits a
-  `{checked,width,no_hoverflow}` signal. `_verdict_outcome(viewport_layout)`: no overflow →
-  confirm, overflow → fail; `_verdict_target_matches` requires a real measurement (`checked`)
-  and matches the criterion's width bucket (`_viewport_target`: narrow/wide/any). Closure hint
-  `_action_for(viewport_layout)` → `browser(url, viewport="mobile"/"desktop")`.
+  page and measures `scrollWidth <= documentElement.clientWidth + 1` (both scrollbar-EXCLUSIVE)
+  → emits a `{checked,width,no_hoverflow}` signal. `_verdict_outcome(viewport_layout)`: no
+  overflow → confirm, overflow → fail; `_verdict_target_matches` requires a real measurement
+  (`checked`) and matches the criterion's width bucket (`_viewport_target`: narrow/wide/any).
+  Closure hint `_action_for(viewport_layout)` → `browser(url, viewport="mobile"/"desktop")`.
+- **Review (`0d5cb51`→fix) found 5 real defects, all one class or measurement precision:**
+  (#1/#3/#5) `_viewport_target` parsed `NNpx` from prose → a CSS size (font 16px, card 280px)
+  mis-bucketed a *desktop* criterion as *narrow* → mobile render → false confirm OR false hard-FAIL.
+  Fix = **drop px inference; bucket from device KEYWORDS only, both-named→any** (the Batch A
+  meta-lesson: fragile text-inference → narrow the contract, don't patch). (#2) overflow measured
+  vs scrollbar-inclusive `innerWidth` masked overflow up to the scrollbar width → compare
+  `clientWidth`. (#4) negative phrasing ("не должно быть overflow") hit `_NEG_CTX`→generic before
+  the viewport check → route viewport_layout under negative phrasing too (fil-first guard keeps
+  "файл … не содержит X" as content_not_contains).
 - `project.scope.no_parent_changes` stays a **constraint** — no diff verifier added (by design).
 
 **Cross-cutting (do in Batch A):** wire the runtime to *read* this catalog for (1) intent

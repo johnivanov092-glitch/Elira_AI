@@ -399,8 +399,33 @@ class ViewportLayoutVerifierTest(unittest.TestCase):
         self.assertEqual(_criterion_intent("нет горизонтального скролла на mobile"), "viewport_layout")
         self.assertEqual(_viewport_target("адаптив на mobile"), "narrow")
         self.assertEqual(_viewport_target("desktop раскладка"), "wide")
-        self.assertEqual(_viewport_target("макет при 375px"), "narrow")
         self.assertIsNone(_viewport_target("страница без переполнения"))   # ambiguous → any width
+
+    def test_width_bucket_ignores_stray_css_px(self):
+        # Review #1/#3/#5: a CSS spacing/font px is NOT a viewport width and must NOT override
+        # an explicit device keyword (this mis-bucketed a desktop criterion into a mobile render).
+        from app.application.code_agent.taskspec import _viewport_target
+        self.assertEqual(_viewport_target("десктоп раскладка: карточки 280px, без скролла"), "wide")
+        self.assertEqual(_viewport_target("desktop 1280px без overflow, отступ 16px"), "wide")
+        self.assertIsNone(_viewport_target("нет скролла ни на mobile, ни на desktop"))  # both → any, no hijack
+
+    def test_negative_layout_phrasing_still_viewport(self):
+        # Review #4: "не должно быть overflow" is an absence-of-overflow assertion — no_hoverflow
+        # verifies it, so it must NOT fall through to generic and become unverifiable.
+        from app.application.code_agent.taskspec import _criterion_intent
+        self.assertEqual(_criterion_intent("на mobile не должно быть горизонтального скролла"), "viewport_layout")
+        self.assertEqual(_criterion_intent("горизонтальная прокрутка отсутствует на mobile"), "viewport_layout")
+        # a negative FILE criterion is still content_not_contains (not hijacked by a viewport word)
+        self.assertEqual(_criterion_intent("файл app.css не содержит `mobile-first`"), "content_not_contains")
+
+    def test_wide_criterion_needs_wide_measurement(self):
+        # Mirror attribution (review #1/#5): a mobile-width measurement must NOT confirm a
+        # DESKTOP layout claim; the correct desktop measurement does.
+        t = self._tracker("десктопная раскладка без горизонтального скролла")   # wide
+        self._record_vp(t, {"checked": True, "width": 375, "no_hoverflow": True})
+        self.assertEqual(t.items[0]["status"], "unconfirmed")                   # 375 can't confirm desktop
+        self._record_vp(t, {"checked": True, "width": 1280, "no_hoverflow": True})
+        self.assertEqual(t.items[0]["status"], "confirmed")
 
     def test_no_overflow_confirms(self):
         t = self._tracker("нет горизонтального скролла на mobile")
