@@ -238,8 +238,14 @@ def _loop_env():
          patch.object(agent_loop, "_record_code_route_metric"), \
          patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
          patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS)), \
+         patch.object(agent_loop, "_server_url_alive", return_value=True), \
+         patch.object(agent_loop, "_run_owned_servers", return_value=[]), \
+         patch.object(agent_loop, "_stop_run_servers", return_value=[]), \
          patch("app.application.agent_registry.sandbox.preflight_or_raise",
                return_value={"limit": {"max_execution_seconds": 600}}):
+        # R2: the mocked kernel keeps no real server registry — liveness defaults to
+        # True and the ownership helpers to no-ops, so loop tests that don't exercise
+        # the lifecycle keep their pre-R2 behavior. Lifecycle tests re-patch these.
         yield
 
 
@@ -989,6 +995,143 @@ class AutoVerifierClosureTest(unittest.TestCase):
         self.assertEqual(calls, [])                                        # kernel untouched
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertNotEqual(done.get("completion_status"), "confirmed")
+
+
+class ServerLifecycleLoopTest(unittest.TestCase):
+    """R2 Server Lifecycle in the loop: dev-server commands are redirected out of
+    run_bash; the runtime stops its servers at terminals (answer+TaskSpec, abandoned
+    runs) and keeps a deliverable server alive with an explicit report; a stopped
+    server's URL is forgotten so nothing verifies against a dead endpoint."""
+
+    _SPEC_TASK = ("Цель:\nФайл.\n\nКритерии готовности:\n1. файл `a.txt` существует\n")
+
+    def tearDown(self):
+        for rid in ("ts-srv-dev", "ts-srv-stop", "ts-srv-keep", "ts-srv-loopstop", "ts-srv-url"):
+            deferred_tools.clear_run(rid)
+
+    def test_dev_server_run_bash_redirected_to_run_server(self):
+        calls: list = []
+
+        def _exec(request, **kw):
+            calls.append(str(getattr(request, "tool_name", "")))
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True})
+
+        chat = _SeqChat([_call("run_bash", command="npm run dev"), _final("готово")], _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message="запусти дев-сервер проекта", project_root=tmp, run_id="ts-srv-dev",
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        self.assertNotIn("run_bash", calls)                    # never reached the kernel
+        redirects = [e for e in evs if e.get("type") == "tool_call"
+                     and "run_server" in str(e.get("result"))]
+        self.assertTrue(redirects)                             # redirected with guidance
+
+    def test_answer_with_taskspec_stops_owned_servers_and_reports(self):
+        stopped = [{"pid": 123, "port": 5173, "url": "http://localhost:5173", "command": "vite"}]
+        chat = _SeqChat([
+            _call("write_file", path="a.txt", content="x"),
+            _call("path_exists", path="a.txt"),
+            _final("готово"),
+        ], _final())
+        outputs = {
+            "write_file": {"text": "ok", "ok": True, "touched_path": "a.txt"},
+            "path_exists": {"text": "a.txt: существует (файл)", "ok": True,
+                            "verifier": True, "evidence": "a.txt: существует (файл)"},
+        }
+
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            return SimpleNamespace(status="ok", output=dict(outputs.get(tool, {"text": "ok", "ok": True})))
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec), \
+             patch.object(agent_loop, "_stop_run_servers", return_value=stopped) as stop_mock:
+            evs = list(agent_loop.stream_code_agent(
+                user_message=self._SPEC_TASK, project_root=tmp, run_id="ts-srv-stop",
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        self.assertTrue(stop_mock.called)
+        self.assertEqual(stop_mock.call_args_list[0].args[0], "ts-srv-stop")
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertIn("runtime остановил", final)              # explicit, honest note
+        self.assertIn("pid=123", final)
+
+    def test_answer_without_taskspec_keeps_deliverable_server(self):
+        alive = [{"pid": 321, "port": 5173, "url": "http://localhost:5173", "command": "vite"}]
+        chat = _SeqChat([_final("сервер поднят, вот ссылка")], _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(status="ok", output={"text": "ok", "ok": True})), \
+             patch.object(agent_loop, "_run_owned_servers", return_value=alive), \
+             patch.object(agent_loop, "_stop_run_servers", return_value=[]) as stop_mock:
+            evs = list(agent_loop.stream_code_agent(
+                user_message="подними dev-сервер", project_root=tmp, run_id="ts-srv-keep",
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        self.assertFalse(stop_mock.called)                     # deliverable stays alive
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertIn("оставлены работать", final)             # …with an explicit report
+        self.assertIn("pid=321", final)
+        self.assertIn("http://localhost:5173", final)
+
+    def test_abandoned_run_stops_servers_at_exit(self):
+        # loop_guard terminal (abandoned work) → the finally hook stops run-owned
+        # servers unconditionally.
+        chat = _SeqChat([_call("read_file", path="a.txt")] * 8, _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(status="ok", output={"text": "x", "ok": True})), \
+             patch.object(agent_loop, "_stop_run_servers", return_value=[]) as stop_mock:
+            evs = list(agent_loop.stream_code_agent(
+                user_message="читай файл", project_root=tmp, run_id="ts-srv-loopstop",
+                auto_remember=False, permission_mode="bypass", max_steps=15, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "loop_guard")    # precondition: abandoned
+        self.assertTrue(stop_mock.called)
+        self.assertEqual(stop_mock.call_args_list[-1].args[0], "ts-srv-loopstop")
+
+    def test_stop_all_forgets_server_url(self):
+        # After run_server stop_all the remembered URL must NOT feed the closure/auto
+        # layer — no auto browser probe against a dead endpoint.
+        task = ("Цель:\nUI.\n\nКритерии готовности:\n"
+                "1. rendered DOM содержит `Hello`\n")
+        chat = _SeqChat([
+            _call("run_server", action="start", command="vite"),
+            _call("run_server", action="stop_all"),
+            _final("готово"),
+        ], _final())
+        outputs = {
+            "run_server": {"text": "started", "ok": True, "verifier": True,
+                           "server_started": True, "actual_port": 5173,
+                           "actual_url": "http://localhost:5173",
+                           "evidence": "dev server running: http://localhost:5173"},
+        }
+        seen_actions: list = []
+
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            args = dict(getattr(request, "args", {}) or {})
+            if tool == "run_server":
+                seen_actions.append(args.get("action"))
+                if args.get("action") == "stop_all":
+                    return SimpleNamespace(status="ok", output={"text": "Stopped 1 background server(s)."})
+                return SimpleNamespace(status="ok", output=dict(outputs["run_server"]))
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-srv-url",
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        auto_browser = [e for e in evs if e.get("type") == "tool_call"
+                        and e.get("auto_verifier") and e.get("tool") == "browser"]
+        self.assertEqual(auto_browser, [])                     # dead URL never probed
+        # and the closure nudge asks to START the server (placeholder), not to browse a URL
+        self.assertIn("stop_all", seen_actions)
 
 
 class CriteriaTrackerTest(unittest.TestCase):

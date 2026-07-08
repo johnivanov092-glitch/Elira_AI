@@ -166,5 +166,66 @@ class RunServerHonestyTest(unittest.TestCase):
         self.assertFalse(out["ok"])
 
 
+class ServerLifecycleOwnershipTest(unittest.TestCase):
+    """R2 Server Lifecycle: the runtime owns what it started. Ownership is tagged from
+    the executor's run_id ContextVar at start; run_owned_servers/stop_run_servers see
+    ONLY that run's servers; url_is_live_server demands a live process AND a listening
+    port — a stale URL never passes the gate."""
+
+    def _sleeper_cmd(self) -> str:
+        return f'"{sys.executable}" -c "import time; time.sleep(30)"'
+
+    def test_start_tags_ownership_and_stop_kills_only_own(self):
+        from app.application.code_agent.tools._shell import set_current_run_id, reset_current_run_id
+        with tempfile.TemporaryDirectory() as tmp:
+            token = set_current_run_id("r2-own")
+            try:
+                out = _run.tool_run_server(Path(tmp), action="start", command=self._sleeper_cmd())
+            finally:
+                reset_current_run_id(token)
+            self.assertTrue(out.get("ok", True), out["text"])
+            try:
+                owned = _run.run_owned_servers("r2-own")
+                self.assertEqual(len(owned), 1)                       # tagged to MY run
+                self.assertEqual(_run.run_owned_servers("other-run"), [])   # not to another
+                stopped = _run.stop_run_servers("r2-own")
+                self.assertEqual(len(stopped), 1)
+                self.assertEqual(stopped[0]["pid"], owned[0]["pid"])
+                self.assertEqual(_run.run_owned_servers("r2-own"), [])      # gone from registry
+                self.assertEqual(_run.stop_run_servers("r2-own"), [])       # idempotent
+            finally:
+                _run.stop_run_servers("r2-own")   # belt-and-braces cleanup
+
+    def test_url_is_live_server_requires_proc_and_listening_port(self):
+        import socket
+        import subprocess
+        self.assertFalse(_run.url_is_live_server("http://localhost:59999"))  # unknown → dead
+        self.assertFalse(_run.url_is_live_server("not a url"))
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        handle = _run._ServerHandle(proc.pid, "sleeper", proc,
+                                    Path("nolog.log"), port,
+                                    url=f"http://localhost:{port}", run_id="r2-live")
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS[proc.pid] = handle
+        try:
+            self.assertTrue(_run.url_is_live_server(f"http://localhost:{port}"))
+            sock.close()                                              # port stops listening…
+            self.assertFalse(_run.url_is_live_server(f"http://localhost:{port}"))
+        finally:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            proc.kill()
+            proc.wait(timeout=5)
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.pop(proc.pid, None)
+        self.assertFalse(_run.url_is_live_server(f"http://localhost:{port}"))  # dead proc → dead
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -364,6 +364,34 @@ _REGISTRY_LOCK = threading.Lock()
 _AUTO_VERIFIER_MAX_CALLS = 5
 
 
+def _server_url_alive(url: str) -> bool:
+    """R2 liveness gate: the remembered dev-server URL is backed by a tracked
+    process that is alive AND listening. Module-level so tests patch it."""
+    try:
+        from app.application.code_agent.tools._run import url_is_live_server
+        return url_is_live_server(url)
+    except Exception:
+        return False
+
+
+def _run_owned_servers(run_id: str) -> list[dict]:
+    """R2: alive servers this run started (module-level so tests patch it)."""
+    try:
+        from app.application.code_agent.tools._run import run_owned_servers
+        return run_owned_servers(run_id)
+    except Exception:
+        return []
+
+
+def _stop_run_servers(run_id: str) -> list[dict]:
+    """R2: stop every server this run started (module-level so tests patch it)."""
+    try:
+        from app.application.code_agent.tools._run import stop_run_servers
+        return stop_run_servers(run_id)
+    except Exception:
+        return []
+
+
 def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
                               text_result: str, tool_ok: bool) -> bool:
     """Feed one EXECUTED tool call into the per-criterion tracker — the single source
@@ -505,6 +533,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _is_critical_call,
     _looks_like_intent_without_action,
     _looks_like_repeat_request,
+    _looks_like_dev_server_command,
     _mark_approval_approved,
     _mark_approval_expired,
     _maybe_inject_execution_reminder,
@@ -566,6 +595,9 @@ def _stream_code_agent_core(
     rid = run_id or uuid.uuid4().hex
     effective_agent_id = str(agent_id or "code-agent").strip() or "code-agent"
     cancel_event = _register_run(rid)
+    # R2: initialized BEFORE the try — every early return (invalid root, preflight
+    # block) reaches the finally, which consults this flag to stop run-owned servers.
+    _keep_servers_on_exit = False
 
     try:
         if not root.exists() or not root.is_dir():
@@ -775,6 +807,7 @@ def _stream_code_agent_core(
         cleanup_barrier_fired = False
         server_redirect_fired = 0
         _SERVER_REDIRECT_MAX = 2
+        dev_server_redirects = 0            # run_bash dev-server → run_server (R2)
         _last_ssh_host = ""      # for concrete closure/barrier call hints
         _ssh_hosts_seen: set[str] = set()   # >1 host → auto-ssh probes disabled
         _last_server_url = ""
@@ -1298,9 +1331,15 @@ def _stream_code_agent_core(
                     and closure_turns < _CLOSURE_GATE_MAX
                 ):
                     _auto_ssh_ok = len(_ssh_hosts_seen) <= 1
+                    # R2: browser hints/auto-probes only against a server that is
+                    # REALLY alive — a stale URL (stopped/crashed server) degrades to
+                    # the placeholder, so the closure asks to start the server first.
+                    _gate_url = _last_server_url if (
+                        _last_server_url and _server_url_alive(_last_server_url)
+                    ) else ""
                     _acts = criterion_closure.missing_verifier_actions(
                         criteria, host=_last_ssh_host or "<host>",
-                        url=_last_server_url or "<actual_url от run_server>",
+                        url=_gate_url or "<actual_url от run_server>",
                         auto_ssh=_auto_ssh_ok,
                     )
                     # ── Auto-verifier pass (runtime-owned closure) ────────────────
@@ -1437,7 +1476,7 @@ def _stream_code_agent_core(
                         # runtime closed drops out; all-green → no nudge, straight to final.
                         _acts = criterion_closure.missing_verifier_actions(
                             criteria, host=_last_ssh_host or "<host>",
-                            url=_last_server_url or "<actual_url от run_server>",
+                            url=_gate_url or "<actual_url от run_server>",
                             auto_ssh=_auto_ssh_ok,
                         )
                     _mkey = criterion_closure.missing_set_key(_acts)
@@ -1487,6 +1526,34 @@ def _stream_code_agent_core(
                     _report = criterion_closure.runtime_final_report(criteria)
                     if _report:
                         final_text = final_text.rstrip() + "\n\n" + _report
+                # R2 Server Lifecycle: the runtime owns what it started — the model
+                # never owns PID lifecycle. With a TaskSpec the server was a
+                # verification VEHICLE (its evidence is already recorded) → stop it
+                # now, so a finished run leaves no processes and no listening ports.
+                # Without a TaskSpec the server IS the deliverable («подними
+                # dev-сервер») → keep it alive and REPORT it explicitly.
+                try:
+                    if task_spec is not None:
+                        _stopped = _stop_run_servers(rid)
+                        if _stopped:
+                            _srv = "; ".join(
+                                f"pid={s['pid']}" + (f" port={s['port']}" if s.get("port") else "")
+                                for s in _stopped)
+                            final_text = final_text.rstrip() + (
+                                f"\n\n[runtime остановил свои dev-серверы: {_srv}]")
+                            call_log.append(f"[auto] stop_run_servers({len(_stopped)})")
+                    else:
+                        _alive = _run_owned_servers(rid)
+                        if _alive:
+                            _keep_servers_on_exit = True
+                            _srv = "; ".join(
+                                f"pid={s['pid']}" + (f" — {s['url']}" if s.get("url") else "")
+                                for s in _alive)
+                            final_text = final_text.rstrip() + (
+                                f"\n\n[Серверы оставлены работать: {_srv}. "
+                                "Остановить: run_server(action='stop', pid=…).]")
+                except Exception:
+                    pass
                 # Step C: proactivity (default OFF; opt-in master switch + per-
                 # trigger first-fire gate). At most one item, appended as text to
                 # Elira's reply. Fail-safe — never breaks the run.
@@ -1611,13 +1678,16 @@ def _stream_code_agent_core(
                 # server while one is already up and the only open work is browser
                 # interaction — restarting is the wrong step (live 10/13 spun into a
                 # run_server loop → loop_guard). Redirect (bounded) to the exact grouped
-                # browser(actions=…) call instead of running run_server.
+                # browser(actions=…) call instead of running run_server. R2: only when
+                # the remembered server is REALLY alive (process + listening port) — a
+                # redirect at a dead URL would steer verification into a wall.
                 if (
                     name == "run_server"
                     and str(parsed_args.get("action") or "start").lower() == "start"
                     and _last_server_url
                     and criteria.items
                     and server_redirect_fired < _SERVER_REDIRECT_MAX
+                    and _server_url_alive(_last_server_url)
                 ):
                     _redir = criterion_closure.browser_interaction_redirect(criteria, _last_server_url)
                     if _redir is not None:
@@ -1630,6 +1700,31 @@ def _stream_code_agent_core(
                         tool_round_trips += 1
                         call_log.append(f"{name}(→browser-interaction)")
                         continue
+                # R2: a dev server started through run_bash BLOCKS the run until the
+                # shell timeout (the process never exits) and the runtime can't own
+                # its lifecycle. Redirect to run_server (bounded). Heuristic detection
+                # is fine HERE — this is a guard (worst case: one bad hint), not a
+                # verdict (map invariant №10).
+                if (
+                    name == "run_bash"
+                    and dev_server_redirects < _SERVER_REDIRECT_MAX
+                    and _looks_like_dev_server_command(str(parsed_args.get("command") or ""))
+                ):
+                    dev_server_redirects += 1
+                    _dev_msg = (
+                        "Эта команда поднимает долгоживущий dev-server — в run_bash она "
+                        "заблокирует ран до таймаута и останется без владельца. Запусти её "
+                        "через run_server(action='start', command=…): он вернёт pid и "
+                        "реальный URL, а runtime сам остановит сервер в конце прогона."
+                    )
+                    yield {
+                        "type": "tool_call", "step": step, "tool": name,
+                        "arguments": parsed_args, "result": _dev_msg, "ok": False,
+                    }
+                    messages.append({"role": "tool", "content": _dev_msg, "name": name})
+                    tool_round_trips += 1
+                    call_log.append(f"{name}(→run_server)")
+                    continue
                 # Whitespace-normalized fingerprint: a stray space/newline in a
                 # retried argument no longer evades the repeat counter.
                 fingerprint = _normalized_fingerprint(name, parsed_args)
@@ -2133,8 +2228,15 @@ def _stream_code_agent_core(
                             error="approval_timeout",
                         )
                 tool_meta = _exec_result.output
-                if name == "run_server" and tool_meta.get("actual_url"):
-                    _last_server_url = str(tool_meta.get("actual_url"))
+                if name == "run_server":
+                    _rs_act = str(parsed_args.get("action") or "start").lower()
+                    if tool_meta.get("actual_url"):
+                        _last_server_url = str(tool_meta.get("actual_url"))
+                    elif _rs_act in ("stop", "stop_all") or not tool_meta.get("ok", True):
+                        # R2: stop / stop_all / failed start / empty list — the old URL
+                        # can't be trusted anymore; a later list/logs verdict with
+                        # actual_url re-adopts a live one.
+                        _last_server_url = ""
                 text_result = str(tool_meta.get("text", ""))
                 event: dict[str, Any] = {
                     "type": "tool_call",
@@ -2290,6 +2392,18 @@ def _stream_code_agent_core(
 
         clear_run(rid)
         _unregister_run(rid)
+        # R2 Server Lifecycle: an ABANDONED run (cancel / timeout / no_progress /
+        # loop_guard / error / client disconnect) must not leave its servers
+        # running. The answer path either already stopped them (TaskSpec) or
+        # explicitly opted to keep the deliverable (_keep_servers_on_exit).
+        if not _keep_servers_on_exit:
+            try:
+                _stopped_at_exit = _stop_run_servers(rid)
+                if _stopped_at_exit:
+                    logger.info("run %s terminal: stopped %d run-owned server(s)",
+                                rid, len(_stopped_at_exit))
+            except Exception:
+                pass
 
 
 def stream_code_agent(

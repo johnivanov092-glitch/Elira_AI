@@ -319,10 +319,11 @@ def _await_server_url(log_path: Path, deadline: float) -> tuple[str, int] | None
 
 
 class _ServerHandle:
-    __slots__ = ("pid", "command", "proc", "log_path", "port", "url", "started_at")
+    __slots__ = ("pid", "command", "proc", "log_path", "port", "url", "started_at", "run_id")
 
     def __init__(self, pid: int, command: str, proc: subprocess.Popen,
-                 log_path: Path, port: int | None, url: str | None = None) -> None:
+                 log_path: Path, port: int | None, url: str | None = None,
+                 run_id: str | None = None) -> None:
         self.pid = pid
         self.command = command
         self.proc = proc
@@ -330,6 +331,9 @@ class _ServerHandle:
         self.port = port
         self.url = url
         self.started_at = time.time()
+        # R2 Server Lifecycle: the run that STARTED this server owns it — the runtime
+        # (not the model) knows what it launched and cleans it up at the run's end.
+        self.run_id = run_id
 
 
 _LIVE_SERVERS: dict[int, _ServerHandle] = {}
@@ -351,6 +355,72 @@ def active_server_ports() -> set[int]:
     _reap_dead_servers()
     with _SERVERS_LOCK:
         return {int(h.port) for h in _LIVE_SERVERS.values() if h.port}
+
+
+# ─── R2 Server Lifecycle: runtime owns what it started ──────────────────────
+
+def _port_listening(port: int, timeout: float = 0.5) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def url_is_live_server(url: str) -> bool:
+    """True when `url` points at a tracked dev server whose PROCESS is alive and
+    whose port actually LISTENS. This is the liveness gate for server→browser
+    redirects and auto-verifier browser probes — a stale URL from a stopped/crashed
+    server must not steer verification at a dead endpoint."""
+    m = _SERVER_URL_RE.search(url or "")
+    if not m:
+        return False
+    port = int(m.group(2))
+    _reap_dead_servers()
+    with _SERVERS_LOCK:
+        handles = [h for h in _LIVE_SERVERS.values() if h.port == port]
+    if not any(h.proc.poll() is None for h in handles):
+        return False
+    return _port_listening(port)
+
+
+def run_owned_servers(run_id: str) -> list[dict[str, Any]]:
+    """Alive servers STARTED BY this run — pid/port/url/command. The runtime uses
+    this at the final to report (or stop) what it launched; the model never owns
+    PID lifecycle."""
+    if not run_id:
+        return []
+    _reap_dead_servers()
+    with _SERVERS_LOCK:
+        handles = [h for h in _LIVE_SERVERS.values() if h.run_id == run_id]
+    return [{"pid": h.pid, "port": h.port, "url": h.url, "command": h.command}
+            for h in handles if h.proc.poll() is None]
+
+
+def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
+    """Stop every server owned by `run_id` (kill the whole tree) and drop the
+    handles. Returns what was stopped. Called by the runtime at run terminals —
+    an abandoned run must not leave processes behind."""
+    if not run_id:
+        return []
+    with _SERVERS_LOCK:
+        owned = [(pid, h) for pid, h in _LIVE_SERVERS.items() if h.run_id == run_id]
+    stopped: list[dict[str, Any]] = []
+    for pid, h in owned:
+        try:
+            if h.proc.poll() is None:
+                _kill_proc_tree(h.proc)
+                try:
+                    h.proc.wait(timeout=5)
+                except Exception:
+                    pass
+                stopped.append({"pid": pid, "port": h.port, "url": h.url, "command": h.command})
+        except Exception:
+            pass
+        with _SERVERS_LOCK:
+            _LIVE_SERVERS.pop(pid, None)
+    return stopped
 
 
 def _read_log_tail(log_path: Path, limit: int = _SERVER_LOG_TAIL_CHARS) -> str:
@@ -638,7 +708,10 @@ def tool_run_server(
             pass
         return {"text": f"ERROR: {exc}", "ok": False}
 
-    handle = _ServerHandle(proc.pid, cleaned_command, proc, log_path, port)
+    # R2: tag ownership — the executor's worker thread binds the run_id ContextVar,
+    # so the runtime later knows which servers THIS run launched (report/stop them).
+    handle = _ServerHandle(proc.pid, cleaned_command, proc, log_path, port,
+                           run_id=_CURRENT_RUN_ID.get())
     with _SERVERS_LOCK:
         _LIVE_SERVERS[proc.pid] = handle
 

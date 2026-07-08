@@ -185,10 +185,10 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
 - DoD: FORM-smoke ≤ ~15 tool calls при 8/8; после smoke `run_server list` пуст и порт НЕ
   слушает; ран «подними сервер» без TaskSpec оставляет сервер жив с отчётом.
 
-**R3 — Model-path parity для blocked (G5)**
-- В модельном пути вердикт пишется только при `status=="ok"` (как в auto-pass); rejected
-  approval / rate-limit не может пометить критерий failed.
-- DoD: регрессия «rejected → критерий unconfirmed, не failed»; полный suite зелёный.
+**R3 — Model-path parity для blocked (G5) — ✅ DONE (`b1361f1`)**
+- Вердикт пишется только при `status=="ok"` (единая семантика с auto-pass через общий
+  helper); rejected approval / rate-limit не может пометить критерий failed. Регрессия:
+  model-called `npm test` blocked → unconfirmed, не failed. Бэкенд 3602.
 
 **R4 — UI: бейдж auto-verifier (G4)**
 - `auto_verifier: true` → значок «⚙ проверено runtime» на tool-карточке + строка в

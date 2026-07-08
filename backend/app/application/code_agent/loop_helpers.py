@@ -582,6 +582,32 @@ def _deterministic_stop_summary(
     return "\n".join(lines)
 
 
+# R2 Server Lifecycle: dev-server commands must go through run_server (owned,
+# stoppable, real URL) — in run_bash they block until the shell timeout and leak.
+# HEURISTIC by design: this feeds a bounded REDIRECT (worst case = one bad hint),
+# never a verdict (map invariant №10) — so the list not being exhaustive is fine.
+_DEV_SERVER_CMD_RE = re.compile(
+    r"(?:^|&&|;)\s*(?:"
+    r"(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b"
+    r"|(?:npx\s+)?(?:vite|next\s+dev|nuxt\s+dev|astro\s+dev|remix\s+dev)\b"
+    r"|ng\s+serve\b"
+    r"|python3?\s+-m\s+http\.server\b"
+    r"|(?:python3?\s+)?manage\.py\s+runserver\b"
+    r"|uvicorn\s+\S+"
+    r"|flask\s+run\b"
+    r"|(?:npx\s+)?(?:http-server|live-server|serve)\b"
+    r"|rails\s+s(?:erver)?\b"
+    r"|php\s+-S\s"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_dev_server_command(command: str) -> bool:
+    """A run_bash command that starts a long-lived dev server (guard heuristic)."""
+    return bool(_DEV_SERVER_CMD_RE.search((command or "").strip()))
+
+
 def _mark_approval_approved(approval_id: str) -> bool:
     """Programmatically grant an approval row (for non-'ask' permission modes)."""
     try:
