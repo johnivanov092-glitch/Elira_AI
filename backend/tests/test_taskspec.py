@@ -997,6 +997,40 @@ class AutoVerifierClosureTest(unittest.TestCase):
         self.assertNotEqual(done.get("completion_status"), "confirmed")
 
 
+class TargetTokenHijackTest(unittest.TestCase):
+    """Intent context comes from the criterion's PROSE — a TARGET string (path/filename)
+    must not hijack classification. Live SSH canary: «файл C:\\AgentLab\\smoke-canary.txt
+    существует» classified command_check off the "smoke" inside its own filename, so a
+    green ssh_exists could never confirm it (R5 first live run, 1/3)."""
+
+    def test_trap_filenames_stay_file_intents(self):
+        from app.application.code_agent.taskspec import _criterion_intent
+        self.assertEqual(_criterion_intent("файл C:\\AgentLab\\smoke-canary.txt существует"),
+                         "file_exists")
+        self.assertEqual(_criterion_intent("файл C:\\AgentLab\\smoke-canary.txt удалён после проверки"),
+                         "file_not_exists")
+        self.assertEqual(_criterion_intent("файл server-config.txt существует"), "file_exists")
+        self.assertEqual(_criterion_intent("файл mobile.css существует"), "file_exists")
+        # prose cues still classify as before
+        self.assertEqual(_criterion_intent("smoke-тест проходит"), "command_check")
+        self.assertEqual(_criterion_intent("сервис слушает порт 18080"), "server_started")
+        self.assertEqual(_criterion_intent("нет горизонтального скролла на mobile"),
+                         "viewport_layout")
+
+    def test_ssh_canary_scenario_confirms(self):
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "файл C:\\AgentLab\\smoke-canary.txt существует",
+            "файл C:\\AgentLab\\smoke-canary.txt содержит `canary=ok`",
+            "файл C:\\AgentLab\\smoke-canary.txt удалён после проверки",
+        ]))
+        p = "C:\\AgentLab\\smoke-canary.txt"
+        t.record(tool_name="ssh_exists", args={"host": "h", "path": p}, ok=True, evidence="ЕСТЬ")
+        t.record(tool_name="ssh_assert_contains",
+                 args={"host": "h", "path": p, "pattern": "canary=ok"}, ok=True, evidence="НАЙДЕНО")
+        t.record(tool_name="ssh_not_exists", args={"host": "h", "path": p}, ok=True, evidence="УДАЛЁН")
+        self.assertEqual(t.completion_status(), "confirmed")
+
+
 class DevServerHeuristicTest(unittest.TestCase):
     """The dev-server redirect heuristic (guard, not verdict). Review-hardened:
     the costly false positives — one-shot builds (`vite build`), quoted mentions,

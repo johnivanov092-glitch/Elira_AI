@@ -1,0 +1,48 @@
+Цель:
+Создай новый маленький проект `csv-inventory-checker`.
+
+Программа:
+CLI parser для CSV-инвентаризации.
+
+Функциональность:
+- создать `csv-inventory-checker/inventory.csv`
+- создать `csv-inventory-checker/check.js`
+- создать `csv-inventory-checker/bad.csv` с одной строкой, где IP вне подсети (например `switch,10.0.0.5,ok`)
+- CSV содержит колонки `host,ip,status`
+- CSV содержит:
+  - `router,192.168.88.1,ok`
+  - `nas,192.168.88.10,warn`
+  - `camera,192.168.88.25,down`
+- запуск `node check.js inventory.csv` должен вывести:
+  - `OK: 1`
+  - `WARN: 1`
+  - `DOWN: 1`
+  - `SUBNET: 192.168.88.0/24`
+- если IP не из `192.168.88.0/24`, вывести `OUT_OF_SCOPE`
+
+Критерии готовности:
+- создана папка `csv-inventory-checker`
+- `inventory.csv` существует
+- `check.js` существует
+- `node check.js inventory.csv` выводит `OK: 1`
+- `node check.js inventory.csv` выводит `WARN: 1`
+- `node check.js inventory.csv` выводит `DOWN: 1`
+- `node check.js inventory.csv` выводит `SUBNET: 192.168.88.0/24`
+- `node check.js bad.csv` выводит `OUT_OF_SCOPE`
+
+Подвох:
+- `192.168.88.1` НЕ должен матчиться как `192.168.88.10`
+- grep/read_file по CSV или JS НЕ подтверждает CLI output
+- нужно реально запустить parser
+
+Ограничения:
+- создать только папку `csv-inventory-checker`
+- не использовать внешние API
+- не устанавливать пакеты
+
+Финальный отчёт:
+- файлы
+- command verifier checks
+- negative case result
+- deterministic completion_status
+- unverified/failed

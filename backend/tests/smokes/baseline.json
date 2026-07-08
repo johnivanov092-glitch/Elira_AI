@@ -1,0 +1,35 @@
+{
+  "cli": {
+    "task": "tasks/cli.txt",
+    "expect_completion": "confirmed",
+    "expect_confirmed": 8,
+    "max_tool_calls": 14,
+    "artifacts": ["log-summarizer/index.js", "log-summarizer/sample.log"],
+    "note": "baseline live 2026-07-08: 8/8, 9-10 tools, 21-34s (auto closes negative case + 3 paths)"
+  },
+  "csv_named": {
+    "task": "tasks/csv_named.txt",
+    "expect_completion": "confirmed",
+    "expect_confirmed": 8,
+    "max_tool_calls": 22,
+    "artifacts": ["csv-inventory-checker/check.js", "csv-inventory-checker/inventory.csv"],
+    "note": "baseline live 2026-07-08: 8/8, 17 tools, 56s (named phrasing; 1 auto run_bash closes 4 output-crits)"
+  },
+  "form": {
+    "task": "tasks/form.txt",
+    "expect_completion": "confirmed",
+    "expect_confirmed": 8,
+    "max_tool_calls": 22,
+    "check_ports_closed": true,
+    "artifacts": ["backup-form-checker"],
+    "note": "baseline live 2026-07-09 (post-R2): 8/8, 8-17 tools, 84-94s; run_server x2; port closed after"
+  },
+  "ssh_canary": {
+    "task": "tasks/ssh_canary.txt",
+    "expect_completion": "confirmed",
+    "expect_confirmed": 3,
+    "max_tool_calls": 15,
+    "requires_ssh_host": "home-srv01",
+    "note": "baseline live 2026-07-09: 3/3, 7 tools, 34s (after the target-token classification fix)"
+  }
+}

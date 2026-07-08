@@ -783,6 +783,16 @@ def _criterion_intent(text: str) -> str:
     has_path = bool(_path_tokens_from_text(text))
     fil = _has(unquoted, _FILE_CTX) or (has_path and not dom)
     negative = _has(low, _NEG_CTX)
+    # Context cues must come from the criterion's PROSE — never from its PATH tokens.
+    # A file merely NAMED smoke-canary.txt / server-config.txt / mobile.css must not
+    # hijack the intent into command_check / server_started / viewport_layout (live SSH
+    # canary: «файл C:\AgentLab\smoke-canary.txt существует» classified command_check
+    # off the "smoke" inside its own filename, so a green ssh_exists could never
+    # confirm it). Quoted spans are KEPT here — a command criterion's cue legitimately
+    # lives inside its quotes («`npm test` проходит»); only path-shaped tokens go.
+    prose = low
+    for _tok in _path_tokens_from_text(text):
+        prose = prose.replace(_tok.lower(), " ")
 
     if negative:
         # A file NOT containing a pattern is verifiable; a "DOM must NOT show X" is not
@@ -793,7 +803,7 @@ def _criterion_intent(text: str) -> str:
         # горизонтального скролла") — and no_hoverflow IS a direct verifier for it, so route
         # it to viewport_layout instead of the generic fallback (Batch D review, finding 4).
         # fil-first above keeps a "файл … не содержит `mobile`" as content_not_contains.
-        if _has(low, _VIEWPORT_CTX):
+        if _has(prose, _VIEWPORT_CTX):
             return "viewport_layout"
         return "generic"
     # positive: a rendered-page claim with either a visibility verb OR named tokens
@@ -804,18 +814,18 @@ def _criterion_intent(text: str) -> str:
     # Y") or a CLI ("введите команду … вывод содержит Z") isn't hijacked into browser-only.
     if (dom or (_is_interaction(text) and _has(low, _BROWSER_CTX))) and (_has(low, _DOM_VERB) or targets):
         return "dom_contains"
-    if _has(low, _VIEWPORT_CTX):
+    if _has(prose, _VIEWPORT_CTX):
         return "viewport_layout"
     if fil and _has(low, ("содержит", "contains", "включает", "есть строка")):
         return "content_contains"
     # server BEFORE page_open, but a "browser opens URL" claim is page_open not server
-    if _has(low, _SERVER_CTX) and not (_has(low, _OPEN_CTX) and _has(low, ("browser", "http", "браузер"))):
+    if _has(prose, _SERVER_CTX) and not (_has(prose, _OPEN_CTX) and _has(low, ("browser", "http", "браузер"))):
         return "server_started"
-    if _has(low, _OPEN_CTX):
+    if _has(prose, _OPEN_CTX):
         return "page_open"
     if _is_command_output(text):
         return "command_output"        # a command prints text — proven by run_bash stdout
-    if _has(low, _CMD_CTX):
+    if _has(prose, _CMD_CTX):
         return "command_check"
     exists_verb = _has(unquoted, _EXIST_CTX)
     absent = _has(unquoted, _ABSENT_STRONG) or (_has(unquoted, _ABSENT_WEAK) and not exists_verb)

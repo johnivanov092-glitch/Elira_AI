@@ -150,7 +150,7 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
 | G4 | UI не различает auto_verifier-вызовы (нет бейджа) | наблюдаемость | события честно рендерятся как tool calls |
 | G5 | ~~Model-path blocked-вердикт~~ — ✅ закрыто R3 (`b1361f1`: запись только при status=="ok") | — | — |
 | G6 | `cli.output.not_contains` — нет верификатора | покрытие | каталог помечает missing; критерий честно unverified |
-| G7 | Live-smoke не автоматизированы (ручной драйвер в scratchpad) | регрессия | 3601 offline-тестов + канарейки; smoke гоняются вручную |
+| G7 | ~~Live-smoke не автоматизированы~~ — ✅ закрыто R5 (`tests/smokes/`, 4/4 PASS) | — | — |
 | G8 | Interactions не исполняются runtime'ом (selectors неизвестны) | по дизайну | closure-nudge даёт точный grouped-вызов модели |
 | G9 | `command_check` red от среды (не от кода) — честный, но шумный fail | UX | red rescuable (зелёный прогон позже подтверждает) |
 
@@ -206,13 +206,20 @@ liveness пробит по хосту из URL (::1/LAN), stop не выкиды
   readiness-evidence.
 - DoD: событие видно в UI; ребилд bundle.
 
-**R5 — Автоматизированный live-smoke (G7)** *(после R2 — smoke проверяет и cleanup)*
-- Драйвер + промпты (CLI, CSV-named, frontend-form, SSH-canary) → `backend/tests/smokes/`;
-  одна команда против живого бэкенда.
-- Ассерты на каждый smoke: completion_status vs эталон, tool-count budget, **cleanup**
-  (`run_server list` пуст, порт не слушает, временные файлы убраны).
-- DoD: `python -m tests.smokes` гоняет всё и печатает diff с baseline; SSH-canary скипается,
-  если хост недоступен (прекондишн, не fail).
+**R5 — Автоматизированный live-smoke (G7) — ✅ DONE**
+- `backend/tests/smokes/` (не собирается pytest'ом): `run.py` + `driver.py` + 4 таска +
+  `baseline.json`. Одна команда: `python tests/smokes/run.py [--only cli,form] [--keep]`.
+- Ассерты: stop_reason/completion/confirmed vs baseline, tool-budget, артефакты на диске,
+  **порты закрыты после прогона**; SSH-canary скипается, если хост не в allowlist
+  (прекондишн, не fail). Retry-политика: 1 повтор на любой фейл — детерминированная
+  регрессия падает дважды (FAIL), стохастический флейк проходит как видимый FLAKY-PASS.
+- **Первый же прогон окупил слой**: поймал live-баг классификации — «файл
+  C:\AgentLab\smoke-canary.txt существует» уходил в command_check из-за «smoke» в ИМЕНИ
+  файла (target-токен хайджекал intent; ssh_exists не мог подтвердить). Фикс: контекстные
+  cue (cmd/server/open/viewport) читают прозу без path-токенов, кавычки сохранены
+  («`npm test` проходит» живёт). Негативное правило добавлено в каталог + регрессии.
+- Финальный прогон: **4/4 PASS attempt-1** — cli 8/8 (9 tools), csv_named 8/8 (19),
+  form 8/8 (14, порт закрыт), ssh_canary 3/3 (7 tools, 34с; было 1/3 при 19 до фикса).
 
 **R6 — `cli.output.not_contains` (G6)** *(маленький, по методу каталога)*
 - Строка в каталоге → negative-вариант матчинга (token НЕ в выводе named-команды, exit-гейт)

@@ -314,6 +314,7 @@ negative_rules:
   - "the model's final TEXT closes nothing — completion is decided only by verifier verdicts."
   - "a conditional criterion never hard-FAILS; unresolved -> skipped (n/a), excluded from the mandatory denominator."
   - "a criterion with no deterministic verifier stays `generic` -> unverified (honest partial), never auto-confirmed."
+  - "intent context comes from the criterion's PROSE — path/quoted TARGET tokens are stripped before context cues (a file merely NAMED smoke-*/server-*/mobile-* must not hijack the intent into command_check/server_started/viewport_layout; live R5 ssh-canary)."
 
 # ── Known false-positive risks ───────────────────────────────────────────────
 false_positive_risks:

@@ -1,0 +1,42 @@
+Цель:
+Создай новый маленький CLI-проект `log-summarizer` в текущей рабочей директории.
+
+Программа:
+Node.js CLI утилита, которая читает файл `sample.log` и печатает краткую сводку.
+
+Функциональность:
+- создать `log-summarizer/sample.log`
+- создать CLI script `log-summarizer/index.js`
+- `sample.log` должен содержать строки с уровнями `INFO`, `WARN`, `ERROR`
+- запуск `node index.js sample.log` должен вывести:
+  - `INFO: 2`
+  - `WARN: 1`
+  - `ERROR: 2`
+  - `TOTAL: 5`
+- если файл не существует, вывести `File not found` и завершиться с non-zero exit code
+
+Критерии готовности:
+- создана папка `log-summarizer`
+- `log-summarizer/index.js` существует
+- `log-summarizer/sample.log` существует
+- `node index.js sample.log` выводит `INFO: 2`
+- `node index.js sample.log` выводит `WARN: 1`
+- `node index.js sample.log` выводит `ERROR: 2`
+- `node index.js sample.log` выводит `TOTAL: 5`
+- `node index.js missing.log` выводит `File not found` и завершается с ошибкой
+
+Подвох:
+- наличие кода в файле НЕ подтверждает CLI behavior
+- grep/read_file по исходникам НЕ подтверждает output criteria
+- output criteria подтверждаются только реальным запуском команды
+
+Ограничения:
+- создать только папку `log-summarizer`
+- не устанавливать npm-пакеты
+- не трогать родительский проект
+
+Финальный отчёт:
+- какие файлы созданы
+- какие command verifier checks прошли
+- deterministic completion_status
+- что осталось unverified/failed, если есть

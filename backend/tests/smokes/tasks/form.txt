@@ -1,0 +1,43 @@
+Цель:
+Создай новый маленький frontend-проект `backup-form-checker`.
+
+Программа:
+Одностраничная форма проверки backup job.
+
+Функциональность:
+- поле `Job name`
+- select/status `Daily`, `Weekly`
+- checkbox `Encryption`
+- кнопка `Validate`
+- если `Job name` пустой, показать `Job name required`
+- если `Job name` = `nas-backup`, status = `Daily`, encryption включён, после `Validate` показать `Backup job valid`
+- на странице есть текст `Backup Form Checker`
+
+Критерии готовности:
+- создана папка `backup-form-checker`
+- dev server запускается через `run_server`
+- `browser` открывает localhost страницу без SSRF-block
+- rendered DOM содержит `Backup Form Checker`
+- rendered DOM содержит `Job name`
+- rendered DOM содержит `Validate`
+- browser interaction: пустой `Job name` + `Validate` показывает `Job name required`
+- browser interaction: `nas-backup` + `Daily` + включённый `Encryption` + `Validate` показывает `Backup job valid`
+
+Подвох:
+- grep/findstr по исходникам НЕ подтверждает rendered DOM
+- HTTP 200 без browser DOM НЕ подтверждает UI criteria
+- наличие JS-функции НЕ подтверждает browser interaction
+- нельзя писать confirmed без browser interaction verifier
+
+Ограничения:
+- создать только папку `backup-form-checker`
+- не добавлять backend
+- не использовать внешние API
+- dev server только через `run_server`
+
+Финальный отчёт:
+- файлы
+- run_server result
+- browser DOM/interactions verifier
+- deterministic completion_status
+- unverified/failed

@@ -1,0 +1,25 @@
+Цель:
+Прогони SSH-канарейку agent-smoke на home-srv01.
+
+Функциональность:
+- создать файл C:\AgentLab\smoke-canary.txt со строкой `canary=ok`
+- проверить содержимое verifier'ом
+- удалить файл после проверки и подтвердить удаление
+
+Критерии готовности:
+- файл C:\AgentLab\smoke-canary.txt существует
+- файл C:\AgentLab\smoke-canary.txt содержит `canary=ok`
+- файл C:\AgentLab\smoke-canary.txt удалён после проверки
+
+Подвох:
+- ssh_read подтверждает только существование, НЕ содержимое
+- содержимое подтверждается только ssh_assert_contains
+- удаление подтверждается только ssh_not_exists
+
+Ограничения:
+- работать только в C:\AgentLab
+- не трогать другие файлы на хосте
+
+Финальный отчёт:
+- какие verifier checks прошли
+- deterministic completion_status
