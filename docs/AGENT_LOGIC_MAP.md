@@ -133,7 +133,10 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
 8. Auto-pass не может сфабриковать red: blocked/error не пишет вердикт, cd-инференс только
    там, где red нейтрален, ssh только 1-хост+remote-путь, пробы — строго по пути критерия.
 9. Гард редиректит, не блокирует; каждый гард ограничен и имеет терминал.
-10. База промпта не растёт бездумно — компакшн-канарейка (num_ctx=8192) обязана жить.
+10. **Эвристика допустима для guard/redirect** (worst case = плохой хинт, ограниченный
+    таймаутом/капом), **запрещена для verdict** (там только позитив-evidence) — это
+    различение снимает противоречие «денилисты выпилили, а dev-server-детекция — список».
+11. База промпта не растёт бездумно — компакшн-канарейка (num_ctx=8192) обязана жить.
 
 ---
 
@@ -163,10 +166,24 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
   из каталога.
 - DoD: фиче-флаг; при выключенном флаге поведение бит-в-бит текущее; канарейки живы.
 
-**R2 — Server-economy (G3)**
-- `run_server(action=status)`-хинт в closure/redirect; кэш `actual_url` в established-facts;
-  nudge «сервер уже поднят» при повторном start.
-- DoD: FORM-smoke ≤ ~15 tool calls при 8/8.
+**R2 — Server Lifecycle (runtime владеет тем, что сам поднял) (G3)**
+Не «economy-хинты», а владение жизненным циклом: модель не владеет PID'ами.
+- **Ownership:** run_server регистрирует pid/port/url с run_id; runtime знает live-список
+  СВОИХ серверов в ране.
+- **Liveness:** server→browser redirect и auto-pass browser-хинты только при реально живом
+  сервере (PID жив + порт слушает); `_last_server_url` очищается на stop / stop_all /
+  failed start / list-empty / dead-probe.
+- **run_bash-редирект:** dev-server-команды (`npm run dev`/`vite`/`next dev`/`uvicorn`/
+  `flask run`/`http.server`…) → редирект в run_server. Это ЭВРИСТИКА, и это допустимо:
+  правило — эвристика разрешена для guard/redirect (worst case = плохой хинт, ограничен
+  таймаутом), запрещена для verdict (false-confirm/fail).
+- **Терминалы:** cancel/timeout/no_progress/error → runtime ВСЕГДА останавливает run-owned
+  серверы. Answer-финал: с TaskSpec → останавливает (сервер был средством верификации;
+  evidence уже записан); без TaskSpec (сервер = deliverable, «подними dev-сервер») →
+  оставляет жить + ЯВНЫЙ отчёт (pid, url, как остановить). Комментарий "deliberately
+  OUTLIVE" в _run.py заменяется этой политикой.
+- DoD: FORM-smoke ≤ ~15 tool calls при 8/8; после smoke `run_server list` пуст и порт НЕ
+  слушает; ран «подними сервер» без TaskSpec оставляет сервер жив с отчётом.
 
 **R3 — Model-path parity для blocked (G5)**
 - В модельном пути вердикт пишется только при `status=="ok"` (как в auto-pass); rejected
@@ -178,17 +195,21 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
   readiness-evidence.
 - DoD: событие видно в UI; ребилд bundle.
 
-**R5 — Smoke-регрессия (G7)**
-- Драйвер + 4 промпта из scratchpad → `backend/tests/smokes/` (скрипт, запускаемый вручную
-  или nightly против живого бэкенда; отчёт = summary JSON diff с эталоном).
-- DoD: одна команда гоняет все смоки и сравнивает с baseline.
+**R5 — Автоматизированный live-smoke (G7)** *(после R2 — smoke проверяет и cleanup)*
+- Драйвер + промпты (CLI, CSV-named, frontend-form, SSH-canary) → `backend/tests/smokes/`;
+  одна команда против живого бэкенда.
+- Ассерты на каждый smoke: completion_status vs эталон, tool-count budget, **cleanup**
+  (`run_server list` пуст, порт не слушает, временные файлы убраны).
+- DoD: `python -m tests.smokes` гоняет всё и печатает diff с baseline; SSH-canary скипается,
+  если хост недоступен (прекондишн, не fail).
 
 **R6 — `cli.output.not_contains` (G6)** *(маленький, по методу каталога)*
 - Строка в каталоге → negative-вариант матчинга (token НЕ в выводе named-команды, exit-гейт)
   → тесты → support.
 
-Порядок: **R3 (дешёвый и правильный) → R4 → R2 → R5 → R1 → R6.** R1 самый рискованный —
-последним из крупных, под флагом.
+Порядок (утверждён 2026-07-08): **R3 → R2 → R5 → R4 → R6 → R1.** Главная боль по
+live-прогонам — server lifecycle, поэтому R2 сразу после дешёвого correctness-фикса R3;
+R4 (бейдж) не чинит поведение — позже; R1 самый рискованный — последним, под флагом.
 
 ---
 
