@@ -785,7 +785,7 @@ class AutoVerifierClosureTest(unittest.TestCase):
 
     def tearDown(self):
         for rid in ("ts-auto-green", "ts-auto-red", "ts-auto-budget", "ts-auto-skip",
-                    "ts-auto-blocked", "ts-auto-cleanup"):
+                    "ts-auto-blocked", "ts-auto-cleanup", "ts-model-blocked"):
             deferred_tools.clear_run(rid)
 
     @staticmethod
@@ -941,6 +941,33 @@ class AutoVerifierClosureTest(unittest.TestCase):
         self.assertIn("path_exists", note.split("НЕ повторяй")[1].split("\n")[0])
         self.assertNotIn("path_exists", "".join(line for line in note.splitlines()
                                                 if "НЕ прошла" in line))   # …never as red
+
+    def test_model_path_blocked_call_not_recorded_as_verdict(self):
+        # R3 parity: the MODEL calls the named check itself, but the kernel BLOCKS it
+        # (rejected approval / rate limit) — the call never ran, so it must not fail
+        # the criterion (before R3 the blocked {ok:False} output hard-failed a
+        # command_check). Honest outcome: unconfirmed → unverified, never failed.
+        task = "Цель:\nПроверки.\n\nКритерии готовности:\n1. `npm test` проходит\n"
+        chat = _RecordingChat(
+            [_call("run_bash", command="npm test"), _final("сделал")], _final("готово"))
+
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            if tool == "run_bash":
+                return SimpleNamespace(status="blocked",
+                                       output={"text": "Пользователь отклонил это действие.",
+                                               "ok": False, "error": "approval_rejected"})
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-model-blocked",
+                auto_remember=False, permission_mode="bypass", max_steps=20, chat_fn=chat,
+            ))
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertTrue(all(c["status"] != "failed" for c in done["criteria"]))
+        self.assertIn(done.get("completion_status"), ("unverified", "partial"))  # never failed
 
     def test_interaction_and_remote_cleanup_stay_model_directed(self):
         # No auto spec for a browser interaction (selectors unknown) or a remote cleanup

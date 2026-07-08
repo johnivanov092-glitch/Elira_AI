@@ -2185,9 +2185,16 @@ def _stream_code_agent_core(
                 _family = strategy_family(name, parsed_args)
                 # A verifier tool records structured evidence; run_bash records real
                 # stdout/stderr + exit_code (command_output / command_check) — shared
-                # with the auto-verifier pass via _record_criterion_verdict.
-                criterion_progress = _record_criterion_verdict(
-                    criteria, name, parsed_args, tool_meta, text_result, _tool_ok)
+                # with the auto-verifier pass via _record_criterion_verdict. ONLY a
+                # call that actually RAN (kernel status ok) is a verdict: a blocked /
+                # rejected / timed-out call never executed, and its {ok:False} output
+                # must not hard-fail a criterion (R3 — parity with the auto pass; a
+                # tool's own red result, e.g. assert-miss or exit!=0, still ships with
+                # status ok and records honestly).
+                criterion_progress = False
+                if _exec_result.status == "ok":
+                    criterion_progress = _record_criterion_verdict(
+                        criteria, name, parsed_args, tool_meta, text_result, _tool_ok)
                 # Strategy router — a criterion flip (criterion_progress) is the
                 # strongest progress signal and re-arms the run.
                 verdict = progress.evaluate(
