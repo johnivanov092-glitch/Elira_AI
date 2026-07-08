@@ -393,20 +393,23 @@ def _stop_run_servers(run_id: str) -> list[dict]:
 
 
 def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
-                              text_result: str, tool_ok: bool) -> bool:
+                              text_result: str, tool_ok: bool, auto: bool = False) -> bool:
     """Feed one EXECUTED tool call into the per-criterion tracker — the single source
     for both the model-called path and the runtime auto-verifier pass, so verdict
     semantics can never drift between them. A verifier tool records its structured
     evidence; run_bash records real stdout/stderr + exit_code (command_output /
-    command_check). Returns True when a criterion changed status."""
+    command_check). `auto=True` = the runtime itself made the call (auto-verifier
+    pass) — stamped on the criterion for the report/UI. Returns True when a criterion
+    changed status."""
     if not criteria.items:
         return False
     if tool_meta.get("verifier"):
         return criteria.record(tool_name=name, args=args, ok=tool_ok,
-                               evidence=str(tool_meta.get("evidence") or ""), meta=tool_meta)
+                               evidence=str(tool_meta.get("evidence") or ""),
+                               meta=tool_meta, auto=auto)
     if name == "run_bash":
         return criteria.record(tool_name=name, args=args, ok=tool_ok,
-                               evidence=text_result, meta=tool_meta)
+                               evidence=text_result, meta=tool_meta, auto=auto)
     return False
 
 
@@ -1462,7 +1465,7 @@ def _stream_code_agent_core(
                             # nothing); red = failed something, or ran red without closing.
                             _st_before = [it["status"] for it in criteria.items]
                             _record_criterion_verdict(
-                                criteria, _a_tool, _a_args, _a_meta, _a_text, _a_ok)
+                                criteria, _a_tool, _a_args, _a_meta, _a_text, _a_ok, auto=True)
                             _st_after = [it["status"] for it in criteria.items]
                             _n_conf = sum(1 for b, a in zip(_st_before, _st_after)
                                           if a == "confirmed" and b != "confirmed")

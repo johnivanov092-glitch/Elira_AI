@@ -24,6 +24,8 @@ export type CodeAgentToolCall = {
   old_content?: string;
   new_content?: string;
   diff_action?: "create" | "overwrite" | "edit";
+  /** The RUNTIME made this call itself (auto-verifier closure pass), not the model. */
+  auto_verifier?: boolean;
 };
 
 export type CodeAgentResponse = {
@@ -169,6 +171,8 @@ export type CriterionState = {
   status: "confirmed" | "unconfirmed" | "failed" | "skipped";
   verifier?: string | null;
   evidence?: string | null;
+  /** Closed by the runtime's own auto-verifier pass (not a model-made call). */
+  auto_verified?: boolean;
 };
 
 export type ContextUsage = {

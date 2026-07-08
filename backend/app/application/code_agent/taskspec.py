@@ -1108,11 +1108,14 @@ class CriteriaTracker:
         crits = spec.success_criteria if spec else []
         return cls(items=[_criterion_item(c) for c in crits])
 
-    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str, meta: dict | None = None) -> bool:
+    def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str,
+               meta: dict | None = None, auto: bool = False) -> bool:
         """Feed a verifier verdict (classified by tool + args + structured evidence).
         Confirms/refutes a criterion only on matching intent + target; unrelated
         criteria are untouched. `evidence` carries the rendered DOM text for a browser
-        verdict; `meta` carries structured fields (actual_port/viewport).
+        verdict; `meta` carries structured fields (actual_port/viewport). `auto` marks
+        a verdict the RUNTIME executed itself (auto-verifier pass) — surfaced in the
+        report/UI so it's visible who closed the criterion.
 
         Returns True if a criterion changed status (unconfirmed→confirmed/failed) —
         the strongest goal-level progress signal there is, which the strategy router
@@ -1124,13 +1127,15 @@ class CriteriaTracker:
         for it in self.items:
             outcome = _verdict_outcome(it, v, ok)
             if outcome == "confirm" and it["status"] != "confirmed":
-                it.update(status="confirmed", verifier=tool_name, evidence=evidence or None)
+                it.update(status="confirmed", verifier=tool_name, evidence=evidence or None,
+                          auto_verified=auto)
                 transitioned = True
             elif outcome == "fail" and it["status"] == "unconfirmed" and not it.get("conditional"):
                 # A conditional criterion never hard-FAILS — e.g. `npm run typecheck`
                 # exiting non-zero because the script is absent must not fail the task;
                 # it stays unconfirmed and finalize_conditionals() marks it skipped.
-                it.update(status="failed", verifier=tool_name, evidence=evidence or None)
+                it.update(status="failed", verifier=tool_name, evidence=evidence or None,
+                          auto_verified=auto)
                 transitioned = True
         return transitioned
 
@@ -1157,4 +1162,6 @@ class CriteriaTracker:
                 it["status"] = "skipped"
 
     def report(self) -> list[dict]:
-        return [{k: it[k] for k in ("text", "status", "verifier", "evidence")} for it in self.items]
+        return [{"text": it["text"], "status": it["status"], "verifier": it["verifier"],
+                 "evidence": it["evidence"], "auto_verified": bool(it.get("auto_verified"))}
+                for it in self.items]

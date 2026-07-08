@@ -191,6 +191,16 @@ function ToolRow({ call, nested }: { call: CodeAgentToolCall; nested?: boolean }
           <span className={cn("font-medium", err && "text-danger")}>{call.tool}</span>{" "}
           <span className={cn("font-mono text-[11.5px]", err ? "text-danger" : "text-t2")}>{shortArg(call.arguments)}</span>
         </span>
+        {/* R4: the runtime made this call itself (auto-verifier closure) — make it
+            visibly distinct from model-chosen calls. */}
+        {call.auto_verifier && (
+          <span
+            className="ml-2 shrink-0 rounded-md border border-line bg-surface px-1.5 py-px text-[10px] text-t2"
+            title="Вызов выполнен runtime'ом (auto-verifier pass), не моделью"
+          >
+            ⚙ runtime
+          </span>
+        )}
         <ChevronRight size={13} className="ml-auto shrink-0 text-mut" />
       </button>
       {exp && call.result && (

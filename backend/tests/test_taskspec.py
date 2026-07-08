@@ -755,6 +755,7 @@ class VerifierGateTest(unittest.TestCase):
         self.assertEqual(len(confirmed), 1)
         self.assertIn("Content-Length", confirmed[0]["text"])
         self.assertIsNotNone(confirmed[0]["evidence"])
+        self.assertFalse(confirmed[0].get("auto_verified"))   # closed by the MODEL's call
 
 
 # ── per-criterion tracker (Ph7.4/7.5) ───────────────────────────
@@ -836,6 +837,8 @@ class AutoVerifierClosureTest(unittest.TestCase):
         # cwd resolution: the named command ran with the deterministic cd prefix
         run_cmds = [a.get("command") for t, a in calls if t == "run_bash"]
         self.assertEqual(run_cmds, ["cd log-summarizer && node index.js sample.log"])
+        # R4: criteria closed by the runtime carry the auto_verified flag (UI badge)
+        self.assertTrue(all(c.get("auto_verified") for c in done["criteria"]))
 
     def test_red_pass_gives_short_report_then_honest_partial(self):
         # The auto run goes RED → the model gets ONE short report turn with the

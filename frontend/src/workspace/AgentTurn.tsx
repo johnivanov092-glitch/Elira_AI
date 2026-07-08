@@ -157,6 +157,12 @@ function CriterionRow({ c, duplicate }: { c: CriterionState; duplicate?: boolean
       <span className="min-w-0">
         <span className={cn(c.status === "failed" && "text-danger", c.status === "skipped" && "text-mut")}>{c.text}</span>
         {c.status === "skipped" && <span className="ml-1 text-[10.5px] text-mut">— n/a (условный)</span>}
+        {/* R4: the criterion was closed by the runtime's own verifier call. */}
+        {c.auto_verified && (
+          <span className="ml-1 text-[10.5px] text-mut" title="Критерий закрыт вызовом runtime (auto-verifier pass)">
+            ⚙ runtime
+          </span>
+        )}
         {/* Same evidence shared across criteria (e.g. one rendered-DOM verdict covering
             several dom_contains checks) is shown once — later rows just point back. */}
         {evidence && duplicate && <span className="ml-1 text-[10.5px] text-mut">— то же evidence, см. выше</span>}

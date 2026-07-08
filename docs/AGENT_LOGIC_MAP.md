@@ -147,7 +147,7 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
 | G1 | Runtime не читает YAML-каталог (классификация задвоена: код+док) | drift-риск | validation-тесты каталога пинуют `code:`-указатели |
 | G2 | Prose-критерии («запуск с CSV выводит…») → generic | покрытие | задокументированный размен; named-формулировка даёт 8/8 (live-доказано) |
 | G3 | ~~run_server-churn~~ — ✅ закрыто R2 (FORM ×8→×2; lifecycle у runtime) | — | остаток: гонка Popen-окна при disconnect (принята) |
-| G4 | UI не различает auto_verifier-вызовы (нет бейджа) | наблюдаемость | события честно рендерятся как tool calls |
+| G4 | ~~UI не различает auto_verifier-вызовы~~ — ✅ закрыто R4 (чипы «⚙ runtime» на карточке и в readiness) | — | — |
 | G5 | ~~Model-path blocked-вердикт~~ — ✅ закрыто R3 (`b1361f1`: запись только при status=="ok") | — | — |
 | G6 | `cli.output.not_contains` — нет верификатора | покрытие | каталог помечает missing; критерий честно unverified |
 | G7 | ~~Live-smoke не автоматизированы~~ — ✅ закрыто R5 (`tests/smokes/`, 4/4 PASS) | — | — |
@@ -201,10 +201,11 @@ liveness пробит по хосту из URL (::1/LAN), stop не выкиды
   helper); rejected approval / rate-limit не может пометить критерий failed. Регрессия:
   model-called `npm test` blocked → unconfirmed, не failed. Бэкенд 3602.
 
-**R4 — UI: бейдж auto-verifier (G4)**
-- `auto_verifier: true` → значок «⚙ проверено runtime» на tool-карточке + строка в
-  readiness-evidence.
-- DoD: событие видно в UI; ребилд bundle.
+**R4 — UI: бейдж auto-verifier (G4) — ✅ DONE**
+- Tool-карточка: чип «⚙ runtime» при `auto_verifier: true` (ToolCallGroup). Readiness-строка:
+  «⚙ runtime» при `auto_verified` — новый флаг в `criteria.report()` (ставится в `record()`
+  при auto=True, прокинут через `_record_criterion_verdict`). Модельные вызовы флага не несут
+  (регрессии в обе стороны). Bundle пересобран.
 
 **R5 — Автоматизированный live-smoke (G7) — ✅ DONE**
 - `backend/tests/smokes/` (не собирается pytest'ом): `run.py` + `driver.py` + 4 таска +
