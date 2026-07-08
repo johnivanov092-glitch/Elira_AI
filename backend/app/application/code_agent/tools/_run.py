@@ -359,18 +359,29 @@ def active_server_ports() -> set[int]:
 
 # ─── R2 Server Lifecycle: runtime owns what it started ──────────────────────
 
-def _port_listening(port: int, timeout: float = 0.5) -> bool:
+def _port_listening(port: int, timeout: float = 0.5, host: str = "127.0.0.1") -> bool:
     import socket
     try:
-        with socket.create_connection(("127.0.0.1", int(port)), timeout=timeout):
+        with socket.create_connection((host, int(port)), timeout=timeout):
             return True
     except OSError:
         return False
 
 
+def _url_endpoint_listening(url: str, port: int) -> bool:
+    """Probe the host the URL actually names — not a hardcoded 127.0.0.1. A server
+    bound only to ::1 or to a LAN interface is ALIVE at its own address; probing the
+    wrong loopback would read it as dead and invite a duplicate start (review #6/#9)."""
+    m = re.match(r"https?://\[?([^/\]:]+)\]?", url or "")
+    host = (m.group(1) if m else "127.0.0.1").lower()
+    if host in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "::"):
+        return _port_listening(port) or _port_listening(port, host="::1")
+    return _port_listening(port, host=host)
+
+
 def url_is_live_server(url: str) -> bool:
     """True when `url` points at a tracked dev server whose PROCESS is alive and
-    whose port actually LISTENS. This is the liveness gate for server→browser
+    whose endpoint actually LISTENS. This is the liveness gate for server→browser
     redirects and auto-verifier browser probes — a stale URL from a stopped/crashed
     server must not steer verification at a dead endpoint."""
     m = _SERVER_URL_RE.search(url or "")
@@ -382,7 +393,7 @@ def url_is_live_server(url: str) -> bool:
         handles = [h for h in _LIVE_SERVERS.values() if h.port == port]
     if not any(h.proc.poll() is None for h in handles):
         return False
-    return _port_listening(port)
+    return _url_endpoint_listening(url, port)
 
 
 def run_owned_servers(run_id: str) -> list[dict[str, Any]]:
@@ -408,16 +419,23 @@ def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
         owned = [(pid, h) for pid, h in _LIVE_SERVERS.items() if h.run_id == run_id]
     stopped: list[dict[str, Any]] = []
     for pid, h in owned:
+        was_alive = False
         try:
-            if h.proc.poll() is None:
+            was_alive = h.proc.poll() is None
+            if was_alive:
                 _kill_proc_tree(h.proc)
                 try:
                     h.proc.wait(timeout=5)
                 except Exception:
                     pass
-                stopped.append({"pid": pid, "port": h.port, "url": h.url, "command": h.command})
         except Exception:
             pass
+        if h.proc.poll() is None:
+            # The kill FAILED — keep the handle: an unkillable process must stay
+            # tracked (list/stop_all/SSRF allowlist), not silently leak (review #11).
+            continue
+        if was_alive:
+            stopped.append({"pid": pid, "port": h.port, "url": h.url, "command": h.command})
         with _SERVERS_LOCK:
             _LIVE_SERVERS.pop(pid, None)
     return stopped
@@ -679,6 +697,12 @@ def tool_run_server(
         return {"text": f"ERROR: cannot create server log dir: {exc}", "ok": False}
     log_path = log_dir / f"server-{int(time.time() * 1000)}.log"
 
+    # R2 attribution: if the REQUESTED port is already taken by another process
+    # BEFORE our start, our child cannot be the one bound there — the requested-port
+    # fallback below must not adopt it, or liveness/verification would bless a
+    # FOREIGN app on that port (review #2/#7/#19).
+    _pre_bound = _port_listening(int(port)) if port else False
+
     try:
         # Binary: the server child writes its raw bytes straight to this fd; we
         # decode on read (_read_log_tail) so Windows OEM output isn't mangled.
@@ -747,8 +771,12 @@ def tool_run_server(
     if parsed:
         actual_url, actual_port = parsed
         handle.url, handle.port = actual_url, actual_port
-    elif port:
+    elif port and not _pre_bound:
         handle.url = f"http://localhost:{port}"
+    elif port and _pre_bound:
+        # The requested port was listening BEFORE this start — whatever answers there
+        # is NOT our child. No URL adopted: verification must not target a foreign app.
+        handle.port = None
     actual_url = handle.url
     actual_port = handle.port
 
@@ -762,6 +790,12 @@ def tool_run_server(
                 f"  (note: requested port {port} was taken — the server bound "
                 f"{actual_port} instead)\n"
             )
+    elif port and _pre_bound:
+        url_line = (
+            f"  ⚠ порт {port} был занят ЧУЖИМ процессом ещё до старта — URL не принят. "
+            f"Проверь run_server(action='logs', pid={proc.pid}): сервер мог упасть или "
+            f"подняться на другом порту.\n"
+        )
     else:
         url_line = ""
     text = (

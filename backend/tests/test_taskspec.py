@@ -997,6 +997,37 @@ class AutoVerifierClosureTest(unittest.TestCase):
         self.assertNotEqual(done.get("completion_status"), "confirmed")
 
 
+class DevServerHeuristicTest(unittest.TestCase):
+    """The dev-server redirect heuristic (guard, not verdict). Review-hardened:
+    the costly false positives — one-shot builds (`vite build`), quoted mentions,
+    --help/--version probes, dev-prefixed script names — must NOT match."""
+
+    def _is(self, cmd):
+        from app.application.code_agent.loop_helpers import _looks_like_dev_server_command
+        return _looks_like_dev_server_command(cmd)
+
+    def test_real_servers_match(self):
+        for cmd in ("npm run dev", "yarn dev", "pnpm run dev", "npm start", "vite",
+                    "vite --port 3000", "npx vite", "next dev", "ng serve",
+                    "python -m http.server 8765", "uvicorn main:app --reload",
+                    "flask run", "npx serve dist", "cd app && npm run dev"):
+            self.assertTrue(self._is(cmd), cmd)
+
+    def test_one_shot_and_probes_do_not_match(self):
+        for cmd in ("vite build", "npx vite build --mode production", "vite optimize",
+                    "npm run dev-build", "npm run dev:build", "yarn start:lint",
+                    "npm run preview:build", "uvicorn --version", "flask run --help",
+                    "npx serve --help", "npm run build", "pip install uvicorn"):
+            self.assertFalse(self._is(cmd), cmd)
+
+    def test_quoted_mentions_do_not_match(self):
+        for cmd in ('git commit -m "chore: docs; npm start guide"',
+                    "printf 'cd app && npm run dev' > start.sh",
+                    'echo "vite dev is great" >> README.md',
+                    'cat > s.sh <<EOF\ncd app && npm run dev\nEOF'):
+            self.assertFalse(self._is(cmd), cmd)
+
+
 class ServerLifecycleLoopTest(unittest.TestCase):
     """R2 Server Lifecycle in the loop: dev-server commands are redirected out of
     run_bash; the runtime stops its servers at terminals (answer+TaskSpec, abandoned
@@ -1006,7 +1037,8 @@ class ServerLifecycleLoopTest(unittest.TestCase):
     _SPEC_TASK = ("Цель:\nФайл.\n\nКритерии готовности:\n1. файл `a.txt` существует\n")
 
     def tearDown(self):
-        for rid in ("ts-srv-dev", "ts-srv-stop", "ts-srv-keep", "ts-srv-loopstop", "ts-srv-url"):
+        for rid in ("ts-srv-dev", "ts-srv-stop", "ts-srv-keep", "ts-srv-loopstop", "ts-srv-url",
+                    "ts-srv-keepurl", "ts-srv-devauto", "ts-srv-verif"):
             deferred_tools.clear_run(rid)
 
     def test_dev_server_run_bash_redirected_to_run_server(self):
@@ -1095,7 +1127,8 @@ class ServerLifecycleLoopTest(unittest.TestCase):
 
     def test_stop_all_forgets_server_url(self):
         # After run_server stop_all the remembered URL must NOT feed the closure/auto
-        # layer — no auto browser probe against a dead endpoint.
+        # layer — no auto browser probe against a dead endpoint. Liveness flips to
+        # False after the stop (stateful mock — the real registry does exactly this).
         task = ("Цель:\nUI.\n\nКритерии готовности:\n"
                 "1. rendered DOM содержит `Hello`\n")
         chat = _SeqChat([
@@ -1110,6 +1143,7 @@ class ServerLifecycleLoopTest(unittest.TestCase):
                            "evidence": "dev server running: http://localhost:5173"},
         }
         seen_actions: list = []
+        alive = [True]
 
         def _exec(request, **kw):
             tool = str(getattr(request, "tool_name", ""))
@@ -1117,12 +1151,14 @@ class ServerLifecycleLoopTest(unittest.TestCase):
             if tool == "run_server":
                 seen_actions.append(args.get("action"))
                 if args.get("action") == "stop_all":
+                    alive[0] = False
                     return SimpleNamespace(status="ok", output={"text": "Stopped 1 background server(s)."})
                 return SimpleNamespace(status="ok", output=dict(outputs["run_server"]))
             return SimpleNamespace(status="ok", output={"text": "ok", "ok": True})
 
         with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
-             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec), \
+             patch.object(agent_loop, "_server_url_alive", side_effect=lambda url: alive[0]):
             evs = list(agent_loop.stream_code_agent(
                 user_message=task, project_root=tmp, run_id="ts-srv-url",
                 auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
@@ -1130,8 +1166,92 @@ class ServerLifecycleLoopTest(unittest.TestCase):
         auto_browser = [e for e in evs if e.get("type") == "tool_call"
                         and e.get("auto_verifier") and e.get("tool") == "browser"]
         self.assertEqual(auto_browser, [])                     # dead URL never probed
-        # and the closure nudge asks to START the server (placeholder), not to browse a URL
         self.assertIn("stop_all", seen_actions)
+
+    def test_unrelated_failed_call_keeps_live_url(self):
+        # Review #1/#8/#15: a failed run_server call about a DIFFERENT server (wrong-pid
+        # logs) must NOT wipe the live server's URL — the auto pass still probes it.
+        task = ("Цель:\nUI.\n\nКритерии готовности:\n"
+                "1. rendered DOM содержит `Hello`\n")
+        chat = _SeqChat([
+            _call("run_server", action="start", command="vite"),
+            _call("run_server", action="logs", pid=99999),      # stale pid → ok=False
+            _final("готово"),
+        ], _final())
+
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            args = dict(getattr(request, "args", {}) or {})
+            if tool == "run_server" and args.get("action") == "logs":
+                return SimpleNamespace(status="ok", output={"text": "ERROR: no tracked server", "ok": False})
+            if tool == "run_server":
+                return SimpleNamespace(status="ok", output={
+                    "text": "started", "ok": True, "verifier": True, "server_started": True,
+                    "actual_port": 5173, "actual_url": "http://localhost:5173",
+                    "evidence": "dev server running: http://localhost:5173"})
+            if tool == "browser":
+                return SimpleNamespace(status="ok", output={
+                    "text": "[browser] TITLE: X\nHello", "ok": True, "verifier": True,
+                    "evidence": "TITLE: X\nHello", "interacted": False})
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-srv-keepurl",
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        # liveness (patched True in _loop_env) says the server is alive → URL kept →
+        # the auto pass probes it and the dom criterion confirms
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "confirmed")
+        auto_browser = [e for e in evs if e.get("auto_verifier") and e.get("tool") == "browser"]
+        self.assertTrue(auto_browser)
+
+    def test_dev_server_named_command_not_auto_executed(self):
+        # Review #5: an auto command_output spec whose NAMED command is itself a dev
+        # server must not be executed by the runtime (it would hang the finalize gate).
+        task = ("Цель:\nСервер.\n\nКритерии готовности:\n"
+                "1. `npm run dev` выводит `ready`\n")
+        calls: list = []
+
+        def _exec(request, **kw):
+            calls.append(str(getattr(request, "tool_name", "")))
+            return SimpleNamespace(status="ok", output={"text": "ok", "ok": True})
+
+        chat = _SeqChat([_final("готово")], _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            list(agent_loop.stream_code_agent(
+                user_message=task, project_root=tmp, run_id="ts-srv-devauto",
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        self.assertNotIn("run_bash", calls)                    # runtime never ran it
+
+    def test_redirected_run_bash_does_not_count_as_verification(self):
+        # Review #18: a REDIRECTED (never-executed) dev-server run_bash must not set
+        # ran_verification — an edited-but-unverified run still gets the honesty nudge.
+        chat = _RecordingChat([
+            _call("write_file", path="app.js", content="x"),
+            _call("run_bash", command="npm run dev"),
+            _final("сделал"),
+        ], _final("готово"))
+        outputs = {"write_file": {"text": "ok", "ok": True, "touched_path": "app.js"}}
+
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            return SimpleNamespace(status="ok", output=dict(outputs.get(tool, {"text": "ok", "ok": True})))
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            list(agent_loop.stream_code_agent(
+                user_message="поправь app.js чтобы дев-сервер работал", project_root=tmp,
+                run_id="ts-srv-verif", auto_remember=False, permission_mode="bypass",
+                max_steps=10, chat_fn=chat,
+            ))
+        nudges = [m["content"] for ms in chat.seen_messages for m in ms
+                  if m.get("role") == "user" and "ещё не проверил" in str(m.get("content"))]
+        self.assertTrue(nudges)                                # honesty nudge still fires
 
 
 class CriteriaTrackerTest(unittest.TestCase):

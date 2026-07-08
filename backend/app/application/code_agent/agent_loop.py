@@ -1366,6 +1366,10 @@ def _stream_code_agent_core(
                             _a_tool = str(_a["auto"]["tool"])
                             _a_args = dict(_a["auto"].get("args") or {})
                             if _a_tool == "run_bash":
+                                if _looks_like_dev_server_command(_a_args.get("command", "")):
+                                    continue   # a NAMED dev-server command would hang the
+                                    # finalize gate until the shell timeout (review #5) —
+                                    # the nudge steers it to run_server instead
                                 _cmd = criterion_closure.resolve_auto_command(
                                     _a_args.get("command", ""), project_root, touched_files)
                                 if not _cmd:
@@ -1532,6 +1536,7 @@ def _stream_code_agent_core(
                 # now, so a finished run leaves no processes and no listening ports.
                 # Without a TaskSpec the server IS the deliverable («подними
                 # dev-сервер») → keep it alive and REPORT it explicitly.
+                _keep_candidate = False
                 try:
                     if task_spec is not None:
                         _stopped = _stop_run_servers(rid)
@@ -1545,7 +1550,11 @@ def _stream_code_agent_core(
                     else:
                         _alive = _run_owned_servers(rid)
                         if _alive:
-                            _keep_servers_on_exit = True
+                            # Committed to _keep_servers_on_exit only AFTER the done
+                            # event is delivered (below): a client that disconnects at
+                            # the final yield never SAW the keep-report — that run is
+                            # abandoned and its servers must stop (review #20).
+                            _keep_candidate = True
                             _srv = "; ".join(
                                 f"pid={s['pid']}" + (f" — {s['url']}" if s.get("url") else "")
                                 for s in _alive)
@@ -1608,6 +1617,10 @@ def _stream_code_agent_core(
                     "recent_tool_output": _recent_digest,
                     **_completion_fields(criteria),
                 }
+                # The done event LANDED — only now commit keeping the deliverable
+                # server (a disconnect at the yields above → keep stays False →
+                # the finally stops run-owned servers: abandoned = cleaned).
+                _keep_servers_on_exit = _keep_candidate
                 return
 
             messages.append({
@@ -1638,18 +1651,6 @@ def _stream_code_agent_core(
                     return
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
-                # Track verification-gate signals from the tool stream itself,
-                # before any dispatch branch, so it sees every call uniformly.
-                # Remote edits (ssh_write/ssh_replace) count as edits; remote
-                # commands and verifiers count as "ran something to check".
-                if name in ("write_file", "edit_file", "ssh_write", "ssh_replace"):
-                    edited_in_run = True
-                elif name in (
-                    "run_bash", "run_server", "ssh_run", "ssh_run_ps",
-                    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-                    "ssh_exists", "ssh_not_exists", "ssh_read", "path_exists", "browser",
-                ):
-                    ran_verification = True
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
                 # Remember the host for concrete closure/barrier call hints. The full
@@ -2084,6 +2085,18 @@ def _stream_code_agent_core(
                     # P12.2: subagents are children of the current run. The
                     # model chooses role/task, not parent_run_id.
                     parsed_args["run_id"] = rid
+                # Verification-gate signals — AFTER every redirect/guard branch, so a
+                # call that was redirected (never EXECUTED) doesn't count as an edit
+                # or a verification (review #18: a redirected `npm run dev` used to
+                # mark ran_verification and silently skip the unverified-edit nudge).
+                if name in ("write_file", "edit_file", "ssh_write", "ssh_replace"):
+                    edited_in_run = True
+                elif name in (
+                    "run_bash", "run_server", "ssh_run", "ssh_run_ps",
+                    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
+                    "ssh_exists", "ssh_not_exists", "ssh_read", "path_exists", "browser",
+                ):
+                    ran_verification = True
                 _request = ToolExecutionRequest(
                     run_id=rid,
                     agent_id=effective_agent_id,
@@ -2232,11 +2245,16 @@ def _stream_code_agent_core(
                     _rs_act = str(parsed_args.get("action") or "start").lower()
                     if tool_meta.get("actual_url"):
                         _last_server_url = str(tool_meta.get("actual_url"))
-                    elif _rs_act in ("stop", "stop_all") or not tool_meta.get("ok", True):
-                        # R2: stop / stop_all / failed start / empty list — the old URL
-                        # can't be trusted anymore; a later list/logs verdict with
-                        # actual_url re-adopts a live one.
-                        _last_server_url = ""
+                    elif _last_server_url and (
+                        _rs_act in ("stop", "stop_all") or not tool_meta.get("ok", True)
+                    ):
+                        # R2 (scoped, review #1/#8/#15): forget the URL only if ITS
+                        # server is really gone — a failed call about a DIFFERENT
+                        # server (wrong-pid logs, second start on a taken port, a
+                        # rejected approval that never ran) must not wipe a live
+                        # server's address. A later verdict re-adopts via actual_url.
+                        if not _server_url_alive(_last_server_url):
+                            _last_server_url = ""
                 text_result = str(tool_meta.get("text", ""))
                 event: dict[str, Any] = {
                     "type": "tool_call",
@@ -2386,16 +2404,11 @@ def _stream_code_agent_core(
             **_completion_fields(criteria, terminated_incomplete=True),
         }
     finally:
-        # P10.1: drop the run's deferred allowlist on EVERY terminal exit
-        # (success, max_steps, timeout, cancel, error).
-        from app.application.agent_kernel.deferred_tools import clear_run
-
-        clear_run(rid)
-        _unregister_run(rid)
-        # R2 Server Lifecycle: an ABANDONED run (cancel / timeout / no_progress /
-        # loop_guard / error / client disconnect) must not leave its servers
-        # running. The answer path either already stopped them (TaskSpec) or
-        # explicitly opted to keep the deliverable (_keep_servers_on_exit).
+        # R2 Server Lifecycle FIRST and guarded (review #4): an ABANDONED run
+        # (cancel / timeout / no_progress / loop_guard / error / client disconnect)
+        # must not leave its servers running even if the other cleanups fail. The
+        # answer path either already stopped them (TaskSpec) or explicitly opted to
+        # keep the deliverable (_keep_servers_on_exit, committed after done landed).
         if not _keep_servers_on_exit:
             try:
                 _stopped_at_exit = _stop_run_servers(rid)
@@ -2404,6 +2417,17 @@ def _stream_code_agent_core(
                                 rid, len(_stopped_at_exit))
             except Exception:
                 pass
+        # P10.1: drop the run's deferred allowlist on EVERY terminal exit
+        # (success, max_steps, timeout, cancel, error).
+        try:
+            from app.application.agent_kernel.deferred_tools import clear_run
+            clear_run(rid)
+        except Exception:
+            pass
+        try:
+            _unregister_run(rid)
+        except Exception:
+            pass
 
 
 def stream_code_agent(

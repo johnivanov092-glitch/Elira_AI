@@ -585,17 +585,25 @@ def _deterministic_stop_summary(
 # R2 Server Lifecycle: dev-server commands must go through run_server (owned,
 # stoppable, real URL) — in run_bash they block until the shell timeout and leak.
 # HEURISTIC by design: this feeds a bounded REDIRECT (worst case = one bad hint),
-# never a verdict (map invariant №10) — so the list not being exhaustive is fine.
+# never a verdict (map invariant №10). Review-hardened against the costly false
+# positives: quoted mentions (commit messages, printf), --help/--version probes,
+# one-shot subcommands (`vite build`), and dev-prefixed script names (dev-build).
+_QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\'[^\']*\'')
+_WORD_END = r"(?=\s|$|&|\||;)"
 _DEV_SERVER_CMD_RE = re.compile(
     r"(?:^|&&|;)\s*(?:"
-    r"(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b"
-    r"|(?:npx\s+)?(?:vite|next\s+dev|nuxt\s+dev|astro\s+dev|remix\s+dev)\b"
+    # dev-token scripts: word must END there — `npm run dev-build`/`dev:build` are one-shot
+    r"(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)" + _WORD_END +
+    # bare `vite` / `vite --port …` / `vite dev|serve|preview` serve; `vite build` does NOT
+    r"|(?:npx\s+)?vite(?=\s*$|\s+--|\s+(?:dev|serve|preview)" + _WORD_END + r")"
+    r"|(?:npx\s+)?(?:next|nuxt|astro|remix)\s+dev\b"
     r"|ng\s+serve\b"
     r"|python3?\s+-m\s+http\.server\b"
     r"|(?:python3?\s+)?manage\.py\s+runserver\b"
-    r"|uvicorn\s+\S+"
-    r"|flask\s+run\b"
-    r"|(?:npx\s+)?(?:http-server|live-server|serve)\b"
+    # uvicorn only with an app path (module:attr) — `uvicorn --version` is a probe
+    r"|uvicorn\s+[\w./\\]+:[\w.]+"
+    r"|flask\s+run" + _WORD_END +
+    r"|(?:npx\s+)?(?:http-server|live-server|serve)" + _WORD_END +
     r"|rails\s+s(?:erver)?\b"
     r"|php\s+-S\s"
     r")",
@@ -605,7 +613,13 @@ _DEV_SERVER_CMD_RE = re.compile(
 
 def _looks_like_dev_server_command(command: str) -> bool:
     """A run_bash command that starts a long-lived dev server (guard heuristic)."""
-    return bool(_DEV_SERVER_CMD_RE.search((command or "").strip()))
+    cmd = (command or "").strip()
+    low = cmd.lower()
+    if "--help" in low or "--version" in low or "<<" in low:
+        return False   # diagnostics / heredoc file-writes are not server launches
+    # a QUOTED mention (commit message, printf/echo payload) is not a launch
+    cmd = _QUOTED_SPAN_RE.sub(" ", cmd)
+    return bool(_DEV_SERVER_CMD_RE.search(cmd))
 
 
 def _mark_approval_approved(approval_id: str) -> bool:

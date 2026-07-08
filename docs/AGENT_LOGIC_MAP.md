@@ -146,9 +146,9 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
 |---|---|---|---|
 | G1 | Runtime не читает YAML-каталог (классификация задвоена: код+док) | drift-риск | validation-тесты каталога пинуют `code:`-указатели |
 | G2 | Prose-критерии («запуск с CSV выводит…») → generic | покрытие | задокументированный размен; named-формулировка даёт 8/8 (live-доказано) |
-| G3 | run_server-churn (FORM: ×8 вызовов) | экономия | redirect есть (2), но модель всё ещё дёргает рестарты |
+| G3 | ~~run_server-churn~~ — ✅ закрыто R2 (FORM ×8→×2; lifecycle у runtime) | — | остаток: гонка Popen-окна при disconnect (принята) |
 | G4 | UI не различает auto_verifier-вызовы (нет бейджа) | наблюдаемость | события честно рендерятся как tool calls |
-| G5 | Model-path: rejected/blocked-вызов может записать вердикт (auto-путь загейчен, модельный — нет) | false-fail | редко: нужен verifier-flagged tool с blocked output |
+| G5 | ~~Model-path blocked-вердикт~~ — ✅ закрыто R3 (`b1361f1`: запись только при status=="ok") | — | — |
 | G6 | `cli.output.not_contains` — нет верификатора | покрытие | каталог помечает missing; критерий честно unverified |
 | G7 | Live-smoke не автоматизированы (ручной драйвер в scratchpad) | регрессия | 3601 offline-тестов + канарейки; smoke гоняются вручную |
 | G8 | Interactions не исполняются runtime'ом (selectors неизвестны) | по дизайну | closure-nudge даёт точный grouped-вызов модели |
@@ -166,7 +166,18 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
   из каталога.
 - DoD: фиче-флаг; при выключенном флаге поведение бит-в-бит текущее; канарейки живы.
 
-**R2 — Server Lifecycle (runtime владеет тем, что сам поднял) (G3)**
+**R2 — Server Lifecycle (runtime владеет тем, что сам поднял) (G3) — ✅ DONE
+(`3d464fe` + ревью-фиксы)**
+Live-DoD выполнен: FORM 30→17 tools, 30→10 шагов, run_server ×8→×2, порт после прогона
+закрыт. Ревью (20 находок, verify-фаза упала в лимит → ручной триаж, все реальные):
+regex ужесточён (`vite build`/dev-build/--version/quoted-упоминания больше не редиректятся),
+URL-очистка стала scoped (liveness-recheck — чужой фейл не стирает живой адрес), pre-bound
+гейт (запрошенный порт, занятый ДО старта, не принимается — чужой listener не благословляется),
+liveness пробит по хосту из URL (::1/LAN), stop не выкидывает незакиленный процесс из
+трекинга, auto-pass не исполняет named dev-server команды, редиректнутый вызов не считается
+верификацией, keep-флаг коммитится после доставки done. Остаточный риск: узкая гонка «регистрация
+хэндла после finally» при client-disconnect ровно в окне Popen — принята и
+задокументирована (единственный не закрытый кейс из 20 находок ревью).
 Не «economy-хинты», а владение жизненным циклом: модель не владеет PID'ами.
 - **Ownership:** run_server регистрирует pid/port/url с run_id; runtime знает live-список
   СВОИХ серверов в ране.
