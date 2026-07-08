@@ -149,7 +149,7 @@ verify-gate 3×300s, server-redirect 2, cleanup-barrier 1, стратегия: 2
 | G3 | ~~run_server-churn~~ — ✅ закрыто R2 (FORM ×8→×2; lifecycle у runtime) | — | остаток: гонка Popen-окна при disconnect (принята) |
 | G4 | ~~UI не различает auto_verifier-вызовы~~ — ✅ закрыто R4 (чипы «⚙ runtime» на карточке и в readiness) | — | — |
 | G5 | ~~Model-path blocked-вердикт~~ — ✅ закрыто R3 (`b1361f1`: запись только при status=="ok") | — | — |
-| G6 | `cli.output.not_contains` — нет верификатора | покрытие | каталог помечает missing; критерий честно unverified |
+| G6 | ~~`cli.output.not_contains`~~ — ✅ закрыто R6 (absent-полярность + фикс fil-хайджека) | — | — |
 | G7 | ~~Live-smoke не автоматизированы~~ — ✅ закрыто R5 (`tests/smokes/`, 4/4 PASS) | — | — |
 | G8 | Interactions не исполняются runtime'ом (selectors неизвестны) | по дизайну | closure-nudge даёт точный grouped-вызов модели |
 | G9 | `command_check` red от среды (не от кода) — честный, но шумный fail | UX | red rescuable (зелёный прогон позже подтверждает) |
@@ -222,9 +222,12 @@ liveness пробит по хосту из URL (::1/LAN), stop не выкиды
 - Финальный прогон: **4/4 PASS attempt-1** — cli 8/8 (9 tools), csv_named 8/8 (19),
   form 8/8 (14, порт закрыт), ssh_canary 3/3 (7 tools, 34с; было 1/3 при 19 до фикса).
 
-**R6 — `cli.output.not_contains` (G6)** *(маленький, по методу каталога)*
-- Строка в каталоге → negative-вариант матчинга (token НЕ в выводе named-команды, exit-гейт)
-  → тесты → support.
+**R6 — `cli.output.not_contains` (G6) — ✅ DONE (`fc73a42`)**
+- «`cmd` НЕ выводит `X`» → command_output с absent-полярностью: та же атрибуция
+  (`_run_invokes`), GREEN-ран без токена → confirm, GREEN-ран С токеном → честный fail,
+  красный ран → нейтрально. Попутно закрыт латентный false-confirm: negative-ветка проверяет
+  command_output ДО fil — файловый assert больше не может закрыть output-критерий.
+  Каталог missing→supported; csv_named smoke усилен 9-м критерием (live: confirmed 9/9).
 
 Порядок (утверждён 2026-07-08): **R3 → R2 → R5 → R4 → R6 → R1.** Главная боль по
 live-прогонам — server lifecycle, поэтому R2 сразу после дешёвого correctness-фикса R3;
