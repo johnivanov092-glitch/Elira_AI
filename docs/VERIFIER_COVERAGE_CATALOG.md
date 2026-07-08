@@ -36,7 +36,7 @@ Support: **✅ supported** (classified + verifier + evidence + regression test) 
 | `browser.interaction.fill_click_assert` | `dom_contains`+interaction | `browser(actions)` | post-action DOM has result | ✅ | — |
 | `project.scope.created_under` | `file_exists` | `path_exists` | present | ✅ | — |
 | `cleanup.confirmed` | `file_not_exists` | `ssh_not_exists` | absent | ✅ | — |
-| `viewport_layout` | `viewport_layout` | `browser` | viewport meta | ◐ | — |
+| `viewport_layout` — нет горизонтального скролла на mobile | `viewport_layout` | `browser(viewport=…)` | measured no-horizontal-overflow at the tested width | ✅ | width-bucket attribution (narrow≠desktop) |
 | `project.scope.no_parent_changes` | *(→ constraint)* | — | *(can't verify without diff)* | ◐ | — |
 | `cli.output.contains` — `cmd` выводит `INFO: 2` | `command_output` | `run_bash` | stdout/stderr contains text (one run closes many) | ✅ | — |
 | `cli.command.fails_with_output` — выводит X и падает | `command_output`+nonzero | `run_bash` | text + exit≠0 | ✅ | — |
@@ -90,10 +90,17 @@ honest instead of a rubber stamp.
    (only when `completion_status != confirmed`), so a model checkmark table/row can no longer
    *look* done beside the runtime "подтверждено N/M" block. The deterministic panel is the only
    source of "готово". `code: criterion_closure.scrub_success_marks`.
-4. **`viewport_layout` — PARTIAL** (no deterministic closure suggestion) and
-   **`project.scope.no_parent_changes` — PARTIAL** (a diff/changed-paths verifier would be
-   needed; today it's routed to constraints so it doesn't hang). Both are honest today — low
-   priority.
+4. **`viewport_layout` — ✅ DONE (Batch D).** `browser(viewport="mobile"/"desktop"/{w,h})`
+   sizes the page and MEASURES horizontal overflow: no overflow at the tested width → confirm,
+   overflow → **fail** (a real red), no viewport requested → stays unconfirmed (honest). Width
+   attribution — a "mobile" claim can't be confirmed by a desktop-width measurement (bucket
+   mismatch → unconfirmed, never a false pass). Closure hint routes to the right preset. The
+   residual limit (the tool measures overflow at whatever width the model set; it does not
+   cross-check that the DOM at that width is the responsive layout) is the same class as the
+   Batch B statically-present-token limit. `code: tools/_web.tool_browser` +
+   `taskspec._verdict_outcome(viewport_layout)`.
+   **`project.scope.no_parent_changes` — stays a constraint by design** (a diff/changed-paths
+   verifier is deliberately NOT added — it's routed to constraints so it doesn't hang). Honest.
 
 ---
 
@@ -128,8 +135,14 @@ changed until this catalog is approved.**
   (right after `gate_completion_claims`), so the deterministic panel is the only source of
   "done". Surrounding text is preserved; a confirmed run keeps its marks (scrub not called).
 
-**Batch D (optional, low priority).** `viewport_layout` closure hint; a `changed_paths`
-scope verifier for `no_parent_changes`.
+**Batch D — viewport layout verifier (closes gap 4). ✅ DONE.**
+- `browser` gains a `viewport` param (preset or `{width,height}`); `_browser_render` sizes the
+  page and measures `document.documentElement.scrollWidth <= innerWidth + 1` → emits a
+  `{checked,width,no_hoverflow}` signal. `_verdict_outcome(viewport_layout)`: no overflow →
+  confirm, overflow → fail; `_verdict_target_matches` requires a real measurement (`checked`)
+  and matches the criterion's width bucket (`_viewport_target`: narrow/wide/any). Closure hint
+  `_action_for(viewport_layout)` → `browser(url, viewport="mobile"/"desktop")`.
+- `project.scope.no_parent_changes` stays a **constraint** — no diff verifier added (by design).
 
 **Cross-cutting (do in Batch A):** wire the runtime to *read* this catalog for (1) intent
 classification sanity, (2) exact closure missing-action text, and (3) a `unsupported/

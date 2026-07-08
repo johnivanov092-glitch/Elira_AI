@@ -63,8 +63,8 @@ def _content_pattern(item: dict) -> str:
 
 def _action_for(item: dict, *, host: str, url: str) -> dict | None:
     """The one concrete verifier call that would close this criterion, or None when the
-    verifier is not unambiguous (generic / viewport w/o evidence) — those stay honestly
-    unverified rather than being demanded of the model."""
+    verifier is not unambiguous (generic) — those stay honestly unverified rather than
+    being demanded of the model."""
     intent, text = item["intent"], item["text"]
     if intent == "content_contains":
         path, pat = _criterion_path(item), _content_pattern(item)
@@ -107,7 +107,16 @@ def _action_for(item: dict, *, host: str, url: str) -> dict | None:
     elif intent == "command_check":
         cmd = _COMMAND_FOR_KIND.get(item.get("command_kind") or "any", "нужную проверку")
         return {"tool": "run_bash", "call": f"run_bash(`{cmd}`) — должно пройти (exit 0)", "why": text}
-    return None  # generic / viewport_layout → no deterministic verifier
+    elif intent == "viewport_layout":
+        # Render at the width the criterion names (mobile for narrow/ambiguous, desktop for
+        # wide) and let the browser MEASURE horizontal overflow — a real layout verdict, not
+        # a grep. `viewport="mobile"` also confirms a width-agnostic layout criterion.
+        preset = "desktop" if item.get("viewport_width") == "wide" else "mobile"
+        return {"tool": "browser",
+                "call": (f'browser(url={url}, viewport="{preset}") — отрисуй на этой ширине; '
+                         f"не должно быть горизонтального переполнения (измеряется реально, не grep)"),
+                "why": text}
+    return None  # generic → no deterministic verifier
 
 
 def _interaction_group_actions(items: list[dict], url: str) -> list[dict]:

@@ -686,6 +686,23 @@ _CMD_CTX = ("typecheck", "type-check", "tsc", "mypy", "pyright", "npm run", "npm
             "доступные провер", "exit 0", "линт", "lint", "тесты проход", "ошибок типов")
 _VIEWPORT_CTX = ("viewport", "адаптив", "responsive", "mobile", "desktop", "мобильн", "десктоп",
                  "overflow", "переполн", "горизонтальн скролл", "раскладк", "layout")
+# A layout criterion is only meaningfully proven at the width it names — so classify the
+# intended viewport bucket. narrow ("mobile"/"телефон"/≤600px) must be measured narrow, wide
+# ("desktop"/≥900px) wide; ambiguous → None (any measured width confirms). This ties the
+# overflow signal to the criterion's intent (a desktop measurement can't confirm "mobile").
+_VP_NARROW = ("мобиль", "телефон", "смартфон", "mobile", "phone")
+_VP_WIDE = ("десктоп", "desktop", "широк", "large screen", "wide screen")
+_PX_RE = re.compile(r"(\d{2,4})\s*px")
+
+
+def _viewport_target(text: str) -> str | None:
+    low = (text or "").lower()
+    px = [int(x) for x in _PX_RE.findall(low)]
+    if any(c in low for c in _VP_NARROW) or any(p <= 600 for p in px):
+        return "narrow"
+    if any(c in low for c in _VP_WIDE) or any(p >= 900 for p in px):
+        return "wide"
+    return None
 # A rendered-surface context that promotes an INTERACTION criterion to dom_contains even
 # without a _DOM_CTX word ("browser interaction: … показывает X"). NOT added to _DOM_CTX
 # itself — "browser" appears in the page_open criterion too, which must stay page_open;
@@ -1053,7 +1070,7 @@ def _criterion_item(text: str) -> dict:
         "targets": _dom_targets(text), "command_kind": _command_kind(text),
         "interaction": _is_interaction(text), "conditional": _is_conditional(text),
         "command": cmd["command"], "output_expected": cmd["output_expected"],
-        "expect_nonzero": cmd["expect_nonzero"],
+        "expect_nonzero": cmd["expect_nonzero"], "viewport_width": _viewport_target(text),
     }
 
 

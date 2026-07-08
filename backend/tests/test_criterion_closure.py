@@ -52,12 +52,22 @@ class MissingActionsTest(unittest.TestCase):
             self.assertIn(line, blob)
         self.assertIn("home-srv01", blob)
 
-    def test_generic_and_viewport_have_no_missing_action(self):
+    def test_generic_has_no_missing_action(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
-            "код не ломает существующие routes",       # generic
-            "страница адаптивна для desktop и mobile",  # viewport_layout, no evidence
+            "код не ломает существующие routes",       # generic → no deterministic verifier
         ]))
         self.assertEqual(cc.missing_verifier_actions(t), [])
+
+    def test_viewport_gets_browser_measure_hint(self):
+        # Batch D: a layout/responsive criterion now has a concrete closure action —
+        # browser(viewport=…) which MEASURES horizontal overflow (not a grep).
+        t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[
+            "страница адаптивна на mobile — нет горизонтального скролла",
+        ]))
+        acts = cc.missing_verifier_actions(t)
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["tool"], "browser")
+        self.assertIn('viewport="mobile"', acts[0]["call"])
 
     def test_confirmed_criteria_produce_no_actions(self):
         t = CriteriaTracker.from_spec(TaskSpec(success_criteria=[f"файл `{SNAP}` существует"]))

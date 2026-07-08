@@ -410,6 +410,15 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                             ),
                             "items": {"type": "object"},
                         },
+                        "viewport": {
+                            "description": (
+                                "Optional. Size the page and MEASURE horizontal overflow to verify a "
+                                "layout / responsive criterion (\"no horizontal scroll on mobile\"). "
+                                "Pass a preset \"mobile\" (375px) / \"tablet\" (768px) / \"desktop\" (1280px), "
+                                "or an explicit {\"width\": 375, \"height\": 812}. The result reports whether "
+                                "the layout fits at that width — the honest verifier for a viewport criterion."
+                            ),
+                        },
                     },
                     "required": ["url"],
                 },

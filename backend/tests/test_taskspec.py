@@ -299,16 +299,16 @@ class BrowserInteractionLiveTest(unittest.TestCase):
     def test_fill_and_click_reveal_result_in_dom(self):
         from app.application.code_agent.tools._web import _browser_render
         url = self._page_url()
-        _t, _u, dom0, _a = _browser_render(url, None, 4000, None)
+        _t, _u, dom0, _a, _v = _browser_render(url, None, 4000, None)
         self.assertNotIn("Network: 192.168.1.0", dom0)          # result hidden until interaction
-        _t, _u, dom1, _a = _browser_render(
+        _t, _u, dom1, _a, _v = _browser_render(
             url, None, 4000, [{"fill": "CIDR", "value": "192.168.1.0/24"}, {"click": "Calculate"}])
         self.assertIn("Network: 192.168.1.0", dom1)             # fill-by-label + click-by-text worked
 
     def test_bad_input_interaction_shows_error_only(self):
         from app.application.code_agent.tools._web import _browser_render
         url = self._page_url()
-        _t, _u, dom, _a = _browser_render(
+        _t, _u, dom, _a, _v = _browser_render(
             url, None, 4000, [{"fill": "CIDR", "value": "bad-input"}, {"click": "Calculate"}])
         self.assertIn("Invalid CIDR", dom)
         self.assertNotIn("Network: 192.168.1.0", dom)
@@ -333,17 +333,99 @@ class BrowserInteractionLiveTest(unittest.TestCase):
     def test_form_fill_select_check_click_drive_the_dom(self):
         from app.application.code_agent.tools._web import _browser_render
         url = self._form_url()
-        _t, _u, empty, _a = _browser_render(url, None, 4000, [{"click": "Validate"}])
+        _t, _u, empty, _a, _v = _browser_render(url, None, 4000, [{"click": "Validate"}])
         self.assertIn("Job name required", empty)                       # empty field → required
-        _t, _u, ok, _a = _browser_render(url, None, 4000, [
+        _t, _u, ok, _a, _v = _browser_render(url, None, 4000, [
             {"fill": "Job name", "value": "nas-backup"}, {"select": "Schedule", "value": "Daily"},
             {"check": "Encryption"}, {"click": "Validate"}])
         self.assertIn("Backup job valid", ok)                           # fill+select+check+click
         self.assertNotIn("Invalid", ok)
-        _t, _u, noenc, _a = _browser_render(url, None, 4000, [
+        _t, _u, noenc, _a, _v = _browser_render(url, None, 4000, [
             {"fill": "Job name", "value": "nas-backup"}, {"select": "Schedule", "value": "Daily"},
             {"click": "Validate"}])
         self.assertNotIn("Backup job valid", noenc)                     # the checkbox genuinely mattered
+
+    # Batch D: a fixed 1000px block overflows a 375px phone but fits a 1280px desktop —
+    # the browser MEASURES it (real layout signal), and no viewport request → no signal.
+    _WIDE = ("<!doctype html><body style='margin:0'>"
+             "<div style='width:1000px;height:40px'>wide block</div></body>")
+
+    def _wide_url(self):
+        d = Path(tempfile.mkdtemp())
+        f = d / "wide.html"
+        f.write_text(self._WIDE, encoding="utf-8")
+        return f.as_uri()
+
+    def test_viewport_measures_horizontal_overflow(self):
+        from app.application.code_agent.tools._web import _browser_render
+        url = self._wide_url()
+        _t, _u, _b, _a, vp_m = _browser_render(url, None, 2000, None, {"width": 375, "height": 812})
+        self.assertTrue(vp_m["checked"])
+        self.assertFalse(vp_m["no_hoverflow"])                          # 1000px overflows a 375px phone
+        _t, _u, _b, _a, vp_d = _browser_render(url, None, 2000, None, {"width": 1280, "height": 800})
+        self.assertTrue(vp_d["no_hoverflow"])                           # …but fits a 1280px desktop
+        _t, _u, _b, _a, vp_none = _browser_render(url, None, 2000, None, None)
+        self.assertIsNone(vp_none)                                      # no viewport requested → no signal
+
+
+class ViewportCoerceTest(unittest.TestCase):
+    """`_coerce_viewport` normalises the tool arg → size dict or None (no network)."""
+
+    def test_presets_and_explicit_and_junk(self):
+        from app.application.code_agent.tools._web import _coerce_viewport
+        self.assertEqual(_coerce_viewport("mobile"), {"width": 375, "height": 812})
+        self.assertEqual(_coerce_viewport("DESKTOP"), {"width": 1280, "height": 800})
+        self.assertEqual(_coerce_viewport({"width": 400, "height": 700}), {"width": 400, "height": 700})
+        self.assertIsNone(_coerce_viewport("phablet"))                  # unknown preset
+        self.assertIsNone(_coerce_viewport({"width": 10, "height": 10}))  # too small → rejected
+        self.assertIsNone(_coerce_viewport(None))
+
+
+class ViewportLayoutVerifierTest(unittest.TestCase):
+    """Batch D: the layout verifier (non-live). A viewport_layout criterion confirms ONLY on
+    a real browser measurement — no horizontal overflow at the tested width — and FAILS on
+    overflow. A plain render (no viewport measured) leaves it honestly unconfirmed, and a
+    desktop measurement can't confirm a 'mobile' claim (width-bucket attribution)."""
+
+    def _tracker(self, crit):
+        return CriteriaTracker.from_spec(TaskSpec(success_criteria=[crit]))
+
+    def _record_vp(self, t, vp, ok=True):
+        t.record(tool_name="browser", args={"url": "http://x"}, ok=ok,
+                 evidence="TITLE: X\nсодержимое", meta={"verifier": True, "viewport": vp})
+
+    def test_classification_and_width_bucket(self):
+        from app.application.code_agent.taskspec import _criterion_intent, _viewport_target
+        self.assertEqual(_criterion_intent("нет горизонтального скролла на mobile"), "viewport_layout")
+        self.assertEqual(_viewport_target("адаптив на mobile"), "narrow")
+        self.assertEqual(_viewport_target("desktop раскладка"), "wide")
+        self.assertEqual(_viewport_target("макет при 375px"), "narrow")
+        self.assertIsNone(_viewport_target("страница без переполнения"))   # ambiguous → any width
+
+    def test_no_overflow_confirms(self):
+        t = self._tracker("нет горизонтального скролла на mobile")
+        self._record_vp(t, {"checked": True, "width": 375, "no_hoverflow": True})
+        self.assertEqual(t.items[0]["status"], "confirmed")
+
+    def test_overflow_fails(self):
+        t = self._tracker("нет горизонтального скролла на mobile")
+        self._record_vp(t, {"checked": True, "width": 375, "no_hoverflow": False})
+        self.assertEqual(t.items[0]["status"], "failed")                # overflow = a real red
+
+    def test_plain_render_without_viewport_stays_unconfirmed(self):
+        t = self._tracker("нет горизонтального скролла на mobile")
+        self._record_vp(t, None)
+        self.assertEqual(t.items[0]["status"], "unconfirmed")           # never measured → honest partial
+
+    def test_desktop_measure_cannot_confirm_mobile_claim(self):
+        t = self._tracker("нет горизонтального скролла на mobile")
+        self._record_vp(t, {"checked": True, "width": 1280, "no_hoverflow": True})
+        self.assertEqual(t.items[0]["status"], "unconfirmed")           # width-bucket mismatch (attribution)
+
+    def test_ambiguous_width_confirmed_by_any_measure(self):
+        t = self._tracker("страница без горизонтального переполнения")   # no bucket → any width ok
+        self._record_vp(t, {"checked": True, "width": 1280, "no_hoverflow": True})
+        self.assertEqual(t.items[0]["status"], "confirmed")
 
 
 class ToolSearchEconomyTest(unittest.TestCase):
