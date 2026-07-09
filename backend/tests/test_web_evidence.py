@@ -21,6 +21,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.web_evidence import corpus as wc  # noqa: E402
+from app.application.web_evidence import ledger as wl  # noqa: E402
 from app.application.web_evidence import retrieval as wr  # noqa: E402
 from app.application.web_evidence.analyzer import ANALYZER_VERSION, Bm25Index, tokenize  # noqa: E402
 from app.application.web_evidence.taint import corpus_tainted  # noqa: E402
@@ -452,6 +453,101 @@ class IntentBindingTest(_TempStore):
         self.assertIsNone(frag)
 
 
+class LedgerTest(_TempStore):
+    """W3: structured web_claim_add → deterministic per-evidence verdicts + a
+    runtime-rendered appendix. quote_verified is provenance, NEVER truth."""
+
+    def _seed(self, run_id, text):
+        return _ingest_html(run_id, "http://x/src",
+                            f"<html><body><p>{text}</p></body></html>")
+
+    def test_verified_claim_records_and_renders(self):
+        res = self._seed("lc1", "Столица Франции — Париж, население около 2 миллионов.")
+        doc_id = res["doc_id"]
+        out = wl.add_claims("lc1", [{
+            "claim": "Париж — столица Франции",
+            "evidence": [{"doc_id": doc_id, "quote": "Столица Франции — Париж"}],
+            "support": "прямое утверждение источника",
+        }])
+        self.assertTrue(out["ok"])
+        self.assertTrue(out["claims"][0]["any_verified"])
+        self.assertTrue(out["claims"][0]["evidence"][0]["quote_verified"])
+        rendered = wl.render_ledger("lc1")
+        self.assertIn("Париж — столица Франции", rendered)
+        self.assertIn("провенанс", rendered.lower())
+        self.assertIn("не истинность", rendered.lower())     # negative rule №1 in the UI
+
+    def test_fabricated_quote_is_unverified_not_stored_as_true(self):
+        res = self._seed("lc2", "Реальный текст источника про погоду.")
+        out = wl.add_claims("lc2", [{
+            "claim": "Источник утверждает X",
+            "evidence": [{"doc_id": res["doc_id"], "quote": "выдуманная цитата которой нет"}],
+        }])
+        ev = out["claims"][0]["evidence"][0]
+        self.assertFalse(ev["quote_verified"])                # fabricated → not verified
+        self.assertTrue(ev["source_verified"])                # but the doc IS from this run
+        self.assertFalse(out["claims"][0]["any_verified"])
+        self.assertIn("НЕ найдена дословно", wl.render_ledger("lc2"))
+
+    def test_tampered_corpus_makes_evidence_unverified(self):
+        res = self._seed("lc3", "оригинальный факт LEDG-1")
+        doc_id = res["doc_id"]
+        import sqlite3
+        conn = sqlite3.connect(ws._DB_PATH_OVERRIDE)
+        conn.execute("UPDATE documents SET canonical_text=? WHERE run_id=? AND doc_id=?",
+                     ("подделка LEDG-1", "lc3", doc_id)); conn.commit(); conn.close()
+        out = wl.add_claims("lc3", [{
+            "claim": "факт", "evidence": [{"doc_id": doc_id, "quote": "оригинальный факт LEDG-1"}]}])
+        ev = out["claims"][0]["evidence"][0]
+        self.assertFalse(ev["quote_verified"])
+        self.assertFalse(ev["source_verified"])               # integrity broken
+        self.assertIn("целостность", str(ev["reason"]))
+
+    def test_unknown_doc_id_not_verified(self):
+        self._seed("lc4", "текст")
+        out = wl.add_claims("lc4", [{
+            "claim": "c", "evidence": [{"doc_id": "deadbeef", "quote": "текст"}]}])
+        self.assertFalse(out["claims"][0]["evidence"][0]["source_verified"])
+
+    def test_bounds_rejected_and_nothing_stored(self):
+        self._seed("lc5", "src")
+        with self.assertRaises(wl.LedgerBoundsError):
+            wl.add_claims("lc5", [{"claim": "c", "evidence": [{"doc_id": "d", "quote": "q"}]}] * 11)
+        with self.assertRaises(wl.LedgerBoundsError):
+            wl.add_claims("lc5", [{"claim": "c", "evidence": [{"doc_id": "d", "quote": "q"}] * 5}])
+        with self.assertRaises(wl.LedgerBoundsError):
+            wl.add_claims("lc5", [{"claim": "c", "evidence": [{"doc_id": "d", "quote": "x" * 501}]}])
+        with self.assertRaises(wl.LedgerBoundsError):
+            wl.add_claims("lc5", [{"claim": "  ", "evidence": [{"doc_id": "d", "quote": "q"}]}])
+        self.assertEqual(ws.list_claims("lc5"), [])           # nothing recorded on reject
+
+    def test_cleanup_removes_ledger(self):
+        res = self._seed("lc6", "факт clean")
+        wl.add_claims("lc6", [{"claim": "c", "evidence": [{"doc_id": res["doc_id"], "quote": "факт clean"}]}])
+        self.assertTrue(ws.has_claims("lc6"))
+        ws.cleanup_run("lc6")
+        self.assertFalse(ws.has_claims("lc6"))
+        self.assertEqual(ws.list_claims("lc6"), [])
+
+
+class LedgerToolFlagTest(unittest.TestCase):
+    def test_web_claim_add_blocked_when_flag_off(self):
+        from app.application.code_agent.tools import _web
+        with patch.object(_web, "_web_corpus_on", return_value=False):
+            out = _web.tool_web_claim_add(claims=[{"claim": "c", "evidence": [{"doc_id": "d", "quote": "q"}]}])
+        self.assertFalse(out["ok"])
+        self.assertIn("web_corpus", out["text"])
+
+    def test_schema_has_claim_add_only_when_flag_on(self):
+        from app.application.code_agent import tool_schemas as tsch
+        with patch.object(tsch, "_web_corpus_enabled", return_value=False):
+            off = {s["function"]["name"] for s in tsch.build_tool_schemas()}
+        self.assertNotIn("web_claim_add", off)
+        with patch.object(tsch, "_web_corpus_enabled", return_value=True):
+            on = {s["function"]["name"] for s in tsch.build_tool_schemas()}
+        self.assertIn("web_claim_add", on)
+
+
 class IntentBindingLoopTest(_TempStore):
     """John's P1-1 (the real agent/kernel smoke, ask AND bypass): with a malicious
     corpus fragment in a side-effect call's arguments, the runtime must NOT
@@ -542,6 +638,64 @@ class WebCorpusRouteLifecycleTest(_TempStore):
         self.assertFalse(out["removed"])
         self.assertNotIn("web_corpus_removed", out)
         self.assertEqual(len(ws.list_documents("sess-2")), 1)
+
+
+class LedgerLoopTest(_TempStore):
+    """W3 in the real loop: a run that read the web but recorded no claims gets ONE
+    bounded nudge; once it records a claim, the runtime renders the ledger appendix
+    into the final answer (the model never numbers citations itself)."""
+
+    def setUp(self):
+        super().setUp()
+        from app.application.code_agent import agent_loop
+        from types import SimpleNamespace
+        self.al = agent_loop
+        self.SN = SimpleNamespace
+        # seed a corpus doc for the run so has_documents() is true
+        self._doc = _ingest_html("ledger-run", "http://x/src",
+                                  "<html><body><p>Ключевой факт: значение равно QED-4242.</p></body></html>")
+
+    def tearDown(self):
+        from app.application.agent_kernel import deferred_tools
+        deferred_tools.clear_run("ledger-run")
+        super().tearDown()
+
+    def test_nudge_then_render(self):
+        import os
+        import test_taskspec as H
+        al, SN, doc_id = self.al, self.SN, self._doc["doc_id"]
+
+        def _exec(request, **kw):
+            tool = str(getattr(request, "tool_name", ""))
+            args = dict(getattr(request, "args", {}) or {})
+            if tool == "web_claim_add":
+                from app.application.web_evidence.ledger import add_claims
+                add_claims("ledger-run", args.get("claims") or [])
+                return SN(status="ok", output={"text": "recorded", "ok": True})
+            return SN(status="ok", output={"text": "ok", "ok": True})
+
+        # 1st finalize attempt → nudged; then the model records a claim; then finalize.
+        chat = H._SeqChat([
+            H._final("Ответ: значение QED-4242."),                     # triggers ledger nudge
+            H._call("web_claim_add", claims=[{
+                "claim": "значение равно QED-4242",
+                "evidence": [{"doc_id": doc_id, "quote": "значение равно QED-4242"}]}]),
+            H._final("Ответ: значение QED-4242."),
+        ], H._final("Ответ: значение QED-4242."))
+
+        with tempfile.TemporaryDirectory() as tmp, H._loop_env(), \
+             patch.dict(os.environ, {"ELIRA_WEB_CORPUS": "1"}), \
+             patch.object(al, "_kernel_exec", side_effect=_exec):
+            evs = list(al.stream_code_agent(
+                user_message="что за значение на странице?", project_root=tmp,
+                run_id="ledger-run", auto_remember=False, permission_mode="bypass",
+                max_steps=8, chat_fn=chat))
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertIn("Реестр цитат", final)                          # runtime-rendered appendix
+        self.assertIn("значение равно QED-4242", final)
+        self.assertIn("провенанс", final.lower())
+        # the ledger nudge fired exactly once (bounded) — a claim was recorded live
+        self.assertTrue(ws.has_claims("ledger-run"))
 
 
 if __name__ == "__main__":

@@ -52,6 +52,39 @@ def _web_corpus_enabled() -> bool:
         return False
 
 
+_WEB_CLAIM_ADD_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_claim_add",
+        "description": (
+            "Record the load-bearing claims of your answer into the citation "
+            "ledger, each backed by an exact quote from the web corpus (doc_id "
+            "from web_query). The runtime deterministically checks each quote "
+            "against the stored source and RENDERS the citation appendix itself — "
+            "so DO NOT number citations in your prose. Provenance (quote found in "
+            "the source) is NOT proof the claim is true. Batched, bounded: ≤10 "
+            "claims/call, ≤4 evidence/claim, quote ≤500 chars."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claims": {
+                    "type": "array",
+                    "description": (
+                        "Each: {\"claim\": \"<statement>\", \"evidence\": [{\"doc_id\": "
+                        "\"<from web_query>\", \"quote\": \"<verbatim excerpt>\"}], "
+                        "\"support\": \"<optional: why the quote backs the claim — advisory>\", "
+                        "\"conflicted\": <optional bool>}."
+                    ),
+                    "items": {"type": "object"},
+                },
+            },
+            "required": ["claims"],
+        },
+    },
+}
+
+
 def build_tool_schemas() -> list[dict[str, Any]]:
     """OpenAI-compatible function-calling tool schemas."""
     schemas = _base_tool_schemas()
@@ -62,6 +95,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
             if (s.get("function") or {}).get("name") == "web_fetch":
                 s["function"]["parameters"]["properties"]["store"] = dict(_WEB_FETCH_STORE_PROP)
         schemas.append(copy.deepcopy(_WEB_QUERY_SCHEMA))
+        schemas.append(copy.deepcopy(_WEB_CLAIM_ADD_SCHEMA))
     return schemas
 
 

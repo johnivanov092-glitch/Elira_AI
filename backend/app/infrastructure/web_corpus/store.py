@@ -22,7 +22,7 @@ from typing import Any
 
 from app.application.web_evidence.analyzer import ANALYZER_VERSION
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4   # v4: + W3 citation ledger (claims, claim_evidence)
 
 _RUN_MAX_DOCS = 40
 _RUN_MAX_BYTES = 15 * 1024 * 1024
@@ -64,7 +64,9 @@ def _connect():
         if ver != _SCHEMA_VERSION:
             # The corpus is a CACHE — on schema change we drop & recreate rather
             # than migrate (documents re-fetch on demand; TTL would purge them anyway).
-            conn.executescript("DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS documents;")
+            conn.executescript(
+                "DROP TABLE IF EXISTS claim_evidence; DROP TABLE IF EXISTS claims; "
+                "DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS documents;")
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         conn.executescript(
             """
@@ -83,6 +85,21 @@ def _connect():
                 FOREIGN KEY (run_id, doc_id) REFERENCES documents(run_id, doc_id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_docs_hash ON documents(run_id, content_hash);
+            -- W3 citation ledger: claims + their evidence, keyed per run. Verdicts
+            -- (quote_verified/source_verified) are runtime-computed and stored here;
+            -- support_note is the model's ADVISORY assessment, never a runtime verdict.
+            CREATE TABLE IF NOT EXISTS claims (
+                run_id TEXT NOT NULL, claim_id INTEGER NOT NULL, claim_text TEXT NOT NULL,
+                support_note TEXT, conflicted INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL,
+                PRIMARY KEY (run_id, claim_id)
+            );
+            CREATE TABLE IF NOT EXISTS claim_evidence (
+                run_id TEXT NOT NULL, claim_id INTEGER NOT NULL, ev_idx INTEGER NOT NULL,
+                doc_id TEXT, chunk_id INTEGER, quote TEXT NOT NULL, offset INTEGER,
+                quote_verified INTEGER NOT NULL, source_verified INTEGER NOT NULL, reason TEXT,
+                PRIMARY KEY (run_id, claim_id, ev_idx),
+                FOREIGN KEY (run_id, claim_id) REFERENCES claims(run_id, claim_id) ON DELETE CASCADE
+            );
             """
         )
         return conn
@@ -241,9 +258,67 @@ def has_documents(run_id: str) -> bool:
 
 def cleanup_run(run_id: str) -> int:
     def op(conn):
+        conn.execute("DELETE FROM claims WHERE run_id=?", (run_id,))   # + ledger (W3)
         cur = conn.execute("DELETE FROM documents WHERE run_id=?", (run_id,))
         conn.commit()
         return cur.rowcount
+    return _wrap(op)
+
+
+# ── W3 citation ledger CRUD ─────────────────────────────────────────────────
+
+def add_claim(*, run_id: str, claim_text: str, support_note: str | None,
+              conflicted: bool, evidence: list[dict]) -> int:
+    """Insert one claim + its (already runtime-verified) evidence rows; return the
+    claim_id. Evidence dicts carry doc_id/chunk_id/quote/offset + the runtime
+    verdicts quote_verified/source_verified/reason."""
+    def op(conn):
+        row = conn.execute(
+            "SELECT COALESCE(MAX(claim_id),0)+1 FROM claims WHERE run_id=?", (run_id,)).fetchone()
+        claim_id = int(row[0])
+        conn.execute(
+            "INSERT INTO claims (run_id, claim_id, claim_text, support_note, conflicted, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (run_id, claim_id, claim_text, support_note, 1 if conflicted else 0, _now()))
+        conn.executemany(
+            "INSERT INTO claim_evidence (run_id, claim_id, ev_idx, doc_id, chunk_id, quote,"
+            " offset, quote_verified, source_verified, reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            [(run_id, claim_id, i, e.get("doc_id"), e.get("chunk_id"), e["quote"], e.get("offset"),
+              1 if e["quote_verified"] else 0, 1 if e["source_verified"] else 0, e.get("reason"))
+             for i, e in enumerate(evidence)])
+        conn.commit()
+        return claim_id
+    return _wrap(op)
+
+
+def list_claims(run_id: str) -> list[dict[str, Any]]:
+    def op(conn):
+        claims = conn.execute(
+            "SELECT claim_id, claim_text, support_note, conflicted, created_at"
+            " FROM claims WHERE run_id=? ORDER BY claim_id ASC", (run_id,)).fetchall()
+        out = []
+        for c in claims:
+            ev = conn.execute(
+                "SELECT ev_idx, doc_id, chunk_id, quote, offset, quote_verified, source_verified, reason"
+                " FROM claim_evidence WHERE run_id=? AND claim_id=? ORDER BY ev_idx ASC",
+                (run_id, c[0])).fetchall()
+            out.append({
+                "claim_id": c[0], "claim_text": c[1], "support_note": c[2],
+                "conflicted": bool(c[3]), "created_at": c[4],
+                "evidence": [{
+                    "ev_idx": e[0], "doc_id": e[1], "chunk_id": e[2], "quote": e[3],
+                    "offset": e[4], "quote_verified": bool(e[5]), "source_verified": bool(e[6]),
+                    "reason": e[7],
+                } for e in ev],
+            })
+        return out
+    return _wrap(op)
+
+
+def has_claims(run_id: str) -> bool:
+    def op(conn):
+        return bool(conn.execute(
+            "SELECT 1 FROM claims WHERE run_id=? LIMIT 1", (run_id,)).fetchone())
     return _wrap(op)
 
 

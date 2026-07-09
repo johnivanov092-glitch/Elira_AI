@@ -364,6 +364,15 @@ _REGISTRY_LOCK = threading.Lock()
 _AUTO_VERIFIER_MAX_CALLS = 5
 
 
+def _web_corpus_flag() -> bool:
+    """W3: the web_corpus feature flag (ledger render + nudge are gated on it)."""
+    try:
+        from app.application.feature_flags import flag_enabled
+        return flag_enabled("web_corpus")
+    except Exception:
+        return False
+
+
 def _server_url_alive(url: str) -> bool:
     """R2 liveness gate: the remembered dev-server URL is backed by a tracked
     process that is alive AND listening. Module-level so tests patch it."""
@@ -827,6 +836,7 @@ def _stream_code_agent_core(
         closure_turns = 0
         _CLOSURE_GATE_MAX = 2
         auto_verifier_done = False   # runtime-owned verifier pass: at most ONCE per run
+        web_ledger_nudged = False    # W3: one bounded "record your citations" nudge
         cleanup_barrier_fired = False
         server_redirect_fired = 0
         _SERVER_REDIRECT_MAX = 2
@@ -1527,6 +1537,36 @@ def _stream_code_agent_core(
                             _nudge = _auto_note + "\n\n" + _nudge
                         messages.append({"role": "user", "content": _nudge})
                         continue
+                # W3 ledger nudge (bounded, once per run): the run read the web into
+                # the corpus but recorded NO claims — ask it ONCE to back its
+                # load-bearing statements via web_claim_add before finalizing.
+                # Closure-style; never loops (single fire).
+                if (
+                    _web_corpus_flag() and not web_ledger_nudged
+                    and (content or last_text)
+                ):
+                    try:
+                        from app.infrastructure.web_corpus import store as _wc_store
+                        _needs_ledger = _wc_store.has_documents(rid) and not _wc_store.has_claims(rid)
+                    except Exception:
+                        _needs_ledger = False
+                    if _needs_ledger:
+                        web_ledger_nudged = True
+                        try:
+                            from app.application.agent_kernel.deferred_tools import activate_tools
+                            activate_tools(rid, ["web_claim_add", "web_query"])
+                        except Exception:
+                            pass
+                        if content:
+                            messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": (
+                            "Ты читал веб-страницы в корпус, но не зафиксировал ни одного "
+                            "утверждения с источником. Перед финальным ответом привяжи "
+                            "НЕСУЩИЕ утверждения к дословным цитатам через "
+                            "web_claim_add(claims=[{claim, evidence:[{doc_id, quote}]}]) "
+                            "(doc_id и цитаты бери из web_query). Не нумеруй цитаты в тексте "
+                            "— реестр добавит runtime. Затем дай финальный ответ.")})
+                        continue
                 final_text = _strip_tool_call_markup(content or last_text)
                 # Finalizing for real (closure gate is done): a conditional criterion
                 # still open is n/a (e.g. no `npm run typecheck` script) → mark skipped so
@@ -1553,6 +1593,18 @@ def _stream_code_agent_core(
                     _report = criterion_closure.runtime_final_report(criteria)
                     if _report:
                         final_text = final_text.rstrip() + "\n\n" + _report
+                # W3 citation ledger (flag web_corpus): the RUNTIME renders the
+                # citation appendix from structured web_claim_add records — the
+                # model never numbers citations in its prose. Provenance only
+                # (quote verbatim in the source), never a truth claim.
+                try:
+                    if _web_corpus_flag():
+                        from app.application.web_evidence.ledger import render_ledger
+                        _ledger = render_ledger(rid)
+                        if _ledger:
+                            final_text = final_text.rstrip() + "\n\n" + _ledger
+                except Exception:
+                    pass
                 # R2 Server Lifecycle: the runtime owns what it started — the model
                 # never owns PID lifecycle. With a TaskSpec the server was a
                 # verification VEHICLE (its evidence is already recorded) → stop it

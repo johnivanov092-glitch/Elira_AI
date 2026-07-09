@@ -197,6 +197,25 @@ closure-стиля: ран читал веб → отчёт без записе�
 7. Флаг off → старый web-flow бит-в-бит (пиновано); канарейки живы.
 8. Promote в Библиотеку сохраняет source=web/url/hash/trust=untrusted.
 
+## W3 — citation ledger (✅ реализовано)
+
+Структурированный `web_claim_add(claims=[{claim, evidence:[{doc_id, quote}],
+support?, conflicted?}])` — единственный вход в реестр; номера `[n]` из текста
+модели НЕ парсятся. На каждое evidence runtime детерминированно ставит
+**quote_verified** (цитата дословно в canonical_text + hash цел) и
+**source_verified** (документ реально фетчился раном) через `verify_quote`;
+`support` — ADVISORY-оценка модели (runtime её не утверждает). Bounds: ≤10
+claims/вызов, ≤4 evidence/claim, quote ≤500 (превышение → ok=False, ничего не
+сохранено — all-or-nothing на вызов). **Runtime рендерит** реестр аппендиксом
+в финале (`render_ledger`, как runtime_final_report): нумерует сам, показывает
+провенанс-бейджи и явно «провенанс, НЕ истинность утверждения» (негативное
+правило №1). Bounded nudge (1/ран): ран читал веб в корпус, но записей нет →
+один пинок записать несущие утверждения. Хранение — те же ledger-таблицы infra
+web_corpus store (schema v4, cleanup_run сносит и реестр). За флагом web_corpus,
+бит-в-бит при выключенном (schema/tool_search/тул). Тесты: verified/fabricated/
+tampered/unknown-doc verdicts, bounds, cleanup, flag-off surface, loop
+nudge→claim→render.
+
 ## W2 — web-документы (✅ реализовано)
 
 `web_fetch(store)` при Content-Type `application/pdf` / `…docx` пропускает байты

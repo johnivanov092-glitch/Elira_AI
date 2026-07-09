@@ -275,6 +275,45 @@ def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str,
     return {"text": payload, "ok": True}
 
 
+def tool_web_claim_add(*, claims: Any) -> dict[str, Any]:
+    """Record load-bearing claims of your answer into the citation ledger, each
+    backed by evidence from the web corpus. Structured only — DO NOT number
+    citations in your prose; the runtime renders the citation appendix itself.
+
+    claims = [{"claim": "<утверждение>",
+               "evidence": [{"doc_id": "<из web_query>", "quote": "<дословная цитата>",
+                             "chunk_id": <опц>, "offset": <опц>}],
+               "support": "<опц: почему цитата подтверждает утверждение — advisory>",
+               "conflicted": <опц bool>}]
+
+    The runtime deterministically checks each quote against the stored source
+    (quote_verified = verbatim provenance; source_verified = the page was really
+    fetched). It NEVER asserts the claim is TRUE — provenance ≠ truth. Bounded:
+    ≤10 claims/call, ≤4 evidence/claim, quote ≤500 chars."""
+    if not _web_corpus_on():
+        return {"text": "ERROR: web_claim_add выключен (фиче-флаг web_corpus)", "ok": False}
+    run_id = _current_run_id()
+    if not run_id:
+        return {"text": "ERROR: web_claim_add требует контекст рана", "ok": False}
+    from app.application.web_evidence.ledger import LedgerBoundsError, add_claims
+    try:
+        res = add_claims(run_id, claims if isinstance(claims, list) else [])
+    except LedgerBoundsError as exc:
+        return {"text": f"ERROR: {exc}", "ok": False}
+    except Exception as exc:  # noqa: BLE001 — store issue must not crash the tool
+        return {"text": f"ERROR: ledger недоступен: {str(exc)[:150]}", "ok": False}
+    # tell the model exactly what verified, so it can fix an unverifiable citation
+    lines = [f"Записано {res['recorded']} утверждений в реестр цитат. Провенанс проверен runtime:"]
+    for c in res["claims"]:
+        oks = sum(1 for e in c["evidence"] if e["quote_verified"])
+        lines.append(f"- [{c['claim_id']}] «{c['claim'][:70]}» — провенанс подтверждён у {oks}/{len(c['evidence'])} цитат")
+        for e in c["evidence"]:
+            if not e["quote_verified"]:
+                lines.append(f"    ✗ {e.get('doc_id') or '(нет doc_id)'}: {e.get('reason')}")
+    lines.append("Не нумеруй цитаты в тексте — runtime добавит реестр сам.")
+    return {"text": "\n".join(lines), "ok": True}
+
+
 def _resolve_locator(page, selector: str, *, kind: str):
     """Best-effort locator for an interaction step. Accepts a raw CSS selector, or a
     human label / button text / placeholder / input name — trying each strategy so the
