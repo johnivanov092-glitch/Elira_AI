@@ -970,4 +970,11 @@ def patch_code_session(session_id: str, payload: SessionPatchRequest) -> dict[st
 @router.delete("/sessions/{session_id}")
 def delete_code_session(session_id: str) -> dict[str, Any]:
     removed = session_store.delete_session(session_id)
-    return {"ok": True, "removed": removed}
+    result: dict[str, Any] = {"ok": True, "removed": removed}
+    if removed:
+        try:
+            from app.infrastructure.web_corpus.store import StoreUnavailable, cleanup_run
+            result["web_corpus_removed"] = cleanup_run(session_id)
+        except StoreUnavailable as exc:
+            result["web_corpus_error"] = str(exc)
+    return result

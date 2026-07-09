@@ -13,9 +13,9 @@ auto-pass. Guard-class heuristic (logic-map invariant №10): a false positive
 costs one extra confirmation; false negatives are narrowed by the data
 envelope + the adversarial smoke set, honestly not zero.
 
-Fail-open on store failure is SAFE here: if the corpus store is down, corpus
-text could not have entered the model's context this run either (web_query
-degrades too), so there is nothing to be tainted by.
+Store failure is fail-closed for side-effect calls: if the runtime cannot prove
+that a long side-effect argument came from the user rather than from the corpus,
+it escalates to approval instead of auto-approving in bypass.
 """
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _WINDOW = 24     # min verbatim overlap that counts as corpus-derived
 _STRIDE = 12
 _MAX_ARG_CHARS = 20_000   # bound the scan; longer args are truncated for the check
+_UNAVAILABLE_SENTINEL = "corpus-taint-check-unavailable"
 
 # Tools whose arguments can cause side effects worth binding to user intent.
 SIDE_EFFECT_TOOLS = frozenset({
@@ -52,22 +53,10 @@ def _string_values(args: dict) -> list[str]:
     return out
 
 
-def corpus_tainted(run_id: str, tool_name: str, args: dict, user_text: str) -> str | None:
-    """The matched corpus fragment when `args` of a side-effect call carry
-    verbatim web-corpus content that the USER never wrote — else None."""
-    if tool_name not in SIDE_EFFECT_TOOLS:
-        return None
-    try:
-        from app.infrastructure.web_corpus import store
-        if not store.has_documents(run_id):
-            return None
-        corpus = "\n".join(normalize(t) for t in store.corpus_texts(run_id))
-    except Exception as exc:  # noqa: BLE001 — see module docstring (safe fail-open)
-        logger.warning("corpus taint check unavailable (%s) — skipped", exc)
-        return None
-    if not corpus:
-        return None
+def _unbound_arg_fragments(args: dict, user_text: str) -> list[str]:
+    """Long normalized argument fragments absent from the user's own task text."""
     user_norm = normalize(user_text or "")
+    fragments: list[str] = []
     for raw in _string_values(args):
         arg = normalize(raw)[:_MAX_ARG_CHARS]
         if len(arg) < _WINDOW:
@@ -75,7 +64,30 @@ def corpus_tainted(run_id: str, tool_name: str, args: dict, user_text: str) -> s
         for start in range(0, len(arg) - _WINDOW + 1, _STRIDE):
             frag = arg[start:start + _WINDOW]
             if frag in user_norm:
-                continue        # the user themselves wrote it — intent-bound
-            if frag in corpus:
-                return frag     # corpus-derived, not user-derived → escalate
+                continue
+            fragments.append(frag)
+    return fragments
+
+
+def corpus_tainted(run_id: str, tool_name: str, args: dict, user_text: str) -> str | None:
+    """The matched corpus fragment when `args` of a side-effect call carry
+    verbatim web-corpus content that the USER never wrote — else None."""
+    if tool_name not in SIDE_EFFECT_TOOLS:
+        return None
+    fragments = _unbound_arg_fragments(args, user_text)
+    if not fragments:
+        return None
+    try:
+        from app.infrastructure.web_corpus import store
+        if not store.has_documents(run_id):
+            return None
+        corpus = "\n".join(normalize(t) for t in store.corpus_texts(run_id))
+    except Exception as exc:  # noqa: BLE001 — fail-closed for side-effect auto-approval
+        logger.warning("corpus taint check unavailable (%s) — escalating", exc)
+        return _UNAVAILABLE_SENTINEL
+    if not corpus:
+        return None
+    for frag in fragments:
+        if frag in corpus:
+            return frag     # corpus-derived, not user-derived → escalate
     return None

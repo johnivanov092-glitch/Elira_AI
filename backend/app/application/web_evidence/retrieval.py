@@ -111,6 +111,14 @@ def web_query(run_id: str, query: str, *, doc_id: str | None = None,
     for c in final:
         d = docs.get(c["doc_id"], {})
         quote, abs_offset = _snippet(c["text"], c["offset"], query)
+        try:
+            full_doc = _store.get_document(run_id, c["doc_id"])
+        except _store.StoreUnavailable:
+            full_doc = None
+        if full_doc:
+            exact_offset = str(full_doc.get("canonical_text") or "").find(quote)
+            if exact_offset >= 0:
+                abs_offset = exact_offset
         results.append({
             "doc_id": c["doc_id"], "chunk_id": c["chunk_id"], "offset": abs_offset,
             "url": d.get("final_url") or d.get("url"), "title": d.get("title"),
@@ -143,14 +151,17 @@ def verify_quote(run_id: str, doc_id: str, quote: str,
         return {"quote_verified": False, "source_verified": False,
                 "reason": "нарушена целостность корпуса: hash канонического текста "
                           "не совпадает с записанным"}
-    q = (quote or "").strip()
-    if not q:
+    q = str(quote or "")
+    if not q.strip():
         return {"quote_verified": False, "source_verified": True, "reason": "пустая цитата"}
     if offset is not None:
-        ok = text[offset:offset + len(q)] == q or text.find(q, max(0, offset - 8),
-                                                            offset + len(q) + 8) != -1
+        try:
+            start = int(offset)
+        except (TypeError, ValueError):
+            start = -1
+        ok = start >= 0 and text[start:start + len(q)] == q
         return {"quote_verified": bool(ok), "source_verified": True,
-                "offset": offset if ok else None,
+                "offset": start if ok else None,
                 "reason": None if ok else "цитата не найдена по заявленному offset"}
     idx = text.find(q)
     return {"quote_verified": idx >= 0, "source_verified": True,

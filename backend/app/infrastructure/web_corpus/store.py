@@ -2,7 +2,7 @@
 infrastructure connection helper (no second DB layer; standards: SQLite adapters
 live in infrastructure).
 
-Schema v2 (John's W1 review):
+Schema v3 (John's W1 review + strict quote offsets):
   * PRIMARY KEY (run_id, doc_id) — the SAME page fetched by two runs is two
     independent rows; run B can never replace/steal run A's document (v1 used a
     global doc_id PK + INSERT OR REPLACE and broke run isolation);
@@ -22,7 +22,7 @@ from typing import Any
 
 from app.application.web_evidence.analyzer import ANALYZER_VERSION
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _RUN_MAX_DOCS = 40
 _RUN_MAX_BYTES = 15 * 1024 * 1024
