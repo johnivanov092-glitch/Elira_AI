@@ -32,18 +32,35 @@ def _clean_text(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+# file_extract swallows extractor failures and returns the ERROR as text with
+# ok=True (e.g. "[DOCX ошибка: File is not a zip file]", "[pypdf не установлен: …]").
+# Storing that as a "document" is a false success (John's W2 review). Detect the
+# bracketed extractor-error sentinels — matched as the WHOLE text, so success
+# markers ("[OCR распознавание]", "--- Страница N ---") and real docs that merely
+# CONTAIN a bracket are never misread as errors.
+_EXTRACTOR_ERROR_RE = re.compile(r"^\s*\[[^\]]*(?:ошибка|не установлен)\s*:[^\]]*\]\s*$")
+
+
+class DocumentExtractError(Exception):
+    """The extractor reported a failure (returned a bracketed error sentinel)."""
+
+
 def _extract_document(content: bytes, mime: str, url: str) -> tuple[str, str]:
     """W2: extract text from a web PDF/DOCX via the EXISTING file_extract pipeline
     (pypdf → pdfplumber → OCR :8002 for PDFs; python-docx for DOCX) — no new
-    provider. Returns (canonical_text, title). extract_file dispatches by
-    extension, so we hand it a filename carrying the right suffix."""
+    provider. Returns (canonical_text, title). Raises DocumentExtractError when the
+    pipeline reports a failure via its bracketed-error sentinel — so a corrupt
+    document surfaces as an honest ok=False, never stored as its own error text."""
     from urllib.parse import urlparse
     ext = ".pdf" if mime == _MIME_PDF else ".docx"
     base = (urlparse(url).path.rsplit("/", 1)[-1] or "web").strip()
     filename = base if base.lower().endswith(ext) else f"web{ext}"
     from app.application.file_extract.runtime import extract_file
     res = extract_file(filename, content)
-    text = _clean_text(str(res.get("text") or ""))
+    raw = str(res.get("text") or "")
+    if _EXTRACTOR_ERROR_RE.match(raw.strip()):
+        raise DocumentExtractError(raw.strip()[:200])
+    text = _clean_text(raw)
     # title: the document filename, or its first substantial line
     title = base if base and base != "web" else ""
     if not title:
@@ -167,6 +184,10 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     elif mime in (_MIME_PDF, _MIME_DOCX):
         try:
             canonical, title = _extract_document(raw["content"], mime, raw["final_url"])
+        except DocumentExtractError as exc:
+            # extractor reported a failure (corrupt file / missing lib) — honest
+            # ok=False; the error text is NOT stored as a document (review P1)
+            return {"ok": False, "error": f"документ не извлечён: {exc}"}
         except Exception as exc:  # noqa: BLE001 — extraction never crashes the tool
             return {"ok": False, "error": f"document extraction failed: {exc}"}
     else:

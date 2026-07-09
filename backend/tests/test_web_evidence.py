@@ -149,7 +149,39 @@ class DocumentIngestTest(_TempStore):
         self.assertFalse(res["ok"])
         self.assertIn("без извлекаемого текста", res["error"])
 
-    def test_extraction_failure_never_crashes(self):
+    def test_real_corrupt_docx_is_honest_error(self):
+        # John's W2 review: file_extract swallows the DOCX failure and returns
+        # "[DOCX ошибка: File is not a zip file]" with ok=True — this must NOT be
+        # stored as a document. NO mock: the real extract_file runs on real garbage.
+        garbage = b"this is definitely not a valid docx zip container" * 4
+        res = _ingest_bytes("wcorrupt", "http://x/broken.docx", garbage, _DOCX_MIME)
+        self.assertFalse(res["ok"], f"corrupt DOCX must be ok=False, got {res}")
+        self.assertIn("не извлечён", res["error"])
+        self.assertEqual(ws.list_documents("wcorrupt"), [])       # nothing stored
+
+    def test_real_corrupt_pdf_is_honest_error(self):
+        # Real corrupt PDF bytes → the pipeline's "[PDF ошибка: …]" sentinel (or
+        # empty) → honest ok=False, never stored. No mock.
+        res = _ingest_bytes("wcorruptpdf", "http://x/broken.pdf",
+                            b"%PDF-1.4\nnot really a pdf body at all\n%%EOF", _PDF_MIME)
+        self.assertFalse(res["ok"], f"corrupt PDF must be ok=False, got {res}")
+        self.assertEqual(ws.list_documents("wcorruptpdf"), [])
+
+    def test_extractor_error_sentinel_not_stored(self):
+        # Direct: extract_file returning a bracketed error (ok=True) → ok=False,
+        # but a SUCCESS marker like "[OCR распознавание]" must still be stored.
+        with patch("app.application.file_extract.runtime.extract_file",
+                   return_value={"ok": True, "text": "[pypdf не установлен: pip install pypdf]"}):
+            bad = _ingest_bytes("ws1", "http://x/a.pdf", b"%PDF", _PDF_MIME)
+        self.assertFalse(bad["ok"])
+        self.assertEqual(ws.list_documents("ws1"), [])
+        with patch("app.application.file_extract.runtime.extract_file",
+                   return_value={"ok": True, "text": "[OCR распознавание]\nOKMARK-42 распознано"}):
+            good = _ingest_bytes("ws2", "http://x/b.pdf", b"%PDF", _PDF_MIME)
+        self.assertTrue(good["ok"])                               # OCR marker ≠ error
+        self.assertIn("OKMARK-42", wr.web_query("ws2", "OKMARK распознано")["results"][0]["quote"])
+
+    def test_extraction_crash_never_crashes_run(self):
         with patch("app.application.file_extract.runtime.extract_file",
                    side_effect=RuntimeError("corrupt")):
             res = _ingest_bytes("wf", "http://x/bad.pdf", b"%PDF-1.4", _PDF_MIME)
