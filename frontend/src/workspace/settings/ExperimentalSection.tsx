@@ -1,11 +1,11 @@
-import { Braces, Globe, ListChecks, Play, Sparkles, Square, type LucideIcon } from "lucide-react";
+import { Braces, Globe, Library, ListChecks, Play, Sparkles, Square, type LucideIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { toast } from "../../components/ToastHost";
 import { cn } from "../../ui/cn";
 import { Loading, McpBtn, Note, Wrap } from "./_shared";
 
-type FeatureFlags = { remote_mcp: boolean; action_envelopes: boolean; proactive: boolean; catalog_assist: boolean };
+type FeatureFlags = { remote_mcp: boolean; action_envelopes: boolean; proactive: boolean; catalog_assist: boolean; web_corpus: boolean };
 
 const FLAG_META: { key: keyof FeatureFlags; label: string; hint: string; icon: LucideIcon }[] = [
   {
@@ -32,6 +32,12 @@ const FLAG_META: { key: keyof FeatureFlags; label: string; hint: string; icon: L
     hint: "Runtime читает каталог покрытий: критерии без верификатора помечаются «нет верификатора», closure-подсказки получают негативные правила из каталога, дрейф классификации логируется. Классификацию НЕ заменяет.",
     icon: ListChecks,
   },
+  {
+    key: "web_corpus",
+    label: "Веб-корпус доказательств (W1)",
+    hint: "web_fetch(store=true) сохраняет полные страницы в корпус рана, а web_query читает их выборочно (BM25 + опц. эмбеддинги). Большие страницы и много источников без переполнения контекста. Веб-текст — недоверенные данные.",
+    icon: Library,
+  },
 ];
 
 export function ExperimentalSection() {
@@ -44,7 +50,7 @@ export function ExperimentalSection() {
     let alive = true;
     request<FeatureFlags>("/api/elira/feature-flags")
       .then((f) => { if (alive) setFlags(f); })
-      .catch(() => { if (alive) setFlags({ remote_mcp: false, action_envelopes: false, proactive: false, catalog_assist: false }); });
+      .catch(() => { if (alive) setFlags({ remote_mcp: false, action_envelopes: false, proactive: false, catalog_assist: false, web_corpus: false }); });
     request<{ checkin_time?: string }>("/api/persona/proactive-config")
       .then((c) => { if (alive && c?.checkin_time) setCheckin(c.checkin_time); })
       .catch(() => { /* offline */ });

@@ -52,6 +52,9 @@ _ENV_VAR: dict[str, str] = {
     # R1 — the verifier catalog as a runtime ASSIST (unsupported-labels, closure-hint
     # notes, classification-drift log). NOT a classifier; bit-identical when off.
     "catalog_assist": "ELIRA_CATALOG_ASSIST",
+    # W1 — web-evidence corpus: web_fetch(store) saves full pages, web_query reads
+    # them selectively (BM25 + optional embed). Bit-identical when off.
+    "web_corpus": "ELIRA_WEB_CORPUS",
 }
 
 # Canonical flag set + defaults (all OFF). The file is normalised to exactly

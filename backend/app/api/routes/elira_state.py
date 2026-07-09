@@ -52,7 +52,7 @@ class FeatureFlagRequest(BaseModel):
     (the action_envelopes bug, repeated for catalog_assist in the R1 review)."""
 
     model_config = {"extra": "forbid"}
-    name: Literal["remote_mcp", "action_envelopes", "proactive", "catalog_assist"]
+    name: Literal["remote_mcp", "action_envelopes", "proactive", "catalog_assist", "web_corpus"]
     value: bool
 
 
