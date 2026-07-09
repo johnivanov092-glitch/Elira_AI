@@ -134,6 +134,10 @@ backend/data/rag_memory.db
 # Mirror of the backend/data ignores above. data/plugins/ stays tracked
 # (intentional, not runtime/personal).
 data/*.db
+data/*.sqlite3
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+data/web_corpus.sqlite3
 data/generated/
 data/system/
 data/run_history.json
