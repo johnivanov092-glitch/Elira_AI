@@ -55,6 +55,10 @@ _ENV_VAR: dict[str, str] = {
     # W1 — web-evidence corpus: web_fetch(store) saves full pages, web_query reads
     # them selectively (BM25 + optional embed). Bit-identical when off.
     "web_corpus": "ELIRA_WEB_CORPUS",
+    # IT Operations program (Phase 0+) — asset/connection/scope/secret_ref runtime.
+    # OFF disables the /api/itops/* routes, the it_ops schema use, the UI entrypoint
+    # and all deferred ops-tools. Bit-identical when off. See docs/IT_OPERATIONS_PLAN.md.
+    "itops": "ELIRA_ITOPS",
 }
 
 # Canonical flag set + defaults (all OFF). The file is normalised to exactly
