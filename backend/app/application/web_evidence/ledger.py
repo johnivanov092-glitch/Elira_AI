@@ -93,35 +93,65 @@ def render_ledger(run_id: str) -> str:
     Provenance is a property of the CURRENT corpus, not of record time: every
     evidence item is RE-VERIFIED against the source here (verify_quote — quote
     verbatim + hash intact + document still present), so a stored `quote_verified`
-    is NEVER trusted at render (John's W3 review). A source tampered or TTL-expired
-    after web_claim_add therefore renders as unverified, not a stale ✓.
-    quote_verified is provenance only — never proof the claim is true; support_note
-    is the model's advisory opinion."""
+    is NEVER trusted at render (W3 review). W5 adds, per claim: CORROBORATION —
+    how many INDEPENDENT registrable domains back the VERIFIED evidence (single vs
+    ≥2) — and FRESHNESS of each source (its date; stale sources flagged). Conflicts
+    the model marked (advisory) get a dedicated section. quote_verified is
+    provenance only, never proof the claim is true; support_note is advisory."""
+    from app.application.web_evidence.freshness import (
+        corroboration, freshness_note, registrable_domain)
+
     claims = _store.list_claims(run_id)
     if not claims:
         return ""
+    try:
+        docs = {d["doc_id"]: d for d in _store.list_documents(run_id)}
+    except Exception:
+        docs = {}
+
     lines = ["## Реестр цитат (перепроверено runtime сейчас — провенанс, не истинность утверждения)"]
     n_unverified = 0
+    single_source = 0
+    conflicted_idx: list[int] = []
     for i, c in enumerate(claims, 1):
-        flag = " ⚠ конфликт источников" if c["conflicted"] else ""
-        lines.append(f"\n**[{i}] {c['claim_text']}**{flag}")
+        lines.append(f"\n**[{i}] {c['claim_text']}**")
         if c["support_note"]:
             lines.append(f"  _модель (advisory): {c['support_note']}_")
+        if c["conflicted"]:
+            conflicted_idx.append(i)
+        verified_domains: set[str] = set()
         any_now = False
         for e in c["evidence"]:
             doc_id = e.get("doc_id")
-            # RE-VERIFY against the current corpus — do not trust the stored verdict.
             fresh = verify_quote(run_id, str(doc_id), e["quote"], offset=e.get("offset")) if doc_id \
                 else {"quote_verified": False, "source_verified": False,
                       "reason": "нет doc_id — цитату нельзя привязать к источнику"}
-            any_now = any_now or bool(fresh["quote_verified"])
-            src = doc_id or "—"
+            d = docs.get(doc_id or "", {})
+            url = d.get("final_url") or d.get("url")
+            if fresh["quote_verified"]:
+                any_now = True
+                if url:
+                    verified_domains.add(registrable_domain(url))
+            src = registrable_domain(url) if url else (doc_id or "—")
             quote = " ".join((e["quote"] or "").split())[:200]
-            lines.append(f"  • {src}: «{quote}» — {_badge(fresh)}")
+            fnote = f" · {freshness_note(d.get('dates') or {})}" if url else ""
+            lines.append(f"  • {src}: «{quote}» — {_badge(fresh)}{fnote}")
+        level, cnote = corroboration(verified_domains)
+        lines.append(f"  → {cnote}")
         if not any_now:
             n_unverified += 1
-    foot = f"\nВсего утверждений с evidence: {len(claims)}"
+        if level == "single":
+            single_source += 1
+
+    if conflicted_idx:
+        lines.append("\n### ⚠ Противоречия (отмечено моделью — advisory, не runtime-вердикт)")
+        lines.append("  Утверждения с конфликтующими источниками: "
+                     + ", ".join(f"[{i}]" for i in conflicted_idx))
+
+    foot = [f"\nВсего утверждений с evidence: {len(claims)}"]
     if n_unverified:
-        foot += f"; из них БЕЗ подтверждённого провенанса СЕЙЧАС: {n_unverified}"
-    lines.append(foot)
+        foot.append(f"без подтверждённого провенанса СЕЙЧАС: {n_unverified}")
+    if single_source:
+        foot.append(f"одноисточниковых (не перекрёстно): {single_source}")
+    lines.append("; ".join(foot))
     return "\n".join(lines)

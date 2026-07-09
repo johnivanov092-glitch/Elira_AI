@@ -538,7 +538,7 @@ class LedgerTest(_TempStore):
         rendered = wl.render_ledger("lcr1")
         self.assertNotIn("провенанс ✓", rendered)                     # NO stale green
         self.assertIn("НЕ подтверждено", rendered)                    # tampered hash → unverified
-        self.assertIn("БЕЗ подтверждённого провенанса СЕЙЧАС: 1", rendered)
+        self.assertIn("без подтверждённого провенанса СЕЙЧАС: 1", rendered)
 
     def test_render_reverifies_after_ttl_expiry(self):
         # John's W3 review: a claim recorded GREEN must NOT render green once TTL
@@ -554,7 +554,7 @@ class LedgerTest(_TempStore):
             rendered = wl.render_ledger("lcr2")
         self.assertNotIn("провенанс ✓", rendered)                     # not a stale ✓
         self.assertIn("НЕ подтверждено", rendered)                    # source gone
-        self.assertIn("БЕЗ подтверждённого провенанса СЕЙЧАС: 1", rendered)
+        self.assertIn("без подтверждённого провенанса СЕЙЧАС: 1", rendered)
 
     def test_cleanup_removes_ledger(self):
         res = self._seed("lc6", "факт clean")
@@ -563,6 +563,98 @@ class LedgerTest(_TempStore):
         ws.cleanup_run("lc6")
         self.assertFalse(ws.has_claims("lc6"))
         self.assertEqual(ws.list_claims("lc6"), [])
+
+
+class FreshnessTest(unittest.TestCase):
+    """W5: deterministic domain (eTLD+1) + date extraction + stale heuristic."""
+
+    def test_registrable_domain_etld1(self):
+        from app.application.web_evidence.freshness import registrable_domain as rd
+        self.assertEqual(rd("https://www.example.com/a"), "example.com")
+        self.assertEqual(rd("https://news.bbc.co.uk/x"), "bbc.co.uk")     # multi-part TLD
+        self.assertEqual(rd("https://ru.wikipedia.org/wiki/Python"), "wikipedia.org")
+        self.assertEqual(rd("http://127.0.0.1:8000/x"), "127.0.0.1")      # bare IP
+        self.assertEqual(rd("https://sub.a.example.com"), "example.com")
+
+    def test_extract_dates_meta_and_header(self):
+        from app.application.web_evidence.freshness import extract_dates
+        html = '<meta property="article:published_time" content="2019-05-01T10:00:00Z">'
+        d = extract_dates(html, "Wed, 21 Oct 2020 07:28:00 GMT")
+        self.assertEqual(d["published"], "2019-05-01")
+        self.assertEqual(d["modified"], "2020-10-21")
+        self.assertEqual(extract_dates("<html>no dates</html>", None), {})
+
+    def test_stale_heuristic(self):
+        from app.application.web_evidence.freshness import is_stale
+        from datetime import datetime, timezone
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        self.assertTrue(is_stale({"modified": "2019-01-01"}, now=now))     # >3y
+        self.assertFalse(is_stale({"modified": "2024-06-01"}, now=now))
+        self.assertFalse(is_stale({}, now=now))                            # unknown ≠ stale
+
+    def test_corroboration_levels(self):
+        from app.application.web_evidence.freshness import corroboration
+        self.assertEqual(corroboration(set())[0], "none")
+        self.assertEqual(corroboration({"a.com"})[0], "single")
+        self.assertEqual(corroboration({"a.com", "b.org"})[0], "multi")
+
+
+class LedgerCorroborationTest(_TempStore):
+    """W5 in the ledger render: single-source vs cross-domain, freshness lines,
+    conflict section — all on RE-VERIFIED evidence."""
+
+    def _seed(self, run_id, url, text, html_dates=""):
+        html = f"<html><head>{html_dates}</head><body><p>{text}</p></body></html>"
+        raw = {"ok": True, "final_url": url, "mime": "text/html",
+               "content": html.encode("utf-8"), "last_modified": None}
+        with patch.object(wc, "_fetch_raw", return_value=raw):
+            return wc.ingest(url, run_id)
+
+    def test_single_source_flagged(self):
+        d = self._seed("cs1", "https://only.example.com/a", "факт SS-1 подтверждён")
+        wl.add_claims("cs1", [{"claim": "c", "evidence": [
+            {"doc_id": d["doc_id"], "quote": "факт SS-1 подтверждён"}]}])
+        r = wl.render_ledger("cs1")
+        self.assertIn("один источник (example.com)", r)
+        self.assertIn("одноисточниковых (не перекрёстно): 1", r)
+
+    def test_two_independent_domains_corroborate(self):
+        a = self._seed("cm1", "https://site-a.com/x", "общий факт CM-1 здесь")
+        b = self._seed("cm1", "https://site-b.org/y", "общий факт CM-1 здесь тоже")
+        wl.add_claims("cm1", [{"claim": "c", "evidence": [
+            {"doc_id": a["doc_id"], "quote": "общий факт CM-1 здесь"},
+            {"doc_id": b["doc_id"], "quote": "общий факт CM-1 здесь тоже"}]}])
+        r = wl.render_ledger("cm1")
+        self.assertIn("перекрёстно: 2 независимых домена", r)
+        self.assertIn("site-a.com", r)
+        self.assertIn("site-b.org", r)
+
+    def test_same_domain_is_not_cross_confirmed(self):
+        a = self._seed("cd1", "https://one.com/a", "факт SD-1 версия один")
+        b = self._seed("cd1", "https://one.com/b", "факт SD-1 версия два")
+        wl.add_claims("cd1", [{"claim": "c", "evidence": [
+            {"doc_id": a["doc_id"], "quote": "факт SD-1 версия один"},
+            {"doc_id": b["doc_id"], "quote": "факт SD-1 версия два"}]}])
+        r = wl.render_ledger("cd1")
+        self.assertIn("один источник (one.com)", r)          # same eTLD+1 ≠ independent
+
+    def test_freshness_line_and_stale(self):
+        old = '<meta property="article:published_time" content="2010-01-01T00:00:00Z">'
+        d = self._seed("cf1", "https://old.example.com/a", "старый факт OLD-1", html_dates=old)
+        self.assertEqual(ws.list_documents("cf1")[0]["dates"], {"published": "2010-01-01"})
+        wl.add_claims("cf1", [{"claim": "c", "evidence": [
+            {"doc_id": d["doc_id"], "quote": "старый факт OLD-1"}]}])
+        r = wl.render_ledger("cf1")
+        self.assertIn("возможно устарел, 2010-01-01", r)
+
+    def test_conflict_section(self):
+        d = self._seed("ck1", "https://x.com/a", "спорный факт CK-1")
+        wl.add_claims("ck1", [{"claim": "спорное утверждение", "conflicted": True, "evidence": [
+            {"doc_id": d["doc_id"], "quote": "спорный факт CK-1"}]}])
+        r = wl.render_ledger("ck1")
+        self.assertIn("Противоречия", r)
+        self.assertIn("advisory", r.lower())
+        self.assertIn("[1]", r)
 
 
 class LedgerToolFlagTest(unittest.TestCase):

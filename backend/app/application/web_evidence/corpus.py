@@ -154,12 +154,13 @@ def _fetch_raw(url: str) -> dict[str, Any]:
         if mime and not any(mime == m for m in _MIME_ALLOW):
             resp.close()
             return {"ok": False, "error": f"unsupported MIME '{mime}' (allow: html/plain/pdf/docx)"}
+        last_modified = resp.headers.get("Last-Modified")
         body = resp.raw.read(_MAX_RESPONSE_BYTES + 1, decode_content=True)
         resp.close()
         if len(body) > _MAX_RESPONSE_BYTES:
             return {"ok": False, "error": f"response exceeds {_MAX_RESPONSE_BYTES // (1024*1024)}MB cap"}
         return {"ok": True, "final_url": resp.url or current, "mime": mime or "text/html",
-                "content": body}
+                "content": body, "last_modified": last_modified}
     return {"ok": False, "error": "too many redirects"}
 
 
@@ -175,6 +176,7 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
         return {"ok": False, "error": raw.get("error", "fetch failed")}
     mime = raw["mime"]
     outline: list[str] = []
+    decoded = ""
     if "html" in mime or "text/plain" in mime:
         try:
             decoded = raw["content"].decode("utf-8", errors="replace")
@@ -198,9 +200,13 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     final_url = raw["final_url"]
     doc_id = hashlib.sha256(f"{final_url}\n{content_hash}".encode("utf-8")).hexdigest()[:24]
+    # W5: capture source dates (published/modified meta + Last-Modified header) for
+    # the freshness signal. Best-effort — a missing date is a normal, honest state.
+    from app.application.web_evidence.freshness import extract_dates
+    dates = extract_dates(decoded, raw.get("last_modified"))
     doc = {
         "doc_id": doc_id, "url": url, "final_url": final_url, "content_hash": content_hash,
-        "mime": mime, "title": title, "outline": outline, "dates": {},
+        "mime": mime, "title": title, "outline": outline, "dates": dates,
         "tier": "unknown", "nbytes": len(canonical.encode("utf-8")),
         "canonical_text": canonical,
     }
