@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import re
 import time
+import html as _html
+import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
@@ -32,7 +34,13 @@ _LASTMOD_RE = re.compile(r"<lastmod>\s*([^<\s]+)", re.IGNORECASE)
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-def _get(url: str, *, deadline: float, max_bytes: int = _MAX_SITEMAP_BYTES) -> dict:
+def _get(
+    url: str,
+    *,
+    deadline: float,
+    max_bytes: int = _MAX_SITEMAP_BYTES,
+    site_domain: str | None = None,
+) -> dict:
     """GET with manual redirects + per-hop SSRF re-check (contract §4). Returns
     {ok, final_url, text} or {ok:False, error}. text-ish only."""
     import requests
@@ -55,7 +63,10 @@ def _get(url: str, *, deadline: float, max_bytes: int = _MAX_SITEMAP_BYTES) -> d
             resp.close()
             if not loc:
                 return {"ok": False, "error": "redirect without Location"}
-            current = urljoin(current, loc)     # re-checked at loop top
+            nxt = urljoin(current, loc)     # SSRF re-checked at loop top
+            if site_domain and registrable_domain(nxt) != site_domain:
+                return {"ok": False, "error": "off-domain redirect"}
+            current = nxt
             continue
         if resp.status_code != 200:
             resp.close()
@@ -69,13 +80,13 @@ def _get(url: str, *, deadline: float, max_bytes: int = _MAX_SITEMAP_BYTES) -> d
     return {"ok": False, "error": "too many redirects"}
 
 
-def _robots(base: str, deadline: float) -> RobotFileParser:
+def _robots(base: str, deadline: float, site_domain: str) -> RobotFileParser:
     """robots.txt parser for the site (SSRF-checked fetch). Fail-open to ALLOW —
     standard behaviour when robots is unreachable."""
     rp = RobotFileParser()
     parsed = urlparse(base)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    got = _get(robots_url, deadline=deadline, max_bytes=512 * 1024)
+    got = _get(robots_url, deadline=deadline, max_bytes=512 * 1024, site_domain=site_domain)
     if got.get("ok"):
         rp.parse(got["text"].splitlines())
     else:
@@ -88,14 +99,14 @@ def _sitemaps_from_robots(text: str) -> list[str]:
             re.finditer(r"(?im)^\s*sitemap:\s*(\S+)", text or "")]
 
 
-def _resolve_sitemap_urls(url: str, deadline: float) -> tuple[list[str], str]:
+def _resolve_sitemap_urls(url: str, deadline: float, site_domain: str | None = None) -> tuple[list[str], str]:
     """Where the sitemap(s) live: an explicit .xml, else robots.txt Sitemap:
     directives, else /sitemap.xml. Returns (sitemap_urls, note)."""
     if url.rstrip("/").lower().endswith(".xml"):
         return [url], "явный sitemap"
     parsed = urlparse(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    got = _get(robots_url, deadline=deadline, max_bytes=512 * 1024)
+    got = _get(robots_url, deadline=deadline, max_bytes=512 * 1024, site_domain=site_domain)
     if got.get("ok"):
         sms = _sitemaps_from_robots(got["text"])
         if sms:
@@ -103,11 +114,21 @@ def _resolve_sitemap_urls(url: str, deadline: float) -> tuple[list[str], str]:
     return [f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"], "по умолчанию /sitemap.xml"
 
 
-def _parse(xml: str) -> tuple[list[dict], list[str]]:
-    """Parse a sitemap: (url entries, child sitemap urls). urlset → entries;
-    sitemapindex → children."""
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _child_text(node: ET.Element, name: str) -> str:
+    for child in list(node):
+        if _local(str(child.tag)) == name:
+            return (child.text or "").strip()
+    return ""
+
+
+def _parse_loose(xml: str) -> tuple[list[dict], list[str]]:
+    """Best-effort fallback for malformed sitemap XML."""
     if re.search(r"<sitemapindex", xml, re.IGNORECASE):
-        return [], _LOC_RE.findall(xml)
+        return [], [_html.unescape(u.strip()) for u in _LOC_RE.findall(xml)]
     entries = []
     for block in _URL_BLOCK_RE.findall(xml):
         loc = _LOC_RE.search(block)
@@ -115,7 +136,37 @@ def _parse(xml: str) -> tuple[list[dict], list[str]]:
             continue
         lm = _LASTMOD_RE.search(block)
         iso = _ISO_RE.search(lm.group(1)) if lm else None
-        entries.append({"loc": loc.group(1).strip(), "lastmod": iso.group(0) if iso else None})
+        entries.append({"loc": _html.unescape(loc.group(1).strip()), "lastmod": iso.group(0) if iso else None})
+    if not entries:   # flat <loc> list without <url> wrappers
+        entries = [{"loc": _html.unescape(u.strip()), "lastmod": None} for u in _LOC_RE.findall(xml)]
+    return entries, []
+
+
+def _parse(xml: str) -> tuple[list[dict], list[str]]:
+    """Parse a sitemap: (url entries, child sitemap urls). urlset → entries;
+    sitemapindex → children."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError:
+        return _parse_loose(xml)
+    if _local(str(root.tag)) == "sitemapindex":
+        children = []
+        for node in root.iter():
+            if _local(str(node.tag)) == "sitemap":
+                loc = _child_text(node, "loc")
+                if loc:
+                    children.append(loc)
+        return [], children
+    entries = []
+    for node in root.iter():
+        if _local(str(node.tag)) != "url":
+            continue
+        loc = _child_text(node, "loc")
+        if not loc:
+            continue
+        lm = _child_text(node, "lastmod")
+        iso = _ISO_RE.search(lm) if lm else None
+        entries.append({"loc": loc, "lastmod": iso.group(0) if iso else None})
     if not entries:   # flat <loc> list without <url> wrappers
         entries = [{"loc": u.strip(), "lastmod": None} for u in _LOC_RE.findall(xml)]
     return entries, []
@@ -132,8 +183,8 @@ def discover(url: str, *, max_urls: int = _MAX_URLS,
     if not site_domain:
         return {"ok": False, "error": "не удалось определить домен"}
 
-    sitemap_urls, note = _resolve_sitemap_urls(url, deadline)
-    robots = _robots(url, deadline)
+    sitemap_urls, note = _resolve_sitemap_urls(url, deadline, site_domain=site_domain)
+    robots = _robots(url, deadline, site_domain)
     seen: set[str] = set()
     out: list[dict] = []
     skipped = {"off_domain": 0, "robots": 0, "dup": 0}
@@ -145,7 +196,7 @@ def discover(url: str, *, max_urls: int = _MAX_URLS,
         sm = queue.pop(0)
         if registrable_domain(sm) != site_domain:      # a sitemap off-domain is ignored
             continue
-        got = _get(sm, deadline=deadline)
+        got = _get(sm, deadline=deadline, site_domain=site_domain)
         if not got.get("ok"):
             continue
         entries, children = _parse(got["text"])

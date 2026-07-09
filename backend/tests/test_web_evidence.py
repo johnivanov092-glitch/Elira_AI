@@ -687,7 +687,7 @@ class SitemapDiscoveryTest(unittest.TestCase):
 
     def _patch_get(self, mapping):
         # mapping: url -> text; robots.txt defaults to allow-all
-        def fake_get(url, *, deadline, max_bytes=None):
+        def fake_get(url, *, deadline, max_bytes=None, site_domain=None):
             if url.endswith("/robots.txt") and url not in mapping:
                 return {"ok": True, "final_url": url, "text": "User-agent: *\nAllow: /"}
             if url in mapping:
@@ -762,6 +762,46 @@ class SitemapDiscoveryTest(unittest.TestCase):
                            deadline=_t.monotonic() + 5)
         self.assertFalse(got["ok"])
         self.assertIn("SSRF", got["error"])
+
+    def test_off_domain_sitemap_redirect_is_rejected(self):
+        # W4-lite review: a same-domain sitemap URL that redirects to another
+        # domain must not be parsed. Otherwise an off-domain page can feed
+        # same-domain-looking loc entries into the discovery result.
+        from app.application.web_evidence import sitemap
+        import time as _t
+
+        class Redirect:
+            is_redirect = True
+            status_code = 302
+            headers = {"Location": "https://evil.com/sitemap.xml"}
+
+            def close(self):
+                pass
+
+        with patch("requests.get", return_value=Redirect()):
+            got = sitemap._get(
+                "https://site.com/sitemap.xml",
+                deadline=_t.monotonic() + 5,
+                site_domain="site.com",
+            )
+        self.assertFalse(got["ok"])
+        self.assertIn("off-domain redirect", got["error"])
+
+    def test_parse_xml_entities_and_cdata_urls(self):
+        from app.application.web_evidence import sitemap
+
+        xml = (
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>https://site.com/a?x=1&amp;y=2</loc></url>"
+            "<url><loc><![CDATA[https://site.com/cdata]]></loc></url>"
+            "</urlset>"
+        )
+        entries, children = sitemap._parse(xml)
+        self.assertEqual(children, [])
+        self.assertEqual(
+            [e["loc"] for e in entries],
+            ["https://site.com/a?x=1&y=2", "https://site.com/cdata"],
+        )
 
 
 class SitemapToolFlagTest(unittest.TestCase):

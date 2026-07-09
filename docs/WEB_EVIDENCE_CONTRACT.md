@@ -210,7 +210,9 @@ sitemap ≤4MB; ≤50 URL/вызов; time-budget 20с. Только discovery �
 выбором модели через web_fetch(store). За флагом web_corpus, бит-в-бит off
 (schema/tool_search/тул). Тесты: urlset/index/robots-disallow/off-domain-drop/
 max_urls/contains + реальный SSRF-блок 169.254.169.254. Live: djangoproject.com
-→ URL одного домена, contains-фильтр.
+→ URL одного домена, contains-фильтр. **Ревью-hardened:** off-domain REDIRECT
+режется в `_get` (site.com→evil.com sitemap не парсится); XML парсится через
+ElementTree (namespaces/CDATA/`&amp;`), regex — только fallback с unescape.
 
 ## W5 — freshness + conflicts (✅ реализовано)
 
