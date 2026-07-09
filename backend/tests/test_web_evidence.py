@@ -940,6 +940,26 @@ class W6ExecutorPathTest(unittest.TestCase):
             self.assertEqual(batch.status, "error")            # page>1 is single-query only
             self.assertIn("одиночн", batch.output.get("text", ""))
 
+    def test_page_type_is_strict_no_implicit_coercion(self):
+        # John's W6 round-2 repro: int(page) silently coerced 2.9 → page 2,
+        # True → page 1, "2" → page 2. Schema says integer → ONLY a real int
+        # passes; bool/float/str are rejected (no compatibility path).
+        from app.application.code_agent.tools import _web
+        with patch.object(_web, "_web_corpus_on", return_value=True), \
+             patch("app.core.web_engines.search_searxng",
+                   side_effect=AssertionError("must not be called for invalid page")):
+            for bad in (2.9, True, "2", 2.0, False):
+                res = self._exec_web_search({"query": "q", "page": bad})
+                self.assertEqual(res.status, "error", f"page={bad!r} must be rejected")
+                self.assertIn("integer", res.output.get("text", ""))
+        # a REAL int still works end-to-end through the executor
+        with patch.object(_web, "_web_corpus_on", return_value=True), \
+             patch("app.core.web_engines.search_searxng",
+                   return_value=[{"title": "t", "href": "https://x.com/a", "body": "b"}]) as sx:
+            ok = self._exec_web_search({"query": "q", "page": 2})
+        self.assertEqual(ok.status, "ok")
+        self.assertEqual(sx.call_args.kwargs.get("pageno"), 2)
+
 
 class PolitenessDeadlineTest(unittest.TestCase):
     def test_wait_overshooting_deadline_aborts_without_sleep(self):

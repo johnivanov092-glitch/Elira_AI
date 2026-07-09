@@ -102,10 +102,14 @@ def tool_web_search(
     # a schema-only gate breaks the bit-identical-off promise. Validation is
     # strict (1..5, single query only), and every error path carries ok=False —
     # the executor treats a missing "ok" as success (no green error calls).
-    try:
-        page_n = int(page)
-    except (TypeError, ValueError):
-        return {"text": f"ERROR: page должен быть целым 1..5, получено {page!r}", "ok": False}
+    # Strict by schema (John's W6 round-2): the schema says integer, so ONLY a
+    # real int passes — no implicit int() coercion (2.9 silently became page 2,
+    # True became page 1, "2" slipped through). bool is an int subclass → an
+    # explicit reject. A teachable error beats a silent coercion.
+    if isinstance(page, bool) or not isinstance(page, int):
+        return {"text": f"ERROR: page должен быть целым числом (integer) 1..5, получено {page!r}",
+                "ok": False}
+    page_n = page
     if not 1 <= page_n <= 5:
         return {"text": f"ERROR: page должен быть в диапазоне 1..5, получено {page_n}", "ok": False}
     if page_n > 1:
