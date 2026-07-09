@@ -25,23 +25,23 @@ def tool_read_image(
     try:
         from app.infrastructure.llm.vision_ocr import describe_image, is_vision_enabled
     except Exception as exc:  # pragma: no cover - import guard
-        return {"text": f"ERROR: vision support unavailable: {exc}"}
+        return {"text": f"ERROR: vision support unavailable: {exc}", "ok": False}
 
     if not is_vision_enabled():
-        return {"text": "ERROR: vision is disabled (set VISION_ENABLED=1 on the server to enable read_image)."}
+        return {"text": "ERROR: vision is disabled (set VISION_ENABLED=1 on the server to enable read_image).", "ok": False}
 
     target = _resolve_safe(project_root, path)
     if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {path}"}
+        return {"text": f"ERROR: not a file or does not exist: {path}", "ok": False}
 
     try:
         contents = target.read_bytes()
     except OSError as exc:
-        return {"text": f"ERROR: failed to read image {path}: {exc}"}
+        return {"text": f"ERROR: failed to read image {path}: {exc}", "ok": False}
 
     description = describe_image(target.name, contents, prompt=(prompt or None))
     if not description:
-        return {"text": f"ERROR: vision returned no description for {path} (service unreachable or empty response)."}
+        return {"text": f"ERROR: vision returned no description for {path} (service unreachable or empty response).", "ok": False}
     return {"text": f"Image description for {path}:\n{description}"}
 
 
@@ -54,21 +54,21 @@ def tool_ocr_file(
     try:
         from app.infrastructure.llm.vision_ocr import is_ocr_enabled, ocr_document
     except Exception as exc:  # pragma: no cover - import guard
-        return {"text": f"ERROR: OCR support unavailable: {exc}"}
+        return {"text": f"ERROR: OCR support unavailable: {exc}", "ok": False}
 
     if not is_ocr_enabled():
-        return {"text": "ERROR: OCR is disabled (set OCR_ENABLED=1 on the server to enable ocr_file)."}
+        return {"text": "ERROR: OCR is disabled (set OCR_ENABLED=1 on the server to enable ocr_file).", "ok": False}
 
     target = _resolve_safe(project_root, path)
     if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {path}"}
+        return {"text": f"ERROR: not a file or does not exist: {path}", "ok": False}
 
     try:
         contents = target.read_bytes()
     except OSError as exc:
-        return {"text": f"ERROR: failed to read file {path}: {exc}"}
+        return {"text": f"ERROR: failed to read file {path}: {exc}", "ok": False}
 
     text = ocr_document(target.name, contents, language=(language or None))
     if not text:
-        return {"text": f"ERROR: OCR found no text in {path} (service unreachable or no recognizable text)."}
+        return {"text": f"ERROR: OCR found no text in {path} (service unreachable or no recognizable text).", "ok": False}
     return {"text": f"OCR text from {path}:\n{text}"}
