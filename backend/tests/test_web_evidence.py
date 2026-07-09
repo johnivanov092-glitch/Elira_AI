@@ -603,6 +603,10 @@ class FreshnessTest(unittest.TestCase):
         d4 = extract_dates('<meta content="2022-02-02" name="dateModified">',
                            "Wed, 21 Oct 2020 07:28:00 GMT")
         self.assertEqual(d4["modified"], "2022-02-02")
+        # og:-prefixed article time (live case: django weblog) → published
+        d5 = extract_dates(
+            '<meta property="og:article:published_time" content="2026-07-07T09:00:00" />', None)
+        self.assertEqual(d5, {"published": "2026-07-07"})
 
     def test_stale_heuristic(self):
         from app.application.web_evidence.freshness import is_stale

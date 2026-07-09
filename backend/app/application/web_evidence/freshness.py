@@ -51,10 +51,12 @@ def registrable_domain(url: str) -> str:
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # meta names/properties mapped to their date KIND (John's W5 review: dateModified
 # is a MODIFIED date, not published; attribute order must not matter).
-_PUBLISHED_KEYS = {"article:published_time", "date", "dc.date", "datepublished",
-                   "publishdate", "pubdate", "sailthru.date"}
-_MODIFIED_KEYS = {"article:modified_time", "last-modified", "og:updated_time",
-                  "datemodified", "lastmod", "revised"}
+# og:-prefixed article times are a common real-world variant (live case: django
+# weblog uses og:article:published_time) — same meaning, same kind.
+_PUBLISHED_KEYS = {"article:published_time", "og:article:published_time", "date",
+                   "dc.date", "datepublished", "publishdate", "pubdate", "sailthru.date"}
+_MODIFIED_KEYS = {"article:modified_time", "og:article:modified_time", "last-modified",
+                  "og:updated_time", "datemodified", "lastmod", "revised"}
 
 
 def extract_dates(html: str, last_modified_header: str | None) -> dict:
