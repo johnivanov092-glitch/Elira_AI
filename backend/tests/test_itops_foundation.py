@@ -207,6 +207,54 @@ class VaultRealCredManagerTest(_TempStore):
             vault.resolve(ref)
 
 
+class LeakClosingTest(unittest.TestCase):
+    """Phase 0 prerequisite: close live secret-leak surfaces. Here: the
+    GET /mcp/servers write-only redaction and the output canary."""
+
+    def test_mcp_public_view_masks_env_and_secret_headers_keeps_keys(self):
+        from app.application.tool_providers.mcp_runtime import public_server_view
+        servers = [{
+            "id": "github", "command": "npx", "args": ["-y", "x"],
+            "env": {"GITHUB_TOKEN": "ghp_SUPERSECRET123456"},
+            "secret_headers": {"Authorization": "Bearer tok_SECRET_789"},
+            "url": "https://example.test", "status": "stopped",
+        }]
+        view = public_server_view(servers)[0]
+        # values masked, keys kept
+        self.assertEqual(view["env"], {"GITHUB_TOKEN": "●●●"})
+        self.assertEqual(view["secret_headers"], {"Authorization": "●●●"})
+        # no secret value anywhere in the serialized view
+        import json as _j
+        blob = _j.dumps(view, ensure_ascii=False)
+        self.assertNotIn("ghp_SUPERSECRET123456", blob)
+        self.assertNotIn("tok_SECRET_789", blob)
+        # non-secret fields untouched
+        self.assertEqual(view["id"], "github")
+        self.assertEqual(view["url"], "https://example.test")
+
+    def test_internal_list_servers_keeps_real_values_for_launch(self):
+        # The redaction is ONLY at the API boundary — list_servers() must keep real
+        # env so the launch path (mcp_provider) still works. Assert the route wraps
+        # the raw list in public_server_view (grep the source).
+        import inspect
+        from app.api.routes import code_agent_routes as r
+        for fn in (r.mcp_list_servers, r.lsp_list_servers, r.mcp_save_servers):
+            self.assertIn("public_server_view", inspect.getsource(fn),
+                          f"{fn.__name__} must redact secret fields at the API boundary")
+
+    def test_output_canary_masks_resolved_value_anywhere(self):
+        from app.core.redaction import mask_known_values, REDACTED
+        secret = "resolved-P@ssw0rd-9931"
+        text = f"connecting with {secret} to host — oddly-named-field={secret}"
+        masked = mask_known_values(text, [secret])
+        self.assertNotIn(secret, masked)
+        self.assertEqual(masked.count(REDACTED), 2)
+        # short values are ignored (avoid mangling unrelated text)
+        self.assertEqual(mask_known_values("abc x abc", ["abc"]), "abc x abc")
+        # non-str passes through
+        self.assertEqual(mask_known_values(None, ["x"]), None)
+
+
 class FlagTest(unittest.TestCase):
     def test_itops_flag_registered_and_off_by_default(self):
         from app.application import feature_flags as ff

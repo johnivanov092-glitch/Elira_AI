@@ -694,18 +694,19 @@ def _live_mcp_client_or_404(server_id: str):
 
 @router.get("/mcp/servers")
 def mcp_list_servers() -> dict[str, Any]:
-    """All configured MCP servers + live status."""
-    from app.application.tool_providers.mcp_runtime import list_servers
-    return {"servers": list_servers()}
+    """All configured MCP servers + live status. Secret fields (env/secret_headers)
+    are write-only: their VALUES are masked in the response (keys kept)."""
+    from app.application.tool_providers.mcp_runtime import list_servers, public_server_view
+    return {"servers": public_server_view(list_servers())}
 
 
 @router.post("/mcp/servers")
 def mcp_save_servers(payload: McpServersRequest) -> dict[str, Any]:
     """Replace the MCP server list atomically. Any server whose
     spec changed (or that was removed) is stopped automatically."""
-    from app.application.tool_providers.mcp_runtime import save_servers
+    from app.application.tool_providers.mcp_runtime import save_servers, public_server_view
     persisted = save_servers([s.model_dump() for s in payload.servers])
-    return {"ok": True, "servers": persisted}
+    return {"ok": True, "servers": public_server_view(persisted)}
 
 
 @router.post("/mcp/start")
@@ -769,9 +770,10 @@ class LspServerActionRequest(BaseModel):
 
 @router.get("/lsp/servers")
 def lsp_list_servers() -> dict[str, Any]:
-    """All configured LSP servers + live status."""
+    """All configured LSP servers + live status (secret fields masked, write-only)."""
     from app.application.tool_providers.lsp_runtime import list_servers
-    return {"servers": list_servers()}
+    from app.application.tool_providers.mcp_runtime import public_server_view
+    return {"servers": public_server_view(list_servers())}
 
 
 @router.post("/lsp/servers")

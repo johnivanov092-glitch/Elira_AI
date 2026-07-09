@@ -55,6 +55,29 @@ def redact_text(value: str) -> str:
     return out
 
 
+def mask_known_values(text: str, values: "Any") -> str:
+    """Output canary: mask any EXACT known-secret value that reappears in *text*,
+    regardless of surrounding naming. Complements the name/pattern-based rules —
+    if the runtime resolved a secret_ref to a value this run, that value must never
+    surface in tool output / history / events even in an oddly-named field.
+
+    `values` is an iterable of the resolved secret strings. Empty/short values are
+    ignored (a 1-2 char 'secret' would mangle unrelated text)."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    seen: set[str] = set()
+    for v in values or ():
+        if not isinstance(v, str):
+            continue
+        v = v.strip()
+        if len(v) < 4 or v in seen:      # too short → skip (avoid false masking)
+            continue
+        seen.add(v)
+        out = out.replace(v, REDACTED)
+    return out
+
+
 def redact_secrets(value: Any) -> Any:
     """Recursively redact secrets from args (dict/list/str), preserving shape.
 

@@ -183,6 +183,28 @@ def list_servers() -> list[dict[str, Any]]:
     return out
 
 
+_SECRET_SERVER_FIELDS = ("env", "secret_headers")
+
+
+def public_server_view(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """API-boundary redaction: replace the VALUES of secret-bearing fields
+    (`env`, `secret_headers`) with a masked marker while KEEPING the key names, so
+    the UI can show which secrets are configured without ever exposing a value.
+
+    Applied only at the HTTP read boundary — `list_servers()` itself keeps the real
+    values because the launch path (mcp_provider) needs `env` to start a server.
+    """
+    out: list[dict[str, Any]] = []
+    for srv in servers:
+        s = dict(srv)
+        for field in _SECRET_SERVER_FIELDS:
+            val = s.get(field)
+            if isinstance(val, dict) and val:
+                s[field] = {k: "●●●" for k in val}     # write-only: keys, not values
+        out.append(s)
+    return out
+
+
 def save_servers(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Replace the configured-server list atomically.
 
