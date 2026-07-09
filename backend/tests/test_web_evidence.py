@@ -521,6 +521,41 @@ class LedgerTest(_TempStore):
             wl.add_claims("lc5", [{"claim": "  ", "evidence": [{"doc_id": "d", "quote": "q"}]}])
         self.assertEqual(ws.list_claims("lc5"), [])           # nothing recorded on reject
 
+    def test_render_reverifies_after_tamper(self):
+        # John's W3 review: a claim recorded GREEN must NOT render green once the
+        # source is tampered — provenance is re-checked at render, stored verdict
+        # is never trusted.
+        res = self._seed("lcr1", "исходная фраза REV-1 в источнике")
+        doc_id = res["doc_id"]
+        out = wl.add_claims("lcr1", [{
+            "claim": "c", "evidence": [{"doc_id": doc_id, "quote": "исходная фраза REV-1 в источнике"}]}])
+        self.assertTrue(out["claims"][0]["any_verified"])              # green at record time
+        self.assertIn("провенанс ✓", wl.render_ledger("lcr1"))
+        import sqlite3
+        conn = sqlite3.connect(ws._DB_PATH_OVERRIDE)
+        conn.execute("UPDATE documents SET canonical_text=? WHERE run_id=? AND doc_id=?",
+                     ("подделанный текст REV-1", "lcr1", doc_id)); conn.commit(); conn.close()
+        rendered = wl.render_ledger("lcr1")
+        self.assertNotIn("провенанс ✓", rendered)                     # NO stale green
+        self.assertIn("НЕ подтверждено", rendered)                    # tampered hash → unverified
+        self.assertIn("БЕЗ подтверждённого провенанса СЕЙЧАС: 1", rendered)
+
+    def test_render_reverifies_after_ttl_expiry(self):
+        # John's W3 review: a claim recorded GREEN must NOT render green once TTL
+        # expired its document.
+        res = self._seed("lcr2", "факт который истечёт REV-2")
+        doc_id = res["doc_id"]
+        wl.add_claims("lcr2", [{
+            "claim": "c", "evidence": [{"doc_id": doc_id, "quote": "факт который истечёт REV-2"}]}])
+        self.assertIn("провенанс ✓", wl.render_ledger("lcr2"))
+        future = ws.time.time() + ws._TTL_SECONDS + 10
+        with patch.object(ws, "_now", return_value=future):           # document expires
+            self.assertEqual(ws.list_documents("lcr2"), [])
+            rendered = wl.render_ledger("lcr2")
+        self.assertNotIn("провенанс ✓", rendered)                     # not a stale ✓
+        self.assertIn("НЕ подтверждено", rendered)                    # source gone
+        self.assertIn("БЕЗ подтверждённого провенанса СЕЙЧАС: 1", rendered)
+
     def test_cleanup_removes_ledger(self):
         res = self._seed("lc6", "факт clean")
         wl.add_claims("lc6", [{"claim": "c", "evidence": [{"doc_id": res["doc_id"], "quote": "факт clean"}]}])

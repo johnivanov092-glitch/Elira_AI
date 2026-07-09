@@ -89,26 +89,39 @@ def _badge(ev: dict) -> str:
 
 def render_ledger(run_id: str) -> str:
     """Deterministic citation appendix the runtime appends to the final answer.
-    quote_verified is PROVENANCE only — never presented as proof the claim is
-    true; support_note is shown as the model's advisory opinion."""
+
+    Provenance is a property of the CURRENT corpus, not of record time: every
+    evidence item is RE-VERIFIED against the source here (verify_quote — quote
+    verbatim + hash intact + document still present), so a stored `quote_verified`
+    is NEVER trusted at render (John's W3 review). A source tampered or TTL-expired
+    after web_claim_add therefore renders as unverified, not a stale ✓.
+    quote_verified is provenance only — never proof the claim is true; support_note
+    is the model's advisory opinion."""
     claims = _store.list_claims(run_id)
     if not claims:
         return ""
-    lines = ["## Реестр цитат (проверено runtime — провенанс, не истинность утверждения)"]
+    lines = ["## Реестр цитат (перепроверено runtime сейчас — провенанс, не истинность утверждения)"]
+    n_unverified = 0
     for i, c in enumerate(claims, 1):
         flag = " ⚠ конфликт источников" if c["conflicted"] else ""
         lines.append(f"\n**[{i}] {c['claim_text']}**{flag}")
         if c["support_note"]:
             lines.append(f"  _модель (advisory): {c['support_note']}_")
+        any_now = False
         for e in c["evidence"]:
-            src = e.get("doc_id") or "—"
+            doc_id = e.get("doc_id")
+            # RE-VERIFY against the current corpus — do not trust the stored verdict.
+            fresh = verify_quote(run_id, str(doc_id), e["quote"], offset=e.get("offset")) if doc_id \
+                else {"quote_verified": False, "source_verified": False,
+                      "reason": "нет doc_id — цитату нельзя привязать к источнику"}
+            any_now = any_now or bool(fresh["quote_verified"])
+            src = doc_id or "—"
             quote = " ".join((e["quote"] or "").split())[:200]
-            lines.append(f"  • {src}: «{quote}» — {_badge(e)}")
-    n_claims = len(claims)
-    n_unverified = sum(1 for c in claims
-                       if not any(e["quote_verified"] for e in c["evidence"]))
-    foot = f"\nВсего утверждений с evidence: {n_claims}"
+            lines.append(f"  • {src}: «{quote}» — {_badge(fresh)}")
+        if not any_now:
+            n_unverified += 1
+    foot = f"\nВсего утверждений с evidence: {len(claims)}"
     if n_unverified:
-        foot += f"; из них БЕЗ подтверждённого провенанса: {n_unverified}"
+        foot += f"; из них БЕЗ подтверждённого провенанса СЕЙЧАС: {n_unverified}"
     lines.append(foot)
     return "\n".join(lines)
