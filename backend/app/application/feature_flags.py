@@ -49,6 +49,9 @@ _ENV_VAR: dict[str, str] = {
     "action_envelopes": "ELIRA_ACTION_ENVELOPES",
     # Living Persona step C — master switch for Elira's proactivity (default OFF).
     "proactive": "ELIRA_PROACTIVE",
+    # R1 — the verifier catalog as a runtime ASSIST (unsupported-labels, closure-hint
+    # notes, classification-drift log). NOT a classifier; bit-identical when off.
+    "catalog_assist": "ELIRA_CATALOG_ASSIST",
 }
 
 # Canonical flag set + defaults (all OFF). The file is normalised to exactly

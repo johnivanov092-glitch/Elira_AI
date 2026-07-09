@@ -798,6 +798,26 @@ def _stream_code_agent_core(
         # deterministic function of this — kept SEPARATE from runtime `ok`. We never
         # burn an extra LLM turn to nag; unconfirmed criteria are reported at finalize.
         criteria = CriteriaTracker.from_spec(task_spec)
+        # R1 (flag `catalog_assist`, default OFF): the verifier catalog assists the
+        # runtime — unsupported-labels in the report, catalog notes in closure hints,
+        # and a classification-DRIFT log (an intent the catalog doesn't know = the
+        # code and the contract diverged). Never a classifier; fail-open.
+        if criteria.items:
+            try:
+                from app.application.feature_flags import flag_enabled as _flag_enabled
+                if _flag_enabled("catalog_assist"):
+                    # import FIRST — the flag turns on only when the catalog module is
+                    # actually importable, so the downstream lazy imports can't blow up
+                    # mid-run after the flag committed (review F9).
+                    from app.application.code_agent import catalog as _catalog
+                    criteria.catalog_assist = True
+                    _drift = _catalog.drift_intents({it["intent"] for it in criteria.items})
+                    if _drift:
+                        logger.warning("catalog drift (run %s): intents %s are not in "
+                                       "verifier_catalog.yaml", rid, _drift)
+            except Exception:
+                criteria.catalog_assist = False
+                logger.warning("catalog assist unavailable — flag ignored for run %s", rid)
         # Criterion Closure state-machine (Ph7.12): before a run with OPEN criteria
         # finalizes, spend ONE bounded turn asking for the exact missing verifier calls
         # (once per distinct missing-set, capped total); a Cleanup Barrier blocks a
@@ -1343,7 +1363,7 @@ def _stream_code_agent_core(
                     _acts = criterion_closure.missing_verifier_actions(
                         criteria, host=_last_ssh_host or "<host>",
                         url=_gate_url or "<actual_url от run_server>",
-                        auto_ssh=_auto_ssh_ok,
+                        auto_ssh=_auto_ssh_ok, catalog_hints=criteria.catalog_assist,
                     )
                     # ── Auto-verifier pass (runtime-owned closure) ────────────────
                     # missing_verifier_actions already KNOWS the exact calls — for the
@@ -1484,7 +1504,7 @@ def _stream_code_agent_core(
                         _acts = criterion_closure.missing_verifier_actions(
                             criteria, host=_last_ssh_host or "<host>",
                             url=_gate_url or "<actual_url от run_server>",
-                            auto_ssh=_auto_ssh_ok,
+                            auto_ssh=_auto_ssh_ok, catalog_hints=criteria.catalog_assist,
                         )
                     _mkey = criterion_closure.missing_set_key(_acts)
                     if _acts and _mkey not in closure_fired_sets:

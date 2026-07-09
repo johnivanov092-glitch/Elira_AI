@@ -163,6 +163,16 @@ function CriterionRow({ c, duplicate }: { c: CriterionState; duplicate?: boolean
             ⚙ runtime
           </span>
         )}
+        {/* R1 (catalog_assist): the coverage catalog has no verifier for this criterion —
+            honest "unverifiable", not a silent unconfirmed and not a failure. */}
+        {c.unsupported && c.status !== "confirmed" && (
+          <span
+            className="ml-1 text-[10.5px] text-mut"
+            title="По каталогу покрытий для этого критерия нет верификатора — он не может быть подтверждён автоматически"
+          >
+            — нет верификатора
+          </span>
+        )}
         {/* Same evidence shared across criteria (e.g. one rendered-DOM verdict covering
             several dom_contains checks) is shown once — later rows just point back. */}
         {evidence && duplicate && <span className="ml-1 text-[10.5px] text-mut">— то же evidence, см. выше</span>}

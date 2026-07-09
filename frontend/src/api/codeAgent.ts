@@ -173,6 +173,9 @@ export type CriterionState = {
   evidence?: string | null;
   /** Closed by the runtime's own auto-verifier pass (not a model-made call). */
   auto_verified?: boolean;
+  /** R1 (flag catalog_assist): no verifier exists for this criterion per the
+   *  coverage catalog — it can never be auto-confirmed; unverifiable, not failing. */
+  unsupported?: boolean;
 };
 
 export type ContextUsage = {

@@ -1130,6 +1130,9 @@ class CriteriaTracker:
     confirms a semantic/visibility claim."""
 
     items: list[dict] = field(default_factory=list)
+    # R1 (flag `catalog_assist`): when True, report() consults the verifier catalog to
+    # label criteria that have NO verifier — set by the loop, never on by default.
+    catalog_assist: bool = False
 
     @classmethod
     def from_spec(cls, spec: TaskSpec | None) -> "CriteriaTracker":
@@ -1190,6 +1193,17 @@ class CriteriaTracker:
                 it["status"] = "skipped"
 
     def report(self) -> list[dict]:
-        return [{"text": it["text"], "status": it["status"], "verifier": it["verifier"],
+        rows = [{"text": it["text"], "status": it["status"], "verifier": it["verifier"],
                  "evidence": it["evidence"], "auto_verified": bool(it.get("auto_verified"))}
                 for it in self.items]
+        if self.catalog_assist:
+            # R1: honest «нет верификатора» label from the catalog — the key is ONLY
+            # present with the flag on, so the default payload stays bit-identical.
+            # Fail-open: a broken catalog must never break the report (review F9).
+            try:
+                from app.application.code_agent import catalog as _catalog
+                for row, it in zip(rows, self.items):
+                    row["unsupported"] = _catalog.unsupported_intent(it["intent"])
+            except Exception:
+                pass
+        return rows

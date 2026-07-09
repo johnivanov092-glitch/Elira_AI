@@ -306,7 +306,8 @@ def _command_group_actions(items: list[dict]) -> list[dict]:
 
 
 def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLACEHOLDER,
-                             url: str = _URL_PLACEHOLDER, auto_ssh: bool = True) -> list[dict]:
+                             url: str = _URL_PLACEHOLDER, auto_ssh: bool = True,
+                             catalog_hints: bool = False) -> list[dict]:
     """Concrete verifier calls still missing for each unconfirmed/failed criterion whose
     verifier is unambiguous. Criteria with no deterministic verifier are omitted.
 
@@ -320,7 +321,13 @@ def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLAC
     rest = [it for it in open_items
             if not (it["intent"] == "dom_contains" and it.get("interaction")) and it["intent"] != "command_output"]
     out, seen = [], set()
-    grouped = _interaction_group_actions(interaction, url) + _command_group_actions(cmd_output)
+    grouped_i = _interaction_group_actions(interaction, url)
+    grouped_c = _command_group_actions(cmd_output)
+    for _g in grouped_i:
+        _g["intent"] = "dom_contains"    # for catalog-hint lookup (inert extra key)
+    for _g in grouped_c:
+        _g["intent"] = "command_output"
+    grouped = grouped_i + grouped_c
     # a browser DOM verifier (grouped or plain) subsumes page_open → don't also ask http_api
     has_browser_dom = bool(interaction) or any(it["intent"] == "dom_contains" for it in rest)
     for a in grouped:
@@ -335,11 +342,24 @@ def missing_verifier_actions(tracker: CriteriaTracker, *, host: str = _HOST_PLAC
             continue
         if act["call"] in seen:
             continue
+        act["intent"] = it["intent"]
         auto = _auto_spec(it, host=host, url=url, allow_ssh=auto_ssh)
         if auto:   # runtime can execute this one itself (auto-verifier pass)
             act["auto"] = auto
         seen.add(act["call"])
         out.append(act)
+    if catalog_hints:
+        # R1: single-sourced negative rule from the catalog appended to each hint —
+        # what this verifier does NOT accept ("grep не закрывает…"). Flag-gated: the
+        # nudge text is bit-identical when catalog_assist is off. Fail-open (F9).
+        try:
+            from app.application.code_agent import catalog as _catalog
+            for a in out:
+                note = _catalog.intent_note(str(a.get("intent") or ""))
+                if note:
+                    a["call"] += f" [каталог: НЕ закрывает — {note}]"
+        except Exception:
+            pass
     return out
 
 

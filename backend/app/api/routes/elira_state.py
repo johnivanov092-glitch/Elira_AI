@@ -46,10 +46,13 @@ class SettingsRequest(BaseModel):
 
 
 class FeatureFlagRequest(BaseModel):
-    """Toggle one deferred-track feature flag (D1 remote MCP / D3 envelopes)."""
+    """Toggle one deferred-track feature flag (D1 remote MCP / D3 envelopes /
+    proactivity / R1 catalog assist). Keep this Literal in sync with
+    feature_flags._ENV_VAR — a missing entry makes the UI toggle 422 silently
+    (the action_envelopes bug, repeated for catalog_assist in the R1 review)."""
 
     model_config = {"extra": "forbid"}
-    name: Literal["remote_mcp", "action_envelopes", "proactive"]
+    name: Literal["remote_mcp", "action_envelopes", "proactive", "catalog_assist"]
     value: bool
 
 

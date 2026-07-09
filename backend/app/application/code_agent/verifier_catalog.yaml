@@ -28,6 +28,7 @@ meta:
     - page_open
     - server_started
     - command_check       # +command_kind: typecheck|build|test|import|smoke|lint|any
+    - command_output      # Batch A; +flag output_absent (R6 «НЕ выводит `X`»)
     - generic             # no verifier -> stays unverified (honest)
   flags:
     interaction: "dom_contains criterion that needs a user action first (fill/click)"

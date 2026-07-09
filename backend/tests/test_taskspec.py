@@ -1060,6 +1060,46 @@ class CliOutputAbsentTest(unittest.TestCase):
         self.assertIn("НЕ должно быть `OUT_OF_SCOPE`", acts[0]["call"])
 
 
+class CatalogAssistLoopTest(unittest.TestCase):
+    """R1 end-to-end: with ELIRA_CATALOG_ASSIST=1 the done event's criteria carry the
+    honest `unsupported` label for unverifiable criteria; with the flag off (default)
+    the key is absent — bit-identical payload."""
+
+    _TASK = ("Цель:\nПроверки.\n\nКритерии готовности:\n"
+             "1. код не ломает существующие routes\n"
+             "2. файл `a.txt` существует\n")
+
+    def tearDown(self):
+        for rid in ("ts-cat-on", "ts-cat-off"):
+            deferred_tools.clear_run(rid)
+
+    def _run(self, rid):
+        chat = _SeqChat([_final("готово")], _final())
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(status="ok", output={"text": "ok", "ok": True})):
+            evs = list(agent_loop.stream_code_agent(
+                user_message=self._TASK, project_root=tmp, run_id=rid,
+                auto_remember=False, permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        return [e for e in evs if e.get("type") == "done"][-1]
+
+    def test_flag_on_labels_unverifiable_criterion(self):
+        with patch.dict("os.environ", {"ELIRA_CATALOG_ASSIST": "1"}):
+            done = self._run("ts-cat-on")
+        by_text = {c["text"]: c for c in done["criteria"]}
+        self.assertTrue(by_text["код не ломает существующие routes"].get("unsupported"))
+        self.assertFalse(by_text["файл `a.txt` существует"].get("unsupported"))
+
+    def test_flag_off_payload_has_no_key(self):
+        # "0" = explicit falsy OVERRIDE (an empty string means UNSET and would fall
+        # through to the developer's persisted feature_flags.json — review F3/F10).
+        with patch.dict("os.environ", {"ELIRA_CATALOG_ASSIST": "0"}):
+            done = self._run("ts-cat-off")
+        for c in done["criteria"]:
+            self.assertNotIn("unsupported", c)
+
+
 class TargetTokenHijackTest(unittest.TestCase):
     """Intent context comes from the criterion's PROSE — a TARGET string (path/filename)
     must not hijack classification. Live SSH canary: «файл C:\\AgentLab\\smoke-canary.txt
