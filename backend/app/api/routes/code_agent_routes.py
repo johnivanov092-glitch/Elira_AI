@@ -575,6 +575,34 @@ def watcher_status_endpoint(project_root: Optional[str] = None) -> dict[str, Any
     return watcher_status(project_root)
 
 
+@router.delete("/web-corpus/{run_id}")
+def web_corpus_cleanup(run_id: str) -> dict[str, Any]:
+    """Drop a run's web-evidence corpus (W1 lifecycle). Runs have no deletion flow
+    in the app today — TTL/LRU are the automatic lifecycle; this endpoint is the
+    explicit hook (used by smokes and any future run-deletion flow)."""
+    from app.infrastructure.web_corpus.store import StoreUnavailable, cleanup_run
+    try:
+        return {"ok": True, "removed": cleanup_run(run_id)}
+    except StoreUnavailable as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+class WebCorpusPromoteRequest(BaseModel):
+    run_id: str
+    doc_id: str
+
+
+@router.post("/web-corpus/promote")
+def web_corpus_promote(payload: WebCorpusPromoteRequest) -> dict[str, Any]:
+    """Pin a corpus document into the Library (W1 lifecycle). Preserves
+    source=web / URL / content_hash / trust=untrusted — a pinned page stays DATA."""
+    from app.infrastructure.web_corpus.store import StoreUnavailable, promote_document
+    try:
+        return promote_document(payload.run_id, payload.doc_id)
+    except StoreUnavailable as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 @router.get("/servers")
 def servers_list(run_id: Optional[str] = None) -> dict[str, Any]:
     """Live run_server registry (R2 observability): every tracked dev server with its

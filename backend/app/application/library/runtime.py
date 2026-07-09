@@ -234,6 +234,7 @@ def add_file_contents(
     contents: bytes,
     content_type: str | None = None,
     use_in_context: bool = True,
+    source: str = "upload",
 ) -> dict[str, Any]:
     filename = filename or "unknown"
     if not contents:
@@ -255,7 +256,7 @@ def add_file_contents(
                 content_type or Path(filename).suffix.lower() or "unknown",
                 preview,
                 1 if use_in_context else 0,
-                "upload",
+                source or "upload",
                 str(disk_path),
                 sha256,
             ),

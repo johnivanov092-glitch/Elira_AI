@@ -141,11 +141,14 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
         "canonical_text": canonical,
     }
     chunks = _chunk(canonical)
-    from app.application.web_evidence import store as _store
+    from app.infrastructure.web_corpus import store as _store
     try:
         res = _store.store_document(run_id=run_id, doc=doc, chunks=chunks)
     except _store.QuotaExceeded as exc:
         return {"ok": False, "error": str(exc)}
+    except _store.StoreUnavailable as exc:
+        # fail-soft (contract §9): the caller degrades to the old no-store fetch
+        return {"ok": False, "error": str(exc), "store_unavailable": True}
     return {"ok": True, "doc_id": res["doc_id"], "deduped": res["deduped"], "title": title,
             "url": url, "final_url": final_url, "mime": mime, "nbytes": doc["nbytes"],
             "n_chunks": len(chunks), "outline": outline[:12]}

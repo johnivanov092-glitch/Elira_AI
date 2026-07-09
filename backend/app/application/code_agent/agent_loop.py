@@ -2152,11 +2152,29 @@ def _stream_code_agent_core(
                 # of pausing for the user (binding incl. run_id stays intact).
                 # Critical calls (destructive shell: rm/git reset/drop/kill…) are
                 # NEVER auto-approved — the user confirms them even in bypass.
+                # W1 intent-binding (contract §3): a side-effect call whose args carry
+                # VERBATIM web-corpus content the user never wrote is escalated the
+                # same way — bypass must not let a malicious page trigger an action
+                # without a human. Deterministic taint check, fail-open only when the
+                # corpus store is down (then no corpus text reached the model either).
+                _taint_frag = None
                 if (
                     _exec_result.status == "waiting_approval"
                     and _approval_id
                     and _mode_auto_approves(permission_mode, name)
                     and not _is_critical_call(name, parsed_args)
+                ):
+                    try:
+                        from app.application.web_evidence.taint import corpus_tainted
+                        _taint_frag = corpus_tainted(rid, name, parsed_args, user_message)
+                    except Exception:
+                        _taint_frag = None
+                if (
+                    _exec_result.status == "waiting_approval"
+                    and _approval_id
+                    and _mode_auto_approves(permission_mode, name)
+                    and not _is_critical_call(name, parsed_args)
+                    and not _taint_frag
                 ):
                     _mark_approval_approved(_approval_id)
                     if _delay_tool_started:
@@ -2178,13 +2196,19 @@ def _stream_code_agent_core(
                     and approval_wait_seconds > 0
                     and _approval_id
                 ):
-                    yield {
+                    _approval_event: dict[str, Any] = {
                         "type": "approval_pending",
                         "step": step,
                         "tool": name,
                         "arguments": parsed_args,
                         "approval_id": _approval_id,
                     }
+                    if _taint_frag:
+                        _approval_event["reason"] = (
+                            "аргументы дословно содержат текст из ВЕБ-СТРАНИЦЫ, которого "
+                            "нет в вашей задаче — возможная инъекция; подтвердите явно. "
+                            f"Фрагмент: «{_taint_frag[:80]}»")
+                    yield _approval_event
                     _wait_started = time.monotonic()
                     _last_keepalive = _wait_started
                     _decision = "timeout"

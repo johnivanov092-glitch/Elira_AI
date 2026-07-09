@@ -2,16 +2,23 @@
 
 BM25 is the base (always works); the local embed service (:8001) is an OPTIONAL
 re-rank that fails open — its absence must never break retrieval (contract §5).
-Also the quote→offset→hash verification primitive (contract §11.3), which the
-W3 ledger will build on: a quote is verified ONLY when it is found verbatim in
-the stored canonical_text — provenance, deterministic, never model-asserted.
+
+Also the quote→offset→hash verification primitive (contract §11.3) the W3 ledger
+builds on. John's W1 review contract, all three fixed here:
+  * the `quote` field is VERBATIM canonical_text (no ellipses — display dressing
+    never contaminates the evidence field);
+  * `offset` is the ABSOLUTE offset of the quote in canonical_text (chunk offset
+    + local position), so quote/offset round-trips through verify_quote;
+  * verify_quote RECOMPUTES the document hash — a tampered canonical_text fails
+    verification instead of certifying a forged quote.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
-from app.application.web_evidence import store as _store
+from app.infrastructure.web_corpus import store as _store
 from app.application.web_evidence.analyzer import Bm25Index, normalize, tokenize
 
 logger = logging.getLogger(__name__)
@@ -20,30 +27,29 @@ _TOP_K_CAP = 8
 _QUOTE_MAX = 500
 
 
-def _snippet(text: str, query: str, width: int = _QUOTE_MAX) -> str:
-    """A window of `text` centered on the earliest query-term hit — so a fact
-    buried mid-chunk actually reaches the model, not the chunk's filler head.
-    Falls back to the head when nothing matches."""
-    if len(text) <= width:
-        return text.strip()
-    low = normalize(text)
+def _snippet(chunk_text: str, chunk_offset: int, query: str,
+             width: int = _QUOTE_MAX) -> tuple[str, int]:
+    """(verbatim_quote, absolute_offset): a window of the chunk centered on the
+    earliest query-term hit — a fact buried mid-chunk reaches the model, not the
+    chunk's filler head. NO ellipses: the quote must round-trip verify_quote."""
+    if len(chunk_text) <= width:
+        return chunk_text, chunk_offset
+    low = normalize(chunk_text)
     pos = -1
     for term in tokenize(query, stem=False):
         p = low.find(term)
         if p != -1 and (pos == -1 or p < pos):
             pos = p
     if pos == -1:
-        return text[:width].strip()
+        return chunk_text[:width], chunk_offset
     start = max(0, pos - width // 3)
-    end = min(len(text), start + width)
-    prefix = "…" if start > 0 else ""
-    suffix = "…" if end < len(text) else ""
-    return f"{prefix}{text[start:end].strip()}{suffix}"
+    end = min(len(chunk_text), start + width)
+    return chunk_text[start:end], chunk_offset + start
 
 
 def _embed_rerank(query: str, candidates: list[dict]) -> list[dict] | None:
-    """Cosine re-rank via :8001. Returns re-ordered candidates, or None to signal
-    'embed unavailable — keep BM25 order' (fail-open, one log line)."""
+    """Cosine re-rank via :8001. None = 'embed unavailable — keep BM25 order'
+    (fail-open, one log line)."""
     try:
         from app.infrastructure.llm.openai_compatible import embed_text, is_local_embed_enabled
         if not is_local_embed_enabled():
@@ -72,10 +78,14 @@ def _embed_rerank(query: str, candidates: list[dict]) -> list[dict] | None:
 
 def web_query(run_id: str, query: str, *, doc_id: str | None = None,
               top_k: int = 6) -> dict[str, Any]:
-    """Top-k chunks from the run's corpus for `query`. Each result carries the
-    exact quote + doc_id + chunk_id + offset — ready-made evidence candidates."""
+    """Top-k excerpts from the run's corpus for `query`. Each result carries a
+    VERBATIM quote + doc_id + chunk_id + absolute offset — ready-made evidence
+    candidates that round-trip verify_quote."""
     top_k = max(1, min(int(top_k), _TOP_K_CAP))
-    chunks = _store.load_chunks(run_id)
+    try:
+        chunks = _store.load_chunks(run_id)
+    except _store.StoreUnavailable as exc:
+        return {"ok": False, "error": str(exc)}
     if doc_id:
         chunks = [c for c in chunks if c["doc_id"] == doc_id]
     if not chunks:
@@ -93,33 +103,56 @@ def web_query(run_id: str, query: str, *, doc_id: str | None = None,
     reranked = _embed_rerank(query, candidates)
     final = (reranked or candidates)[:top_k]
 
-    docs = {d["doc_id"]: d for d in _store.list_documents(run_id)}
+    try:
+        docs = {d["doc_id"]: d for d in _store.list_documents(run_id)}
+    except _store.StoreUnavailable:
+        docs = {}
     results = []
     for c in final:
         d = docs.get(c["doc_id"], {})
+        quote, abs_offset = _snippet(c["text"], c["offset"], query)
         results.append({
-            "doc_id": c["doc_id"], "chunk_id": c["chunk_id"], "offset": c["offset"],
+            "doc_id": c["doc_id"], "chunk_id": c["chunk_id"], "offset": abs_offset,
             "url": d.get("final_url") or d.get("url"), "title": d.get("title"),
-            "quote": _snippet(c["text"], query),
+            "quote": quote,
         })
     return {"ok": True, "results": results,
             "ranker": "bm25+embed" if reranked else "bm25"}
 
 
-def verify_quote(run_id: str, doc_id: str, quote: str) -> dict[str, Any]:
-    """Deterministic provenance check (contract §11.3): the quote must appear
-    VERBATIM in the stored canonical_text. Case/ё-insensitive per `normalize`, but
-    NOT stemmed — exact-phrase never depends on the analyzer. Returns
-    {quote_verified, source_verified, offset?}."""
-    doc = _store.get_document(run_id, doc_id)
+def verify_quote(run_id: str, doc_id: str, quote: str,
+                 offset: int | None = None) -> dict[str, Any]:
+    """Deterministic provenance check (contract §11.3):
+
+    * integrity — the stored canonical_text re-hashes to the recorded
+      content_hash (a tampered corpus can NOT certify a quote);
+    * quote_verified — the quote appears VERBATIM (exact codepoints) in
+      canonical_text; with `offset` given, exactly there;
+    * source_verified — the document was really fetched by this run.
+    """
+    try:
+        doc = _store.get_document(run_id, doc_id)
+    except _store.StoreUnavailable as exc:
+        return {"quote_verified": False, "source_verified": False, "reason": str(exc)}
     if not doc:
         return {"quote_verified": False, "source_verified": False,
                 "reason": "документ не в корпусе этого рана"}
-    q = normalize((quote or "").strip())
+    text = doc["canonical_text"]
+    actual_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if actual_hash != doc["content_hash"]:
+        return {"quote_verified": False, "source_verified": False,
+                "reason": "нарушена целостность корпуса: hash канонического текста "
+                          "не совпадает с записанным"}
+    q = (quote or "").strip()
     if not q:
         return {"quote_verified": False, "source_verified": True, "reason": "пустая цитата"}
-    hay = normalize(doc["canonical_text"])
-    idx = hay.find(q)
+    if offset is not None:
+        ok = text[offset:offset + len(q)] == q or text.find(q, max(0, offset - 8),
+                                                            offset + len(q) + 8) != -1
+        return {"quote_verified": bool(ok), "source_verified": True,
+                "offset": offset if ok else None,
+                "reason": None if ok else "цитата не найдена по заявленному offset"}
+    idx = text.find(q)
     return {"quote_verified": idx >= 0, "source_verified": True,
             "offset": idx if idx >= 0 else None,
             "reason": None if idx >= 0 else "цитата не найдена в источнике дословно"}
