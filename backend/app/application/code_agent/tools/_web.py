@@ -96,15 +96,28 @@ def tool_web_search(
     limit = max(1, min(int(top_k), 10))
     focus = "".join(f" · {x}" for x in (cat, tr) if x)
 
-    # ── W6: SearXNG result pagination (page 2+); SearXNG-only, honest otherwise ──
+    # ── W6: SearXNG result pagination (page 2+) ─────────────────────────────
+    # Strict, execution-level gating (John's W6 review): the flag check lives in
+    # the TOOL, not only in the schema — action envelopes pass arbitrary args, so
+    # a schema-only gate breaks the bit-identical-off promise. Validation is
+    # strict (1..5, single query only), and every error path carries ok=False —
+    # the executor treats a missing "ok" as success (no green error calls).
     try:
-        page_n = max(1, min(int(page), 5))
+        page_n = int(page)
     except (TypeError, ValueError):
-        page_n = 1
+        return {"text": f"ERROR: page должен быть целым 1..5, получено {page!r}", "ok": False}
+    if not 1 <= page_n <= 5:
+        return {"text": f"ERROR: page должен быть в диапазоне 1..5, получено {page_n}", "ok": False}
     if page_n > 1:
-        cleaned = (query or "").strip() or " ".join(_coerce_str_list(queries))
+        if not _web_corpus_on():
+            return {"text": "ERROR: пагинация (page>1) недоступна — фиче-флаг web_corpus выключен",
+                    "ok": False}
+        if _coerce_str_list(queries):
+            return {"text": "ERROR: page>1 работает только с одиночным `query`, не с `queries`",
+                    "ok": False}
+        cleaned = (query or "").strip()
         if not cleaned:
-            return {"text": "ERROR: query is empty (pass `query`)"}
+            return {"text": "ERROR: query is empty (pass `query`)", "ok": False}
         try:
             from app.core.web_engines import search_searxng
             sources = search_searxng(cleaned, max_results=limit,
@@ -112,7 +125,8 @@ def tool_web_search(
                                      pageno=page_n)
         except Exception as exc:  # noqa: BLE001 — pagination is SearXNG-only
             return {"text": f"ERROR: страница {page_n} недоступна — пагинация работает только "
-                            f"через SearXNG ({exc}). Fallback-движки отдают только первую страницу."}
+                            f"через SearXNG ({exc}). Fallback-движки отдают только первую страницу.",
+                    "ok": False}
         if not sources:
             return {"text": f"Страница {page_n} по '{cleaned}' пуста — дальше результатов нет."}
         return {"text": _format_search_results(

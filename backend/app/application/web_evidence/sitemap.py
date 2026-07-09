@@ -54,9 +54,17 @@ def _get(
         reason = check_ssrf(current, allow_loopback_ports=active_server_ports())
         if reason:
             return {"ok": False, "error": f"SSRF blocked — {reason}"}
-        politeness_wait(current)   # W6: per-domain politeness budget
+        # W6 politeness, deadline-aware: a polite wait that would overshoot the
+        # budget aborts instead of sleeping; the request gets the REMAINING
+        # budget (capped at 10s), so the 20s discovery budget holds for real.
+        if politeness_wait(current, deadline=deadline) is None:
+            return {"ok": False, "error": "time budget exceeded"}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"ok": False, "error": "time budget exceeded"}
         try:
-            resp = requests.get(current, timeout=10, allow_redirects=False, stream=True,
+            resp = requests.get(current, timeout=min(10.0, remaining), allow_redirects=False,
+                                stream=True,
                                 headers={"User-Agent": _UA, "Accept": "application/xml,text/plain"})
         except requests.RequestException as exc:
             return {"ok": False, "error": f"fetch failed: {exc}"}

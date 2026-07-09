@@ -817,7 +817,7 @@ class TierTest(unittest.TestCase):
         self.assertEqual(ct("https://docs.python.org/3/library/json.html"), "official")
         self.assertEqual(ct("https://www.w3.org/TR/xml/"), "official")
         self.assertEqual(ct("https://www.exampleagency.gov/report"), "official")
-        self.assertEqual(ct("https://docs.djangoproject.com/en/5.0/"), "official")  # docs. host
+        self.assertEqual(ct("https://docs.djangoproject.com/en/5.0/"), "official")  # curated domain
         self.assertEqual(ct("https://pypi.org/project/requests/"), "primary")
         self.assertEqual(ct("https://github.com/psf/requests"), "primary")
         self.assertEqual(ct("https://arxiv.org/abs/1706.03762"), "primary")
@@ -826,6 +826,16 @@ class TierTest(unittest.TestCase):
         self.assertEqual(ct("https://habr.com/ru/articles/1/"), "ugc")
         self.assertEqual(ct("https://random-blog.example.com/post"), "unknown")
         self.assertEqual(ct(""), "unknown")
+
+    def test_no_structural_official_from_host_prefix(self):
+        # John's W6 review: docs.*/wiki.* is attacker-controllable — a docs.
+        # subdomain must NOT become official (the ledger would then say a single
+        # official source "may suffice"). Official = curated domains + gov only.
+        from app.application.web_evidence.tiers import classify_tier as ct
+        self.assertEqual(ct("https://docs.evil-example.test/paper"), "unknown")
+        self.assertEqual(ct("https://wiki.untrusted.example/page"), "unknown")
+        self.assertEqual(ct("https://developer.random-startup.io/api"), "unknown")
+        self.assertEqual(ct("https://learn.shady.site/course"), "unknown")
 
     def test_ingest_stores_tier_and_render_annotates(self):
         import tempfile as _tf
@@ -879,6 +889,80 @@ class PolitenessTest(unittest.TestCase):
         self.assertIn("politeness_wait", inspect.getsource(_s._get))
 
 
+class W6ExecutorPathTest(unittest.TestCase):
+    """John's W6 review: gates and error statuses must hold on the EXECUTOR path
+    (envelope args reach the tool regardless of schema), not only in schemas."""
+
+    def _exec_web_search(self, args):
+        from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool
+        from app.application.code_agent.tools._dispatch import build_tool_dispatch
+        from pathlib import Path as _P
+        import tempfile as _tf
+        dispatch = build_tool_dispatch(_P(_tf.mkdtemp()))
+        spec = {"permission": "auto", "max_output_chars": 50000,
+                "policy_classified": True, "enabled": True, "side_effect": False}
+        with patch("app.application.tool_registry.runtime.get_tool", return_value=spec), \
+             patch("app.application.agent_registry.sandbox.preflight_or_raise"):
+            return execute_tool(
+                ToolExecutionRequest(run_id="w6-exec", agent_id="code-agent",
+                                     project_scope_id="scope-w6", tool_name="web_search",
+                                     args=args, source="code_agent"),
+                dispatch_fn=lambda n, a: dispatch[n](**a))
+
+    def test_flag_off_page2_never_reaches_searxng_via_executor(self):
+        # Repro of John's P1: schema hides `page`, but the envelope passes it and
+        # dispatch forwards it. The TOOL itself must gate on the flag.
+        from app.application.code_agent.tools import _web
+        with patch.object(_web, "_web_corpus_on", return_value=False), \
+             patch("app.core.web_engines.search_searxng",
+                   side_effect=AssertionError("SearXNG must not be called with flag off")):
+            res = self._exec_web_search({"query": "q", "page": 2})
+        self.assertEqual(res.status, "error")                  # not a green call
+        self.assertIn("web_corpus", res.output.get("text", ""))
+
+    def test_searxng_error_is_error_status_via_executor(self):
+        # Repro of John's P1: ERROR text without ok=False was treated as success
+        # by the executor (missing "ok" defaults to ok).
+        from app.application.code_agent.tools import _web
+        with patch.object(_web, "_web_corpus_on", return_value=True), \
+             patch("app.core.web_engines.search_searxng", side_effect=RuntimeError("down")):
+            res = self._exec_web_search({"query": "q", "page": 2})
+        self.assertEqual(res.status, "error")
+        self.assertIn("SearXNG", res.output.get("text", ""))
+
+    def test_strict_page_validation(self):
+        from app.application.code_agent.tools import _web
+        with patch.object(_web, "_web_corpus_on", return_value=True):
+            self.assertEqual(self._exec_web_search({"query": "q", "page": 0}).status, "error")
+            self.assertEqual(self._exec_web_search({"query": "q", "page": 6}).status, "error")
+            self.assertEqual(self._exec_web_search({"query": "q", "page": "abc"}).status, "error")
+            batch = self._exec_web_search({"queries": ["a", "b"], "page": 2})
+            self.assertEqual(batch.status, "error")            # page>1 is single-query only
+            self.assertIn("одиночн", batch.output.get("text", ""))
+
+
+class PolitenessDeadlineTest(unittest.TestCase):
+    def test_wait_overshooting_deadline_aborts_without_sleep(self):
+        from app.application.web_evidence import politeness as pol
+        with patch.object(pol, "_last_hit", {}), patch.object(pol.time, "sleep") as slept:
+            now = pol.time.monotonic()
+            self.assertEqual(pol.politeness_wait("https://a.com/1"), 0.0)
+            # a second same-domain hit with almost no budget → None, no sleep
+            self.assertIsNone(pol.politeness_wait("https://a.com/2", deadline=now + 0.01))
+            slept.assert_not_called()
+
+    def test_sitemap_get_respects_deadline_after_wait(self):
+        # a politeness abort inside sitemap._get → honest time-budget error
+        from app.application.web_evidence import sitemap as sm
+        import time as _t
+        with patch("app.application.web_evidence.politeness.politeness_wait", return_value=None), \
+             patch("app.application.web.ssrf_guard.check_ssrf", return_value=None), \
+             patch("app.application.code_agent.tools._run.active_server_ports", return_value=set()):
+            got = sm._get("https://site.com/sitemap.xml", deadline=_t.monotonic() + 5)
+        self.assertFalse(got["ok"])
+        self.assertIn("time budget", got["error"])
+
+
 class SearchPageTest(unittest.TestCase):
     """W6: SearXNG pageno — deeper result pages for the same query."""
 
@@ -903,16 +987,19 @@ class SearchPageTest(unittest.TestCase):
 
     def test_tool_page2_uses_searxng_only(self):
         from app.application.code_agent.tools import _web
-        with patch("app.core.web_engines.search_searxng",
+        with patch.object(_web, "_web_corpus_on", return_value=True), \
+             patch("app.core.web_engines.search_searxng",
                    return_value=[{"title": "t", "href": "https://x.com/a", "body": "b"}]) as sx:
             out = _web.tool_web_search(query="q", page=2)
         self.assertIn("страница 2", out["text"])
         self.assertEqual(sx.call_args.kwargs.get("pageno"), 2)
-        # SearXNG down → honest error, no silent page-1 fallback
-        with patch("app.core.web_engines.search_searxng", side_effect=RuntimeError("down")):
+        # SearXNG down → honest error WITH ok=False (executor must not green it)
+        with patch.object(_web, "_web_corpus_on", return_value=True), \
+             patch("app.core.web_engines.search_searxng", side_effect=RuntimeError("down")):
             out2 = _web.tool_web_search(query="q", page=2)
         self.assertIn("ERROR", out2["text"])
         self.assertIn("SearXNG", out2["text"])
+        self.assertIs(out2.get("ok"), False)
 
     def test_page_prop_gated_on_flag(self):
         from app.application.code_agent import tool_schemas as tsch

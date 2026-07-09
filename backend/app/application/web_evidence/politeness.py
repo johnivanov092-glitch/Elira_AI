@@ -23,9 +23,14 @@ _last_hit: dict[str, float] = {}
 _MAX_TRACKED = 512           # bound the map; oldest half dropped on overflow
 
 
-def politeness_wait(url: str) -> float:
+def politeness_wait(url: str, *, deadline: float | None = None) -> float | None:
     """Sleep so that two fetches to one registrable domain are ≥MIN_INTERVAL_S
-    apart. Returns the seconds actually slept (0.0 for a new/idle domain)."""
+    apart. Returns the seconds actually slept (0.0 for a new/idle domain).
+
+    Deadline-aware (John's W6 review): with `deadline` (time.monotonic scale),
+    a wait that would overshoot it is NOT slept — returns None so the caller
+    aborts with its time-budget error instead of both blowing the budget and
+    hammering the host."""
     dom = registrable_domain(url)
     if not dom:
         return 0.0
@@ -33,6 +38,8 @@ def politeness_wait(url: str) -> float:
         now = time.monotonic()
         prev = _last_hit.get(dom)
         wait = max(0.0, MIN_INTERVAL_S - (now - prev)) if prev is not None else 0.0
+        if deadline is not None and now + wait >= deadline:
+            return None                 # no budget left for a polite fetch — abort
         _last_hit[dom] = now + wait     # reserve the slot for THIS request
         if len(_last_hit) > _MAX_TRACKED:
             for k in sorted(_last_hit, key=_last_hit.get)[: _MAX_TRACKED // 2]:

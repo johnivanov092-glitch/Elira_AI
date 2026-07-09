@@ -25,7 +25,7 @@ _OFFICIAL_DOMAINS = frozenset({
     "w3.org", "ietf.org", "rfc-editor.org", "iso.org", "iec.ch", "ecma-international.org",
     "python.org", "kernel.org", "postgresql.org", "sqlite.org", "openssl.org",
     "mozilla.org", "rust-lang.org", "golang.org", "go.dev", "nodejs.org", "php.net",
-    "oracle.com", "microsoft.com", "apple.com",
+    "oracle.com", "microsoft.com", "apple.com", "djangoproject.com",
 })
 _PRIMARY_DOMAINS = frozenset({
     "pypi.org", "npmjs.com", "crates.io", "rubygems.org", "packagist.org", "nuget.org",
@@ -42,17 +42,20 @@ _UGC_DOMAINS = frozenset({
     "twitter.com", "x.com", "facebook.com", "vk.com", "t.me", "youtube.com",
     "blogspot.com", "wordpress.com", "livejournal.com",
 })
-# Documentation-style hosts: docs.<vendor>, developer.<vendor> etc. — the vendor's
-# own docs are official for that vendor's subject matter.
-_DOC_HOST_PREFIXES = ("docs.", "developer.", "developers.", "devdocs.", "learn.", "wiki.")
+# NO structural host rules (docs.*/wiki.* etc.): anyone controls their own
+# subdomain names, so docs.evil.example would classify official and the ledger
+# would then say a single official source "may suffice" — a trust escalation
+# from an attacker-controllable pattern (John's W6 review). Official comes ONLY
+# from the curated registrable-domain list and government TLD suffixes.
 _GOV_SUFFIXES = (".gov", ".mil", ".gov.uk", ".gov.au", ".gov.ru", ".gc.ca", ".europa.eu")
 
 TIERS = ("official", "primary", "secondary", "ugc", "unknown")
 
 
 def classify_tier(url: str) -> str:
-    """Deterministic tier for a URL. Curated lists + structural rules; the
-    default is 'unknown' — never a guess."""
+    """Deterministic tier for a URL. Curated registrable-domain lists + gov TLD
+    suffixes only; the default is 'unknown' — never a guess, never a host-name
+    pattern (subdomain names are attacker-controllable)."""
     host = (urlparse(url or "").hostname or "").lower().strip(".")
     if not host:
         return "unknown"
@@ -67,8 +70,6 @@ def classify_tier(url: str) -> str:
         return "primary"
     if dom in _OFFICIAL_DOMAINS:
         return "official"
-    if host.startswith(_DOC_HOST_PREFIXES):
-        return "official"      # vendor documentation host (structural rule)
     return "unknown"
 
 
