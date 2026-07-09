@@ -196,6 +196,51 @@ class ServerLifecycleOwnershipTest(unittest.TestCase):
             finally:
                 _run.stop_run_servers("r2-own")   # belt-and-braces cleanup
 
+    def test_stop_action_keeps_handle_when_kill_fails(self):
+        # John's P1a: a failed kill must NOT report "Stopped" and must NOT drop the
+        # handle — the process would live on untracked and unstoppable.
+        import subprocess
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        handle = _run._ServerHandle(proc.pid, "sleeper", proc, Path("nolog.log"), None,
+                                    run_id="p1a-stop")
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS[proc.pid] = handle
+        try:
+            with mock.patch.object(_run, "_kill_proc_tree", lambda p: None):  # kill "fails"
+                out = _run.tool_run_server(Path("."), action="stop", pid=proc.pid)
+            self.assertFalse(out.get("ok", True))
+            self.assertIn("ЖИВ", out["text"])                        # honest, not "Stopped"
+            with _run._SERVERS_LOCK:
+                self.assertIn(proc.pid, _run._LIVE_SERVERS)          # still tracked
+            out2 = _run.tool_run_server(Path("."), action="stop", pid=proc.pid)  # real kill
+            self.assertIn("Stopped", out2["text"])
+            with _run._SERVERS_LOCK:
+                self.assertNotIn(proc.pid, _run._LIVE_SERVERS)
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.pop(proc.pid, None)
+
+    def test_stop_all_keeps_unkillable_tracked(self):
+        import subprocess
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        handle = _run._ServerHandle(proc.pid, "sleeper", proc, Path("nolog.log"), None,
+                                    run_id="p1a-stopall")
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS[proc.pid] = handle
+        try:
+            with mock.patch.object(_run, "_kill_proc_tree", lambda p: None):
+                self.assertEqual(_run.stop_all_servers(), 0)         # nothing actually died
+            with _run._SERVERS_LOCK:
+                self.assertIn(proc.pid, _run._LIVE_SERVERS)          # still tracked
+            self.assertEqual(_run.stop_all_servers(), 1)             # real kill works
+        finally:
+            proc.kill()
+            proc.wait(timeout=5)
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.pop(proc.pid, None)
+
     def test_url_is_live_server_requires_proc_and_listening_port(self):
         import socket
         import subprocess

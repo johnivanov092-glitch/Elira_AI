@@ -62,6 +62,17 @@ def _port_listening(port: int) -> bool:
         return False
 
 
+def _run_servers_left(backend: str, run_id: str) -> list[dict]:
+    """Live run_server registry entries still owned by `run_id` — the honest cleanup
+    check (a leaked handle or a server with no parsed URL is invisible to the port
+    probe alone; John's P1b review of the R5 DoD)."""
+    try:
+        data = _get_json(backend.rstrip("/") + f"/api/code-agent/servers?run_id={run_id}")
+        return list(data.get("servers") or [])
+    except Exception as exc:
+        return [{"error": f"servers endpoint unreachable: {exc}"}]
+
+
 def _evaluate(name: str, spec: dict, summary: dict, project_dir: Path) -> list[str]:
     """Return the list of assertion FAILURES (empty = pass)."""
     fails: list[str] = []
@@ -81,6 +92,9 @@ def _evaluate(name: str, spec: dict, summary: dict, project_dir: Path) -> list[s
         leaked = [p for p in summary.get("server_ports") or [] if _port_listening(p)]
         if leaked:
             fails.append(f"порт(ы) ещё слушают после прогона: {leaked} — сервер утёк")
+        left = _run_servers_left(spec["_backend"], summary.get("run_id") or "")
+        if left:
+            fails.append(f"run_server registry НЕ пуст после прогона: {left} — handle утёк")
     return fails
 
 
@@ -117,6 +131,7 @@ def main() -> int:
             continue
 
         task_text = (HERE / spec["task"]).read_text(encoding="utf-8")
+        spec["_backend"] = args.backend   # for the registry cleanup check
         verdict = "FAIL"
         summary: dict = {}
         fails: list[str] = []

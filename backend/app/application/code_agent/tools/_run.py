@@ -255,11 +255,16 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
 # ─── run_server: background process launcher ────────────────────────────────
 # Unlike run_bash (which blocks until the command exits or times out), run_server
 # starts a long-lived process via Popen and returns IMMEDIATELY. The process is
-# tracked in a module-level registry keyed by pid so it can be listed and stopped
-# explicitly later. These servers deliberately OUTLIVE the agent run that started
-# them, so they are NOT registered in _LIVE_SHELL_PROCS and are NOT killed by the
-# Stop button — only by `stop`/`stop_all`. Output is captured to log files under
-# the project's .elira/servers/ so the model can inspect startup without blocking.
+# tracked in a module-level registry keyed by pid (tagged with the OWNING run_id)
+# so it can be listed and stopped explicitly. R2 Server Lifecycle: the RUNTIME owns
+# what it started — servers survive across turns WITHIN the run, and at the run's
+# end the runtime stops its own servers (answer+TaskSpec: verification vehicle;
+# cancel/timeout/error/disconnect: always) unless the run had no TaskSpec and the
+# server IS the deliverable («подними dev-сервер») — then it stays alive with an
+# explicit report. They are not in _LIVE_SHELL_PROCS (the mid-run Stop path kills
+# shell procs; servers are stopped by the run-terminal hook instead). Output is
+# captured to log files under the project's .elira/servers/ so the model can
+# inspect startup without blocking.
 
 _SERVER_LOG_DIRNAME = ".elira/servers"
 _SERVER_STARTUP_GRACE = 1.5  # seconds to let the process crash-or-bind before reporting
@@ -572,20 +577,32 @@ def _auto_verify_gui(handle: "_ServerHandle") -> str:
 
 
 def stop_all_servers() -> int:
-    """Kill every tracked background server. Returns the count signalled.
-    Intended for process/app shutdown, not the per-run Stop button."""
+    """Kill every tracked background server. Returns the count actually stopped.
+    Intended for process/app shutdown, not the per-run Stop button. A handle whose
+    kill FAILED stays in the registry — an unkillable process must remain tracked
+    (list/stop/SSRF allowlist), never silently leak (John's P1a review: the old code
+    cleared the registry unconditionally, reporting 'Stopped' for a live process)."""
     with _SERVERS_LOCK:
-        handles = list(_LIVE_SERVERS.values())
+        handles = list(_LIVE_SERVERS.items())
     killed = 0
-    for h in handles:
+    for pid, h in handles:
+        was_alive = False
         try:
-            if h.proc.poll() is None:
+            was_alive = h.proc.poll() is None
+            if was_alive:
                 _kill_proc_tree(h.proc)
-                killed += 1
+                try:
+                    h.proc.wait(timeout=5)
+                except Exception:
+                    pass
         except Exception:
             pass
-    with _SERVERS_LOCK:
-        _LIVE_SERVERS.clear()
+        if h.proc.poll() is None:
+            continue   # kill failed → keep it tracked
+        with _SERVERS_LOCK:
+            _LIVE_SERVERS.pop(pid, None)
+        if was_alive:
+            killed += 1
     return killed
 
 
@@ -666,9 +683,12 @@ def tool_run_server(
         if pid is None:
             return {"text": "ERROR: action 'stop' requires a pid."}
         with _SERVERS_LOCK:
-            h = _LIVE_SERVERS.pop(int(pid), None)
+            h = _LIVE_SERVERS.get(int(pid))
         if h is None:
             return {"text": f"ERROR: no tracked server with pid={pid}."}
+        # The handle leaves the registry only AFTER the process is confirmed dead —
+        # otherwise a failed taskkill reported "Stopped" while the process lived on,
+        # untracked and unstoppable (John's P1a review; same rule as stop_run_servers).
         try:
             if h.proc.poll() is None:
                 _kill_proc_tree(h.proc)
@@ -676,9 +696,17 @@ def tool_run_server(
                     h.proc.wait(timeout=5)
                 except Exception:
                     pass
-            return {"text": f"Stopped server pid={pid} — {h.command}"}
         except Exception as exc:
-            return {"text": f"ERROR stopping pid={pid}: {exc}"}
+            if h.proc.poll() is None:
+                return {"text": f"ERROR stopping pid={pid}: {exc} — процесс ЖИВ и остаётся "
+                                f"в списке (run_server list).", "ok": False}
+        if h.proc.poll() is None:
+            return {"text": f"ERROR: не удалось остановить pid={pid} — процесс ЖИВ и "
+                            f"остаётся в списке (run_server list). Попробуй ещё раз или "
+                            f"останови вручную.", "ok": False}
+        with _SERVERS_LOCK:
+            _LIVE_SERVERS.pop(int(pid), None)
+        return {"text": f"Stopped server pid={pid} — {h.command}"}
 
     if act != "start":
         return {"text": f"ERROR: unknown action '{action}'. Use start|list|logs|stop|stop_all."}
@@ -805,7 +833,9 @@ def tool_run_server(
         f"  $ {cleaned_command}\n"
         f"Use run_server(action='logs', pid={proc.pid}) to read output, "
         f"run_server(action='stop', pid={proc.pid}) to stop it. "
-        f"It keeps running across turns and is NOT killed by Stop."
+        f"It keeps running across turns within this run; the runtime stops its own "
+        f"servers at the run's end (kept alive only when the server itself is the "
+        f"deliverable — then the final message says so)."
     )
 
     # Auto GUI verification: capture what just launched and feed it back so the

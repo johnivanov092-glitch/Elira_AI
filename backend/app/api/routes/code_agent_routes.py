@@ -575,6 +575,26 @@ def watcher_status_endpoint(project_root: Optional[str] = None) -> dict[str, Any
     return watcher_status(project_root)
 
 
+@router.get("/servers")
+def servers_list(run_id: Optional[str] = None) -> dict[str, Any]:
+    """Live run_server registry (R2 observability): every tracked dev server with its
+    owning run_id. `run_id` filters to one run. The smoke suite asserts this is EMPTY
+    after a TaskSpec run — the honest cleanup check the port probe alone can't give
+    (a leaked handle or a server with no parsed URL is invisible to a port scan)."""
+    import time as _time
+    from app.application.code_agent.tools._run import _LIVE_SERVERS, _SERVERS_LOCK, _reap_dead_servers
+    _reap_dead_servers()
+    with _SERVERS_LOCK:
+        handles = list(_LIVE_SERVERS.values())
+    servers = [
+        {"pid": h.pid, "port": h.port, "url": h.url, "command": h.command,
+         "run_id": h.run_id, "age_s": int(_time.time() - h.started_at)}
+        for h in handles
+        if run_id is None or h.run_id == run_id
+    ]
+    return {"servers": servers, "count": len(servers)}
+
+
 # ── SSH allowlist (the security boundary for the SshToolProvider) ───────
 
 class SshConfigRequest(BaseModel):

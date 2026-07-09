@@ -186,6 +186,12 @@ liveness пробит по хосту из URL (::1/LAN), stop не выкиды
 верификацией, keep-флаг коммитится после доставки done. Остаточный риск: узкая гонка «регистрация
 хэндла после finally» при client-disconnect ровно в окне Popen — принята и
 задокументирована (единственный не закрытый кейс из 20 находок ревью).
+**Post-6/6 ревью Джона (P1a):** мой же фикс «pop только после подтверждённой смерти»
+был применён в `stop_run_servers`, но НЕ в model-facing `stop`/`stop_all` — фейл kill
+отдавал «Stopped» и терял живой процесс из трекинга. Исправлено зеркально + честный
+error-текст («процесс ЖИВ и остаётся в списке») + регрессии. Стейл-тексты «NOT killed
+by Stop / deliberately OUTLIVE» (модульный комментарий, start-результат, схема тула)
+заменены на актуальную политику.
 Не «economy-хинты», а владение жизненным циклом: модель не владеет PID'ами.
 - **Ownership:** run_server регистрирует pid/port/url с run_id; runtime знает live-список
   СВОИХ серверов в ране.
@@ -216,12 +222,16 @@ liveness пробит по хосту из URL (::1/LAN), stop не выкиды
   (регрессии в обе стороны). Bundle пересобран.
 
 **R5 — Автоматизированный live-smoke (G7) — ✅ DONE**
-- `backend/tests/smokes/` (не собирается pytest'ом): `run.py` + `driver.py` + 4 таска +
-  `baseline.json`. Одна команда: `python tests/smokes/run.py [--only cli,form] [--keep]`.
+- `backend/tests/smokes/` (не собирается pytest'ом): `run.py` + `driver.py` + `__main__.py` +
+  4 таска + `baseline.json`. Команда: `python -m tests.smokes [--only cli,form] [--keep]`
+  (namespace-package, без tests/__init__.py — pytest не тронут; работает и как
+  `python tests/smokes/run.py`).
 - Ассерты: stop_reason/completion/confirmed vs baseline, tool-budget, артефакты на диске,
-  **порты закрыты после прогона**; SSH-canary скипается, если хост не в allowlist
-  (прекондишн, не fail). Retry-политика: 1 повтор на любой фейл — детерминированная
-  регрессия падает дважды (FAIL), стохастический флейк проходит как видимый FLAKY-PASS.
+  **порты закрыты после прогона И registry пуст** (GET `/api/code-agent/servers?run_id=` —
+  добавлен по ревью Джона: утёкший handle / сервер без распознанного URL порт-скан не видит);
+  SSH-canary скипается, если хост не в allowlist (прекондишн, не fail). Retry-политика:
+  1 повтор на любой фейл — детерминированная регрессия падает дважды (FAIL), стохастический
+  флейк проходит как видимый FLAKY-PASS.
 - **Первый же прогон окупил слой**: поймал live-баг классификации — «файл
   C:\AgentLab\smoke-canary.txt существует» уходил в command_check из-за «smoke» в ИМЕНИ
   файла (target-токен хайджекал intent; ssh_exists не мог подтвердить). Фикс: контекстные

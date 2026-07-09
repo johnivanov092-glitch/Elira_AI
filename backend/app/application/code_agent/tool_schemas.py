@@ -283,7 +283,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                     "can tail. Use this for `npm run dev`, `uvicorn`, `flask run`, `vite`, etc. "
                     "Actions: 'start' (launch `command`, optional `port`), 'list' (show running "
                     "servers), 'logs' (tail output of `pid`), 'stop' (terminate `pid`), 'stop_all'. "
-                    "Servers are NOT killed by the Stop button — stop them explicitly with 'stop'."
+                    "The runtime stops run-owned servers at the run's end; stop early with 'stop'."
                 ),
                 "parameters": {
                     "type": "object",
