@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -130,6 +131,80 @@ class MigrationTest(_TempStore):
         itstore._DB_PATH_OVERRIDE = "\x00::not-a-valid-path::"
         with self.assertRaises(itstore.StoreUnavailable):
             itstore._connect()
+
+
+class VaultTest(_TempStore):
+    """Secret vault: value lives ONLY in Windows Credential Manager; the it_ops DB
+    holds only state. Credential Manager is faked in-memory so tests run headless."""
+
+    def setUp(self):
+        super().setUp()
+        from app.infrastructure.secrets import wincred
+        self._cm: dict[str, str] = {}
+        self._patches = [
+            unittest.mock.patch.object(wincred, "write_secret",
+                                       side_effect=lambda ref, val: self._cm.__setitem__(ref, val)),
+            unittest.mock.patch.object(wincred, "read_secret",
+                                       side_effect=lambda ref: self._cm.get(ref)),
+            unittest.mock.patch.object(wincred, "delete_secret",
+                                       side_effect=lambda ref: self._cm.pop(ref, None) is not None),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        super().tearDown()
+
+    def test_put_resolve_round_trip_value_only_in_cred_manager(self):
+        from app.infrastructure.secrets import vault
+        SECRET = "S3cr3t-P@ss-DO-NOT-LEAK-4242"
+        ref = vault.put_secret(kind="password", value=SECRET, asset_id="a1")
+        self.assertTrue(ref.startswith("sref_"))
+        self.assertEqual(self._cm[ref], SECRET)            # in Credential Manager
+        self.assertEqual(vault.resolve(ref), SECRET)       # runtime resolve works
+        # the value must NOT appear anywhere in the it_ops SQLite file
+        blob = Path(itstore._DB_PATH_OVERRIDE).read_bytes()
+        self.assertNotIn(SECRET.encode("utf-8"), blob, "secret value leaked into it_ops DB")
+        # state carries no value
+        st = vault.state(ref)
+        self.assertEqual(st["kind"], "password")
+        self.assertNotIn(SECRET, str(st))
+
+    def test_revoke_fails_closed(self):
+        from app.infrastructure.secrets import vault
+        ref = vault.put_secret(kind="token", value="tok-123")
+        vault.revoke(ref)
+        self.assertEqual(vault.state(ref)["lifecycle"], "revoked")
+        with self.assertRaises(vault.SecretUnavailable):
+            vault.resolve(ref)
+
+    def test_resolve_unknown_ref_fails_closed(self):
+        from app.infrastructure.secrets import vault
+        with self.assertRaises(vault.SecretUnavailable):
+            vault.resolve("sref_nonexistent")
+
+    def test_empty_value_rejected(self):
+        from app.infrastructure.secrets import vault
+        with self.assertRaises(ValueError):
+            vault.put_secret(kind="password", value="")
+
+
+class VaultRealCredManagerTest(_TempStore):
+    """A real Windows Credential Manager round-trip (Windows-only; cleans up)."""
+
+    @unittest.skipUnless(sys.platform == "win32", "Credential Manager is Windows-only")
+    def test_real_write_read_delete(self):
+        from app.infrastructure.secrets import wincred, vault
+        self.assertTrue(wincred.available())
+        ref = vault.put_secret(kind="password", value="real-roundtrip-777")
+        try:
+            self.assertEqual(vault.resolve(ref), "real-roundtrip-777")
+        finally:
+            vault.revoke(ref)
+        with self.assertRaises(vault.SecretUnavailable):
+            vault.resolve(ref)
 
 
 class FlagTest(unittest.TestCase):
