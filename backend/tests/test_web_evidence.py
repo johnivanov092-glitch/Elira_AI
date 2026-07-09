@@ -584,6 +584,26 @@ class FreshnessTest(unittest.TestCase):
         self.assertEqual(d["modified"], "2020-10-21")
         self.assertEqual(extract_dates("<html>no dates</html>", None), {})
 
+    def test_extract_dates_attribute_order_independent(self):
+        # John's W5 review: real pages write content BEFORE name/property, and
+        # dateModified is a MODIFIED date, not published.
+        from app.application.web_evidence.freshness import extract_dates
+        # content-first, property-second
+        d1 = extract_dates('<meta content="2020-01-02T00:00:00Z" property="article:published_time">', None)
+        self.assertEqual(d1, {"published": "2020-01-02"})
+        # dateModified (name), content-first → typed as MODIFIED
+        d2 = extract_dates('<meta content="2024-03-04T00:00:00Z" name="dateModified">', None)
+        self.assertEqual(d2, {"modified": "2024-03-04"})
+        # both kinds present, mixed order
+        d3 = extract_dates(
+            '<meta name="datePublished" content="2018-06-01">'
+            '<meta content="2023-09-09" property="article:modified_time">', None)
+        self.assertEqual(d3, {"published": "2018-06-01", "modified": "2023-09-09"})
+        # meta modified wins over a Last-Modified header
+        d4 = extract_dates('<meta content="2022-02-02" name="dateModified">',
+                           "Wed, 21 Oct 2020 07:28:00 GMT")
+        self.assertEqual(d4["modified"], "2022-02-02")
+
     def test_stale_heuristic(self):
         from app.application.web_evidence.freshness import is_stale
         from datetime import datetime, timezone

@@ -48,29 +48,44 @@ def registrable_domain(url: str) -> str:
     return last2
 
 
-_META_DATE_RE = re.compile(
-    r'<meta[^>]+(?:property|name)\s*=\s*["\'](?:article:published_time|article:modified_time'
-    r'|date|dc\.date|last-modified|og:updated_time|datePublished|dateModified)["\'][^>]*'
-    r'content\s*=\s*["\']([^"\']+)["\']',
-    re.IGNORECASE)
 _ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# meta names/properties mapped to their date KIND (John's W5 review: dateModified
+# is a MODIFIED date, not published; attribute order must not matter).
+_PUBLISHED_KEYS = {"article:published_time", "date", "dc.date", "datepublished",
+                   "publishdate", "pubdate", "sailthru.date"}
+_MODIFIED_KEYS = {"article:modified_time", "last-modified", "og:updated_time",
+                  "datemodified", "lastmod", "revised"}
 
 
 def extract_dates(html: str, last_modified_header: str | None) -> dict:
     """Best-effort source dates: article/date meta tags in HTML + the HTTP
     Last-Modified header. Returns {"published"?, "modified"?} as ISO strings.
-    Fail-open — no date is a normal, honest state (rendered as 'дата неизвестна')."""
+    Fail-open — no date is a normal, honest state (rendered as 'дата неизвестна').
+
+    Parsed via BeautifulSoup so attribute ORDER is irrelevant (content-before-name
+    is common on real pages) and published vs modified are typed correctly."""
     out: dict[str, str] = {}
-    for m in _META_DATE_RE.finditer(html or ""):
-        iso = _ISO_RE.search(m.group(1))
-        if iso:
-            out.setdefault("published", iso.group(0))
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html or "", "html.parser")
+        for tag in soup.find_all("meta"):
+            key = str(tag.get("property") or tag.get("name") or "").strip().lower()
+            content = str(tag.get("content") or "")
+            iso = _ISO_RE.search(content)
+            if not key or not iso:
+                continue
+            if key in _MODIFIED_KEYS:
+                out.setdefault("modified", iso.group(0))
+            elif key in _PUBLISHED_KEYS:
+                out.setdefault("published", iso.group(0))
+    except Exception:
+        pass   # fail-open: no dates is honest
     if last_modified_header:
         try:
             from email.utils import parsedate_to_datetime
             dt = parsedate_to_datetime(last_modified_header)
             if dt:
-                out["modified"] = dt.date().isoformat()
+                out.setdefault("modified", dt.date().isoformat())  # meta wins over header
         except (TypeError, ValueError):
             pass
     return out
