@@ -12,13 +12,46 @@ import hashlib
 import re
 from typing import Any
 
-_MIME_ALLOW = ("text/html", "text/plain", "application/pdf",
-               "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+_MIME_HTML = ("text/html", "text/plain")
+_MIME_PDF = "application/pdf"
+_MIME_DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_MIME_ALLOW = (*_MIME_HTML, _MIME_PDF, _MIME_DOCX)
 _MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_REDIRECTS = 5
 _CHUNK_TARGET = 1400          # chars per chunk (contract §1)
 _ZERO_WIDTH = re.compile(r"[​-‏‪-‮⁠﻿]")
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _clean_text(text: str) -> str:
+    """Same hygiene the HTML path applies — strip zero-width/control chars and
+    collapse blank runs. Used for document (PDF/OCR/DOCX) text too, whose OCR
+    output can carry stray control characters."""
+    text = _ZERO_WIDTH.sub("", text or "")
+    text = _CTRL.sub(" ", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _extract_document(content: bytes, mime: str, url: str) -> tuple[str, str]:
+    """W2: extract text from a web PDF/DOCX via the EXISTING file_extract pipeline
+    (pypdf → pdfplumber → OCR :8002 for PDFs; python-docx for DOCX) — no new
+    provider. Returns (canonical_text, title). extract_file dispatches by
+    extension, so we hand it a filename carrying the right suffix."""
+    from urllib.parse import urlparse
+    ext = ".pdf" if mime == _MIME_PDF else ".docx"
+    base = (urlparse(url).path.rsplit("/", 1)[-1] or "web").strip()
+    filename = base if base.lower().endswith(ext) else f"web{ext}"
+    from app.application.file_extract.runtime import extract_file
+    res = extract_file(filename, content)
+    text = _clean_text(str(res.get("text") or ""))
+    # title: the document filename, or its first substantial line
+    title = base if base and base != "web" else ""
+    if not title:
+        for line in text.splitlines():
+            if len(line.strip()) >= 4:
+                title = line.strip()[:120]
+                break
+    return text, title
 
 
 def _canonicalize(html_or_text: str, mime: str) -> tuple[str, str, list[str]]:
@@ -63,9 +96,11 @@ def _chunk(text: str) -> list[dict]:
             if window != -1:
                 end = window + 1
         piece = text[pos:end]
-        if piece.strip():
-            chunks.append({"chunk_id": len(chunks), "offset": pos,
-                           "length": len(piece), "text": piece.strip()})
+        stripped = piece.strip()
+        if stripped:
+            left_trim = len(piece) - len(piece.lstrip())
+            chunks.append({"chunk_id": len(chunks), "offset": pos + left_trim,
+                           "length": len(stripped), "text": stripped})
         pos = end
     return chunks
 
@@ -114,23 +149,31 @@ def _fetch_raw(url: str) -> dict[str, Any]:
 def ingest(url: str, run_id: str) -> dict[str, Any]:
     """Fetch → canonicalize → chunk → store one URL for `run_id`. Returns a
     passport {ok, doc_id, title, url, final_url, mime, nbytes, n_chunks, outline,
-    deduped} or {ok:False, error}. Document/OCR MIME (pdf/docx) is deferred to W2
-    — for now non-text MIME reports a clear ok=False."""
+    deduped} or {ok:False, error}. Handles HTML/plain text and (W2) PDF/DOCX
+    documents through the existing file_extract pipeline (OCR fallback for scanned
+    PDFs). Everything converges on the same chunk+store path — a web PDF becomes a
+    corpus document exactly like an HTML page (untrusted, dedup/quota/TTL apply)."""
     raw = _fetch_raw(url)
     if not raw.get("ok"):
         return {"ok": False, "error": raw.get("error", "fetch failed")}
     mime = raw["mime"]
+    outline: list[str] = []
     if "html" in mime or "text/plain" in mime:
         try:
             decoded = raw["content"].decode("utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"decode failed: {exc}"}
+        canonical, title, outline = _canonicalize(decoded, mime)
+    elif mime in (_MIME_PDF, _MIME_DOCX):
+        try:
+            canonical, title = _extract_document(raw["content"], mime, raw["final_url"])
+        except Exception as exc:  # noqa: BLE001 — extraction never crashes the tool
+            return {"ok": False, "error": f"document extraction failed: {exc}"}
     else:
-        return {"ok": False, "error": f"MIME '{mime}' handled in W2 (documents); not stored yet"}
+        return {"ok": False, "error": f"unsupported MIME '{mime}'"}
 
-    canonical, title, outline = _canonicalize(decoded, mime)
     if not canonical:
-        return {"ok": False, "error": "empty canonical text"}
+        return {"ok": False, "error": "empty canonical text (документ без извлекаемого текста)"}
     content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     final_url = raw["final_url"]
     doc_id = hashlib.sha256(f"{final_url}\n{content_hash}".encode("utf-8")).hexdigest()[:24]

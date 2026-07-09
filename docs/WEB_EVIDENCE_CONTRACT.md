@@ -197,6 +197,17 @@ closure-стиля: ран читал веб → отчёт без записе�
 7. Флаг off → старый web-flow бит-в-бит (пиновано); канарейки живы.
 8. Promote в Библиотеку сохраняет source=web/url/hash/trust=untrusted.
 
+## W2 — web-документы (✅ реализовано)
+
+`web_fetch(store)` при Content-Type `application/pdf` / `…docx` пропускает байты
+через СУЩЕСТВУЮЩИЙ `file_extract` pipeline (pypdf → pdfplumber → OCR :8002 для
+сканов; python-docx для DOCX) — без нового провайдера. Извлечённый текст
+чистится тем же `_clean_text` (zero-width/control), чанкуется и кладётся в тот
+же корпус как обычный документ: trust=untrusted, dedup/квоты/TTL, round-trip
+verify_quote — идентично HTML-странице. Пустое извлечение / повреждённый файл /
+неподдерживаемый MIME → честный ok=False, ран не падает. Тесты: реальные PDF
+(pypdf) и DOCX (python-docx) round-trip + OCR-fallback путь.
+
 ## 12. Вне scope (осознанно)
 
 Auth/paywall/капчи; BFS-краулер (W4 — после реальной необходимости); видео;

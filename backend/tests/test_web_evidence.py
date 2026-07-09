@@ -33,6 +33,48 @@ def _ingest_html(run_id, url, html):
         return wc.ingest(url, run_id)
 
 
+def _ingest_bytes(run_id, url, content, mime):
+    raw = {"ok": True, "final_url": url, "mime": mime, "content": content}
+    with patch.object(wc, "_fetch_raw", return_value=raw):
+        return wc.ingest(url, run_id)
+
+
+def _make_pdf(text: str) -> bytes:
+    """A minimal single-page PDF with an extractable text object (real bytes,
+    extracted by the real pypdf pipeline — no mock)."""
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    ]
+    stream = b"BT /F1 24 Tf 72 700 Td (" + text.encode("latin-1") + b") Tj ET"
+    objs.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objs.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = b"%PDF-1.4\n"
+    offsets = []
+    for i, o in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += str(i).encode() + b" 0 obj\n" + o + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 " + str(len(objs) + 1).encode() + b"\n0000000000 65535 f \n"
+    for off in offsets:
+        out += ("%010d 00000 n \n" % off).encode()
+    out += (b"trailer\n<< /Size " + str(len(objs) + 1).encode() + b" /Root 1 0 R >>\n"
+            b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF")
+    return out
+
+
+def _make_docx(paragraphs: list[str]) -> bytes:
+    import io
+    from docx import Document
+    doc = Document()
+    for p in paragraphs:
+        doc.add_paragraph(p)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 class _TempStore(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
@@ -52,6 +94,72 @@ class AnalyzerTest(unittest.TestCase):
         idx.add("a", "локальный поиск в интернете и парсинг страниц")
         idx.add("b", "погода в москве на завтра дождь")
         self.assertEqual(idx.search("парсинг страниц", top_k=1)[0][0], "a")
+
+
+_PDF_MIME = "application/pdf"
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class DocumentIngestTest(_TempStore):
+    """W2: web PDF/DOCX flow through the EXISTING file_extract pipeline into the
+    same corpus — a document becomes a corpus doc exactly like an HTML page
+    (untrusted, chunked, retrievable, round-trips verify_quote)."""
+
+    def test_real_pdf_round_trips_through_corpus(self):
+        pdf = _make_pdf("PDF-CANARY-7788")
+        res = _ingest_bytes("wpdf", "http://x/report.pdf", pdf, _PDF_MIME)
+        self.assertTrue(res["ok"], res.get("error"))
+        self.assertEqual(res["mime"], _PDF_MIME)
+        q = wr.web_query("wpdf", "PDF-CANARY", top_k=1)
+        hit = q["results"][0]
+        self.assertIn("PDF-CANARY-7788", hit["quote"])
+        v = wr.verify_quote("wpdf", hit["doc_id"], hit["quote"], offset=hit["offset"])
+        self.assertTrue(v["quote_verified"])          # provenance holds for PDF text too
+
+    def test_real_docx_round_trips_through_corpus(self):
+        docx = _make_docx(["Заголовок отчёта", "Ключевая строка DOCX-CANARY-3355 в теле."])
+        res = _ingest_bytes("wdocx", "http://x/doc.docx", docx, _DOCX_MIME)
+        self.assertTrue(res["ok"], res.get("error"))
+        q = wr.web_query("wdocx", "DOCX-CANARY строка", top_k=1)
+        self.assertIn("DOCX-CANARY-3355", q["results"][0]["quote"])
+
+    def test_scanned_pdf_uses_ocr_fallback(self):
+        # A scanned PDF has no embedded text → the pipeline's OCR fallback returns
+        # the recognized text, which flows into the corpus just the same. We patch
+        # extract_file (the real OCR service isn't part of the unit run).
+        with patch("app.application.file_extract.runtime.extract_file",
+                   return_value={"ok": True, "text": "[OCR распознавание]\nSCAN-OCR-9911 в скане",
+                                 "chars": 30}):
+            res = _ingest_bytes("wocr", "http://x/scan.pdf", b"%PDF-1.4 fake", _PDF_MIME)
+        self.assertTrue(res["ok"])
+        q = wr.web_query("wocr", "SCAN-OCR скан", top_k=1)
+        self.assertIn("SCAN-OCR-9911", q["results"][0]["quote"])
+
+    def test_document_is_untrusted_and_dedups(self):
+        pdf = _make_pdf("DEDUP-PDF-1")
+        a = _ingest_bytes("wd", "http://x/d.pdf", pdf, _PDF_MIME)
+        b = _ingest_bytes("wd", "http://x/d.pdf", pdf, _PDF_MIME)
+        self.assertTrue(b["deduped"])
+        self.assertEqual(ws.list_documents("wd")[0]["trust"], "untrusted")
+
+    def test_empty_document_is_honest_error(self):
+        with patch("app.application.file_extract.runtime.extract_file",
+                   return_value={"ok": True, "text": "   ", "chars": 0}):
+            res = _ingest_bytes("we", "http://x/empty.pdf", b"%PDF-1.4", _PDF_MIME)
+        self.assertFalse(res["ok"])
+        self.assertIn("без извлекаемого текста", res["error"])
+
+    def test_extraction_failure_never_crashes(self):
+        with patch("app.application.file_extract.runtime.extract_file",
+                   side_effect=RuntimeError("corrupt")):
+            res = _ingest_bytes("wf", "http://x/bad.pdf", b"%PDF-1.4", _PDF_MIME)
+        self.assertFalse(res["ok"])
+        self.assertIn("extraction failed", res["error"])
+
+    def test_unsupported_mime_rejected(self):
+        res = _ingest_bytes("wu", "http://x/a.zip", b"PK\x03\x04", "application/zip")
+        self.assertFalse(res["ok"])
+        self.assertIn("unsupported MIME", res["error"])
 
 
 class RunIsolationTest(_TempStore):
@@ -85,6 +193,17 @@ class RoundTripTest(_TempStore):
         # and without the offset hint too (pure verbatim search)
         v2 = wr.verify_quote("rt1", hit["doc_id"], hit["quote"])
         self.assertTrue(v2["quote_verified"])
+
+    def test_verify_quote_rejects_shifted_offset(self):
+        res = _ingest_html("rt-offset", "http://x/offset",
+                           "<html><body><p>alpha needle-token omega</p></body></html>")
+        doc_id = res["doc_id"]
+        good_offset = ws.get_document("rt-offset", doc_id)["canonical_text"].find("needle-token")
+        self.assertTrue(wr.verify_quote(
+            "rt-offset", doc_id, "needle-token", offset=good_offset)["quote_verified"])
+        shifted = wr.verify_quote("rt-offset", doc_id, "needle-token", offset=good_offset + 3)
+        self.assertFalse(shifted["quote_verified"])
+        self.assertIsNone(shifted["offset"])
 
     def test_tampered_corpus_fails_verification(self):
         # John's P1-3: hash must be RECOMPUTED — a tampered canonical_text cannot
@@ -290,9 +409,15 @@ class IntentBindingTest(_TempStore):
         self.assertIsNone(corpus_tainted("ti3", "read_file", {"path": self._EVIL}, ""))
         self.assertIsNone(corpus_tainted("no-corpus-run", "run_bash", {"command": self._EVIL}, ""))
 
-    def test_store_down_fails_open_safely(self):
+    def test_store_down_fails_closed_for_unbound_side_effect(self):
         with patch.object(ws, "has_documents", side_effect=ws.StoreUnavailable("down")):
-            self.assertIsNone(corpus_tainted("ti4", "run_bash", {"command": self._EVIL}, ""))
+            frag = corpus_tainted("ti4", "run_bash", {"command": self._EVIL}, "summarize page")
+        self.assertIsNotNone(frag)
+
+    def test_store_down_keeps_user_written_arg_untainted(self):
+        with patch.object(ws, "has_documents", side_effect=ws.StoreUnavailable("down")):
+            frag = corpus_tainted("ti5", "run_bash", {"command": self._EVIL}, self._EVIL)
+        self.assertIsNone(frag)
 
 
 class IntentBindingLoopTest(_TempStore):
@@ -355,9 +480,36 @@ class IntentBindingLoopTest(_TempStore):
         self.assertEqual(pending, [])
         self.assertGreaterEqual(execs, 2)      # re-executed after auto-approve
 
+    def test_bypass_escalates_when_taint_store_unavailable(self):
+        with patch.object(ws, "has_documents", side_effect=ws.StoreUnavailable("down")):
+            pending, _execs = self._drive(self._FRAG, "summarize page", "bypass")
+        self.assertTrue(pending)
+        self.assertIn("инъекц", str(pending[0].get("reason", "")).lower())
+
     def test_ask_mode_also_escalates(self):
         pending, _ = self._drive(self._FRAG, "перескажи страницу", "ask")
         self.assertTrue(pending)               # ask escalates too (never auto in ask)
+
+
+class WebCorpusRouteLifecycleTest(_TempStore):
+    def test_delete_session_cleans_matching_web_corpus(self):
+        _ingest_html("sess-1", "http://x/session", "<p>session corpus doc</p>")
+        self.assertEqual(len(ws.list_documents("sess-1")), 1)
+        from app.api.routes import code_agent_routes as routes
+        with patch.object(routes.session_store, "delete_session", return_value=True):
+            out = routes.delete_code_session("sess-1")
+        self.assertTrue(out["removed"])
+        self.assertEqual(out["web_corpus_removed"], 1)
+        self.assertEqual(len(ws.list_documents("sess-1")), 0)
+
+    def test_delete_missing_session_does_not_clean_web_corpus(self):
+        _ingest_html("sess-2", "http://x/session", "<p>session corpus doc</p>")
+        from app.api.routes import code_agent_routes as routes
+        with patch.object(routes.session_store, "delete_session", return_value=False):
+            out = routes.delete_code_session("sess-2")
+        self.assertFalse(out["removed"])
+        self.assertNotIn("web_corpus_removed", out)
+        self.assertEqual(len(ws.list_documents("sess-2")), 1)
 
 
 if __name__ == "__main__":
