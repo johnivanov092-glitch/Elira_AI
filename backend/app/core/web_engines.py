@@ -168,6 +168,7 @@ def search_searxng(
     *,
     time_range: str | None = None,
     categories: str | None = None,
+    pageno: int | None = None,
 ) -> List[Dict[str, str]]:
     """Query the self-hosted SearXNG metasearch JSON API. SearXNG already
     aggregates Google/Bing/DuckDuckGo/Wikipedia upstream, so one call fans out
@@ -192,6 +193,8 @@ def search_searxng(
         params["time_range"] = time_range
     if categories:
         params["categories"] = categories
+    if pageno and int(pageno) > 1:
+        params["pageno"] = str(int(pageno))   # W6: SearXNG result pagination
 
     response = session().get(
         f"{base}/search",

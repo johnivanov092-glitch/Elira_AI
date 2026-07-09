@@ -46,6 +46,7 @@ def _get(
     import requests
     from app.application.web.ssrf_guard import check_ssrf
     from app.application.code_agent.tools._run import active_server_ports
+    from app.application.web_evidence.politeness import politeness_wait
     current = url
     for _hop in range(_MAX_REDIRECTS + 1):
         if time.monotonic() > deadline:
@@ -53,6 +54,7 @@ def _get(
         reason = check_ssrf(current, allow_loopback_ports=active_server_ports())
         if reason:
             return {"ok": False, "error": f"SSRF blocked — {reason}"}
+        politeness_wait(current)   # W6: per-domain politeness budget
         try:
             resp = requests.get(current, timeout=10, allow_redirects=False, stream=True,
                                 headers={"User-Agent": _UA, "Accept": "application/xml,text/plain"})

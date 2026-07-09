@@ -41,6 +41,16 @@ def _run_search(query: str, limit: int, cat: str, tr: str) -> list[dict]:
 
 
 def _format_search_results(sources: list[dict], header: str, limit: int) -> str:
+    # W6 (flag-gated): annotate each result with its deterministic source tier
+    # (official/primary/secondary/ugc) so the model can weigh sources; flag off →
+    # output is byte-identical to pre-W6.
+    tag_tiers = False
+    try:
+        tag_tiers = _web_corpus_on()
+        if tag_tiers:
+            from app.application.web_evidence.tiers import classify_tier
+    except Exception:
+        tag_tiers = False
     lines = [header]
     for i, item in enumerate(sources[:limit], 1):
         title = (item.get("title") or "").strip() or "(no title)"
@@ -50,7 +60,12 @@ def _format_search_results(sources: list[dict], header: str, limit: int) -> str:
         snippet = (item.get("body") or item.get("snippet") or item.get("content") or "").strip()
         if len(snippet) > 350:
             snippet = snippet[:350] + " […]"
-        lines.append(f"\n[{i}] {title}\n    {url}\n    {snippet}" if snippet else f"\n[{i}] {title}\n    {url}")
+        mark = ""
+        if tag_tiers and url:
+            tier = classify_tier(url)
+            mark = f" [{tier}]" if tier != "unknown" else ""
+        head = f"\n[{i}] {title}{mark}\n    {url}"
+        lines.append(f"{head}\n    {snippet}" if snippet else head)
     return "\n".join(lines)
 
 
@@ -61,6 +76,7 @@ def tool_web_search(
     top_k: int = 5,
     categories: str = "",
     time_range: str = "",
+    page: int = 1,
 ) -> dict[str, Any]:
     """Search the web (SearXNG / DuckDuckGo / Wikipedia). Returns ranked results
     with title + URL + snippet. Use `web_fetch` after to read a result in full.
@@ -79,6 +95,28 @@ def tool_web_search(
     tr = tr if tr in _WEB_SEARCH_TIME_RANGES else ""
     limit = max(1, min(int(top_k), 10))
     focus = "".join(f" · {x}" for x in (cat, tr) if x)
+
+    # ── W6: SearXNG result pagination (page 2+); SearXNG-only, honest otherwise ──
+    try:
+        page_n = max(1, min(int(page), 5))
+    except (TypeError, ValueError):
+        page_n = 1
+    if page_n > 1:
+        cleaned = (query or "").strip() or " ".join(_coerce_str_list(queries))
+        if not cleaned:
+            return {"text": "ERROR: query is empty (pass `query`)"}
+        try:
+            from app.core.web_engines import search_searxng
+            sources = search_searxng(cleaned, max_results=limit,
+                                     time_range=tr or None, categories=cat or None,
+                                     pageno=page_n)
+        except Exception as exc:  # noqa: BLE001 — pagination is SearXNG-only
+            return {"text": f"ERROR: страница {page_n} недоступна — пагинация работает только "
+                            f"через SearXNG ({exc}). Fallback-движки отдают только первую страницу."}
+        if not sources:
+            return {"text": f"Страница {page_n} по '{cleaned}' пуста — дальше результатов нет."}
+        return {"text": _format_search_results(
+            sources, f"Результаты, страница {page_n} (SearXNG){focus}:", limit)}
 
     query_list = _coerce_str_list(queries)
     if query_list:

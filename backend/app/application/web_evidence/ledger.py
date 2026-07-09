@@ -120,6 +120,7 @@ def render_ledger(run_id: str) -> str:
         if c["conflicted"]:
             conflicted_idx.append(i)
         verified_domains: set[str] = set()
+        verified_tiers: set[str] = set()
         any_now = False
         for e in c["evidence"]:
             doc_id = e.get("doc_id")
@@ -132,11 +133,19 @@ def render_ledger(run_id: str) -> str:
                 any_now = True
                 if url:
                     verified_domains.add(registrable_domain(url))
+                    verified_tiers.add(str(d.get("tier") or "unknown"))
             src = registrable_domain(url) if url else (doc_id or "—")
             quote = " ".join((e["quote"] or "").split())[:200]
             fnote = f" · {freshness_note(d.get('dates') or {})}" if url else ""
-            lines.append(f"  • {src}: «{quote}» — {_badge(fresh)}{fnote}")
+            # W6 tier annotation — publisher KIND (deterministic list), not a verdict
+            tier = str(d.get("tier") or "unknown")
+            tnote = f" · {tier}" if url and tier != "unknown" else ""
+            lines.append(f"  • {src}: «{quote}» — {_badge(fresh)}{fnote}{tnote}")
         level, cnote = corroboration(verified_domains)
+        # invariant №9: an OFFICIAL primary source may suffice alone — annotate,
+        # but keep the single-source count honest (annotation, not exemption).
+        if level == "single" and verified_tiers == {"official"}:
+            cnote += " · источник official (вендор/стандарт) — может быть достаточен один"
         lines.append(f"  → {cnote}")
         if not any_now:
             n_unverified += 1

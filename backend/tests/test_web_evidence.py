@@ -804,6 +804,133 @@ class SitemapDiscoveryTest(unittest.TestCase):
         )
 
 
+class TierTest(unittest.TestCase):
+    """W6: deterministic source tiers — curated lists + structural rules; the
+    default is 'unknown' (never a guess)."""
+
+    def test_classification(self):
+        from app.application.web_evidence.tiers import classify_tier as ct
+        self.assertEqual(ct("https://docs.python.org/3/library/json.html"), "official")
+        self.assertEqual(ct("https://www.w3.org/TR/xml/"), "official")
+        self.assertEqual(ct("https://www.exampleagency.gov/report"), "official")
+        self.assertEqual(ct("https://docs.djangoproject.com/en/5.0/"), "official")  # docs. host
+        self.assertEqual(ct("https://pypi.org/project/requests/"), "primary")
+        self.assertEqual(ct("https://github.com/psf/requests"), "primary")
+        self.assertEqual(ct("https://arxiv.org/abs/1706.03762"), "primary")
+        self.assertEqual(ct("https://ru.wikipedia.org/wiki/Python"), "secondary")
+        self.assertEqual(ct("https://stackoverflow.com/q/1"), "ugc")
+        self.assertEqual(ct("https://habr.com/ru/articles/1/"), "ugc")
+        self.assertEqual(ct("https://random-blog.example.com/post"), "unknown")
+        self.assertEqual(ct(""), "unknown")
+
+    def test_ingest_stores_tier_and_render_annotates(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp()
+        ws._DB_PATH_OVERRIDE = str(Path(tmp) / "c.sqlite3")
+        try:
+            d = _ingest_html("tier1", "https://ru.wikipedia.org/wiki/X",
+                             "<html><body><p>факт TIER-1 в тексте</p></body></html>")
+            self.assertEqual(ws.list_documents("tier1")[0]["tier"], "secondary")
+            wl.add_claims("tier1", [{"claim": "c", "evidence": [
+                {"doc_id": d["doc_id"], "quote": "факт TIER-1 в тексте"}]}])
+            self.assertIn("· secondary", wl.render_ledger("tier1"))
+        finally:
+            ws._DB_PATH_OVERRIDE = None
+
+    def test_single_official_source_annotated(self):
+        import tempfile as _tf
+        tmp = _tf.mkdtemp()
+        ws._DB_PATH_OVERRIDE = str(Path(tmp) / "c.sqlite3")
+        try:
+            d = _ingest_html("tier2", "https://docs.python.org/3/x",
+                             "<html><body><p>официальный факт OF-1</p></body></html>")
+            wl.add_claims("tier2", [{"claim": "c", "evidence": [
+                {"doc_id": d["doc_id"], "quote": "официальный факт OF-1"}]}])
+            r = wl.render_ledger("tier2")
+            self.assertIn("может быть достаточен один", r)          # invariant №9
+            self.assertIn("один источник", r)                       # count stays honest
+        finally:
+            ws._DB_PATH_OVERRIDE = None
+
+
+class PolitenessTest(unittest.TestCase):
+    """W6: consecutive fetches to ONE registrable domain are spaced; different
+    domains are not throttled."""
+
+    def test_same_domain_spaced_other_domain_not(self):
+        from app.application.web_evidence import politeness as pol
+        with patch.object(pol, "_last_hit", {}), patch.object(pol.time, "sleep") as slept:
+            self.assertEqual(pol.politeness_wait("https://a.com/1"), 0.0)   # first hit free
+            w2 = pol.politeness_wait("https://a.com/2")                     # same domain → wait
+            self.assertGreater(w2, 0.0)
+            self.assertLessEqual(w2, pol.MIN_INTERVAL_S)
+            self.assertEqual(pol.politeness_wait("https://b.org/1"), 0.0)   # other domain free
+            slept.assert_called()
+
+    def test_fetch_paths_call_politeness(self):
+        # both outbound fetchers must consult the budget (wiring, not timing)
+        from app.application.web_evidence import corpus as _c, sitemap as _s
+        import inspect
+        self.assertIn("politeness_wait", inspect.getsource(_c._fetch_raw))
+        self.assertIn("politeness_wait", inspect.getsource(_s._get))
+
+
+class SearchPageTest(unittest.TestCase):
+    """W6: SearXNG pageno — deeper result pages for the same query."""
+
+    def test_searxng_passes_pageno(self):
+        from app.core import web_engines as we
+        captured = {}
+        class _R:
+            def raise_for_status(self): pass
+            def json(self): return {"results": [
+                {"url": "https://x.com/a", "title": "t", "content": "c"}]}
+        class _S:
+            def get(self, url, params=None, timeout=None):
+                captured.update(params or {})
+                return _R()
+        with patch.object(we, "searxng_url", return_value="http://s"), \
+             patch.object(we, "session", return_value=_S()):
+            we.search_searxng("q", pageno=3)
+            self.assertEqual(captured.get("pageno"), "3")
+            captured.clear()
+            we.search_searxng("q")                       # default: no pageno param
+            self.assertNotIn("pageno", captured)
+
+    def test_tool_page2_uses_searxng_only(self):
+        from app.application.code_agent.tools import _web
+        with patch("app.core.web_engines.search_searxng",
+                   return_value=[{"title": "t", "href": "https://x.com/a", "body": "b"}]) as sx:
+            out = _web.tool_web_search(query="q", page=2)
+        self.assertIn("страница 2", out["text"])
+        self.assertEqual(sx.call_args.kwargs.get("pageno"), 2)
+        # SearXNG down → honest error, no silent page-1 fallback
+        with patch("app.core.web_engines.search_searxng", side_effect=RuntimeError("down")):
+            out2 = _web.tool_web_search(query="q", page=2)
+        self.assertIn("ERROR", out2["text"])
+        self.assertIn("SearXNG", out2["text"])
+
+    def test_page_prop_gated_on_flag(self):
+        from app.application.code_agent import tool_schemas as tsch
+        def _props(enabled):
+            with patch.object(tsch, "_web_corpus_enabled", return_value=enabled):
+                for s in tsch.build_tool_schemas():
+                    if s["function"]["name"] == "web_search":
+                        return set(s["function"]["parameters"]["properties"])
+        self.assertNotIn("page", _props(False))
+        self.assertIn("page", _props(True))
+
+    def test_tier_tags_in_search_output_flag_gated(self):
+        from app.application.code_agent.tools import _web
+        src = [{"title": "Doc", "href": "https://docs.python.org/3/", "body": "x"}]
+        with patch.object(_web, "_web_corpus_on", return_value=True):
+            on = _web._format_search_results(src, "h", 5)
+        with patch.object(_web, "_web_corpus_on", return_value=False):
+            off = _web._format_search_results(src, "h", 5)
+        self.assertIn("[official]", on)
+        self.assertNotIn("[official]", off)               # flag off → pre-W6 bytes
+
+
 class SitemapToolFlagTest(unittest.TestCase):
     def test_web_sitemap_blocked_when_flag_off(self):
         from app.application.code_agent.tools import _web

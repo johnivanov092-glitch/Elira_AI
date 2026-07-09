@@ -129,11 +129,14 @@ def _fetch_raw(url: str) -> dict[str, Any]:
     from app.application.web.ssrf_guard import check_ssrf
     from app.application.code_agent.tools._run import active_server_ports
 
+    from app.application.web_evidence.politeness import politeness_wait
+
     current = url
     for _hop in range(_MAX_REDIRECTS + 1):
         reason = check_ssrf(current, allow_loopback_ports=active_server_ports())
         if reason:
             return {"ok": False, "error": f"SSRF blocked — {reason}"}
+        politeness_wait(current)   # W6: per-domain politeness budget
         try:
             resp = requests.get(current, timeout=15, allow_redirects=False, stream=True,
                                 headers={"User-Agent": "Mozilla/5.0 EliraBot",
@@ -203,11 +206,12 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     # W5: capture source dates (published/modified meta + Last-Modified header) for
     # the freshness signal. Best-effort — a missing date is a normal, honest state.
     from app.application.web_evidence.freshness import extract_dates
+    from app.application.web_evidence.tiers import classify_tier
     dates = extract_dates(decoded, raw.get("last_modified"))
     doc = {
         "doc_id": doc_id, "url": url, "final_url": final_url, "content_hash": content_hash,
         "mime": mime, "title": title, "outline": outline, "dates": dates,
-        "tier": "unknown", "nbytes": len(canonical.encode("utf-8")),
+        "tier": classify_tier(final_url), "nbytes": len(canonical.encode("utf-8")),
         "canonical_text": canonical,
     }
     chunks = _chunk(canonical)

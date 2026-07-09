@@ -109,6 +109,15 @@ _WEB_SITEMAP_SCHEMA = {
 }
 
 
+_WEB_SEARCH_PAGE_PROP = {
+    "type": "integer",
+    "description": (
+        "Result page 2-5 for the SAME query (deeper results via SearXNG "
+        "pagination) when page 1 wasn't enough. Single query only."
+    ),
+}
+
+
 def build_tool_schemas() -> list[dict[str, Any]]:
     """OpenAI-compatible function-calling tool schemas."""
     schemas = _base_tool_schemas()
@@ -116,8 +125,11 @@ def build_tool_schemas() -> list[dict[str, Any]]:
         import copy
         schemas = copy.deepcopy(schemas)
         for s in schemas:
-            if (s.get("function") or {}).get("name") == "web_fetch":
+            name = (s.get("function") or {}).get("name")
+            if name == "web_fetch":
                 s["function"]["parameters"]["properties"]["store"] = dict(_WEB_FETCH_STORE_PROP)
+            elif name == "web_search":
+                s["function"]["parameters"]["properties"]["page"] = dict(_WEB_SEARCH_PAGE_PROP)
         schemas.append(copy.deepcopy(_WEB_QUERY_SCHEMA))
         schemas.append(copy.deepcopy(_WEB_CLAIM_ADD_SCHEMA))
         schemas.append(copy.deepcopy(_WEB_SITEMAP_SCHEMA))
