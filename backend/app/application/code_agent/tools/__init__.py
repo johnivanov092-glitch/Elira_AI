@@ -43,6 +43,7 @@ from app.application.code_agent.tools._web import (  # noqa: F401
     tool_web_fetch,
     tool_web_claim_add,
     tool_web_query,
+    tool_web_sitemap,
     tool_web_search,
 )
 from app.application.code_agent.tools._sandbox_tools import (  # noqa: F401
@@ -106,6 +107,7 @@ __all__ = [
     "tool_web_fetch",
     "tool_web_query",
     "tool_web_claim_add",
+    "tool_web_sitemap",
     "tool_browser",
     "tool_sandbox_run",
     "tool_sandbox_reset",

@@ -314,6 +314,33 @@ def tool_web_claim_add(*, claims: Any) -> dict[str, Any]:
     return {"text": "\n".join(lines), "ok": True}
 
 
+def tool_web_sitemap(*, url: str, contains: str = "", max_urls: int = 30) -> dict[str, Any]:
+    """Discover URLs from a site's sitemap.xml (W4-lite) so you can then read the
+    relevant ones with web_fetch(store=true). This does NOT crawl links — it only
+    lists sitemap URLs (with lastmod dates), never leaves the site's domain,
+    respects robots.txt, and is bounded. `contains` filters URLs by a substring."""
+    if not _web_corpus_on():
+        return {"text": "ERROR: web_sitemap выключен (фиче-флаг web_corpus)", "ok": False}
+    if not str(url).strip().startswith(("http://", "https://")):
+        return {"text": "ERROR: url must be a full http(s) URL", "ok": False}
+    from app.application.web_evidence.sitemap import discover
+    res = discover(url, max_urls=max_urls, contains=contains or "")
+    if not res.get("ok"):
+        return {"text": f"ERROR: {res.get('error')}", "ok": False}
+    urls = res.get("urls") or []
+    if not urls:
+        return {"text": f"Sitemap ({res.get('sitemap')}, {res.get('note')}): подходящих URL не найдено. "
+                        f"Пропущено: {res.get('skipped') or {}}", "ok": True}
+    lines = [f"Найдено {res['count']} URL в sitemap ({res.get('note')}). "
+             f"Прочитай нужные через web_fetch(store=true, urls=[...]):"]
+    for e in urls[:max_urls]:
+        lm = f"  (lastmod {e['lastmod']})" if e.get("lastmod") else ""
+        lines.append(f"- {e['loc']}{lm}")
+    if res.get("skipped"):
+        lines.append(f"Пропущено (вне домена/robots/дубли): {res['skipped']}")
+    return {"text": "\n".join(lines), "ok": True}
+
+
 def _resolve_locator(page, selector: str, *, kind: str):
     """Best-effort locator for an interaction step. Accepts a raw CSS selector, or a
     human label / button text / placeholder / input name — trying each strategy so the

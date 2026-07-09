@@ -29,6 +29,7 @@ from app.application.code_agent.tools._web import (
     tool_web_fetch,
     tool_web_claim_add,
     tool_web_query,
+    tool_web_sitemap,
     tool_web_search,
 )
 from app.application.code_agent.tools._sandbox_tools import (
@@ -80,6 +81,7 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "web_fetch": lambda **kw: tool_web_fetch(**kw),
         "web_query": lambda **kw: tool_web_query(**kw),
         "web_claim_add": lambda **kw: tool_web_claim_add(**kw),
+        "web_sitemap": lambda **kw: tool_web_sitemap(**kw),
         "browser": lambda **kw: tool_browser(**kw),
         "sandbox_run": lambda **kw: tool_sandbox_run(project_root, **kw),
         "sandbox_reset": lambda **kw: tool_sandbox_reset(project_root, **kw),

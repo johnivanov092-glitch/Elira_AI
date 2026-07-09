@@ -197,6 +197,21 @@ closure-стиля: ран читал веб → отчёт без записе�
 7. Флаг off → старый web-flow бит-в-бит (пиновано); канарейки живы.
 8. Promote в Библиотеку сохраняет source=web/url/hash/trust=untrusted.
 
+## W4-lite — sitemap discovery (✅ реализовано; полный BFS-краулер W4 — по реальной необходимости)
+
+`web_sitemap(url, contains?, max_urls?)` — bounded discovery URL из sitemap.xml,
+БЕЗ обхода ссылок. `web_evidence/sitemap.py`: резолв (явный .xml → robots.txt
+`Sitemap:` → `/sitemap.xml`), парс urlset + sitemapindex (следование за child
+ограничено `_MAX_CHILD_SITEMAPS`=5), фильтр eTLD+1 (**НЕ покидает registrable-
+домен** — off-domain URL и off-domain child-sitemap отбрасываются), robots.txt
+respected (RobotFileParser, fail-open к allow), `contains`-фильтр по подстроке.
+Границы (§4): GET only; **SSRF re-check на КАЖДОМ URL и КАЖДОМ redirect-хопе**;
+sitemap ≤4MB; ≤50 URL/вызов; time-budget 20с. Только discovery — ингест остаётся
+выбором модели через web_fetch(store). За флагом web_corpus, бит-в-бит off
+(schema/tool_search/тул). Тесты: urlset/index/robots-disallow/off-domain-drop/
+max_urls/contains + реальный SSRF-блок 169.254.169.254. Live: djangoproject.com
+→ URL одного домена, contains-фильтр.
+
 ## W5 — freshness + conflicts (✅ реализовано)
 
 Поверх ledger, всё на РЕ-ВЕРИФИЦИРОВАННЫХ (в момент рендера) evidence:

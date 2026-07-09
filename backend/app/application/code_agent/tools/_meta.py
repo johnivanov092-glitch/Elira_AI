@@ -107,7 +107,7 @@ def tool_search(
     matches = search_tool_specs(query, limit=safe_limit)
     # W1 flag-off surface parity: web_query must be invisible when web_corpus is
     # off — otherwise tool_search output differs from pre-W1 (review P1-4).
-    _W1_TOOLS = {"web_query", "web_claim_add"}
+    _W1_TOOLS = {"web_query", "web_claim_add", "web_sitemap"}
     try:
         from app.application.feature_flags import flag_enabled
         if not flag_enabled("web_corpus"):

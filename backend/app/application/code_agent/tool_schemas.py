@@ -85,6 +85,30 @@ _WEB_CLAIM_ADD_SCHEMA = {
 }
 
 
+_WEB_SITEMAP_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_sitemap",
+        "description": (
+            "Discover URLs from a site's sitemap.xml so you can then read the "
+            "relevant ones with web_fetch(store=true). This does NOT crawl links — "
+            "it only lists sitemap URLs (with lastmod), never leaves the site's "
+            "registrable domain, respects robots.txt, and is bounded. Use `contains` "
+            "to filter URLs by a substring (e.g. a section path)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Site or sitemap URL (http(s))."},
+                "contains": {"type": "string", "description": "Optional substring URLs must contain."},
+                "max_urls": {"type": "integer", "description": "Max URLs to return (default 30, max 50)."},
+            },
+            "required": ["url"],
+        },
+    },
+}
+
+
 def build_tool_schemas() -> list[dict[str, Any]]:
     """OpenAI-compatible function-calling tool schemas."""
     schemas = _base_tool_schemas()
@@ -96,6 +120,7 @@ def build_tool_schemas() -> list[dict[str, Any]]:
                 s["function"]["parameters"]["properties"]["store"] = dict(_WEB_FETCH_STORE_PROP)
         schemas.append(copy.deepcopy(_WEB_QUERY_SCHEMA))
         schemas.append(copy.deepcopy(_WEB_CLAIM_ADD_SCHEMA))
+        schemas.append(copy.deepcopy(_WEB_SITEMAP_SCHEMA))
     return schemas
 
 

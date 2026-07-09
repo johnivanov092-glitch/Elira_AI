@@ -677,6 +677,109 @@ class LedgerCorroborationTest(_TempStore):
         self.assertIn("[1]", r)
 
 
+class SitemapDiscoveryTest(unittest.TestCase):
+    """W4-lite: bounded sitemap discovery. No BFS, never leaves the domain, robots
+    respected, SSRF re-checked, bounded. Fetches are patched (no network)."""
+
+    def _urlset(self, locs):
+        items = "".join(f"<url><loc>{u}</loc><lastmod>2024-05-06</lastmod></url>" for u in locs)
+        return f'<?xml version="1.0"?><urlset>{items}</urlset>'
+
+    def _patch_get(self, mapping):
+        # mapping: url -> text; robots.txt defaults to allow-all
+        def fake_get(url, *, deadline, max_bytes=None):
+            if url.endswith("/robots.txt") and url not in mapping:
+                return {"ok": True, "final_url": url, "text": "User-agent: *\nAllow: /"}
+            if url in mapping:
+                return {"ok": True, "final_url": url, "text": mapping[url]}
+            return {"ok": False, "error": "404"}
+        from app.application.web_evidence import sitemap
+        return patch.object(sitemap, "_get", side_effect=fake_get)
+
+    def test_urlset_discovery_same_domain_only(self):
+        from app.application.web_evidence import sitemap
+        xml = self._urlset(["https://site.com/a", "https://site.com/b",
+                            "https://evil.com/x"])   # off-domain must be dropped
+        with self._patch_get({"https://site.com/sitemap.xml": xml}):
+            res = sitemap.discover("https://site.com/")
+        locs = [u["loc"] for u in res["urls"]]
+        self.assertEqual(sorted(locs), ["https://site.com/a", "https://site.com/b"])
+        self.assertEqual(res["skipped"].get("off_domain"), 1)
+        self.assertEqual(res["urls"][0]["lastmod"], "2024-05-06")
+
+    def test_sitemapindex_followed_bounded(self):
+        from app.application.web_evidence import sitemap
+        index = ('<?xml version="1.0"?><sitemapindex>'
+                 '<sitemap><loc>https://site.com/sm1.xml</loc></sitemap>'
+                 '<sitemap><loc>https://site.com/sm2.xml</loc></sitemap></sitemapindex>')
+        with self._patch_get({
+            "https://site.com/sitemap.xml": index,
+            "https://site.com/sm1.xml": self._urlset(["https://site.com/p1"]),
+            "https://site.com/sm2.xml": self._urlset(["https://site.com/p2"]),
+        }):
+            res = sitemap.discover("https://site.com/")
+        self.assertEqual(sorted(u["loc"] for u in res["urls"]),
+                         ["https://site.com/p1", "https://site.com/p2"])
+
+    def test_robots_from_robots_txt_and_disallow(self):
+        from app.application.web_evidence import sitemap
+        robots = ("User-agent: *\nDisallow: /private\n"
+                  "Sitemap: https://site.com/custom-sitemap.xml")
+        xml = self._urlset(["https://site.com/public", "https://site.com/private/secret"])
+        with self._patch_get({
+            "https://site.com/robots.txt": robots,
+            "https://site.com/custom-sitemap.xml": xml,
+        }):
+            res = sitemap.discover("https://site.com/")
+        locs = [u["loc"] for u in res["urls"]]
+        self.assertIn("https://site.com/public", locs)
+        self.assertNotIn("https://site.com/private/secret", locs)   # robots Disallow
+        self.assertEqual(res["skipped"].get("robots"), 1)
+        self.assertEqual(res["sitemap"], "https://site.com/custom-sitemap.xml")
+
+    def test_max_urls_bound(self):
+        from app.application.web_evidence import sitemap
+        many = self._urlset([f"https://site.com/p{i}" for i in range(100)])
+        with self._patch_get({"https://site.com/sitemap.xml": many}):
+            res = sitemap.discover("https://site.com/", max_urls=5)
+        self.assertEqual(len(res["urls"]), 5)
+
+    def test_contains_filter(self):
+        from app.application.web_evidence import sitemap
+        xml = self._urlset(["https://site.com/blog/a", "https://site.com/shop/b",
+                            "https://site.com/blog/c"])
+        with self._patch_get({"https://site.com/sitemap.xml": xml}):
+            res = sitemap.discover("https://site.com/", contains="/blog/")
+        self.assertEqual(sorted(u["loc"] for u in res["urls"]),
+                         ["https://site.com/blog/a", "https://site.com/blog/c"])
+
+    def test_ssrf_and_redirect_recheck_real_get(self):
+        # The REAL _get must SSRF-block a private target (no patch) — proves the
+        # per-hop guard is wired, not just the discovery orchestration.
+        from app.application.web_evidence import sitemap
+        import time as _t
+        got = sitemap._get("http://169.254.169.254/latest/meta-data",
+                           deadline=_t.monotonic() + 5)
+        self.assertFalse(got["ok"])
+        self.assertIn("SSRF", got["error"])
+
+
+class SitemapToolFlagTest(unittest.TestCase):
+    def test_web_sitemap_blocked_when_flag_off(self):
+        from app.application.code_agent.tools import _web
+        with patch.object(_web, "_web_corpus_on", return_value=False):
+            out = _web.tool_web_sitemap(url="https://x.com")
+        self.assertFalse(out["ok"])
+        self.assertIn("web_corpus", out["text"])
+
+    def test_schema_gated_on_flag(self):
+        from app.application.code_agent import tool_schemas as tsch
+        with patch.object(tsch, "_web_corpus_enabled", return_value=False):
+            self.assertNotIn("web_sitemap", {s["function"]["name"] for s in tsch.build_tool_schemas()})
+        with patch.object(tsch, "_web_corpus_enabled", return_value=True):
+            self.assertIn("web_sitemap", {s["function"]["name"] for s in tsch.build_tool_schemas()})
+
+
 class LedgerToolFlagTest(unittest.TestCase):
     def test_web_claim_add_blocked_when_flag_off(self):
         from app.application.code_agent.tools import _web
