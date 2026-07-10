@@ -284,6 +284,15 @@ def _sse_format(event: dict[str, Any]) -> str:
 @router.post("/stream")
 def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
     run_id = payload.run_id or uuid.uuid4().hex
+    # Scoped Read-Only SSH v1: a diagnostic run_id is server-minted and bound to a
+    # read-only scope, and may be streamed EXACTLY ONCE. Refuse a stream with no live
+    # bound scope (fabricated prefix / expired) and any repeat/parallel stream — a
+    # second stream could finish and lift the lockdown while the first is still live.
+    from app.application.agent_kernel import operation_scope as _opscope
+    if run_id.startswith(_opscope.DIAG_RUN_PREFIX):
+        if _opscope.get_active_scope(run_id) is None or not _opscope.claim_stream(run_id):
+            raise HTTPException(status_code=409,
+                                detail="diagnostic run already used or not bound to a live scope")
     history = [m.model_dump() for m in (payload.conversation_history or [])]
     user_message = _inject_library_context(_inject_attachment_context(payload.message, payload.attachments))
 
@@ -332,6 +341,11 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
 @router.post("/runs/{run_id}/resume")
 def resume_run(run_id: str) -> StreamingResponse:
     """Continue a persisted interrupted/partial run with the same run id."""
+    # Scoped Read-Only SSH v1: a diagnostic run is one-shot and its scope is cleared
+    # on exit — resuming would run with NO scope (no lockdown). Refuse it.
+    from app.application.agent_kernel import operation_scope as _opscope
+    if run_id.startswith(_opscope.DIAG_RUN_PREFIX):
+        raise HTTPException(status_code=409, detail="diagnostic runs are one-shot and not resumable")
     from app.application.code_agent.run_journal import RunJournal
 
     try:

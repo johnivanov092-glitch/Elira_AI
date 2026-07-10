@@ -31,6 +31,12 @@ DEFAULT_TTL_SECONDS = 300
 # so an entry expired longer ago than this has NO live run and is safe to sweep. This
 # bounds _SCOPES growth from abandoned /diagnostics/start calls that never streamed.
 _SWEEP_GRACE_SECONDS = 900
+# Diagnostic run_ids are server-minted with this prefix. Used to (a) fail CLOSED on a
+# broken scope layer and (b) enforce one-shot streaming.
+DIAG_RUN_PREFIX = "itops-diag-"
+# How long a stream claim is remembered (well past any run's lifetime) so a repeat
+# stream / resume is refused; bounds _CLAIMED growth.
+_CLAIM_RETENTION_SECONDS = 3600
 
 _LOCK = threading.RLock()
 # run_id -> mutable scope record. Presence of the key == the run is LOCKED DOWN
@@ -38,6 +44,9 @@ _LOCK = threading.RLock()
 # or the abandoned-entry sweep — never by TTL. TTL only governs whether a LIVE scope
 # exists (get_active_scope), which the one-shot health check requires.
 _SCOPES: dict[str, dict] = {}
+# diagnostic run_id -> claim time. A diagnostic run_id may be streamed EXACTLY ONCE;
+# this survives clear_scope so a repeat/parallel stream or a resume is refused.
+_CLAIMED: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -77,7 +86,8 @@ def bind_scope(run_id: str, profile_id: str, *, mode: str = "read_only",
 
 
 def _sweep_locked() -> None:
-    """Drop entries whose run is long gone (expired more than the sweep grace ago).
+    """Drop entries whose run is long gone (expired more than the sweep grace ago),
+    and claims older than the retention window.
 
     Caller holds _LOCK. Any live run has already been cleared by its finally or is
     still within its execution deadline, so an entry this stale has no live run and
@@ -85,6 +95,25 @@ def _sweep_locked() -> None:
     now = time.time()
     for k in [k for k, v in _SCOPES.items() if now - v["expires_at"] > _SWEEP_GRACE_SECONDS]:
         _SCOPES.pop(k, None)
+    for k in [k for k, t in _CLAIMED.items() if now - t > _CLAIM_RETENTION_SECONDS]:
+        _CLAIMED.pop(k, None)
+
+
+def claim_stream(run_id: str) -> bool:
+    """Atomically claim a diagnostic run_id for its SINGLE stream. True the first
+    time, False on every repeat — so a diagnostic run can never be streamed twice
+    (parallel or sequential) or resumed. Without this, a finished stream's
+    clear_scope could lift the lockdown while a second stream on the same run_id is
+    still live, and a post-cleanup re-stream/resume would run with no scope at all."""
+    rid = _norm(run_id)
+    if not rid:
+        return False
+    with _LOCK:
+        _sweep_locked()
+        if rid in _CLAIMED:
+            return False
+        _CLAIMED[rid] = time.time()
+        return True
 
 
 def _view(rid: str) -> ScopeView | None:

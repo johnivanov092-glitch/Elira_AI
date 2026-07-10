@@ -74,6 +74,13 @@ class ScopeStoreTest(unittest.TestCase):
         self.assertFalse(opscope.is_locked_down("r-old"))
         self.assertTrue(opscope.is_locked_down("r-new"))
 
+    def test_claim_stream_is_once(self):
+        # a diagnostic run_id may be streamed exactly once — repeat/parallel refused.
+        self.assertTrue(opscope.claim_stream("itops-diag-c1"))    # first wins
+        self.assertFalse(opscope.claim_stream("itops-diag-c1"))   # repeat refused
+        self.assertFalse(opscope.claim_stream(""))                # empty rejected
+        self.assertTrue(opscope.claim_stream("itops-diag-c2"))    # distinct id ok
+
 
 class ScopedGateTest(unittest.TestCase):
     TOOL = "itops_ssh_healthcheck"
@@ -138,6 +145,54 @@ class ScopedGateTest(unittest.TestCase):
         self.assertEqual(res2.status, "blocked")
         self.assertEqual(res2.error, "healthcheck_already_used")
         self.assertEqual(calls2, [])
+
+    def test_scope_layer_error_fails_closed_for_diag_run(self):
+        # P1: a broken scope layer must BLOCK a diagnostic run, not fall open. A normal
+        # run is unaffected by an unrelated scope-layer error.
+        import app.application.agent_kernel.operation_scope as opmod
+        with unittest.mock.patch.object(opmod, "is_locked_down", side_effect=RuntimeError("boom")):
+            res, calls = self._exec("run_bash", {"command": "whoami"}, run_id="itops-diag-err")
+            self.assertEqual(res.status, "blocked")
+            self.assertEqual(res.error, "scope_unavailable")
+            self.assertEqual(calls, [])
+            res2, _ = self._exec("run_bash", {"command": "whoami"}, run_id="plain-run")
+            self.assertNotEqual(res2.error, "scope_unavailable")     # normal run untouched
+
+    def test_evidence_persist_failure_marks_run_failed(self):
+        # P2: if evidence does not persist, the health check is NOT a success — the
+        # commands ran without proof in the journal.
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        from app.infrastructure.it_ops import store as st
+        fake = unittest.mock.Mock()
+        fake.stdout, fake.stderr, fake.returncode = b"h\n", b"", 0
+        tok = set_current_run_id("ctx-ev")
+        try:
+            with unittest.mock.patch("subprocess.run", return_value=fake), \
+                 unittest.mock.patch.object(st, "record_evidence", side_effect=RuntimeError("db down")):
+                out = itops_provider.tool_itops_ssh_healthcheck(profile_id="prof-ok")
+        finally:
+            reset_current_run_id(tok)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "evidence_persist_failed")
+        self.assertTrue(all(r["evidence_persisted"] is False for r in out["results"]))
+
+    def test_tool_search_hides_itops_when_flag_off(self):
+        # P2: with itops off the model must not even see the disabled diagnostic tool.
+        from app.application.agent_kernel.deferred_tools import clear_run, enable_deferred_tools
+        from app.application.code_agent.tools import tool_search
+        from app.application import feature_flags as ff
+        rid = "search-run-1"
+        enable_deferred_tools(rid, ())
+        try:
+            with unittest.mock.patch.object(ff, "flag_enabled", side_effect=lambda n: n != "itops"):
+                off = tool_search(run_id=rid, query="itops ssh health check diagnostic hostname uname")
+            self.assertNotIn("itops_ssh_healthcheck", [m.get("name") for m in off.get("matches", [])])
+            with unittest.mock.patch.object(ff, "flag_enabled", side_effect=lambda n: True):
+                on = tool_search(run_id=rid, query="itops ssh health check diagnostic hostname uname")
+            self.assertIn("itops_ssh_healthcheck", [m.get("name") for m in on.get("matches", [])])
+        finally:
+            clear_run(rid)
 
     def test_handler_takes_run_id_from_context_not_args(self):
         # point 2: the handler derives run_id from the runtime context (authoritative,
@@ -243,6 +298,38 @@ class DiagnosticsRouteTest(unittest.TestCase):
         with unittest.mock.patch.object(ff, "flag_enabled", return_value=False):
             r = self.client.post("/api/itops/diagnostics/start", json={"profile_id": "prof-ok"})
         self.assertEqual(r.status_code, 404)
+
+
+class DiagStreamGuardTest(unittest.TestCase):
+    """P1: a diagnostic run_id may be streamed exactly once and never resumed."""
+
+    def setUp(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.code_agent_routes import router
+        app = FastAPI()
+        app.include_router(router)
+        self.client = TestClient(app)
+
+    def test_stream_refuses_diag_run_without_live_scope(self):
+        # fabricated/expired diagnostic run_id with no bound scope → 409 (before any run)
+        r = self.client.post("/api/code-agent/stream",
+                             json={"message": "x", "project_root": ".", "run_id": "itops-diag-nobind"})
+        self.assertEqual(r.status_code, 409, r.text)
+
+    def test_stream_refuses_already_claimed_diag_run(self):
+        opscope.bind_scope("itops-diag-claimed", "prof-x")
+        opscope.claim_stream("itops-diag-claimed")   # first stream already claimed it
+        try:
+            r = self.client.post("/api/code-agent/stream",
+                                 json={"message": "x", "project_root": ".", "run_id": "itops-diag-claimed"})
+            self.assertEqual(r.status_code, 409, r.text)   # repeat/parallel refused
+        finally:
+            opscope.clear_scope("itops-diag-claimed")
+
+    def test_resume_refuses_diag_run(self):
+        r = self.client.post("/api/code-agent/runs/itops-diag-x/resume")
+        self.assertEqual(r.status_code, 409, r.text)
 
 
 if __name__ == "__main__":

@@ -80,6 +80,7 @@ def tool_itops_ssh_healthcheck(profile_id: str = "", **_ignored: Any) -> dict[st
 
     results: list[dict[str, Any]] = []
     lines: list[str] = [f"Read-only health check — {alias} (profile {pid}):"]
+    evidence_ok = True
     for cmd_id, remote in _HEALTH_COMMANDS:
         try:
             proc = subprocess.run(_ssh_argv(alias, remote), capture_output=True, timeout=15)
@@ -93,21 +94,34 @@ def tool_itops_ssh_healthcheck(profile_id: str = "", **_ignored: Any) -> dict[st
         entry = {"command_id": cmd_id, "command": " ".join(remote), "exit": code, "stdout": out}
         if err:
             entry["stderr"] = err
-        results.append(entry)
-        # Persist evidence (already redacted+capped); never let a write break the run.
+        # Persist evidence (already redacted+capped). AUDIT REQUIREMENT: a command
+        # whose evidence did NOT persist is reported as failed, so the run can never
+        # claim success for a remote command with no proof in the journal.
         try:
             store.record_evidence(
                 run_id=run_id, target_identity=target_identity, scanner_vantage=_SCANNER_VANTAGE,
                 operation=f"ssh_healthcheck:{cmd_id}",
                 result={"alias": alias, "command": " ".join(remote), "stdout": out, "stderr": err},
                 exit_status="" if code is None else str(code))
+            entry["evidence_persisted"] = True
         except Exception:  # noqa: BLE001
+            entry["evidence_persisted"] = False
+            evidence_ok = False
             logger.warning("itops healthcheck: evidence write failed for %s/%s", pid, cmd_id)
+        results.append(entry)
         head = out if code == 0 else (err or f"exit {code}")
-        lines.append(f"  $ {' '.join(remote)}  →  {'ok' if code == 0 else 'FAILED'}: {head.splitlines()[0] if head else ''}")
+        _note = "" if entry["evidence_persisted"] else "  [evidence NOT persisted]"
+        lines.append(f"  $ {' '.join(remote)}  →  {'ok' if code == 0 else 'FAILED'}: "
+                     f"{head.splitlines()[0] if head else ''}{_note}")
 
-    ok = all(r["exit"] == 0 for r in results)
-    return {"ok": ok, "text": "\n".join(lines), "results": results, "profile_id": pid}
+    cmds_ok = all(r["exit"] == 0 for r in results)
+    ok = cmds_ok and evidence_ok
+    out_dict: dict[str, Any] = {"ok": ok, "text": "\n".join(lines), "results": results, "profile_id": pid}
+    if not evidence_ok:
+        out_dict["error"] = "evidence_persist_failed"
+        out_dict["text"] += ("\nПРЕДУПРЕЖДЕНИЕ: команды выполнены, но запись доказательства в "
+                             "журнал не удалась — результат помечен как неуспешный.")
+    return out_dict
 
 
 _DISPATCH = {"itops_ssh_healthcheck": tool_itops_ssh_healthcheck}

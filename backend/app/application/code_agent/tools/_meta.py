@@ -108,12 +108,17 @@ def tool_search(
     # W1 flag-off surface parity: web_query must be invisible when web_corpus is
     # off — otherwise tool_search output differs from pre-W1 (review P1-4).
     _W1_TOOLS = {"web_query", "web_claim_add", "web_sitemap"}
+    # itops diagnostic tool: invisible when the itops flag is off, so the model never
+    # sees or tries to activate a disabled tool (its provider is off too).
+    _ITOPS_TOOLS = {"itops_ssh_healthcheck"}
     try:
         from app.application.feature_flags import flag_enabled
         if not flag_enabled("web_corpus"):
             matches = [m for m in matches if m.get("name") not in _W1_TOOLS]
+        if not flag_enabled("itops"):
+            matches = [m for m in matches if m.get("name") not in _ITOPS_TOOLS]
     except Exception:
-        matches = [m for m in matches if m.get("name") not in _W1_TOOLS]
+        matches = [m for m in matches if m.get("name") not in (_W1_TOOLS | _ITOPS_TOOLS)]
 
     cap = _clamp_to_max(activation_cap, TOOL_SEARCH_ACTIVATION_CAP)
     eligible: list[str] = []

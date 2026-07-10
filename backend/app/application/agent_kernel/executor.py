@@ -212,8 +212,14 @@ def execute_tool(
         # a LIVE scope (get_active_scope), which TTL does gate.
         _locked = _opscope.is_locked_down(request.run_id)
         _scope = _opscope.get_active_scope(request.run_id)
-    except Exception as exc:  # noqa: BLE001 — a broken scope layer must BLOCK the scoped tool
-        if tool_name == _SCOPE_TOOL:
+    except Exception as exc:  # noqa: BLE001 — a broken scope layer must BLOCK, not fall open
+        # Fail CLOSED for a diagnostic run: its server-minted run_id carries the
+        # prefix (checked with a literal so this holds even if the import above is
+        # what failed), so if we cannot verify its lockdown we block EVERY tool — a
+        # broken scope layer must never re-open a scoped run's tools. Normal runs are
+        # unaffected (the scope layer is irrelevant to them).
+        _diag_run = str(request.run_id or "").startswith("itops-diag-")
+        if _diag_run or tool_name == _SCOPE_TOOL:
             _emit_blocked(request, f"operation scope unavailable: {exc}")
             return ToolExecutionResult(
                 status="blocked",

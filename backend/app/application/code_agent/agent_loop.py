@@ -1877,7 +1877,10 @@ def _stream_code_agent_core(
                         from app.application.agent_kernel.operation_scope import is_locked_down as _is_locked
                         _scoped_now = _is_locked(rid)
                     except Exception:
-                        _scoped_now = False
+                        # Fail CLOSED for a diagnostic run: if the scope layer is broken
+                        # we cannot verify lockdown, so treat an itops-diag run as locked
+                        # (block the inline meta-tools). Normal runs are unaffected.
+                        _scoped_now = str(rid or "").startswith("itops-diag-")
                     if _scoped_now:
                         _msg = (f"Инструмент '{name}' недоступен в ограниченном read-only "
                                 "диагностическом запуске — разрешены только tool_search и "
