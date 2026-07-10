@@ -39,11 +39,16 @@ class SshEnrollUnitTest(unittest.TestCase):
         self.assertEqual(r["user"], "root")
         self.assertIn("~/.ssh/id_ed25519", r["identity_files"])
 
-    def test_alias_with_metachars_rejected(self):
-        self.assertFalse(ssh_enroll.alias_ok("host; rm -rf /"))
-        self.assertFalse(ssh_enroll.alias_ok("a b"))
+    def test_alias_rejects_metachars_and_option_injection(self):
+        # regression: an alias must be a plain Host token, NEVER an ssh option.
+        for bad in ("host; rm -rf /", "a b", "bad$(x)",
+                    "-oProxyCommand=calc.exe", "-Fmy.config", "-oStrictHostKeyChecking=no",
+                    "--", "-x", "a=b", "he|llo"):
+            self.assertFalse(ssh_enroll.alias_ok(bad), f"{bad!r} must be rejected")
+        for good in ("ubuntu-lab", "ai-server", "host.example.com", "h_1", "203.0.113.10"):
+            self.assertTrue(ssh_enroll.alias_ok(good), f"{good!r} must be accepted")
         with self.assertRaises(ssh_enroll.SshEnrollError):
-            ssh_enroll.resolve_alias("bad$(x)")
+            ssh_enroll.resolve_alias("-oProxyCommand=x")
 
     def test_verify_uses_batchmode_and_strict_hostkey(self):
         seen = {}
@@ -85,13 +90,6 @@ class SshVerticalRouteTest(unittest.TestCase):
         from app.api.routes.itops_routes import router
         self._tmp = tempfile.mkdtemp()
         itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
-        # isolate the SSH allowlist file
-        from app.application.tool_providers import ssh_acl
-        self._acl = ssh_acl
-        self._acl_patch = unittest.mock.patch.object(
-            ssh_acl, "ACL_PATH", Path(self._tmp) / "ssh_acl.json")
-        self._acl_patch.start()
-        # flag ON for these tests
         from app.application import feature_flags as ff
         self._flag_patch = unittest.mock.patch.object(ff, "flag_enabled", return_value=True)
         self._flag_patch.start()
@@ -101,64 +99,72 @@ class SshVerticalRouteTest(unittest.TestCase):
 
     def tearDown(self):
         self._flag_patch.stop()
-        self._acl_patch.stop()
         itstore._DB_PATH_OVERRIDE = None
 
     _EFFECTIVE = {"ok": True, "hostname": "203.0.113.10", "port": "22", "user": "root",
                   "identity_files": ["~/.ssh/id_ed25519"]}
+    _OBSERVED = {"ok": True, "fingerprints": ["256 SHA256:abc 203.0.113.10 (ED25519)"],
+                 "note": "OBSERVED fingerprint only — NOT proof of identity."}
 
-    def test_enroll_requires_confirm_and_allowlists_only_after(self):
-        with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE):
-            # missing confirmation → 400, and NOT allowlisted
-            r = self.client.post("/api/itops/ssh/enroll",
-                                 json={"label": "Lab", "ssh_alias": "ubuntu-lab",
-                                       "confirmed_fingerprint": ""})
-            self.assertEqual(r.status_code, 400)
-            self.assertNotIn("ubuntu-lab", self._acl.get_allowed_hosts())
-            # with confirmation → saved unverified + allowlisted
-            ok = self.client.post("/api/itops/ssh/enroll",
-                                  json={"label": "Lab", "ssh_alias": "ubuntu-lab",
-                                        "confirmed_fingerprint": "SHA256:abc123"})
-            self.assertEqual(ok.status_code, 200, ok.text)
-        body = ok.json()
-        self.assertEqual(body["profile"]["last_health"]["status"], "unverified")
-        self.assertIsNone(body["profile"]["auth_ref"])                 # no secret stored
-        self.assertEqual(body["profile"]["host_key_fingerprint"], "SHA256:abc123")
-        self.assertIn("ubuntu-lab", self._acl.get_allowed_hosts())     # allowlisted only now
+    def _enroll(self, alias="ubuntu-lab", label="Lab"):
+        with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE), \
+             unittest.mock.patch.object(ssh_enroll, "observe_fingerprint", return_value=self._OBSERVED):
+            return self.client.post("/api/itops/ssh/enroll",
+                                    json={"label": label, "ssh_alias": alias})
 
-    def test_verify_by_profile_id_only_success_updates_health(self):
-        with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE):
-            prof = self.client.post("/api/itops/ssh/enroll",
-                                    json={"label": "Lab", "ssh_alias": "ubuntu-lab",
-                                          "confirmed_fingerprint": "SHA256:abc123"}).json()["profile"]
-        pid = prof["profile_id"]
-        with unittest.mock.patch.object(ssh_enroll, "verify_alias",
-                                        return_value={"ok": True, "output": "labhost", "exit": 0}):
-            r = self.client.post("/api/itops/verify", json={"profile_id": pid})
+    def test_enroll_saves_draft_unverified_no_secret(self):
+        r = self._enroll()
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertTrue(r.json()["ok"])
-        self.assertEqual(r.json()["health"]["status"], "verified")
-        # persisted
-        assets = self.client.get("/api/itops/assets").json()["assets"]
-        prof_now = assets[0]["profiles"][0]
-        self.assertEqual(prof_now["last_health"]["status"], "verified")
+        body = r.json()
+        self.assertEqual(body["asset"]["lifecycle_state"], "draft")    # NOT enabled yet
+        self.assertEqual(body["profile"]["last_health"]["status"], "unverified")
+        self.assertIsNone(body["profile"]["auth_ref"])                 # no secret
 
-    def test_verify_failure_leaves_unverified_with_reason(self):
-        with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE):
-            pid = self.client.post("/api/itops/ssh/enroll",
-                                   json={"label": "Lab", "ssh_alias": "ubuntu-lab",
-                                         "confirmed_fingerprint": "SHA256:abc123"}).json()["profile"]["profile_id"]
+    def test_enroll_does_not_touch_ssh_acl(self):
+        # regression: Settings/API must NOT grant the model host access.
+        from app.application.tool_providers import ssh_acl
+        before = list(ssh_acl.get_allowed_hosts())
+        with unittest.mock.patch.object(ssh_acl, "set_allowed_hosts") as setter:
+            self._enroll(alias="never-allowlisted-xyz")
+        setter.assert_not_called()
+        self.assertEqual(ssh_acl.get_allowed_hosts(), before)          # allowlist unchanged
+
+    def test_no_client_supplied_fingerprint_proof(self):
+        # regression: a client-supplied 'confirmed_fingerprint' is rejected (extra
+        # forbidden); the stored fingerprint is the SERVER-observed one, advisory.
+        with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE), \
+             unittest.mock.patch.object(ssh_enroll, "observe_fingerprint", return_value=self._OBSERVED):
+            bad = self.client.post("/api/itops/ssh/enroll",
+                                   json={"label": "L", "ssh_alias": "ubuntu-lab",
+                                         "confirmed_fingerprint": "SHA256:attacker"})
+        self.assertEqual(bad.status_code, 422)                         # not an accepted field
+        prof = self._enroll().json()["profile"]
+        self.assertIn("SHA256:abc", prof["host_key_fingerprint"])      # server-observed value
+        self.assertNotIn("attacker", prof["host_key_fingerprint"])
+
+    def test_verify_success_enables_asset_failure_leaves_draft(self):
+        # regression: asset is enabled ONLY after a successful SSH verify.
+        pid = self._enroll().json()["profile"]["profile_id"]
+        aid = self._enroll().json()["asset"]["asset_id"]  # same asset_id (ssh-<alias>)
+        # failure first → stays draft
         with unittest.mock.patch.object(
                 ssh_enroll, "verify_alias",
                 return_value={"ok": False, "reason": "host key not trusted", "exit": 255}):
-            r = self.client.post("/api/itops/verify", json={"profile_id": pid})
-        self.assertEqual(r.status_code, 200)
-        self.assertFalse(r.json()["ok"])
-        self.assertEqual(r.json()["health"]["status"], "unverified")
-        self.assertIn("host key", r.json()["health"]["reason"])
+            f = self.client.post("/api/itops/verify", json={"profile_id": pid})
+        self.assertFalse(f.json()["ok"])
+        self.assertEqual(itstore.get_asset(aid)["lifecycle_state"], "draft")
+        self.assertEqual(f.json()["health"]["status"], "unverified")
+        self.assertIn("host key", f.json()["health"]["reason"])
+        # success → enabled
+        with unittest.mock.patch.object(
+                ssh_enroll, "verify_alias",
+                return_value={"ok": True, "output": "labhost", "exit": 0}):
+            ok = self.client.post("/api/itops/verify", json={"profile_id": pid})
+        self.assertTrue(ok.json()["ok"])
+        self.assertEqual(itstore.get_asset(aid)["lifecycle_state"], "enabled")
+        self.assertEqual(ok.json()["health"]["status"], "verified")
 
     def test_verify_rejects_unknown_profile_and_never_takes_a_host(self):
-        # unknown profile id → 404; there is no way to pass a raw host at all
         r = self.client.post("/api/itops/verify", json={"profile_id": "prof-nope"})
         self.assertEqual(r.status_code, 404)
         bad = self.client.post("/api/itops/verify", json={"host": "evil.example"})

@@ -15,11 +15,16 @@ Hard scope (Phase 0):
 """
 from __future__ import annotations
 
+import re
 import subprocess
 
 from app.infrastructure.encoding import decode_console
 
-_METACHARS = (" ", "\t", "\n", "\r", ";", "|", "&", "$", "`", "<", ">", '"', "'", "\\")
+# An alias must be a plain OpenSSH Host token — NOT an ssh option. It must start
+# with an alphanumeric (so a leading '-' can never turn it into -oProxyCommand=…,
+# -F<config>, etc.) and contain only [A-Za-z0-9._-]. This blocks option injection
+# and shell metacharacters in one rule.
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SSH = "ssh"
 _KEYSCAN = "ssh-keyscan"
 _KEYGEN = "ssh-keygen"
@@ -30,7 +35,7 @@ class SshEnrollError(ValueError):
 
 
 def alias_ok(alias: str) -> bool:
-    return isinstance(alias, str) and bool(alias.strip()) and not any(c in alias for c in _METACHARS)
+    return isinstance(alias, str) and bool(_ALIAS_RE.match(alias.strip()))
 
 
 def _require_alias(alias: str) -> str:
@@ -75,7 +80,7 @@ def observe_fingerprint(hostname: str, port: str = "22") -> dict:
     temp file). ADVISORY only — the caller/UI must state it is not proof of identity
     and require an out-of-band comparison. Returns {ok, fingerprints:[...], note}."""
     host = (hostname or "").strip()
-    if not host or any(c in host for c in _METACHARS):
+    if not host or not re.match(r"^[A-Za-z0-9._:-]+$", host):   # IP / FQDN chars only
         return {"ok": False, "error": "invalid hostname for keyscan", "fingerprints": []}
     p = (str(port) or "22").strip()
     if not p.isdigit():

@@ -43,8 +43,6 @@ class SshEnrollRequest(BaseModel):
     label: str
     ssh_alias: str
     kind: str = "linux"
-    confirmed_fingerprint: str = Field(
-        ..., description="The host-key fingerprint the user VERIFIED out-of-band and confirms")
 
 
 class VerifyRequest(BaseModel):
@@ -71,66 +69,65 @@ def ssh_preview(payload: SshPreviewRequest) -> dict[str, Any]:
 
 @router.post("/ssh/enroll")
 def ssh_enroll_asset(payload: SshEnrollRequest) -> dict[str, Any]:
-    """Save an asset + SSH connection profile for an EXISTING alias. The allowlist
-    is extended ONLY here, after the user's explicit fingerprint confirmation. The
-    profile starts `unverified` (nothing is trusted until verify runs)."""
+    """Save a DRAFT asset + unverified SSH profile for an EXISTING alias. This does
+    NOT grant the model any host access (the SSH allowlist is untouched) and stores
+    no secret (auth_ref=NULL). The stored fingerprint is what the SERVER observed
+    now — advisory, not proof. The asset is `draft` until a successful verify."""
     _require_flag()
     from app.application.it_ops import ssh_enroll
-    from app.application.tool_providers import ssh_acl
 
     if not ssh_enroll.alias_ok(payload.ssh_alias):
         raise HTTPException(status_code=400, detail="invalid ssh alias")
-    if not (payload.confirmed_fingerprint or "").strip():
-        raise HTTPException(status_code=400,
-                            detail="confirmed_fingerprint is required — confirm the host key out-of-band first")
     effective = ssh_enroll.resolve_alias(payload.ssh_alias)
     if not effective.get("ok"):
         raise HTTPException(status_code=400, detail=effective.get("error", "alias resolve failed"))
+    # server-side OBSERVED fingerprint (advisory) — never a client-supplied "proof".
+    observed = ssh_enroll.observe_fingerprint(effective["hostname"], effective["port"])
 
     store = _store()
     try:
         asset = store.upsert_asset(
             asset_id=f"ssh-{payload.ssh_alias}", label=payload.label, kind=payload.kind,
-            endpoint=f"{effective['hostname']}:{effective['port']}", lifecycle_state="enabled")
+            endpoint=f"{effective['hostname']}:{effective['port']}", lifecycle_state="draft")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    # allowlist the alias ONLY now (explicit confirm) so the SSH provider/verify accept it
-    hosts = ssh_acl.get_allowed_hosts()
-    if payload.ssh_alias not in hosts:
-        ssh_acl.set_allowed_hosts(hosts + [payload.ssh_alias])
 
     profile = store.put_connection_profile(
         profile_id=f"prof-{uuid.uuid4().hex[:12]}", asset_id=asset["asset_id"], transport="ssh",
         user=effective.get("user", ""), auth_ref=None, ssh_alias=payload.ssh_alias,
-        host_key_fingerprint=payload.confirmed_fingerprint.strip(),
-        os_platform_meta=effective, last_health={"status": "unverified"})
+        host_key_fingerprint="; ".join(observed.get("fingerprints", [])),  # observed, advisory
+        os_platform_meta={"effective": effective, "observed_fingerprint": observed},
+        last_health={"status": "unverified"})
     return {"ok": True, "asset": asset, "profile": profile}
 
 
 @router.post("/verify")
 def verify_profile(payload: VerifyRequest) -> dict[str, Any]:
     """Verify a SAVED profile by id (never a browser-supplied host). Runs SSH with
-    STRICT host-key checking; updates last_health. Does not modify anything else."""
+    STRICT host-key checking on the STORED alias. Success → the asset becomes
+    `enabled`; failure → it stays/returns to `draft`. Updates last_health only."""
     _require_flag()
     from app.application.it_ops import ssh_enroll
-    from app.application.tool_providers import ssh_acl
 
     store = _store()
     profile = store.get_connection_profile(payload.profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="profile not found")
     alias = profile.get("ssh_alias") or ""
-    # defense in depth: only verify an allowlisted alias resolved from the STORED profile
-    if not ssh_enroll.alias_ok(alias) or not ssh_acl.is_host_allowed(alias):
-        raise HTTPException(status_code=403, detail="alias not in the SSH allowlist")
+    # the alias comes from the STORED profile (validated at enroll), not the request;
+    # re-check the shape defensively so a fixed `ssh <alias> hostname` argv is safe.
+    if not ssh_enroll.alias_ok(alias):
+        raise HTTPException(status_code=400, detail="stored alias is not a valid token")
 
     result = ssh_enroll.verify_alias(alias)
     from time import time as _time
-    health = ({"status": "verified", "hostname": result.get("output", ""), "at": _time()}
-              if result.get("ok")
-              else {"status": "unverified", "reason": result.get("reason", "verify failed"),
-                    "at": _time()})
+    if result.get("ok"):
+        health = {"status": "verified", "hostname": result.get("output", ""), "at": _time()}
+        store.set_asset_lifecycle(profile["asset_id"], "enabled")   # trusted only after exit 0
+    else:
+        health = {"status": "unverified", "reason": result.get("reason", "verify failed"),
+                  "at": _time()}
+        store.set_asset_lifecycle(profile["asset_id"], "draft")     # failure leaves it draft
     store.set_profile_health(payload.profile_id, health)
     return {"ok": bool(result.get("ok")), "profile_id": payload.profile_id,
             "health": health, "detail": result}
