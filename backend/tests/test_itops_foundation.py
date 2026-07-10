@@ -623,48 +623,28 @@ class ItopsStartupTest(unittest.TestCase):
     def tearDown(self):
         itstore._DB_PATH_OVERRIDE = None
 
-    def test_flag_off_does_not_touch_schema_or_recover(self):
+    def test_flag_off_does_not_touch_schema(self):
         from app.application.it_ops import startup
         from app.application import feature_flags as ff
         with unittest.mock.patch.object(ff, "flag_enabled", return_value=False), \
-             unittest.mock.patch.object(itstore, "init_db") as init, \
-             unittest.mock.patch("app.infrastructure.secrets.vault.recover_incomplete_secrets") as rec:
+             unittest.mock.patch.object(itstore, "init_db") as init:
             startup.itops_startup()
         init.assert_not_called()
-        rec.assert_not_called()
 
-    def test_flag_on_migrates_then_recovers(self):
-        from app.application.it_ops import startup
-        from app.application import feature_flags as ff
-        order = []
-        with unittest.mock.patch.object(ff, "flag_enabled", return_value=True), \
-             unittest.mock.patch.object(itstore, "init_db",
-                                        side_effect=lambda: order.append("init")), \
-             unittest.mock.patch("app.infrastructure.secrets.vault.recover_incomplete_secrets",
-                                 side_effect=lambda: (order.append("recover"),
-                                                      {"cleaned": [], "failed": [], "skipped": []})[1]):
-            startup.itops_startup()
-        self.assertEqual(order, ["init", "recover"])       # migrate BEFORE recover
-
-    def test_startup_always_logs_bounded_summary_even_all_zero(self):
+    def test_flag_on_initializes_store_only_no_recovery(self):
+        # Phase-0 decision: startup ONLY inits the store — NO auto-recovery.
         from app.application.it_ops import startup
         from app.application import feature_flags as ff
         with unittest.mock.patch.object(ff, "flag_enabled", return_value=True), \
-             unittest.mock.patch.object(itstore, "init_db"), \
+             unittest.mock.patch.object(itstore, "init_db") as init, \
              unittest.mock.patch(
-                 "app.infrastructure.secrets.vault.recover_incomplete_secrets",
-                 return_value={"cleaned": [], "failed": [], "skipped": [], "exhausted": []}):
-            with self.assertLogs("app.application.it_ops.startup", level="INFO") as cap:
-                startup.itops_startup()
-        blob = "\n".join(cap.output)
-        self.assertIn("cleaned=0", blob)
-        self.assertIn("failed=0", blob)
-        self.assertIn("skipped=0", blob)
-        self.assertIn("exhausted=0", blob)
+                 "app.infrastructure.secrets.vault.recover_incomplete_secrets") as rec:
+            startup.itops_startup()
+        init.assert_called_once()
+        rec.assert_not_called()                            # no recovery on startup
 
     def test_startup_is_not_a_registered_tool(self):
-        # recovery must not be model-callable — it is a plain startup function, not
-        # a ToolSpec in the registry.
+        # startup / recovery must not be model-callable — plain functions, not ToolSpecs.
         from app.application.tool_registry import runtime as reg
         names = {s.get("name") for s in reg.search_tool_specs("recover", limit=50)}
         self.assertNotIn("recover_incomplete_secrets", names)
