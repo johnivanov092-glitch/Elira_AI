@@ -1,15 +1,17 @@
-"""IT Operations domain types — pure dataclasses, no I/O.
+"""IT Operations domain types — pure dataclasses + enums, no I/O.
 
+Lives in the domain layer per ARCHITECTURE.md (pure types, no infrastructure).
 Terminology fixed in docs/IT_OPERATIONS_PLAN.md §1. TWO status axes that never
 merge: the task axis `completion_status` (confirmed|partial|failed|unverified|n/a,
 unchanged, from CriteriaTracker) and the lifecycle axis `change_run_status`.
+
+The tuples below are the CANONICAL enums; the store validates against them at its
+boundary (an invalid value is rejected before SQL).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
-
-# ── enums (as tuples; validated at the store boundary) ──────────────────────
 
 ASSET_KINDS = (
     "linux", "windows", "network_device", "local_workspace",

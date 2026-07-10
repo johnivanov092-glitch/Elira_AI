@@ -17,6 +17,7 @@ from ctypes import wintypes
 _PREFIX = "Elira:itops:"          # Credential Manager target namespace
 CRED_TYPE_GENERIC = 0x1
 CRED_PERSIST_LOCAL_MACHINE = 0x2  # per-user, this machine, survives logoff
+ERROR_NOT_FOUND = 1168            # winerror.h — the ref simply does not exist
 
 
 class WinCredUnavailable(RuntimeError):
@@ -77,7 +78,9 @@ def write_secret(secret_ref: str, value: str) -> None:
 
 
 def read_secret(secret_ref: str) -> str | None:
-    """Return the value, or None if the ref is absent/revoked."""
+    """Return the value, or None if the ref does NOT EXIST. An infrastructure /
+    access error (anything other than ERROR_NOT_FOUND) is raised — a missing secret
+    and a broken vault must never look the same."""
     lib = _advapi32()
     lib.CredReadW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
                               ctypes.POINTER(ctypes.POINTER(_CREDENTIAL))]
@@ -85,7 +88,10 @@ def read_secret(secret_ref: str) -> str | None:
     lib.CredFree.argtypes = [ctypes.c_void_p]
     ptr = ctypes.POINTER(_CREDENTIAL)()
     if not lib.CredReadW(_target(secret_ref), CRED_TYPE_GENERIC, 0, ctypes.byref(ptr)):
-        return None
+        err = ctypes.get_last_error()
+        if err == ERROR_NOT_FOUND:
+            return None
+        raise WinCredUnavailable(f"CredRead failed (err={err})")
     try:
         cred = ptr.contents
         size = int(cred.CredentialBlobSize)
@@ -98,8 +104,15 @@ def read_secret(secret_ref: str) -> str | None:
 
 
 def delete_secret(secret_ref: str) -> bool:
-    """Delete the ref from Credential Manager; True if it existed."""
+    """Delete the ref from Credential Manager. Returns True if it existed and was
+    deleted, False if it did NOT exist (ERROR_NOT_FOUND). Any other failure
+    (infrastructure / access error) is RAISED — never silently swallowed as False."""
     lib = _advapi32()
     lib.CredDeleteW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD]
     lib.CredDeleteW.restype = wintypes.BOOL
-    return bool(lib.CredDeleteW(_target(secret_ref), CRED_TYPE_GENERIC, 0))
+    if lib.CredDeleteW(_target(secret_ref), CRED_TYPE_GENERIC, 0):
+        return True
+    err = ctypes.get_last_error()
+    if err == ERROR_NOT_FOUND:
+        return False
+    raise WinCredUnavailable(f"CredDelete failed (err={err})")

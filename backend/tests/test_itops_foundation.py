@@ -20,7 +20,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.infrastructure.it_ops import store as itstore  # noqa: E402
-from app.application.it_ops import domain  # noqa: E402
+from app.domain import it_ops as domain  # noqa: E402
 
 
 class _TempStore(unittest.TestCase):
@@ -172,23 +172,228 @@ class VaultTest(_TempStore):
         self.assertEqual(st["kind"], "password")
         self.assertNotIn(SECRET, str(st))
 
-    def test_revoke_fails_closed(self):
+    def test_revoke_deletes_then_marks_revoked(self):
         from app.infrastructure.secrets import vault
-        ref = vault.put_secret(kind="token", value="tok-123")
+        ref = vault.put_secret(kind="token", value="tok-12345")
         vault.revoke(ref)
+        self.assertNotIn(ref, self._cm)                    # deleted from vault first
         self.assertEqual(vault.state(ref)["lifecycle"], "revoked")
         with self.assertRaises(vault.SecretUnavailable):
             vault.resolve(ref)
+
+    def test_revoke_infra_error_does_not_mark_revoked(self):
+        # John's fix #2: a failed delete (infra error) must NOT look successful —
+        # the error propagates and lifecycle stays NOT revoked.
+        from app.infrastructure.secrets import vault, wincred
+        ref = vault.put_secret(kind="token", value="tok-98765")
+        with unittest.mock.patch.object(
+                wincred, "delete_secret",
+                side_effect=wincred.WinCredUnavailable("vault down")):
+            with self.assertRaises(wincred.WinCredUnavailable):
+                vault.revoke(ref)
+        self.assertNotEqual(vault.state(ref)["lifecycle"], "revoked")
+
+    def test_put_secret_atomic_orphan_deleted_on_metadata_failure(self):
+        # John's fix #1: CredWrite succeeded but the metadata write raises →
+        # compensating CredDelete removes the orphan; no credential remains.
+        from app.infrastructure.secrets import vault
+        with unittest.mock.patch.object(
+                itstore, "put_secret_ref",
+                side_effect=itstore.StoreUnavailable("db down")):
+            with self.assertRaises(itstore.StoreUnavailable):
+                vault.put_secret(kind="password", value="orphan-candidate-1")
+        self.assertEqual(self._cm, {}, "orphan credential left in the vault")
 
     def test_resolve_unknown_ref_fails_closed(self):
         from app.infrastructure.secrets import vault
         with self.assertRaises(vault.SecretUnavailable):
             vault.resolve("sref_nonexistent")
 
-    def test_empty_value_rejected(self):
+    def test_short_and_whitespace_values_rejected_by_intake(self):
         from app.infrastructure.secrets import vault
+        for bad in ("", "   ", "ab", " a "):
+            with self.assertRaises(ValueError, msg=f"{bad!r} should be rejected"):
+                vault.put_secret(kind="password", value=bad)
+
+
+class WinCredHonestyTest(unittest.TestCase):
+    """John's fix #2 at the wincred boundary: NOT_FOUND is distinct from an
+    infrastructure/access error."""
+
+    @unittest.skipUnless(sys.platform == "win32", "real Credential Manager only")
+    def test_real_not_found_is_none_and_false(self):
+        from app.infrastructure.secrets import wincred
+        self.assertIsNone(wincred.read_secret("sref_definitely_absent_zzz"))
+        self.assertFalse(wincred.delete_secret("sref_definitely_absent_zzz"))
+
+    def test_non_not_found_error_raises(self):
+        from app.infrastructure.secrets import wincred
+        import ctypes
+        # a fake advapi32 whose Cred* calls FAIL (return 0); MagicMock supports the
+        # .argtypes/.restype assignment the wrapper does, and is callable.
+        fake = unittest.mock.MagicMock()
+        fake.CredReadW.return_value = 0
+        fake.CredDeleteW.return_value = 0
+        # a non-NOT_FOUND error code (e.g. ERROR_ACCESS_DENIED=5) must RAISE
+        with unittest.mock.patch.object(wincred, "_advapi32", return_value=fake), \
+             unittest.mock.patch.object(ctypes, "get_last_error", return_value=5):
+            with self.assertRaises(wincred.WinCredUnavailable):
+                wincred.read_secret("sref_x")
+            with self.assertRaises(wincred.WinCredUnavailable):
+                wincred.delete_secret("sref_x")
+        # ERROR_NOT_FOUND (1168) → None / False, never an exception
+        with unittest.mock.patch.object(wincred, "_advapi32", return_value=fake), \
+             unittest.mock.patch.object(ctypes, "get_last_error",
+                                        return_value=wincred.ERROR_NOT_FOUND):
+            self.assertIsNone(wincred.read_secret("sref_x"))
+            self.assertFalse(wincred.delete_secret("sref_x"))
+
+
+class EnumEnforcementTest(_TempStore):
+    """John's fix #3: the store validates enum values BEFORE SQL."""
+
+    def test_invalid_asset_kind_and_lifecycle_rejected(self):
         with self.assertRaises(ValueError):
-            vault.put_secret(kind="password", value="")
+            itstore.upsert_asset(asset_id="a", label="A", kind="NOT_A_KIND")
+        with self.assertRaises(ValueError):
+            itstore.upsert_asset(asset_id="a", label="A", kind="linux",
+                                 lifecycle_state="MADE_UP")
+
+    def test_invalid_secret_kind_and_lifecycle_rejected(self):
+        with self.assertRaises(ValueError):
+            itstore.put_secret_ref(secret_ref="s", kind="TYPO")
+        with self.assertRaises(ValueError):
+            itstore.put_secret_ref(secret_ref="s", kind="password", lifecycle="NOT_A_STATE")
+
+    def test_invalid_rollback_kind_and_status_axes_rejected(self):
+        itstore.upsert_asset(asset_id="a", label="A", kind="linux")
+        with self.assertRaises(ValueError):
+            itstore.create_change_run(change_run_id="c", run_id="r", asset_id="a",
+                                      rollback_kind="MAYBE")
+        itstore.create_change_run(change_run_id="c2", run_id="r", asset_id="a")
+        with self.assertRaises(ValueError):
+            itstore.update_change_run("c2", change_run_status="NOT_A_STATE")
+        with self.assertRaises(ValueError):
+            itstore.update_change_run("c2", completion_status="MADE_UP")
+        # cross-axis: a lifecycle value is NOT a valid completion_status
+        with self.assertRaises(ValueError):
+            itstore.update_change_run("c2", completion_status="rolled_back")
+
+
+class MigrationRealTest(unittest.TestCase):
+    """John's fix #4: real additive migration — an older shape migrates, keeps its
+    row, and only then is the version stamped; an unrecoverable shape does not bump."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self._path = str(Path(self._tmp) / "old.sqlite3")
+        itstore._DB_PATH_OVERRIDE = self._path
+
+    def tearDown(self):
+        itstore._DB_PATH_OVERRIDE = None
+
+    def test_v0_change_runs_missing_column_migrates_additively(self):
+        # hand-build an OLD change_runs missing completion_status, user_version=0,
+        # with an existing row.
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "CREATE TABLE change_runs (change_run_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,"
+            " asset_id TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '{}', approval_id TEXT,"
+            " snapshot_id TEXT, rollback_kind TEXT NOT NULL DEFAULT 'none',"
+            " change_run_status TEXT NOT NULL DEFAULT 'planned', created_at REAL NOT NULL,"
+            " updated_at REAL NOT NULL);")
+        conn.execute("INSERT INTO change_runs (change_run_id, run_id, asset_id, created_at, updated_at)"
+                     " VALUES ('old1','r','a',1.0,1.0)")
+        conn.execute("PRAGMA user_version=0")
+        conn.commit(); conn.close()
+
+        itstore.init_db()                                  # additive migration
+
+        cr = itstore.get_change_run("old1")
+        self.assertIsNotNone(cr, "existing row must survive the migration")
+        self.assertIsNone(cr["completion_status"])         # new column present, NULL
+        conn = sqlite3.connect(self._path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(change_runs)").fetchall()}
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.close()
+        self.assertIn("completion_status", cols)           # column added
+        self.assertEqual(ver, itstore._SCHEMA_VERSION)     # stamped only after shape matches
+
+    def test_unrecoverable_schema_raises_and_does_not_bump_version(self):
+        # a change_runs table whose PK column has a conflicting type/shape that a
+        # NOT NULL insert path can't reconcile → simulate by a wrong-typed table that
+        # breaks the ALTER (use a reserved/duplicate). Here: make init fail by locking
+        # the file into an incompatible object (a table named like an index target).
+        conn = sqlite3.connect(self._path)
+        # 'assets' created as something the CREATE-IF-NOT-EXISTS won't fix and whose
+        # ADD COLUMN will fail: a table missing PK but with a NOT NULL no-default col
+        # already populated differently is hard to force portably, so we assert the
+        # honest-version contract via a forced sqlite error during migration.
+        conn.executescript("CREATE TABLE assets (asset_id TEXT);")  # minimal old shape
+        conn.execute("PRAGMA user_version=0")
+        conn.commit(); conn.close()
+        # patch ALTER to fail → migration must raise StoreUnavailable, version stays 0
+        import app.infrastructure.it_ops.store as st
+        orig_connect = st._connect
+
+        class _FailingConn:
+            def __init__(self, real): self._real = real
+            def __getattr__(self, n): return getattr(self._real, n)
+            def execute(self, sql, *a):
+                if sql.strip().upper().startswith("ALTER TABLE"):
+                    raise sqlite3.OperationalError("forced ALTER failure")
+                return self._real.execute(sql, *a)
+        with unittest.mock.patch.object(st, "_connect",
+                                        side_effect=lambda: _FailingConn(orig_connect())):
+            with self.assertRaises(st.StoreUnavailable):
+                st.init_db()
+        conn = sqlite3.connect(self._path)
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.close()
+        self.assertEqual(ver, 0, "version must NOT be bumped on a failed migration")
+
+
+class StoreErrorContractTest(_TempStore):
+    """John's fix #6: a sqlite error inside a PUBLIC store op becomes
+    StoreUnavailable (not a raw sqlite error), with rollback/close guaranteed."""
+
+    def test_public_op_wraps_sqlite_error(self):
+        import app.infrastructure.it_ops.store as st
+
+        class _BadConn:
+            def execute(self, *a, **k): raise sqlite3.OperationalError("boom")
+            def rollback(self): self.rolled_back = True
+            def close(self): self.closed = True
+        bad = _BadConn()
+        with unittest.mock.patch.object(st, "_connect", return_value=bad):
+            with self.assertRaises(st.StoreUnavailable):
+                st.list_assets()                           # a real public operation
+        self.assertTrue(getattr(bad, "rolled_back", False))
+        self.assertTrue(getattr(bad, "closed", False))
+
+
+class FlagApiTest(unittest.TestCase):
+    """John's fix #5: PUT feature-flags name=itops must not 422 (Literal synced)."""
+
+    def _client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.elira_state import router
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_put_itops_flag_not_422(self):
+        from app.application import feature_flags as ff
+        with tempfile.TemporaryDirectory() as tmp, \
+             unittest.mock.patch.object(ff, "CONFIG_PATH", Path(tmp) / "flags.json"):
+            client = self._client()
+            r = client.put("/api/elira/feature-flags", json={"name": "itops", "value": True})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertTrue(r.json().get("itops"))
+            # an unknown flag still 422s (Literal is a real allowlist)
+            bad = client.put("/api/elira/feature-flags", json={"name": "bogus", "value": True})
+            self.assertEqual(bad.status_code, 422)
 
 
 class VaultRealCredManagerTest(_TempStore):
@@ -232,15 +437,23 @@ class LeakClosingTest(unittest.TestCase):
         self.assertEqual(view["id"], "github")
         self.assertEqual(view["url"], "https://example.test")
 
-    def test_internal_list_servers_keeps_real_values_for_launch(self):
-        # The redaction is ONLY at the API boundary — list_servers() must keep real
-        # env so the launch path (mcp_provider) still works. Assert the route wraps
-        # the raw list in public_server_view (grep the source).
-        import inspect
-        from app.api.routes import code_agent_routes as r
-        for fn in (r.mcp_list_servers, r.lsp_list_servers, r.mcp_save_servers):
-            self.assertIn("public_server_view", inspect.getsource(fn),
-                          f"{fn.__name__} must redact secret fields at the API boundary")
+    def test_get_mcp_servers_route_masks_secrets_but_input_untouched(self):
+        # Behavior test (no source inspection): call the real route with list_servers
+        # patched to return a secret-bearing server; the RESPONSE must be masked,
+        # while the raw list the launch path sees is left untouched.
+        from app.api.routes import code_agent_routes as routes
+        from app.application.tool_providers import mcp_runtime
+        raw = [{"id": "github", "command": "npx",
+                "env": {"GITHUB_TOKEN": "ghp_LEAKME_999"},
+                "secret_headers": {"Authorization": "Bearer tok_LEAKME"}}]
+        with unittest.mock.patch.object(mcp_runtime, "list_servers", return_value=raw):
+            resp = routes.mcp_list_servers()
+        body = __import__("json").dumps(resp, ensure_ascii=False)
+        self.assertNotIn("ghp_LEAKME_999", body)          # value masked in the response
+        self.assertNotIn("tok_LEAKME", body)
+        self.assertEqual(resp["servers"][0]["env"], {"GITHUB_TOKEN": "●●●"})
+        # public_server_view must not MUTATE its input (launch path keeps real env)
+        self.assertEqual(raw[0]["env"], {"GITHUB_TOKEN": "ghp_LEAKME_999"})
 
     def test_output_canary_masks_resolved_value_anywhere(self):
         from app.core.redaction import mask_known_values, REDACTED

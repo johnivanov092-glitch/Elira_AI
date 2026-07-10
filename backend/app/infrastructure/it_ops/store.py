@@ -1,11 +1,18 @@
 """IT Operations durable store — schema, forward-only migrations, and CRUD.
 
-Mirrors the monitoring-store convention: `CREATE TABLE IF NOT EXISTS` + a chain of
-named, idempotent, additive `migrate_*` functions, plus a forward-only
-`PRAGMA user_version` ladder. Durable records — no drop-on-change.
+Mirrors the monitoring-store convention: `CREATE TABLE IF NOT EXISTS` + additive,
+idempotent column migrations, plus a forward-only `PRAGMA user_version` ladder.
+Durable records — no drop-on-change.
 
-Fail-soft: every public op is wrapped so a store outage degrades to a clear
-`StoreUnavailable` rather than crashing the caller (mirrors web_corpus).
+Contract:
+  * enum values (asset/secret kind + lifecycle, rollback_kind, both status axes)
+    are validated against the domain enums BEFORE any SQL — an invalid value is a
+    ValueError, not a silent bad row.
+  * every query/commit/migration sqlite error becomes StoreUnavailable, with
+    rollback + close guaranteed (fail-soft).
+  * migrations are honest: user_version is stamped ONLY after the on-disk shape
+    actually matches the version (all expected columns present); an unrecoverable
+    schema raises StoreUnavailable and does NOT bump the version.
 """
 from __future__ import annotations
 
@@ -13,12 +20,13 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.core.data_files import data_file
+from app.domain import it_ops as _dom
 from app.infrastructure.db.connection import connect_sqlite
 
-# Forward-only ladder. Bump ONLY with a matching migrate step; never DROP.
+# Forward-only ladder. Bump ONLY with a matching column spec; never DROP.
 _SCHEMA_VERSION = 1
 
 # Test override (mirrors web_corpus store). None → the real data file.
@@ -92,14 +100,11 @@ CREATE TABLE IF NOT EXISTS change_runs (
     approval_id TEXT,
     snapshot_id TEXT,
     rollback_kind TEXT NOT NULL DEFAULT 'none',
-    -- TWO SEPARATE AXES (never merged):
     change_run_status TEXT NOT NULL DEFAULT 'planned',
     completion_status TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
--- secret_ref STATE + metadata ONLY. The secret VALUE lives exclusively in Windows
--- Credential Manager. No ciphertext, no DPAPI blob, no value is ever stored here.
 CREATE TABLE IF NOT EXISTS secret_refs (
     secret_ref TEXT PRIMARY KEY,
     backend TEXT NOT NULL DEFAULT 'wincred',
@@ -115,9 +120,74 @@ CREATE INDEX IF NOT EXISTS idx_change_runs_run ON change_runs(run_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_run ON evidence(run_id);
 """
 
+# Expected columns per table → the additive `ALTER TABLE ADD COLUMN` clause used to
+# bring an OLDER on-disk table up to the current shape. Adds are nullable / have a
+# default so they are safe on a table with existing rows.
+_EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
+    "assets": {
+        "asset_id": "asset_id TEXT", "label": "label TEXT",
+        "kind": "kind TEXT", "endpoint": "endpoint TEXT DEFAULT ''",
+        "tags": "tags TEXT NOT NULL DEFAULT '[]'",
+        "owner_scope": "owner_scope TEXT NOT NULL DEFAULT ''",
+        "lifecycle_state": "lifecycle_state TEXT NOT NULL DEFAULT 'draft'",
+        "created_at": "created_at REAL", "updated_at": "updated_at REAL",
+    },
+    "connection_profiles": {
+        "profile_id": "profile_id TEXT", "asset_id": "asset_id TEXT",
+        "transport": "transport TEXT", "user": "user TEXT DEFAULT ''",
+        "auth_ref": "auth_ref TEXT", "ssh_alias": "ssh_alias TEXT DEFAULT ''",
+        "host_key_fingerprint": "host_key_fingerprint TEXT DEFAULT ''",
+        "os_platform_meta": "os_platform_meta TEXT NOT NULL DEFAULT '{}'",
+        "last_health": "last_health TEXT NOT NULL DEFAULT '{}'",
+        "created_at": "created_at REAL", "updated_at": "updated_at REAL",
+    },
+    "operation_scopes": {
+        "scope_id": "scope_id TEXT", "run_id": "run_id TEXT",
+        "allowed_asset_ids": "allowed_asset_ids TEXT NOT NULL DEFAULT '[]'",
+        "cidrs": "cidrs TEXT NOT NULL DEFAULT '[]'",
+        "local_roots": "local_roots TEXT NOT NULL DEFAULT '[]'",
+        "service_ids": "service_ids TEXT NOT NULL DEFAULT '[]'",
+        "config_roots": "config_roots TEXT NOT NULL DEFAULT '[]'",
+        "db_profiles": "db_profiles TEXT NOT NULL DEFAULT '[]'",
+        "mode": "mode TEXT NOT NULL DEFAULT 'read_only'",
+        "approved_by": "approved_by TEXT DEFAULT ''", "approved_at": "approved_at REAL",
+    },
+    "snapshots": {
+        "snapshot_id": "snapshot_id TEXT", "change_run_id": "change_run_id TEXT",
+        "asset_id": "asset_id TEXT", "before_state": "before_state TEXT DEFAULT ''",
+        "artifact_path": "artifact_path TEXT DEFAULT ''",
+        "content_hash": "content_hash TEXT NOT NULL DEFAULT ''",
+        "captured_at": "captured_at REAL", "rollback_ref": "rollback_ref TEXT DEFAULT ''",
+        "restored_at": "restored_at REAL",
+    },
+    "evidence": {
+        "evidence_id": "evidence_id TEXT", "run_id": "run_id TEXT",
+        "change_run_id": "change_run_id TEXT", "target_identity": "target_identity TEXT",
+        "scanner_vantage": "scanner_vantage TEXT", "operation": "operation TEXT",
+        "result": "result TEXT NOT NULL DEFAULT '{}'", "exit_status": "exit_status TEXT DEFAULT ''",
+        "captured_at": "captured_at REAL",
+    },
+    "change_runs": {
+        "change_run_id": "change_run_id TEXT", "run_id": "run_id TEXT",
+        "asset_id": "asset_id TEXT", "plan": "plan TEXT NOT NULL DEFAULT '{}'",
+        "approval_id": "approval_id TEXT", "snapshot_id": "snapshot_id TEXT",
+        "rollback_kind": "rollback_kind TEXT NOT NULL DEFAULT 'none'",
+        "change_run_status": "change_run_status TEXT NOT NULL DEFAULT 'planned'",
+        "completion_status": "completion_status TEXT",
+        "created_at": "created_at REAL", "updated_at": "updated_at REAL",
+    },
+    "secret_refs": {
+        "secret_ref": "secret_ref TEXT", "backend": "backend TEXT NOT NULL DEFAULT 'wincred'",
+        "kind": "kind TEXT", "asset_id": "asset_id TEXT",
+        "lifecycle": "lifecycle TEXT NOT NULL DEFAULT 'temporary'",
+        "created_at": "created_at REAL", "rotated_at": "rotated_at REAL",
+        "revoked_at": "revoked_at REAL",
+    },
+}
+
 
 class StoreUnavailable(RuntimeError):
-    """The IT-Ops store could not be opened/queried — fail-soft signal."""
+    """The IT-Ops store could not be opened/queried/migrated — fail-soft signal."""
 
 
 def _now() -> float:
@@ -134,38 +204,75 @@ def _connect() -> sqlite3.Connection:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
     except (sqlite3.Error, OSError, ValueError) as exc:
-        # fail-soft: a bad path / unreadable DB degrades to StoreUnavailable rather
-        # than crashing the caller (mirrors web_corpus store).
         raise StoreUnavailable(f"it_ops store unavailable: {exc}") from exc
 
 
+# ── enum validation (BEFORE any SQL) ────────────────────────────────────────
+
+def _check(value: Any, allowed: tuple, what: str) -> None:
+    if value not in allowed:
+        raise ValueError(f"invalid {what}: {value!r} (allowed: {list(allowed)})")
+
+
+# ── init + honest migration ─────────────────────────────────────────────────
+
 def init_db() -> None:
-    """Create tables if missing and run forward-only migrations. Resilient: safe to
-    call at import and repeatedly (idempotent). Never drops."""
+    """Create tables if missing, run additive migrations, and stamp the version
+    ONLY when the on-disk shape matches. Idempotent, forward-only, never drops.
+    Any sqlite failure → StoreUnavailable (version NOT bumped)."""
     conn = _connect()
     try:
         conn.executescript(_CREATE_SQL)
-        _run_migrations(conn)
+        _migrate(conn)
         conn.commit()
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise StoreUnavailable(f"it_ops migration failed: {exc}") from exc
     finally:
         conn.close()
 
 
-def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Forward-only ladder on PRAGMA user_version. Each step is additive and
-    idempotent; a step N is applied only when user_version < N, and the version is
-    stamped forward afterward. NEVER drop-on-change (durable records)."""
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive: for every existing table, add any missing expected column. Then,
+    ONLY if every table now has its full expected column set, stamp user_version.
+    An incomplete/unrecoverable shape leaves the version untouched."""
+    for table, cols in _EXPECTED_COLUMNS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not existing:
+            # table absent even after CREATE IF NOT EXISTS → unrecoverable shape
+            raise sqlite3.OperationalError(f"expected table {table!r} missing after create")
+        for col, ddl in cols.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+    # verify the shape actually matches before stamping the version forward
+    for table, cols in _EXPECTED_COLUMNS.items():
+        now = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        missing = set(cols) - now
+        if missing:
+            raise sqlite3.OperationalError(
+                f"table {table!r} still missing columns {sorted(missing)} — not stamping version")
     ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    # (No column migrations yet at v1 — the ladder is here so future additive
-    #  steps land as `if ver < N: <add-column-if-missing>; ver = N`.)
     if ver < _SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
 
-def _wrap(op):
+# ── error-contract wrapper ──────────────────────────────────────────────────
+
+def _wrap(op: Callable[[sqlite3.Connection], Any]) -> Any:
+    """Run *op* on a fresh connection; any sqlite error → StoreUnavailable with
+    rollback + close guaranteed."""
     conn = _connect()
     try:
         return op(conn)
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise StoreUnavailable(f"it_ops store operation failed: {exc}") from exc
     finally:
         conn.close()
 
@@ -188,6 +295,9 @@ def _loads(raw: Any, default: Any) -> Any:
 def upsert_asset(*, asset_id: str, label: str, kind: str, endpoint: str = "",
                  tags: list[str] | None = None, owner_scope: str = "",
                  lifecycle_state: str = "draft") -> dict[str, Any]:
+    _check(kind, _dom.ASSET_KINDS, "asset kind")
+    _check(lifecycle_state, _dom.ASSET_LIFECYCLE, "asset lifecycle_state")
+
     def op(conn):
         now = _now()
         conn.execute(
@@ -199,7 +309,8 @@ def upsert_asset(*, asset_id: str, label: str, kind: str, endpoint: str = "",
             (asset_id, label, kind, endpoint, _dumps(tags or []), owner_scope,
              lifecycle_state, now, now))
         conn.commit()
-        return get_asset(asset_id)
+        r = conn.execute("SELECT * FROM assets WHERE asset_id=?", (asset_id,)).fetchone()
+        return _asset_row(r)
     return _wrap(op)
 
 
@@ -218,6 +329,8 @@ def list_assets() -> list[dict[str, Any]]:
 
 
 def set_asset_lifecycle(asset_id: str, lifecycle_state: str) -> None:
+    _check(lifecycle_state, _dom.ASSET_LIFECYCLE, "asset lifecycle_state")
+
     def op(conn):
         conn.execute("UPDATE assets SET lifecycle_state=?, updated_at=? WHERE asset_id=?",
                      (lifecycle_state, _now(), asset_id))
@@ -238,6 +351,9 @@ def _asset_row(r: sqlite3.Row) -> dict[str, Any]:
 
 def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
                    asset_id: str | None = None, lifecycle: str = "temporary") -> None:
+    _check(kind, _dom.SECRET_KINDS, "secret kind")
+    _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
+
     def op(conn):
         conn.execute(
             "INSERT INTO secret_refs (secret_ref, backend, kind, asset_id, lifecycle, created_at)"
@@ -261,6 +377,15 @@ def secret_ref_state(secret_ref: str) -> dict[str, Any] | None:
     return _wrap(op)
 
 
+def delete_secret_ref(secret_ref: str) -> None:
+    """Remove the state row entirely — used by the vault's atomicity compensation
+    (metadata write failed → nothing should remain)."""
+    def op(conn):
+        conn.execute("DELETE FROM secret_refs WHERE secret_ref=?", (secret_ref,))
+        conn.commit()
+    _wrap(op)
+
+
 def mark_secret_revoked(secret_ref: str) -> None:
     def op(conn):
         conn.execute("UPDATE secret_refs SET lifecycle='revoked', revoked_at=? WHERE secret_ref=?",
@@ -274,6 +399,8 @@ def mark_secret_revoked(secret_ref: str) -> None:
 def create_change_run(*, change_run_id: str, run_id: str, asset_id: str,
                        plan: dict | None = None, rollback_kind: str = "none",
                        approval_id: str | None = None) -> None:
+    _check(rollback_kind, _dom.ROLLBACK_KINDS, "rollback_kind")
+
     def op(conn):
         now = _now()
         conn.execute(
@@ -289,8 +416,13 @@ def create_change_run(*, change_run_id: str, run_id: str, asset_id: str,
 def update_change_run(change_run_id: str, *, change_run_status: str | None = None,
                       completion_status: str | None = None, snapshot_id: str | None = None,
                       approval_id: str | None = None) -> None:
-    """Update either/both axes INDEPENDENTLY. The two status columns are never
-    coerced into one another."""
+    """Update either/both axes INDEPENDENTLY. Each value is validated against its
+    OWN axis before SQL — the two are never coerced into one another."""
+    if change_run_status is not None:
+        _check(change_run_status, _dom.CHANGE_RUN_STATUS, "change_run_status")
+    if completion_status is not None:
+        _check(completion_status, _dom.COMPLETION_STATUS, "completion_status")
+
     sets, vals = [], []
     if change_run_status is not None:
         sets.append("change_run_status=?"); vals.append(change_run_status)
