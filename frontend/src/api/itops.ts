@@ -76,3 +76,21 @@ export async function verifyProfile(profile_id: string): Promise<VerifyResp> {
 export async function listAssets(): Promise<AssetsResp> {
   return request<AssetsResp>("/api/itops/assets");
 }
+
+export type DiagnosticsStartResp = {
+  ok: boolean;
+  run_id: string;
+  profile_id: string;
+  message: string;
+  ttl_seconds: number;
+};
+
+// Start ONE scoped read-only diagnostic run for a saved, VERIFIED profile. The
+// SERVER mints the run_id and binds a read-only operation scope before the run;
+// the caller then streams /api/code-agent/stream with THIS run_id + message.
+export async function startDiagnostics(profile_id: string): Promise<DiagnosticsStartResp> {
+  return request<DiagnosticsStartResp>("/api/itops/diagnostics/start", {
+    method: "POST",
+    body: { profile_id },
+  });
+}

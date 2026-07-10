@@ -63,6 +63,11 @@ class VerifyRequest(BaseModel):
     profile_id: str = Field(..., description="A SAVED connection profile id — never a raw host")
 
 
+class DiagnosticsStartRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    profile_id: str = Field(..., description="A SAVED, VERIFIED (enabled) connection profile id")
+
+
 # ── endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/ssh/preview")
@@ -168,3 +173,38 @@ def list_assets() -> dict[str, Any]:
         by_asset.setdefault(p["asset_id"], []).append(p)
     return {"ok": True, "assets": [{**a, "profiles": by_asset.get(a["asset_id"], [])}
                                    for a in assets]}
+
+
+@router.post("/diagnostics/start")
+def diagnostics_start(payload: DiagnosticsStartRequest) -> dict[str, Any]:
+    """Start ONE scoped read-only diagnostic run for a saved, VERIFIED profile.
+
+    The SERVER mints the run_id and binds a read-only operation scope
+    (run_id -> profile_id, TTL) BEFORE the run — the model never chooses the
+    profile. The caller then opens POST /api/code-agent/stream with THIS run_id and
+    the returned message; inside that run the executor allows only tool_search +
+    itops_ssh_healthcheck for this exact profile (everything else is blocked), and
+    the scope is dropped when the run ends or the TTL expires. A draft (unverified)
+    or unknown profile is refused here — nothing is bound."""
+    _require_flag()
+    import uuid
+    from app.application.agent_kernel import operation_scope
+
+    store = _store()
+    profile = store.get_connection_profile(payload.profile_id)
+    if not profile or profile.get("transport") != "ssh":
+        raise HTTPException(status_code=404, detail="ssh profile not found")
+    asset = store.get_asset(str(profile.get("asset_id") or ""))
+    if not asset or asset.get("lifecycle_state") != "enabled":
+        raise HTTPException(status_code=409, detail="profile is not verified/enabled — verify it first")
+
+    run_id = f"itops-diag-{uuid.uuid4().hex}"
+    operation_scope.bind_scope(run_id, payload.profile_id)   # read_only, default TTL
+    message = (
+        "Выполни read-only диагностику сохранённого подключения. Активируй инструмент "
+        "itops_ssh_healthcheck через tool_search, затем вызови его РОВНО ОДИН РАЗ с "
+        f'profile_id="{payload.profile_id}" и покажи результат. Не вызывай никакие '
+        "другие инструменты — это ограниченный диагностический запуск."
+    )
+    return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id,
+            "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}

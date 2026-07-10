@@ -32,7 +32,7 @@ VALID_SCOPES: frozenset[str] = frozenset({
 
 # Sources whose tools are trusted built-ins shipped with the app. They are always
 # policy-classified; only plugin/mcp/custom tools require explicit admin classification.
-_TRUSTED_SOURCES: tuple[str, ...] = ("builtin", "code_agent", "ssh")
+_TRUSTED_SOURCES: tuple[str, ...] = ("builtin", "code_agent", "ssh", "itops")
 
 
 def migrate_toolspec_columns(*, conn_factory: Callable[[], Any]) -> None:

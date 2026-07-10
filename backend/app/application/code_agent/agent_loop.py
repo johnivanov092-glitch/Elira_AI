@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterator
 
 from app.application.tool_providers import (
     BuiltinToolProvider,
+    ItopsToolProvider,
     SshToolProvider,
     ToolRegistry,
     build_lsp_providers,
@@ -690,6 +691,7 @@ def _stream_code_agent_core(
         registry = ToolRegistry([
             BuiltinToolProvider(root),
             SshToolProvider(),
+            ItopsToolProvider(),
             *build_lsp_providers(),
             *build_mcp_providers(),
         ])
@@ -1862,6 +1864,30 @@ def _stream_code_agent_core(
                         **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
+                # Scoped Read-Only SSH v1: in a bound read-only diagnostic run the ONLY
+                # allowed tools are tool_search (discovery) and itops_ssh_healthcheck
+                # (kernel-gated). The meta-tools below (ask_user / ssh_request_host /
+                # todo_update) are handled INLINE here, BEFORE the kernel — so the
+                # executor scope gate (1g) cannot block them. Refuse everything except
+                # the two allowed tools here too, so the capability allowlist is airtight
+                # even for kernel-bypassing tools (e.g. ssh_request_host must not be able
+                # to widen the ssh allowlist from inside a scoped diagnostic run).
+                if name not in ("tool_search", "itops_ssh_healthcheck"):
+                    try:
+                        from app.application.agent_kernel.operation_scope import is_locked_down as _is_locked
+                        _scoped_now = _is_locked(rid)
+                    except Exception:
+                        _scoped_now = False
+                    if _scoped_now:
+                        _msg = (f"Инструмент '{name}' недоступен в ограниченном read-only "
+                                "диагностическом запуске — разрешены только tool_search и "
+                                "itops_ssh_healthcheck.")
+                        yield {"type": "tool_call", "step": step, "tool": name,
+                               "arguments": parsed_args, "result": _msg, "ok": False}
+                        messages.append({"role": "tool", "content": _msg, "name": name})
+                        tool_round_trips += 1
+                        call_log.append(f"{name}(blocked:scoped)")
+                        continue
                 if name == "tool_search":
                     # Tool-economy: browser is a run-scoped activation — once it's on,
                     # re-searching "browser / playwright / evaluate" is a wasted round
@@ -2521,6 +2547,13 @@ def _stream_code_agent_core(
         try:
             from app.application.agent_kernel.deferred_tools import clear_run
             clear_run(rid)
+        except Exception:
+            pass
+        # Scoped Read-Only SSH v1: drop any bound operation scope on EVERY terminal
+        # exit (finally/cancel/error). Expiry also drops it lazily via TTL.
+        try:
+            from app.application.agent_kernel.operation_scope import clear_scope
+            clear_scope(rid)
         except Exception:
             pass
         try:

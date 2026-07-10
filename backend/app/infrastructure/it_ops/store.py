@@ -534,6 +534,50 @@ def set_profile_health(profile_id: str, health: dict) -> None:
     _wrap(op)
 
 
+# ── evidence ────────────────────────────────────────────────────────────────
+
+def record_evidence(*, run_id: str, target_identity: str, scanner_vantage: str,
+                     operation: str, result: dict | None = None, exit_status: str = "",
+                     change_run_id: str | None = None) -> str:
+    """Append ONE evidence row for a read-only diagnostic command. `result` must be
+    already redacted+capped by the caller (never a raw secret). Returns evidence_id."""
+    import uuid as _uuid
+    eid = f"ev-{_uuid.uuid4().hex[:12]}"
+
+    def op(conn):
+        conn.execute(
+            "INSERT INTO evidence (evidence_id, run_id, change_run_id, target_identity,"
+            " scanner_vantage, operation, result, exit_status, captured_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (eid, str(run_id or ""), change_run_id, str(target_identity or ""),
+             str(scanner_vantage or ""), str(operation or ""),
+             json.dumps(result or {}, ensure_ascii=False), str(exit_status or ""), _now()))
+        conn.commit()
+        return eid
+    return _wrap(op)
+
+
+def _evidence_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "evidence_id": r["evidence_id"], "run_id": r["run_id"],
+        "change_run_id": r["change_run_id"], "target_identity": r["target_identity"],
+        "scanner_vantage": r["scanner_vantage"], "operation": r["operation"],
+        "result": _loads(r["result"], {}), "exit_status": r["exit_status"],
+        "captured_at": r["captured_at"],
+    }
+
+
+def list_evidence(run_id: str | None = None) -> list[dict[str, Any]]:
+    def op(conn):
+        if run_id:
+            rows = conn.execute(
+                "SELECT * FROM evidence WHERE run_id=? ORDER BY captured_at ASC", (run_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM evidence ORDER BY captured_at ASC").fetchall()
+        return [_evidence_row(r) for r in rows]
+    return _wrap(op)
+
+
 def _profile_row(r: sqlite3.Row) -> dict[str, Any]:
     return {
         "profile_id": r["profile_id"], "asset_id": r["asset_id"], "transport": r["transport"],

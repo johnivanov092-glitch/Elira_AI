@@ -187,6 +187,13 @@ def set_current_run_id(run_id: str | None) -> contextvars.Token:
     return _CURRENT_RUN_ID.set(run_id)
 
 
+def get_current_run_id() -> str:
+    """The run_id bound to the current thread by the executor — authoritative,
+    set from ToolExecutionRequest.run_id, NEVER from model-supplied tool args.
+    Empty string if unset. Use this when a tool handler needs its own run_id."""
+    return str(_CURRENT_RUN_ID.get() or "")
+
+
 def reset_current_run_id(token: contextvars.Token) -> None:
     try:
         _CURRENT_RUN_ID.reset(token)

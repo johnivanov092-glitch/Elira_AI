@@ -615,6 +615,33 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
     ]
 
 
+def _build_itops_tools() -> list[dict[str, Any]]:
+    """Metadata-only ToolSpec for the Scoped Read-Only SSH diagnostic (itops).
+
+    Dispatch runs through ItopsToolProvider (handler here is a noop). Seeded as a
+    trusted built-in (classified + enabled). Read-only (permission 'auto',
+    side_effect False) — the REAL authorization is the executor operation-scope
+    gate, which blocks it unless the run has a bound read-only scope pinned to the
+    requested profile_id. NOT in BASE_TOOLS (would flip the base-prompt compaction
+    canary); activatable via tool_search.
+    """
+    def _noop(a: dict) -> dict:
+        return {"ok": False, "error": "itops tool — execute via ItopsToolProvider"}
+
+    return [
+        {
+            "name": "itops_ssh_healthcheck", "handler": _noop,
+            "display_name": "IT-Ops SSH Health Check", "display_name_ru": "SSH диагностика",
+            "category": "itops",
+            "description": "Read-only SSH diagnostic (hostname, uname -a, uptime) on a saved verified profile",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 60, "max_output_chars": 20000,
+        },
+    ]
+
+
 def build_builtin_tools() -> list[dict[str, Any]]:
     from app.application.git.runtime import git_commit as _git_commit_fn
     from app.application.git.runtime import git_status as _git_status_fn
@@ -654,4 +681,5 @@ def build_builtin_tools() -> list[dict[str, Any]]:
         *_build_project_brain_tools(map_service, brain_service),
         *_build_native_code_agent_tools(),
         *_build_ssh_tools(),
+        *_build_itops_tools(),
     ]

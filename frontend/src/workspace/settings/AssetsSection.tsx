@@ -1,6 +1,7 @@
-import { CheckCircle2, Fingerprint, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, Fingerprint, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
+import { streamCodeAgent } from "../../api/codeAgent";
 import {
   type AssetsResp,
   type ItopsAsset,
@@ -9,6 +10,7 @@ import {
   listAssets,
   sshEnroll,
   sshPreview,
+  startDiagnostics,
   verifyProfile,
 } from "../../api/itops";
 import { toast } from "../../components/ToastHost";
@@ -35,7 +37,7 @@ function lifecycleTone(state: string): string {
 // shows a pointer to the Experimental tab when it is off (and every /api/itops route
 // 404s anyway). Nothing here grants the model host access — enroll/verify only save
 // and check a connection; model use needs a separate scope/approval layer.
-export function AssetsSection() {
+export function AssetsSection({ project }: { project: string }) {
   const [ready, setReady] = useState(false);
   const [on, setOn] = useState(false);
 
@@ -58,10 +60,10 @@ export function AssetsSection() {
       </Wrap>
     );
   }
-  return <AssetsSurface />;
+  return <AssetsSurface project={project} />;
 }
 
-function AssetsSurface() {
+function AssetsSurface({ project }: { project: string }) {
   const [assets, setAssets] = useState<ItopsAsset[] | null>(null);
 
   const reload = useCallback(() => {
@@ -75,7 +77,7 @@ function AssetsSurface() {
     <Wrap title={TITLE}>
       <div className="flex flex-col gap-6">
         <EnrollBlock onEnrolled={reload} />
-        <AssetsList assets={assets} onReload={reload} />
+        <AssetsList assets={assets} onReload={reload} project={project} />
       </div>
     </Wrap>
   );
@@ -257,8 +259,10 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
   );
 }
 
-function AssetsList({ assets, onReload }: { assets: ItopsAsset[] | null; onReload: () => void }) {
+function AssetsList({ assets, onReload, project }: { assets: ItopsAsset[] | null; onReload: () => void; project: string }) {
   const [verifying, setVerifying] = useState("");
+  const [diagFor, setDiagFor] = useState("");
+  const [diagOut, setDiagOut] = useState<{ profileId: string; text: string; err: string } | null>(null);
 
   async function doVerify(profile_id: string) {
     if (verifying) return;
@@ -272,6 +276,36 @@ function AssetsList({ assets, onReload }: { assets: ItopsAsset[] | null; onReloa
       toast.error(errText(e, "Не удалось выполнить проверку"));
     } finally {
       setVerifying("");
+    }
+  }
+
+  // Start ONE server-scoped read-only diagnostic run and stream it. The run is
+  // locked to this profile (read-only, TTL) by the backend; the model can only run
+  // the fixed health check. We surface its output inline.
+  async function doDiagnose(profile_id: string) {
+    if (diagFor) return;
+    setDiagFor(profile_id);
+    setDiagOut({ profileId: profile_id, text: "", err: "" });
+    try {
+      const s = await startDiagnostics(profile_id);
+      let hc = "";
+      let finalText = "";
+      await streamCodeAgent({
+        message: s.message,
+        projectRoot: project,
+        runId: s.run_id,
+        maxSteps: 6,
+        onEvent: (ev) => {
+          if (ev.type === "tool_call" && ev.tool === "itops_ssh_healthcheck") hc = ev.result || hc;
+          else if (ev.type === "final_response") finalText = ev.text || finalText;
+        },
+        onError: (e) => setDiagOut({ profileId: profile_id, text: "", err: e.message }),
+      });
+      setDiagOut({ profileId: profile_id, text: hc || finalText || "готово", err: "" });
+    } catch (e) {
+      setDiagOut({ profileId: profile_id, text: "", err: errText(e, "Диагностика не удалась") });
+    } finally {
+      setDiagFor("");
     }
   }
 
@@ -308,26 +342,48 @@ function AssetsList({ assets, onReload }: { assets: ItopsAsset[] | null; onReloa
                 </span>
               </div>
               {a.profiles.map((p: ItopsProfile) => (
-                <div key={p.profile_id} className="mt-1.5 flex items-center gap-2 border-t border-line pt-1.5">
-                  <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", healthDot(p.last_health?.status || "unknown"))} />
-                  <span className="min-w-0 flex-1 truncate text-[11.5px] text-t2">
-                    <span className="font-mono">{p.ssh_alias || p.profile_id}</span>
-                    <span className="ml-1.5 text-mut">
-                      {p.last_health?.status === "verified"
-                        ? "проверено"
-                        : p.last_health?.reason || "не проверено"}
+                <div key={p.profile_id}>
+                  <div className="mt-1.5 flex items-center gap-2 border-t border-line pt-1.5">
+                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", healthDot(p.last_health?.status || "unknown"))} />
+                    <span className="min-w-0 flex-1 truncate text-[11.5px] text-t2">
+                      <span className="font-mono">{p.ssh_alias || p.profile_id}</span>
+                      <span className="ml-1.5 text-mut">
+                        {p.last_health?.status === "verified"
+                          ? "проверено"
+                          : p.last_health?.reason || "не проверено"}
+                      </span>
                     </span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void doVerify(p.profile_id)}
-                    disabled={verifying !== ""}
-                    className={cn(
-                      "flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50",
+                    {a.lifecycle_state === "enabled" && (
+                      <button
+                        type="button"
+                        onClick={() => void doDiagnose(p.profile_id)}
+                        disabled={diagFor !== ""}
+                        title="Read-only диагностика: hostname / uname -a / uptime"
+                        className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
+                      >
+                        {diagFor === p.profile_id ? <Loader2 size={11} className="animate-spin" /> : <Activity size={11} />} Диагностика
+                      </button>
                     )}
-                  >
-                    {verifying === p.profile_id ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />} Проверить
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => void doVerify(p.profile_id)}
+                      disabled={verifying !== ""}
+                      className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
+                    >
+                      {verifying === p.profile_id ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} />} Проверить
+                    </button>
+                  </div>
+                  {diagOut?.profileId === p.profile_id && (
+                    <div className="mt-1.5">
+                      {diagOut.err ? (
+                        <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{diagOut.err}</div>
+                      ) : diagOut.text ? (
+                        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">{diagOut.text}</pre>
+                      ) : (
+                        <div className="flex items-center gap-2 px-1 text-[11.5px] text-mut"><Loader2 size={12} className="animate-spin" /> диагностика…</div>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

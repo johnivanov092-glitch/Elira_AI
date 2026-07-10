@@ -20,6 +20,7 @@ Public re-exports:
 
 from app.application.tool_providers.base import ToolDispatchResult, ToolProvider
 from app.application.tool_providers.builtin import BuiltinToolProvider
+from app.application.tool_providers.itops_provider import ItopsToolProvider
 from app.application.tool_providers.lsp_provider import LspToolProvider, build_lsp_providers
 from app.application.tool_providers.mcp_provider import McpToolProvider, build_mcp_providers
 from app.application.tool_providers.registry import ToolRegistry
@@ -27,6 +28,7 @@ from app.application.tool_providers.ssh_provider import SshToolProvider
 
 __all__ = [
     "BuiltinToolProvider",
+    "ItopsToolProvider",
     "LspToolProvider",
     "McpToolProvider",
     "SshToolProvider",

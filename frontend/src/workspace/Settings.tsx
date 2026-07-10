@@ -72,7 +72,7 @@ export function Settings({ model, onModel, onClose, project, initialSection }: {
           {section === "dashboard" && <Lazy load={getDashboardOverview} title="Дашборд" />}
           {section === "telegram" && <TelegramSection />}
           {section === "sshmcp" && <SshMcpSection />}
-          {section === "assets" && <AssetsSection />}
+          {section === "assets" && <AssetsSection project={project} />}
           {section === "experimental" && <ExperimentalSection />}
           {section === "voice" && <VoiceSection />}
           {section === "theme" && <ThemeSection />}

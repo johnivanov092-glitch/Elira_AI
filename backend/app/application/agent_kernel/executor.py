@@ -50,6 +50,23 @@ class ToolExecutionResult:
     error: str | None = None
 
 
+def _itops_profile_enabled(profile_id: str) -> bool:
+    """True iff *profile_id* is a saved SSH profile on an ENABLED (verified) asset.
+
+    Fail-closed: any error (store unavailable, unknown profile, draft asset) → False,
+    so the scoped health-check gate blocks rather than falls through.
+    """
+    try:
+        from app.infrastructure.it_ops import store as _st
+        prof = _st.get_connection_profile(profile_id)
+        if not prof or prof.get("transport") != "ssh":
+            return False
+        asset = _st.get_asset(str(prof.get("asset_id") or ""))
+        return bool(asset) and asset.get("lifecycle_state") == "enabled"
+    except Exception:  # noqa: BLE001 — fail-closed
+        return False
+
+
 def execute_tool(
     request: ToolExecutionRequest,
     dispatch_fn: DispatchFn,
@@ -176,6 +193,91 @@ def execute_tool(
             },
             error="tool_not_activated",
         )
+
+    # 1g. Operation-scope capability allowlist (Scoped Read-Only SSH v1). When a run
+    # has a bound operation scope it is a LOCKED-DOWN read-only diagnostic run: only
+    # tool_search (discovery) and itops_ssh_healthcheck may execute — every other
+    # tool (ssh_*, run_bash, filesystem, browser, change tools) is blocked here at
+    # the single dispatch path, so the model cannot escape the scope via any tool.
+    # And itops_ssh_healthcheck can NEVER run without a bound scope for THIS run,
+    # bound to the exact profile_id, over an ENABLED asset. Fail-closed throughout
+    # (import errors / empty run_id / unknown profile all block). run_id may be
+    # empty; get_active_scope treats that as "no scope".
+    _SCOPE_TOOL = "itops_ssh_healthcheck"
+    try:
+        from app.application.agent_kernel import operation_scope as _opscope
+        # The capability allowlist is STICKY (is_locked_down): once a run is bound to
+        # a diagnostic scope it stays locked down until it ends — a TTL expiry must
+        # NEVER re-open the tools it was barred from. The one-shot health check needs
+        # a LIVE scope (get_active_scope), which TTL does gate.
+        _locked = _opscope.is_locked_down(request.run_id)
+        _scope = _opscope.get_active_scope(request.run_id)
+    except Exception as exc:  # noqa: BLE001 — a broken scope layer must BLOCK the scoped tool
+        if tool_name == _SCOPE_TOOL:
+            _emit_blocked(request, f"operation scope unavailable: {exc}")
+            return ToolExecutionResult(
+                status="blocked",
+                output={"ok": False, "text": "Operation scope unavailable — blocked (fail-closed).",
+                        "error": "scope_unavailable"},
+                error="scope_unavailable",
+            )
+        _locked, _scope = False, None
+
+    if _locked and tool_name not in ("tool_search", _SCOPE_TOOL):
+        _emit_blocked(request, f"tool '{tool_name}' blocked: scoped read-only diagnostic run")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": (f"Tool '{tool_name}' is not allowed in a scoped read-only diagnostic "
+                         "run — only tool_search and itops_ssh_healthcheck may run here."),
+                "error": "scope_restricted",
+            },
+            error="scope_restricted",
+        )
+
+    if tool_name == _SCOPE_TOOL:
+        if _scope is None:
+            _emit_blocked(request, "itops_ssh_healthcheck requires an operation scope")
+            return ToolExecutionResult(
+                status="blocked",
+                output={"ok": False, "text": "This diagnostic tool requires a bound read-only "
+                        "operation scope (start a diagnostic run) — blocked (fail-closed).",
+                        "error": "no_operation_scope"},
+                error="no_operation_scope",
+            )
+        _pid = str(request.args.get("profile_id") or "").strip()
+        if _scope.mode != "read_only" or not _pid or _pid != _scope.profile_id:
+            _emit_blocked(request, "operation scope profile/mode mismatch")
+            return ToolExecutionResult(
+                status="blocked",
+                output={"ok": False, "text": "Requested profile_id is not the one bound to this "
+                        "run's read-only scope — blocked (fail-closed).", "error": "scope_mismatch"},
+                error="scope_mismatch",
+            )
+        if not _itops_profile_enabled(_pid):
+            _emit_blocked(request, "operation scope target is not an enabled asset")
+            return ToolExecutionResult(
+                status="blocked",
+                output={"ok": False, "text": "The bound profile is not a verified/enabled asset "
+                        "(draft or missing) — blocked (fail-closed).", "error": "profile_not_enabled"},
+                error="profile_not_enabled",
+            )
+        # One health check per run: atomic reserve BEFORE dispatch. A second call
+        # (or a retry after a failed dispatch) is refused.
+        if not _opscope.reserve_healthcheck(request.run_id):
+            _emit_blocked(request, "health check already used for this run")
+            return ToolExecutionResult(
+                status="blocked",
+                output={"ok": False, "text": "This diagnostic run has already performed its one "
+                        "health check — blocked.", "error": "healthcheck_already_used"},
+                error="healthcheck_already_used",
+            )
+        # Re-pin profile_id to the scope's value (already validated equal above), so
+        # the handler receives the authoritative profile. The handler takes its run_id
+        # from the runtime context the executor binds (set_current_run_id below), NOT
+        # from args — so run_id is never injected here.
+        request.args = {**request.args, "profile_id": _pid}
 
     # 2. Policy preflight — rate-limit, context-budget, and per-call allowed_tools.
     # selected_tools=[tool_name] enforces the agent's allowed_tools list at tool-call
