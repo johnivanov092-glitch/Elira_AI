@@ -34,8 +34,12 @@ SECRET_LIFECYCLE = (
 )
 # Origin binds a secret_ref to the path that created it. Auto-recovery is a
 # COMPENSATING action of the secure-intake path only — recovery may touch an
-# incomplete record ONLY when its origin is `secure_intake`.
-SECRET_ORIGINS = ("secure_intake",)
+# incomplete record ONLY when its origin is `secure_intake`. Rows migrated in from
+# a pre-origin schema get `legacy_unbound` so startup never auto-deletes them.
+SECRET_ORIGINS = ("secure_intake", "legacy_unbound")
+# Only put_secret_ref (the intake path) may CREATE a record — and only as
+# secure_intake. legacy_unbound is set solely by the v1→v2 migration.
+SECRET_INTAKE_ORIGINS = ("secure_intake",)
 # What a caller may REQUEST as the final state of put_secret (internal saga states
 # are not requestable).
 SECRET_REQUESTABLE_LIFECYCLE = ("temporary", "persistent")

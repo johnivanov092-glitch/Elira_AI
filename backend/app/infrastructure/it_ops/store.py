@@ -26,8 +26,14 @@ from app.core.data_files import data_file
 from app.domain import it_ops as _dom
 from app.infrastructure.db.connection import connect_sqlite
 
-# Forward-only ladder. Bump ONLY with a matching column spec; never DROP.
-_SCHEMA_VERSION = 1
+# Forward-only ladder. v1 → v2 added secret_refs.origin/recovery_attempts/
+# last_recovery_at. Bump WITH an explicit migration from the known prior version.
+_SCHEMA_VERSION = 2
+
+# Recovery bounds.
+MAX_RECOVERY_ATTEMPTS = 2          # auto-recovery attempts per record, then terminal
+MAX_RECOVERY_PER_START = 50        # records processed per startup pass (bounded)
+LEASE_TTL_SECONDS = 300.0          # a `recovering` record older than this is stale → reclaimable
 
 # Test override (mirrors web_corpus store). None → the real data file.
 _DB_PATH_OVERRIDE: str | None = None
@@ -191,11 +197,6 @@ _EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     },
 }
 
-# Max auto-recovery attempts across startups. After this, a record goes terminal
-# `recovery_failed` (visible state) and is never auto-deleted/retried again — only
-# explicit manual recovery later.
-MAX_RECOVERY_ATTEMPTS = 2
-
 
 class StoreUnavailable(RuntimeError):
     """The IT-Ops store could not be opened/queried/migrated — fail-soft signal."""
@@ -237,36 +238,66 @@ _EXPECTED_PK: dict[str, str] = {
     "evidence": "evidence_id", "change_runs": "change_run_id",
     "secret_refs": "secret_ref",
 }
-# Core columns required to be NOT NULL (only columns present in ANY compatible
-# legacy schema — additive/optional columns are NOT listed here).
+# EVERY NOT NULL column of the canonical (v2) schema. The contract is EXACT: a
+# nullable-where-it-should-be-NOT-NULL column fails verification (P2 fix — do not
+# call it a full contract while skipping constraints).
 _REQUIRED_NOTNULL: dict[str, set[str]] = {
-    "assets": {"label", "kind", "created_at", "updated_at"},
-    "connection_profiles": {"asset_id", "transport", "created_at", "updated_at"},
-    "operation_scopes": {"run_id"},
-    "snapshots": {"change_run_id", "asset_id", "captured_at"},
-    "evidence": {"run_id", "target_identity", "scanner_vantage", "operation", "captured_at"},
-    "change_runs": {"run_id", "asset_id", "created_at", "updated_at"},
-    "secret_refs": {"kind", "origin", "created_at"},
+    "assets": {"label", "kind", "tags", "owner_scope", "lifecycle_state",
+               "created_at", "updated_at"},
+    "connection_profiles": {"asset_id", "transport", "os_platform_meta", "last_health",
+                            "created_at", "updated_at"},
+    "operation_scopes": {"run_id", "allowed_asset_ids", "cidrs", "local_roots",
+                         "service_ids", "config_roots", "db_profiles", "mode"},
+    "snapshots": {"change_run_id", "asset_id", "content_hash", "captured_at"},
+    "evidence": {"run_id", "target_identity", "scanner_vantage", "operation",
+                 "result", "captured_at"},
+    "change_runs": {"run_id", "asset_id", "plan", "rollback_kind",
+                    "change_run_status", "created_at", "updated_at"},
+    "secret_refs": {"backend", "kind", "lifecycle", "origin", "recovery_attempts",
+                    "created_at"},
 }
 # Declared foreign keys: (from_col, ref_table, ref_col, on_delete).
 _EXPECTED_FK: dict[str, list[tuple[str, str, str, str]]] = {
     "connection_profiles": [("asset_id", "assets", "asset_id", "CASCADE")],
 }
 
+# The KNOWN prior v1 contract — identical to v2 EXCEPT secret_refs lacked
+# origin/recovery_attempts/last_recovery_at. Only a DB matching THIS is migrated
+# v1→v2; anything else at user_version=1 is an unknown v1 → fail-closed.
+_V1_SECRET_REFS_COLS = {
+    "secret_ref", "backend", "kind", "asset_id", "lifecycle",
+    "created_at", "rotated_at", "revoked_at",
+}
+_V1_SECRET_REFS_NOTNULL = {"backend", "kind", "lifecycle", "created_at"}
+
+
+def _columns_for(version: int) -> dict[str, set]:
+    cols = {t: set(c) for t, c in _EXPECTED_COLUMNS.items()}
+    if version == 1:
+        cols["secret_refs"] = set(_V1_SECRET_REFS_COLS)
+    return cols
+
+
+def _notnull_for(version: int) -> dict[str, set]:
+    nn = {t: set(c) for t, c in _REQUIRED_NOTNULL.items()}
+    if version == 1:
+        nn["secret_refs"] = set(_V1_SECRET_REFS_NOTNULL)
+    return nn
+
 
 def init_db() -> None:
-    """Initialize the it_ops store with a NARROW, fail-closed model. it_ops v1 was
-    never released, so there are no partial-v0 schemas in the wild to migrate:
+    """Initialize the it_ops store with a narrow, fail-closed model:
 
-      * user_version=0 AND no itops tables → create the canonical v1, stamp v1;
-      * user_version=0 AND any itops table already exists → StoreUnavailable, DB
-        left untouched, version NOT stamped (refuse a partial/unknown schema);
-      * user_version=1 → VERIFY the exact structural contract, change nothing;
-      * user_version>1 → fail-closed (a newer build wrote it).
+      * user_version=0 AND no itops tables → create the canonical v2, stamp v2;
+      * user_version=0 AND any itops table exists → StoreUnavailable, untouched;
+      * user_version=1 → must match the KNOWN v1 contract, then migrate v1→v2
+        (add origin/recovery_attempts/last_recovery_at, mark existing rows
+        origin='legacy_unbound' so startup never auto-deletes them), stamp v2;
+        an unknown v1 shape → fail-closed;
+      * user_version=2 → verify the exact v2 contract, change nothing;
+      * user_version>2 → fail-closed.
 
-    Any sqlite failure or a contract mismatch → StoreUnavailable, version unchanged.
-    Future v2+ will be an explicit migration from a known prior version, not an
-    ad-hoc column patch."""
+    Any sqlite failure / contract mismatch → StoreUnavailable, version unchanged."""
     conn = _connect()
     try:
         ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -281,10 +312,17 @@ def init_db() -> None:
                     f"it_ops user_version=0 but tables already exist {sorted(present)} — "
                     f"refusing to touch a partial/unknown schema (fail-closed)")
             conn.executescript(_CREATE_SQL)
-            _verify_contract(conn)          # our own create must satisfy the contract
+            _verify_contract(conn, _columns_for(2), _notnull_for(2))
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
-        else:  # ver == _SCHEMA_VERSION (1): verify only, change nothing.
-            _verify_contract(conn)
+        elif ver == 1:
+            _verify_contract(conn, _columns_for(1), _notnull_for(1))   # known v1 or fail-closed
+            _migrate_v1_to_v2(conn)
+            _verify_contract(conn, _columns_for(2), _notnull_for(2))
+            conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+        elif ver == _SCHEMA_VERSION:      # 2 → verify only
+            _verify_contract(conn, _columns_for(2), _notnull_for(2))
+        else:
+            raise StoreUnavailable(f"it_ops user_version={ver} has no known migration (fail-closed)")
         conn.commit()
     except sqlite3.Error as exc:
         try:
@@ -296,6 +334,16 @@ def init_db() -> None:
         conn.close()
 
 
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """Add the v2 secret_refs columns and bind pre-existing rows to
+    origin='legacy_unbound' so auto-recovery (secure_intake-only) never touches
+    them. Additive; the row data is preserved."""
+    conn.execute("ALTER TABLE secret_refs ADD COLUMN origin TEXT NOT NULL DEFAULT 'secure_intake'")
+    conn.execute("ALTER TABLE secret_refs ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0")
+    conn.execute("ALTER TABLE secret_refs ADD COLUMN last_recovery_at REAL")
+    conn.execute("UPDATE secret_refs SET origin='legacy_unbound'")   # everything present is legacy
+
+
 def _table_info(conn: sqlite3.Connection, table: str) -> list[tuple]:
     return conn.execute(f"PRAGMA table_info({table})").fetchall()
 
@@ -305,12 +353,14 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
 
-def _verify_contract(conn: sqlite3.Connection) -> None:
-    """Verify the EXACT structural contract: every table present with its full
-    expected column set, the correct single-column PK, core NOT NULL constraints,
-    and declared FKs (including on_delete). Any mismatch raises — the caller turns
-    it into StoreUnavailable and leaves the DB/version untouched."""
-    for table, cols in _EXPECTED_COLUMNS.items():
+def _verify_contract(conn: sqlite3.Connection, columns_by_table: dict[str, set],
+                     notnull_by_table: dict[str, set]) -> None:
+    """Verify the EXACT structural contract for the given version's spec: every
+    table present with its full expected column set, the correct single-column PK,
+    ALL required NOT NULL constraints, and declared FKs (incl. on_delete). Any
+    mismatch raises — the caller turns it into StoreUnavailable, DB/version
+    untouched."""
+    for table, cols in columns_by_table.items():
         info = _table_info(conn, table)          # rows: (cid, name, type, notnull, dflt, pk)
         if not info:
             raise sqlite3.OperationalError(f"expected table {table!r} missing")
@@ -324,10 +374,10 @@ def _verify_contract(conn: sqlite3.Connection) -> None:
         if pk_cols != {pk}:
             raise sqlite3.OperationalError(
                 f"{table}: primary key is {sorted(pk_cols) or 'none'}, expected [{pk!r}]")
-        for col in _REQUIRED_NOTNULL.get(table, set()):
+        for col in notnull_by_table.get(table, set()):
             if col not in notnull_cols and col != pk:
                 raise sqlite3.OperationalError(
-                    f"{table}: core column {col!r} must be NOT NULL")
+                    f"{table}: column {col!r} must be NOT NULL")
     for table, fks in _EXPECTED_FK.items():
         declared = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
         # rows: (id, seq, table, from, to, on_update, on_delete, match)
@@ -435,7 +485,9 @@ def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
     _check(kind, _dom.SECRET_KINDS, "secret kind")
     _check(backend, _dom.SECRET_BACKENDS, "secret backend")   # Phase 0: wincred only
     _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
-    _check(origin, _dom.SECRET_ORIGINS, "secret origin")
+    # only the intake path may CREATE a record (secure_intake); legacy_unbound is
+    # set solely by the v1→v2 migration, never by a caller.
+    _check(origin, _dom.SECRET_INTAKE_ORIGINS, "secret origin")
 
     def op(conn):
         conn.execute(
@@ -461,21 +513,6 @@ def set_secret_lifecycle(secret_ref: str, lifecycle: str) -> None:
         conn.execute(f"UPDATE secret_refs SET lifecycle=?{ts_col} WHERE secret_ref=?", params)
         conn.commit()
     _wrap(op)
-
-
-def list_secret_refs_by_lifecycle(lifecycles: tuple[str, ...]) -> list[dict[str, Any]]:
-    """secret_ref STATE rows in the given lifecycles — used by the vault recovery
-    path to find incomplete (provisioning / cleanup_pending) records."""
-    if not lifecycles:
-        return []
-    placeholders = ",".join("?" for _ in lifecycles)
-
-    def op(conn):
-        rows = conn.execute(
-            f"SELECT * FROM secret_refs WHERE lifecycle IN ({placeholders})"
-            f" ORDER BY created_at ASC", tuple(lifecycles)).fetchall()
-        return [_secret_row(r) for r in rows]
-    return _wrap(op)
 
 
 def _secret_row(r: sqlite3.Row) -> dict[str, Any]:
@@ -526,36 +563,54 @@ def finalize_provisioning(secret_ref: str, lifecycle: str) -> bool:
     return _wrap(op)
 
 
-def claim_for_recovery(secret_ref: str) -> bool:
-    """Atomic CAS claim: provisioning|cleanup_pending → recovering, incrementing
-    recovery_attempts. Returns True ONLY if this call won the claim (rowcount==1).
+# A record is RECOVERABLE if it is secure_intake AND either fresh-incomplete
+# (provisioning|cleanup_pending) OR a STALE lease (recovering whose last_recovery_at
+# is older than the lease TTL — its claimer died before finishing). This is the
+# fix for a record hanging forever in `recovering`.
+_RECOVERABLE_PREDICATE = (
+    " origin='secure_intake' AND ("
+    "   lifecycle IN ('provisioning','cleanup_pending')"
+    "   OR (lifecycle='recovering' AND (last_recovery_at IS NULL OR last_recovery_at < ?))"
+    " )")
 
-    Guarded so auto-recovery is a COMPENSATING action of the secure-intake path
-    only: the claim requires origin='secure_intake' AND recovery_attempts <
-    MAX_RECOVERY_ATTEMPTS. A record already recovering / finalized / gone, one from
-    another origin, or one that exhausted its attempts yields False."""
+
+def list_recoverable(stale_before: float, limit: int) -> list[dict[str, Any]]:
+    """Bounded set of recoverable records (secure_intake; fresh-incomplete OR stale
+    recovering). `limit` caps how many a single startup pass reads."""
+    def op(conn):
+        rows = conn.execute(
+            f"SELECT * FROM secret_refs WHERE{_RECOVERABLE_PREDICATE}"
+            f" ORDER BY created_at ASC LIMIT ?", (stale_before, int(limit))).fetchall()
+        return [_secret_row(r) for r in rows]
+    return _wrap(op)
+
+
+def claim_for_recovery(secret_ref: str, stale_before: float) -> bool:
+    """Atomic CAS lease claim → recovering, incrementing recovery_attempts and
+    stamping last_recovery_at. Claims a fresh-incomplete record OR RE-claims a stale
+    recovering lease (so a record can never hang forever in recovering). Guarded to
+    secure_intake and recovery_attempts < MAX. Returns True only on rowcount==1."""
     def op(conn):
         cur = conn.execute(
             "UPDATE secret_refs SET lifecycle='recovering',"
             " recovery_attempts=recovery_attempts+1, last_recovery_at=?"
-            " WHERE secret_ref=? AND lifecycle IN ('provisioning','cleanup_pending')"
-            " AND origin='secure_intake' AND recovery_attempts < ?",
-            (_now(), secret_ref, MAX_RECOVERY_ATTEMPTS))
+            f" WHERE secret_ref=? AND recovery_attempts < ? AND{_RECOVERABLE_PREDICATE}",
+            (_now(), secret_ref, MAX_RECOVERY_ATTEMPTS, stale_before))
         conn.commit()
         return cur.rowcount == 1
     return _wrap(op)
 
 
-def mark_recovery_failed(secret_ref: str) -> bool:
-    """Terminal CAS: an incomplete record that exhausted its auto-recovery attempts
-    (>= MAX_RECOVERY_ATTEMPTS) goes to `recovery_failed` — visible, never
-    auto-deleted/retried again (manual recovery only). Returns True on transition."""
+def mark_recovery_failed(secret_ref: str, stale_before: float) -> bool:
+    """Terminal CAS: a secure_intake record that exhausted its attempts
+    (>= MAX_RECOVERY_ATTEMPTS) and is fresh-incomplete OR a stale recovering lease
+    goes to `recovery_failed` (visible; never auto-deleted/retried again). Returns
+    True on transition."""
     def op(conn):
         cur = conn.execute(
-            "UPDATE secret_refs SET lifecycle='recovery_failed' WHERE secret_ref=?"
-            " AND lifecycle IN ('provisioning','cleanup_pending')"
-            " AND origin='secure_intake' AND recovery_attempts >= ?",
-            (secret_ref, MAX_RECOVERY_ATTEMPTS))
+            "UPDATE secret_refs SET lifecycle='recovery_failed'"
+            f" WHERE secret_ref=? AND recovery_attempts >= ? AND{_RECOVERABLE_PREDICATE}",
+            (secret_ref, MAX_RECOVERY_ATTEMPTS, stale_before))
         conn.commit()
         return cur.rowcount == 1
     return _wrap(op)

@@ -125,22 +125,28 @@ def revoke(secret_ref: str) -> None:
 
 
 def recover_incomplete_secrets() -> dict:
-    """Race-safe, bounded, origin-scoped recovery for incomplete records
-    (`provisioning` / `cleanup_pending`). This is a COMPENSATING action of the
-    secure-intake path — it touches ONLY records whose origin is `secure_intake`
-    (enforced in the CAS claim).
+    """Race-safe, BOUNDED, origin-scoped recovery. A COMPENSATING action of the
+    secure-intake path — it touches ONLY `secure_intake` records (legacy_unbound
+    rows are never auto-deleted). At most MAX_RECOVERY_PER_START records per pass.
 
-    Per candidate:
-      * a record that already exhausted MAX_RECOVERY_ATTEMPTS → terminal
-        `recovery_failed` (visible; never auto-deleted/retried again);
-      * else atomically CLAIM it (→ recovering, attempts+1) so put_secret and a
-        concurrent recovery can never both act on the same ref; then delete the
+    Per candidate (fresh-incomplete OR a STALE recovering lease):
+      * exhausted MAX_RECOVERY_ATTEMPTS → terminal `recovery_failed` (visible);
+      * else atomically LEASE-CLAIM it (→ recovering, attempts+1, timestamped) so a
+        concurrent put_secret/recovery can't both act on it; then delete the
         credential and the claimed record;
-      * a record we could not claim (other owner / other origin / exhausted) is
-        skipped; a claimed record we could not finish is reset to cleanup_pending
-        (retryable next boot, attempts persisted) and reported.
-    Returns opaque secret_refs / counts only, never any value. All transitions CAS."""
-    refs = _store.list_secret_refs_by_lifecycle(("provisioning", "cleanup_pending"))
+      * unclaimable (other owner / origin / exhausted) → skipped; a claimed record
+        we couldn't finish is reset to cleanup_pending (retryable — and if that
+        reset also fails, the stale lease is reclaimed next pass, so it can never
+        hang forever).
+    Returns opaque secret_refs / counts only, never a value; `capped` flags that
+    more records remain than were processed this pass. All transitions CAS."""
+    now = _store._now()
+    stale_before = now - _store.LEASE_TTL_SECONDS
+    limit = _store.MAX_RECOVERY_PER_START
+    refs = _store.list_recoverable(stale_before, limit + 1)     # +1 to detect overflow
+    capped = len(refs) > limit
+    refs = refs[:limit]
+
     cleaned: list[str] = []
     failed: list[dict] = []
     skipped: list[str] = []
@@ -148,12 +154,12 @@ def recover_incomplete_secrets() -> dict:
     for r in refs:
         sref = r["secret_ref"]
         if int(r.get("recovery_attempts") or 0) >= _store.MAX_RECOVERY_ATTEMPTS:
-            if _store.mark_recovery_failed(sref):    # terminal, visible
+            if _store.mark_recovery_failed(sref, stale_before):    # terminal, visible
                 exhausted.append(sref)
             continue
         try:
-            if not _store.claim_for_recovery(sref):
-                skipped.append(sref)                 # other owner / origin / exhausted
+            if not _store.claim_for_recovery(sref, stale_before):
+                skipped.append(sref)
                 continue
             wincred.delete_secret(sref)              # raises on infra error; False if absent
             if _store.delete_claimed_recovery(sref):
@@ -164,6 +170,7 @@ def recover_incomplete_secrets() -> dict:
             try:
                 _store.set_secret_lifecycle(sref, "cleanup_pending")
             except _store.StoreUnavailable:
-                pass
+                pass                                 # stale lease reclaimed next pass
             failed.append({"secret_ref": sref, "error": str(exc)})
-    return {"cleaned": cleaned, "failed": failed, "skipped": skipped, "exhausted": exhausted}
+    return {"cleaned": cleaned, "failed": failed, "skipped": skipped,
+            "exhausted": exhausted, "capped": capped}

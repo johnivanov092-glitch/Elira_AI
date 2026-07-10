@@ -12,6 +12,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+_SAMPLE = 10   # cap the opaque-ref sample logged per category
+
 
 def itops_startup() -> None:
     """Migrate the it_ops store, then run the secret recovery pass. Flag-gated and
@@ -31,12 +33,14 @@ def itops_startup() -> None:
     failed = summary["failed"]
     skipped = summary["skipped"]
     exhausted = summary.get("exhausted", [])
-    # ALWAYS log a bounded summary (even all-zero), opaque secret_refs only — a
-    # value must never reach the log.
+    capped = summary.get("capped", False)
+    # ALWAYS log a bounded summary (even all-zero): counts + a CAPPED sample of
+    # opaque secret_refs (never a value, never an unbounded list).
+    n = _SAMPLE
     logger.info(
-        "itops startup recovery: cleaned=%d failed=%d skipped=%d exhausted=%d refs=%s",
-        len(cleaned), len(failed), len(skipped), len(exhausted),
-        {"cleaned": cleaned,
-         "failed": [f["secret_ref"] for f in failed],
-         "skipped": skipped,
-         "exhausted": exhausted})
+        "itops startup recovery: cleaned=%d failed=%d skipped=%d exhausted=%d capped=%s sample=%s",
+        len(cleaned), len(failed), len(skipped), len(exhausted), capped,
+        {"cleaned": cleaned[:n],
+         "failed": [f["secret_ref"] for f in failed[:n]],
+         "skipped": skipped[:n],
+         "exhausted": exhausted[:n]})

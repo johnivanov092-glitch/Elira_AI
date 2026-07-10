@@ -235,7 +235,7 @@ class VaultTest(_TempStore):
         def racing_write(ref, val):
             self._cm[ref] = val
             # recovery wins the race: claim (provisioning→recovering), delete cred+record
-            self.assertTrue(itstore.claim_for_recovery(ref))
+            self.assertTrue(itstore.claim_for_recovery(ref, itstore._now() - itstore.LEASE_TTL_SECONDS))
             self._cm.pop(ref, None)
             self.assertTrue(itstore.delete_claimed_recovery(ref))
 
@@ -291,8 +291,8 @@ class StoreCasTest(_TempStore):
 
     def test_claim_is_exclusive_and_delete_only_recovering(self):
         itstore.put_secret_ref(secret_ref="s2", kind="password")   # provisioning
-        self.assertTrue(itstore.claim_for_recovery("s2"))          # claim wins
-        self.assertFalse(itstore.claim_for_recovery("s2"))         # already recovering
+        self.assertTrue(itstore.claim_for_recovery("s2", itstore._now() - itstore.LEASE_TTL_SECONDS))          # claim wins
+        self.assertFalse(itstore.claim_for_recovery("s2", itstore._now() - itstore.LEASE_TTL_SECONDS))         # already recovering
         self.assertFalse(itstore.finalize_provisioning("s2", "temporary"))  # can't finalize a claimed rec
         self.assertTrue(itstore.delete_claimed_recovery("s2"))     # delete a recovering record
         self.assertFalse(itstore.delete_claimed_recovery("s2"))    # gone → conflict, not success
@@ -320,7 +320,8 @@ class RecoveryPolicyTest(_TempStore):
         self.assertIn("sref_inc", s3["exhausted"])
         # a further pass does nothing — no auto-delete/retry beyond the cap
         s4 = vault.recover_incomplete_secrets()
-        self.assertEqual(s4, {"cleaned": [], "failed": [], "skipped": [], "exhausted": []})
+        self.assertEqual(s4, {"cleaned": [], "failed": [], "skipped": [],
+                              "exhausted": [], "capped": False})
 
     def test_recovery_only_touches_secure_intake_origin(self):
         from app.infrastructure.secrets import vault
@@ -333,7 +334,7 @@ class RecoveryPolicyTest(_TempStore):
             " recovery_attempts, created_at) VALUES"
             " ('sref_ext','wincred','password','provisioning','external',0,?)", (_t.time(),))
         conn.commit(); conn.close()
-        self.assertFalse(itstore.claim_for_recovery("sref_ext"))       # origin guard
+        self.assertFalse(itstore.claim_for_recovery("sref_ext", itstore._now() - itstore.LEASE_TTL_SECONDS))       # origin guard
         summary = vault.recover_incomplete_secrets()
         self.assertNotIn("sref_ext", summary["cleaned"] + summary["exhausted"])
         self.assertEqual(itstore.secret_ref_state("sref_ext")["lifecycle"], "provisioning")
@@ -347,8 +348,43 @@ class RecoveryPolicyTest(_TempStore):
             " recovery_attempts, created_at) VALUES"
             " ('sref_ext2','wincred','password','cleanup_pending','external',5,?)", (_t.time(),))
         conn.commit(); conn.close()
-        self.assertFalse(itstore.mark_recovery_failed("sref_ext2"))     # not our origin
+        self.assertFalse(itstore.mark_recovery_failed("sref_ext2", itstore._now() - itstore.LEASE_TTL_SECONDS))     # not our origin
         self.assertEqual(itstore.secret_ref_state("sref_ext2")["lifecycle"], "cleanup_pending")
+
+    def test_stale_recovering_lease_is_reclaimed_never_hangs(self):
+        # P1 repro: a record stuck in `recovering` (claimer died / reset failed)
+        # must be reclaimable via a STALE lease — it can never hang forever.
+        import time as _t
+        old = _t.time() - itstore.LEASE_TTL_SECONDS - 100      # last_recovery_at well in the past
+        conn = sqlite3.connect(itstore._DB_PATH_OVERRIDE)
+        conn.execute(
+            "INSERT INTO secret_refs (secret_ref, backend, kind, lifecycle, origin,"
+            " recovery_attempts, last_recovery_at, created_at) VALUES"
+            " ('stuck','wincred','password','recovering','secure_intake',1,?,1.0)", (old,))
+        conn.commit(); conn.close()
+        stale_before = itstore._now() - itstore.LEASE_TTL_SECONDS
+        # a FRESH recovering lease (now) is NOT reclaimable; a STALE one IS.
+        self.assertTrue(itstore.claim_for_recovery("stuck", stale_before))   # reclaimed
+        self.assertEqual(itstore.secret_ref_state("stuck")["recovery_attempts"], 2)
+
+    def test_recovery_is_bounded_and_flags_capped(self):
+        # more incomplete records than MAX_RECOVERY_PER_START → process at most the
+        # cap and flag capped=True.
+        from app.infrastructure.secrets import vault
+        n = itstore.MAX_RECOVERY_PER_START + 5
+        for i in range(n):
+            itstore.put_secret_ref(secret_ref=f"b{i}", kind="password")   # provisioning
+        with unittest.mock.patch("app.infrastructure.secrets.wincred.delete_secret",
+                                 return_value=True):
+            summary = vault.recover_incomplete_secrets()
+        processed = len(summary["cleaned"]) + len(summary["failed"]) + len(summary["skipped"])
+        self.assertLessEqual(processed, itstore.MAX_RECOVERY_PER_START)
+        self.assertTrue(summary["capped"])
+
+    def test_only_secure_intake_origin_is_creatable(self):
+        # a caller cannot mint a legacy_unbound (or any non-intake) origin.
+        with self.assertRaises(ValueError):
+            itstore.put_secret_ref(secret_ref="x", kind="password", origin="legacy_unbound")
 
 
 class WinCredHonestyTest(unittest.TestCase):
@@ -499,7 +535,7 @@ class MigrationRealTest(unittest.TestCase):
         self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)
 
     def test_future_user_version_fails_closed(self):
-        itstore.init_db()                              # build v1
+        itstore.init_db()                              # build current schema
         conn = sqlite3.connect(self._path)
         conn.execute(f"PRAGMA user_version={itstore._SCHEMA_VERSION + 5}")
         conn.commit(); conn.close()
@@ -507,6 +543,74 @@ class MigrationRealTest(unittest.TestCase):
             itstore.init_db()
         self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION + 5,
                          "a future version must be left untouched")
+
+    _V1_SECRET_REFS = (
+        "CREATE TABLE secret_refs (secret_ref TEXT PRIMARY KEY,"
+        " backend TEXT NOT NULL DEFAULT 'wincred', kind TEXT NOT NULL, asset_id TEXT,"
+        " lifecycle TEXT NOT NULL DEFAULT 'provisioning', created_at REAL NOT NULL,"
+        " rotated_at REAL, revoked_at REAL);")
+
+    def _build_prior_v1(self):
+        # a genuine prior-v1 DB: the v2 schema but secret_refs at its v1 (8-col)
+        # shape, stamped user_version=1.
+        conn = sqlite3.connect(self._path)
+        conn.executescript(itstore._CREATE_SQL)                 # v2 tables
+        conn.executescript("DROP TABLE secret_refs;" + self._V1_SECRET_REFS)  # → v1 secret_refs
+        conn.execute("PRAGMA user_version=1")
+        conn.commit(); conn.close()
+
+    def test_prior_v1_upgrades_to_v2_and_binds_legacy_rows(self):
+        # P1 repro: a DB created by the prior release must UPGRADE, not be rejected.
+        self._build_prior_v1()
+        conn = sqlite3.connect(self._path)
+        conn.execute("INSERT INTO secret_refs (secret_ref, backend, kind, lifecycle, created_at)"
+                     " VALUES ('legacy1','wincred','password','cleanup_pending',1.0)")
+        conn.commit(); conn.close()
+        itstore.init_db()                                       # v1 → v2 migration
+        self.assertEqual(self._user_version(), 2)
+        st = itstore.secret_ref_state("legacy1")
+        self.assertIsNotNone(st, "legacy row must survive the upgrade")
+        self.assertEqual(st["origin"], "legacy_unbound")        # bound so recovery won't touch it
+        self.assertEqual(st["recovery_attempts"], 0)
+        # recovery leaves the legacy row alone (origin guard)
+        from app.infrastructure.secrets import vault
+        with unittest.mock.patch("app.infrastructure.secrets.wincred.delete_secret") as d:
+            summary = vault.recover_incomplete_secrets()
+        d.assert_not_called()
+        self.assertNotIn("legacy1", summary["cleaned"] + summary["exhausted"])
+        self.assertEqual(itstore.secret_ref_state("legacy1")["lifecycle"], "cleanup_pending")
+
+    def test_unknown_v1_shape_fails_closed(self):
+        # user_version=1 but the shape does NOT match the known v1 (e.g. secret_refs
+        # missing a v1 column) → fail-closed, no migration, untouched.
+        conn = sqlite3.connect(self._path)
+        conn.executescript(itstore._CREATE_SQL)
+        conn.executescript(
+            "DROP TABLE secret_refs;"
+            "CREATE TABLE secret_refs (secret_ref TEXT PRIMARY KEY, kind TEXT NOT NULL,"
+            " created_at REAL NOT NULL);")                       # unknown/partial v1
+        conn.execute("PRAGMA user_version=1")
+        conn.commit(); conn.close()
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()
+        self.assertEqual(self._user_version(), 1, "unknown v1 must be left untouched")
+
+    def test_nullable_secret_backend_fails_verification(self):
+        # P2 repro: the contract is EXACT — a nullable secret_refs.backend (a NOT
+        # NULL column in canonical) must fail verification at v2.
+        itstore.init_db()                                       # v2
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "DROP TABLE secret_refs;"
+            "CREATE TABLE secret_refs (secret_ref TEXT PRIMARY KEY, backend TEXT,"  # nullable!
+            " kind TEXT NOT NULL, asset_id TEXT, lifecycle TEXT NOT NULL DEFAULT 'provisioning',"
+            " origin TEXT NOT NULL DEFAULT 'secure_intake', recovery_attempts INTEGER NOT NULL"
+            " DEFAULT 0, last_recovery_at REAL, created_at REAL NOT NULL, rotated_at REAL,"
+            " revoked_at REAL);")
+        conn.commit(); conn.close()
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)   # untouched
 
 
 class ItopsStartupTest(unittest.TestCase):
