@@ -160,6 +160,19 @@ class SshVerticalRouteTest(unittest.TestCase):
         meta = ok.json()["profile"]["os_platform_meta"]
         self.assertIs(meta["fingerprint_reviewed"], True)             # audit trail
 
+    def test_enroll_refuses_when_no_fingerprint_observed(self):
+        # regression: you cannot attest to a key the server never observed. If a fresh
+        # observe_fingerprint() yields nothing, enroll is a 409 BEFORE any write —
+        # a fingerprint_reviewed=True over an empty observation is never persisted.
+        unobserved = {"ok": False, "fingerprints": [], "error": "no host key observed"}
+        with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE), \
+             unittest.mock.patch.object(ssh_enroll, "observe_fingerprint", return_value=unobserved):
+            r = self.client.post("/api/itops/ssh/enroll",
+                                 json={"label": "L", "ssh_alias": "ubuntu-lab",
+                                       "fingerprint_reviewed": True})
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertEqual(self.client.get("/api/itops/assets").json()["assets"], [])  # nothing written
+
     def test_verify_success_enables_asset_failure_leaves_draft(self):
         # regression: asset is enabled ONLY after a successful SSH verify.
         pid = self._enroll().json()["profile"]["profile_id"]

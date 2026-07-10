@@ -111,7 +111,13 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
   // Save requires the preview/attestation to still match the current alias — a stale
   // preview for a different host can never enable Save (belt to the onChange reset).
   const previewMatches = preview?.ok === true && previewAlias === alias.trim();
-  const canSave = Boolean(label.trim() && alias.trim() && previewMatches && confirmed && busy === "");
+  const fp = preview?.observed_fingerprint;
+  // You cannot attest to a key the server never showed you: enrollment needs an
+  // actually-observed fingerprint (the backend also refuses with 409 when it has none).
+  const fingerprintObserved = fp?.ok === true && fp.fingerprints.length > 0;
+  const canSave = Boolean(
+    label.trim() && alias.trim() && previewMatches && fingerprintObserved && confirmed && busy === "",
+  );
 
   async function doSave() {
     if (!canSave) return;
@@ -127,8 +133,6 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
       setBusy("");
     }
   }
-
-  const fp = preview?.observed_fingerprint;
 
   return (
     <div>
@@ -206,8 +210,8 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
                 </>
               ) : (
                 <div className="text-mut">
-                  Отпечаток не наблюдён (хост недоступен/фильтруется). Сверьте ключ хоста
-                  самостоятельно перед подтверждением.
+                  Отпечаток не наблюдён (хост недоступен или фильтруется). Сохранение
+                  недоступно — подтвердить можно только реально показанный отпечаток.
                 </div>
               )}
               <div className="mt-1 text-[11px] text-mut">
@@ -217,32 +221,36 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
             </div>
           </div>
 
-          <label className="flex cursor-pointer items-start gap-2 text-[12px] text-t2">
-            <input
-              type="checkbox"
-              checked={confirmed}
-              onChange={(e) => setConfirmed(e.target.checked)}
-              className="mt-0.5 h-3.5 w-3.5 shrink-0"
-            />
-            <span>
-              Я сверил(а) отпечаток с доверенным источником вне канала (out-of-band).
-              Это подтверждение действия человека, а не криптографическое доказательство.
-            </span>
-          </label>
+          {fingerprintObserved && (
+            <>
+              <label className="flex cursor-pointer items-start gap-2 text-[12px] text-t2">
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  onChange={(e) => setConfirmed(e.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                />
+                <span>
+                  Я сверил(а) отпечаток с доверенным источником вне канала (out-of-band).
+                  Это подтверждение действия человека, а не криптографическое доказательство.
+                </span>
+              </label>
 
-          <div>
-            <button
-              type="button"
-              onClick={() => void doSave()}
-              disabled={!canSave}
-              className={cn(
-                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
-                canSave ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
-              )}
-            >
-              {busy === "save" ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} Сохранить подключение
-            </button>
-          </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => void doSave()}
+                  disabled={!canSave}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+                    canSave ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+                  )}
+                >
+                  {busy === "save" ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />} Сохранить подключение
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

@@ -10,13 +10,13 @@ access — there is no SSH allowlist step here) → verify (by saved profile_id 
 never a host from the browser; success promotes the asset to `enabled`, failure
 leaves it `draft`). Nothing is auto-deleted; an unverified profile stays visible.
 
-The out-of-band fingerprint comparison is the user's, made in the UI. The API
-ENFORCES that attestation: enroll requires `fingerprint_reviewed=True` (the user
-asserts they compared the OBSERVED fingerprint against a trusted source); a request
-without it is 422. This is an attestation of a human action, NOT cryptographic
-proof — the server cannot verify the comparison actually happened, only that the
-caller claims it did. Saving/verifying a profile does NOT let the model connect over
-it — that needs a separate scope/approval layer.
+The out-of-band fingerprint comparison is the user's, made in the UI. `fingerprint_reviewed=True`
+is REQUIRED on enroll (missing/false → 422), and enroll refuses (409) when the server
+cannot observe a host key to compare against — you cannot attest to a key you were
+never shown. But this flag only records the user's CLAIM: it is a user attestation,
+NOT runtime proof — the server cannot prove a human actually compared anything, only
+that the caller asserted it. Saving/verifying a profile does NOT let the model connect
+over it — that needs a separate scope/approval layer.
 """
 from __future__ import annotations
 
@@ -83,11 +83,12 @@ def ssh_preview(payload: SshPreviewRequest) -> dict[str, Any]:
 @router.post("/ssh/enroll")
 def ssh_enroll_asset(payload: SshEnrollRequest) -> dict[str, Any]:
     """Save a DRAFT asset + unverified SSH profile for an EXISTING alias. Requires
-    `fingerprint_reviewed=True` — the user's attestation that they compared the
-    OBSERVED fingerprint out-of-band (enforced by the request model; missing/false →
-    422). This does NOT grant the model any host access (the SSH allowlist is
-    untouched) and stores no secret (auth_ref=NULL). The stored fingerprint is what
-    the SERVER observed now — advisory, not proof. `draft` until a successful verify."""
+    `fingerprint_reviewed=True` — the user's CLAIM that they compared the observed
+    fingerprint out-of-band (a user attestation, not proof; missing/false → 422). If
+    the server cannot observe a host key now there is nothing to attest to → 409 and
+    nothing is written. Grants the model NO host access (the SSH allowlist is untouched)
+    and stores no secret (auth_ref=NULL). The stored fingerprint is what the SERVER
+    observed now — advisory. `draft` until a successful verify."""
     _require_flag()
     from app.application.it_ops import ssh_enroll
 
@@ -98,6 +99,12 @@ def ssh_enroll_asset(payload: SshEnrollRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=effective.get("error", "alias resolve failed"))
     # server-side OBSERVED fingerprint (advisory) — never a client-supplied "proof".
     observed = ssh_enroll.observe_fingerprint(effective["hostname"], effective["port"])
+    # Nothing to attest to if the server could not observe a host key now — refuse
+    # BEFORE writing anything, so a fingerprint_reviewed=True over an empty observation
+    # can never be persisted.
+    if not observed.get("ok") or not observed.get("fingerprints"):
+        raise HTTPException(status_code=409,
+                            detail="host key could not be observed now — nothing to attest to")
 
     store = _store()
     try:
