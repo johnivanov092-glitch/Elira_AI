@@ -85,15 +85,22 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
   const [label, setLabel] = useState("");
   const [alias, setAlias] = useState("");
   const [preview, setPreview] = useState<PreviewResp | null>(null);
+  // The exact alias `preview` (and therefore `confirmed`) belongs to. The attestation
+  // is bound to THIS alias; editing the alias away from it voids preview+confirm so a
+  // user can never attest to host A's fingerprint and enroll host B under it.
+  const [previewAlias, setPreviewAlias] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<"" | "preview" | "save">("");
   const [err, setErr] = useState("");
 
   async function doPreview() {
-    if (!alias.trim() || busy) return;
-    setBusy("preview"); setErr(""); setPreview(null); setConfirmed(false);
+    const a = alias.trim();
+    if (!a || busy) return;
+    setBusy("preview"); setErr(""); setPreview(null); setConfirmed(false); setPreviewAlias("");
     try {
-      setPreview(await sshPreview(alias.trim()));
+      const p = await sshPreview(a);
+      setPreview(p);
+      setPreviewAlias(a);   // bind the attestation-to-be to the alias actually previewed
     } catch (e) {
       setErr(errText(e, "Не удалось получить конфигурацию алиаса"));
     } finally {
@@ -101,7 +108,10 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
     }
   }
 
-  const canSave = Boolean(label.trim() && alias.trim() && preview?.ok && confirmed && busy === "");
+  // Save requires the preview/attestation to still match the current alias — a stale
+  // preview for a different host can never enable Save (belt to the onChange reset).
+  const previewMatches = preview?.ok === true && previewAlias === alias.trim();
+  const canSave = Boolean(label.trim() && alias.trim() && previewMatches && confirmed && busy === "");
 
   async function doSave() {
     if (!canSave) return;
@@ -145,7 +155,14 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
         <div className="flex gap-2">
           <input
             value={alias}
-            onChange={(e) => setAlias(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setAlias(v);
+              // Diverging from the previewed alias voids the attestation: force a
+              // re-preview + re-confirm so the displayed/attested host always equals
+              // the enrolled one.
+              if (v.trim() !== previewAlias) { setPreview(null); setConfirmed(false); }
+            }}
             onKeyDown={(e) => { if (e.key === "Enter") void doPreview(); }}
             placeholder="ssh-алиас (например ai-server)"
             className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
@@ -164,7 +181,7 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
         </div>
       </div>
 
-      {preview?.ok && (
+      {preview?.ok && previewMatches && (
         <div className="mt-2 flex flex-col gap-2 rounded-lg border border-line px-3 py-2.5 text-[12.5px]">
           <div className="text-t2">
             <span className="text-mut">Хост: </span>
