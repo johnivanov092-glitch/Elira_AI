@@ -107,11 +107,12 @@ class SshVerticalRouteTest(unittest.TestCase):
     _OBSERVED = {"ok": True, "fingerprints": ["256 SHA256:abc 203.0.113.10 (ED25519)"],
                  "note": "OBSERVED fingerprint only — NOT proof of identity."}
 
-    def _enroll(self, alias="ubuntu-lab", label="Lab"):
+    def _enroll(self, alias="ubuntu-lab", label="Lab", body=None):
+        payload = body if body is not None else {
+            "label": label, "ssh_alias": alias, "fingerprint_reviewed": True}
         with unittest.mock.patch.object(ssh_enroll, "resolve_alias", return_value=self._EFFECTIVE), \
              unittest.mock.patch.object(ssh_enroll, "observe_fingerprint", return_value=self._OBSERVED):
-            return self.client.post("/api/itops/ssh/enroll",
-                                    json={"label": label, "ssh_alias": alias})
+            return self.client.post("/api/itops/ssh/enroll", json=payload)
 
     def test_enroll_saves_draft_unverified_no_secret(self):
         r = self._enroll()
@@ -137,11 +138,27 @@ class SshVerticalRouteTest(unittest.TestCase):
              unittest.mock.patch.object(ssh_enroll, "observe_fingerprint", return_value=self._OBSERVED):
             bad = self.client.post("/api/itops/ssh/enroll",
                                    json={"label": "L", "ssh_alias": "ubuntu-lab",
+                                         "fingerprint_reviewed": True,   # otherwise valid…
                                          "confirmed_fingerprint": "SHA256:attacker"})
-        self.assertEqual(bad.status_code, 422)                         # not an accepted field
+        self.assertEqual(bad.status_code, 422)                         # …extra field is rejected
         prof = self._enroll().json()["profile"]
         self.assertIn("SHA256:abc", prof["host_key_fingerprint"])      # server-observed value
         self.assertNotIn("attacker", prof["host_key_fingerprint"])
+
+    def test_enroll_requires_fingerprint_reviewed_attestation(self):
+        # regression: enroll is impossible without the user's out-of-band review
+        # attestation. A missing or false flag is a 422 (Literal[True] enforced at the
+        # API boundary); true → 200 and the attestation is recorded on the profile.
+        missing = self._enroll(body={"label": "L", "ssh_alias": "ubuntu-lab"})
+        self.assertEqual(missing.status_code, 422)                     # required
+        false_flag = self._enroll(body={"label": "L", "ssh_alias": "ubuntu-lab",
+                                         "fingerprint_reviewed": False})
+        self.assertEqual(false_flag.status_code, 422)                  # must be exactly True
+        ok = self._enroll(body={"label": "L", "ssh_alias": "ubuntu-lab",
+                                "fingerprint_reviewed": True})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        meta = ok.json()["profile"]["os_platform_meta"]
+        self.assertIs(meta["fingerprint_reviewed"], True)             # audit trail
 
     def test_verify_success_enables_asset_failure_leaves_draft(self):
         # regression: asset is enabled ONLY after a successful SSH verify.

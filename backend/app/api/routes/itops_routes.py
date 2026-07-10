@@ -10,15 +10,18 @@ access — there is no SSH allowlist step here) → verify (by saved profile_id 
 never a host from the browser; success promotes the asset to `enabled`, failure
 leaves it `draft`). Nothing is auto-deleted; an unverified profile stays visible.
 
-The out-of-band fingerprint comparison is a UI responsibility: the API itself does
-not yet require it. A future `fingerprint_reviewed` attestation could enforce it at
-the API level. Saving/verifying a profile does NOT let the model connect over it —
-that needs a separate scope/approval layer.
+The out-of-band fingerprint comparison is the user's, made in the UI. The API
+ENFORCES that attestation: enroll requires `fingerprint_reviewed=True` (the user
+asserts they compared the OBSERVED fingerprint against a trusted source); a request
+without it is 422. This is an attestation of a human action, NOT cryptographic
+proof — the server cannot verify the comparison actually happened, only that the
+caller claims it did. Saving/verifying a profile does NOT let the model connect over
+it — that needs a separate scope/approval layer.
 """
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -49,6 +52,10 @@ class SshEnrollRequest(BaseModel):
     label: str
     ssh_alias: str
     kind: str = "linux"
+    # User attestation that they compared the OBSERVED host-key fingerprint against a
+    # trusted out-of-band source. Required and must be exactly True — a missing or
+    # false value is a 422. Not cryptographic proof; an attestation of a human action.
+    fingerprint_reviewed: Literal[True]
 
 
 class VerifyRequest(BaseModel):
@@ -75,10 +82,12 @@ def ssh_preview(payload: SshPreviewRequest) -> dict[str, Any]:
 
 @router.post("/ssh/enroll")
 def ssh_enroll_asset(payload: SshEnrollRequest) -> dict[str, Any]:
-    """Save a DRAFT asset + unverified SSH profile for an EXISTING alias. This does
-    NOT grant the model any host access (the SSH allowlist is untouched) and stores
-    no secret (auth_ref=NULL). The stored fingerprint is what the SERVER observed
-    now — advisory, not proof. The asset is `draft` until a successful verify."""
+    """Save a DRAFT asset + unverified SSH profile for an EXISTING alias. Requires
+    `fingerprint_reviewed=True` — the user's attestation that they compared the
+    OBSERVED fingerprint out-of-band (enforced by the request model; missing/false →
+    422). This does NOT grant the model any host access (the SSH allowlist is
+    untouched) and stores no secret (auth_ref=NULL). The stored fingerprint is what
+    the SERVER observed now — advisory, not proof. `draft` until a successful verify."""
     _require_flag()
     from app.application.it_ops import ssh_enroll
 
@@ -102,7 +111,8 @@ def ssh_enroll_asset(payload: SshEnrollRequest) -> dict[str, Any]:
         profile_id=f"prof-{uuid.uuid4().hex[:12]}", asset_id=asset["asset_id"], transport="ssh",
         user=effective.get("user", ""), auth_ref=None, ssh_alias=payload.ssh_alias,
         host_key_fingerprint="; ".join(observed.get("fingerprints", [])),  # observed, advisory
-        os_platform_meta={"effective": effective, "observed_fingerprint": observed},
+        os_platform_meta={"effective": effective, "observed_fingerprint": observed,
+                          "fingerprint_reviewed": True},  # user attestation (audit trail)
         last_health={"status": "unverified"})
     return {"ok": True, "asset": asset, "profile": profile}
 
