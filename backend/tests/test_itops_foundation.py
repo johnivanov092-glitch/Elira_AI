@@ -102,8 +102,9 @@ class SecretRefStateTest(_TempStore):
         conn.close()
         for forbidden in ("value", "secret", "ciphertext", "dpapi_blob", "password", "blob"):
             self.assertNotIn(forbidden, cols, f"secret_refs must not have a {forbidden!r} column")
-        self.assertEqual(cols, {"secret_ref", "backend", "kind", "asset_id",
-                                "lifecycle", "created_at", "rotated_at", "revoked_at"})
+        self.assertEqual(cols, {"secret_ref", "backend", "kind", "asset_id", "lifecycle",
+                                "origin", "recovery_attempts", "last_recovery_at",
+                                "created_at", "rotated_at", "revoked_at"})
 
     def test_secret_ref_state_never_returns_a_value(self):
         # default lifecycle is now 'provisioning' (the saga writes the recovery
@@ -298,6 +299,58 @@ class StoreCasTest(_TempStore):
         self.assertIsNone(itstore.secret_ref_state("s2"))
 
 
+class RecoveryPolicyTest(_TempStore):
+    """Recovery is bounded (max attempts → terminal) and origin-scoped (compensating
+    action of the secure-intake path only). All transitions via CAS."""
+
+    def test_recovery_bounded_to_max_attempts_then_terminal(self):
+        from app.infrastructure.secrets import vault, wincred
+        itstore.put_secret_ref(secret_ref="sref_inc", kind="password")   # provisioning, att=0
+        with unittest.mock.patch.object(
+                wincred, "delete_secret",
+                side_effect=wincred.WinCredUnavailable("vault down")):
+            vault.recover_incomplete_secrets()                           # attempt 1
+            self.assertEqual(itstore.secret_ref_state("sref_inc")["recovery_attempts"], 1)
+            vault.recover_incomplete_secrets()                           # attempt 2
+            self.assertEqual(itstore.secret_ref_state("sref_inc")["recovery_attempts"], 2)
+            s3 = vault.recover_incomplete_secrets()                      # exhausted → terminal
+        st = itstore.secret_ref_state("sref_inc")
+        self.assertEqual(st["lifecycle"], "recovery_failed")            # visible terminal
+        self.assertEqual(st["recovery_attempts"], 2)                    # never exceeds max
+        self.assertIn("sref_inc", s3["exhausted"])
+        # a further pass does nothing — no auto-delete/retry beyond the cap
+        s4 = vault.recover_incomplete_secrets()
+        self.assertEqual(s4, {"cleaned": [], "failed": [], "skipped": [], "exhausted": []})
+
+    def test_recovery_only_touches_secure_intake_origin(self):
+        from app.infrastructure.secrets import vault
+        import time as _t
+        # a record from a DIFFERENT origin (inserted raw, bypassing the origin
+        # allowlist) must NOT be claimed or recovered.
+        conn = sqlite3.connect(itstore._DB_PATH_OVERRIDE)
+        conn.execute(
+            "INSERT INTO secret_refs (secret_ref, backend, kind, lifecycle, origin,"
+            " recovery_attempts, created_at) VALUES"
+            " ('sref_ext','wincred','password','provisioning','external',0,?)", (_t.time(),))
+        conn.commit(); conn.close()
+        self.assertFalse(itstore.claim_for_recovery("sref_ext"))       # origin guard
+        summary = vault.recover_incomplete_secrets()
+        self.assertNotIn("sref_ext", summary["cleaned"] + summary["exhausted"])
+        self.assertEqual(itstore.secret_ref_state("sref_ext")["lifecycle"], "provisioning")
+
+    def test_exhausted_terminal_only_for_secure_intake(self):
+        # even the terminal transition is origin-scoped.
+        import time as _t
+        conn = sqlite3.connect(itstore._DB_PATH_OVERRIDE)
+        conn.execute(
+            "INSERT INTO secret_refs (secret_ref, backend, kind, lifecycle, origin,"
+            " recovery_attempts, created_at) VALUES"
+            " ('sref_ext2','wincred','password','cleanup_pending','external',5,?)", (_t.time(),))
+        conn.commit(); conn.close()
+        self.assertFalse(itstore.mark_recovery_failed("sref_ext2"))     # not our origin
+        self.assertEqual(itstore.secret_ref_state("sref_ext2")["lifecycle"], "cleanup_pending")
+
+
 class WinCredHonestyTest(unittest.TestCase):
     """John's fix #2 at the wincred boundary: NOT_FOUND is distinct from an
     infrastructure/access error."""
@@ -371,8 +424,10 @@ class EnumEnforcementTest(_TempStore):
 
 
 class MigrationRealTest(unittest.TestCase):
-    """John's fix #4: real additive migration — an older shape migrates, keeps its
-    row, and only then is the version stamped; an unrecoverable shape does not bump."""
+    """Narrow, fail-closed migration model. it_ops v1 was never released, so there
+    are no partial-v0 schemas to migrate: v0+empty → create canonical v1; v0+any
+    table → refuse; v1 → verify exact contract; future → fail-closed. Real SQLite
+    fixtures, no mocked ALTER."""
 
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
@@ -382,55 +437,69 @@ class MigrationRealTest(unittest.TestCase):
     def tearDown(self):
         itstore._DB_PATH_OVERRIDE = None
 
-    def test_v0_change_runs_missing_column_migrates_additively(self):
-        # hand-build an OLD change_runs missing completion_status, user_version=0,
-        # with an existing row.
-        conn = sqlite3.connect(self._path)
-        conn.executescript(
-            "CREATE TABLE change_runs (change_run_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,"
-            " asset_id TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '{}', approval_id TEXT,"
-            " snapshot_id TEXT, rollback_kind TEXT NOT NULL DEFAULT 'none',"
-            " change_run_status TEXT NOT NULL DEFAULT 'planned', created_at REAL NOT NULL,"
-            " updated_at REAL NOT NULL);")
-        conn.execute("INSERT INTO change_runs (change_run_id, run_id, asset_id, created_at, updated_at)"
-                     " VALUES ('old1','r','a',1.0,1.0)")
-        conn.execute("PRAGMA user_version=0")
-        conn.commit(); conn.close()
-
-        itstore.init_db()                                  # additive migration
-
-        cr = itstore.get_change_run("old1")
-        self.assertIsNotNone(cr, "existing row must survive the migration")
-        self.assertIsNone(cr["completion_status"])         # new column present, NULL
-        conn = sqlite3.connect(self._path)
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(change_runs)").fetchall()}
-        ver = conn.execute("PRAGMA user_version").fetchone()[0]
-        conn.close()
-        self.assertIn("completion_status", cols)           # column added
-        self.assertEqual(ver, itstore._SCHEMA_VERSION)     # stamped only after shape matches
-
     def _user_version(self) -> int:
         conn = sqlite3.connect(self._path)
         v = conn.execute("PRAGMA user_version").fetchone()[0]
         conn.close()
         return v
 
-    def test_assets_without_primary_key_is_structurally_incompatible(self):
-        # REAL fixture (no mocked ALTER): a legacy `assets` with NO primary key
-        # (so duplicate asset_id is possible) is structurally incompatible.
+    def _tables(self) -> set:
         conn = sqlite3.connect(self._path)
-        conn.executescript("CREATE TABLE assets (asset_id TEXT, label TEXT, kind TEXT);")
-        conn.execute("INSERT INTO assets VALUES ('dup','A','linux')")
-        conn.execute("INSERT INTO assets VALUES ('dup','B','linux')")   # duplicate id, no PK
+        t = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        conn.close()
+        return t
+
+    def test_fresh_v0_creates_canonical_v1(self):
+        # empty DB (user_version=0, no itops tables) → create v1 and stamp.
+        itstore.init_db()
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)
+        itstore.upsert_asset(asset_id="a", label="A", kind="linux")   # usable
+        self.assertIsNotNone(itstore.get_asset("a"))
+        for t in ("assets", "connection_profiles", "change_runs", "secret_refs"):
+            self.assertIn(t, self._tables())
+
+    def test_partial_v0_fails_untouched(self):
+        # user_version=0 but SOME itops table already exists → refuse; do not touch
+        # the DB or stamp the version (no partial/unknown schema support).
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT NOT NULL,"
+            " kind TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);")
         conn.execute("PRAGMA user_version=0")
         conn.commit(); conn.close()
         with self.assertRaises(itstore.StoreUnavailable):
             itstore.init_db()
-        self.assertEqual(self._user_version(), 0, "version must not bump on incompatible schema")
+        self.assertEqual(self._user_version(), 0)
+        self.assertEqual(self._tables(), {"assets"})   # untouched — nothing else created
+
+    def test_v1_wrong_fk_on_delete_fails_untouched(self):
+        # build the canonical v1, then corrupt connection_profiles' FK to
+        # ON DELETE RESTRICT and re-init → the v1 verify must reject it, untouched.
+        itstore.init_db()
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "DROP TABLE connection_profiles;"
+            "CREATE TABLE connection_profiles (profile_id TEXT PRIMARY KEY,"
+            " asset_id TEXT NOT NULL REFERENCES assets(asset_id) ON DELETE RESTRICT,"
+            " transport TEXT NOT NULL, user TEXT DEFAULT '', auth_ref TEXT,"
+            " ssh_alias TEXT DEFAULT '', host_key_fingerprint TEXT DEFAULT '',"
+            " os_platform_meta TEXT NOT NULL DEFAULT '{}', last_health TEXT NOT NULL DEFAULT '{}',"
+            " created_at REAL NOT NULL, updated_at REAL NOT NULL);")
+        conn.commit(); conn.close()
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)  # still v1
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()                          # verify rejects the wrong on_delete
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)  # untouched
+
+    def test_v1_verify_passes_and_changes_nothing(self):
+        itstore.init_db()                              # v1
+        itstore.upsert_asset(asset_id="keep", label="L", kind="linux")
+        itstore.init_db()                              # verify-only, no change
+        self.assertIsNotNone(itstore.get_asset("keep"))
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)
 
     def test_future_user_version_fails_closed(self):
-        # REAL fixture: a DB stamped by a newer build must fail closed, not downgrade.
-        itstore.init_db()                                  # build the current schema
+        itstore.init_db()                              # build v1
         conn = sqlite3.connect(self._path)
         conn.execute(f"PRAGMA user_version={itstore._SCHEMA_VERSION + 5}")
         conn.commit(); conn.close()
@@ -438,49 +507,6 @@ class MigrationRealTest(unittest.TestCase):
             itstore.init_db()
         self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION + 5,
                          "a future version must be left untouched")
-
-    def test_nullable_core_column_is_structurally_incompatible(self):
-        # REAL fixture: assets with correct PK but NULLABLE label/kind → rejected.
-        conn = sqlite3.connect(self._path)
-        conn.executescript(
-            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT, kind TEXT,"
-            " created_at REAL NOT NULL, updated_at REAL NOT NULL);")   # label/kind nullable
-        conn.execute("PRAGMA user_version=0")
-        conn.commit(); conn.close()
-        with self.assertRaises(itstore.StoreUnavailable):
-            itstore.init_db()
-        self.assertEqual(self._user_version(), 0)
-
-    def test_missing_foreign_key_is_structurally_incompatible(self):
-        # REAL fixture: connection_profiles WITHOUT its declared asset_id FK → rejected.
-        conn = sqlite3.connect(self._path)
-        conn.executescript(
-            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT NOT NULL,"
-            " kind TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);"
-            "CREATE TABLE connection_profiles (profile_id TEXT PRIMARY KEY,"
-            " asset_id TEXT NOT NULL, transport TEXT NOT NULL,"
-            " created_at REAL NOT NULL, updated_at REAL NOT NULL);")   # no FK on asset_id
-        conn.execute("PRAGMA user_version=0")
-        conn.commit(); conn.close()
-        with self.assertRaises(itstore.StoreUnavailable):
-            itstore.init_db()
-        self.assertEqual(self._user_version(), 0)
-
-    def test_compatible_pk_but_missing_column_migrates_and_stamps(self):
-        # correct PK + NOT NULL core, missing only an OPTIONAL column → additive
-        # migrate + stamp, real fixture.
-        conn = sqlite3.connect(self._path)
-        conn.executescript(
-            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT NOT NULL,"
-            " kind TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);")
-        conn.execute("INSERT INTO assets (asset_id,label,kind,created_at,updated_at)"
-                     " VALUES ('keep','L','linux',1.0,1.0)")
-        conn.execute("PRAGMA user_version=0")
-        conn.commit(); conn.close()
-        itstore.init_db()
-        self.assertIsNotNone(itstore.get_asset("keep"))    # row preserved
-        self.assertEqual(itstore.get_asset("keep")["lifecycle_state"], "draft")  # added col default
-        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)
 
 
 class ItopsStartupTest(unittest.TestCase):
@@ -515,6 +541,22 @@ class ItopsStartupTest(unittest.TestCase):
                                                       {"cleaned": [], "failed": [], "skipped": []})[1]):
             startup.itops_startup()
         self.assertEqual(order, ["init", "recover"])       # migrate BEFORE recover
+
+    def test_startup_always_logs_bounded_summary_even_all_zero(self):
+        from app.application.it_ops import startup
+        from app.application import feature_flags as ff
+        with unittest.mock.patch.object(ff, "flag_enabled", return_value=True), \
+             unittest.mock.patch.object(itstore, "init_db"), \
+             unittest.mock.patch(
+                 "app.infrastructure.secrets.vault.recover_incomplete_secrets",
+                 return_value={"cleaned": [], "failed": [], "skipped": [], "exhausted": []}):
+            with self.assertLogs("app.application.it_ops.startup", level="INFO") as cap:
+                startup.itops_startup()
+        blob = "\n".join(cap.output)
+        self.assertIn("cleaned=0", blob)
+        self.assertIn("failed=0", blob)
+        self.assertIn("skipped=0", blob)
+        self.assertIn("exhausted=0", blob)
 
     def test_startup_is_not_a_registered_tool(self):
         # recovery must not be model-callable — it is a plain startup function, not

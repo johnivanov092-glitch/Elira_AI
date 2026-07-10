@@ -110,7 +110,10 @@ CREATE TABLE IF NOT EXISTS secret_refs (
     backend TEXT NOT NULL DEFAULT 'wincred',
     kind TEXT NOT NULL,
     asset_id TEXT,
-    lifecycle TEXT NOT NULL DEFAULT 'temporary',
+    lifecycle TEXT NOT NULL DEFAULT 'provisioning',
+    origin TEXT NOT NULL DEFAULT 'secure_intake',
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
+    last_recovery_at REAL,
     created_at REAL NOT NULL,
     rotated_at REAL,
     revoked_at REAL
@@ -179,11 +182,19 @@ _EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     "secret_refs": {
         "secret_ref": "secret_ref TEXT", "backend": "backend TEXT NOT NULL DEFAULT 'wincred'",
         "kind": "kind TEXT", "asset_id": "asset_id TEXT",
-        "lifecycle": "lifecycle TEXT NOT NULL DEFAULT 'temporary'",
+        "lifecycle": "lifecycle TEXT NOT NULL DEFAULT 'provisioning'",
+        "origin": "origin TEXT NOT NULL DEFAULT 'secure_intake'",
+        "recovery_attempts": "recovery_attempts INTEGER NOT NULL DEFAULT 0",
+        "last_recovery_at": "last_recovery_at REAL",
         "created_at": "created_at REAL", "rotated_at": "rotated_at REAL",
         "revoked_at": "revoked_at REAL",
     },
 }
+
+# Max auto-recovery attempts across startups. After this, a record goes terminal
+# `recovery_failed` (visible state) and is never auto-deleted/retried again — only
+# explicit manual recovery later.
+MAX_RECOVERY_ATTEMPTS = 2
 
 
 class StoreUnavailable(RuntimeError):
@@ -235,36 +246,52 @@ _REQUIRED_NOTNULL: dict[str, set[str]] = {
     "snapshots": {"change_run_id", "asset_id", "captured_at"},
     "evidence": {"run_id", "target_identity", "scanner_vantage", "operation", "captured_at"},
     "change_runs": {"run_id", "asset_id", "created_at", "updated_at"},
-    "secret_refs": {"kind", "created_at"},
+    "secret_refs": {"kind", "origin", "created_at"},
 }
-# Declared foreign keys: (from_col, ref_table, ref_col).
-_EXPECTED_FK: dict[str, list[tuple[str, str, str]]] = {
-    "connection_profiles": [("asset_id", "assets", "asset_id")],
+# Declared foreign keys: (from_col, ref_table, ref_col, on_delete).
+_EXPECTED_FK: dict[str, list[tuple[str, str, str, str]]] = {
+    "connection_profiles": [("asset_id", "assets", "asset_id", "CASCADE")],
 }
 
 
 def init_db() -> None:
-    """Create tables if missing, run an honest structural migration, and stamp the
-    version ONLY when the on-disk shape actually matches (columns + primary keys).
-    Fail-closed: a future user_version, a structurally-incompatible legacy table, or
-    any sqlite failure → StoreUnavailable, and user_version is NOT changed."""
+    """Initialize the it_ops store with a NARROW, fail-closed model. it_ops v1 was
+    never released, so there are no partial-v0 schemas in the wild to migrate:
+
+      * user_version=0 AND no itops tables → create the canonical v1, stamp v1;
+      * user_version=0 AND any itops table already exists → StoreUnavailable, DB
+        left untouched, version NOT stamped (refuse a partial/unknown schema);
+      * user_version=1 → VERIFY the exact structural contract, change nothing;
+      * user_version>1 → fail-closed (a newer build wrote it).
+
+    Any sqlite failure or a contract mismatch → StoreUnavailable, version unchanged.
+    Future v2+ will be an explicit migration from a known prior version, not an
+    ad-hoc column patch."""
     conn = _connect()
     try:
         ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if ver > _SCHEMA_VERSION:
-            # a DB written by a newer build — do not touch or downgrade it.
             raise StoreUnavailable(
                 f"it_ops schema user_version={ver} is newer than supported "
                 f"{_SCHEMA_VERSION} (fail-closed)")
-        conn.executescript(_CREATE_SQL)
-        _migrate(conn, ver)
+        if ver == 0:
+            present = [t for t in _EXPECTED_PK if _table_exists(conn, t)]
+            if present:
+                raise StoreUnavailable(
+                    f"it_ops user_version=0 but tables already exist {sorted(present)} — "
+                    f"refusing to touch a partial/unknown schema (fail-closed)")
+            conn.executescript(_CREATE_SQL)
+            _verify_contract(conn)          # our own create must satisfy the contract
+            conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+        else:  # ver == _SCHEMA_VERSION (1): verify only, change nothing.
+            _verify_contract(conn)
         conn.commit()
     except sqlite3.Error as exc:
         try:
             conn.rollback()
         except sqlite3.Error:
             pass
-        raise StoreUnavailable(f"it_ops migration failed: {exc}") from exc
+        raise StoreUnavailable(f"it_ops init failed: {exc}") from exc
     finally:
         conn.close()
 
@@ -273,59 +300,43 @@ def _table_info(conn: sqlite3.Connection, table: str) -> list[tuple]:
     return conn.execute(f"PRAGMA table_info({table})").fetchall()
 
 
-def _assert_structural_compat(conn: sqlite3.Connection) -> None:
-    """Every existing table must be STRUCTURALLY compatible — PK, core NOT NULL
-    constraints, and declared FKs. Names alone are not enough: a legacy table with
-    no PK, a nullable core column, or a missing FK is rejected."""
-    for table, pk in _EXPECTED_PK.items():
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
+
+
+def _verify_contract(conn: sqlite3.Connection) -> None:
+    """Verify the EXACT structural contract: every table present with its full
+    expected column set, the correct single-column PK, core NOT NULL constraints,
+    and declared FKs (including on_delete). Any mismatch raises — the caller turns
+    it into StoreUnavailable and leaves the DB/version untouched."""
+    for table, cols in _EXPECTED_COLUMNS.items():
         info = _table_info(conn, table)          # rows: (cid, name, type, notnull, dflt, pk)
         if not info:
-            raise sqlite3.OperationalError(f"expected table {table!r} missing after create")
+            raise sqlite3.OperationalError(f"expected table {table!r} missing")
         names = {r[1] for r in info}
         notnull_cols = {r[1] for r in info if r[3] and int(r[3]) > 0}
         pk_cols = {r[1] for r in info if r[5] and int(r[5]) > 0}
-        if pk not in names:
-            raise sqlite3.OperationalError(f"{table}: missing expected PK column {pk!r}")
+        missing = set(cols) - names
+        if missing:
+            raise sqlite3.OperationalError(f"{table}: missing columns {sorted(missing)}")
+        pk = _EXPECTED_PK[table]
         if pk_cols != {pk}:
             raise sqlite3.OperationalError(
-                f"{table}: primary key is {sorted(pk_cols) or 'none'}, expected [{pk!r}] "
-                f"(structurally incompatible legacy schema)")
+                f"{table}: primary key is {sorted(pk_cols) or 'none'}, expected [{pk!r}]")
         for col in _REQUIRED_NOTNULL.get(table, set()):
-            if col not in names:
-                raise sqlite3.OperationalError(f"{table}: missing required core column {col!r}")
-            # the PK column is implicitly NOT NULL even if the flag isn't set
             if col not in notnull_cols and col != pk:
                 raise sqlite3.OperationalError(
-                    f"{table}: core column {col!r} must be NOT NULL (structurally incompatible)")
+                    f"{table}: core column {col!r} must be NOT NULL")
     for table, fks in _EXPECTED_FK.items():
         declared = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
         # rows: (id, seq, table, from, to, on_update, on_delete, match)
-        have = {(r[3], r[2], r[4]) for r in declared}
-        for col, ref_table, ref_col in fks:
-            if (col, ref_table, ref_col) not in have:
+        have = {(r[3], r[2], r[4], str(r[6]).upper()) for r in declared}
+        for col, ref_table, ref_col, on_delete in fks:
+            if (col, ref_table, ref_col, on_delete.upper()) not in have:
                 raise sqlite3.OperationalError(
-                    f"{table}: missing declared FK {col!r}->{ref_table}.{ref_col} "
-                    f"(structurally incompatible)")
-
-
-def _migrate(conn: sqlite3.Connection, ver: int) -> None:
-    """Structural check → additive column adds → verify → stamp. The version is
-    stamped only after the shape (columns + PKs) actually matches; an incompatible
-    or incomplete shape raises and leaves user_version untouched."""
-    _assert_structural_compat(conn)
-    for table, cols in _EXPECTED_COLUMNS.items():
-        existing = {r[1] for r in _table_info(conn, table)}
-        for col, ddl in cols.items():
-            if col not in existing:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-    for table, cols in _EXPECTED_COLUMNS.items():
-        now = {r[1] for r in _table_info(conn, table)}
-        missing = set(cols) - now
-        if missing:
-            raise sqlite3.OperationalError(
-                f"table {table!r} still missing columns {sorted(missing)} — not stamping version")
-    if ver < _SCHEMA_VERSION:
-        conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
+                    f"{table}: FK {col!r}->{ref_table}.{ref_col} on_delete={on_delete} "
+                    f"not found (have {sorted(have)})")
 
 
 # ── error-contract wrapper ──────────────────────────────────────────────────
@@ -419,17 +430,19 @@ def _asset_row(r: sqlite3.Row) -> dict[str, Any]:
 # ── secret_refs (STATE only; value is in Credential Manager) ─────────────────
 
 def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
-                   asset_id: str | None = None, lifecycle: str = "provisioning") -> None:
+                   asset_id: str | None = None, lifecycle: str = "provisioning",
+                   origin: str = "secure_intake") -> None:
     _check(kind, _dom.SECRET_KINDS, "secret kind")
     _check(backend, _dom.SECRET_BACKENDS, "secret backend")   # Phase 0: wincred only
     _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
+    _check(origin, _dom.SECRET_ORIGINS, "secret origin")
 
     def op(conn):
         conn.execute(
-            "INSERT INTO secret_refs (secret_ref, backend, kind, asset_id, lifecycle, created_at)"
-            " VALUES (?,?,?,?,?,?) ON CONFLICT(secret_ref) DO UPDATE SET"
+            "INSERT INTO secret_refs (secret_ref, backend, kind, asset_id, lifecycle, origin, created_at)"
+            " VALUES (?,?,?,?,?,?,?) ON CONFLICT(secret_ref) DO UPDATE SET"
             " kind=excluded.kind, asset_id=excluded.asset_id, lifecycle=excluded.lifecycle",
-            (secret_ref, backend, kind, asset_id, lifecycle, _now()))
+            (secret_ref, backend, kind, asset_id, lifecycle, origin, _now()))
         conn.commit()
     _wrap(op)
 
@@ -459,26 +472,25 @@ def list_secret_refs_by_lifecycle(lifecycles: tuple[str, ...]) -> list[dict[str,
 
     def op(conn):
         rows = conn.execute(
-            f"SELECT secret_ref, backend, kind, asset_id, lifecycle, created_at,"
-            f" rotated_at, revoked_at FROM secret_refs WHERE lifecycle IN ({placeholders})"
+            f"SELECT * FROM secret_refs WHERE lifecycle IN ({placeholders})"
             f" ORDER BY created_at ASC", tuple(lifecycles)).fetchall()
-        return [{"secret_ref": r["secret_ref"], "backend": r["backend"], "kind": r["kind"],
-                 "asset_id": r["asset_id"], "lifecycle": r["lifecycle"],
-                 "created_at": r["created_at"], "rotated_at": r["rotated_at"],
-                 "revoked_at": r["revoked_at"]} for r in rows]
+        return [_secret_row(r) for r in rows]
     return _wrap(op)
+
+
+def _secret_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {"secret_ref": r["secret_ref"], "backend": r["backend"], "kind": r["kind"],
+            "asset_id": r["asset_id"], "lifecycle": r["lifecycle"], "origin": r["origin"],
+            "recovery_attempts": r["recovery_attempts"], "last_recovery_at": r["last_recovery_at"],
+            "created_at": r["created_at"], "rotated_at": r["rotated_at"],
+            "revoked_at": r["revoked_at"]}
 
 
 def secret_ref_state(secret_ref: str) -> dict[str, Any] | None:
     """STATE only — never a value (there is no value column)."""
     def op(conn):
         r = conn.execute("SELECT * FROM secret_refs WHERE secret_ref=?", (secret_ref,)).fetchone()
-        if not r:
-            return None
-        return {"secret_ref": r["secret_ref"], "backend": r["backend"], "kind": r["kind"],
-                "asset_id": r["asset_id"], "lifecycle": r["lifecycle"],
-                "created_at": r["created_at"], "rotated_at": r["rotated_at"],
-                "revoked_at": r["revoked_at"]}
+        return _secret_row(r) if r else None
     return _wrap(op)
 
 
@@ -515,13 +527,35 @@ def finalize_provisioning(secret_ref: str, lifecycle: str) -> bool:
 
 
 def claim_for_recovery(secret_ref: str) -> bool:
-    """Atomic CAS claim: provisioning|cleanup_pending → recovering. Returns True
-    ONLY if this call won the claim (rowcount==1). A record already recovering /
-    finalized / gone yields False — exclusive ownership, no double-recovery."""
+    """Atomic CAS claim: provisioning|cleanup_pending → recovering, incrementing
+    recovery_attempts. Returns True ONLY if this call won the claim (rowcount==1).
+
+    Guarded so auto-recovery is a COMPENSATING action of the secure-intake path
+    only: the claim requires origin='secure_intake' AND recovery_attempts <
+    MAX_RECOVERY_ATTEMPTS. A record already recovering / finalized / gone, one from
+    another origin, or one that exhausted its attempts yields False."""
     def op(conn):
         cur = conn.execute(
-            "UPDATE secret_refs SET lifecycle='recovering' WHERE secret_ref=?"
-            " AND lifecycle IN ('provisioning','cleanup_pending')", (secret_ref,))
+            "UPDATE secret_refs SET lifecycle='recovering',"
+            " recovery_attempts=recovery_attempts+1, last_recovery_at=?"
+            " WHERE secret_ref=? AND lifecycle IN ('provisioning','cleanup_pending')"
+            " AND origin='secure_intake' AND recovery_attempts < ?",
+            (_now(), secret_ref, MAX_RECOVERY_ATTEMPTS))
+        conn.commit()
+        return cur.rowcount == 1
+    return _wrap(op)
+
+
+def mark_recovery_failed(secret_ref: str) -> bool:
+    """Terminal CAS: an incomplete record that exhausted its auto-recovery attempts
+    (>= MAX_RECOVERY_ATTEMPTS) goes to `recovery_failed` — visible, never
+    auto-deleted/retried again (manual recovery only). Returns True on transition."""
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE secret_refs SET lifecycle='recovery_failed' WHERE secret_ref=?"
+            " AND lifecycle IN ('provisioning','cleanup_pending')"
+            " AND origin='secure_intake' AND recovery_attempts >= ?",
+            (secret_ref, MAX_RECOVERY_ATTEMPTS))
         conn.commit()
         return cur.rowcount == 1
     return _wrap(op)

@@ -125,34 +125,45 @@ def revoke(secret_ref: str) -> None:
 
 
 def recover_incomplete_secrets() -> dict:
-    """Race-safe recovery for incomplete records (`provisioning` / `cleanup_pending`).
+    """Race-safe, bounded, origin-scoped recovery for incomplete records
+    (`provisioning` / `cleanup_pending`). This is a COMPENSATING action of the
+    secure-intake path — it touches ONLY records whose origin is `secure_intake`
+    (enforced in the CAS claim).
 
-    For each candidate: atomically CLAIM it (→ recovering) so put_secret and a
-    concurrent recovery can never both act on the same ref; then delete the
-    credential and the claimed record. A record we could not claim (someone else
-    owns it) is skipped. A claimed record we could not finish is reset to
-    cleanup_pending for a later pass and reported — never silently passed. Returns
-    opaque secret_refs only, never any value."""
+    Per candidate:
+      * a record that already exhausted MAX_RECOVERY_ATTEMPTS → terminal
+        `recovery_failed` (visible; never auto-deleted/retried again);
+      * else atomically CLAIM it (→ recovering, attempts+1) so put_secret and a
+        concurrent recovery can never both act on the same ref; then delete the
+        credential and the claimed record;
+      * a record we could not claim (other owner / other origin / exhausted) is
+        skipped; a claimed record we could not finish is reset to cleanup_pending
+        (retryable next boot, attempts persisted) and reported.
+    Returns opaque secret_refs / counts only, never any value. All transitions CAS."""
     refs = _store.list_secret_refs_by_lifecycle(("provisioning", "cleanup_pending"))
     cleaned: list[str] = []
     failed: list[dict] = []
     skipped: list[str] = []
+    exhausted: list[str] = []
     for r in refs:
         sref = r["secret_ref"]
+        if int(r.get("recovery_attempts") or 0) >= _store.MAX_RECOVERY_ATTEMPTS:
+            if _store.mark_recovery_failed(sref):    # terminal, visible
+                exhausted.append(sref)
+            continue
         try:
             if not _store.claim_for_recovery(sref):
-                skipped.append(sref)            # another owner (finalizing/recovering)
+                skipped.append(sref)                 # other owner / origin / exhausted
                 continue
-            wincred.delete_secret(sref)         # raises on infra error; False if absent
+            wincred.delete_secret(sref)              # raises on infra error; False if absent
             if _store.delete_claimed_recovery(sref):
                 cleaned.append(sref)
             else:
                 failed.append({"secret_ref": sref, "error": "state conflict on record delete"})
         except (wincred.WinCredUnavailable, _store.StoreUnavailable) as exc:
-            # claimed but couldn't finish → make it retryable, then report.
             try:
                 _store.set_secret_lifecycle(sref, "cleanup_pending")
             except _store.StoreUnavailable:
                 pass
             failed.append({"secret_ref": sref, "error": str(exc)})
-    return {"cleaned": cleaned, "failed": failed, "skipped": skipped}
+    return {"cleaned": cleaned, "failed": failed, "skipped": skipped, "exhausted": exhausted}

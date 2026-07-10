@@ -30,8 +30,12 @@ SECRET_BACKENDS = ("wincred",)
 # can never both finalize the same ref). resolve() is fail-closed for all three.
 SECRET_LIFECYCLE = (
     "provisioning", "temporary", "persistent", "rotated", "revoked",
-    "cleanup_pending", "recovering",
+    "cleanup_pending", "recovering", "recovery_failed",
 )
+# Origin binds a secret_ref to the path that created it. Auto-recovery is a
+# COMPENSATING action of the secure-intake path only — recovery may touch an
+# incomplete record ONLY when its origin is `secure_intake`.
+SECRET_ORIGINS = ("secure_intake",)
 # What a caller may REQUEST as the final state of put_secret (internal saga states
 # are not requestable).
 SECRET_REQUESTABLE_LIFECYCLE = ("temporary", "persistent")

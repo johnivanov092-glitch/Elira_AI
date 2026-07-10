@@ -27,12 +27,16 @@ def itops_startup() -> None:
 
     store.init_db()                       # migrate/verify BEFORE any intake
     summary = vault.recover_incomplete_secrets()
-    cleaned, failed, skipped = summary["cleaned"], summary["failed"], summary["skipped"]
-    if cleaned or failed or skipped:
-        # opaque secret_refs only — a value must never reach the log.
-        logger.info(
-            "itops startup recovery: cleaned=%d failed=%d skipped=%d refs=%s",
-            len(cleaned), len(failed), len(skipped),
-            {"cleaned": cleaned,
-             "failed": [f["secret_ref"] for f in failed],
-             "skipped": skipped})
+    cleaned = summary["cleaned"]
+    failed = summary["failed"]
+    skipped = summary["skipped"]
+    exhausted = summary.get("exhausted", [])
+    # ALWAYS log a bounded summary (even all-zero), opaque secret_refs only — a
+    # value must never reach the log.
+    logger.info(
+        "itops startup recovery: cleaned=%d failed=%d skipped=%d exhausted=%d refs=%s",
+        len(cleaned), len(failed), len(skipped), len(exhausted),
+        {"cleaned": cleaned,
+         "failed": [f["secret_ref"] for f in failed],
+         "skipped": skipped,
+         "exhausted": exhausted})
