@@ -477,6 +477,74 @@ def _asset_row(r: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+# ── connection_profiles ─────────────────────────────────────────────────────
+
+def put_connection_profile(*, profile_id: str, asset_id: str, transport: str,
+                           user: str = "", auth_ref: str | None = None,
+                           ssh_alias: str = "", host_key_fingerprint: str = "",
+                           os_platform_meta: dict | None = None,
+                           last_health: dict | None = None) -> dict[str, Any]:
+    _check(transport, _dom.TRANSPORTS, "transport")
+
+    def op(conn):
+        now = _now()
+        conn.execute(
+            "INSERT INTO connection_profiles (profile_id, asset_id, transport, user, auth_ref,"
+            " ssh_alias, host_key_fingerprint, os_platform_meta, last_health, created_at, updated_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(profile_id) DO UPDATE SET user=excluded.user, auth_ref=excluded.auth_ref,"
+            " ssh_alias=excluded.ssh_alias, host_key_fingerprint=excluded.host_key_fingerprint,"
+            " os_platform_meta=excluded.os_platform_meta, last_health=excluded.last_health,"
+            " updated_at=excluded.updated_at",
+            (profile_id, asset_id, transport, user, auth_ref, ssh_alias, host_key_fingerprint,
+             json.dumps(os_platform_meta or {}, ensure_ascii=False),
+             json.dumps(last_health or {}, ensure_ascii=False), now, now))
+        conn.commit()
+        return _profile_row(conn.execute(
+            "SELECT * FROM connection_profiles WHERE profile_id=?", (profile_id,)).fetchone())
+    return _wrap(op)
+
+
+def get_connection_profile(profile_id: str) -> dict[str, Any] | None:
+    def op(conn):
+        r = conn.execute("SELECT * FROM connection_profiles WHERE profile_id=?",
+                         (profile_id,)).fetchone()
+        return _profile_row(r) if r else None
+    return _wrap(op)
+
+
+def list_connection_profiles(asset_id: str | None = None) -> list[dict[str, Any]]:
+    def op(conn):
+        if asset_id:
+            rows = conn.execute(
+                "SELECT * FROM connection_profiles WHERE asset_id=? ORDER BY created_at ASC",
+                (asset_id,)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM connection_profiles ORDER BY created_at ASC").fetchall()
+        return [_profile_row(r) for r in rows]
+    return _wrap(op)
+
+
+def set_profile_health(profile_id: str, health: dict) -> None:
+    def op(conn):
+        conn.execute("UPDATE connection_profiles SET last_health=?, updated_at=? WHERE profile_id=?",
+                     (json.dumps(health or {}, ensure_ascii=False), _now(), profile_id))
+        conn.commit()
+    _wrap(op)
+
+
+def _profile_row(r: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "profile_id": r["profile_id"], "asset_id": r["asset_id"], "transport": r["transport"],
+        "user": r["user"], "auth_ref": r["auth_ref"], "ssh_alias": r["ssh_alias"],
+        "host_key_fingerprint": r["host_key_fingerprint"],
+        "os_platform_meta": _loads(r["os_platform_meta"], {}),
+        "last_health": _loads(r["last_health"], {}),
+        "created_at": r["created_at"], "updated_at": r["updated_at"],
+    }
+
+
 # ── secret_refs (STATE only; value is in Credential Manager) ─────────────────
 
 def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
