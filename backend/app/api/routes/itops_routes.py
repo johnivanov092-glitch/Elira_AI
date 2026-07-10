@@ -4,10 +4,16 @@ All routes are gated on the `itops` feature flag: OFF → 404 (disabled). v1 wor
 only with an EXISTING OpenSSH alias and never touches ~/.ssh, known_hosts, keys,
 ssh-agent, Credential Manager, or any secret value.
 
-Flow: preview (ssh -G + observed fingerprint) → enroll (after the user confirms
-the fingerprint out-of-band; adds the alias to the SSH allowlist and saves the
-asset+profile as `unverified`) → verify (by saved profile_id ONLY — never a host
-from the browser). Nothing is auto-deleted; an unverified profile stays visible.
+Flow: preview (ssh -G + an OBSERVED, advisory fingerprint) → enroll (saves a
+`draft` asset + an unverified profile, auth_ref=NULL; grants the model NO host
+access — there is no SSH allowlist step here) → verify (by saved profile_id ONLY,
+never a host from the browser; success promotes the asset to `enabled`, failure
+leaves it `draft`). Nothing is auto-deleted; an unverified profile stays visible.
+
+The out-of-band fingerprint comparison is a UI responsibility: the API itself does
+not yet require it. A future `fingerprint_reviewed` attestation could enforce it at
+the API level. Saving/verifying a profile does NOT let the model connect over it —
+that needs a separate scope/approval layer.
 """
 from __future__ import annotations
 

@@ -1,9 +1,10 @@
 """IT-Ops SSH vertical v1 — enrollment + verify for an existing OpenSSH alias.
 
-Behavior tests. v1 never touches ~/.ssh/keys/known_hosts/agent/Credential Manager
-and stores no secret; the allowlist grows only after an explicit fingerprint
-confirm; verify runs by SAVED profile_id (never a browser host) with STRICT
-host-key checking; an unverified profile stays visible.
+Behavior tests. v1 never touches ~/.ssh/keys/known_hosts/agent/Credential Manager,
+stores no secret (auth_ref=NULL), and grants the model NO host access (there is no
+SSH allowlist step — enroll never touches it). enroll saves a `draft` asset; verify
+runs by SAVED profile_id (never a browser host) with STRICT host-key checking and
+promotes the asset to `enabled` only on exit 0; an unverified profile stays visible.
 """
 from __future__ import annotations
 
