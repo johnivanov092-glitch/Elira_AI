@@ -20,7 +20,20 @@ ASSET_KINDS = (
 ASSET_LIFECYCLE = ("draft", "enabled", "disabled", "revoked")
 TRANSPORTS = ("ssh", "winrm", "mcp", "local")
 SECRET_KINDS = ("password", "private_key", "token", "connection_string")
-SECRET_LIFECYCLE = ("temporary", "persistent", "rotated", "revoked")
+# Phase 0 vault backend is strictly Windows Credential Manager. A second backend
+# would be a future ADR — the store rejects any other value.
+SECRET_BACKENDS = ("wincred",)
+# Lifecycle includes the internal saga states: `provisioning` (recovery record
+# written BEFORE the credential) and `cleanup_pending` (credential may exist but
+# provisioning did not complete). resolve() is fail-closed for both.
+SECRET_LIFECYCLE = (
+    "provisioning", "temporary", "persistent", "rotated", "revoked", "cleanup_pending",
+)
+# What a caller may REQUEST as the final state of put_secret (internal saga states
+# are not requestable).
+SECRET_REQUESTABLE_LIFECYCLE = ("temporary", "persistent")
+# Lifecycles whose value may be resolved (a complete, live secret).
+SECRET_RESOLVABLE_LIFECYCLE = ("temporary", "persistent", "rotated")
 SCOPE_MODES = ("read_only", "change")
 ROLLBACK_KINDS = ("automatic", "manual", "none")
 

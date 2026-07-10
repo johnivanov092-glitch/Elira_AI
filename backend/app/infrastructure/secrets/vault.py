@@ -1,67 +1,112 @@
-"""IT-Ops secret vault — Windows Credential Manager backed.
+"""IT-Ops secret vault — Windows Credential Manager backed, provisioning saga.
 
-`put_secret(raw) -> secret_ref` writes the value into Credential Manager and
-records only STATE in the it_ops store. `resolve(secret_ref)` reads the value back
-(runtime-only, called inside dispatch after gates). `state` / `revoke` manage the
-lifecycle. The value never touches the it_ops DB, args, journals, events, or the
-model — only the opaque `secret_ref` does.
+`put_secret` is a SAGA, not best-effort cleanup: a durable recovery record
+(state=`provisioning`) is written BEFORE any credential exists, so a credential is
+never untracked. Only after CredWrite AND the transition to the requested lifecycle
+succeed is the secret complete. If any step fails, the record stays durable and
+honestly reflects an incomplete state (`provisioning` / `cleanup_pending`), and a
+`VaultProvisioningError` (carrying the secret_ref, never the value) is raised.
+`recover_incomplete_secrets` is the recovery path for such records.
+
+`resolve` is fail-closed for any non-complete lifecycle. The value lives only in
+Credential Manager; the it_ops DB holds only the ref + state.
 """
 from __future__ import annotations
 
 import uuid
 
+from app.domain import it_ops as _dom
 from app.infrastructure.it_ops import store as _store
 from app.infrastructure.secrets import wincred
 
 
-MIN_SECRET_LEN = 4   # intake contract: shorter/whitespace-only values are rejected
-                     # (the output canary cannot safely mask a <4-char value).
-
-
 class SecretUnavailable(RuntimeError):
-    """The secret value could not be resolved (absent / revoked / vault down)."""
+    """The secret value could not be resolved (absent / revoked / incomplete / down)."""
+
+
+class VaultProvisioningError(RuntimeError):
+    """A secret could not be fully provisioned. Carries the secret_ref (opaque) so
+    the caller can observe / recover — never the secret value."""
+
+    def __init__(self, secret_ref: str, message: str):
+        self.secret_ref = secret_ref
+        super().__init__(f"{message} (secret_ref={secret_ref})")
 
 
 def _new_ref() -> str:
     return "sref_" + uuid.uuid4().hex
 
 
+def _best_effort_mark(secret_ref: str, lifecycle: str) -> None:
+    """Try to record an incomplete state. If the store is down we can't update it,
+    but the durable `provisioning` record already tracks the secret_ref — recovery
+    will still find it."""
+    try:
+        _store.set_secret_lifecycle(secret_ref, lifecycle)
+    except _store.StoreUnavailable:
+        pass
+
+
 def put_secret(*, kind: str, value: str, asset_id: str | None = None,
                lifecycle: str = "temporary") -> str:
-    """Store *value* in Credential Manager; persist only state. Returns secret_ref.
+    """Provision a secret as a saga. Accepts ANY non-empty string value verbatim
+    (no trim/normalization — a short client credential is valid). Returns the
+    secret_ref on full success; raises VaultProvisioningError (with the ref, no
+    value) if provisioning does not complete."""
+    if not isinstance(value, str) or value == "":
+        raise ValueError("secret value must be a non-empty string")
+    if lifecycle not in _dom.SECRET_REQUESTABLE_LIFECYCLE:
+        raise ValueError(
+            f"requested lifecycle must be one of {list(_dom.SECRET_REQUESTABLE_LIFECYCLE)}, "
+            f"got {lifecycle!r}")
 
-    ATOMIC: the credential and its state row are provisioned together — if the
-    metadata write fails after CredWrite, the just-written credential is deleted
-    (compensating delete) so no orphan value is left in the OS vault.
-
-    Intake contract: a whitespace-only or <MIN_SECRET_LEN value is rejected (the
-    output canary cannot safely mask a value that short)."""
-    if not isinstance(value, str) or len(value.strip()) < MIN_SECRET_LEN:
-        raise ValueError(f"secret value must be non-blank and ≥{MIN_SECRET_LEN} chars")
     secret_ref = _new_ref()
-    wincred.write_secret(secret_ref, value)          # value → Credential Manager only
+
+    # 1. Durable recovery record FIRST — before any credential exists. If this
+    #    fails, nothing was written to the vault: propagate (nothing to track).
+    _store.put_secret_ref(secret_ref=secret_ref, kind=kind, backend="wincred",
+                          asset_id=asset_id, lifecycle="provisioning")
+
+    # 2. Write the credential. It is now TRACKED by the provisioning record.
     try:
-        _store.put_secret_ref(secret_ref=secret_ref, kind=kind, backend="wincred",
-                              asset_id=asset_id, lifecycle=lifecycle)
-    except Exception:
-        # metadata failed → do not leave an orphan credential in the vault
+        wincred.write_secret(secret_ref, value)
+    except wincred.WinCredUnavailable as exc:
+        _best_effort_mark(secret_ref, "cleanup_pending")  # no credential; still tracked
+        raise VaultProvisioningError(secret_ref, "credential write failed") from exc
+
+    # 3. Transition provisioning → requested final lifecycle (completes the saga).
+    try:
+        _store.set_secret_lifecycle(secret_ref, lifecycle)
+    except _store.StoreUnavailable as exc:
+        # Credential exists but couldn't be finalized. Try to remove it; whether or
+        # not the delete succeeds, the durable provisioning record keeps it TRACKED
+        # (→ recovery path). We do not swallow the outcome into a false success.
+        removed = False
         try:
             wincred.delete_secret(secret_ref)
+            removed = True
         except wincred.WinCredUnavailable:
-            pass  # best-effort compensation; the original error is what matters
-        raise
+            removed = False
+        _best_effort_mark(secret_ref, "cleanup_pending")
+        raise VaultProvisioningError(
+            secret_ref,
+            "provisioning did not complete; credential "
+            + ("removed" if removed else "retained (tracked, pending recovery)")) from exc
+
     return secret_ref
 
 
 def resolve(secret_ref: str) -> str:
-    """Runtime-only: read the value from Credential Manager. Fail-closed if the ref
-    is unknown or revoked. NEVER call from an LLM-facing tool."""
+    """Runtime-only: read the value from Credential Manager. Fail-closed for any
+    non-complete lifecycle (unknown / provisioning / cleanup_pending / revoked) and
+    for a missing credential. NEVER call from an LLM-facing tool."""
     st = _store.secret_ref_state(secret_ref)
     if not st:
         raise SecretUnavailable(f"unknown secret_ref: {secret_ref}")
-    if st.get("lifecycle") == "revoked":
-        raise SecretUnavailable(f"secret_ref revoked: {secret_ref}")
-    value = wincred.read_secret(secret_ref)
+    if st.get("lifecycle") not in _dom.SECRET_RESOLVABLE_LIFECYCLE:
+        raise SecretUnavailable(
+            f"secret_ref not resolvable (lifecycle={st.get('lifecycle')!r}): {secret_ref}")
+    value = wincred.read_secret(secret_ref)     # raises on infra error; None on not-found
     if value is None:
         raise SecretUnavailable(f"secret_ref not in vault: {secret_ref}")
     return value
@@ -74,12 +119,27 @@ def state(secret_ref: str) -> dict | None:
 
 def revoke(secret_ref: str) -> None:
     """Delete from Credential Manager, THEN mark the state revoked. Honest:
-
-    * the value is deleted first (or confirmed already-absent);
-    * lifecycle becomes `revoked` ONLY after a confirmed delete/not-found;
-    * if the vault is unavailable / the delete fails (infrastructure error), the
-      error propagates and the state is NOT marked revoked — a failed revoke must
-      not look successful.
-    """
+    the value is deleted first (or confirmed already-absent); lifecycle becomes
+    `revoked` ONLY after a confirmed delete/not-found. An infrastructure error
+    propagates and the state is NOT marked revoked (a failed revoke can't look
+    done)."""
     wincred.delete_secret(secret_ref)          # raises on infra error → NOT revoked
     _store.mark_secret_revoked(secret_ref)
+
+
+def recover_incomplete_secrets() -> dict:
+    """Recovery path for incomplete provisioning records (`provisioning` /
+    `cleanup_pending`): delete any credential, then remove the record. Per-ref
+    failures are collected and returned — never silently passed."""
+    refs = _store.list_secret_refs_by_lifecycle(("provisioning", "cleanup_pending"))
+    cleaned: list[str] = []
+    failed: list[dict] = []
+    for r in refs:
+        sref = r["secret_ref"]
+        try:
+            wincred.delete_secret(sref)         # raises on infra error; False if absent
+            _store.delete_secret_ref(sref)
+            cleaned.append(sref)
+        except (wincred.WinCredUnavailable, _store.StoreUnavailable) as exc:
+            failed.append({"secret_ref": sref, "error": str(exc)})
+    return {"cleaned": cleaned, "failed": failed}

@@ -106,11 +106,15 @@ class SecretRefStateTest(_TempStore):
                                 "lifecycle", "created_at", "rotated_at", "revoked_at"})
 
     def test_secret_ref_state_never_returns_a_value(self):
+        # default lifecycle is now 'provisioning' (the saga writes the recovery
+        # record BEFORE the credential exists).
         itstore.put_secret_ref(secret_ref="sref_abc", kind="password", asset_id="a1")
         st = itstore.secret_ref_state("sref_abc")
-        self.assertEqual(st["lifecycle"], "temporary")
+        self.assertEqual(st["lifecycle"], "provisioning")
         self.assertEqual(st["backend"], "wincred")
         self.assertNotIn("value", st)
+        itstore.set_secret_lifecycle("sref_abc", "temporary")   # complete it
+        self.assertEqual(itstore.secret_ref_state("sref_abc")["lifecycle"], "temporary")
         itstore.mark_secret_revoked("sref_abc")
         self.assertEqual(itstore.secret_ref_state("sref_abc")["lifecycle"], "revoked")
 
@@ -193,27 +197,74 @@ class VaultTest(_TempStore):
                 vault.revoke(ref)
         self.assertNotEqual(vault.state(ref)["lifecycle"], "revoked")
 
-    def test_put_secret_atomic_orphan_deleted_on_metadata_failure(self):
-        # John's fix #1: CredWrite succeeded but the metadata write raises →
-        # compensating CredDelete removes the orphan; no credential remains.
+    def test_saga_store_fails_before_credwrite_no_credential(self):
+        # Recovery record is written FIRST; if THAT fails, no credential is written.
         from app.infrastructure.secrets import vault
         with unittest.mock.patch.object(
                 itstore, "put_secret_ref",
                 side_effect=itstore.StoreUnavailable("db down")):
             with self.assertRaises(itstore.StoreUnavailable):
-                vault.put_secret(kind="password", value="orphan-candidate-1")
-        self.assertEqual(self._cm, {}, "orphan credential left in the vault")
+                vault.put_secret(kind="password", value="never-written-1")
+        self.assertEqual(self._cm, {}, "no credential must exist if the record failed first")
+
+    def test_saga_final_update_and_delete_fail_leaves_TRACKED_credential(self):
+        # John's fix #1 (saga): CredWrite ok, final state update fails, compensating
+        # CredDelete ALSO fails → the credential may remain, but ONLY as a durable
+        # TRACKED provisioning record. Never an untracked credential.
+        from app.infrastructure.secrets import vault, wincred
+        with unittest.mock.patch.object(
+                itstore, "set_secret_lifecycle",
+                side_effect=itstore.StoreUnavailable("db down")), \
+             unittest.mock.patch.object(
+                wincred, "delete_secret",
+                side_effect=wincred.WinCredUnavailable("vault down")):
+            with self.assertRaises(vault.VaultProvisioningError) as ctx:
+                vault.put_secret(kind="password", value="tracked-not-orphan-1")
+        ref = ctx.exception.secret_ref
+        self.assertNotIn("tracked-not-orphan-1", str(ctx.exception))   # no value in error
+        self.assertEqual(len(self._cm), 1)                             # credential remained
+        cred_ref = next(iter(self._cm))
+        self.assertEqual(cred_ref, ref)
+        st = vault.state(ref)                                          # ...but TRACKED
+        self.assertIsNotNone(st)
+        self.assertIn(st["lifecycle"], ("provisioning", "cleanup_pending"))
+        with self.assertRaises(vault.SecretUnavailable):              # not resolvable
+            vault.resolve(ref)
+
+    def test_recovery_cleans_incomplete_records(self):
+        # The recovery path deletes the credential and removes the record.
+        from app.infrastructure.secrets import vault, wincred
+        with unittest.mock.patch.object(
+                itstore, "set_secret_lifecycle",
+                side_effect=itstore.StoreUnavailable("db down")), \
+             unittest.mock.patch.object(
+                wincred, "delete_secret",
+                side_effect=wincred.WinCredUnavailable("vault down")):
+            try:
+                vault.put_secret(kind="password", value="to-recover-1")
+            except vault.VaultProvisioningError as e:
+                ref = e.secret_ref
+        self.assertEqual(vault.state(ref)["lifecycle"], "provisioning")  # incomplete
+        # now recover with the vault/store healthy
+        summary = vault.recover_incomplete_secrets()
+        self.assertIn(ref, summary["cleaned"])
+        self.assertEqual(self._cm, {})                    # credential deleted
+        self.assertIsNone(vault.state(ref))               # record removed
 
     def test_resolve_unknown_ref_fails_closed(self):
         from app.infrastructure.secrets import vault
         with self.assertRaises(vault.SecretUnavailable):
             vault.resolve("sref_nonexistent")
 
-    def test_short_and_whitespace_values_rejected_by_intake(self):
+    def test_any_non_empty_value_accepted_only_empty_rejected(self):
+        # John's fix #4: MIN_SECRET_LEN removed — accept ANY non-empty string
+        # verbatim (short/whitespace ok); only "" is rejected.
         from app.infrastructure.secrets import vault
-        for bad in ("", "   ", "ab", " a "):
-            with self.assertRaises(ValueError, msg=f"{bad!r} should be rejected"):
-                vault.put_secret(kind="password", value=bad)
+        for good in ("x", "ab", "   ", " a "):
+            ref = vault.put_secret(kind="password", value=good)
+            self.assertEqual(self._cm[ref], good)         # stored verbatim, no trim
+        with self.assertRaises(ValueError):
+            vault.put_secret(kind="password", value="")
 
 
 class WinCredHonestyTest(unittest.TestCase):
@@ -264,6 +315,14 @@ class EnumEnforcementTest(_TempStore):
             itstore.put_secret_ref(secret_ref="s", kind="TYPO")
         with self.assertRaises(ValueError):
             itstore.put_secret_ref(secret_ref="s", kind="password", lifecycle="NOT_A_STATE")
+
+    def test_non_wincred_backend_rejected(self):
+        # John's fix #3: Phase 0 vault backend is strictly wincred.
+        with self.assertRaises(ValueError):
+            itstore.put_secret_ref(secret_ref="s", kind="password", backend="dpapi")
+        # wincred is accepted
+        itstore.put_secret_ref(secret_ref="ok", kind="password", backend="wincred")
+        self.assertEqual(itstore.secret_ref_state("ok")["backend"], "wincred")
 
     def test_invalid_rollback_kind_and_status_axes_rejected(self):
         itstore.upsert_asset(asset_id="a", label="A", kind="linux")
@@ -319,38 +378,50 @@ class MigrationRealTest(unittest.TestCase):
         self.assertIn("completion_status", cols)           # column added
         self.assertEqual(ver, itstore._SCHEMA_VERSION)     # stamped only after shape matches
 
-    def test_unrecoverable_schema_raises_and_does_not_bump_version(self):
-        # a change_runs table whose PK column has a conflicting type/shape that a
-        # NOT NULL insert path can't reconcile → simulate by a wrong-typed table that
-        # breaks the ALTER (use a reserved/duplicate). Here: make init fail by locking
-        # the file into an incompatible object (a table named like an index target).
+    def _user_version(self) -> int:
         conn = sqlite3.connect(self._path)
-        # 'assets' created as something the CREATE-IF-NOT-EXISTS won't fix and whose
-        # ADD COLUMN will fail: a table missing PK but with a NOT NULL no-default col
-        # already populated differently is hard to force portably, so we assert the
-        # honest-version contract via a forced sqlite error during migration.
-        conn.executescript("CREATE TABLE assets (asset_id TEXT);")  # minimal old shape
+        v = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.close()
+        return v
+
+    def test_assets_without_primary_key_is_structurally_incompatible(self):
+        # REAL fixture (no mocked ALTER): a legacy `assets` with NO primary key
+        # (so duplicate asset_id is possible) is structurally incompatible.
+        conn = sqlite3.connect(self._path)
+        conn.executescript("CREATE TABLE assets (asset_id TEXT, label TEXT, kind TEXT);")
+        conn.execute("INSERT INTO assets VALUES ('dup','A','linux')")
+        conn.execute("INSERT INTO assets VALUES ('dup','B','linux')")   # duplicate id, no PK
         conn.execute("PRAGMA user_version=0")
         conn.commit(); conn.close()
-        # patch ALTER to fail → migration must raise StoreUnavailable, version stays 0
-        import app.infrastructure.it_ops.store as st
-        orig_connect = st._connect
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()
+        self.assertEqual(self._user_version(), 0, "version must not bump on incompatible schema")
 
-        class _FailingConn:
-            def __init__(self, real): self._real = real
-            def __getattr__(self, n): return getattr(self._real, n)
-            def execute(self, sql, *a):
-                if sql.strip().upper().startswith("ALTER TABLE"):
-                    raise sqlite3.OperationalError("forced ALTER failure")
-                return self._real.execute(sql, *a)
-        with unittest.mock.patch.object(st, "_connect",
-                                        side_effect=lambda: _FailingConn(orig_connect())):
-            with self.assertRaises(st.StoreUnavailable):
-                st.init_db()
+    def test_future_user_version_fails_closed(self):
+        # REAL fixture: a DB stamped by a newer build must fail closed, not downgrade.
+        itstore.init_db()                                  # build the current schema
         conn = sqlite3.connect(self._path)
-        ver = conn.execute("PRAGMA user_version").fetchone()[0]
-        conn.close()
-        self.assertEqual(ver, 0, "version must NOT be bumped on a failed migration")
+        conn.execute(f"PRAGMA user_version={itstore._SCHEMA_VERSION + 5}")
+        conn.commit(); conn.close()
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION + 5,
+                         "a future version must be left untouched")
+
+    def test_compatible_pk_but_missing_column_migrates_and_stamps(self):
+        # correct PK, missing a column → additive migrate + stamp, real fixture.
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT NOT NULL,"
+            " kind TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);")
+        conn.execute("INSERT INTO assets (asset_id,label,kind,created_at,updated_at)"
+                     " VALUES ('keep','L','linux',1.0,1.0)")
+        conn.execute("PRAGMA user_version=0")
+        conn.commit(); conn.close()
+        itstore.init_db()
+        self.assertIsNotNone(itstore.get_asset("keep"))    # row preserved
+        self.assertEqual(itstore.get_asset("keep")["lifecycle_state"], "draft")  # added col default
+        self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)
 
 
 class StoreErrorContractTest(_TempStore):

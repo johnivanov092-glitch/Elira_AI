@@ -216,14 +216,30 @@ def _check(value: Any, allowed: tuple, what: str) -> None:
 
 # ── init + honest migration ─────────────────────────────────────────────────
 
+# Expected single-column primary key per table — structural compatibility check.
+_EXPECTED_PK: dict[str, str] = {
+    "assets": "asset_id", "connection_profiles": "profile_id",
+    "operation_scopes": "scope_id", "snapshots": "snapshot_id",
+    "evidence": "evidence_id", "change_runs": "change_run_id",
+    "secret_refs": "secret_ref",
+}
+
+
 def init_db() -> None:
-    """Create tables if missing, run additive migrations, and stamp the version
-    ONLY when the on-disk shape matches. Idempotent, forward-only, never drops.
-    Any sqlite failure → StoreUnavailable (version NOT bumped)."""
+    """Create tables if missing, run an honest structural migration, and stamp the
+    version ONLY when the on-disk shape actually matches (columns + primary keys).
+    Fail-closed: a future user_version, a structurally-incompatible legacy table, or
+    any sqlite failure → StoreUnavailable, and user_version is NOT changed."""
     conn = _connect()
     try:
+        ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if ver > _SCHEMA_VERSION:
+            # a DB written by a newer build — do not touch or downgrade it.
+            raise StoreUnavailable(
+                f"it_ops schema user_version={ver} is newer than supported "
+                f"{_SCHEMA_VERSION} (fail-closed)")
         conn.executescript(_CREATE_SQL)
-        _migrate(conn)
+        _migrate(conn, ver)
         conn.commit()
     except sqlite3.Error as exc:
         try:
@@ -235,26 +251,44 @@ def init_db() -> None:
         conn.close()
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Additive: for every existing table, add any missing expected column. Then,
-    ONLY if every table now has its full expected column set, stamp user_version.
-    An incomplete/unrecoverable shape leaves the version untouched."""
-    for table, cols in _EXPECTED_COLUMNS.items():
-        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if not existing:
-            # table absent even after CREATE IF NOT EXISTS → unrecoverable shape
+def _table_info(conn: sqlite3.Connection, table: str) -> list[tuple]:
+    return conn.execute(f"PRAGMA table_info({table})").fetchall()
+
+
+def _assert_structural_compat(conn: sqlite3.Connection) -> None:
+    """Every existing table must be STRUCTURALLY compatible: the expected column is
+    present AND is the sole primary key. A legacy `assets` with no PK (allowing
+    duplicate asset_id) is rejected — names alone are not enough."""
+    for table, pk in _EXPECTED_PK.items():
+        info = _table_info(conn, table)          # rows: (cid, name, type, notnull, dflt, pk)
+        if not info:
             raise sqlite3.OperationalError(f"expected table {table!r} missing after create")
+        names = {r[1] for r in info}
+        pk_cols = {r[1] for r in info if r[5] and int(r[5]) > 0}
+        if pk not in names:
+            raise sqlite3.OperationalError(f"{table}: missing expected PK column {pk!r}")
+        if pk_cols != {pk}:
+            raise sqlite3.OperationalError(
+                f"{table}: primary key is {sorted(pk_cols) or 'none'}, expected [{pk!r}] "
+                f"(structurally incompatible legacy schema)")
+
+
+def _migrate(conn: sqlite3.Connection, ver: int) -> None:
+    """Structural check → additive column adds → verify → stamp. The version is
+    stamped only after the shape (columns + PKs) actually matches; an incompatible
+    or incomplete shape raises and leaves user_version untouched."""
+    _assert_structural_compat(conn)
+    for table, cols in _EXPECTED_COLUMNS.items():
+        existing = {r[1] for r in _table_info(conn, table)}
         for col, ddl in cols.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-    # verify the shape actually matches before stamping the version forward
     for table, cols in _EXPECTED_COLUMNS.items():
-        now = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        now = {r[1] for r in _table_info(conn, table)}
         missing = set(cols) - now
         if missing:
             raise sqlite3.OperationalError(
                 f"table {table!r} still missing columns {sorted(missing)} — not stamping version")
-    ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if ver < _SCHEMA_VERSION:
         conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
@@ -350,8 +384,9 @@ def _asset_row(r: sqlite3.Row) -> dict[str, Any]:
 # ── secret_refs (STATE only; value is in Credential Manager) ─────────────────
 
 def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
-                   asset_id: str | None = None, lifecycle: str = "temporary") -> None:
+                   asset_id: str | None = None, lifecycle: str = "provisioning") -> None:
     _check(kind, _dom.SECRET_KINDS, "secret kind")
+    _check(backend, _dom.SECRET_BACKENDS, "secret backend")   # Phase 0: wincred only
     _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
 
     def op(conn):
@@ -362,6 +397,41 @@ def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
             (secret_ref, backend, kind, asset_id, lifecycle, _now()))
         conn.commit()
     _wrap(op)
+
+
+def set_secret_lifecycle(secret_ref: str, lifecycle: str) -> None:
+    """Transition a secret_ref's lifecycle (validated against the enum). Used by the
+    vault provisioning saga and by revoke."""
+    _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
+
+    def op(conn):
+        ts_col = ", revoked_at=?" if lifecycle == "revoked" else ""
+        params = [lifecycle]
+        if lifecycle == "revoked":
+            params.append(_now())
+        params.append(secret_ref)
+        conn.execute(f"UPDATE secret_refs SET lifecycle=?{ts_col} WHERE secret_ref=?", params)
+        conn.commit()
+    _wrap(op)
+
+
+def list_secret_refs_by_lifecycle(lifecycles: tuple[str, ...]) -> list[dict[str, Any]]:
+    """secret_ref STATE rows in the given lifecycles — used by the vault recovery
+    path to find incomplete (provisioning / cleanup_pending) records."""
+    if not lifecycles:
+        return []
+    placeholders = ",".join("?" for _ in lifecycles)
+
+    def op(conn):
+        rows = conn.execute(
+            f"SELECT secret_ref, backend, kind, asset_id, lifecycle, created_at,"
+            f" rotated_at, revoked_at FROM secret_refs WHERE lifecycle IN ({placeholders})"
+            f" ORDER BY created_at ASC", tuple(lifecycles)).fetchall()
+        return [{"secret_ref": r["secret_ref"], "backend": r["backend"], "kind": r["kind"],
+                 "asset_id": r["asset_id"], "lifecycle": r["lifecycle"],
+                 "created_at": r["created_at"], "rotated_at": r["rotated_at"],
+                 "revoked_at": r["revoked_at"]} for r in rows]
+    return _wrap(op)
 
 
 def secret_ref_state(secret_ref: str) -> dict[str, Any] | None:
