@@ -207,49 +207,61 @@ class VaultTest(_TempStore):
                 vault.put_secret(kind="password", value="never-written-1")
         self.assertEqual(self._cm, {}, "no credential must exist if the record failed first")
 
-    def test_saga_final_update_and_delete_fail_leaves_TRACKED_credential(self):
-        # John's fix #1 (saga): CredWrite ok, final state update fails, compensating
-        # CredDelete ALSO fails → the credential may remain, but ONLY as a durable
-        # TRACKED provisioning record. Never an untracked credential.
-        from app.infrastructure.secrets import vault, wincred
+    def test_saga_finalize_store_down_leaves_TRACKED_credential(self):
+        # CredWrite ok, the CONDITIONAL finalize hits a store outage → the credential
+        # remains but ONLY as a durable TRACKED provisioning record (recovery owns
+        # teardown). Never an untracked credential; never a false success.
+        from app.infrastructure.secrets import vault
         with unittest.mock.patch.object(
-                itstore, "set_secret_lifecycle",
-                side_effect=itstore.StoreUnavailable("db down")), \
-             unittest.mock.patch.object(
-                wincred, "delete_secret",
-                side_effect=wincred.WinCredUnavailable("vault down")):
+                itstore, "finalize_provisioning",
+                side_effect=itstore.StoreUnavailable("db down")):
             with self.assertRaises(vault.VaultProvisioningError) as ctx:
                 vault.put_secret(kind="password", value="tracked-not-orphan-1")
         ref = ctx.exception.secret_ref
         self.assertNotIn("tracked-not-orphan-1", str(ctx.exception))   # no value in error
-        self.assertEqual(len(self._cm), 1)                             # credential remained
-        cred_ref = next(iter(self._cm))
-        self.assertEqual(cred_ref, ref)
-        st = vault.state(ref)                                          # ...but TRACKED
-        self.assertIsNotNone(st)
-        self.assertIn(st["lifecycle"], ("provisioning", "cleanup_pending"))
-        with self.assertRaises(vault.SecretUnavailable):              # not resolvable
+        self.assertEqual(list(self._cm), [ref])                        # credential remained
+        self.assertEqual(vault.state(ref)["lifecycle"], "provisioning")  # TRACKED
+        with self.assertRaises(vault.SecretUnavailable):               # not resolvable
             vault.resolve(ref)
 
-    def test_recovery_cleans_incomplete_records(self):
-        # The recovery path deletes the credential and removes the record.
+    def test_interleaving_recovery_claims_before_finalize_no_false_success(self):
+        # RACE regression: credential created → a recovery pass CLAIMS and tears down
+        # the record BEFORE put_secret finalizes. put_secret's conditional finalize
+        # must fail (state conflict) — never a successful put_secret with a
+        # deleted credential/ref.
         from app.infrastructure.secrets import vault, wincred
+
+        def racing_write(ref, val):
+            self._cm[ref] = val
+            # recovery wins the race: claim (provisioning→recovering), delete cred+record
+            self.assertTrue(itstore.claim_for_recovery(ref))
+            self._cm.pop(ref, None)
+            self.assertTrue(itstore.delete_claimed_recovery(ref))
+
+        with unittest.mock.patch.object(wincred, "write_secret", side_effect=racing_write):
+            with self.assertRaises(vault.VaultProvisioningError) as ctx:
+                vault.put_secret(kind="password", value="raced-secret-1")
+        self.assertIn("state conflict", str(ctx.exception))
+        # no live credential and no live ref survived a "successful" put_secret
+        self.assertEqual(self._cm, {})
+        self.assertIsNone(vault.state(ctx.exception.secret_ref))
+
+    def test_recovery_cleans_incomplete_records(self):
+        # The recovery path claims, deletes the credential, and removes the record.
+        from app.infrastructure.secrets import vault
         with unittest.mock.patch.object(
-                itstore, "set_secret_lifecycle",
-                side_effect=itstore.StoreUnavailable("db down")), \
-             unittest.mock.patch.object(
-                wincred, "delete_secret",
-                side_effect=wincred.WinCredUnavailable("vault down")):
+                itstore, "finalize_provisioning",
+                side_effect=itstore.StoreUnavailable("db down")):
             try:
                 vault.put_secret(kind="password", value="to-recover-1")
             except vault.VaultProvisioningError as e:
                 ref = e.secret_ref
         self.assertEqual(vault.state(ref)["lifecycle"], "provisioning")  # incomplete
-        # now recover with the vault/store healthy
         summary = vault.recover_incomplete_secrets()
         self.assertIn(ref, summary["cleaned"])
         self.assertEqual(self._cm, {})                    # credential deleted
         self.assertIsNone(vault.state(ref))               # record removed
+
 
     def test_resolve_unknown_ref_fails_closed(self):
         from app.infrastructure.secrets import vault
@@ -265,6 +277,25 @@ class VaultTest(_TempStore):
             self.assertEqual(self._cm[ref], good)         # stored verbatim, no trim
         with self.assertRaises(ValueError):
             vault.put_secret(kind="password", value="")
+
+
+class StoreCasTest(_TempStore):
+    """The atomic CAS primitives the vault saga + recovery rely on."""
+
+    def test_finalize_provisioning_is_conditional(self):
+        itstore.put_secret_ref(secret_ref="s1", kind="password")   # → provisioning
+        self.assertTrue(itstore.finalize_provisioning("s1", "temporary"))  # 1st wins
+        self.assertFalse(itstore.finalize_provisioning("s1", "persistent"))  # no longer provisioning
+        self.assertEqual(itstore.secret_ref_state("s1")["lifecycle"], "temporary")
+
+    def test_claim_is_exclusive_and_delete_only_recovering(self):
+        itstore.put_secret_ref(secret_ref="s2", kind="password")   # provisioning
+        self.assertTrue(itstore.claim_for_recovery("s2"))          # claim wins
+        self.assertFalse(itstore.claim_for_recovery("s2"))         # already recovering
+        self.assertFalse(itstore.finalize_provisioning("s2", "temporary"))  # can't finalize a claimed rec
+        self.assertTrue(itstore.delete_claimed_recovery("s2"))     # delete a recovering record
+        self.assertFalse(itstore.delete_claimed_recovery("s2"))    # gone → conflict, not success
+        self.assertIsNone(itstore.secret_ref_state("s2"))
 
 
 class WinCredHonestyTest(unittest.TestCase):
@@ -408,8 +439,36 @@ class MigrationRealTest(unittest.TestCase):
         self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION + 5,
                          "a future version must be left untouched")
 
+    def test_nullable_core_column_is_structurally_incompatible(self):
+        # REAL fixture: assets with correct PK but NULLABLE label/kind → rejected.
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT, kind TEXT,"
+            " created_at REAL NOT NULL, updated_at REAL NOT NULL);")   # label/kind nullable
+        conn.execute("PRAGMA user_version=0")
+        conn.commit(); conn.close()
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()
+        self.assertEqual(self._user_version(), 0)
+
+    def test_missing_foreign_key_is_structurally_incompatible(self):
+        # REAL fixture: connection_profiles WITHOUT its declared asset_id FK → rejected.
+        conn = sqlite3.connect(self._path)
+        conn.executescript(
+            "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT NOT NULL,"
+            " kind TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL);"
+            "CREATE TABLE connection_profiles (profile_id TEXT PRIMARY KEY,"
+            " asset_id TEXT NOT NULL, transport TEXT NOT NULL,"
+            " created_at REAL NOT NULL, updated_at REAL NOT NULL);")   # no FK on asset_id
+        conn.execute("PRAGMA user_version=0")
+        conn.commit(); conn.close()
+        with self.assertRaises(itstore.StoreUnavailable):
+            itstore.init_db()
+        self.assertEqual(self._user_version(), 0)
+
     def test_compatible_pk_but_missing_column_migrates_and_stamps(self):
-        # correct PK, missing a column → additive migrate + stamp, real fixture.
+        # correct PK + NOT NULL core, missing only an OPTIONAL column → additive
+        # migrate + stamp, real fixture.
         conn = sqlite3.connect(self._path)
         conn.executescript(
             "CREATE TABLE assets (asset_id TEXT PRIMARY KEY, label TEXT NOT NULL,"
@@ -422,6 +481,48 @@ class MigrationRealTest(unittest.TestCase):
         self.assertIsNotNone(itstore.get_asset("keep"))    # row preserved
         self.assertEqual(itstore.get_asset("keep")["lifecycle_state"], "draft")  # added col default
         self.assertEqual(self._user_version(), itstore._SCHEMA_VERSION)
+
+
+class ItopsStartupTest(unittest.TestCase):
+    """Recovery is operationally wired: flag-gated, migrate→recover→(then intake)."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
+
+    def tearDown(self):
+        itstore._DB_PATH_OVERRIDE = None
+
+    def test_flag_off_does_not_touch_schema_or_recover(self):
+        from app.application.it_ops import startup
+        from app.application import feature_flags as ff
+        with unittest.mock.patch.object(ff, "flag_enabled", return_value=False), \
+             unittest.mock.patch.object(itstore, "init_db") as init, \
+             unittest.mock.patch("app.infrastructure.secrets.vault.recover_incomplete_secrets") as rec:
+            startup.itops_startup()
+        init.assert_not_called()
+        rec.assert_not_called()
+
+    def test_flag_on_migrates_then_recovers(self):
+        from app.application.it_ops import startup
+        from app.application import feature_flags as ff
+        order = []
+        with unittest.mock.patch.object(ff, "flag_enabled", return_value=True), \
+             unittest.mock.patch.object(itstore, "init_db",
+                                        side_effect=lambda: order.append("init")), \
+             unittest.mock.patch("app.infrastructure.secrets.vault.recover_incomplete_secrets",
+                                 side_effect=lambda: (order.append("recover"),
+                                                      {"cleaned": [], "failed": [], "skipped": []})[1]):
+            startup.itops_startup()
+        self.assertEqual(order, ["init", "recover"])       # migrate BEFORE recover
+
+    def test_startup_is_not_a_registered_tool(self):
+        # recovery must not be model-callable — it is a plain startup function, not
+        # a ToolSpec in the registry.
+        from app.application.tool_registry import runtime as reg
+        names = {s.get("name") for s in reg.search_tool_specs("recover", limit=50)}
+        self.assertNotIn("recover_incomplete_secrets", names)
+        self.assertNotIn("itops_startup", names)
 
 
 class StoreErrorContractTest(_TempStore):

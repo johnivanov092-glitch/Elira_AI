@@ -112,6 +112,16 @@ try:
 except Exception as exc:
     logger.warning("proactive scheduler startup failed: %s", exc)
 
+# IT Operations (Phase 0) — flag-gated startup: migrate the it_ops store then
+# recover incomplete secrets BEFORE accepting intake. No-op when `itops` is OFF
+# (schema/vault/recovery untouched). Not model-callable. Fail-safe.
+try:
+    from app.application.it_ops.startup import itops_startup
+
+    itops_startup()
+except Exception as exc:
+    logger.warning("itops startup failed: %s", exc)
+
 # Server drift detector — probe the live llama-server (/props) on start + daily,
 # alert when the active model / context window drifts from what docs recorded.
 # Read-only + fail-safe; pytest-guarded and killable via ELIRA_DRIFT_CHECK=0.

@@ -74,24 +74,21 @@ def put_secret(*, kind: str, value: str, asset_id: str | None = None,
         _best_effort_mark(secret_ref, "cleanup_pending")  # no credential; still tracked
         raise VaultProvisioningError(secret_ref, "credential write failed") from exc
 
-    # 3. Transition provisioning → requested final lifecycle (completes the saga).
+    # 3. CONDITIONAL finalize: provisioning → requested lifecycle, atomically.
+    #    Only a rowcount==1 transition is success. If a recovery pass has claimed
+    #    the record (provisioning → recovering) or removed it, the CAS returns
+    #    False and we must NOT report success — recovery owns the credential's
+    #    teardown, so put_secret raises instead of returning a ref that is being
+    #    torn down. A store outage mid-finalize leaves the durable provisioning
+    #    record (TRACKED); recovery will handle it.
     try:
-        _store.set_secret_lifecycle(secret_ref, lifecycle)
+        finalized = _store.finalize_provisioning(secret_ref, lifecycle)
     except _store.StoreUnavailable as exc:
-        # Credential exists but couldn't be finalized. Try to remove it; whether or
-        # not the delete succeeds, the durable provisioning record keeps it TRACKED
-        # (→ recovery path). We do not swallow the outcome into a false success.
-        removed = False
-        try:
-            wincred.delete_secret(secret_ref)
-            removed = True
-        except wincred.WinCredUnavailable:
-            removed = False
-        _best_effort_mark(secret_ref, "cleanup_pending")
         raise VaultProvisioningError(
-            secret_ref,
-            "provisioning did not complete; credential "
-            + ("removed" if removed else "retained (tracked, pending recovery)")) from exc
+            secret_ref, "provisioning did not complete (store unavailable; tracked)") from exc
+    if not finalized:
+        raise VaultProvisioningError(
+            secret_ref, "provisioning superseded by recovery (state conflict)")
 
     return secret_ref
 
@@ -128,18 +125,34 @@ def revoke(secret_ref: str) -> None:
 
 
 def recover_incomplete_secrets() -> dict:
-    """Recovery path for incomplete provisioning records (`provisioning` /
-    `cleanup_pending`): delete any credential, then remove the record. Per-ref
-    failures are collected and returned — never silently passed."""
+    """Race-safe recovery for incomplete records (`provisioning` / `cleanup_pending`).
+
+    For each candidate: atomically CLAIM it (→ recovering) so put_secret and a
+    concurrent recovery can never both act on the same ref; then delete the
+    credential and the claimed record. A record we could not claim (someone else
+    owns it) is skipped. A claimed record we could not finish is reset to
+    cleanup_pending for a later pass and reported — never silently passed. Returns
+    opaque secret_refs only, never any value."""
     refs = _store.list_secret_refs_by_lifecycle(("provisioning", "cleanup_pending"))
     cleaned: list[str] = []
     failed: list[dict] = []
+    skipped: list[str] = []
     for r in refs:
         sref = r["secret_ref"]
         try:
+            if not _store.claim_for_recovery(sref):
+                skipped.append(sref)            # another owner (finalizing/recovering)
+                continue
             wincred.delete_secret(sref)         # raises on infra error; False if absent
-            _store.delete_secret_ref(sref)
-            cleaned.append(sref)
+            if _store.delete_claimed_recovery(sref):
+                cleaned.append(sref)
+            else:
+                failed.append({"secret_ref": sref, "error": "state conflict on record delete"})
         except (wincred.WinCredUnavailable, _store.StoreUnavailable) as exc:
+            # claimed but couldn't finish → make it retryable, then report.
+            try:
+                _store.set_secret_lifecycle(sref, "cleanup_pending")
+            except _store.StoreUnavailable:
+                pass
             failed.append({"secret_ref": sref, "error": str(exc)})
-    return {"cleaned": cleaned, "failed": failed}
+    return {"cleaned": cleaned, "failed": failed, "skipped": skipped}

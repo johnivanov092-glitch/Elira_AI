@@ -24,10 +24,13 @@ SECRET_KINDS = ("password", "private_key", "token", "connection_string")
 # would be a future ADR — the store rejects any other value.
 SECRET_BACKENDS = ("wincred",)
 # Lifecycle includes the internal saga states: `provisioning` (recovery record
-# written BEFORE the credential) and `cleanup_pending` (credential may exist but
-# provisioning did not complete). resolve() is fail-closed for both.
+# written BEFORE the credential), `cleanup_pending` (credential may exist but
+# provisioning did not complete), and `recovering` (a recovery pass has atomically
+# CLAIMED an incomplete record — ownership is exclusive so put_secret and recovery
+# can never both finalize the same ref). resolve() is fail-closed for all three.
 SECRET_LIFECYCLE = (
-    "provisioning", "temporary", "persistent", "rotated", "revoked", "cleanup_pending",
+    "provisioning", "temporary", "persistent", "rotated", "revoked",
+    "cleanup_pending", "recovering",
 )
 # What a caller may REQUEST as the final state of put_secret (internal saga states
 # are not requestable).

@@ -216,12 +216,30 @@ def _check(value: Any, allowed: tuple, what: str) -> None:
 
 # ── init + honest migration ─────────────────────────────────────────────────
 
-# Expected single-column primary key per table — structural compatibility check.
+# Structural compatibility spec: single-column primary key, core columns that MUST
+# be NOT NULL, and declared foreign keys. Names alone are not enough — a legacy
+# table with the right column names but a missing PK, a nullable core column, or a
+# missing FK is structurally incompatible and is rejected (StoreUnavailable).
 _EXPECTED_PK: dict[str, str] = {
     "assets": "asset_id", "connection_profiles": "profile_id",
     "operation_scopes": "scope_id", "snapshots": "snapshot_id",
     "evidence": "evidence_id", "change_runs": "change_run_id",
     "secret_refs": "secret_ref",
+}
+# Core columns required to be NOT NULL (only columns present in ANY compatible
+# legacy schema — additive/optional columns are NOT listed here).
+_REQUIRED_NOTNULL: dict[str, set[str]] = {
+    "assets": {"label", "kind", "created_at", "updated_at"},
+    "connection_profiles": {"asset_id", "transport", "created_at", "updated_at"},
+    "operation_scopes": {"run_id"},
+    "snapshots": {"change_run_id", "asset_id", "captured_at"},
+    "evidence": {"run_id", "target_identity", "scanner_vantage", "operation", "captured_at"},
+    "change_runs": {"run_id", "asset_id", "created_at", "updated_at"},
+    "secret_refs": {"kind", "created_at"},
+}
+# Declared foreign keys: (from_col, ref_table, ref_col).
+_EXPECTED_FK: dict[str, list[tuple[str, str, str]]] = {
+    "connection_profiles": [("asset_id", "assets", "asset_id")],
 }
 
 
@@ -256,14 +274,15 @@ def _table_info(conn: sqlite3.Connection, table: str) -> list[tuple]:
 
 
 def _assert_structural_compat(conn: sqlite3.Connection) -> None:
-    """Every existing table must be STRUCTURALLY compatible: the expected column is
-    present AND is the sole primary key. A legacy `assets` with no PK (allowing
-    duplicate asset_id) is rejected — names alone are not enough."""
+    """Every existing table must be STRUCTURALLY compatible — PK, core NOT NULL
+    constraints, and declared FKs. Names alone are not enough: a legacy table with
+    no PK, a nullable core column, or a missing FK is rejected."""
     for table, pk in _EXPECTED_PK.items():
         info = _table_info(conn, table)          # rows: (cid, name, type, notnull, dflt, pk)
         if not info:
             raise sqlite3.OperationalError(f"expected table {table!r} missing after create")
         names = {r[1] for r in info}
+        notnull_cols = {r[1] for r in info if r[3] and int(r[3]) > 0}
         pk_cols = {r[1] for r in info if r[5] and int(r[5]) > 0}
         if pk not in names:
             raise sqlite3.OperationalError(f"{table}: missing expected PK column {pk!r}")
@@ -271,6 +290,22 @@ def _assert_structural_compat(conn: sqlite3.Connection) -> None:
             raise sqlite3.OperationalError(
                 f"{table}: primary key is {sorted(pk_cols) or 'none'}, expected [{pk!r}] "
                 f"(structurally incompatible legacy schema)")
+        for col in _REQUIRED_NOTNULL.get(table, set()):
+            if col not in names:
+                raise sqlite3.OperationalError(f"{table}: missing required core column {col!r}")
+            # the PK column is implicitly NOT NULL even if the flag isn't set
+            if col not in notnull_cols and col != pk:
+                raise sqlite3.OperationalError(
+                    f"{table}: core column {col!r} must be NOT NULL (structurally incompatible)")
+    for table, fks in _EXPECTED_FK.items():
+        declared = conn.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        # rows: (id, seq, table, from, to, on_update, on_delete, match)
+        have = {(r[3], r[2], r[4]) for r in declared}
+        for col, ref_table, ref_col in fks:
+            if (col, ref_table, ref_col) not in have:
+                raise sqlite3.OperationalError(
+                    f"{table}: missing declared FK {col!r}->{ref_table}.{ref_col} "
+                    f"(structurally incompatible)")
 
 
 def _migrate(conn: sqlite3.Connection, ver: int) -> None:
@@ -462,6 +497,46 @@ def mark_secret_revoked(secret_ref: str) -> None:
                      (_now(), secret_ref))
         conn.commit()
     _wrap(op)
+
+
+def finalize_provisioning(secret_ref: str, lifecycle: str) -> bool:
+    """Atomic CAS: provisioning → *lifecycle*. Returns True ONLY if this call made
+    the transition (rowcount==1). False = state conflict (e.g. a recovery pass
+    already claimed the record) — the caller must NOT treat that as success."""
+    _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
+
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE secret_refs SET lifecycle=? WHERE secret_ref=? AND lifecycle='provisioning'",
+            (lifecycle, secret_ref))
+        conn.commit()
+        return cur.rowcount == 1
+    return _wrap(op)
+
+
+def claim_for_recovery(secret_ref: str) -> bool:
+    """Atomic CAS claim: provisioning|cleanup_pending → recovering. Returns True
+    ONLY if this call won the claim (rowcount==1). A record already recovering /
+    finalized / gone yields False — exclusive ownership, no double-recovery."""
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE secret_refs SET lifecycle='recovering' WHERE secret_ref=?"
+            " AND lifecycle IN ('provisioning','cleanup_pending')", (secret_ref,))
+        conn.commit()
+        return cur.rowcount == 1
+    return _wrap(op)
+
+
+def delete_claimed_recovery(secret_ref: str) -> bool:
+    """Delete a record ONLY if it is in `recovering` (i.e. claimed by THIS pass).
+    Returns True on delete (rowcount==1); False = state conflict, not success."""
+    def op(conn):
+        cur = conn.execute(
+            "DELETE FROM secret_refs WHERE secret_ref=? AND lifecycle='recovering'",
+            (secret_ref,))
+        conn.commit()
+        return cur.rowcount == 1
+    return _wrap(op)
 
 
 # ── change_runs (TWO axes — never merged) ───────────────────────────────────
