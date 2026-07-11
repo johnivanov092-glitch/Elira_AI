@@ -175,6 +175,34 @@ class DeadlineHardnessTest(unittest.TestCase):
         self.assertLessEqual(max(seen), profile.total_timeout)
         self.assertGreater(min(seen), 0.0)                   # never submit with a dead budget
 
+    def test_rate_gate_never_sleeps_past_deadline(self):
+        # The rate-gate sleep must itself honour the deadline. rate_limit=1 → 1s between
+        # submits, but total_timeout=0.1: the OLD gate slept the full 1s BEFORE checking
+        # the deadline (John reproduced elapsed=1.015s for a 0.1s cap). With an injected
+        # clock+sleep the test asserts the TOTAL slept never exceeds the cap — and never
+        # touches the real clock (no real second of waiting).
+        slept: list[float] = []
+
+        class Clock:
+            def __init__(self):
+                self.t = 0.0
+
+            def mono(self):
+                return self.t
+
+            def sleep(self, s):
+                slept.append(s)
+                self.t += max(0.0, s)
+
+        clk = Clock()
+        profile = _profile(ports=(22,), rate=1, in_flight=8, per_ct=0.05, total=0.1)
+        hosts = ["10.0.0.1", "10.0.0.2", "10.0.0.3"]         # 3 targets, throttled to 1/s
+        res = ni.run_scan("10.0.0.0/29", hosts, profile, connect_fn=lambda *a: "timeout",
+                          monotonic=clk.mono, sleep=clk.sleep)
+        self.assertEqual(res.status, "timed_out")
+        self.assertLessEqual(sum(slept), profile.total_timeout + 1e-9)   # never sleeps past the cap
+        self.assertLess(res.attempted, res.planned)                     # not everything attempted
+
     def test_full_budget_uses_full_per_connect_timeout(self):
         # when there IS budget, the min() cap must not wrongly truncate the connect.
         seen: list[float] = []

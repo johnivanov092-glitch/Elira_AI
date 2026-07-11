@@ -189,12 +189,13 @@ def _tcp_connect(host: str, port: int, timeout: float) -> str:
 
 
 def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
-             connect_fn=None, monotonic=None) -> ScanResult:
+             connect_fn=None, monotonic=None, sleep=None) -> ScanResult:
     """Bounded TCP-connect scan of hosts x profile.ports. Stops on the total_timeout
-    deadline; remaining attempts are left un-attempted (status=timed_out). connect_fn
-    and monotonic are injectable for tests."""
+    deadline; remaining attempts are left un-attempted (status=timed_out). connect_fn,
+    monotonic and sleep are injectable for tests."""
     connect_fn = connect_fn or _tcp_connect
     monotonic = monotonic or time.monotonic
+    sleep = sleep or time.sleep
     targets = [(h, p) for h in hosts for p in profile.ports]
     planned = len(targets)
     counts = {s: 0 for s in _STATES}
@@ -209,16 +210,26 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
     min_interval = 1.0 / profile.rate_limit if profile.rate_limit > 0 else 0.0
     last_started = [started - min_interval]
 
-    def _rate_gate() -> None:
-        if min_interval <= 0:
-            return
-        wait = last_started[0] + min_interval - monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        last_started[0] = monotonic()
-
     def _remaining() -> float:
         return profile.total_timeout - (monotonic() - started)
+
+    def _rate_gate() -> float:
+        """Throttle to rate_limit WITHOUT sleeping past the deadline, and return the
+        remaining budget the caller should submit against (<= 0 → drop this target, do
+        not submit). The throttle sleep is itself capped at the remaining budget, so the
+        tool never blocks past total_timeout. `last_started` is advanced only when a
+        submit will actually proceed (remaining > 0)."""
+        if min_interval > 0:
+            wait = last_started[0] + min_interval - monotonic()
+            if wait > 0:
+                rem = _remaining()
+                if rem <= 0:                       # deadline already gone — never sleep
+                    return rem
+                sleep(min(wait, rem))              # never sleep past the deadline
+        rem = _remaining()
+        if rem > 0:
+            last_started[0] = monotonic()          # advance the throttle only on a real submit
+        return rem
 
     finished = started
     timed_out = False
@@ -232,8 +243,9 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
                 break
             # Top up the in-flight window, honouring the deadline PER TARGET — the check
             # lives inside this loop (not only at the outer top) so a full window is
-            # never submitted past the deadline. We re-check AFTER the rate-gate, whose
-            # sleep can itself consume the remaining budget.
+            # never submitted past the deadline. The rate-gate itself is deadline-aware
+            # (it never sleeps past the budget) and returns the remaining budget to
+            # submit against.
             while not exhausted and len(pending) < profile.in_flight:
                 if _remaining() <= 0:
                     timed_out, finished = True, monotonic()
@@ -243,10 +255,9 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
                 except StopIteration:
                     exhausted = True
                     break
-                _rate_gate()
-                rem = _remaining()
+                rem = _rate_gate()
                 if rem <= 0:
-                    # The rate-gate sleep exhausted the budget: drop this target
+                    # The deadline arrived at/within the rate-gate: drop this target
                     # un-attempted rather than launch a connect past the deadline.
                     timed_out, finished = True, monotonic()
                     break
@@ -261,8 +272,11 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
             if not pending:
                 finished = monotonic()
                 break
+            # Poll for completions, but never block past the deadline: cap the wait at
+            # the remaining budget (<=0 → non-blocking poll, then the outer check breaks).
             done, pending = concurrent.futures.wait(
-                pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED)
+                pending, timeout=min(0.2, max(0.0, _remaining())),
+                return_when=concurrent.futures.FIRST_COMPLETED)
             for fut in done:
                 host, port = fut._t  # type: ignore[attr-defined]
                 try:
