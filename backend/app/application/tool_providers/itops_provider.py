@@ -247,8 +247,8 @@ def tool_itops_linux_inventory(profile_id: str = "", **_ignored: Any) -> dict[st
 
     ok = cmds_ok and evidence_ok
     text = "\n".join(lines)
-    if len(text) > _INVENTORY_TOTAL_CAP:      # total reply cap
-        text = text[:_INVENTORY_TOTAL_CAP] + "\n[truncated]"
+    if len(text) > _INVENTORY_TOTAL_CAP:      # total reply cap (marker counted, so ≤ cap)
+        text = text[:_INVENTORY_TOTAL_CAP - len(_TRUNC)] + _TRUNC
     out_dict: dict[str, Any] = {"ok": ok, "text": text, "results": results, "profile_id": pid}
     if not cmds_ok:
         out_dict["error"] = "inventory_command_failed"

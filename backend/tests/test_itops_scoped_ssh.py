@@ -290,6 +290,12 @@ class InventoryHandlerTest(unittest.TestCase):
         total = sum(len(e["result"].get("stdout", "")) + len(e["result"].get("stderr", "")) for e in ev)
         self.assertLessEqual(total, 12000)                    # shared budget bounds evidence too
 
+    def test_reply_text_within_12k(self):
+        # the assembled reply text (marker counted) never exceeds the 12K cap.
+        n = self._n_cmds()
+        out = self._run("ctx-inv-text", [_fake_proc(b"B" * 5000, b"", 0) for _ in range(n)])
+        self.assertLessEqual(len(out["text"]), 12000)
+
     def test_requires_linux_asset(self):
         from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
         from app.application.tool_providers import itops_provider

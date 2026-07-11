@@ -192,13 +192,17 @@ def list_assets() -> dict[str, Any]:
 def diagnostics_start(payload: DiagnosticsStartRequest) -> dict[str, Any]:
     """Start ONE scoped read-only diagnostic run for a saved, VERIFIED profile.
 
-    The SERVER mints the run_id and binds a read-only operation scope
-    (run_id -> profile_id, TTL) BEFORE the run — the model never chooses the
-    profile. The caller then opens POST /api/code-agent/stream with THIS run_id and
-    the returned message; inside that run the executor allows only tool_search +
-    itops_ssh_healthcheck for this exact profile (everything else is blocked), and
-    the scope is dropped when the run ends or the TTL expires. A draft (unverified)
-    or unknown profile is refused here — nothing is bound."""
+    The client picks an ADAPTER (enum), never a tool name; the SERVER maps it to a
+    tool via _ADAPTER_TOOL, mints the run_id, and binds a read-only operation scope
+    (run_id -> profile_id, allowed_tool, TTL) BEFORE the run — the model never
+    chooses the profile or the tool. The caller then opens POST /api/code-agent/stream
+    with THIS run_id and the returned message; inside that run the executor allows
+    only tool_search + that ONE bound adapter tool for this exact profile (everything
+    else, including other itops adapters, is blocked). The lockdown is sticky: a TTL
+    expiry blocks the tool call but never re-opens other tools; the scope is dropped
+    when the run ends (finally/cancel/error) or is swept. A draft (unverified) or
+    unknown profile — or an adapter whose required asset kind does not match — is
+    refused here; nothing is bound."""
     _require_flag()
     import uuid
     from app.application.agent_kernel import operation_scope
