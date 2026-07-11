@@ -630,6 +630,34 @@ class EvidenceHistoryRouteTest(unittest.TestCase):
         rec = r.json()["evidence"][0]
         self.assertEqual(set(rec["result"].keys()), {"alias", "command", "status", "stdout", "stderr"})
 
+    def test_network_nested_secrets_are_projected_out(self):
+        # network evidence carries NESTED containers (ports/counts/caps). A secret
+        # smuggled INSIDE a container must be dropped by the typed projection — the old
+        # flat whitelist copied counts/caps wholesale and leaked them.
+        itstore.record_evidence(
+            run_id="run-net-dirty", target_identity="net/192.168.88.0/24",
+            scanner_vantage="elira-local", operation="network_inventory:_summary",
+            exit_status="0",
+            result={"cidr": "192.168.88.0/24", "port_profile": "common-v1",
+                    "ports": [22, 443, "auth_ref"], "vantage": "elira-local",
+                    "source_ip": "192.168.88.99", "planned": 2032, "attempted": 2032,
+                    "completed": 2032, "open_count": 1, "stop_reason": "complete",
+                    "counts": {"open": 1, "refused": 5, "timeout": 10, "unreachable": 0,
+                               "local_error": 0, "auth_ref": "cred://SECRET"},
+                    "caps": {"rate_limit": 50, "total_timeout": 60.0, "per_connect_timeout": 1.0,
+                             "in_flight": 64, "max_hosts": 254, "password": "P@SSW0RD"},
+                    "auth_ref": "cred://TOPSECRET", "password": "P@SSW0RD"})
+        r = self.client.get("/api/itops/evidence?run_id=run-net-dirty")
+        self.assertEqual(r.status_code, 200, r.text)
+        for leak in ("SECRET", "P@SSW0RD", "auth_ref", "password", "TOPSECRET"):
+            self.assertNotIn(leak, r.text)
+        res = r.json()["evidence"][0]["result"]
+        self.assertEqual(set(res["counts"].keys()),
+                         {"open", "refused", "timeout", "unreachable", "local_error"})
+        self.assertEqual(set(res["caps"].keys()),
+                         {"rate_limit", "total_timeout", "per_connect_timeout", "in_flight", "max_hosts"})
+        self.assertEqual(res["ports"], [22, 443])       # the non-int entry is dropped
+
     def test_evidence_requires_run_id(self):
         self.assertEqual(self.client.get("/api/itops/evidence").status_code, 422)      # missing
         self.assertEqual(self.client.get("/api/itops/evidence?run_id=").status_code, 422)  # empty
@@ -720,6 +748,10 @@ class NetworkAdapterTest(unittest.TestCase):
         self._tmp = tempfile.mkdtemp()
         itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
         itstore.init_db()
+        # The handler re-verifies CIDR authorization against this allowlist (defence in
+        # depth), so the bound CIDR must be authorized for the happy-path tests.
+        self._env = unittest.mock.patch.dict("os.environ", {"ITOPS_NETWORK_ALLOWED_CIDRS": "192.168.88.0/24"})
+        self._env.start()
         self.rid = "net-run-1"
         opscope.clear_scope(self.rid)
         opscope.bind_scope_network(self.rid, cidr="192.168.88.0/24",
@@ -727,6 +759,7 @@ class NetworkAdapterTest(unittest.TestCase):
 
     def tearDown(self):
         opscope.clear_scope(self.rid)
+        self._env.stop()
         itstore._DB_PATH_OVERRIDE = None
 
     def _result(self, status, opens):
@@ -801,6 +834,29 @@ class NetworkAdapterTest(unittest.TestCase):
             reset_current_run_id(tok)
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "no_network_scope")
+
+    def test_handler_refuses_scope_over_unauthorized_cidr(self):
+        # Defence in depth: even a validly-shaped scope whose CIDR is NOT in the
+        # allowlist must fail closed in the handler (route auth is not the only gate),
+        # and it must NOT scan or write any evidence.
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.it_ops import net_inventory as ni
+        from app.application.tool_providers import itops_provider
+        rid = "net-unauth-run"
+        opscope.clear_scope(rid)
+        opscope.bind_scope_network(rid, cidr="10.9.9.0/24",           # a valid /24, NOT allowlisted
+                                   port_profile="common-v1", allowed_tool=NET)
+        tok = set_current_run_id(rid)
+        try:
+            with unittest.mock.patch.object(ni, "run_scan") as scan:
+                out = itops_provider.tool_itops_network_inventory()
+        finally:
+            reset_current_run_id(tok)
+            opscope.clear_scope(rid)
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "cidr_not_authorized")
+        scan.assert_not_called()                                     # fail-closed BEFORE any scan
+        self.assertEqual(itstore.list_evidence(rid), [])            # and no evidence written
 
 
 if __name__ == "__main__":

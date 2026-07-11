@@ -414,6 +414,15 @@ def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
         hosts = ni.parse_cidr_v1(cidr)
     except ni.CidrError as exc:
         return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
+    # Defence-in-depth: the route authorizes the CIDR before binding the scope, but the
+    # handler re-verifies against the SAME controls and fails closed — an unauthorized or
+    # over-budget target must never scan just because a scope was created some other way.
+    if not ni.cidr_authorized(cidr):
+        return {"ok": False, "text": "ERROR: cidr not authorized", "error": "cidr_not_authorized"}
+    try:
+        ni.validate_profile(profile, len(hosts))
+    except ni.CidrError as exc:
+        return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
 
     target_identity = f"net/{cidr}"
     result = None

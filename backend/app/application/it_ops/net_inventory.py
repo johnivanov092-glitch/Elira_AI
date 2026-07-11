@@ -125,13 +125,19 @@ def cidr_authorized(cidr: str) -> bool:
     return any(req.subnet_of(a) for a in allowed_cidrs())
 
 
-def local_source_ip() -> str:
-    """Best-effort local source IP (recorded in the summary alongside VANTAGE).
-    Never raises; empty string when it cannot be determined."""
+def local_source_ip(dest: str) -> str:
+    """Best-effort local source IP the kernel would use to reach *dest* — recorded in
+    the summary alongside VANTAGE so evidence names the RIGHT egress interface even on a
+    multi-NIC / VPN host. *dest* must be an IP in the bound CIDR (a UDP `connect` sends
+    no packet; it only makes the kernel resolve the route + source address). Never
+    raises; empty string when dest is empty or the route cannot be determined."""
+    d = str(dest or "").strip()
+    if not d:
+        return ""
     s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("192.0.2.1", 9))   # TEST-NET-1; no packet is sent for UDP connect
+        s.connect((d, 9))   # no packet is sent for a UDP connect; route/source only
         return s.getsockname()[0]
     except OSError:
         return ""
@@ -194,7 +200,9 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
     counts = {s: 0 for s in _STATES}
     opens: list[dict] = []
     started = monotonic()
-    source_ip = local_source_ip()
+    # Source IP is resolved toward the bound subnet (first host), never a fixed sentinel,
+    # so it reflects the interface that actually reaches the scanned CIDR.
+    source_ip = local_source_ip(hosts[0] if hosts else "")
     attempted = 0
     completed = 0
     stop_reason = "complete"
@@ -209,28 +217,47 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
             time.sleep(wait)
         last_started[0] = monotonic()
 
+    def _remaining() -> float:
+        return profile.total_timeout - (monotonic() - started)
+
     finished = started
+    timed_out = False
     with concurrent.futures.ThreadPoolExecutor(max_workers=profile.in_flight) as ex:
         pending: set = set()
         it = iter(targets)
         exhausted = False
         while True:
-            if monotonic() - started > profile.total_timeout:
-                stop_reason = "timed_out"
-                finished = monotonic()
+            if _remaining() <= 0:
+                timed_out, finished = True, monotonic()
                 break
-            # top up the in-flight window
+            # Top up the in-flight window, honouring the deadline PER TARGET — the check
+            # lives inside this loop (not only at the outer top) so a full window is
+            # never submitted past the deadline. We re-check AFTER the rate-gate, whose
+            # sleep can itself consume the remaining budget.
             while not exhausted and len(pending) < profile.in_flight:
+                if _remaining() <= 0:
+                    timed_out, finished = True, monotonic()
+                    break
                 try:
                     host, port = next(it)
                 except StopIteration:
                     exhausted = True
                     break
                 _rate_gate()
+                rem = _remaining()
+                if rem <= 0:
+                    # The rate-gate sleep exhausted the budget: drop this target
+                    # un-attempted rather than launch a connect past the deadline.
+                    timed_out, finished = True, monotonic()
+                    break
                 attempted += 1
-                fut = ex.submit(connect_fn, host, port, profile.per_connect_timeout)
+                # Cap the connect timeout at the remaining budget so an in-flight
+                # socket can never outlive the overall total_timeout.
+                fut = ex.submit(connect_fn, host, port, min(profile.per_connect_timeout, rem))
                 fut._t = (host, port)  # type: ignore[attr-defined]
                 pending.add(fut)
+            if timed_out:
+                break
             if not pending:
                 finished = monotonic()
                 break
@@ -246,11 +273,13 @@ def run_scan(cidr: str, hosts: list[str], profile: PortProfile, *,
                 counts[state] = counts.get(state, 0) + 1
                 if state == "open":
                     opens.append({"host": host, "port": port})
-        # `finished` is stamped at the moment we STOP scheduling (<= total_timeout + one
-        # 0.2s wait tick), so finished_at honours the hard cap. Any still-in-flight
-        # connects then drain on with-exit (shutdown(wait=True)) — bounded by
-        # per_connect_timeout since every socket carries it — and that drain is
-        # deliberately excluded from finished_at, not counted as attempted/completed.
+        # `finished` is stamped at the moment we STOP scheduling, so finished_at honours
+        # the hard cap. Any still-in-flight connects then drain on with-exit
+        # (shutdown(wait=True)) — each capped at min(per_connect_timeout, remaining) at
+        # submit, so none outlives the deadline — and that drain is deliberately excluded
+        # from finished_at, not counted as attempted/completed.
+    if timed_out:
+        stop_reason = "timed_out"
     status = "complete" if (stop_reason == "complete" and attempted == planned and completed == attempted) else \
         ("timed_out" if stop_reason == "timed_out" else "partial")
     return ScanResult(cidr=cidr, profile=profile.name, vantage=VANTAGE, source_ip=source_ip,

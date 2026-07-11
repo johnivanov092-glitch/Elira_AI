@@ -131,5 +131,65 @@ class ScanSemanticsTest(unittest.TestCase):
         self.assertEqual(len(res.opens), 1)
 
 
+class DeadlineHardnessTest(unittest.TestCase):
+    """total_timeout is a HARD runtime cap, not just a timestamp: the scanner does not
+    submit a full in-flight window past the deadline, and no connect is ever given a
+    timeout that could outlive the overall deadline."""
+
+    @staticmethod
+    def _stepping_clock(dt):
+        t = [0.0]
+
+        def mono():
+            v = t[0]
+            t[0] += dt
+            return v
+        return mono
+
+    def test_deadline_bounds_submissions_and_connect_timeouts(self):
+        # per_connect_timeout (5.0) deliberately DWARFS total_timeout (0.5): the buggy
+        # code submitted a full 64-wide window carrying the 5.0 per-connect timeout even
+        # with a ~0 budget. The fix must (a) stop submitting at the deadline and (b) cap
+        # each connect at the remaining budget.
+        import threading
+        seen: list[float] = []
+        lock = threading.Lock()
+
+        def connect(host, port, timeout):
+            with lock:
+                seen.append(timeout)
+            return "timeout"
+
+        profile = _profile(ports=tuple(range(1, 9)), rate=0, in_flight=64,
+                           per_ct=5.0, total=0.5)
+        hosts = ni.parse_cidr_v1("192.168.50.0/24")          # 254 x 8 = 2032 planned
+        res = ni.run_scan("192.168.50.0/24", hosts, profile,
+                          connect_fn=connect, monotonic=self._stepping_clock(0.05))
+        self.assertEqual(res.status, "timed_out")
+        self.assertEqual(res.stop_reason, "timed_out")
+        self.assertGreater(res.attempted, 0)
+        self.assertLess(res.attempted, res.planned)          # NOT the whole plan / a full window
+        self.assertEqual(len(seen), res.attempted)           # every attempt is a real submit
+        # the discriminating invariant: no connect outlives the overall deadline —
+        # every timeout is min(per_connect_timeout, remaining) <= total_timeout.
+        self.assertLessEqual(max(seen), profile.total_timeout)
+        self.assertGreater(min(seen), 0.0)                   # never submit with a dead budget
+
+    def test_full_budget_uses_full_per_connect_timeout(self):
+        # when there IS budget, the min() cap must not wrongly truncate the connect.
+        seen: list[float] = []
+
+        def connect(host, port, timeout):
+            seen.append(timeout)
+            return "refused"
+
+        profile = _profile(ports=(80,), rate=0, in_flight=4, per_ct=0.7, total=60.0)
+        res = ni.run_scan("192.168.50.0/30", ni.parse_cidr_v1("192.168.50.0/30"),
+                          profile, connect_fn=connect)       # real clock; instant connect
+        self.assertEqual(res.status, "complete")
+        self.assertTrue(seen)
+        self.assertTrue(all(t == profile.per_connect_timeout for t in seen))
+
+
 if __name__ == "__main__":
     unittest.main()

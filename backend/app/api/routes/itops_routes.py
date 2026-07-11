@@ -258,33 +258,72 @@ def evidence_runs(limit: int = 50) -> dict[str, Any]:
 
 # The ONLY result fields the public evidence API may expose. A hard whitelist so a
 # record whose `result` was polluted with a secret (auth_ref/password/…) can never
-# leak through this read API, regardless of what was stored. Every field here is
-# non-secret metadata; a secret lives under a DIFFERENT key and is stripped.
-_EVIDENCE_RESULT_FIELDS = (
+# leak through this read API, regardless of what was stored. This is a TYPED projection:
+# scalar fields are copied only when scalar, and the three NESTED fields (ports/counts/
+# caps) are rebuilt key-by-key from known keys — so a secret smuggled INSIDE a nested
+# container (e.g. counts.auth_ref, caps.password) is dropped, not passed through.
+_EVIDENCE_SCALAR_FIELDS = (
     # ssh / inventory adapters
     "alias", "command", "status", "stdout", "stderr",
-    # network inventory (open + summary) — non-secret scan metadata
-    "host", "port", "state", "vantage", "cidr", "port_profile", "ports", "source_ip",
-    "planned", "attempted", "completed", "open_count", "counts", "stop_reason", "caps",
+    # network inventory (open + summary) flat metadata
+    "host", "port", "state", "vantage", "cidr", "port_profile", "source_ip",
+    "planned", "attempted", "completed", "open_count", "stop_reason",
 )
+_NET_STATE_KEYS = ("open", "refused", "timeout", "unreachable", "local_error")
+_NET_CAP_KEYS = ("rate_limit", "total_timeout", "per_connect_timeout", "in_flight", "max_hosts")
+
+
+def _num(v: Any) -> bool:
+    """A real number, not a bool (bool is an int subclass in Python)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _project_ports(v: Any) -> list[int]:
+    return [int(x) for x in v if isinstance(x, int) and not isinstance(x, bool)] if isinstance(v, list) else []
+
+
+def _project_counts(v: Any) -> dict[str, int]:
+    if not isinstance(v, dict):
+        return {}
+    return {k: int(v[k]) for k in _NET_STATE_KEYS if isinstance(v.get(k), int) and not isinstance(v.get(k), bool)}
+
+
+def _project_caps(v: Any) -> dict[str, float]:
+    if not isinstance(v, dict):
+        return {}
+    return {k: v[k] for k in _NET_CAP_KEYS if _num(v.get(k))}
+
+
+_EVIDENCE_NESTED_PROJECTORS = {
+    "ports": _project_ports, "counts": _project_counts, "caps": _project_caps,
+}
 
 
 def _public_evidence(ev: dict[str, Any]) -> dict[str, Any]:
     res = ev.get("result") or {}
+    if not isinstance(res, dict):
+        res = {}
+    projected: dict[str, Any] = {
+        k: res[k] for k in _EVIDENCE_SCALAR_FIELDS
+        if k in res and isinstance(res[k], (str, int, float)) and not isinstance(res[k], bool)
+    }
+    for k, proj in _EVIDENCE_NESTED_PROJECTORS.items():
+        if k in res:
+            projected[k] = proj(res[k])
     return {
         "evidence_id": ev.get("evidence_id"), "run_id": ev.get("run_id"),
         "target_identity": ev.get("target_identity"), "scanner_vantage": ev.get("scanner_vantage"),
         "operation": ev.get("operation"), "exit_status": ev.get("exit_status"),
         "captured_at": ev.get("captured_at"),
-        "result": {k: res.get(k) for k in _EVIDENCE_RESULT_FIELDS if k in res},
+        "result": projected,
     }
 
 
 @router.get("/evidence")
 def evidence_detail(run_id: str) -> dict[str, Any]:
-    """Read-only evidence for ONE run (run_id required). Returns each command's result
-    projected to a hard whitelist (alias/command/status/stdout/stderr) — never a
-    secret or auth_ref, even if the stored result contained one."""
+    """Read-only evidence for ONE run (run_id required). Each result is rebuilt by a
+    TYPED projection — scalar metadata plus per-type-rebuilt ports/counts/caps — so no
+    secret or auth_ref leaks through, even one smuggled inside a nested container."""
     _require_flag()
     if not str(run_id or "").strip():
         raise HTTPException(status_code=422, detail="run_id is required")
@@ -300,8 +339,12 @@ def network_profile() -> dict[str, Any]:
     _require_flag()
     from app.application.it_ops import net_inventory as ni
     p = ni.PROFILE_COMMON_V1
-    return {"ok": True, "vantage": ni.VANTAGE, "source_ip": ni.local_source_ip(),
-            "allowed_cidrs": [str(c) for c in ni.allowed_cidrs()],
+    # UI hint only: resolve the egress IP toward the first authorized subnet (if any),
+    # so it reflects the interface a scan would actually use — not a fixed sentinel.
+    allowed = list(ni.allowed_cidrs())
+    hint_dest = str(next(iter(allowed[0].hosts()), allowed[0].network_address)) if allowed else ""
+    return {"ok": True, "vantage": ni.VANTAGE, "source_ip": ni.local_source_ip(hint_dest),
+            "allowed_cidrs": [str(c) for c in allowed],
             "profile": {"name": p.name, "ports": list(p.ports), "rate_limit": p.rate_limit,
                         "total_timeout": p.total_timeout, "max_hosts": p.max_hosts,
                         "min_prefix": p.min_prefix}}
