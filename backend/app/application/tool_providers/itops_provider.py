@@ -385,10 +385,101 @@ def tool_itops_windows_inventory(profile_id: str = "", **_ignored: Any) -> dict[
     return out_dict
 
 
+def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
+    """Read-only network inventory (Phase 3). Takes NO arguments — the CIDR and the
+    server-owned port profile come ONLY from the run's bound network scope (the gate
+    already refused any model arg). Does a bounded TCP-connect scan within hard caps,
+    writes one evidence row per CONFIRMED OPEN host:port, and ALWAYS writes a
+    server-owned summary in a finally (planned/attempted/completed/state counts, caps,
+    stop_reason, status). complete → ok=true; partial/timed_out → ok=false
+    scan_incomplete; a failed summary write OR a failed per-open write → ok=false
+    evidence_persist_failed (no open may be reported without its own proof row). A
+    killed process cannot write the summary — absence of a terminal summary is
+    'unknown', never 'nothing found'.
+    """
+    from app.application.agent_kernel import operation_scope
+    from app.application.code_agent.tools import get_current_run_id
+    from app.application.it_ops import net_inventory as ni
+    from app.infrastructure.it_ops import store
+
+    run_id = get_current_run_id()
+    scope = operation_scope.get_active_scope(run_id)
+    if scope is None or scope.target_kind != "network" or scope.network is None:
+        return {"ok": False, "text": "ERROR: no bound network scope", "error": "no_network_scope"}
+    cidr = scope.network.cidr
+    if scope.network.port_profile != ni.PROFILE_COMMON_V1.name:
+        return {"ok": False, "text": "ERROR: unknown port profile", "error": "unknown_profile"}
+    profile = ni.PROFILE_COMMON_V1
+    try:
+        hosts = ni.parse_cidr_v1(cidr)
+    except ni.CidrError as exc:
+        return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
+
+    target_identity = f"net/{cidr}"
+    result = None
+    summary_ok = False
+    opens_evidence_ok = True     # every open MUST leave its own durable proof row
+    try:
+        store.init_db()
+        result = ni.run_scan(cidr, hosts, profile)
+        for o in result.opens:
+            try:
+                store.record_evidence(
+                    run_id=run_id, target_identity=target_identity, scanner_vantage=result.vantage,
+                    operation="network_inventory:open",
+                    result={"host": o["host"], "port": o["port"], "state": "open",
+                            "vantage": result.vantage},
+                    exit_status="0")
+            except Exception:  # noqa: BLE001
+                opens_evidence_ok = False
+                logger.warning("itops network_inventory: open evidence write failed for %s", o)
+    finally:
+        # MANDATORY server-owned summary — written on any normal return (including an
+        # incomplete scan), so a partial run is visible as `partial`, not "nothing found".
+        if result is not None:
+            try:
+                store.record_evidence(
+                    run_id=run_id, target_identity=target_identity, scanner_vantage=result.vantage,
+                    operation="network_inventory:_summary",
+                    result={"cidr": cidr, "port_profile": profile.name, "ports": list(profile.ports),
+                            "vantage": result.vantage, "source_ip": result.source_ip,
+                            "planned": result.planned, "attempted": result.attempted,
+                            "completed": result.completed, "open_count": len(result.opens),
+                            "counts": result.counts, "stop_reason": result.stop_reason,
+                            "status": result.status,
+                            "caps": {"rate_limit": profile.rate_limit, "total_timeout": profile.total_timeout,
+                                     "per_connect_timeout": profile.per_connect_timeout,
+                                     "in_flight": profile.in_flight, "max_hosts": profile.max_hosts}},
+                    exit_status="0" if result.status == "complete" else "1")
+                summary_ok = True
+            except Exception:  # noqa: BLE001
+                logger.warning("itops network_inventory: SUMMARY evidence write failed for %s", cidr)
+
+    if result is None:
+        return {"ok": False, "text": "ERROR: scan did not run", "error": "scan_failed"}
+    if result.status != "complete":
+        ok, err = False, "scan_incomplete"
+    elif not summary_ok or not opens_evidence_ok:
+        # Mirror the SSH/inventory adapters: a run can never claim success while any
+        # confirmed-open lacks its own persisted proof row (or the summary is missing).
+        ok, err = False, "evidence_persist_failed"
+    else:
+        ok, err = True, None
+    text = (f"Network inventory {cidr} ({result.vantage}): status={result.status}; "
+            f"{len(result.opens)} open / {result.attempted} of {result.planned} attempted; "
+            f"states={result.counts}")
+    out: dict[str, Any] = {"ok": ok, "text": text, "cidr": cidr, "status": result.status,
+                           "opens": result.opens, "summary_persisted": summary_ok}
+    if err:
+        out["error"] = err
+    return out
+
+
 _DISPATCH = {
     "itops_ssh_healthcheck": tool_itops_ssh_healthcheck,
     "itops_linux_inventory": tool_itops_linux_inventory,
     "itops_windows_inventory": tool_itops_windows_inventory,
+    "itops_network_inventory": tool_itops_network_inventory,
 }
 
 
@@ -474,6 +565,20 @@ class ItopsToolProvider:
                         },
                         "required": ["profile_id"],
                     },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "itops_network_inventory",
+                    "description": (
+                        "Read-only network inventory: a bounded TCP-connect scan of the authorized "
+                        "CIDR bound to this diagnostic run, on a fixed server-owned port set. Takes "
+                        "NO arguments — the target and caps come only from the bound scope. Returns "
+                        "the open host:port list and a summary. Only runnable inside a bound network "
+                        "diagnostic run; one call per run."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},   # NO args
                 },
             },
         ]

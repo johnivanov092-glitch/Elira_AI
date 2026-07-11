@@ -659,6 +659,16 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 120, "max_output_chars": 14000,
         },
+        {
+            "name": "itops_network_inventory", "handler": _noop,
+            "display_name": "IT-Ops Network Inventory", "display_name_ru": "Инвентарь сети",
+            "category": "itops",
+            "description": "Read-only bounded TCP-connect network inventory of an authorized CIDR bound to the run (no args)",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 120, "max_output_chars": 14000,
+        },
     ]
 
 

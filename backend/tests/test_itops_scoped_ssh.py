@@ -26,6 +26,7 @@ from app.infrastructure.it_ops import store as itstore  # noqa: E402
 HEALTH = "itops_ssh_healthcheck"
 INV = "itops_linux_inventory"
 WIN = "itops_windows_inventory"
+NET = "itops_network_inventory"
 
 
 def _fake_proc(out=b"", err=b"", code=0):
@@ -149,6 +150,42 @@ class ScopedGateTest(unittest.TestCase):
             res, c = self._exec(other, {"profile_id": "prof-ok", "command": "id"})
             self.assertEqual(res.error, "scope_restricted", other)
             self.assertEqual(c, [])
+
+    def test_network_scope_allows_only_network_inventory(self):
+        opscope.bind_scope_network(self.rid, cidr="192.168.88.0/24",
+                                   port_profile="common-v1", allowed_tool=NET)
+        ok, calls = self._exec(NET, {})                      # no args → allowed
+        self.assertEqual(ok.status, "ok", ok.output)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], {})                    # gate injected empty authoritative args
+        for other in (HEALTH, INV, WIN, "run_bash", "ssh_run", "itops_dummy_ro"):
+            res, c = self._exec(other, {"profile_id": "prof-ok", "command": "id", "host": "x"})
+            self.assertEqual(res.error, "scope_restricted", other)
+            self.assertEqual(c, [])
+
+    def test_network_tool_rejects_any_model_arg(self):
+        opscope.bind_scope_network(self.rid, cidr="192.168.88.0/24",
+                                   port_profile="common-v1", allowed_tool=NET)
+        res, c = self._exec(NET, {"cidr": "10.0.0.0/8"})     # model tries to supply a target
+        self.assertEqual(res.status, "blocked")
+        self.assertEqual(res.error, "scope_args_forbidden")
+        self.assertEqual(c, [])
+
+    def test_network_tool_without_scope_blocked(self):
+        res, c = self._exec(NET, {}, run_id="unscoped-net")
+        self.assertEqual(res.error, "no_operation_scope")
+        self.assertEqual(c, [])
+
+    def test_ssh_and_network_scopes_are_isolated(self):
+        # an SSH scope never opens the network tool, and a network scope never opens SSH.
+        self._bind(HEALTH)
+        res, _ = self._exec(NET, {})
+        self.assertEqual(res.error, "scope_restricted")
+        opscope.clear_scope(self.rid)
+        opscope.bind_scope_network(self.rid, cidr="192.168.88.0/24",
+                                   port_profile="common-v1", allowed_tool=NET)
+        res2, _ = self._exec(HEALTH, {"profile_id": "prof-ok"})
+        self.assertEqual(res2.error, "scope_restricted")
 
     def test_healthcheck_scope_allows_only_healthcheck(self):
         self._bind(HEALTH)
@@ -601,6 +638,169 @@ class EvidenceHistoryRouteTest(unittest.TestCase):
         r = self.client.get("/api/itops/evidence/runs?limit=999")
         self.assertEqual(r.status_code, 200)
         self.assertLessEqual(len(r.json()["runs"]), 50)
+
+
+class NetworkRouteTest(unittest.TestCase):
+    """/network/start — CIDR parse/authorization + scope bind. Read-only, flag-gated."""
+
+    def setUp(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.itops_routes import router
+        self._tmp = tempfile.mkdtemp()
+        itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
+        from app.application import feature_flags as ff
+        self._flag = unittest.mock.patch.object(ff, "flag_enabled", return_value=True)
+        self._flag.start()
+        self._env = unittest.mock.patch.dict("os.environ", {"ITOPS_NETWORK_ALLOWED_CIDRS": "192.168.88.0/24"})
+        self._env.start()
+        itstore.init_db()
+        app = FastAPI()
+        app.include_router(router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._env.stop()
+        self._flag.stop()
+        itstore._DB_PATH_OVERRIDE = None
+
+    def _start(self, **body):
+        return self.client.post("/api/itops/network/start", json=body)
+
+    def test_authorized_cidr_binds_network_scope(self):
+        r = self._start(cidr="192.168.88.0/24")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["vantage"], "elira-local")     # not a client param
+        self.assertEqual(body["hosts"], 254)
+        self.assertEqual(body["profile"]["name"], "common-v1")
+        scope = opscope.get_active_scope(body["run_id"])
+        self.assertEqual(scope.target_kind, "network")
+        self.assertEqual(scope.allowed_tool, NET)
+        self.assertEqual(scope.network.cidr, "192.168.88.0/24")
+        opscope.clear_scope(body["run_id"])
+
+    def test_unauthorized_cidr_403(self):
+        self.assertEqual(self._start(cidr="192.168.99.0/24").status_code, 403)   # not in allowlist
+
+    def test_ipv6_400(self):
+        self.assertEqual(self._start(cidr="fd00::/120").status_code, 400)
+
+    def test_public_cidr_403(self):
+        self.assertEqual(self._start(cidr="8.8.8.0/24").status_code, 403)
+
+    def test_prefix_too_large_400(self):
+        self.assertEqual(self._start(cidr="10.0.0.0/16").status_code, 400)
+
+    def test_non_canonical_400(self):
+        self.assertEqual(self._start(cidr="192.168.88.5/24").status_code, 400)   # host bits set
+
+    def test_ports_not_accepted(self):
+        self.assertEqual(self._start(cidr="192.168.88.0/24", ports=[22]).status_code, 422)
+
+    def test_profile_endpoint_exposes_ports_and_allowlist(self):
+        r = self.client.get("/api/itops/network/profile")
+        self.assertEqual(r.status_code, 200, r.text)
+        b = r.json()
+        self.assertEqual(len(b["profile"]["ports"]), 8)
+        self.assertIn("192.168.88.0/24", b["allowed_cidrs"])
+        self.assertEqual(b["vantage"], "elira-local")
+
+    def test_flag_off_404(self):
+        from app.application import feature_flags as ff
+        with unittest.mock.patch.object(ff, "flag_enabled", return_value=False):
+            self.assertEqual(self._start(cidr="192.168.88.0/24").status_code, 404)
+            self.assertEqual(self.client.get("/api/itops/network/profile").status_code, 404)
+
+
+class NetworkAdapterTest(unittest.TestCase):
+    """The itops_network_inventory handler: open evidence + MANDATORY summary + ok semantics."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
+        itstore.init_db()
+        self.rid = "net-run-1"
+        opscope.clear_scope(self.rid)
+        opscope.bind_scope_network(self.rid, cidr="192.168.88.0/24",
+                                   port_profile="common-v1", allowed_tool=NET)
+
+    def tearDown(self):
+        opscope.clear_scope(self.rid)
+        itstore._DB_PATH_OVERRIDE = None
+
+    def _result(self, status, opens):
+        from app.application.it_ops import net_inventory as ni
+        n = 2032 if status == "complete" else 100
+        return ni.ScanResult(cidr="192.168.88.0/24", profile="common-v1", vantage="elira-local",
+                             source_ip="192.168.88.99", started_at=0.0, finished_at=1.0,
+                             planned=2032, attempted=n, completed=n,
+                             counts={"open": len(opens), "refused": 5, "timeout": 10,
+                                     "unreachable": 0, "local_error": 0},
+                             opens=opens, stop_reason=("complete" if status == "complete" else "timed_out"),
+                             status=status)
+
+    def _run(self, scan_result):
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.it_ops import net_inventory as ni
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id(self.rid)
+        try:
+            with unittest.mock.patch.object(ni, "run_scan", return_value=scan_result):
+                return itops_provider.tool_itops_network_inventory()
+        finally:
+            reset_current_run_id(tok)
+
+    def test_complete_writes_opens_and_mandatory_summary(self):
+        opens = [{"host": "192.168.88.10", "port": 22}, {"host": "192.168.88.10", "port": 443}]
+        out = self._run(self._result("complete", opens))
+        self.assertTrue(out["ok"], out)
+        ops = [e["operation"] for e in itstore.list_evidence(self.rid)]
+        self.assertEqual(ops.count("network_inventory:open"), 2)          # one per confirmed open
+        self.assertEqual(ops.count("network_inventory:_summary"), 1)      # MANDATORY summary
+        summ = next(e for e in itstore.list_evidence(self.rid)
+                    if e["operation"] == "network_inventory:_summary")
+        self.assertEqual(summ["result"]["status"], "complete")
+        self.assertEqual(summ["result"]["planned"], 2032)
+
+    def test_open_evidence_write_failure_makes_ok_false(self):
+        # Mirror the SSH/inventory invariant: no confirmed-open may be reported without
+        # its own durable proof row. A failed :open write (summary still OK) → ok=false.
+        opens = [{"host": "192.168.88.10", "port": 22}]
+        real = itstore.record_evidence
+
+        def flaky(*a, **kw):
+            if kw.get("operation") == "network_inventory:open":
+                raise RuntimeError("disk full")     # the per-open proof row fails to persist
+            return real(*a, **kw)                    # the mandatory summary still succeeds
+
+        with unittest.mock.patch.object(itstore, "record_evidence", side_effect=flaky):
+            out = self._run(self._result("complete", opens))
+        self.assertFalse(out["ok"], out)                             # cannot claim success…
+        self.assertEqual(out["error"], "evidence_persist_failed")    # …with an unproven open
+        ops = [e["operation"] for e in itstore.list_evidence(self.rid)]
+        self.assertEqual(ops.count("network_inventory:open"), 0)     # the open row never landed
+        self.assertEqual(ops.count("network_inventory:_summary"), 1) # summary still mandatory
+
+    def test_partial_is_not_ok_but_still_writes_summary(self):
+        out = self._run(self._result("timed_out", []))
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "scan_incomplete")                 # not a false "nothing found"
+        summ = [e for e in itstore.list_evidence(self.rid)
+                if e["operation"] == "network_inventory:_summary"]
+        self.assertEqual(len(summ), 1)                                    # summary written on partial too
+        self.assertEqual(summ[0]["result"]["status"], "timed_out")
+
+    def test_no_bound_scope_refuses(self):
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id("no-scope-run")
+        try:
+            out = itops_provider.tool_itops_network_inventory()
+        finally:
+            reset_current_run_id(tok)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "no_network_scope")
 
 
 if __name__ == "__main__":

@@ -85,6 +85,14 @@ _ADAPTER_REQUIRES_KIND: dict[str, str] = {
 }
 
 
+class NetworkStartRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # The client supplies ONLY the CIDR. Ports come from a server-owned profile and
+    # the vantage is fixed (elira-local) — neither is a client parameter.
+    cidr: str = Field(..., description="An IPv4 CIDR (strict, >= /24, private) that is a "
+                                       "subset of ITOPS_NETWORK_ALLOWED_CIDRS")
+
+
 # ── endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/ssh/preview")
@@ -250,8 +258,15 @@ def evidence_runs(limit: int = 50) -> dict[str, Any]:
 
 # The ONLY result fields the public evidence API may expose. A hard whitelist so a
 # record whose `result` was polluted with a secret (auth_ref/password/…) can never
-# leak through this read API, regardless of what was stored.
-_EVIDENCE_RESULT_FIELDS = ("alias", "command", "status", "stdout", "stderr")
+# leak through this read API, regardless of what was stored. Every field here is
+# non-secret metadata; a secret lives under a DIFFERENT key and is stripped.
+_EVIDENCE_RESULT_FIELDS = (
+    # ssh / inventory adapters
+    "alias", "command", "status", "stdout", "stderr",
+    # network inventory (open + summary) — non-secret scan metadata
+    "host", "port", "state", "vantage", "cidr", "port_profile", "ports", "source_ip",
+    "planned", "attempted", "completed", "open_count", "counts", "stop_reason", "caps",
+)
 
 
 def _public_evidence(ev: dict[str, Any]) -> dict[str, Any]:
@@ -276,3 +291,56 @@ def evidence_detail(run_id: str) -> dict[str, Any]:
     store = _store()
     return {"ok": True, "run_id": run_id,
             "evidence": [_public_evidence(e) for e in store.list_evidence(run_id)]}
+
+
+@router.get("/network/profile")
+def network_profile() -> dict[str, Any]:
+    """The server-owned network scan profile + the authorized CIDR allowlist + the
+    fixed vantage — for the UI to display (ports/caps are NOT client-settable)."""
+    _require_flag()
+    from app.application.it_ops import net_inventory as ni
+    p = ni.PROFILE_COMMON_V1
+    return {"ok": True, "vantage": ni.VANTAGE, "source_ip": ni.local_source_ip(),
+            "allowed_cidrs": [str(c) for c in ni.allowed_cidrs()],
+            "profile": {"name": p.name, "ports": list(p.ports), "rate_limit": p.rate_limit,
+                        "total_timeout": p.total_timeout, "max_hosts": p.max_hosts,
+                        "min_prefix": p.min_prefix}}
+
+
+@router.post("/network/start")
+def network_start(payload: NetworkStartRequest) -> dict[str, Any]:
+    """Start ONE scoped read-only NETWORK inventory run over an AUTHORIZED CIDR. The
+    server parses/authorizes the CIDR (IPv4, strict, >= /24, private, and a subset of
+    ITOPS_NETWORK_ALLOWED_CIDRS — else 400/403), checks the fixed server-owned port
+    profile fits the caps, and binds a read-only network scope (allowed_tool =
+    itops_network_inventory, no ports/vantage from the client). The caller then streams
+    /api/code-agent/stream with THIS run_id; the model may run only that one tool."""
+    _require_flag()
+    import uuid
+    from app.application.agent_kernel import operation_scope
+    from app.application.it_ops import net_inventory as ni
+
+    try:
+        hosts = ni.parse_cidr_v1(payload.cidr)      # ipv6/non-canonical/too-large → 400; public → 403
+    except ni.CidrError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.reason)
+    if not ni.cidr_authorized(payload.cidr):        # ONLY a subset of the explicit allowlist
+        raise HTTPException(status_code=403, detail="cidr not authorized (ITOPS_NETWORK_ALLOWED_CIDRS)")
+    profile = ni.PROFILE_COMMON_V1
+    try:
+        ni.validate_profile(profile, len(hosts))    # caps must fit the planned work
+    except ni.CidrError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.reason)
+
+    _store()   # ensure the evidence table exists
+    run_id = f"itops-diag-{uuid.uuid4().hex}"
+    operation_scope.bind_scope_network(run_id, cidr=payload.cidr, port_profile=profile.name,
+                                       allowed_tool="itops_network_inventory")
+    message = (
+        "Выполни read-only сетевой инвентарь авторизованной подсети. Активируй инструмент "
+        "itops_network_inventory через tool_search, затем вызови его РОВНО ОДИН РАЗ БЕЗ "
+        "аргументов (цель уже привязана к запуску) и покажи результат. Не вызывай другие инструменты."
+    )
+    return {"ok": True, "run_id": run_id, "cidr": payload.cidr, "vantage": ni.VANTAGE,
+            "hosts": len(hosts), "profile": {"name": profile.name, "ports": list(profile.ports)},
+            "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}

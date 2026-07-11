@@ -252,22 +252,56 @@ def execute_tool(
                         "error": "no_operation_scope"},
                 error="no_operation_scope",
             )
-        _pid = str(request.args.get("profile_id") or "").strip()
-        if _scope.mode != "read_only" or not _pid or _pid != _scope.profile_id:
-            _emit_blocked(request, "operation scope profile/mode mismatch")
+        if _scope.mode != "read_only":
+            _emit_blocked(request, "operation scope is not read_only")
             return ToolExecutionResult(
                 status="blocked",
-                output={"ok": False, "text": "Requested profile_id is not the one bound to this "
-                        "run's read-only scope — blocked (fail-closed).", "error": "scope_mismatch"},
+                output={"ok": False, "text": "Scope is not read-only — blocked (fail-closed).",
+                        "error": "scope_mismatch"},
                 error="scope_mismatch",
             )
-        if not _itops_profile_enabled(_pid):
-            _emit_blocked(request, "operation scope target is not an enabled asset")
+        # Target validation is TYPED by scope.target_kind (one typed variant in the
+        # single operation_scope — not a second executor, not a loose params dict). The
+        # allowlist (clause a) and reserve below are shared across variants.
+        if _scope.target_kind == "ssh_profile":
+            _pid = str(request.args.get("profile_id") or "").strip()
+            if not _pid or _pid != _scope.profile_id:
+                _emit_blocked(request, "operation scope profile mismatch")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "Requested profile_id is not the one bound to this "
+                            "run's read-only scope — blocked (fail-closed).", "error": "scope_mismatch"},
+                    error="scope_mismatch",
+                )
+            if not _itops_profile_enabled(_pid):
+                _emit_blocked(request, "operation scope target is not an enabled asset")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "The bound profile is not a verified/enabled asset "
+                            "(draft or missing) — blocked (fail-closed).", "error": "profile_not_enabled"},
+                    error="profile_not_enabled",
+                )
+            _authoritative_args: dict[str, Any] = {"profile_id": _pid}
+        elif _scope.target_kind == "network":
+            # A network adapter takes NO args: the CIDR + server-owned port profile come
+            # ONLY from the scope. ANY model-supplied argument is blocked; the handler
+            # reads the bound target from the run's scope (get_active_scope), not args.
+            if request.args:
+                _emit_blocked(request, "network adapter takes no args")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "This adapter takes no arguments; the target comes "
+                            "only from the bound scope — blocked (fail-closed).", "error": "scope_args_forbidden"},
+                    error="scope_args_forbidden",
+                )
+            _authoritative_args = {}
+        else:
+            _emit_blocked(request, f"unknown scope target_kind: {_scope.target_kind}")
             return ToolExecutionResult(
                 status="blocked",
-                output={"ok": False, "text": "The bound profile is not a verified/enabled asset "
-                        "(draft or missing) — blocked (fail-closed).", "error": "profile_not_enabled"},
-                error="profile_not_enabled",
+                output={"ok": False, "text": "Scope has an unknown target kind — blocked (fail-closed).",
+                        "error": "scope_unknown_target"},
+                error="scope_unknown_target",
             )
         # One read-only operation per run: atomic reserve BEFORE dispatch. A second
         # call (or a retry after a failed dispatch) is refused.
@@ -279,10 +313,8 @@ def execute_tool(
                         "read-only operation — blocked.", "error": "operation_already_used"},
                 error="operation_already_used",
             )
-        # Re-pin profile_id to the scope's value (already validated equal above). The
-        # handler takes its run_id from the runtime context the executor binds
-        # (set_current_run_id below), NOT from args — so run_id is never injected here.
-        request.args = {**request.args, "profile_id": _pid}
+        # Hand the handler ONLY the authoritative, server-owned args (never model args).
+        request.args = _authoritative_args
 
     # 2. Policy preflight — rate-limit, context-budget, and per-call allowed_tools.
     # selected_tools=[tool_name] enforces the agent's allowed_tools list at tool-call

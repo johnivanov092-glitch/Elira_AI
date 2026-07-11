@@ -55,18 +55,30 @@ _CLAIMED: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
+class NetworkTarget:
+    """Typed target for a target_kind='network' scope. cidr is the bound network;
+    port_profile names the server-owned port set (ports resolved from it, never from
+    the model)."""
+    cidr: str
+    port_profile: str
+
+
+@dataclass(frozen=True)
 class ScopeView:
     """Immutable snapshot handed to the executor gate (never the live dict)."""
     run_id: str
-    profile_id: str
     mode: str
     expires_at: float
     operation_used: bool
     # The SINGLE adapter tool this scope permits (e.g. "itops_ssh_healthcheck" or
-    # "itops_linux_inventory"). The gate allows only tool_search + this exact tool —
+    # "itops_network_inventory"). The gate allows only tool_search + this exact tool —
     # a source==itops check is NOT used for allowlist membership, so a future itops
     # tool is never auto-runnable from an old scope.
     allowed_tool: str
+    # Discriminated target. "ssh_profile" → profile_id; "network" → network.
+    target_kind: str = "ssh_profile"
+    profile_id: str = ""
+    network: NetworkTarget | None = None
 
 
 def _norm(run_id: str) -> str:
@@ -89,7 +101,34 @@ def bind_scope(run_id: str, profile_id: str, *, allowed_tool: str,
     with _LOCK:
         _sweep_locked()   # bound growth: drop long-dead abandoned entries
         _SCOPES[rid] = {
+            "target_kind": "ssh_profile",
             "profile_id": pid,
+            "network": None,
+            "mode": str(mode),
+            "expires_at": time.time() + float(ttl_seconds),
+            "operation_used": False,
+            "allowed_tool": tool,
+        }
+        return _view(rid)
+
+
+def bind_scope_network(run_id: str, *, cidr: str, port_profile: str, allowed_tool: str,
+                       mode: str = "read_only", ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
+    """Bind *run_id* to a read-only NETWORK scope over the exact *cidr* + server-owned
+    *port_profile*, permitting exactly the one adapter tool *allowed_tool*. Same sticky
+    lockdown / one-op reserve machinery as an ssh_profile scope. No-op on empty args."""
+    rid = _norm(run_id)
+    c = str(cidr or "").strip()
+    pp = str(port_profile or "").strip()
+    tool = str(allowed_tool or "").strip()
+    if not rid or not c or not pp or not tool:
+        return None
+    with _LOCK:
+        _sweep_locked()
+        _SCOPES[rid] = {
+            "target_kind": "network",
+            "profile_id": "",
+            "network": {"cidr": c, "port_profile": pp},
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -133,8 +172,12 @@ def _view(rid: str) -> ScopeView | None:
     s = _SCOPES.get(rid)
     if s is None:
         return None
-    return ScopeView(rid, s["profile_id"], s["mode"], s["expires_at"],
-                     s["operation_used"], s["allowed_tool"])
+    net = s.get("network")
+    return ScopeView(
+        run_id=rid, mode=s["mode"], expires_at=s["expires_at"],
+        operation_used=s["operation_used"], allowed_tool=s["allowed_tool"],
+        target_kind=s.get("target_kind", "ssh_profile"), profile_id=s.get("profile_id", ""),
+        network=NetworkTarget(net["cidr"], net["port_profile"]) if net else None)
 
 
 def get_active_scope(run_id: str) -> ScopeView | None:

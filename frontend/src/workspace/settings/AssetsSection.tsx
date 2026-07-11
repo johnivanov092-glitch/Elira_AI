@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, ChevronRight, Fingerprint, History, ListChecks, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, ChevronRight, Fingerprint, History, ListChecks, Loader2, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
@@ -9,13 +9,16 @@ import {
   type EvidenceRun,
   type ItopsAsset,
   type ItopsProfile,
+  type NetworkProfile,
   type PreviewResp,
   getEvidence,
+  getNetworkProfile,
   listAssets,
   listEvidenceRuns,
   sshEnroll,
   sshPreview,
   startDiagnostics,
+  startNetworkScan,
   verifyProfile,
 } from "../../api/itops";
 import { toast } from "../../components/ToastHost";
@@ -83,6 +86,7 @@ function AssetsSurface({ project }: { project: string }) {
       <div className="flex flex-col gap-6">
         <EnrollBlock onEnrolled={reload} />
         <AssetsList assets={assets} onReload={reload} project={project} />
+        <NetworkScanBlock project={project} />
         <EvidenceHistory assets={assets} />
       </div>
     </Wrap>
@@ -431,6 +435,119 @@ function AssetsList({ assets, onReload, project }: { assets: ItopsAsset[] | null
               ))}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Phase 3: bounded read-only network inventory of an AUTHORIZED CIDR. The client
+// sends only the CIDR; ports/vantage/caps are server-owned. Runs a scoped agent run.
+function NetworkScanBlock({ project }: { project: string }) {
+  const [profile, setProfile] = useState<NetworkProfile | null>(null);
+  const [cidr, setCidr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<{ text: string; err: string } | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getNetworkProfile().then((p) => { if (alive) setProfile(p); }).catch(() => { if (alive) setProfile(null); });
+    return () => { alive = false; };
+  }, []);
+
+  async function doScan() {
+    const c = cidr.trim();
+    if (!c || busy) return;
+    setBusy(true);
+    setOut(null);
+    try {
+      const s = await startNetworkScan(c);
+      let toolOut = "";
+      let finalText = "";
+      await streamCodeAgent({
+        message: s.message,
+        projectRoot: project,
+        runId: s.run_id,
+        maxSteps: 8,
+        onEvent: (ev) => {
+          if (ev.type === "tool_call" && ev.tool === "itops_network_inventory") toolOut = ev.result || toolOut;
+          else if (ev.type === "final_response") finalText = ev.text || finalText;
+        },
+        onError: (e) => setOut({ text: "", err: e.message }),
+      });
+      setOut({ text: toolOut || finalText || "готово", err: "" });
+    } catch (e) {
+      setOut({ text: "", err: errText(e, "Скан не удался") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
+        <Radar size={13} /> Сеть (read-only инвентарь)
+      </div>
+      <Note>
+        Bounded TCP-connect инвентарь. Разрешены только CIDR из серверного allowlist
+        (ITOPS_NETWORK_ALLOWED_CIDRS); порты и vantage — серверные, не задаются здесь.
+      </Note>
+      {profile && (
+        <div className="mt-2 rounded-lg border border-line px-3 py-2 text-[11.5px] text-t2">
+          <div>
+            <span className="text-mut">vantage:</span> <span className="font-mono">{profile.vantage}</span>
+            {profile.source_ip ? <span className="text-mut"> ({profile.source_ip})</span> : null}
+          </div>
+          <div className="mt-0.5">
+            <span className="text-mut">профиль {profile.profile.name}, порты:</span>{" "}
+            <span className="font-mono">{profile.profile.ports.join(", ")}</span>
+          </div>
+          <div className="mt-0.5">
+            <span className="text-mut">разрешённые CIDR:</span>{" "}
+            {profile.allowed_cidrs.length ? (
+              profile.allowed_cidrs.map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setCidr(c)}
+                  className="ml-1 rounded border border-line px-1.5 py-0.5 font-mono text-[11px] hover:bg-hover"
+                >
+                  {c}
+                </button>
+              ))
+            ) : (
+              <span className="text-mut">пусто — задайте ITOPS_NETWORK_ALLOWED_CIDRS</span>
+            )}
+          </div>
+        </div>
+      )}
+      <div className="mt-2 flex gap-2">
+        <input
+          value={cidr}
+          onChange={(e) => setCidr(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") void doScan(); }}
+          placeholder="CIDR (например 192.168.88.0/24)"
+          className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+        />
+        <button
+          type="button"
+          onClick={() => void doScan()}
+          disabled={busy || !cidr.trim()}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+            cidr.trim() && !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+          )}
+        >
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Radar size={13} />} Сканировать
+        </button>
+      </div>
+      {out && (
+        <div className="mt-2">
+          {out.err ? (
+            <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{out.err}</div>
+          ) : (
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">{out.text}</pre>
+          )}
         </div>
       )}
     </div>

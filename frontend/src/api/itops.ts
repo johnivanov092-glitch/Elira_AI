@@ -139,3 +139,36 @@ export async function getEvidence(run_id: string): Promise<{ ok: boolean; run_id
     `/api/itops/evidence?run_id=${encodeURIComponent(run_id)}`,
   );
 }
+
+// ── network inventory (read-only) ─────────────────────────────────────────
+
+export type NetworkProfile = {
+  ok: boolean;
+  vantage: string;
+  source_ip: string;
+  allowed_cidrs: string[];           // the authorized CIDR allowlist (server-owned)
+  profile: { name: string; ports: number[]; rate_limit: number; total_timeout: number; max_hosts: number; min_prefix: number };
+};
+
+export type NetworkStartResp = {
+  ok: boolean;
+  run_id: string;
+  cidr: string;
+  vantage: string;
+  hosts: number;
+  profile: { name: string; ports: number[] };
+  message: string;
+  ttl_seconds: number;
+};
+
+// The server-owned scan profile + authorized CIDR allowlist + fixed vantage (a UI hint).
+export async function getNetworkProfile(): Promise<NetworkProfile> {
+  return request<NetworkProfile>("/api/itops/network/profile");
+}
+
+// Start ONE bounded read-only network inventory over an AUTHORIZED CIDR. The client
+// sends ONLY the CIDR (ports + vantage are server-owned); the server binds a network
+// scope. The caller then streams /api/code-agent/stream with the returned run_id.
+export async function startNetworkScan(cidr: string): Promise<NetworkStartResp> {
+  return request<NetworkStartResp>("/api/itops/network/start", { method: "POST", body: { cidr } });
+}
