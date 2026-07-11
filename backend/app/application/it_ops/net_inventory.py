@@ -47,27 +47,45 @@ class PortProfile:
 
 
 # The ONE server-owned profile for v1. Ports are a small common-service set (<=8).
-# Sized so 254 hosts x 8 ports = 2032 attempts fits 50/s x 60s = 3000 with margin.
+# total_timeout is 90s (not 60): a full /24 is 254 x 8 = 2032 attempts, and the HONEST
+# capacity formula below certifies 2032 <= min(50, 64/1.0) x 90 x 0.5 = 2250. A live /24
+# smoke of a sparse LAN sustained ~32 attempts/s (0.64 of nominal), completing ~2032 in
+# ~65s — so 90s carries real headroom while staying well under the tool's 900s net.outbound
+# hard cap. See docs/IT_OPERATIONS_PLAN.md; the 60s value over-promised /24 (rejected below).
 PROFILE_COMMON_V1 = PortProfile(
     name="common-v1",
     ports=(22, 80, 443, 445, 139, 3389, 3306, 5432),
     rate_limit=50,
-    total_timeout=60.0,
+    total_timeout=90.0,
     per_connect_timeout=1.0,
     in_flight=64,
     max_hosts=254,
     min_prefix=24,
 )
 
+# Conservative efficiency factor for the capacity estimate. A live /24 scan of a sparse
+# LAN sustained ~0.64 of the nominal ceiling (each connect to an absent host holds an
+# in-flight slot for the full per_connect_timeout, and the single control loop serialises
+# submit/poll). We certify against 0.5 — BELOW the observed 0.64 — so the formula never
+# over-promises the way `rate x total x 0.9` did (it ignored the in-flight/per-connect
+# ceiling and the real per-timeout occupancy, "certifying" a /24 that then timed out).
+_PROFILE_EFFICIENCY = 0.5
+
 
 def validate_profile(profile: PortProfile, host_count: int) -> None:
-    """Refuse a profile whose planned work cannot finish inside the budget, so a
-    future profile can never silently exceed the caps. Raises CidrError(400)."""
+    """Refuse a profile whose planned work cannot finish inside the budget, so a future
+    profile can never silently exceed the caps. The sustainable attempt rate is bounded
+    by BOTH the rate limit AND how fast the in-flight window drains
+    (in_flight / per_connect_timeout, since each slot is held up to one timeout); the
+    certified capacity applies a conservative efficiency factor on top. Raises
+    CidrError(400)."""
     if len(profile.ports) > 8:
         raise CidrError("profile_too_many_ports", 400)
     planned = host_count * len(profile.ports)
-    budget = profile.rate_limit * profile.total_timeout   # attempts the rate allows
-    if planned > int(budget * 0.9):                       # 10% margin for timeouts
+    per_ct = profile.per_connect_timeout if profile.per_connect_timeout > 0 else 1.0
+    sustainable = min(profile.rate_limit, profile.in_flight / per_ct)   # attempts/s ceiling
+    capacity = int(sustainable * profile.total_timeout * _PROFILE_EFFICIENCY)
+    if planned > capacity:
         raise CidrError("profile_exceeds_budget", 400)
 
 

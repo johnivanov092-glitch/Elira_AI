@@ -68,12 +68,33 @@ class CidrAuthorizationTest(unittest.TestCase):
 
 class ProfileCompatTest(unittest.TestCase):
     def test_common_v1_fits_a_24(self):
-        ni.validate_profile(ni.PROFILE_COMMON_V1, 254)                 # 2032 <= 3000*0.9
+        # honest capacity: min(50, 64/1.0) * 90 * 0.5 = 2250 >= 254*8 = 2032
+        ni.validate_profile(ni.PROFILE_COMMON_V1, 254)
+
+    def test_common_v1_at_60s_would_not_fit_a_24(self):
+        # WHY total_timeout was raised to 90: at 60s the honest formula certifies only
+        # 50*60*0.5 = 1500 < 2032, so a /24 is (correctly) refused. The old rate*total*0.9
+        # formula "certified" it (2700) and the live scan then timed out.
+        at60 = ni.PortProfile(name="common-60", ports=ni.PROFILE_COMMON_V1.ports, rate_limit=50,
+                              total_timeout=60.0, per_connect_timeout=1.0, in_flight=64,
+                              max_hosts=254, min_prefix=24)
+        with self.assertRaises(ni.CidrError) as c:
+            ni.validate_profile(at60, 254)
+        self.assertEqual(c.exception.reason, "profile_exceeds_budget")
+
+    def test_capacity_bounded_by_inflight_not_just_rate(self):
+        # a high rate_limit cannot cheat the in-flight/per-connect ceiling: sustainable =
+        # min(1000, 8/1.0) = 8, capacity = 8*60*0.5 = 240. The OLD rate-only formula
+        # (1000*60*0.9 = 54000) would have wrongly certified 2000 attempts.
+        p = _profile(ports=(22, 80), rate=1000, in_flight=8, per_ct=1.0, total=60.0)
+        with self.assertRaises(ni.CidrError) as c:
+            ni.validate_profile(p, 1000)                              # 2000 planned > 240
+        self.assertEqual(c.exception.reason, "profile_exceeds_budget")
 
     def test_profile_exceeding_budget_rejected(self):
-        bad = _profile(ports=(1, 2, 3, 4, 5, 6, 7, 8), rate=5, total=10.0)  # budget 50
+        bad = _profile(ports=(1, 2, 3, 4, 5, 6, 7, 8), rate=5, in_flight=8, per_ct=0.1, total=10.0)
         with self.assertRaises(ni.CidrError) as c:
-            ni.validate_profile(bad, 254)                             # 2032 >> 45
+            ni.validate_profile(bad, 254)                             # 2032 >> min(5,80)*10*0.5 = 25
         self.assertEqual(c.exception.reason, "profile_exceeds_budget")
 
     def test_too_many_ports_rejected(self):
