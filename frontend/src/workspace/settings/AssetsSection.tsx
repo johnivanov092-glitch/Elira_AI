@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, ChevronRight, Fingerprint, History, ListChecks, Loader2, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, ChevronRight, Cog, Fingerprint, History, ListChecks, Loader2, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
@@ -19,6 +19,7 @@ import {
   sshPreview,
   startDiagnostics,
   startNetworkScan,
+  startSystemdInspect,
   verifyProfile,
 } from "../../api/itops";
 import { toast } from "../../components/ToastHost";
@@ -87,6 +88,7 @@ function AssetsSurface({ project }: { project: string }) {
         <EnrollBlock onEnrolled={reload} />
         <AssetsList assets={assets} onReload={reload} project={project} />
         <NetworkScanBlock project={project} />
+        <SystemdInspectBlock assets={assets} project={project} />
         <EvidenceHistory assets={assets} />
       </div>
     </Wrap>
@@ -541,6 +543,111 @@ function NetworkScanBlock({ project }: { project: string }) {
           {busy ? <Loader2 size={13} className="animate-spin" /> : <Radar size={13} />} Сканировать
         </button>
       </div>
+      {out && (
+        <div className="mt-2">
+          {out.err ? (
+            <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{out.err}</div>
+          ) : (
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">{out.text}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Phase 4a: read-only systemd service inspect. The human picks a saved ENABLED linux
+// profile + one `.service` unit; the server validates the unit name + asset kind and
+// binds a systemd_service scope. The model runs one fixed `systemctl show` (no unit-file
+// content, no status text, no journal, no start/stop/restart).
+function SystemdInspectBlock({ assets, project }: { assets: ItopsAsset[] | null; project: string }) {
+  // only enabled LINUX profiles can be inspected (the route enforces this too)
+  const linuxProfiles = (assets ?? [])
+    .filter((a) => a.kind === "linux" && a.lifecycle_state === "enabled")
+    .flatMap((a) => a.profiles.map((p) => ({ profile_id: p.profile_id, label: `${a.label} · ${p.profile_id}` })));
+
+  const [profileId, setProfileId] = useState("");
+  const [unit, setUnit] = useState("netdata.service");
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<{ text: string; err: string } | null>(null);
+
+  const chosen = profileId || (linuxProfiles[0]?.profile_id ?? "");
+
+  async function doInspect() {
+    const u = unit.trim();
+    if (!chosen || !u || busy) return;
+    setBusy(true);
+    setOut(null);
+    try {
+      const s = await startSystemdInspect(chosen, u);
+      let toolOut = "";
+      let finalText = "";
+      await streamCodeAgent({
+        message: s.message,
+        projectRoot: project,
+        runId: s.run_id,
+        maxSteps: 8,
+        onEvent: (ev) => {
+          if (ev.type === "tool_call" && ev.tool === "itops_systemd_service_inspect") toolOut = ev.result || toolOut;
+          else if (ev.type === "final_response") finalText = ev.text || finalText;
+        },
+        onError: (e) => setOut({ text: "", err: e.message }),
+      });
+      setOut({ text: toolOut || finalText || "готово", err: "" });
+    } catch (e) {
+      setOut({ text: "", err: errText(e, "Инспекция не удалась") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
+        <Cog size={13} /> systemd-служба (read-only inspect)
+      </div>
+      <Note>
+        Один фиксированный <span className="font-mono">systemctl show</span> для выбранной службы:
+        состояние, MainPID, код выхода, число рестартов, путь unit-файла. Без содержимого
+        unit-файла, без status/journal и без start/stop/restart.
+      </Note>
+      {linuxProfiles.length === 0 ? (
+        <div className="mt-2 rounded-lg border border-line px-3 py-2 text-[11.5px] text-mut">
+          Нет включённых Linux-подключений — сначала enroll + verify Linux-хост.
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-col gap-2">
+          <select
+            value={chosen}
+            onChange={(e) => setProfileId(e.target.value)}
+            className="rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none focus:border-acl"
+          >
+            {linuxProfiles.map((p) => (
+              <option key={p.profile_id} value={p.profile_id}>{p.label}</option>
+            ))}
+          </select>
+          <div className="flex gap-2">
+            <input
+              value={unit}
+              onChange={(e) => setUnit(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void doInspect(); }}
+              placeholder="unit (например netdata.service)"
+              className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+            />
+            <button
+              type="button"
+              onClick={() => void doInspect()}
+              disabled={busy || !unit.trim() || !chosen}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+                unit.trim() && chosen && !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+              )}
+            >
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Cog size={13} />} Инспектировать
+            </button>
+          </div>
+        </div>
+      )}
       {out && (
         <div className="mt-2">
           {out.err ? (

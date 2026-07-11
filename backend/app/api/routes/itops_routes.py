@@ -93,6 +93,14 @@ class NetworkStartRequest(BaseModel):
                                        "subset of ITOPS_NETWORK_ALLOWED_CIDRS")
 
 
+class SystemdInspectRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # The human selects a saved enabled LINUX profile and one .service unit. The unit is
+    # strictly name-validated; the fixed `systemctl show` property set is server-owned.
+    profile_id: str = Field(..., description="A SAVED, VERIFIED (enabled) linux connection profile id")
+    unit: str = Field(..., description="A human-selected systemd .service unit name (strictly validated)")
+
+
 # ── endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/ssh/preview")
@@ -268,6 +276,10 @@ _EVIDENCE_SCALAR_FIELDS = (
     # network inventory (open + summary) flat metadata
     "host", "port", "state", "vantage", "cidr", "port_profile", "source_ip",
     "planned", "attempted", "completed", "open_count", "stop_reason",
+    # systemd service inspect — fixed non-secret systemctl-show fields (never unit-file
+    # CONTENT, status text or journal, which could carry Environment=/tokens/logs)
+    "unit", "id", "load_state", "active_state", "sub_state", "unit_file_state",
+    "main_pid", "exec_main_status", "n_restarts", "fragment_path",
 )
 _NET_STATE_KEYS = ("open", "refused", "timeout", "unreachable", "local_error")
 _NET_CAP_KEYS = ("rate_limit", "total_timeout", "per_connect_timeout", "in_flight", "max_hosts")
@@ -387,3 +399,44 @@ def network_start(payload: NetworkStartRequest) -> dict[str, Any]:
     return {"ok": True, "run_id": run_id, "cidr": payload.cidr, "vantage": ni.VANTAGE,
             "hosts": len(hosts), "profile": {"name": profile.name, "ports": list(profile.ports)},
             "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
+
+
+@router.post("/systemd/inspect/start")
+def systemd_inspect_start(payload: SystemdInspectRequest) -> dict[str, Any]:
+    """Start ONE scoped read-only systemd service INSPECT run (Phase 4a). The human
+    selects a saved enabled LINUX asset + a `.service` unit; the server STRICTLY validates
+    the unit name (400), confirms the profile is an enabled linux asset (404/409), binds a
+    systemd_service scope (profile_id principal + unit) to the ONE tool
+    itops_systemd_service_inspect, and returns run_id + message. The model then calls that
+    tool with NO arguments: it runs a fixed read-only `systemctl show` (no status/journal/
+    unit-file content, no start/stop/restart) and records ONE typed evidence row."""
+    _require_flag()
+    import uuid
+    from app.application.agent_kernel import operation_scope
+    from app.application.it_ops import systemd_inspect as si
+
+    unit = str(payload.unit or "").strip()
+    if not si.unit_name_ok(unit):
+        raise HTTPException(status_code=400, detail="invalid systemd unit name")
+    store = _store()
+    profile = store.get_connection_profile(payload.profile_id)
+    if not profile or profile.get("transport") != "ssh":
+        raise HTTPException(status_code=404, detail="ssh profile not found")
+    asset = store.get_asset(str(profile.get("asset_id") or ""))
+    if not asset or asset.get("lifecycle_state") != "enabled":
+        raise HTTPException(status_code=409, detail="profile is not verified/enabled — verify it first")
+    if asset.get("kind") != "linux":
+        raise HTTPException(status_code=409, detail="systemd inspect requires a linux asset")
+
+    run_id = f"itops-diag-{uuid.uuid4().hex}"
+    operation_scope.bind_scope_systemd(run_id, profile_id=payload.profile_id, unit=unit,
+                                       allowed_tool="itops_systemd_service_inspect")
+    message = (
+        "Выполни read-only инспекцию systemd-службы сохранённого Linux-подключения. Активируй "
+        "инструмент itops_systemd_service_inspect через tool_search, затем вызови его РОВНО ОДИН "
+        "РАЗ БЕЗ аргументов (профиль и unit уже привязаны к запуску) и покажи результат. Не "
+        "вызывай другие инструменты."
+    )
+    return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id, "unit": unit,
+            "tool": "itops_systemd_service_inspect", "message": message,
+            "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}

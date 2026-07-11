@@ -484,11 +484,96 @@ def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
+def tool_itops_systemd_service_inspect(**_ignored: Any) -> dict[str, Any]:
+    """Read-only systemd SERVICE inspect (Phase 4a). Takes NO arguments — the enabled
+    Linux profile (principal) and the ONE selected unit come ONLY from the run's bound
+    systemd_service scope (the gate already refused any model arg). Runs a SINGLE fixed
+    `systemctl show` for a fixed property set, projects the output to TYPED fields (never
+    raw stdout), and writes exactly ONE evidence row; a failed evidence write → ok=false.
+    NO systemctl status / journalctl / unit-file content, and NO start/stop/restart.
+    """
+    from app.application.agent_kernel import operation_scope
+    from app.application.code_agent.tools import get_current_run_id
+    from app.application.it_ops import ssh_enroll
+    from app.application.it_ops import systemd_inspect as si
+    from app.infrastructure.it_ops import store
+
+    run_id = get_current_run_id()
+    scope = operation_scope.get_active_scope(run_id)
+    if scope is None or scope.target_kind != "systemd_service" or scope.systemd is None:
+        return {"ok": False, "text": "ERROR: no bound systemd scope", "error": "no_systemd_scope"}
+    pid = str(scope.profile_id or "").strip()
+    unit = str(scope.systemd.unit or "").strip()
+    if not si.unit_name_ok(unit):     # defense in depth: the route validated this too
+        return {"ok": False, "text": "ERROR: invalid unit name", "error": "bad_unit"}
+    try:
+        store.init_db()
+        prof = store.get_connection_profile(pid)
+        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
+    if not prof or prof.get("transport") != "ssh":
+        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
+    if not asset or asset.get("kind") != "linux":
+        return {"ok": False, "text": "ERROR: systemd inspect requires a linux asset",
+                "error": "not_linux_asset"}
+    alias = str(prof.get("ssh_alias") or "").strip()
+    if not ssh_enroll.alias_ok(alias):
+        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
+    target_identity = f"{asset.get('asset_id')}/{pid}"
+
+    # ONE fixed, read-only `systemctl show` (no shell; the unit is strictly validated).
+    try:
+        proc = subprocess.run(_ssh_argv(alias, si.show_remote_command(unit)),
+                              capture_output=True, timeout=si.INSPECT_TIMEOUT)
+        code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        code, raw_out, raw_err = None, b"", b"connection timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
+
+    if code == 0:
+        fields = si.parse_show_output(decode_console(raw_out))
+        ok, err = True, None
+    else:
+        # a failed inspect is honestly an error, not an empty/false result
+        fields = {}
+        ok, err = False, "inspect_failed"
+
+    # TYPED evidence — never raw stdout; only the projected fields + the unit identity.
+    result: dict[str, Any] = {"unit": unit, **fields}
+    evidence_ok = True
+    try:
+        store.record_evidence(
+            run_id=run_id, target_identity=target_identity, scanner_vantage=_SCANNER_VANTAGE,
+            operation="systemd_service_inspect", result=result,
+            exit_status="0" if code == 0 else (str(code) if code is not None else ""))
+    except Exception:  # noqa: BLE001
+        evidence_ok = False
+        logger.warning("itops systemd_service_inspect: evidence write failed for %s/%s", pid, unit)
+    if not evidence_ok:
+        ok, err = False, "evidence_persist_failed"
+
+    if code == 0:
+        text = (f"systemd inspect {unit} ({alias}): "
+                f"{fields.get('active_state', '?')}/{fields.get('sub_state', '?')} "
+                f"main_pid={fields.get('main_pid', '?')} restarts={fields.get('n_restarts', '?')} "
+                f"unit_file={fields.get('unit_file_state', '?')}")
+    else:
+        text = f"systemd inspect {unit} ({alias}): FAILED ({_clean(raw_err, 300) or ('exit ' + str(code))})"
+    out: dict[str, Any] = {"ok": ok, "text": text, "unit": unit, "fields": fields,
+                           "evidence_persisted": evidence_ok}
+    if err:
+        out["error"] = err
+    return out
+
+
 _DISPATCH = {
     "itops_ssh_healthcheck": tool_itops_ssh_healthcheck,
     "itops_linux_inventory": tool_itops_linux_inventory,
     "itops_windows_inventory": tool_itops_windows_inventory,
     "itops_network_inventory": tool_itops_network_inventory,
+    "itops_systemd_service_inspect": tool_itops_systemd_service_inspect,
 }
 
 
@@ -586,6 +671,21 @@ class ItopsToolProvider:
                         "NO arguments — the target and caps come only from the bound scope. Returns "
                         "the open host:port list and a summary. Only runnable inside a bound network "
                         "diagnostic run; one call per run."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},   # NO args
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "itops_systemd_service_inspect",
+                    "description": (
+                        "Read-only systemd service inspect: runs one fixed `systemctl show` for the "
+                        "unit bound to this diagnostic run on the bound Linux profile, and returns its "
+                        "state (active/sub state, main pid, last exit status, restart count, unit-file "
+                        "state and path). Takes NO arguments — the profile and unit come only from the "
+                        "bound scope. No status text, journal, unit-file content, or changes. Only "
+                        "runnable inside a bound systemd diagnostic run; one call per run."
                     ),
                     "parameters": {"type": "object", "properties": {}},   # NO args
                 },

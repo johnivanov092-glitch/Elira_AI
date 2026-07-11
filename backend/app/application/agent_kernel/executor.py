@@ -295,6 +295,28 @@ def execute_tool(
                     error="scope_args_forbidden",
                 )
             _authoritative_args = {}
+        elif _scope.target_kind == "systemd_service":
+            # A systemd inspect takes NO args: the profile_id (principal) + the selected
+            # unit come ONLY from the scope. Forbid any model-supplied arg, AND (defense
+            # in depth) require the bound profile to still be an ENABLED asset.
+            if request.args:
+                _emit_blocked(request, "systemd adapter takes no args")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "This adapter takes no arguments; the target comes "
+                            "only from the bound scope — blocked (fail-closed).", "error": "scope_args_forbidden"},
+                    error="scope_args_forbidden",
+                )
+            _pid = str(_scope.profile_id or "").strip()
+            if not _pid or not _itops_profile_enabled(_pid):
+                _emit_blocked(request, "operation scope target is not an enabled asset")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "The bound profile is not a verified/enabled asset "
+                            "(draft or missing) — blocked (fail-closed).", "error": "profile_not_enabled"},
+                    error="profile_not_enabled",
+                )
+            _authoritative_args = {}
         else:
             _emit_blocked(request, f"unknown scope target_kind: {_scope.target_kind}")
             return ToolExecutionResult(

@@ -172,3 +172,26 @@ export async function getNetworkProfile(): Promise<NetworkProfile> {
 export async function startNetworkScan(cidr: string): Promise<NetworkStartResp> {
   return request<NetworkStartResp>("/api/itops/network/start", { method: "POST", body: { cidr } });
 }
+
+// ── systemd service inspect (read-only, Phase 4a) ──────────────────────────
+
+export type SystemdInspectResp = {
+  ok: boolean;
+  run_id: string;
+  profile_id: string;
+  unit: string;
+  tool: string;
+  message: string;
+  ttl_seconds: number;
+};
+
+// Start ONE read-only systemd service inspect. The human picks a SAVED enabled LINUX
+// profile and a `.service` unit; the server strictly validates the unit name + asset
+// kind and binds a systemd_service scope. The caller then streams the returned run_id;
+// the model calls itops_systemd_service_inspect() with NO args.
+export async function startSystemdInspect(profile_id: string, unit: string): Promise<SystemdInspectResp> {
+  return request<SystemdInspectResp>("/api/itops/systemd/inspect/start", {
+    method: "POST",
+    body: { profile_id, unit },
+  });
+}

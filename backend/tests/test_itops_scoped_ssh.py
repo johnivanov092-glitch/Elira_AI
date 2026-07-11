@@ -27,6 +27,7 @@ HEALTH = "itops_ssh_healthcheck"
 INV = "itops_linux_inventory"
 WIN = "itops_windows_inventory"
 NET = "itops_network_inventory"
+SYSD = "itops_systemd_service_inspect"
 
 
 def _fake_proc(out=b"", err=b"", code=0):
@@ -185,6 +186,48 @@ class ScopedGateTest(unittest.TestCase):
         opscope.bind_scope_network(self.rid, cidr="192.168.88.0/24",
                                    port_profile="common-v1", allowed_tool=NET)
         res2, _ = self._exec(HEALTH, {"profile_id": "prof-ok"})
+        self.assertEqual(res2.error, "scope_restricted")
+
+    # ── Phase 4a: systemd_service scope ────────────────────────────────────────
+    def test_systemd_scope_allows_only_systemd_inspect(self):
+        opscope.bind_scope_systemd(self.rid, profile_id="prof-ok", unit="netdata.service",
+                                   allowed_tool=SYSD)
+        ok, calls = self._exec(SYSD, {})                     # no args → allowed
+        self.assertEqual(ok.status, "ok", ok.output)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], {})                    # gate injected empty authoritative args
+        for other in (HEALTH, INV, WIN, NET, "run_bash", "ssh_run", "itops_dummy_ro"):
+            res, c = self._exec(other, {"profile_id": "prof-ok", "command": "id"})
+            self.assertEqual(res.error, "scope_restricted", other)
+            self.assertEqual(c, [])
+
+    def test_systemd_tool_rejects_any_model_arg(self):
+        opscope.bind_scope_systemd(self.rid, profile_id="prof-ok", unit="netdata.service",
+                                   allowed_tool=SYSD)
+        res, c = self._exec(SYSD, {"unit": "sshd.service"})  # model tries to choose the unit
+        self.assertEqual(res.status, "blocked")
+        self.assertEqual(res.error, "scope_args_forbidden")
+        self.assertEqual(c, [])
+
+    def test_systemd_scope_requires_enabled_profile(self):
+        # defense in depth: a systemd scope over a DRAFT (unverified) asset is refused.
+        opscope.bind_scope_systemd(self.rid, profile_id="prof-draft", unit="netdata.service",
+                                   allowed_tool=SYSD)
+        res, c = self._exec(SYSD, {})
+        self.assertEqual(res.status, "blocked")
+        self.assertEqual(res.error, "profile_not_enabled")
+        self.assertEqual(c, [])
+
+    def test_systemd_scope_isolated_from_ssh_and_network(self):
+        # a systemd scope opens neither SSH nor network tools, and vice versa.
+        opscope.bind_scope_systemd(self.rid, profile_id="prof-ok", unit="netdata.service",
+                                   allowed_tool=SYSD)
+        for other in (HEALTH, NET):
+            res, _ = self._exec(other, {"profile_id": "prof-ok"})
+            self.assertEqual(res.error, "scope_restricted", other)
+        opscope.clear_scope(self.rid)
+        self._bind(HEALTH)
+        res2, _ = self._exec(SYSD, {})
         self.assertEqual(res2.error, "scope_restricted")
 
     def test_healthcheck_scope_allows_only_healthcheck(self):
@@ -658,6 +701,31 @@ class EvidenceHistoryRouteTest(unittest.TestCase):
                          {"rate_limit", "total_timeout", "per_connect_timeout", "in_flight", "max_hosts"})
         self.assertEqual(res["ports"], [22, 443])       # the non-int entry is dropped
 
+    def test_systemd_evidence_strips_non_whitelisted_fields(self):
+        # the 9 fixed systemctl-show fields pass; anything else (a leaked Environment=,
+        # unit-file content, raw stdout) is projected out even if it was stored.
+        itstore.record_evidence(
+            run_id="run-sysd-dirty", target_identity="ssh-lab/prof-ok",
+            scanner_vantage="elira-host:openssh", operation="systemd_service_inspect",
+            exit_status="0",
+            result={"unit": "netdata.service", "id": "netdata.service", "load_state": "loaded",
+                    "active_state": "active", "sub_state": "running", "unit_file_state": "enabled",
+                    "main_pid": 1238, "exec_main_status": 0, "n_restarts": 0,
+                    "fragment_path": "/usr/lib/systemd/system/netdata.service",
+                    # smuggled non-whitelisted fields — must NOT survive the projection.
+                    # (stdout IS globally whitelisted; the systemd handler simply never
+                    # writes it, so it is not a leak vector here.)
+                    "environment": "API_TOKEN=SECRET", "exec_start": "…password=hunter2…",
+                    "drop_in": "/etc/…/override.conf"})
+        r = self.client.get("/api/itops/evidence?run_id=run-sysd-dirty")
+        self.assertEqual(r.status_code, 200, r.text)
+        for leak in ("API_TOKEN", "SECRET", "hunter2", "environment", "exec_start", "override.conf"):
+            self.assertNotIn(leak, r.text)
+        res = r.json()["evidence"][0]["result"]
+        self.assertEqual(set(res.keys()), {"unit", "id", "load_state", "active_state", "sub_state",
+                                           "unit_file_state", "main_pid", "exec_main_status",
+                                           "n_restarts", "fragment_path"})
+
     def test_evidence_requires_run_id(self):
         self.assertEqual(self.client.get("/api/itops/evidence").status_code, 422)      # missing
         self.assertEqual(self.client.get("/api/itops/evidence?run_id=").status_code, 422)  # empty
@@ -857,6 +925,182 @@ class NetworkAdapterTest(unittest.TestCase):
         self.assertEqual(out["error"], "cidr_not_authorized")
         scan.assert_not_called()                                     # fail-closed BEFORE any scan
         self.assertEqual(itstore.list_evidence(rid), [])            # and no evidence written
+
+
+_SYSTEMD_SHOW_OK = (
+    b"Id=netdata.service\nLoadState=loaded\nActiveState=active\nSubState=running\n"
+    b"UnitFileState=enabled\nMainPID=1238\nExecMainStatus=0\nNRestarts=0\n"
+    b"FragmentPath=/usr/lib/systemd/system/netdata.service\n"
+)
+
+
+class SystemdInspectRouteTest(unittest.TestCase):
+    """/systemd/inspect/start — strict unit-name validation + linux enabled asset + bind."""
+
+    def setUp(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.itops_routes import router
+        self._tmp = tempfile.mkdtemp()
+        itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
+        from app.application import feature_flags as ff
+        self._flag = unittest.mock.patch.object(ff, "flag_enabled", return_value=True)
+        self._flag.start()
+        itstore.init_db()
+        itstore.upsert_asset(asset_id="ssh-lab", label="Lab", kind="linux", lifecycle_state="enabled")
+        itstore.put_connection_profile(profile_id="prof-linux", asset_id="ssh-lab",
+                                       transport="ssh", ssh_alias="lab")
+        itstore.upsert_asset(asset_id="win-1", label="Win", kind="windows", lifecycle_state="enabled")
+        itstore.put_connection_profile(profile_id="prof-win", asset_id="win-1",
+                                       transport="ssh", ssh_alias="winbox")
+        itstore.upsert_asset(asset_id="ssh-draft", label="D", kind="linux", lifecycle_state="draft")
+        itstore.put_connection_profile(profile_id="prof-draft", asset_id="ssh-draft",
+                                       transport="ssh", ssh_alias="draftlab")
+        app = FastAPI()
+        app.include_router(router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._flag.stop()
+        itstore._DB_PATH_OVERRIDE = None
+
+    def _start(self, **body):
+        return self.client.post("/api/itops/systemd/inspect/start", json=body)
+
+    def test_valid_bind_creates_systemd_scope(self):
+        r = self._start(profile_id="prof-linux", unit="netdata.service")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["unit"], "netdata.service")
+        self.assertEqual(body["tool"], SYSD)
+        scope = opscope.get_active_scope(body["run_id"])
+        self.assertEqual(scope.target_kind, "systemd_service")
+        self.assertEqual(scope.allowed_tool, SYSD)
+        self.assertEqual(scope.profile_id, "prof-linux")
+        self.assertEqual(scope.systemd.unit, "netdata.service")
+        opscope.clear_scope(body["run_id"])
+
+    def test_bad_unit_name_400(self):
+        for bad in ("netdata", "netdata.socket", "netdata.service; rm -rf /", "../x.service"):
+            self.assertEqual(self._start(profile_id="prof-linux", unit=bad).status_code, 400, bad)
+
+    def test_non_linux_asset_409(self):
+        self.assertEqual(self._start(profile_id="prof-win", unit="netdata.service").status_code, 409)
+
+    def test_draft_profile_409(self):
+        self.assertEqual(self._start(profile_id="prof-draft", unit="netdata.service").status_code, 409)
+
+    def test_unknown_profile_404(self):
+        self.assertEqual(self._start(profile_id="nope", unit="netdata.service").status_code, 404)
+
+    def test_missing_unit_and_extra_field_422(self):
+        self.assertEqual(self._start(profile_id="prof-linux").status_code, 422)                       # unit required
+        self.assertEqual(self.client.post("/api/itops/systemd/inspect/start",
+                         json={"profile_id": "prof-linux", "unit": "netdata.service",
+                               "properties": ["ExecStart"]}).status_code, 422)                        # extra forbidden
+
+    def test_flag_off_404(self):
+        from app.application import feature_flags as ff
+        with unittest.mock.patch.object(ff, "flag_enabled", return_value=False):
+            self.assertEqual(self._start(profile_id="prof-linux", unit="netdata.service").status_code, 404)
+
+
+class SystemdAdapterTest(unittest.TestCase):
+    """The itops_systemd_service_inspect handler: fixed systemctl show → typed evidence."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
+        itstore.init_db()
+        itstore.upsert_asset(asset_id="ssh-lab", label="Lab", kind="linux", lifecycle_state="enabled")
+        itstore.put_connection_profile(profile_id="prof-linux", asset_id="ssh-lab",
+                                       transport="ssh", ssh_alias="lab")
+        itstore.upsert_asset(asset_id="win-1", label="Win", kind="windows", lifecycle_state="enabled")
+        itstore.put_connection_profile(profile_id="prof-win", asset_id="win-1",
+                                       transport="ssh", ssh_alias="winbox")
+        self.rid = "sysd-run-1"
+        opscope.clear_scope(self.rid)
+        opscope.bind_scope_systemd(self.rid, profile_id="prof-linux", unit="netdata.service",
+                                   allowed_tool=SYSD)
+
+    def tearDown(self):
+        opscope.clear_scope(self.rid)
+        itstore._DB_PATH_OVERRIDE = None
+
+    def _run(self, proc, run_id=None):
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id(run_id or self.rid)
+        try:
+            with unittest.mock.patch("subprocess.run", return_value=proc):
+                return itops_provider.tool_itops_systemd_service_inspect()
+        finally:
+            reset_current_run_id(tok)
+
+    def test_complete_writes_one_typed_evidence_row(self):
+        out = self._run(_fake_proc(_SYSTEMD_SHOW_OK, b"", 0))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["fields"]["active_state"], "active")
+        self.assertEqual(out["fields"]["main_pid"], 1238)          # numeric coerced
+        ev = itstore.list_evidence(self.rid)
+        self.assertEqual(len(ev), 1)                               # EXACTLY one evidence row
+        self.assertEqual(ev[0]["operation"], "systemd_service_inspect")
+        res = ev[0]["result"]
+        self.assertEqual(res["unit"], "netdata.service")
+        self.assertEqual(res["sub_state"], "running")
+        self.assertNotIn("stdout", res)                            # never raw stdout
+        self.assertNotIn("raw", res)
+
+    def test_nonzero_exit_is_inspect_failed_not_empty(self):
+        out = self._run(_fake_proc(b"", b"Failed to get properties", 4))
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "inspect_failed")           # honest failure, not a fake ok
+        ev = itstore.list_evidence(self.rid)
+        self.assertEqual(len(ev), 1)                               # still exactly one row (the attempt)
+        self.assertEqual(ev[0]["exit_status"], "4")
+
+    def test_evidence_write_failure_makes_ok_false(self):
+        real = itstore.record_evidence
+
+        def flaky(*a, **kw):
+            raise RuntimeError("disk full")
+
+        with unittest.mock.patch.object(itstore, "record_evidence", side_effect=flaky):
+            out = self._run(_fake_proc(_SYSTEMD_SHOW_OK, b"", 0))
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "evidence_persist_failed")
+
+    def test_no_bound_scope_refuses(self):
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id("no-sysd-scope")
+        try:
+            out = itops_provider.tool_itops_systemd_service_inspect()
+        finally:
+            reset_current_run_id(tok)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "no_systemd_scope")
+
+    def test_non_linux_asset_refused(self):
+        # defense in depth: a systemd scope over a windows asset is refused in the handler,
+        # with no ssh command run and no evidence written.
+        rid = "sysd-win-run"
+        opscope.clear_scope(rid)
+        opscope.bind_scope_systemd(rid, profile_id="prof-win", unit="netdata.service",
+                                   allowed_tool=SYSD)
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id(rid)
+        try:
+            with unittest.mock.patch("subprocess.run") as sp:
+                out = itops_provider.tool_itops_systemd_service_inspect()
+        finally:
+            reset_current_run_id(tok)
+            opscope.clear_scope(rid)
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "not_linux_asset")
+        sp.assert_not_called()
+        self.assertEqual(itstore.list_evidence(rid), [])
 
 
 if __name__ == "__main__":

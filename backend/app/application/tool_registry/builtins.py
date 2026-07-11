@@ -669,6 +669,16 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 120, "max_output_chars": 14000,
         },
+        {
+            "name": "itops_systemd_service_inspect", "handler": _noop,
+            "display_name": "IT-Ops systemd Inspect", "display_name_ru": "Инспекция systemd-службы",
+            "category": "itops",
+            "description": "Read-only systemd service inspect (fixed systemctl show) for the unit bound to the run (no args)",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 120, "max_output_chars": 14000,
+        },
     ]
 
 

@@ -64,6 +64,14 @@ class NetworkTarget:
 
 
 @dataclass(frozen=True)
+class SystemdTarget:
+    """Typed target for a target_kind='systemd_service' scope. The scope principal is
+    the top-level profile_id (the enabled Linux asset); `unit` is the ONE systemd
+    service unit the human selected — server-owned, never model-supplied."""
+    unit: str
+
+
+@dataclass(frozen=True)
 class ScopeView:
     """Immutable snapshot handed to the executor gate (never the live dict)."""
     run_id: str
@@ -75,10 +83,12 @@ class ScopeView:
     # a source==itops check is NOT used for allowlist membership, so a future itops
     # tool is never auto-runnable from an old scope.
     allowed_tool: str
-    # Discriminated target. "ssh_profile" → profile_id; "network" → network.
+    # Discriminated target. "ssh_profile" → profile_id; "network" → network;
+    # "systemd_service" → profile_id (principal) + systemd.unit.
     target_kind: str = "ssh_profile"
     profile_id: str = ""
     network: NetworkTarget | None = None
+    systemd: SystemdTarget | None = None
 
 
 def _norm(run_id: str) -> str:
@@ -104,6 +114,7 @@ def bind_scope(run_id: str, profile_id: str, *, allowed_tool: str,
             "target_kind": "ssh_profile",
             "profile_id": pid,
             "network": None,
+            "systemd": None,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -129,6 +140,34 @@ def bind_scope_network(run_id: str, *, cidr: str, port_profile: str, allowed_too
             "target_kind": "network",
             "profile_id": "",
             "network": {"cidr": c, "port_profile": pp},
+            "systemd": None,
+            "mode": str(mode),
+            "expires_at": time.time() + float(ttl_seconds),
+            "operation_used": False,
+            "allowed_tool": tool,
+        }
+        return _view(rid)
+
+
+def bind_scope_systemd(run_id: str, *, profile_id: str, unit: str, allowed_tool: str,
+                       mode: str = "read_only", ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
+    """Bind *run_id* to a read-only SYSTEMD-SERVICE scope: the enabled Linux asset
+    *profile_id* (the scope principal, validated by the gate) + the one selected *unit*,
+    permitting exactly the one adapter tool *allowed_tool*. Same sticky lockdown /
+    one-op reserve machinery as the other scopes. No-op on empty args."""
+    rid = _norm(run_id)
+    pid = str(profile_id or "").strip()
+    u = str(unit or "").strip()
+    tool = str(allowed_tool or "").strip()
+    if not rid or not pid or not u or not tool:
+        return None
+    with _LOCK:
+        _sweep_locked()
+        _SCOPES[rid] = {
+            "target_kind": "systemd_service",
+            "profile_id": pid,
+            "network": None,
+            "systemd": {"unit": u},
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -173,11 +212,13 @@ def _view(rid: str) -> ScopeView | None:
     if s is None:
         return None
     net = s.get("network")
+    sysd = s.get("systemd")
     return ScopeView(
         run_id=rid, mode=s["mode"], expires_at=s["expires_at"],
         operation_used=s["operation_used"], allowed_tool=s["allowed_tool"],
         target_kind=s.get("target_kind", "ssh_profile"), profile_id=s.get("profile_id", ""),
-        network=NetworkTarget(net["cidr"], net["port_profile"]) if net else None)
+        network=NetworkTarget(net["cidr"], net["port_profile"]) if net else None,
+        systemd=SystemdTarget(sysd["unit"]) if sysd else None)
 
 
 def get_active_scope(run_id: str) -> ScopeView | None:
