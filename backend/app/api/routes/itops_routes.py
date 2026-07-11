@@ -244,13 +244,31 @@ def evidence_runs(limit: int = 50) -> dict[str, Any]:
     return {"ok": True, "runs": store.list_evidence_runs(limit=limit)}
 
 
+# The ONLY result fields the public evidence API may expose. A hard whitelist so a
+# record whose `result` was polluted with a secret (auth_ref/password/…) can never
+# leak through this read API, regardless of what was stored.
+_EVIDENCE_RESULT_FIELDS = ("alias", "command", "status", "stdout", "stderr")
+
+
+def _public_evidence(ev: dict[str, Any]) -> dict[str, Any]:
+    res = ev.get("result") or {}
+    return {
+        "evidence_id": ev.get("evidence_id"), "run_id": ev.get("run_id"),
+        "target_identity": ev.get("target_identity"), "scanner_vantage": ev.get("scanner_vantage"),
+        "operation": ev.get("operation"), "exit_status": ev.get("exit_status"),
+        "captured_at": ev.get("captured_at"),
+        "result": {k: res.get(k) for k in _EVIDENCE_RESULT_FIELDS if k in res},
+    }
+
+
 @router.get("/evidence")
 def evidence_detail(run_id: str) -> dict[str, Any]:
-    """Read-only evidence for ONE run (run_id required). Returns the already-redacted
-    per-command results (alias/command/status/stdout/stderr) — never a secret or
-    auth_ref."""
+    """Read-only evidence for ONE run (run_id required). Returns each command's result
+    projected to a hard whitelist (alias/command/status/stdout/stderr) — never a
+    secret or auth_ref, even if the stored result contained one."""
     _require_flag()
     if not str(run_id or "").strip():
         raise HTTPException(status_code=422, detail="run_id is required")
     store = _store()
-    return {"ok": True, "run_id": run_id, "evidence": store.list_evidence(run_id)}
+    return {"ok": True, "run_id": run_id,
+            "evidence": [_public_evidence(e) for e in store.list_evidence(run_id)]}

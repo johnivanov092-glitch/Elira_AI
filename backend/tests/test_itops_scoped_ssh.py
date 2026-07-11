@@ -475,6 +475,23 @@ class EvidenceHistoryRouteTest(unittest.TestCase):
             self.assertNotIn("auth_ref", e)
             self.assertNotIn("auth_ref", e.get("result", {}))
 
+    def test_detail_projects_out_non_whitelisted_fields(self):
+        # a polluted stored result must NOT leak through the read API — the public
+        # projection whitelists only alias/command/status/stdout/stderr.
+        itstore.record_evidence(run_id="run-dirty", target_identity="ssh-lab/prof-ok",
+                                scanner_vantage="v", operation="ssh_healthcheck:hostname",
+                                exit_status="0",
+                                result={"alias": "lab", "command": "hostname", "status": "ok",
+                                        "stdout": "host", "stderr": "",
+                                        "auth_ref": "cred://SECRET", "password": "P@SSW0RD",
+                                        "private_key": "-----BEGIN KEY-----"})
+        r = self.client.get("/api/itops/evidence?run_id=run-dirty")
+        self.assertEqual(r.status_code, 200, r.text)
+        for leak in ("SECRET", "P@SSW0RD", "auth_ref", "password", "private_key", "BEGIN KEY"):
+            self.assertNotIn(leak, r.text)
+        rec = r.json()["evidence"][0]
+        self.assertEqual(set(rec["result"].keys()), {"alias", "command", "status", "stdout", "stderr"})
+
     def test_evidence_requires_run_id(self):
         self.assertEqual(self.client.get("/api/itops/evidence").status_code, 422)      # missing
         self.assertEqual(self.client.get("/api/itops/evidence?run_id=").status_code, 422)  # empty

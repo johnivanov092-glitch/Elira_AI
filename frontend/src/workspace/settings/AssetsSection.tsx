@@ -433,12 +433,18 @@ function fmtTime(epochSeconds: number): string {
 // already-redacted per-command output. No SSH / model / host changes here.
 function EvidenceHistory({ assets }: { assets: ItopsAsset[] | null }) {
   const [runs, setRuns] = useState<EvidenceRun[] | null>(null);
+  const [runsErr, setRunsErr] = useState("");
   const [open, setOpen] = useState("");
-  const [detail, setDetail] = useState<{ runId: string; records: EvidenceRecord[] } | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  // Details cached BY run_id, so a late response for one run can never clobber the
+  // display of another (no spinner hang), and re-expanding a run is instant.
+  const [detailCache, setDetailCache] = useState<Record<string, EvidenceRecord[]>>({});
+  const [detailErr, setDetailErr] = useState<Record<string, string>>({});
 
   const reload = useCallback(() => {
-    listEvidenceRuns(50).then((r) => setRuns(r.runs ?? [])).catch(() => setRuns([]));
+    setRunsErr("");
+    listEvidenceRuns(50)
+      .then((r) => setRuns(r.runs ?? []))
+      .catch((e) => { setRuns([]); setRunsErr(errText(e, "Не удалось загрузить историю")); });
   }, []);
   useEffect(() => { reload(); }, [reload]);
 
@@ -450,15 +456,13 @@ function EvidenceHistory({ assets }: { assets: ItopsAsset[] | null }) {
   async function toggle(runId: string) {
     if (open === runId) { setOpen(""); return; }
     setOpen(runId);
-    setDetail(null);
-    setLoadingDetail(true);
+    if (detailCache[runId] !== undefined) return;      // cached — instant, no re-fetch/race
+    setDetailErr((p) => ({ ...p, [runId]: "" }));
     try {
       const r = await getEvidence(runId);
-      setDetail({ runId, records: r.evidence ?? [] });
-    } catch {
-      setDetail({ runId, records: [] });
-    } finally {
-      setLoadingDetail(false);
+      setDetailCache((p) => ({ ...p, [runId]: r.evidence ?? [] }));   // keyed write
+    } catch (e) {
+      setDetailErr((p) => ({ ...p, [runId]: errText(e, "Не удалось загрузить записи") }));
     }
   }
 
@@ -479,7 +483,9 @@ function EvidenceHistory({ assets }: { assets: ItopsAsset[] | null }) {
         </button>
       </div>
 
-      {runs === null ? (
+      {runsErr ? (
+        <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[12px] text-[#d99a9a]">{runsErr}</div>
+      ) : runs === null ? (
         <Loading />
       ) : runs.length === 0 ? (
         <Note>Пока нет прогонов диагностики.</Note>
@@ -506,13 +512,15 @@ function EvidenceHistory({ assets }: { assets: ItopsAsset[] | null }) {
               </button>
               {open === run.run_id && (
                 <div className="border-t border-line px-3 py-2">
-                  {loadingDetail || detail?.runId !== run.run_id ? (
+                  {detailErr[run.run_id] ? (
+                    <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{detailErr[run.run_id]}</div>
+                  ) : detailCache[run.run_id] === undefined ? (
                     <div className="flex items-center gap-2 text-[11.5px] text-mut"><Loader2 size={12} className="animate-spin" /> загрузка…</div>
-                  ) : detail.records.length === 0 ? (
+                  ) : detailCache[run.run_id].length === 0 ? (
                     <Note>Нет записей для этого прогона.</Note>
                   ) : (
                     <div className="flex flex-col gap-2">
-                      {detail.records.map((e) => (
+                      {detailCache[run.run_id].map((e) => (
                         <div key={e.evidence_id}>
                           <div className="flex items-center gap-2 text-[11.5px] text-t2">
                             <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", healthDot(evidenceStatus(e) === "ok" ? "verified" : evidenceStatus(e) === "unsupported" ? "unverified" : "failed"))} />
