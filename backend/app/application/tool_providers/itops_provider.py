@@ -517,6 +517,12 @@ def tool_itops_systemd_service_inspect(**_ignored: Any) -> dict[str, Any]:
     if not asset or asset.get("kind") != "linux":
         return {"ok": False, "text": "ERROR: systemd inspect requires a linux asset",
                 "error": "not_linux_asset"}
+    if asset.get("lifecycle_state") != "enabled":
+        # Defense in depth: the route + gate already require an ENABLED asset, but the
+        # handler holds the same line so a scope bound another way can never inspect a
+        # draft/unverified asset (fail-closed BEFORE any SSH).
+        return {"ok": False, "text": "ERROR: systemd inspect requires a verified/enabled asset",
+                "error": "profile_not_enabled"}
     alias = str(prof.get("ssh_alias") or "").strip()
     if not ssh_enroll.alias_ok(alias):
         return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}

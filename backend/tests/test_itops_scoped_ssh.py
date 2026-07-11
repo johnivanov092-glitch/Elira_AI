@@ -1018,6 +1018,9 @@ class SystemdAdapterTest(unittest.TestCase):
         itstore.upsert_asset(asset_id="win-1", label="Win", kind="windows", lifecycle_state="enabled")
         itstore.put_connection_profile(profile_id="prof-win", asset_id="win-1",
                                        transport="ssh", ssh_alias="winbox")
+        itstore.upsert_asset(asset_id="ssh-draft", label="Draft", kind="linux", lifecycle_state="draft")
+        itstore.put_connection_profile(profile_id="prof-draft", asset_id="ssh-draft",
+                                       transport="ssh", ssh_alias="draftlab")
         self.rid = "sysd-run-1"
         opscope.clear_scope(self.rid)
         opscope.bind_scope_systemd(self.rid, profile_id="prof-linux", unit="netdata.service",
@@ -1099,6 +1102,27 @@ class SystemdAdapterTest(unittest.TestCase):
             opscope.clear_scope(rid)
         self.assertFalse(out["ok"], out)
         self.assertEqual(out["error"], "not_linux_asset")
+        sp.assert_not_called()
+        self.assertEqual(itstore.list_evidence(rid), [])
+
+    def test_draft_asset_refused_before_ssh(self):
+        # defense in depth: a systemd scope over a DRAFT (unverified) linux asset is refused
+        # in the handler — matching the route/gate — with no ssh command and no evidence.
+        rid = "sysd-draft-run"
+        opscope.clear_scope(rid)
+        opscope.bind_scope_systemd(rid, profile_id="prof-draft", unit="netdata.service",
+                                   allowed_tool=SYSD)
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id(rid)
+        try:
+            with unittest.mock.patch("subprocess.run") as sp:
+                out = itops_provider.tool_itops_systemd_service_inspect()
+        finally:
+            reset_current_run_id(tok)
+            opscope.clear_scope(rid)
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "profile_not_enabled")
         sp.assert_not_called()
         self.assertEqual(itstore.list_evidence(rid), [])
 
