@@ -639,6 +639,16 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 60, "max_output_chars": 20000,
         },
+        {
+            "name": "itops_linux_inventory", "handler": _noop,
+            "display_name": "IT-Ops Linux Inventory", "display_name_ru": "Инвентарь Linux",
+            "category": "itops",
+            "description": "Read-only Linux inventory (os/cpu/mem/disk/net/uptime/blockdev) on a saved verified linux profile",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 120, "max_output_chars": 14000,
+        },
     ]
 
 

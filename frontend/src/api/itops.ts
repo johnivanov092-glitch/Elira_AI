@@ -77,20 +77,28 @@ export async function listAssets(): Promise<AssetsResp> {
   return request<AssetsResp>("/api/itops/assets");
 }
 
+export type DiagnosticsAdapter = "healthcheck" | "linux_inventory";
+
 export type DiagnosticsStartResp = {
   ok: boolean;
   run_id: string;
   profile_id: string;
+  adapter?: string;
+  tool?: string;
   message: string;
   ttl_seconds: number;
 };
 
 // Start ONE scoped read-only diagnostic run for a saved, VERIFIED profile. The
-// SERVER mints the run_id and binds a read-only operation scope before the run;
-// the caller then streams /api/code-agent/stream with THIS run_id + message.
-export async function startDiagnostics(profile_id: string): Promise<DiagnosticsStartResp> {
+// client picks an ADAPTER (enum) — never a tool name; the SERVER maps adapter→tool,
+// mints the run_id, and binds a read-only scope to that ONE tool before the run.
+// The caller then streams /api/code-agent/stream with THIS run_id + message.
+export async function startDiagnostics(
+  profile_id: string,
+  adapter: DiagnosticsAdapter = "healthcheck",
+): Promise<DiagnosticsStartResp> {
   return request<DiagnosticsStartResp>("/api/itops/diagnostics/start", {
     method: "POST",
-    body: { profile_id },
+    body: { profile_id, adapter },
   });
 }

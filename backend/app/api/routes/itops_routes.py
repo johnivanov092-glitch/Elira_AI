@@ -66,6 +66,19 @@ class VerifyRequest(BaseModel):
 class DiagnosticsStartRequest(BaseModel):
     model_config = {"extra": "forbid"}
     profile_id: str = Field(..., description="A SAVED, VERIFIED (enabled) connection profile id")
+    # The client picks an ADAPTER (a fixed enum), never a tool name. The server maps
+    # adapter → tool via _ADAPTER_TOOL and binds the scope to exactly that tool.
+    adapter: Literal["healthcheck", "linux_inventory"] = "healthcheck"
+
+
+# Server-side adapter → tool table. The client never supplies a tool name; this is
+# the ONLY source of a scope's allowed_tool.
+_ADAPTER_TOOL: dict[str, str] = {
+    "healthcheck": "itops_ssh_healthcheck",
+    "linux_inventory": "itops_linux_inventory",
+}
+# Adapters that require a specific asset kind.
+_ADAPTER_REQUIRES_KIND: dict[str, str] = {"linux_inventory": "linux"}
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────
@@ -197,14 +210,22 @@ def diagnostics_start(payload: DiagnosticsStartRequest) -> dict[str, Any]:
     asset = store.get_asset(str(profile.get("asset_id") or ""))
     if not asset or asset.get("lifecycle_state") != "enabled":
         raise HTTPException(status_code=409, detail="profile is not verified/enabled — verify it first")
+    # Adapter → tool is server-owned; some adapters require a specific asset kind.
+    tool = _ADAPTER_TOOL[payload.adapter]
+    need_kind = _ADAPTER_REQUIRES_KIND.get(payload.adapter)
+    if need_kind and asset.get("kind") != need_kind:
+        raise HTTPException(status_code=409,
+                            detail=f"{payload.adapter} requires a {need_kind} asset")
 
     run_id = f"itops-diag-{uuid.uuid4().hex}"
-    operation_scope.bind_scope(run_id, payload.profile_id)   # read_only, default TTL
+    # bind the scope to EXACTLY this one adapter tool (not "any itops tool")
+    operation_scope.bind_scope(run_id, payload.profile_id, allowed_tool=tool)
     message = (
         "Выполни read-only диагностику сохранённого подключения. Активируй инструмент "
-        "itops_ssh_healthcheck через tool_search, затем вызови его РОВНО ОДИН РАЗ с "
+        f"{tool} через tool_search, затем вызови его РОВНО ОДИН РАЗ с "
         f'profile_id="{payload.profile_id}" и покажи результат. Не вызывай никакие '
         "другие инструменты — это ограниченный диагностический запуск."
     )
     return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id,
+            "adapter": payload.adapter, "tool": tool,
             "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}

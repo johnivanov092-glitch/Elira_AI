@@ -1864,27 +1864,28 @@ def _stream_code_agent_core(
                         **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
-                # Scoped Read-Only SSH v1: in a bound read-only diagnostic run the ONLY
-                # allowed tools are tool_search (discovery) and itops_ssh_healthcheck
-                # (kernel-gated). The meta-tools below (ask_user / ssh_request_host /
-                # todo_update) are handled INLINE here, BEFORE the kernel — so the
+                # Scoped Read-Only SSH: in a bound read-only diagnostic run the ONLY
+                # allowed tools are tool_search (discovery) and the ONE bound adapter
+                # tool (kernel-gated). The meta-tools below (ask_user / ssh_request_host
+                # / todo_update) are handled INLINE here, BEFORE the kernel — so the
                 # executor scope gate (1g) cannot block them. Refuse everything except
-                # the two allowed tools here too, so the capability allowlist is airtight
-                # even for kernel-bypassing tools (e.g. ssh_request_host must not be able
-                # to widen the ssh allowlist from inside a scoped diagnostic run).
-                if name not in ("tool_search", "itops_ssh_healthcheck"):
+                # tool_search + the bound adapter tool here too, so the capability
+                # allowlist is airtight even for kernel-bypassing tools (e.g.
+                # ssh_request_host must not widen the ssh allowlist from inside a scope).
+                if name != "tool_search":
                     try:
-                        from app.application.agent_kernel.operation_scope import is_locked_down as _is_locked
-                        _scoped_now = _is_locked(rid)
+                        from app.application.agent_kernel.operation_scope import locked_tool as _locked_tool_fn
+                        _lt = _locked_tool_fn(rid)
+                        _block_inline = _lt is not None and name != _lt
                     except Exception:
                         # Fail CLOSED for a diagnostic run: if the scope layer is broken
-                        # we cannot verify lockdown, so treat an itops-diag run as locked
-                        # (block the inline meta-tools). Normal runs are unaffected.
-                        _scoped_now = str(rid or "").startswith("itops-diag-")
-                    if _scoped_now:
+                        # we cannot verify the allowed tool, so block inline meta-tools
+                        # for an itops-diag run. Normal runs are unaffected.
+                        _block_inline = str(rid or "").startswith("itops-diag-")
+                    if _block_inline:
                         _msg = (f"Инструмент '{name}' недоступен в ограниченном read-only "
                                 "диагностическом запуске — разрешены только tool_search и "
-                                "itops_ssh_healthcheck.")
+                                "выбранный диагностический инструмент.")
                         yield {"type": "tool_call", "step": step, "tool": name,
                                "arguments": parsed_args, "result": _msg, "ok": False}
                         messages.append({"role": "tool", "content": _msg, "name": name})

@@ -194,32 +194,30 @@ def execute_tool(
             error="tool_not_activated",
         )
 
-    # 1g. Operation-scope capability allowlist (Scoped Read-Only SSH v1). When a run
-    # has a bound operation scope it is a LOCKED-DOWN read-only diagnostic run: only
-    # tool_search (discovery) and itops_ssh_healthcheck may execute — every other
-    # tool (ssh_*, run_bash, filesystem, browser, change tools) is blocked here at
-    # the single dispatch path, so the model cannot escape the scope via any tool.
-    # And itops_ssh_healthcheck can NEVER run without a bound scope for THIS run,
-    # bound to the exact profile_id, over an ENABLED asset. Fail-closed throughout
-    # (import errors / empty run_id / unknown profile all block). run_id may be
-    # empty; get_active_scope treats that as "no scope".
-    _SCOPE_TOOL = "itops_ssh_healthcheck"
+    # 1g. Operation-scope capability allowlist (Scoped Read-Only SSH). A run with a
+    # bound operation scope is a LOCKED-DOWN read-only diagnostic run that permits
+    # exactly ONE adapter tool (chosen server-side): only tool_search (discovery) and
+    # that one bound tool may execute — every other tool (including OTHER itops
+    # adapters, ssh_*, run_bash, filesystem, browser, change tools) is blocked here at
+    # the single dispatch path. The allowlist is the EXACT bound tool NAME (not "any
+    # itops tool"), so a future itops tool is never auto-runnable from an old scope.
+    # An itops adapter tool (spec.source == "itops") can NEVER run without a bound
+    # scope naming it, over the exact profile_id, on an ENABLED asset. Fail-closed
+    # throughout (import error / empty run_id / unknown profile all block).
+    _is_itops_tool = spec.get("source") == "itops"
     try:
         from app.application.agent_kernel import operation_scope as _opscope
-        # The capability allowlist is STICKY (is_locked_down): once a run is bound to
-        # a diagnostic scope it stays locked down until it ends — a TTL expiry must
-        # NEVER re-open the tools it was barred from. The one-shot health check needs
-        # a LIVE scope (get_active_scope), which TTL does gate.
-        _locked = _opscope.is_locked_down(request.run_id)
+        # STICKY allowlist (locked_tool): once bound, a run stays locked until it ends
+        # — a TTL expiry must NEVER re-open tools it was barred from. The one-shot
+        # operation needs a LIVE scope (get_active_scope), which TTL does gate.
+        _locked_tool = _opscope.locked_tool(request.run_id)
         _scope = _opscope.get_active_scope(request.run_id)
     except Exception as exc:  # noqa: BLE001 — a broken scope layer must BLOCK, not fall open
-        # Fail CLOSED for a diagnostic run: its server-minted run_id carries the
-        # prefix (checked with a literal so this holds even if the import above is
-        # what failed), so if we cannot verify its lockdown we block EVERY tool — a
-        # broken scope layer must never re-open a scoped run's tools. Normal runs are
-        # unaffected (the scope layer is irrelevant to them).
+        # Fail CLOSED for a diagnostic run (server-minted run_id prefix — literal, so
+        # this holds even if the import above is what failed) and for any itops adapter
+        # tool: if we cannot verify the lockdown we block. Normal runs are unaffected.
         _diag_run = str(request.run_id or "").startswith("itops-diag-")
-        if _diag_run or tool_name == _SCOPE_TOOL:
+        if _diag_run or _is_itops_tool:
             _emit_blocked(request, f"operation scope unavailable: {exc}")
             return ToolExecutionResult(
                 status="blocked",
@@ -227,24 +225,26 @@ def execute_tool(
                         "error": "scope_unavailable"},
                 error="scope_unavailable",
             )
-        _locked, _scope = False, None
+        _locked_tool, _scope = None, None
 
-    if _locked and tool_name not in ("tool_search", _SCOPE_TOOL):
+    # (a) In a locked-down run, allow ONLY tool_search + the EXACT bound adapter tool.
+    if _locked_tool is not None and tool_name not in ("tool_search", _locked_tool):
         _emit_blocked(request, f"tool '{tool_name}' blocked: scoped read-only diagnostic run")
         return ToolExecutionResult(
             status="blocked",
-            output={
-                "ok": False,
-                "text": (f"Tool '{tool_name}' is not allowed in a scoped read-only diagnostic "
-                         "run — only tool_search and itops_ssh_healthcheck may run here."),
-                "error": "scope_restricted",
-            },
+            output={"ok": False,
+                    "text": (f"Tool '{tool_name}' is not allowed in this scoped read-only "
+                             f"diagnostic run — only tool_search and '{_locked_tool}' may run here."),
+                    "error": "scope_restricted"},
             error="scope_restricted",
         )
 
-    if tool_name == _SCOPE_TOOL:
+    # (b) An itops adapter tool requires a LIVE scope bound to it, over the exact
+    # profile, on an ENABLED asset, with its one operation slot unused. (If a scope is
+    # bound to a DIFFERENT adapter, clause (a) already blocked this call.)
+    if _is_itops_tool:
         if _scope is None:
-            _emit_blocked(request, "itops_ssh_healthcheck requires an operation scope")
+            _emit_blocked(request, f"{tool_name} requires an operation scope")
             return ToolExecutionResult(
                 status="blocked",
                 output={"ok": False, "text": "This diagnostic tool requires a bound read-only "
@@ -269,20 +269,19 @@ def execute_tool(
                         "(draft or missing) — blocked (fail-closed).", "error": "profile_not_enabled"},
                 error="profile_not_enabled",
             )
-        # One health check per run: atomic reserve BEFORE dispatch. A second call
-        # (or a retry after a failed dispatch) is refused.
-        if not _opscope.reserve_healthcheck(request.run_id):
-            _emit_blocked(request, "health check already used for this run")
+        # One read-only operation per run: atomic reserve BEFORE dispatch. A second
+        # call (or a retry after a failed dispatch) is refused.
+        if not _opscope.reserve_operation(request.run_id):
+            _emit_blocked(request, "operation already used for this run")
             return ToolExecutionResult(
                 status="blocked",
                 output={"ok": False, "text": "This diagnostic run has already performed its one "
-                        "health check — blocked.", "error": "healthcheck_already_used"},
-                error="healthcheck_already_used",
+                        "read-only operation — blocked.", "error": "operation_already_used"},
+                error="operation_already_used",
             )
-        # Re-pin profile_id to the scope's value (already validated equal above), so
-        # the handler receives the authoritative profile. The handler takes its run_id
-        # from the runtime context the executor binds (set_current_run_id below), NOT
-        # from args — so run_id is never injected here.
+        # Re-pin profile_id to the scope's value (already validated equal above). The
+        # handler takes its run_id from the runtime context the executor binds
+        # (set_current_run_id below), NOT from args — so run_id is never injected here.
         request.args = {**request.args, "profile_id": _pid}
 
     # 2. Policy preflight — rate-limit, context-budget, and per-call allowed_tools.

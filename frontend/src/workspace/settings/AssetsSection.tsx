@@ -1,9 +1,10 @@
-import { Activity, CheckCircle2, Fingerprint, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, Fingerprint, ListChecks, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
 import {
   type AssetsResp,
+  type DiagnosticsAdapter,
   type ItopsAsset,
   type ItopsProfile,
   type PreviewResp,
@@ -279,29 +280,30 @@ function AssetsList({ assets, onReload, project }: { assets: ItopsAsset[] | null
     }
   }
 
-  // Start ONE server-scoped read-only diagnostic run and stream it. The run is
-  // locked to this profile (read-only, TTL) by the backend; the model can only run
-  // the fixed health check. We surface its output inline.
-  async function doDiagnose(profile_id: string) {
+  // Start ONE server-scoped read-only diagnostic run for the chosen adapter and
+  // stream it. The backend binds the run's scope to exactly that one tool; we match
+  // the tool named in the start response and surface its output inline.
+  async function doDiagnose(profile_id: string, adapter: DiagnosticsAdapter) {
     if (diagFor) return;
-    setDiagFor(profile_id);
+    setDiagFor(`${profile_id}:${adapter}`);
     setDiagOut({ profileId: profile_id, text: "", err: "" });
     try {
-      const s = await startDiagnostics(profile_id);
-      let hc = "";
+      const s = await startDiagnostics(profile_id, adapter);
+      const wantTool = s.tool || "";
+      let toolOut = "";
       let finalText = "";
       await streamCodeAgent({
         message: s.message,
         projectRoot: project,
         runId: s.run_id,
-        maxSteps: 6,
+        maxSteps: 8,
         onEvent: (ev) => {
-          if (ev.type === "tool_call" && ev.tool === "itops_ssh_healthcheck") hc = ev.result || hc;
+          if (ev.type === "tool_call" && ev.tool === wantTool) toolOut = ev.result || toolOut;
           else if (ev.type === "final_response") finalText = ev.text || finalText;
         },
         onError: (e) => setDiagOut({ profileId: profile_id, text: "", err: e.message }),
       });
-      setDiagOut({ profileId: profile_id, text: hc || finalText || "готово", err: "" });
+      setDiagOut({ profileId: profile_id, text: toolOut || finalText || "готово", err: "" });
     } catch (e) {
       setDiagOut({ profileId: profile_id, text: "", err: errText(e, "Диагностика не удалась") });
     } finally {
@@ -354,15 +356,28 @@ function AssetsList({ assets, onReload, project }: { assets: ItopsAsset[] | null
                       </span>
                     </span>
                     {a.lifecycle_state === "enabled" && (
-                      <button
-                        type="button"
-                        onClick={() => void doDiagnose(p.profile_id)}
-                        disabled={diagFor !== ""}
-                        title="Read-only диагностика: hostname / uname -a / uptime"
-                        className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
-                      >
-                        {diagFor === p.profile_id ? <Loader2 size={11} className="animate-spin" /> : <Activity size={11} />} Диагностика
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => void doDiagnose(p.profile_id, "healthcheck")}
+                          disabled={diagFor !== ""}
+                          title="Read-only health: hostname / uname -a / uptime"
+                          className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
+                        >
+                          {diagFor === `${p.profile_id}:healthcheck` ? <Loader2 size={11} className="animate-spin" /> : <Activity size={11} />} Health
+                        </button>
+                        {a.kind === "linux" && (
+                          <button
+                            type="button"
+                            onClick={() => void doDiagnose(p.profile_id, "linux_inventory")}
+                            disabled={diagFor !== ""}
+                            title="Read-only инвентарь Linux (os / cpu / mem / disk / net / uptime)"
+                            className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
+                          >
+                            {diagFor === `${p.profile_id}:linux_inventory` ? <Loader2 size={11} className="animate-spin" /> : <ListChecks size={11} />} Инвентарь
+                          </button>
+                        )}
+                      </>
                     )}
                     <button
                       type="button"

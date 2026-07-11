@@ -110,7 +110,7 @@ def tool_search(
     _W1_TOOLS = {"web_query", "web_claim_add", "web_sitemap"}
     # itops diagnostic tool: invisible when the itops flag is off, so the model never
     # sees or tries to activate a disabled tool (its provider is off too).
-    _ITOPS_TOOLS = {"itops_ssh_healthcheck"}
+    _ITOPS_TOOLS = {"itops_ssh_healthcheck", "itops_linux_inventory"}
     try:
         from app.application.feature_flags import flag_enabled
         if not flag_enabled("web_corpus"):

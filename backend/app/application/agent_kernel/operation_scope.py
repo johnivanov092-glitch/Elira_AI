@@ -1,23 +1,28 @@
-"""Scoped Read-Only SSH v1 — run-scoped operation scope.
+"""Scoped Read-Only SSH — run-scoped operation scope.
 
 A diagnostic run is bound to ONE saved connection profile with a read-only,
-time-limited scope. While a run has a bound scope the unified executor
-(``agent_kernel.executor.execute_tool``) turns it into a hard capability
-allowlist: ONLY ``tool_search`` (discovery) and ``itops_ssh_healthcheck`` may
-run — every other tool (ssh_*, run_bash, filesystem, browser, change tools) is
-blocked at the single dispatch path, so the model cannot escape the scope. And
-``itops_ssh_healthcheck`` can NEVER run without a bound scope.
+time-limited scope that permits exactly ONE adapter tool (chosen server-side from
+a fixed adapter→tool table — the model/client never names the tool). While a run
+has a bound scope the unified executor (``agent_kernel.executor.execute_tool``)
+turns it into a hard capability allowlist: ONLY ``tool_search`` (discovery) and
+that one ``allowed_tool`` may run — every other tool (including other itops
+adapters, ssh_*, run_bash, filesystem, browser, change tools) is blocked at the
+single dispatch path, so the model cannot escape the scope. The allowlist is the
+exact bound tool name, NOT "any itops tool", so a future itops tool is never
+auto-runnable from an old scope. And an itops adapter tool can NEVER run without a
+bound scope naming it.
 
 Design (mirrors ``deferred_tools.py``):
 - State is in-memory, keyed by ``run_id``; concurrent runs are isolated.
 - The scope is created ONLY by the server (POST /api/itops/diagnostics/start),
-  never by the model — the model never chooses the profile_id.
-- TTL is enforced lazily on read: an expired scope reads as absent (None).
-- ``reserve_healthcheck`` is an atomic compare-and-set — the FIRST caller wins,
-  every later call is refused, so a run performs at most one health check.
+  never by the model — the model never chooses the profile_id or the tool.
+- TTL is enforced lazily on read: an expired scope reads as absent for the tool
+  call (``get_active_scope`` None) but the lockdown stays sticky (``locked_tool``).
+- ``reserve_operation`` is an atomic compare-and-set — the FIRST caller wins,
+  every later call is refused, so a run performs at most one read-only operation.
 - Callers drop the scope with ``clear_scope`` when the run ends (finally/cancel/
   error); expiry drops it lazily. A dropped/expired scope => the run is no longer
-  scoped and the read-only tool is blocked (fail-closed).
+  scoped and the adapter tool is blocked (fail-closed).
 """
 from __future__ import annotations
 
@@ -56,23 +61,30 @@ class ScopeView:
     profile_id: str
     mode: str
     expires_at: float
-    healthcheck_used: bool
+    operation_used: bool
+    # The SINGLE adapter tool this scope permits (e.g. "itops_ssh_healthcheck" or
+    # "itops_linux_inventory"). The gate allows only tool_search + this exact tool —
+    # a source==itops check is NOT used for allowlist membership, so a future itops
+    # tool is never auto-runnable from an old scope.
+    allowed_tool: str
 
 
 def _norm(run_id: str) -> str:
     return str(run_id or "").strip()
 
 
-def bind_scope(run_id: str, profile_id: str, *, mode: str = "read_only",
-               ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
-    """Bind *run_id* to a read-only diagnostic scope over *profile_id*.
+def bind_scope(run_id: str, profile_id: str, *, allowed_tool: str,
+               mode: str = "read_only", ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
+    """Bind *run_id* to a read-only scope over *profile_id*, permitting exactly the
+    one adapter tool *allowed_tool*.
 
-    No-op (returns None) for an empty run_id / profile_id. Re-binding replaces the
-    prior scope for that run (and resets healthcheck_used).
+    No-op (returns None) for an empty run_id / profile_id / allowed_tool. Re-binding
+    replaces the prior scope (and resets operation_used).
     """
     rid = _norm(run_id)
     pid = str(profile_id or "").strip()
-    if not rid or not pid:
+    tool = str(allowed_tool or "").strip()
+    if not rid or not pid or not tool:
         return None
     with _LOCK:
         _sweep_locked()   # bound growth: drop long-dead abandoned entries
@@ -80,7 +92,8 @@ def bind_scope(run_id: str, profile_id: str, *, mode: str = "read_only",
             "profile_id": pid,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
-            "healthcheck_used": False,
+            "operation_used": False,
+            "allowed_tool": tool,
         }
         return _view(rid)
 
@@ -120,7 +133,8 @@ def _view(rid: str) -> ScopeView | None:
     s = _SCOPES.get(rid)
     if s is None:
         return None
-    return ScopeView(rid, s["profile_id"], s["mode"], s["expires_at"], s["healthcheck_used"])
+    return ScopeView(rid, s["profile_id"], s["mode"], s["expires_at"],
+                     s["operation_used"], s["allowed_tool"])
 
 
 def get_active_scope(run_id: str) -> ScopeView | None:
@@ -145,11 +159,19 @@ def is_locked_down(run_id: str) -> bool:
     REGARDLESS of TTL. The capability allowlist is sticky: an expired TTL must never
     re-open the tools a scoped run was barred from. Cleared only by clear_scope
     (run finally/cancel/error) or the abandoned-entry sweep."""
+    return locked_tool(run_id) is not None
+
+
+def locked_tool(run_id: str) -> str | None:
+    """The SINGLE adapter tool this locked-down run permits, REGARDLESS of TTL.
+    None if the run is not locked down. The gate's sticky allowlist (tool_search +
+    this tool) reads this so an expired TTL never re-opens other tools."""
     rid = _norm(run_id)
     if not rid:
-        return False
+        return None
     with _LOCK:
-        return rid in _SCOPES
+        s = _SCOPES.get(rid)
+        return s["allowed_tool"] if s else None
 
 
 def is_scoped(run_id: str) -> bool:
@@ -157,8 +179,8 @@ def is_scoped(run_id: str) -> bool:
     return get_active_scope(run_id) is not None
 
 
-def reserve_healthcheck(run_id: str) -> bool:
-    """Atomically claim the run's single health-check slot.
+def reserve_operation(run_id: str) -> bool:
+    """Atomically claim the run's SINGLE read-only operation slot.
 
     Returns True exactly once per live scope (first caller wins); False if there
     is no live scope or the slot was already claimed. Reserving BEFORE dispatch
@@ -171,9 +193,9 @@ def reserve_healthcheck(run_id: str) -> bool:
         s = _SCOPES.get(rid)
         if s is None or time.time() > s["expires_at"]:
             return False
-        if s["healthcheck_used"]:
+        if s["operation_used"]:
             return False
-        s["healthcheck_used"] = True
+        s["operation_used"] = True
         return True
 
 
