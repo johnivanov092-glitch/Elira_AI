@@ -148,10 +148,17 @@ def tool_itops_ssh_healthcheck(profile_id: str = "", **_ignored: Any) -> dict[st
     try:
         store.init_db()
         prof = store.get_connection_profile(pid)
+        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
     if not prof or prof.get("transport") != "ssh":
         return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
+    # Defense in depth: the route + gate already require an ENABLED asset, but the handler
+    # holds the same line so a scope bound another way can never run against a draft/unknown
+    # asset (fail-closed BEFORE any SSH).
+    if not asset or asset.get("lifecycle_state") != "enabled":
+        return {"ok": False, "text": "ERROR: health check requires a verified/enabled asset",
+                "error": "profile_not_enabled"}
     alias = str(prof.get("ssh_alias") or "").strip()
     if not ssh_enroll.alias_ok(alias):
         return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
@@ -233,6 +240,9 @@ def tool_itops_linux_inventory(profile_id: str = "", **_ignored: Any) -> dict[st
     if not asset or asset.get("kind") != "linux":
         return {"ok": False, "text": "ERROR: linux inventory requires a linux asset",
                 "error": "not_linux_asset"}
+    if asset.get("lifecycle_state") != "enabled":     # defense in depth (route/gate also require it)
+        return {"ok": False, "text": "ERROR: linux inventory requires a verified/enabled asset",
+                "error": "profile_not_enabled"}
     alias = str(prof.get("ssh_alias") or "").strip()
     if not ssh_enroll.alias_ok(alias):
         return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
@@ -327,6 +337,9 @@ def tool_itops_windows_inventory(profile_id: str = "", **_ignored: Any) -> dict[
     if not asset or asset.get("kind") != "windows":
         return {"ok": False, "text": "ERROR: windows inventory requires a windows asset",
                 "error": "not_windows_asset"}
+    if asset.get("lifecycle_state") != "enabled":     # defense in depth (route/gate also require it)
+        return {"ok": False, "text": "ERROR: windows inventory requires a verified/enabled asset",
+                "error": "profile_not_enabled"}
     alias = str(prof.get("ssh_alias") or "").strip()
     if not ssh_enroll.alias_ok(alias):
         return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}

@@ -321,9 +321,52 @@ class InventoryHandlerTest(unittest.TestCase):
         itstore.upsert_asset(asset_id="win-1", label="Win", kind="windows", lifecycle_state="enabled")
         itstore.put_connection_profile(profile_id="prof-win", asset_id="win-1",
                                        transport="ssh", ssh_alias="winbox")
+        # DRAFT (unverified) assets — for the direct-handler bypass regressions
+        itstore.upsert_asset(asset_id="ssh-draft", label="LD", kind="linux", lifecycle_state="draft")
+        itstore.put_connection_profile(profile_id="prof-draft-linux", asset_id="ssh-draft",
+                                       transport="ssh", ssh_alias="draftlab")
+        itstore.upsert_asset(asset_id="win-draft", label="WD", kind="windows", lifecycle_state="draft")
+        itstore.put_connection_profile(profile_id="prof-draft-win", asset_id="win-draft",
+                                       transport="ssh", ssh_alias="draftwin")
 
     def tearDown(self):
         itstore._DB_PATH_OVERRIDE = None
+
+    def _bypass(self, handler_name, profile_id):
+        # call a handler DIRECTLY (bypassing the executor gate) with a profile_id — the
+        # scenario a handler's own defense-in-depth must still fail-closed on.
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        rid = f"bypass-{handler_name}-{profile_id}"
+        handler = getattr(itops_provider, handler_name)
+        tok = set_current_run_id(rid)
+        try:
+            with unittest.mock.patch("subprocess.run") as sp:
+                out = handler(profile_id=profile_id)
+        finally:
+            reset_current_run_id(tok)
+        return out, sp, rid
+
+    def test_healthcheck_draft_asset_refused_before_ssh(self):
+        out, sp, rid = self._bypass("tool_itops_ssh_healthcheck", "prof-draft-linux")
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "profile_not_enabled")
+        sp.assert_not_called()
+        self.assertEqual(itstore.list_evidence(rid), [])
+
+    def test_linux_inventory_draft_asset_refused_before_ssh(self):
+        out, sp, rid = self._bypass("tool_itops_linux_inventory", "prof-draft-linux")
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "profile_not_enabled")
+        sp.assert_not_called()
+        self.assertEqual(itstore.list_evidence(rid), [])
+
+    def test_windows_inventory_draft_asset_refused_before_ssh(self):
+        out, sp, rid = self._bypass("tool_itops_windows_inventory", "prof-draft-win")
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"], "profile_not_enabled")
+        sp.assert_not_called()
+        self.assertEqual(itstore.list_evidence(rid), [])
 
     def _run(self, run_id, fakes):
         from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
