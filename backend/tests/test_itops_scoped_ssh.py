@@ -25,6 +25,7 @@ from app.infrastructure.it_ops import store as itstore  # noqa: E402
 
 HEALTH = "itops_ssh_healthcheck"
 INV = "itops_linux_inventory"
+WIN = "itops_windows_inventory"
 
 
 def _fake_proc(out=b"", err=b"", code=0):
@@ -136,6 +137,16 @@ class ScopedGateTest(unittest.TestCase):
         for other in (HEALTH, "run_bash", "itops_dummy_ro"):     # everything else blocked
             res, c = self._exec(other, {"profile_id": "prof-ok", "command": "id"})
             self.assertEqual(res.status, "blocked", other)
+            self.assertEqual(res.error, "scope_restricted", other)
+            self.assertEqual(c, [])
+
+    def test_windows_inventory_scope_allows_only_windows_inventory(self):
+        self._bind(WIN)                                          # gate is kind-agnostic
+        ok, calls = self._exec(WIN, {"profile_id": "prof-ok"})
+        self.assertEqual(ok.status, "ok", ok.output)
+        self.assertEqual(len(calls), 1)
+        for other in (HEALTH, INV, "run_bash", "itops_dummy_ro"):
+            res, c = self._exec(other, {"profile_id": "prof-ok", "command": "id"})
             self.assertEqual(res.error, "scope_restricted", other)
             self.assertEqual(c, [])
 
@@ -308,6 +319,61 @@ class InventoryHandlerTest(unittest.TestCase):
         self.assertEqual(out["error"], "not_linux_asset")
         self.assertEqual(itstore.list_evidence("ctx-inv-win"), [])   # nothing run
 
+    # ── Windows inventory adapter (#2) ──────────────────────────────────────────
+    def _run_win(self, run_id, pid, fakes):
+        from app.application.code_agent.tools import reset_current_run_id, set_current_run_id
+        from app.application.tool_providers import itops_provider
+        tok = set_current_run_id(run_id)
+        try:
+            with unittest.mock.patch("subprocess.run", side_effect=fakes):
+                return itops_provider.tool_itops_windows_inventory(profile_id=pid)
+        finally:
+            reset_current_run_id(tok)
+
+    def _n_win(self):
+        from app.application.tool_providers.itops_provider import _WINDOWS_COMMANDS
+        return len(_WINDOWS_COMMANDS)
+
+    def test_windows_encoded_command_not_raw(self):
+        import base64 as _b64
+        from app.application.tool_providers.itops_provider import _ps_argv, _ps_encode, _WINDOWS_COMMANDS
+        script = _WINDOWS_COMMANDS[0][1]
+        enc = _ps_encode(script)
+        self.assertEqual(_b64.b64decode(enc).decode("utf-16-le"), script)   # UTF-16LE round-trip
+        argv = _ps_argv("lab", script)
+        self.assertIn("powershell.exe", argv)
+        self.assertIn("-NoProfile", argv)
+        self.assertIn("-NonInteractive", argv)
+        self.assertIn("-EncodedCommand", argv)
+        self.assertIn(enc, argv)
+        self.assertNotIn("-Command", argv)                 # not -Command
+        self.assertNotIn("Bypass", " ".join(argv))         # no ExecutionPolicy Bypass
+        self.assertNotIn(script, argv)                     # the raw script is never on the argv
+
+    def test_windows_all_ok_writes_readable_evidence(self):
+        n = self._n_win()
+        out = self._run_win("ctx-win-ok", "prof-win", [_fake_proc(b"data\r\n", b"", 0) for _ in range(n)])
+        self.assertTrue(out["ok"], out)
+        ev = itstore.list_evidence("ctx-win-ok")
+        self.assertEqual(len(ev), n)
+        self.assertTrue(all(e["operation"].startswith("windows_inventory:") for e in ev))
+        for e in ev:                                        # evidence stores the readable script
+            self.assertNotIn("EncodedCommand", e["result"].get("command", ""))
+
+    def test_windows_requires_windows_asset(self):
+        out = self._run_win("ctx-win-linux", "prof-linux", [_fake_proc(b"", b"", 0)])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "not_windows_asset")
+        self.assertEqual(itstore.list_evidence("ctx-win-linux"), [])
+
+    def test_windows_command_failure_makes_ok_false(self):
+        n = self._n_win()
+        fakes = [_fake_proc(b"ok\r\n", b"", 0) for _ in range(n)]
+        fakes[2] = _fake_proc(b"", b"boom", 1)
+        out = self._run_win("ctx-win-fail", "prof-win", fakes)
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "inventory_command_failed")
+
 
 class DiagnosticsRouteTest(unittest.TestCase):
     def setUp(self):
@@ -362,6 +428,18 @@ class DiagnosticsRouteTest(unittest.TestCase):
 
     def test_linux_inventory_refused_on_non_linux_asset(self):
         r = self._start(profile_id="prof-win", adapter="linux_inventory")
+        self.assertEqual(r.status_code, 409, r.text)
+
+    def test_windows_inventory_adapter_binds_windows_tool(self):
+        r = self._start(profile_id="prof-win", adapter="windows_inventory")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["tool"], WIN)
+        self.assertEqual(opscope.get_active_scope(body["run_id"]).allowed_tool, WIN)
+        opscope.clear_scope(body["run_id"])
+
+    def test_windows_inventory_refused_on_non_windows_asset(self):
+        r = self._start(profile_id="prof-ok", adapter="windows_inventory")   # prof-ok is linux
         self.assertEqual(r.status_code, 409, r.text)
 
     def test_client_cannot_pass_a_tool_name(self):

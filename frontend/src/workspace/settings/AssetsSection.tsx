@@ -100,6 +100,7 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<"" | "preview" | "save">("");
   const [err, setErr] = useState("");
+  const [kind, setKind] = useState<"linux" | "windows">("linux");
 
   async function doPreview() {
     const a = alias.trim();
@@ -131,9 +132,9 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
     if (!canSave) return;
     setBusy("save"); setErr("");
     try {
-      const r = await sshEnroll({ label: label.trim(), ssh_alias: alias.trim() });
+      const r = await sshEnroll({ label: label.trim(), ssh_alias: alias.trim(), kind });
       toast.success(`Сохранено: ${r.asset.label} (${r.asset.lifecycle_state})`);
-      setLabel(""); setAlias(""); setPreview(null); setConfirmed(false);
+      setLabel(""); setAlias(""); setPreview(null); setConfirmed(false); setKind("linux");
       onEnrolled();
     } catch (e) {
       setErr(errText(e, "Не удалось сохранить подключение"));
@@ -158,12 +159,23 @@ function EnrollBlock({ onEnrolled }: { onEnrolled: () => void }) {
       )}
 
       <div className="mt-2 flex flex-col gap-2">
-        <input
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder="Название (например «Прод-сервер лаборатории»)"
-          className="rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
-        />
+        <div className="flex gap-2">
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Название (например «Прод-сервер лаборатории»)"
+            className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none placeholder:text-mut focus:border-acl"
+          />
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value as "linux" | "windows")}
+            title="Тип хоста — определяет доступные адаптеры диагностики"
+            className="shrink-0 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none focus:border-acl"
+          >
+            <option value="linux">Linux</option>
+            <option value="windows">Windows</option>
+          </select>
+        </div>
         <div className="flex gap-2">
           <input
             value={alias}
@@ -380,6 +392,17 @@ function AssetsList({ assets, onReload, project }: { assets: ItopsAsset[] | null
                             className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
                           >
                             {diagFor === `${p.profile_id}:linux_inventory` ? <Loader2 size={11} className="animate-spin" /> : <ListChecks size={11} />} Инвентарь
+                          </button>
+                        )}
+                        {a.kind === "windows" && (
+                          <button
+                            type="button"
+                            onClick={() => void doDiagnose(p.profile_id, "windows_inventory")}
+                            disabled={diagFor !== ""}
+                            title="Read-only инвентарь Windows (os / version / hostname / uptime / disks / services / ip)"
+                            className="flex shrink-0 items-center gap-1 rounded-md border border-line px-2 py-1 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
+                          >
+                            {diagFor === `${p.profile_id}:windows_inventory` ? <Loader2 size={11} className="animate-spin" /> : <ListChecks size={11} />} Инвентарь Win
                           </button>
                         )}
                       </>

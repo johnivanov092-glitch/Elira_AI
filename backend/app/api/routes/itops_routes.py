@@ -68,7 +68,7 @@ class DiagnosticsStartRequest(BaseModel):
     profile_id: str = Field(..., description="A SAVED, VERIFIED (enabled) connection profile id")
     # The client picks an ADAPTER (a fixed enum), never a tool name. The server maps
     # adapter → tool via _ADAPTER_TOOL and binds the scope to exactly that tool.
-    adapter: Literal["healthcheck", "linux_inventory"] = "healthcheck"
+    adapter: Literal["healthcheck", "linux_inventory", "windows_inventory"] = "healthcheck"
 
 
 # Server-side adapter → tool table. The client never supplies a tool name; this is
@@ -76,9 +76,13 @@ class DiagnosticsStartRequest(BaseModel):
 _ADAPTER_TOOL: dict[str, str] = {
     "healthcheck": "itops_ssh_healthcheck",
     "linux_inventory": "itops_linux_inventory",
+    "windows_inventory": "itops_windows_inventory",
 }
 # Adapters that require a specific asset kind.
-_ADAPTER_REQUIRES_KIND: dict[str, str] = {"linux_inventory": "linux"}
+_ADAPTER_REQUIRES_KIND: dict[str, str] = {
+    "linux_inventory": "linux",
+    "windows_inventory": "windows",
+}
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────

@@ -77,7 +77,7 @@ export async function listAssets(): Promise<AssetsResp> {
   return request<AssetsResp>("/api/itops/assets");
 }
 
-export type DiagnosticsAdapter = "healthcheck" | "linux_inventory";
+export type DiagnosticsAdapter = "healthcheck" | "linux_inventory" | "windows_inventory";
 
 export type DiagnosticsStartResp = {
   ok: boolean;

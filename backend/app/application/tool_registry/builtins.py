@@ -649,6 +649,16 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 120, "max_output_chars": 14000,
         },
+        {
+            "name": "itops_windows_inventory", "handler": _noop,
+            "display_name": "IT-Ops Windows Inventory", "display_name_ru": "Инвентарь Windows",
+            "category": "itops",
+            "description": "Read-only Windows inventory (os/version/hostname/uptime/disks/services/ip) on a saved verified windows profile",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 120, "max_output_chars": 14000,
+        },
     ]
 
 
