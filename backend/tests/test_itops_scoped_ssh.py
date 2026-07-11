@@ -410,5 +410,80 @@ class DiagStreamGuardTest(unittest.TestCase):
         self.assertEqual(r.status_code, 409, r.text)
 
 
+class EvidenceHistoryRouteTest(unittest.TestCase):
+    """Read-only diagnostics journal: /evidence/runs summary + /evidence?run_id detail."""
+
+    def setUp(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.itops_routes import router
+        self._tmp = tempfile.mkdtemp()
+        itstore._DB_PATH_OVERRIDE = str(Path(self._tmp) / "it_ops.sqlite3")
+        from app.application import feature_flags as ff
+        self._flag = unittest.mock.patch.object(ff, "flag_enabled", return_value=True)
+        self._flag.start()
+        itstore.init_db()
+        ti = "ssh-lab/prof-ok"
+        # inventory run: ok, ok, unsupported, failed
+        for op, status, code in [("linux_inventory:hostname", "ok", "0"),
+                                 ("linux_inventory:cpu", "ok", "0"),
+                                 ("linux_inventory:failed_units", "unsupported", "1"),
+                                 ("linux_inventory:disk", "failed", "1")]:
+            itstore.record_evidence(run_id="run-inv", target_identity=ti, scanner_vantage="v",
+                                    operation=op, exit_status=code,
+                                    result={"alias": "lab", "command": op, "status": status,
+                                            "stdout": "x", "stderr": ""})
+        # legacy health run: no result.status → counters fall back to exit_status
+        for op, code in [("ssh_healthcheck:hostname", "0"), ("ssh_healthcheck:uptime", "1")]:
+            itstore.record_evidence(run_id="run-health", target_identity=ti, scanner_vantage="v",
+                                    operation=op, exit_status=code,
+                                    result={"alias": "lab", "command": op, "stdout": "y", "stderr": ""})
+        app = FastAPI()
+        app.include_router(router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._flag.stop()
+        itstore._DB_PATH_OVERRIDE = None
+
+    def test_flag_off_evidence_endpoints_404(self):
+        from app.application import feature_flags as ff
+        with unittest.mock.patch.object(ff, "flag_enabled", return_value=False):
+            self.assertEqual(self.client.get("/api/itops/evidence/runs").status_code, 404)
+            self.assertEqual(self.client.get("/api/itops/evidence?run_id=run-inv").status_code, 404)
+
+    def test_runs_summary_counts_mixed_statuses(self):
+        r = self.client.get("/api/itops/evidence/runs")
+        self.assertEqual(r.status_code, 200, r.text)
+        runs = {run["run_id"]: run for run in r.json()["runs"]}
+        inv = runs["run-inv"]
+        self.assertEqual(inv["adapter"], "linux_inventory")
+        self.assertEqual((inv["ok"], inv["failed"], inv["unsupported"], inv["count"]), (2, 1, 1, 4))
+        health = runs["run-health"]
+        self.assertEqual(health["adapter"], "ssh_healthcheck")
+        self.assertEqual((health["ok"], health["failed"]), (1, 1))   # exit_status fallback
+
+    def test_evidence_detail_by_exact_run(self):
+        r = self.client.get("/api/itops/evidence?run_id=run-inv")
+        self.assertEqual(r.status_code, 200, r.text)
+        ev = r.json()["evidence"]
+        self.assertEqual(len(ev), 4)
+        self.assertTrue(all(e["operation"].startswith("linux_inventory:") for e in ev))
+        # read-only journal must never leak a secret / auth_ref
+        self.assertNotIn("auth_ref", r.text)
+        for e in ev:
+            self.assertNotIn("auth_ref", e)
+            self.assertNotIn("auth_ref", e.get("result", {}))
+
+    def test_evidence_requires_run_id(self):
+        self.assertEqual(self.client.get("/api/itops/evidence").status_code, 422)      # missing
+        self.assertEqual(self.client.get("/api/itops/evidence?run_id=").status_code, 422)  # empty
+
+    def test_runs_limit_capped(self):
+        r = self.client.get("/api/itops/evidence/runs?limit=999")
+        self.assertEqual(r.status_code, 200)
+        self.assertLessEqual(len(r.json()["runs"]), 50)
+
+
 if __name__ == "__main__":
     unittest.main()

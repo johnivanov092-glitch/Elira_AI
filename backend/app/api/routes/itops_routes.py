@@ -233,3 +233,24 @@ def diagnostics_start(payload: DiagnosticsStartRequest) -> dict[str, Any]:
     return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id,
             "adapter": payload.adapter, "tool": tool,
             "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
+
+
+@router.get("/evidence/runs")
+def evidence_runs(limit: int = 50) -> dict[str, Any]:
+    """Read-only summary of recent diagnostic runs (target, adapter, time, ok/failed/
+    unsupported). No SSH, no model, no host changes — just reads the evidence table."""
+    _require_flag()
+    store = _store()
+    return {"ok": True, "runs": store.list_evidence_runs(limit=limit)}
+
+
+@router.get("/evidence")
+def evidence_detail(run_id: str) -> dict[str, Any]:
+    """Read-only evidence for ONE run (run_id required). Returns the already-redacted
+    per-command results (alias/command/status/stdout/stderr) — never a secret or
+    auth_ref."""
+    _require_flag()
+    if not str(run_id or "").strip():
+        raise HTTPException(status_code=422, detail="run_id is required")
+    store = _store()
+    return {"ok": True, "run_id": run_id, "evidence": store.list_evidence(run_id)}

@@ -102,3 +102,40 @@ export async function startDiagnostics(
     body: { profile_id, adapter },
   });
 }
+
+// ── evidence history (read-only) ──────────────────────────────────────────
+
+export type EvidenceRun = {
+  run_id: string;
+  target_identity: string;   // "asset_id/profile_id"
+  adapter: string;           // operation prefix, e.g. "linux_inventory"
+  first_at: number;
+  last_at: number;
+  ok: number;
+  failed: number;
+  unsupported: number;
+  count: number;
+};
+
+export type EvidenceRecord = {
+  evidence_id: string;
+  run_id: string;
+  target_identity: string;
+  scanner_vantage: string;
+  operation: string;
+  result: { alias?: string; command?: string; status?: string; stdout?: string; stderr?: string };
+  exit_status: string;
+  captured_at: number;
+};
+
+// Server-side summary of the most recent diagnostic runs. Read-only.
+export async function listEvidenceRuns(limit = 50): Promise<{ ok: boolean; runs: EvidenceRun[] }> {
+  return request<{ ok: boolean; runs: EvidenceRun[] }>(`/api/itops/evidence/runs?limit=${limit}`);
+}
+
+// Already-redacted per-command evidence for ONE run (run_id required).
+export async function getEvidence(run_id: string): Promise<{ ok: boolean; run_id: string; evidence: EvidenceRecord[] }> {
+  return request<{ ok: boolean; run_id: string; evidence: EvidenceRecord[] }>(
+    `/api/itops/evidence?run_id=${encodeURIComponent(run_id)}`,
+  );
+}

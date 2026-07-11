@@ -578,6 +578,44 @@ def list_evidence(run_id: str | None = None) -> list[dict[str, Any]]:
     return _wrap(op)
 
 
+def _evidence_status(ev: dict[str, Any]) -> str:
+    """ok / failed / unsupported for one evidence record. Inventory records carry
+    result.status; older health records have none, so fall back to exit_status
+    (exactly "0" → ok, anything else → failed)."""
+    st = str((ev.get("result") or {}).get("status") or "").strip()
+    if st in ("ok", "failed", "unsupported"):
+        return st
+    return "ok" if str(ev.get("exit_status") or "").strip() == "0" else "failed"
+
+
+def list_evidence_runs(limit: int = 50) -> list[dict[str, Any]]:
+    """Read-only summary of recent diagnostic runs (grouped by run_id): target,
+    adapter (the operation prefix), time window, and ok/failed/unsupported counts.
+    Bounded scan + at most `limit` (<=50) runs, newest first."""
+    lim = max(1, min(int(limit or 50), 50))
+
+    def op(conn):
+        rows = conn.execute("SELECT * FROM evidence ORDER BY captured_at DESC LIMIT 2000").fetchall()
+        runs: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            ev = _evidence_row(r)
+            rid = ev["run_id"]
+            g = runs.get(rid)
+            if g is None:
+                g = runs[rid] = {
+                    "run_id": rid, "target_identity": ev["target_identity"],
+                    "adapter": ev["operation"].split(":", 1)[0] if ev["operation"] else "",
+                    "first_at": ev["captured_at"], "last_at": ev["captured_at"],
+                    "ok": 0, "failed": 0, "unsupported": 0, "count": 0,
+                }
+            g[_evidence_status(ev)] += 1
+            g["count"] += 1
+            g["first_at"] = min(g["first_at"], ev["captured_at"])
+            g["last_at"] = max(g["last_at"], ev["captured_at"])
+        return sorted(runs.values(), key=lambda x: x["last_at"], reverse=True)[:lim]
+    return _wrap(op)
+
+
 def _profile_row(r: sqlite3.Row) -> dict[str, Any]:
     return {
         "profile_id": r["profile_id"], "asset_id": r["asset_id"], "transport": r["transport"],

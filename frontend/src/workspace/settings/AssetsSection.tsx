@@ -1,14 +1,18 @@
-import { Activity, CheckCircle2, Fingerprint, ListChecks, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, ChevronRight, Fingerprint, History, ListChecks, Loader2, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
 import {
   type AssetsResp,
   type DiagnosticsAdapter,
+  type EvidenceRecord,
+  type EvidenceRun,
   type ItopsAsset,
   type ItopsProfile,
   type PreviewResp,
+  getEvidence,
   listAssets,
+  listEvidenceRuns,
   sshEnroll,
   sshPreview,
   startDiagnostics,
@@ -79,6 +83,7 @@ function AssetsSurface({ project }: { project: string }) {
       <div className="flex flex-col gap-6">
         <EnrollBlock onEnrolled={reload} />
         <AssetsList assets={assets} onReload={reload} project={project} />
+        <EvidenceHistory assets={assets} />
       </div>
     </Wrap>
   );
@@ -401,6 +406,130 @@ function AssetsList({ assets, onReload, project }: { assets: ItopsAsset[] | null
                   )}
                 </div>
               ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function evidenceStatus(e: EvidenceRecord): string {
+  const s = (e.result?.status || "").trim();
+  if (s === "ok" || s === "failed" || s === "unsupported") return s;
+  return (e.exit_status || "").trim() === "0" ? "ok" : "failed";   // mirror the server fallback
+}
+
+function fmtTime(epochSeconds: number): string {
+  if (!epochSeconds) return "";
+  try {
+    return new Date(epochSeconds * 1000).toLocaleString();
+  } catch {
+    return "";
+  }
+}
+
+// Read-only diagnostics journal: recent runs (server summary) with an expandable,
+// already-redacted per-command output. No SSH / model / host changes here.
+function EvidenceHistory({ assets }: { assets: ItopsAsset[] | null }) {
+  const [runs, setRuns] = useState<EvidenceRun[] | null>(null);
+  const [open, setOpen] = useState("");
+  const [detail, setDetail] = useState<{ runId: string; records: EvidenceRecord[] } | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+
+  const reload = useCallback(() => {
+    listEvidenceRuns(50).then((r) => setRuns(r.runs ?? [])).catch(() => setRuns([]));
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  function labelFor(targetIdentity: string): string {
+    const assetId = (targetIdentity || "").split("/")[0] || "";
+    return (assets ?? []).find((a) => a.asset_id === assetId)?.label || assetId || targetIdentity;
+  }
+
+  async function toggle(runId: string) {
+    if (open === runId) { setOpen(""); return; }
+    setOpen(runId);
+    setDetail(null);
+    setLoadingDetail(true);
+    try {
+      const r = await getEvidence(runId);
+      setDetail({ runId, records: r.evidence ?? [] });
+    } catch {
+      setDetail({ runId, records: [] });
+    } finally {
+      setLoadingDetail(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
+          <History size={13} /> История диагностик
+        </span>
+        <button
+          type="button"
+          onClick={reload}
+          aria-label="Обновить"
+          title="Обновить"
+          className="grid h-6 w-6 shrink-0 place-items-center rounded-md border border-line text-t2 transition-colors hover:bg-hover hover:text-tx"
+        >
+          <RefreshCw size={12} />
+        </button>
+      </div>
+
+      {runs === null ? (
+        <Loading />
+      ) : runs.length === 0 ? (
+        <Note>Пока нет прогонов диагностики.</Note>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {runs.map((run) => (
+            <div key={run.run_id} className="rounded-lg border border-line text-[12px]">
+              <button
+                type="button"
+                onClick={() => void toggle(run.run_id)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-hover"
+              >
+                <ChevronRight size={12} className={cn("shrink-0 text-mut transition-transform", open === run.run_id && "rotate-90")} />
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="font-medium text-tx">{labelFor(run.target_identity)}</span>
+                  <span className="ml-1.5 text-mut">{run.adapter}</span>
+                  <span className="ml-1.5 text-[11px] text-mut">{fmtTime(run.last_at)}</span>
+                </span>
+                <span className="shrink-0 text-[11px]">
+                  <span className="text-[#7ac98a]">ok {run.ok}</span>
+                  {run.failed > 0 && <span className="ml-1.5 text-[#d99a9a]">fail {run.failed}</span>}
+                  {run.unsupported > 0 && <span className="ml-1.5 text-[#e0a87a]">n/a {run.unsupported}</span>}
+                </span>
+              </button>
+              {open === run.run_id && (
+                <div className="border-t border-line px-3 py-2">
+                  {loadingDetail || detail?.runId !== run.run_id ? (
+                    <div className="flex items-center gap-2 text-[11.5px] text-mut"><Loader2 size={12} className="animate-spin" /> загрузка…</div>
+                  ) : detail.records.length === 0 ? (
+                    <Note>Нет записей для этого прогона.</Note>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {detail.records.map((e) => (
+                        <div key={e.evidence_id}>
+                          <div className="flex items-center gap-2 text-[11.5px] text-t2">
+                            <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", healthDot(evidenceStatus(e) === "ok" ? "verified" : evidenceStatus(e) === "unsupported" ? "unverified" : "failed"))} />
+                            <span className="font-mono">{e.operation}</span>
+                            <span className="text-mut">{evidenceStatus(e)}{e.exit_status !== "" ? ` · exit ${e.exit_status}` : ""}</span>
+                          </div>
+                          {(e.result?.stdout || e.result?.stderr) && (
+                            <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">
+                              {e.result?.stdout || ""}{e.result?.stderr ? `\n[stderr] ${e.result.stderr}` : ""}
+                            </pre>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>
