@@ -334,21 +334,44 @@ class InventoryHandlerTest(unittest.TestCase):
         from app.application.tool_providers.itops_provider import _WINDOWS_COMMANDS
         return len(_WINDOWS_COMMANDS)
 
-    def test_windows_encoded_command_not_raw(self):
+    def test_windows_encoded_command_wraps_and_not_raw(self):
         import base64 as _b64
-        from app.application.tool_providers.itops_provider import _ps_argv, _ps_encode, _WINDOWS_COMMANDS
+        from app.application.tool_providers.itops_provider import (
+            _ps_argv, _ps_encode, _ps_wrap, _WINDOWS_COMMANDS)
         script = _WINDOWS_COMMANDS[0][1]
-        enc = _ps_encode(script)
-        self.assertEqual(_b64.b64decode(enc).decode("utf-16-le"), script)   # UTF-16LE round-trip
+        wrapped = _ps_wrap(script)
+        self.assertIn("$ErrorActionPreference='Stop'", wrapped)   # errors fail the command
+        self.assertIn("catch", wrapped)
+        self.assertIn("exit 1", wrapped)
+        enc = _ps_encode(wrapped)
+        self.assertEqual(_b64.b64decode(enc).decode("utf-16-le"), wrapped)   # UTF-16LE round-trip
         argv = _ps_argv("lab", script)
         self.assertIn("powershell.exe", argv)
         self.assertIn("-NoProfile", argv)
         self.assertIn("-NonInteractive", argv)
         self.assertIn("-EncodedCommand", argv)
-        self.assertIn(enc, argv)
+        self.assertIn(enc, argv)                           # the WRAPPED, encoded payload
         self.assertNotIn("-Command", argv)                 # not -Command
         self.assertNotIn("Bypass", " ".join(argv))         # no ExecutionPolicy Bypass
         self.assertNotIn(script, argv)                     # the raw script is never on the argv
+
+    def test_windows_wrap_makes_nonterminating_errors_nonzero(self):
+        # Regression on a REAL local powershell.exe: a non-terminating error (Write-Error,
+        # a failing CIM query) — which by default can exit 0 depending on the host — MUST
+        # become a non-zero exit under our Stop+try/catch wrap, else a WMI/CIM failure
+        # would be recorded as a successful inventory. Skip off-Windows. (Whether the
+        # UNWRAPPED command exits 0 or 1 is version/host-specific and not asserted; the
+        # invariant we guarantee is: with the wrap, an error fails the command.)
+        import platform
+        import shutil
+        import subprocess as sp
+        if platform.system() != "Windows" or not shutil.which("powershell.exe"):
+            self.skipTest("requires a local powershell.exe (Windows)")
+        from app.application.tool_providers.itops_provider import _ps_encode, _ps_wrap
+        for bad in ("Write-Error 'regression-check'", "Get-CimInstance Win32_NonExistentClass_zzz"):
+            proc = sp.run(["powershell.exe", "-NoProfile", "-NonInteractive",
+                           "-EncodedCommand", _ps_encode(_ps_wrap(bad))], capture_output=True, timeout=30)
+            self.assertNotEqual(proc.returncode, 0, f"wrap must fail the command on: {bad}")
 
     def test_windows_all_ok_writes_readable_evidence(self):
         n = self._n_win()

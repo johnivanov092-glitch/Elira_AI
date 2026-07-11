@@ -87,11 +87,21 @@ def _ps_encode(script: str) -> str:
     return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
 
+def _ps_wrap(script: str) -> str:
+    """Make a PowerShell command FAIL on error. PowerShell's default
+    $ErrorActionPreference is 'Continue', so a non-terminating error (Write-Error, a
+    failing Get-CimInstance/WMI query, …) still exits 0 — which would let a real
+    failure be recorded as a successful `ok` evidence row. Force Stop + try/catch so
+    any error becomes a non-zero exit with the message on stderr."""
+    return ("$ErrorActionPreference='Stop'; try { " + script +
+            " } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }")
+
+
 def _ps_argv(alias: str, script: str) -> list[str]:
-    """SSH argv that runs a static PowerShell script via -EncodedCommand. No
-    -Command, no ExecutionPolicy Bypass, no model input."""
+    """SSH argv that runs a static PowerShell script (error-wrapped) via
+    -EncodedCommand. No -Command, no ExecutionPolicy Bypass, no model input."""
     return _ssh_argv(alias, ["powershell.exe", "-NoProfile", "-NonInteractive",
-                             "-EncodedCommand", _ps_encode(script)])
+                             "-EncodedCommand", _ps_encode(_ps_wrap(script))])
 
 
 def _is_systemd_absent(code: int | None, err_text: str) -> bool:
