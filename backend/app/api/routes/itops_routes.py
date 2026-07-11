@@ -101,6 +101,14 @@ class SystemdInspectRequest(BaseModel):
     unit: str = Field(..., description="A human-selected systemd .service unit name (strictly validated)")
 
 
+class ChangePlanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # The client supplies ONLY an opaque target_id label. The privileged executor resolves
+    # everything (host/unit/argv/binding) from its OWN registry and validates it; the main
+    # backend never sees or sends host/unit/argv/keys.
+    target_id: str = Field(..., description="An executor-registry target id (v1: ai-server-netdata)")
+
+
 # ── endpoints ─────────────────────────────────────────────────────────────
 
 @router.post("/ssh/preview")
@@ -440,3 +448,32 @@ def systemd_inspect_start(payload: SystemdInspectRequest) -> dict[str, Any]:
     return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id, "unit": unit,
             "tool": "itops_systemd_service_inspect", "message": message,
             "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
+
+
+# ── change vertical (v1) — thin proxy to the privileged executor's loopback IPC ──────
+# The main backend NEVER plans, approves, applies, or holds keys/argv/binding — it only
+# forwards a target_id to the executor and reads capped status. Approval happens entirely
+# out-of-band via the executor's dedicated Telegram bot.
+
+@router.post("/change/plan")
+def change_plan(payload: ChangePlanRequest) -> dict[str, Any]:
+    """Ask the privileged executor to plan a change for the given target_id. Returns only
+    {ok, change_run_id, status} — never a token/argv/key/binding. 503 if the executor is
+    not reachable / configured."""
+    _require_flag()
+    from app.application.it_ops import change_client
+    try:
+        return change_client.request_plan(payload.target_id)
+    except change_client.ChangeExecutorUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/change/{change_run_id}/status")
+def change_status(change_run_id: str) -> dict[str, Any]:
+    """Read the executor's capped status/evidence for a change run (read-only)."""
+    _require_flag()
+    from app.application.it_ops import change_client
+    try:
+        return change_client.get_status(change_run_id)
+    except change_client.ChangeExecutorUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))

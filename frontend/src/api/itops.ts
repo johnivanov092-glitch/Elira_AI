@@ -195,3 +195,44 @@ export async function startSystemdInspect(profile_id: string, unit: string): Pro
     body: { profile_id, unit },
   });
 }
+
+// ── change vertical (v1) — thin proxy to the privileged executor ───────────
+
+export type ChangePlanResp = {
+  ok: boolean;
+  change_run_id?: string;
+  status?: string;
+  error?: string;
+};
+
+export type ChangeEvidence = {
+  operation: string;
+  exit_status: string;
+  captured_at: number;
+  result: Record<string, unknown>;
+};
+
+export type ChangeStatusResp = {
+  ok: boolean;
+  change_run_id?: string;
+  unit?: string;
+  operation?: string;
+  status?: string;
+  verdict?: string | null;
+  created_at?: number;
+  updated_at?: number;
+  evidence?: ChangeEvidence[];
+  error?: string;
+};
+
+// Ask the privileged executor to PLAN a change for an executor-registry target_id. The
+// main backend never sends host/unit/argv/keys — only the opaque target_id. Approval then
+// happens out-of-band in the executor's Telegram bot; the model cannot approve or apply.
+export async function startChangePlan(target_id: string): Promise<ChangePlanResp> {
+  return request<ChangePlanResp>("/api/itops/change/plan", { method: "POST", body: { target_id } });
+}
+
+// Read the executor's capped status/evidence for a change run (read-only).
+export async function getChangeStatus(change_run_id: string): Promise<ChangeStatusResp> {
+  return request<ChangeStatusResp>(`/api/itops/change/${encodeURIComponent(change_run_id)}/status`);
+}

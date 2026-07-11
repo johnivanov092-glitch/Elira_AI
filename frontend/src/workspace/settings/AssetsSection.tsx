@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, ChevronRight, Cog, Fingerprint, History, ListChecks, Loader2, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, ChevronRight, Cog, Fingerprint, History, ListChecks, Loader2, Power, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
@@ -17,6 +17,9 @@ import {
   listEvidenceRuns,
   sshEnroll,
   sshPreview,
+  startChangePlan,
+  getChangeStatus,
+  type ChangeStatusResp,
   startDiagnostics,
   startNetworkScan,
   startSystemdInspect,
@@ -89,6 +92,7 @@ function AssetsSurface({ project }: { project: string }) {
         <AssetsList assets={assets} onReload={reload} project={project} />
         <NetworkScanBlock project={project} />
         <SystemdInspectBlock assets={assets} project={project} />
+        <ChangeBlock />
         <EvidenceHistory assets={assets} />
       </div>
     </Wrap>
@@ -655,6 +659,112 @@ function SystemdInspectBlock({ assets, project }: { assets: ItopsAsset[] | null;
           ) : (
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">{out.text}</pre>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Change vertical (v1): plan a `systemctl restart netdata.service` via the privileged
+// executor and poll its capped status. Approval is OUT-OF-BAND in the executor's Telegram
+// bot — neither the model nor this UI can approve or apply.
+const _CHANGE_TERMINAL = new Set([
+  "applied", "command_failed", "postcheck_failed", "apply_unknown", "aborted_before_apply",
+  "rejected", "expired", "delivery_failed", "resolved_unknown",
+]);
+
+function ChangeBlock() {
+  const TARGET = "ai-server-netdata";
+  const [busy, setBusy] = useState(false);
+  const [changeId, setChangeId] = useState("");
+  const [status, setStatus] = useState<ChangeStatusResp | null>(null);
+  const [err, setErr] = useState("");
+
+  async function plan() {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    setStatus(null);
+    setChangeId("");
+    try {
+      const r = await startChangePlan(TARGET);
+      if (!r.ok || !r.change_run_id) {
+        setErr(r.error ? `план отклонён: ${r.error}` : "план не создан");
+        return;
+      }
+      setChangeId(r.change_run_id);
+    } catch (e) {
+      setErr(errText(e, "Executor недоступен"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!changeId) return;
+    let alive = true;
+    let timer = 0;
+    const loop = async () => {
+      try {
+        const s = await getChangeStatus(changeId);
+        if (!alive) return;
+        setStatus(s);
+        if (s.status && _CHANGE_TERMINAL.has(s.status)) return; // terminal → stop polling
+      } catch {
+        /* transient — keep polling */
+      }
+      if (alive) timer = window.setTimeout(loop, 3000);
+    };
+    void loop();
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [changeId]);
+
+  const st = status?.status || (changeId ? "pending_approval" : "");
+  const awaiting = st === "pending_approval";
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
+        <Power size={13} /> Изменение — restart (v1)
+      </div>
+      <Note>
+        Привилегированный executor планирует <span className="font-mono">systemctl restart netdata.service</span>,
+        делает snapshot и отправляет Telegram-кнопку. Подтверждение — <b>только в Telegram</b>;
+        ни модель, ни этот UI применить изменение не могут.
+      </Note>
+      <div className="mt-2">
+        <button
+          type="button"
+          onClick={() => void plan()}
+          disabled={busy}
+          className={cn(
+            "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+            !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+          )}
+        >
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Подготовить restart netdata
+        </button>
+      </div>
+      {err && (
+        <div className="mt-2 rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{err}</div>
+      )}
+      {changeId && (
+        <div className="mt-2 rounded-lg border border-line px-3 py-2 text-[11.5px] text-t2">
+          <div>
+            <span className="text-mut">change:</span> <span className="font-mono">{changeId}</span> — <b>{st}</b>
+          </div>
+          {awaiting && (
+            <div className="mt-1 text-mut">Ожидает подтверждения в Telegram (Approve / Reject).</div>
+          )}
+          {status?.verdict ? (
+            <div className="mt-1"><span className="text-mut">verdict:</span> {status.verdict}</div>
+          ) : null}
+          {status?.evidence?.length ? (
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-2 py-1.5 font-mono text-[10.5px]">{JSON.stringify(status.evidence, null, 1)}</pre>
+          ) : null}
         </div>
       )}
     </div>
