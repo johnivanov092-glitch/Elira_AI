@@ -81,6 +81,11 @@ foreach ($d in @("C:\elira-artifacts", $art)) {   # the dedicated parent AND the
   # /setowner /T (and any icacls) can PARTIALLY fail (locked/in-use files) and print "Failed
   # processing N files" — check $LASTEXITCODE or a file could keep a main-user owner.
   icacls $d /setowner "HOSTNAME\elira-change-exec" /T ; if ($LASTEXITCODE) { throw "setowner failed on $d" }
+  # /reset /T drops any stale explicit/inherited ACEs from a prior owner on EVERY existing child
+  # (a fresh `build` dir has none; a reused one might); then set the protected inheritable ACL on
+  # $d ONLY (NOT /T — an (OI)(CI) grant is a no-op on a file and would leave it an empty deny-all
+  # DACL) so files/subdirs inherit exactly exec+SYSTEM. Step 2c verifies the result regardless.
+  icacls $d /reset /T ; if ($LASTEXITCODE) { throw "reset failed on $d" }
   icacls $d /inheritance:r /grant:r "HOSTNAME\elira-change-exec:(OI)(CI)F" "SYSTEM:(OI)(CI)F" ; if ($LASTEXITCODE) { throw "grant failed on $d" }
 }
 # C:\ (or the chosen drive root) must already deny standard users write/delete-child — verify (2c).
