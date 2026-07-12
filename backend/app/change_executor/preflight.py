@@ -9,7 +9,13 @@ The executor refuses to run unless its runtime is really isolated from the main 
     known_hosts + identity key) must live INSIDE the executor root — so the recursive root
     check covers their whole ancestor chain — and none may be writable by a non-owner;
   * no sys.path entry may be writable by others (a route to shadow the frozen code),
-    including importable zip/egg FILES on sys.path, with path-aware base containment.
+    including importable zip/egg FILES on sys.path, with path-aware base containment;
+  * the executor must be OWNED by and RUNNING AS the configured `ELIRA_CHANGE_EXECUTOR_ACCOUNT`
+    (SID-based, not env/`getpass`). Ownership is verified PER-FILE across the whole recursive
+    walk (root tree, venv, interpreter, sys.path), because on Windows an owner keeps implicit
+    WRITE_DAC even with a clean DACL — so a tree owned by the main user (who could then rewrite
+    any DACL and overwrite the frozen code) fails closed. Provisioning must
+    `icacls <root> /setowner <account> /T` and run the executor AS that account.
 `_writable_by_others` fails CLOSED — if it cannot prove a path is safe, it is unsafe.
 
 TCB / trust assumptions (must hold operationally):
@@ -22,7 +28,6 @@ TCB / trust assumptions (must hold operationally):
 """
 from __future__ import annotations
 
-import getpass
 import os
 import re
 import stat
@@ -36,7 +41,7 @@ from .registry import RegistryError, load_registry
 
 _REQUIRED_ENVS = ("ELIRA_CHANGE_STORE_PATH", "ELIRA_CHANGE_REGISTRY_PATH",
                   "ELIRA_CHANGE_BOT_TOKEN", "ELIRA_CHANGE_EXECUTOR_ROOT",
-                  "ELIRA_CHANGE_IPC_TOKEN_FILE")
+                  "ELIRA_CHANGE_IPC_TOKEN_FILE", "ELIRA_CHANGE_EXECUTOR_ACCOUNT")
 # Trusted writers are resolved to FULL domain\name by _safe_writer_names() from well-known
 # SIDs. Administrators is unavoidably trusted (nearly every Windows file grants it), so it
 # cannot be the boundary — the contract requires the main runtime to be non-elevated
@@ -45,50 +50,305 @@ _REQUIRED_ENVS = ("ELIRA_CHANGE_STORE_PATH", "ELIRA_CHANGE_REGISTRY_PATH",
 _WRITE_TOKENS = {"f", "m", "w", "wd", "ad", "wa", "wea", "d", "dc", "wo", "wdac", "ga"}
 _WRITE_WORDS = ("modify", "full", "write", "append", "delete", "change permissions",
                 "take ownership", "generic")
-_safe_names_cache: set[str] | None = None
+# The canonical SID strings of the system principals that may own/write TCB paths. SYSTEM and
+# Administrators are unavoidable owners on Windows; the contract requires the main runtime to
+# be non-elevated (docstring: elevated admin = TCB). TrustedInstaller owns much of the OS.
+_SYSTEM_SIDS = frozenset({
+    "S-1-5-18",           # NT AUTHORITY\SYSTEM
+    "S-1-5-32-544",       # BUILTIN\Administrators
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",  # TrustedInstaller
+})
+_system_names_cache: set[str] | None = None
+_safe_names_by_account: dict[str, set[str]] = {}
+_account_sid_cache: dict[str, str | None] = {}
 
 
 class PreflightError(RuntimeError):
     """Executor isolation could not be verified — refuse to run (fail-closed)."""
 
 
-def _safe_writer_names() -> set[str]:
-    """Trusted-writer FULL `domain\\name` identities: SYSTEM, Administrators, TrustedInstaller
-    resolved from their well-known SIDs (locale-correct), plus the current OWNER's full name.
-    Matched by full `domain\\name` — NEVER a bare leaf — so a space-containing group like
-    `BUILTIN\\Hyper-V Administrators` (a non-TCB group) or a foreign account sharing a leaf
-    (`OTHERDOMAIN\\Root`) is not mistaken for a safe writer. If SID resolution is unavailable
-    the safe set is minimal → the check OVER-flags (fail-closed), never under-flags."""
-    global _safe_names_cache
-    if _safe_names_cache is not None:
-        return _safe_names_cache
-    names: set[str] = set()
-    user = getpass.getuser()
-    dom_env = str(os.environ.get("USERDOMAIN", "")).strip()
-    if user:
-        names.add((f"{dom_env}\\{user}" if dom_env else user).lower())
-    if os.name == "nt":
+# --------------------------------------------------------------------------------------------
+# Windows identity (SID-based). Names and env (USERNAME/USERDOMAIN, getpass) are spoofable and
+# would trust "whoever ran preflight"; owner/runner identity is resolved to canonical SIDs so a
+# preflight run by the WRONG principal (e.g. the main user) cannot produce a false green.
+# --------------------------------------------------------------------------------------------
+def _win():
+    import ctypes
+    from ctypes import wintypes
+    return ctypes, wintypes, ctypes.windll.advapi32, ctypes.windll.kernel32
+
+
+def _to_sid_string(psid) -> str | None:
+    try:
+        ctypes, wintypes, adv, k32 = _win()
+        adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        adv.ConvertSidToStringSidW.restype = wintypes.BOOL
+        out = wintypes.LPWSTR()
+        if not adv.ConvertSidToStringSidW(psid, ctypes.byref(out)):
+            return None
         try:
-            import ctypes
-            from ctypes import wintypes
-            adv = ctypes.windll.advapi32
-            wellknown = ("S-1-5-18", "S-1-5-32-544",   # SYSTEM, Administrators
-                         "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")  # TrustedInstaller
-            for sid_str in wellknown:
-                psid = ctypes.c_void_p()
-                if not adv.ConvertStringSidToSidW(ctypes.c_wchar_p(sid_str), ctypes.byref(psid)):
-                    continue
-                name = ctypes.create_unicode_buffer(256)
-                dom = ctypes.create_unicode_buffer(256)
-                cn, cd, use = wintypes.DWORD(256), wintypes.DWORD(256), wintypes.DWORD()
-                if adv.LookupAccountSidW(None, psid, name, ctypes.byref(cn), dom,
-                                         ctypes.byref(cd), ctypes.byref(use)):
-                    full = f"{dom.value}\\{name.value}" if dom.value else name.value
-                    names.add(full.lower())
-        except Exception:  # noqa: BLE001
-            pass
-    _safe_names_cache = names
+            return (out.value or "").upper() or None
+        finally:
+            k32.LocalFree(out)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _sid_to_name(sid_str: str) -> str | None:
+    """Canonical SID string → lowercased full `domain\\name` (for DACL matching)."""
+    try:
+        ctypes, wintypes, adv, k32 = _win()
+        adv.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+        adv.ConvertStringSidToSidW.restype = wintypes.BOOL
+        psid = ctypes.c_void_p()
+        if not adv.ConvertStringSidToSidW(sid_str, ctypes.byref(psid)):
+            return None
+        try:
+            name = ctypes.create_unicode_buffer(256)
+            dom = ctypes.create_unicode_buffer(256)
+            cn, cd, use = wintypes.DWORD(256), wintypes.DWORD(256), wintypes.DWORD()
+            if adv.LookupAccountSidW(None, psid, name, ctypes.byref(cn), dom,
+                                     ctypes.byref(cd), ctypes.byref(use)):
+                return (f"{dom.value}\\{name.value}" if dom.value else name.value).lower()
+            return None
+        finally:
+            k32.LocalFree(psid)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _account_sid(account: str) -> str | None:
+    """Resolve a `DOMAIN\\name` OR a raw `S-1-...` string to a canonical SID string (None on
+    failure). Cached per input for the process lifetime."""
+    account = (account or "").strip()
+    if not account:
+        return None
+    if account in _account_sid_cache:
+        return _account_sid_cache[account]
+    result: str | None = None
+    try:
+        ctypes, wintypes, adv, k32 = _win()
+        if account.upper().startswith("S-1-"):
+            adv.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+            adv.ConvertStringSidToSidW.restype = wintypes.BOOL
+            psid = ctypes.c_void_p()
+            if adv.ConvertStringSidToSidW(account, ctypes.byref(psid)):
+                try:
+                    result = _to_sid_string(psid)
+                finally:
+                    k32.LocalFree(psid)
+        else:
+            adv.LookupAccountNameW.argtypes = [
+                wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p,
+                ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+                ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+            adv.LookupAccountNameW.restype = wintypes.BOOL
+            cb, cd, use = wintypes.DWORD(0), wintypes.DWORD(0), wintypes.DWORD()
+            adv.LookupAccountNameW(None, account, None, ctypes.byref(cb), None,
+                                   ctypes.byref(cd), ctypes.byref(use))     # size query
+            if cb.value:
+                sid_buf = (ctypes.c_byte * cb.value)()
+                dom_buf = ctypes.create_unicode_buffer(max(cd.value, 1))
+                if adv.LookupAccountNameW(None, account, sid_buf, ctypes.byref(cb),
+                                          dom_buf, ctypes.byref(cd), ctypes.byref(use)):
+                    result = _to_sid_string(ctypes.cast(sid_buf, ctypes.c_void_p))
+    except Exception:  # noqa: BLE001
+        result = None
+    _account_sid_cache[account] = result
+    return result
+
+
+def _current_sid() -> str | None:
+    """SID string of the CURRENT process token's user — how we prove we run AS the expected
+    account rather than trusting an env-derived username."""
+    try:
+        ctypes, wintypes, adv, k32 = _win()
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        adv.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        adv.OpenProcessToken.restype = wintypes.BOOL
+        adv.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        adv.GetTokenInformation.restype = wintypes.BOOL
+        TOKEN_QUERY, TokenUser = 0x0008, 1
+        tok = wintypes.HANDLE()
+        if not adv.OpenProcessToken(k32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(tok)):
+            return None
+        try:
+            n = wintypes.DWORD(0)
+            adv.GetTokenInformation(tok, TokenUser, None, 0, ctypes.byref(n))   # size query
+            if not n.value:
+                return None
+            buf = (ctypes.c_byte * n.value)()
+            if not adv.GetTokenInformation(tok, TokenUser, buf, n, ctypes.byref(n)):
+                return None
+            # TOKEN_USER = { SID_AND_ATTRIBUTES User } ; User.Sid is the first pointer-sized field
+            psid = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+            return _to_sid_string(ctypes.c_void_p(psid))
+        finally:
+            k32.CloseHandle(tok)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _owner_sid(path: str) -> str | None:
+    """SID string of *path*'s OWNER. The owner can rewrite a DACL regardless of current ACEs,
+    so an owner that is not the executor account is unsafe even with no write ACE present."""
+    try:
+        ctypes, wintypes, adv, k32 = _win()
+        adv.GetNamedSecurityInfoW.argtypes = [
+            wintypes.LPCWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p)]
+        adv.GetNamedSecurityInfoW.restype = wintypes.DWORD
+        SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION = 1, 0x00000001
+        owner, psd = ctypes.c_void_p(), ctypes.c_void_p()
+        if adv.GetNamedSecurityInfoW(path, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                                     ctypes.byref(owner), None, None, None, ctypes.byref(psd)) != 0:
+            return None
+        try:
+            return _to_sid_string(owner)
+        finally:
+            if psd:
+                k32.LocalFree(psd)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _system_safe_names() -> set[str]:
+    """SID-resolved FULL `domain\\name` for SYSTEM/Administrators/TrustedInstaller (cached)."""
+    global _system_names_cache
+    if _system_names_cache is not None:
+        return _system_names_cache
+    names: set[str] = set()
+    if os.name == "nt":
+        for sid in _SYSTEM_SIDS:
+            n = _sid_to_name(sid)
+            if n:
+                names.add(n)
+    _system_names_cache = names
     return names
+
+
+def _expected_account_name() -> str | None:
+    """The configured executor account as a lowercased full `domain\\name` (resolving a raw
+    SID form if that is how it was configured)."""
+    account = str(os.environ.get("ELIRA_CHANGE_EXECUTOR_ACCOUNT", "")).strip()
+    if not account:
+        return None
+    if os.name == "nt" and account.upper().startswith("S-1-"):
+        return _sid_to_name(account)
+    return account.lower()
+
+
+def _safe_writer_names() -> set[str]:
+    """Trusted-writer FULL `domain\\name` identities: SYSTEM/Administrators/TrustedInstaller
+    (SID-resolved) PLUS the configured `ELIRA_CHANGE_EXECUTOR_ACCOUNT` — deliberately NOT
+    `getpass.getuser()` (env-derived, spoofable, and it would trust whoever ran preflight).
+    Matched by full `domain\\name` — never a bare leaf. Account unset/unresolvable ⇒ system-only
+    set ⇒ the check OVER-flags (fail-closed)."""
+    acct = str(os.environ.get("ELIRA_CHANGE_EXECUTOR_ACCOUNT", "")).strip()
+    if acct in _safe_names_by_account:
+        return _safe_names_by_account[acct]
+    names = set(_system_safe_names())
+    full = _expected_account_name()
+    if full:
+        names.add(full)
+    _safe_names_by_account[acct] = names
+    return names
+
+
+def _identity_problems(root: str, sensitive_paths: list[str]) -> list[str]:
+    """Verify the executor is OWNED by and RUNNING AS the configured
+    `ELIRA_CHANGE_EXECUTOR_ACCOUNT` — not merely "whoever ran preflight". A path owned by the
+    main user can have its DACL rewritten by that user at will, so an owner mismatch is unsafe
+    even when no write ACE is present, and a preflight run by the wrong principal must not go
+    green. SID-based; fails closed on any inability to determine identity. This checks running-as
+    plus the owner of the key roots + sensitive files; EVERY file's owner is additionally verified
+    per-file by the recursive walk (`_recursive_writable(..., owner_check=...)`), because on
+    Windows an owner keeps implicit WRITE_DAC even with a clean DACL — so ownership, not the DACL,
+    is the real write boundary. Provisioning must `icacls <root> /setowner <account> /T`."""
+    account = str(os.environ.get("ELIRA_CHANGE_EXECUTOR_ACCOUNT", "")).strip()
+    if not account:
+        return []   # missing-env already reported by the required-envs loop
+    problems: list[str] = []
+    roots = [root, str(Path(__file__).resolve().parent), sys.executable, sys.prefix]
+    if os.name == "nt":
+        expected = _account_sid(account)
+        if not expected:
+            return [f"ELIRA_CHANGE_EXECUTOR_ACCOUNT {account!r} could not be resolved to a SID"]
+        cur = _current_sid()
+        if cur is None:
+            problems.append("could not determine the current process SID (cannot prove running-as)")
+        elif cur != expected:
+            problems.append("executor is NOT running as ELIRA_CHANGE_EXECUTOR_ACCOUNT — a run by "
+                            "any other principal (incl. the main user) would be a false green")
+        trusted = {expected} | set(_SYSTEM_SIDS)
+        seen: set[str] = set()
+        for p in [*roots, *sensitive_paths]:
+            rp = os.path.normcase(os.path.abspath(p)) if p else ""
+            if not rp or rp in seen or not os.path.exists(p):
+                continue
+            seen.add(rp)
+            owner = _owner_sid(p)
+            if owner is None:
+                problems.append(f"could not read owner SID of {p} (cannot verify ownership)")
+            elif owner not in trusted:
+                problems.append(f"path OWNED by a non-executor principal (owner can rewrite its DACL): {p}")
+        return problems
+    # POSIX: uid-based owner + euid running-as.
+    try:
+        import pwd
+        expected_uid = pwd.getpwnam(account).pw_uid
+    except (KeyError, ImportError):
+        return [f"ELIRA_CHANGE_EXECUTOR_ACCOUNT {account!r} is not a known local account"]
+    if hasattr(os, "geteuid") and os.geteuid() != expected_uid:
+        problems.append("executor is NOT running as ELIRA_CHANGE_EXECUTOR_ACCOUNT")
+    seen = set()
+    for p in [*roots, *sensitive_paths]:
+        if not p or p in seen or not os.path.exists(p):
+            continue
+        seen.add(p)
+        try:
+            if os.stat(p).st_uid not in (expected_uid, 0):   # 0 = root (system)
+                problems.append(f"path OWNED by a non-executor principal: {p}")
+        except OSError:
+            problems.append(f"could not stat {p} (cannot verify ownership)")
+    return problems
+
+
+def _make_owner_check():
+    """Return a callable `(path) -> bool` that is True when *path*'s OWNER is NOT the executor
+    account (or a system principal) — for per-file ownership verification inside the recursive
+    walk. On Windows the owner holds implicit WRITE_DAC regardless of the DACL, so this is the
+    real write boundary and must be checked on every file, not just a few roots. Returns None
+    (no owner check) when the account is unset/unresolvable — running-as already reports that.
+    Fails closed: an unreadable owner counts as untrusted."""
+    account = str(os.environ.get("ELIRA_CHANGE_EXECUTOR_ACCOUNT", "")).strip()
+    if not account:
+        return None
+    if os.name == "nt":
+        expected = _account_sid(account)
+        if not expected:
+            return None      # unresolvable account is reported by _identity_problems
+        trusted = {expected} | set(_SYSTEM_SIDS)
+
+        def _chk(p: str) -> bool:
+            o = _owner_sid(p)
+            return o is None or o not in trusted
+        return _chk
+    try:
+        import pwd
+        trusted_uids = {pwd.getpwnam(account).pw_uid, 0}
+    except (KeyError, ImportError):
+        return None
+
+    def _chk_posix(p: str) -> bool:
+        try:
+            return os.stat(p).st_uid not in trusted_uids
+        except OSError:
+            return True
+    return _chk_posix
 
 
 def _ace_grants_write_to_nonowner(line: str, safe: set[str], path: str = "") -> bool:
@@ -141,20 +401,20 @@ def _within(child: str, parent: str) -> bool:
         return False
 
 
-def _recursive_writable(root_dir: str) -> str | None:
-    """The first path (dir OR file) under *root_dir* writable by a non-owner — OR a directory
-    symlink whose target escapes *root_dir* (a code-shadow route os.walk does not descend into
-    and cannot verify) — else None. Per-FILE so a weak ACL on engine.py/_frozen.py is caught
-    even when the dir is safe. os.walk does NOT descend into directory SYMLINKS
-    (followlinks defaults False), so a symlinked subdir would otherwise be neither walked nor
-    ACL-checked; rather than follow one into an unbounded external tree we treat any escaping
-    symlinked dir as unsafe (fail-closed) and still ACL-check a target that stays inside root.
-    (Junctions are not islink and ARE descended by os.walk, so they are covered normally.)
+def _recursive_writable(root_dir: str, owner_check=None) -> str | None:
+    """The first path (dir OR file) under *root_dir* writable by a non-owner, OWNED by a
+    non-executor principal (when *owner_check* is given), OR a directory symlink whose target
+    escapes *root_dir* (a code-shadow route os.walk does not descend into) — else None. Per-FILE
+    so a weak ACL OR a wrong owner on engine.py/_frozen.py is caught even when the dir is safe:
+    on Windows the owner keeps implicit WRITE_DAC regardless of the DACL, so ownership is the
+    real write boundary and must be verified on every file, not just a few roots. os.walk does
+    NOT descend into directory SYMLINKS (followlinks defaults False), so a symlinked subdir is
+    treated as unsafe if it escapes root. (Junctions are not islink and ARE descended.)
     Fails closed: an un-walkable tree returns the root (unsafe)."""
     try:
         root_real = os.path.realpath(root_dir)
         for dirpath, dirs, files in os.walk(root_dir):
-            if _writable_by_others(dirpath):
+            if _writable_by_others(dirpath) or (owner_check and owner_check(dirpath)):
                 return dirpath
             for dn in dirs:                              # os.walk lists but won't descend symlinked dirs
                 dp = os.path.join(dirpath, dn)
@@ -163,7 +423,7 @@ def _recursive_writable(root_dir: str) -> str | None:
                     return dp
             for fn in files:
                 fp = os.path.join(dirpath, fn)
-                if _writable_by_others(fp):
+                if _writable_by_others(fp) or (owner_check and owner_check(fp)):
                     return fp
     except OSError:
         return root_dir
@@ -204,17 +464,20 @@ def verify(*, registry_path: str | None = None) -> list[str]:
 
     pkg_dir = Path(__file__).resolve().parent
     root = str(os.environ.get("ELIRA_CHANGE_EXECUTOR_ROOT", "")).strip()
+    owner_check = _make_owner_check()      # per-file owner verification (Windows implicit WRITE_DAC)
     if root:
         if not _within(str(pkg_dir), root):
             problems.append(f"executor package {pkg_dir} is NOT inside ELIRA_CHANGE_EXECUTOR_ROOT {root}")
         if not _within(sys.executable, root):
             problems.append(f"sys.executable {sys.executable} is NOT inside ELIRA_CHANGE_EXECUTOR_ROOT {root}")
-        off = _recursive_writable(root)                 # the WHOLE executor tree, per-file
+        off = _recursive_writable(root, owner_check)    # the WHOLE executor tree, per-file (ACL + owner)
         if off:
-            problems.append(f"EXECUTOR_ROOT tree file/dir writable by others: {off}")
+            problems.append(f"EXECUTOR_ROOT tree file/dir writable-or-misowned: {off}")
         for d in _tree_and_parents(root)[1:]:           # its parents (root itself walked above)
             if _writable_by_others(d):
                 problems.append(f"EXECUTOR_ROOT parent writable by others: {d}")
+            if owner_check and os.path.exists(d) and owner_check(d):   # a misowned parent can swap the subtree
+                problems.append(f"EXECUTOR_ROOT parent owned by a non-executor principal: {d}")
     if _has_git_ancestor(pkg_dir):
         problems.append(f"executor is running from a git working tree (dev checkout): {pkg_dir}")
     # Recursive ACL over the executor CODE, the interpreter dir, and the venv (per-file, so a
@@ -226,14 +489,17 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         problems.append(f"interpreter writable by others: {sys.executable}")
     exe_dir = str(Path(sys.executable).resolve().parent)
     for d in dict.fromkeys([str(pkg_dir), exe_dir, sys.prefix]):
-        off = _recursive_writable(d)
+        off = _recursive_writable(d, owner_check)
         if off:
-            problems.append(f"code/interpreter/venv file/dir writable by others: {off}")
-    # The large base install is checked at DIRECTORY level; a fully executor-owned, read-only
-    # base Python is a provisioning requirement (recursing all of stdlib per-file is impractical).
+            problems.append(f"code/interpreter/venv file/dir writable-or-misowned: {off}")
+    # The large base install is checked at DIRECTORY level (writability + owner); a fully
+    # executor/system-owned, read-only base Python is a provisioning requirement (recursing all
+    # of stdlib per-file is impractical).
     for d in dict.fromkeys([sys.base_prefix, str(Path(sys.base_prefix) / "Lib")]):
         if d and _writable_by_others(d):
             problems.append(f"base interpreter dir writable by others: {d}")
+        if d and owner_check and os.path.exists(d) and owner_check(d):
+            problems.append(f"base interpreter dir owned by a non-executor principal: {d}")
 
     # Every executor-owned sensitive path (store, registry, IPC token file, and each target's
     # known_hosts + identity KEY) MUST live INSIDE ELIRA_CHANGE_EXECUTOR_ROOT. The recursive
@@ -266,6 +532,13 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         if os.path.exists(p) and _writable_by_others(p):
             problems.append(f"path writable by others: {p}")
 
+    # OWNERSHIP + RUNNING-AS: the executor must be owned by and running AS the configured
+    # ELIRA_CHANGE_EXECUTOR_ACCOUNT (SID-based) — not "whoever ran preflight". This closes the
+    # false green where a deploy/verify run by the main user leaves the main user as owner
+    # (able to rewrite any DACL) and trusted.
+    if root:
+        problems += _identity_problems(root, [p for _label, p in sensitive])
+
     # sys.path is a code-shadow surface. Resolve '' / relative entries to cwd so an
     # attacker-writable cwd on sys.path (e.g. `python -m`) can't be skipped. Containment in
     # the base install is PATH-AWARE (`_within`, not startswith — else `C:\Python\base_evil`
@@ -283,15 +556,15 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         in_base = _within(resolved, base)
         if os.path.isdir(e):
             if in_base:                                  # base stdlib → dir-level (per-file impractical)
-                if _writable_by_others(e):
-                    problems.append(f"sys.path base dir writable by others: {e}")
+                if _writable_by_others(e) or (owner_check and owner_check(e)):
+                    problems.append(f"sys.path base dir writable-or-misowned: {e}")
             else:
-                off = _recursive_writable(e)             # cwd / site-packages / script dir → per-file
+                off = _recursive_writable(e, owner_check)   # cwd / site-packages / script dir → per-file
                 if off:
-                    problems.append(f"sys.path entry file/dir writable by others (code-shadow risk): {off}")
+                    problems.append(f"sys.path entry file/dir writable-or-misowned (code-shadow risk): {off}")
         elif os.path.exists(e):                          # importable zip/egg archive on sys.path
-            if _writable_by_others(e):
-                problems.append(f"sys.path importable file writable by others (code-shadow risk): {e}")
+            if _writable_by_others(e) or (owner_check and owner_check(e)):
+                problems.append(f"sys.path importable file writable-or-misowned (code-shadow risk): {e}")
         # a non-existent entry imports nothing; Python skips it (no check).
     return problems
 

@@ -174,7 +174,7 @@ class PreflightTest(unittest.TestCase):
         evil.mkdir()
         recursed: list[str] = []
 
-        def rec_spy(root_dir):
+        def rec_spy(root_dir, owner_check=None):
             recursed.append(os.path.normpath(str(root_dir)))
             return None
         env = self._valid_env(self._tmp, "/r")
@@ -221,6 +221,110 @@ class PreflightTest(unittest.TestCase):
                                     else os.path.normpath(str(p))), \
                 unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False):
             self.assertIsNone(preflight._recursive_writable(root))
+
+    # --- ownership / running-as identity (P1-b) ------------------------------------------
+    def test_identity_running_as_mismatch_flagged(self):
+        root = str(Path(self._tmp) / "r"); Path(root).mkdir()
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": "M\\exec"}), \
+                unittest.mock.patch.object(preflight.os, "name", "nt"), \
+                unittest.mock.patch.object(preflight, "_account_sid", return_value="S-1-EXPECTED"), \
+                unittest.mock.patch.object(preflight, "_current_sid", return_value="S-1-OTHER"), \
+                unittest.mock.patch.object(preflight, "_owner_sid", return_value="S-1-EXPECTED"):
+            probs = preflight._identity_problems(root, [])
+        self.assertTrue(any("NOT running as" in p for p in probs), probs)
+
+    def test_identity_owner_mismatch_flagged(self):
+        root = str(Path(self._tmp) / "r2"); Path(root).mkdir()
+
+        def owner(p):
+            same = os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(root))
+            return "S-1-MAIN" if same else "S-1-EXPECTED"     # root owned by the main user
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": "M\\exec"}), \
+                unittest.mock.patch.object(preflight.os, "name", "nt"), \
+                unittest.mock.patch.object(preflight, "_account_sid", return_value="S-1-EXPECTED"), \
+                unittest.mock.patch.object(preflight, "_current_sid", return_value="S-1-EXPECTED"), \
+                unittest.mock.patch.object(preflight, "_owner_sid", side_effect=owner):
+            probs = preflight._identity_problems(root, [])
+        self.assertTrue(any("OWNED by a non-executor" in p and "r2" in p for p in probs), probs)
+
+    def test_identity_all_match_clean(self):
+        root = str(Path(self._tmp) / "r3"); Path(root).mkdir()
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": "M\\exec"}), \
+                unittest.mock.patch.object(preflight.os, "name", "nt"), \
+                unittest.mock.patch.object(preflight, "_account_sid", return_value="S-1-EXPECTED"), \
+                unittest.mock.patch.object(preflight, "_current_sid", return_value="S-1-EXPECTED"), \
+                unittest.mock.patch.object(preflight, "_owner_sid", return_value="S-1-EXPECTED"):
+            self.assertEqual(preflight._identity_problems(root, []), [])
+
+    def test_identity_unresolvable_account_flagged(self):
+        root = str(Path(self._tmp) / "r4"); Path(root).mkdir()
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": "NOSUCH\\a"}), \
+                unittest.mock.patch.object(preflight.os, "name", "nt"), \
+                unittest.mock.patch.object(preflight, "_account_sid", return_value=None):
+            probs = preflight._identity_problems(root, [])
+        self.assertTrue(any("could not be resolved to a SID" in p for p in probs), probs)
+
+    def test_identity_account_unset_is_noop(self):
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": ""}):
+            self.assertEqual(preflight._identity_problems(str(self._tmp), []), [])
+
+    def test_safe_writers_do_not_trust_current_runner(self):
+        # The spoofable getpass/USERNAME path is gone: with NO account configured, the current
+        # runner is NOT a trusted writer (only the SID-resolved system principals are).
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": "",
+                                                   "USERNAME": "attacker", "USERDOMAIN": "EVIL"}):
+            preflight._safe_names_by_account.pop("", None)
+            names = preflight._safe_writer_names()
+        self.assertNotIn("evil\\attacker", names)
+
+    @unittest.skipUnless(os.name == "nt", "Windows SID resolution")
+    def test_identity_real_ctypes_agree(self):
+        import subprocess
+        who = subprocess.run(["whoami"], capture_output=True, text=True).stdout.strip()
+        cur = preflight._current_sid()
+        self.assertTrue(cur and cur.startswith("S-1-"), cur)
+        self.assertEqual(preflight._account_sid(who), cur)      # name -> same SID
+        self.assertEqual(preflight._account_sid(cur), cur)      # raw SID string roundtrips
+        f = Path(self._tmp) / "owned.txt"; f.write_text("x", encoding="utf-8")
+        self.assertEqual(preflight._owner_sid(str(f)), cur)     # creator owns the file
+
+    def test_recursive_writable_flags_misowned_file(self):
+        # P1 (adversarial review): a file OWNED by a non-executor principal (Windows implicit
+        # WRITE_DAC) must be caught per-file by the walk even when its DACL is clean.
+        root = str(Path(self._tmp) / "own"); Path(root).mkdir()
+        (Path(root) / "ok.py").write_text("x", encoding="utf-8")
+        bad = Path(root) / "engine.py"; bad.write_text("x", encoding="utf-8")
+
+        def oc(p):     # engine.py is misowned; everything else is fine
+            return os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(str(bad)))
+        with unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False):
+            hit = preflight._recursive_writable(root, oc)
+        self.assertEqual(os.path.normcase(os.path.abspath(hit or "")),
+                         os.path.normcase(os.path.abspath(str(bad))))
+
+    def test_recursive_writable_owner_check_none_is_noop(self):
+        root = str(Path(self._tmp) / "own2"); Path(root).mkdir()
+        (Path(root) / "a.py").write_text("x", encoding="utf-8")
+        with unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False):
+            self.assertIsNone(preflight._recursive_writable(root, None))
+
+    def test_make_owner_check_trusts_only_account_and_system(self):
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": "M\\exec"}), \
+                unittest.mock.patch.object(preflight.os, "name", "nt"), \
+                unittest.mock.patch.object(preflight, "_account_sid", return_value="S-1-EXPECTED"):
+            with unittest.mock.patch.object(preflight, "_owner_sid",
+                                            side_effect=lambda p: "S-1-MAIN" if "bad" in p else "S-1-EXPECTED"):
+                chk = preflight._make_owner_check()
+                self.assertTrue(chk("C:/x/bad.py"))          # non-executor owner -> untrusted
+                self.assertFalse(chk("C:/x/good.py"))        # executor owner -> trusted
+            with unittest.mock.patch.object(preflight, "_owner_sid", return_value="S-1-5-18"):
+                self.assertFalse(preflight._make_owner_check()("C:/x/any"))   # SYSTEM -> trusted
+            with unittest.mock.patch.object(preflight, "_owner_sid", return_value=None):
+                self.assertTrue(preflight._make_owner_check()("C:/x/any"))    # unreadable -> fail-closed
+
+    def test_make_owner_check_unset_account_is_none(self):
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": ""}):
+            self.assertIsNone(preflight._make_owner_check())
 
     def test_malformed_allowlist_reported(self):
         env = {"PATH": os.environ.get("PATH", ""), "ELIRA_CHANGE_STORE_PATH": "/s",
