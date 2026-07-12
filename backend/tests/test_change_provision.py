@@ -19,15 +19,15 @@ import provision_change_executor as prov  # noqa: E402
 
 
 def _make_artifact(dir_path: Path, files: dict) -> str:
-    """Write .py files + a correct MANIFEST.sha256; return the manifest digest."""
+    """Write .py files + a correct MANIFEST.sha256 (exact bytes); return the manifest digest."""
     dir_path.mkdir(parents=True, exist_ok=True)
     hashes = {}
     for name, body in files.items():
         (dir_path / name).write_text(body, encoding="utf-8")
         hashes[name] = prov._sha256_file(dir_path / name)
-    text = prov._manifest_text(hashes)
-    (dir_path / prov._MANIFEST).write_text(text, encoding="utf-8")
-    return prov._manifest_digest(text)
+    man_bytes = prov._manifest_bytes(hashes)
+    (dir_path / prov._MANIFEST).write_bytes(man_bytes)
+    return prov._manifest_digest(man_bytes)
 
 
 class ArtifactVerifyTest(unittest.TestCase):
@@ -109,6 +109,17 @@ class CopyArtifactTest(unittest.TestCase):
         prov._copy_from_artifact(self.root, self.art, self.hashes, force=True)
         self.assertFalse((dst / "evil.py").exists())                                    # attacker file gone
         self.assertEqual((dst / "engine.py").read_text(encoding="utf-8"), "x=1\n")      # verified code deployed
+
+    def test_provisioner_is_not_deployed(self):
+        # the bundled provisioner is the tool, not part of the executor package
+        art = self._tmp / "art2"
+        _make_artifact(art, {"engine.py": "x=1\n", prov._PROVISIONER: "tool()\n"})
+        hashes = {"engine.py": prov._sha256_file(art / "engine.py"),
+                  prov._PROVISIONER: prov._sha256_file(art / prov._PROVISIONER)}
+        root = self._tmp / "root2"; root.mkdir()
+        prov._copy_from_artifact(root, art, hashes, force=False)
+        self.assertTrue((root / "change_executor" / "engine.py").exists())
+        self.assertFalse((root / "change_executor" / prov._PROVISIONER).exists())
 
 
 class GuardTest(unittest.TestCase):

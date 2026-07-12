@@ -430,33 +430,6 @@ def _recursive_writable(root_dir: str, owner_check=None) -> str | None:
     return None
 
 
-def _recursive_owner_untrusted(root_dir: str, owner_check) -> str | None:
-    """First path (dir OR file) under *root_dir* whose OWNER is untrusted (per *owner_check*),
-    else None. OWNER-only — fast in-process SID reads, no per-file `icacls` — so the large base
-    runtime can be checked per-file for the Windows implicit-WRITE_DAC class (a main-owned
-    stdlib file with a clean DACL) without the cost of a full recursive ACL walk. Fails closed:
-    an un-walkable tree returns the root."""
-    if not owner_check:
-        return None
-    try:
-        root_real = os.path.realpath(root_dir)
-        for dirpath, dirs, files in os.walk(root_dir):
-            if owner_check(dirpath):
-                return dirpath
-            for dn in dirs:                              # os.walk won't descend a symlinked dir
-                dp = os.path.join(dirpath, dn)
-                if os.path.islink(dp) and (
-                        not _within(os.path.realpath(dp), root_real) or owner_check(dp)):
-                    return dp
-            for fn in files:
-                fp = os.path.join(dirpath, fn)
-                if owner_check(fp):
-                    return fp
-    except OSError:
-        return root_dir
-    return None
-
-
 def _has_git_ancestor(path: Path) -> bool:
     try:
         p = path.resolve()
@@ -519,16 +492,25 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         off = _recursive_writable(d, owner_check)
         if off:
             problems.append(f"code/interpreter/venv file/dir writable-or-misowned: {off}")
-    # The base runtime's OWNER is verified PER-FILE (fast, no icacls) so a main-owned Lib\*.py
-    # with a clean DACL cannot rewrite its own DACL and shadow an executor import. Writability is
-    # checked at DIRECTORY level (a full per-file icacls walk of stdlib at boot is impractical) —
-    # so the base MUST be a dedicated, read-only, system/executor-owned install.
-    for d in dict.fromkeys([sys.base_prefix, str(Path(sys.base_prefix) / "Lib")]):
-        if d and _writable_by_others(d):
-            problems.append(f"base interpreter dir writable by others: {d}")
-    off = _recursive_owner_untrusted(sys.base_prefix, owner_check)
-    if off:
-        problems.append(f"base runtime file/dir owned by a non-executor principal: {off}")
+    # The base runtime must be proven immutable to non-executor principals: a single Lib\*.py
+    # with a MAINUSER:(W) ACE (clean dir ACL, correct owner) is a shadow-import route. When the
+    # account is configured (a real run) verify the base PER-FILE — owner AND writability — via the
+    # same walk used for the package/venv. Gated on owner_check so the test suite (account unset)
+    # keeps the cheap directory-level path; a full per-file walk of a clean base is a one-time
+    # startup cost for a rarely-restarted privileged service (base = dedicated, read-only install).
+    if owner_check:
+        off = _recursive_writable(sys.base_prefix, owner_check)
+        if off:
+            problems.append(f"base runtime file/dir writable-or-misowned: {off}")
+        for d in _tree_and_parents(sys.base_prefix)[1:]:   # a misowned/writable ancestor can swap the base
+            if _writable_by_others(d):
+                problems.append(f"base runtime parent writable by others: {d}")
+            if os.path.exists(d) and owner_check(d):
+                problems.append(f"base runtime parent owned by a non-executor principal: {d}")
+    else:
+        for d in dict.fromkeys([sys.base_prefix, str(Path(sys.base_prefix) / "Lib")]):
+            if d and _writable_by_others(d):
+                problems.append(f"base interpreter dir writable by others: {d}")
 
     # Every executor-owned sensitive path (store, registry, IPC token file, and each target's
     # known_hosts + identity KEY) MUST live INSIDE ELIRA_CHANGE_EXECUTOR_ROOT. The recursive

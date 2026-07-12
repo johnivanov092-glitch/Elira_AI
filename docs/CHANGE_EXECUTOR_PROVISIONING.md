@@ -52,27 +52,42 @@ itself — before deploy, and preflight only protects the *already-copied* insta
 consumes a **trusted, hash-manifested release artifact** built once from a **verified-clean**
 repo and kept **outside** any writable checkout.
 
-**2a. Build (once, from a clean/verified checkout):**
+**2a. Build (once, from a clean/verified checkout):** the artifact bundles the frozen package
+**and the provisioner itself**, all hashed into `MANIFEST.sha256`.
 
 ```powershell
 python scripts\provision_change_executor.py build --out C:\elira-artifacts\change-exec-v1
-#  -> prints "MANIFEST sha256: <digest>" and the provisioner's own sha256.
+#  -> prints "MANIFEST sha256: <digest>" and "provision_change_executor.py sha256: <phash>".
 ```
 
-Record the `MANIFEST sha256` **out-of-band** and move the artifact outside any writable repo.
-(Verify the checkout was clean — e.g. a signed tag / `git verify` — before trusting the build;
-pin the provisioner's printed hash too, and run deploy from a trusted copy of it.)
+Verify the checkout was clean first (e.g. a signed tag / `git verify`). Record **both** the
+`MANIFEST sha256` and the provisioner sha256 **out-of-band**, and move the artifact outside any
+writable repo. The `MANIFEST.sha256` file bytes hash to exactly the printed digest, so you can
+re-check it with an external OS tool (below) rather than trusting the script.
 
-**2b. Deploy** (as `elira-change-exec`), against the artifact + pinned digest — pick a root
-**outside the repository** (a run from `D:\AIWork\Elira_AI` MUST fail preflight). Use a
-**dedicated, protected base Python** — NOT the main backend's:
+**2b. External trusted bootstrap — verify the provisioner BEFORE running it.** The provisioner
+lives in a writable checkout too; do NOT run the repo copy. Verify the artifact copy with
+`Get-FileHash` (an OS tool, not the script), then run *that* verified copy:
+
+```powershell
+$pin  = "<MANIFEST sha256 from 2a>"
+$art  = "C:\elira-artifacts\change-exec-v1"
+if ((Get-FileHash "$art\MANIFEST.sha256" -Algorithm SHA256).Hash.ToLower() -ne $pin) { throw "MANIFEST tampered" }
+$want = ((Select-String -Path "$art\MANIFEST.sha256" -Pattern 'provision_change_executor.py').Line -split '\s+')[0].ToLower()
+if ((Get-FileHash "$art\provision_change_executor.py" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "provisioner tampered" }
+```
+
+**2c. Deploy** (as `elira-change-exec`), running the **verified provisioner from the artifact**
+(not the repo), against the artifact + pinned digest. Root **outside the repository** (a run from
+`D:\AIWork\Elira_AI` MUST fail preflight); a **dedicated, protected base Python** — NOT the main
+backend's:
 
 ```powershell
 # runas /user:elira-change-exec ...  (or a scheduled task / service running as that account)
-python scripts\provision_change_executor.py deploy `
+python "$art\provision_change_executor.py" deploy `
   --root C:\elira-change-exec `
   --account "HOSTNAME\elira-change-exec" `
-  --artifact C:\elira-artifacts\change-exec-v1 --manifest-sha256 <digest> `
+  --artifact $art --manifest-sha256 $pin `
   --base-python "C:\elira-base-python\python.exe" `
   --target-host 192.168.88.15 --remote-user elira-change --unit netdata.service
 ```
@@ -142,9 +157,11 @@ icacls C:\elira-change-exec     /grant:r "MAINUSER:(RX)"      # traverse to reac
   the same tree (incl. zip/egg + escaping dir-symlinks) and every sensitive file. A grant of
   **read/traverse** (not write) does not trip it. `[preflight]`
 - The **base Python** must be a dedicated, read-only, system/executor-owned install (not the main
-  backend's). preflight owner-checks it per-file (fast) and checks writability at the directory
-  level; own it and lock it: `icacls C:\elira-base-python /setowner "HOSTNAME\elira-change-exec" /T`
-  then `/inheritance:r /grant:r "…exec:(OI)(CI)RX" "SYSTEM:(OI)(CI)F"`. `[preflight/out-of-band]`
+  backend's). preflight verifies it **per-file — owner AND writability** — so a single `Lib\*.py`
+  with a `MAINUSER:(W)` ACE (clean dir ACL, correct owner) is caught; own it and lock it:
+  `icacls C:\elira-base-python /setowner "HOSTNAME\elira-change-exec" /T` then
+  `/inheritance:r /grant:r "…exec:(OI)(CI)RX" "SYSTEM:(OI)(CI)F"`. Keep it a **dedicated, minimal**
+  runtime — the per-file walk is a one-time startup cost. `[preflight]`
 - preflight checks non-**writability** and **ownership**, not non-**readability**. That the main
   user cannot *read* the key / bot-token is on you. `[out-of-band]`
 
@@ -248,10 +265,10 @@ principal other than the account, **fails by design**.
 `[preflight]` recap: required envs; approver allowlist well-formed; package + interpreter inside
 root; dedicated venv; not a git tree; **running as `ELIRA_CHANGE_EXECUTOR_ACCOUNT` (SID) and every
 file OWNED by it** (per-file across root+parents+venv+interpreter+sys.path+**base runtime** —
-Windows owners keep implicit WRITE_DAC); non-owner-**writable** checks over
-root+parents+venv+interpreter+base-dir+sys.path (incl. zip/egg + escaping dir-symlink); sensitive
-paths inside root + non-writable; registry valid + target files. Deploy itself accepts code only
-from a **hash-verified release artifact** (not the live repo).
+Windows owners keep implicit WRITE_DAC); non-owner-**writable** checks per-file over
+root+parents+venv+interpreter+**base runtime**+sys.path (incl. zip/egg + escaping dir-symlink);
+sensitive paths inside root + non-writable; registry valid + target files. Deploy itself accepts
+code only from a **hash-verified release artifact** — bundling the provisioner — not the live repo.
 
 ---
 

@@ -331,20 +331,24 @@ class PreflightTest(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": ""}):
             self.assertIsNone(preflight._make_owner_check())
 
-    def test_recursive_owner_untrusted_flags_deep_file(self):
-        # P1 (review): a base-runtime file (e.g. Lib\os.py) owned by a non-executor principal
-        # must be caught per-file, cheaply (owner-only, no icacls).
+    def test_base_walk_flags_writable_or_misowned_file_per_file(self):
+        # P1 (review): the base runtime is verified PER-FILE for owner AND writability (via
+        # _recursive_writable), so a single Lib\*.py with a bad ACL or owner is caught even when
+        # the directory ACL is clean.
         root = str(Path(self._tmp) / "bown"); Path(root).mkdir()
         sub = Path(root) / "Lib"; sub.mkdir()
         (sub / "ok.py").write_text("x", encoding="utf-8")
         bad = sub / "os.py"; bad.write_text("x", encoding="utf-8")
-
-        def oc(p):
-            return os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(str(bad)))
-        hit = preflight._recursive_owner_untrusted(root, oc)
-        self.assertEqual(os.path.normcase(os.path.abspath(hit or "")),
-                         os.path.normcase(os.path.abspath(str(bad))))
-        self.assertIsNone(preflight._recursive_owner_untrusted(root, None))   # no check -> noop
+        badn = os.path.normcase(os.path.abspath(str(bad)))
+        # writability path: only os.py is writable-by-others
+        with unittest.mock.patch.object(preflight, "_writable_by_others",
+                                        side_effect=lambda p: os.path.normcase(os.path.abspath(p)) == badn):
+            self.assertEqual(os.path.normcase(os.path.abspath(preflight._recursive_writable(root) or "")), badn)
+        # owner path: clean ACL, but os.py owned by a non-executor principal
+        with unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False):
+            hit = preflight._recursive_writable(
+                root, owner_check=lambda p: os.path.normcase(os.path.abspath(p)) == badn)
+        self.assertEqual(os.path.normcase(os.path.abspath(hit or "")), badn)
 
     def test_malformed_allowlist_reported(self):
         env = {"PATH": os.environ.get("PATH", ""), "ELIRA_CHANGE_STORE_PATH": "/s",

@@ -32,10 +32,21 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
-PKG_SRC = REPO / "backend" / "app" / "change_executor"
+def _find_repo() -> Path | None:
+    """The git repo this script lives in, by walking up to a `.git` — NOT `parents[1]`, which is
+    wrong for the copy bundled inside an artifact (deploy runs that copy from OUTSIDE any repo)."""
+    p = Path(__file__).resolve()
+    for d in [p.parent, *p.parents]:
+        if (d / ".git").exists():
+            return d
+    return None
+
+
+REPO = _find_repo()                          # None when running the bundled copy (no repo to avoid)
+PKG_SRC = (REPO / "backend" / "app" / "change_executor") if REPO else None
 _MARKER = ".elira-change-exec-install"      # written on deploy; required before any --force wipe
 _MANIFEST = "MANIFEST.sha256"               # per-file hashes inside a release artifact
+_PROVISIONER = "provision_change_executor.py"   # this tool, bundled + hashed into the artifact
 
 
 def _sha256_file(p: Path) -> str:
@@ -97,11 +108,12 @@ def _validate_base_python(base: str) -> str:
     bp = Path(base).resolve()
     if not bp.exists():
         _fail(f"--base-python not found: {bp}")
-    try:
-        bp.relative_to(REPO)
-        _fail(f"--base-python {bp} is inside the repo - use a separate protected runtime.")
-    except ValueError:
-        pass
+    if REPO is not None:
+        try:
+            bp.relative_to(REPO)
+            _fail(f"--base-python {bp} is inside the repo - use a separate protected runtime.")
+        except ValueError:
+            pass
     return str(bp)
 
 
@@ -109,6 +121,8 @@ def _refuse_if_in_repo(root: Path) -> None:
     rp = root.resolve()
     if rp == rp.parent:      # a drive / filesystem root — a --force here would be catastrophic
         _fail(f"root {rp} is a drive/filesystem root - refuse.")
+    if REPO is None:
+        return               # running the bundled copy: there is no writable repo to be inside of
     try:
         rp.relative_to(REPO)
     except ValueError:
@@ -124,12 +138,13 @@ def _require_marker(root: Path) -> None:
               f"--force to a fresh root, or place the marker only if you are certain.")
 
 
-def _manifest_text(hashes: dict) -> str:
-    return "".join(f"{hashes[k]}  {k}\n" for k in sorted(hashes))
+def _manifest_bytes(hashes: dict) -> bytes:
+    # exact bytes (LF, no BOM) so an EXTERNAL `Get-FileHash MANIFEST.sha256` equals the digest
+    return "".join(f"{hashes[k]}  {k}\n" for k in sorted(hashes)).encode("utf-8")
 
 
-def _manifest_digest(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _manifest_digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _verify_artifact(artifact: Path, expected_digest: str) -> dict:
@@ -142,8 +157,9 @@ def _verify_artifact(artifact: Path, expected_digest: str) -> dict:
     man = artifact / _MANIFEST
     if not man.is_file():
         _fail(f"no {_MANIFEST} in artifact {artifact} - build it with `build --out <dir>`.")
-    text = man.read_text(encoding="utf-8")
-    digest = _manifest_digest(text)
+    man_bytes = man.read_bytes()      # hash the exact file bytes (matches an external Get-FileHash)
+    text = man_bytes.decode("utf-8")
+    digest = _manifest_digest(man_bytes)
     if digest.lower() != expected_digest.strip().lower():
         _fail(f"artifact manifest digest {digest} != pinned --manifest-sha256 "
               f"({expected_digest.strip()}) - tampered artifact or wrong pin. Refusing.")
@@ -168,6 +184,7 @@ def _verify_artifact(artifact: Path, expected_digest: str) -> dict:
 
 def _copy_from_artifact(root: Path, artifact: Path, hashes: dict, force: bool) -> Path:
     dst = root / "change_executor"
+    pkg = {k: v for k, v in hashes.items() if k != _PROVISIONER}   # the provisioner is the tool, not deployed
     if dst.exists():
         # NEVER silently skip: a pre-existing change_executor/ (e.g. pre-planted by the main user
         # into the published root path, then laundered to executor-ownership by `icacls /setowner`)
@@ -178,18 +195,18 @@ def _copy_from_artifact(root: Path, artifact: Path, hashes: dict, force: bool) -
                   f"pre-planted). Deploy into a fresh root, or re-run with --force to replace it.")
         shutil.rmtree(dst)
     dst.mkdir(parents=True)
-    for name in sorted(hashes):
+    for name in sorted(pkg):
         shutil.copy2(artifact / name, dst / name)
     # Re-verify the DEPLOYED bytes against the manifest, so "deployed" == "verified" (this also
     # closes any check-to-use gap between _verify_artifact and the copy).
     present = {p.name for p in dst.iterdir() if p.is_file() and p.suffix == ".py"}
-    if present != set(hashes):
-        _fail(f"deployed .py set {sorted(present)} != manifest {sorted(hashes)} after copy")
-    for name, want in hashes.items():
+    if present != set(pkg):
+        _fail(f"deployed .py set {sorted(present)} != manifest {sorted(pkg)} after copy")
+    for name, want in pkg.items():
         got = _sha256_file(dst / name).lower()
         if got != want:
             _fail(f"deployed {name} sha256 {got} != manifest {want} after copy - refusing.")
-    print(f"  copied + re-verified {len(hashes)} module(s) from artifact -> {dst}")
+    print(f"  copied + re-verified {len(pkg)} module(s) from artifact -> {dst}")
     return dst
 
 
@@ -255,9 +272,9 @@ def cmd_build(a: argparse.Namespace) -> int:
     write MANIFEST.sha256, and print the manifest digest to pin OUT-OF-BAND. Run this ONCE from a
     verified-clean checkout; thereafter deploy consumes only the artifact, not the live repo."""
     out = Path(a.out)
+    if PKG_SRC is None or not PKG_SRC.is_dir():
+        _fail("`build` must run from the repo checkout (the frozen package source was not found).")
     _refuse_if_in_repo(out)                # the artifact must live outside the writable repo
-    if not PKG_SRC.is_dir():
-        _fail(f"frozen package not found at {PKG_SRC}")
     out.mkdir(parents=True, exist_ok=True)
     hashes: dict = {}
     for src in sorted(PKG_SRC.iterdir()):
@@ -266,14 +283,20 @@ def cmd_build(a: argparse.Namespace) -> int:
             hashes[src.name] = _sha256_file(out / src.name)
     if not hashes:
         _fail(f"no .py modules found in {PKG_SRC}")
-    text = _manifest_text(hashes)
-    (out / _MANIFEST).write_text(text, encoding="utf-8")
-    digest = _manifest_digest(text)
-    print(f"Built release artifact -> {out.resolve()}  ({len(hashes)} modules)")
-    print(f"  provisioner sha256 : {_sha256_file(Path(__file__))}")
-    print(f"  MANIFEST sha256    : {digest}")
-    print("\nNEXT: build from a verified-clean repo only; move the artifact outside any writable")
-    print("repo; record the MANIFEST sha256 out-of-band and pass it to deploy as --manifest-sha256.")
+    # Bundle the provisioner ITSELF into the artifact and hash it, so deploy can be run from a
+    # verified, trusted copy (not the writable repo) and the operator can hash-check it out-of-band
+    # BEFORE executing it — a tampered repo-local provisioner would otherwise fake its own checks.
+    shutil.copy2(Path(__file__), out / _PROVISIONER)
+    hashes[_PROVISIONER] = _sha256_file(out / _PROVISIONER)
+    man_bytes = _manifest_bytes(hashes)
+    (out / _MANIFEST).write_bytes(man_bytes)
+    digest = _manifest_digest(man_bytes)
+    print(f"Built release artifact -> {out.resolve()}  ({len(hashes)} files incl. the provisioner)")
+    print(f"  {_PROVISIONER} sha256 : {hashes[_PROVISIONER]}")
+    print(f"  MANIFEST sha256          : {digest}")
+    print("\nNEXT: build from a verified-clean repo only; move the artifact outside any writable repo;")
+    print("record the MANIFEST sha256 out-of-band. Before deploy, hash-check the provisioner with an")
+    print("EXTERNAL tool (Get-FileHash) against the manifest, then run deploy FROM the artifact copy.")
     return 0
 
 
