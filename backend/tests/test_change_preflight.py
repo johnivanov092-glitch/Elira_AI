@@ -109,6 +109,119 @@ class PreflightTest(unittest.TestCase):
                      "COMPUTERNAME\\Root:(F)", "Everyone:(RX)", "Everyone:(R)", "Everyone:(DENY)(W)"):
             self.assertFalse(preflight._ace_grants_write_to_nonowner(line, safe), line)
 
+    def _valid_env(self, root, reg, extra=None):
+        env = {"PATH": os.environ.get("PATH", ""),
+               "ELIRA_CHANGE_STORE_PATH": str(Path(root) / "change.sqlite3"),
+               "ELIRA_CHANGE_REGISTRY_PATH": reg, "ELIRA_CHANGE_BOT_TOKEN": "tok",
+               "ELIRA_CHANGE_EXECUTOR_ROOT": root, "ELIRA_CHANGE_IPC_TOKEN_FILE": str(Path(root) / "ipc.token"),
+               "ITOPS_CHANGE_APPROVER_USER_IDS": "42", "ITOPS_CHANGE_APPROVER_CHAT_IDS": "100"}
+        if extra:
+            env.update(extra)
+        return env
+
+    def _reg_inside(self, root):
+        kh, idf = str(Path(root) / "kh"), str(Path(root) / "id")
+        Path(kh).write_text("srv key\n", encoding="utf-8")
+        Path(idf).write_text("KEY\n", encoding="utf-8")
+        reg = str(Path(root) / "registry.json")
+        Path(reg).write_text(json.dumps({"targets": {"ai-server-netdata": {
+            "host": "h", "port": 22, "remote_user": "elira-change", "known_hosts": kh,
+            "identity_file": idf, "unit": "netdata.service", "operation": "restart"}}}), encoding="utf-8")
+        return reg
+
+    def test_sensitive_path_outside_root_flagged(self):
+        # P1-C: store/registry/token/known_hosts/key OUTSIDE the executor root leave a writable
+        # ancestor unchecked → must be flagged even if the file's immediate parent is safe.
+        root = str(Path(self._tmp) / "exec_root")
+        Path(root).mkdir()
+        outside = str(Path(self._tmp) / "outside")
+        Path(outside).mkdir()
+        reg = self._reg_inside(root)
+        env = self._valid_env(root, reg, {"ELIRA_CHANGE_STORE_PATH": str(Path(outside) / "change.sqlite3")})
+        with unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False), \
+                unittest.mock.patch.object(preflight, "_recursive_writable", return_value=None), \
+                unittest.mock.patch.object(preflight, "_has_git_ancestor", return_value=False), \
+                unittest.mock.patch.dict(os.environ, env, clear=True):
+            problems = preflight.verify(registry_path=reg)
+        self.assertTrue(any("NOT inside ELIRA_CHANGE_EXECUTOR_ROOT" in p and "change.sqlite3" in p
+                            for p in problems), problems)
+
+    def test_syspath_importable_zip_file_checked(self):
+        # P1-B: an importable archive (zip/egg) is a FILE on sys.path — skipping non-directories
+        # would let a writable archive shadow code. It must be checked per-file.
+        zip_path = str(Path(self._tmp) / "shadow.zip")
+        Path(zip_path).write_bytes(b"PK\x03\x04")
+        checked: list[str] = []
+
+        def spy(path):
+            checked.append(os.path.normpath(str(path)))
+            return False
+        env = self._valid_env(self._tmp, "/r")
+        with unittest.mock.patch.object(sys, "path", list(sys.path) + [zip_path]), \
+                unittest.mock.patch.object(preflight, "_recursive_writable", return_value=None), \
+                unittest.mock.patch.object(preflight, "_writable_by_others", side_effect=spy), \
+                unittest.mock.patch.dict(os.environ, env, clear=True):
+            preflight.verify(registry_path="/r")
+        self.assertIn(os.path.normpath(zip_path), checked)   # the archive file was ACL-checked
+
+    def test_syspath_base_prefix_confusion_walks_per_file(self):
+        # P1-B: `<base>_evil` shares a string prefix with base_prefix but is NOT contained in
+        # it. The old startswith() treated it as base stdlib (dir-level, effectively skipped);
+        # a path-aware check classifies it as non-base and walks it PER-FILE (recursive).
+        fake_base = Path(self._tmp) / "pybase"
+        fake_base.mkdir()
+        evil = Path(self._tmp) / "pybase_evil"          # startswith(fake_base) but not within it
+        evil.mkdir()
+        recursed: list[str] = []
+
+        def rec_spy(root_dir):
+            recursed.append(os.path.normpath(str(root_dir)))
+            return None
+        env = self._valid_env(self._tmp, "/r")
+        with unittest.mock.patch.object(sys, "path", list(sys.path) + [str(evil)]), \
+                unittest.mock.patch.object(sys, "base_prefix", str(fake_base)), \
+                unittest.mock.patch.object(preflight, "_recursive_writable", side_effect=rec_spy), \
+                unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False), \
+                unittest.mock.patch.dict(os.environ, env, clear=True):
+            preflight.verify(registry_path="/r")
+        self.assertIn(os.path.normpath(str(evil)), recursed)   # per-file walk, not skipped as base
+
+    def test_recursive_writable_flags_escaping_dir_symlink(self):
+        # P3 (adversarial review): os.walk does not descend into a directory SYMLINK, so a
+        # symlinked subdir whose target escapes the walked root must be flagged rather than
+        # silently skipped. Mocked so it needs no OS symlink-create privilege.
+        root = str(Path(self._tmp) / "tree")
+        Path(root).mkdir()
+        link = os.path.join(root, "shadow")
+        outside = str(Path(self._tmp) / "evil_target")   # target OUTSIDE root
+
+        with unittest.mock.patch("os.walk", side_effect=lambda top: iter([(root, ["shadow"], [])])), \
+                unittest.mock.patch("os.path.islink",
+                                    side_effect=lambda p: os.path.normpath(str(p)) == os.path.normpath(link)), \
+                unittest.mock.patch("os.path.realpath",
+                                    side_effect=lambda p: outside if os.path.normpath(str(p)) == os.path.normpath(link)
+                                    else os.path.normpath(str(p))), \
+                unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False):
+            hit = preflight._recursive_writable(root)
+        self.assertEqual(os.path.normpath(hit or ""), os.path.normpath(link))   # escaping symlink flagged
+
+    def test_recursive_writable_ignores_in_root_safe_symlink(self):
+        # A symlink whose target stays inside root and is not writable is NOT a problem
+        # (the real subtree is walked directly by os.walk).
+        root = str(Path(self._tmp) / "tree2")
+        Path(root).mkdir()
+        link = os.path.join(root, "inside")
+        target = os.path.join(root, "real")              # target INSIDE root
+
+        with unittest.mock.patch("os.walk", side_effect=lambda top: iter([(root, ["inside"], [])])), \
+                unittest.mock.patch("os.path.islink",
+                                    side_effect=lambda p: os.path.normpath(str(p)) == os.path.normpath(link)), \
+                unittest.mock.patch("os.path.realpath",
+                                    side_effect=lambda p: target if os.path.normpath(str(p)) == os.path.normpath(link)
+                                    else os.path.normpath(str(p))), \
+                unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False):
+            self.assertIsNone(preflight._recursive_writable(root))
+
     def test_malformed_allowlist_reported(self):
         env = {"PATH": os.environ.get("PATH", ""), "ELIRA_CHANGE_STORE_PATH": "/s",
                "ELIRA_CHANGE_REGISTRY_PATH": "/r", "ELIRA_CHANGE_BOT_TOKEN": "tok",

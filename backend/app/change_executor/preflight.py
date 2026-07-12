@@ -5,9 +5,11 @@ The executor refuses to run unless its runtime is really isolated from the main 
     `sys.executable` (the venv python) must live INSIDE it — running from the main
     repo/backend or a shared venv fails closed;
   * the executor must NOT be inside a git working tree (a dev checkout);
-  * the executor tree + its parents, the registry, the DB parent, and the key/known_hosts
-    files + their parents must not be writable by any non-owner principal;
-  * no sys.path entry may be writable by others (a route to shadow the frozen code).
+  * every executor-owned sensitive path (store, registry, IPC token file, each target's
+    known_hosts + identity key) must live INSIDE the executor root — so the recursive root
+    check covers their whole ancestor chain — and none may be writable by a non-owner;
+  * no sys.path entry may be writable by others (a route to shadow the frozen code),
+    including importable zip/egg FILES on sys.path, with path-aware base containment.
 `_writable_by_others` fails CLOSED — if it cannot prove a path is safe, it is unsafe.
 
 TCB / trust assumptions (must hold operationally):
@@ -140,13 +142,25 @@ def _within(child: str, parent: str) -> bool:
 
 
 def _recursive_writable(root_dir: str) -> str | None:
-    """The first path (dir OR file) under *root_dir* writable by a non-owner, else None.
-    Per-FILE so a weak ACL on engine.py/_frozen.py is caught even when the dir is safe.
+    """The first path (dir OR file) under *root_dir* writable by a non-owner — OR a directory
+    symlink whose target escapes *root_dir* (a code-shadow route os.walk does not descend into
+    and cannot verify) — else None. Per-FILE so a weak ACL on engine.py/_frozen.py is caught
+    even when the dir is safe. os.walk does NOT descend into directory SYMLINKS
+    (followlinks defaults False), so a symlinked subdir would otherwise be neither walked nor
+    ACL-checked; rather than follow one into an unbounded external tree we treat any escaping
+    symlinked dir as unsafe (fail-closed) and still ACL-check a target that stays inside root.
+    (Junctions are not islink and ARE descended by os.walk, so they are covered normally.)
     Fails closed: an un-walkable tree returns the root (unsafe)."""
     try:
-        for dirpath, _dirs, files in os.walk(root_dir):
+        root_real = os.path.realpath(root_dir)
+        for dirpath, dirs, files in os.walk(root_dir):
             if _writable_by_others(dirpath):
                 return dirpath
+            for dn in dirs:                              # os.walk lists but won't descend symlinked dirs
+                dp = os.path.join(dirpath, dn)
+                if os.path.islink(dp) and (
+                        not _within(os.path.realpath(dp), root_real) or _writable_by_others(dp)):
+                    return dp
             for fn in files:
                 fp = os.path.join(dirpath, fn)
                 if _writable_by_others(fp):
@@ -221,11 +235,17 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         if d and _writable_by_others(d):
             problems.append(f"base interpreter dir writable by others: {d}")
 
-    to_check: list[str] = []
+    # Every executor-owned sensitive path (store, registry, IPC token file, and each target's
+    # known_hosts + identity KEY) MUST live INSIDE ELIRA_CHANGE_EXECUTOR_ROOT. The recursive
+    # root check above (tree + parents) then covers their ENTIRE ancestor chain — a sensitive
+    # path placed outside root would leave a writable ancestor able to swap the subtree, and
+    # checking only the immediate parent (as before) does not catch a writable grandparent.
+    # Requiring containment is strictly stronger than walking each path's full parent chain.
+    sensitive: list[tuple[str, str]] = []
     for env in ("ELIRA_CHANGE_STORE_PATH", "ELIRA_CHANGE_REGISTRY_PATH", "ELIRA_CHANGE_IPC_TOKEN_FILE"):
         p = str(os.environ.get(env, "")).strip()
         if p:
-            to_check += [p, str(Path(p).resolve().parent)]   # file (if present) + parent dir
+            sensitive.append((env, p))
     try:
         reg = load_registry(registry_path)
     except RegistryError as exc:
@@ -236,26 +256,43 @@ def verify(*, registry_path: str | None = None) -> list[str]:
             if not os.path.isfile(p):
                 problems.append(f"target {tid}: {label} missing: {p}")
             else:
-                to_check += [p, str(Path(p).resolve().parent)]
+                sensitive.append((f"target {tid} {label}", p))
+    to_check: list[str] = []
+    for label, p in sensitive:
+        if root and not _within(p, root):
+            problems.append(f"{label} path is NOT inside ELIRA_CHANGE_EXECUTOR_ROOT: {p}")
+        to_check += [p, str(Path(p).resolve().parent)]   # file (if present) + parent dir (belt-and-suspenders)
     for p in dict.fromkeys(to_check):      # de-dup, preserve order
         if os.path.exists(p) and _writable_by_others(p):
             problems.append(f"path writable by others: {p}")
 
-    # sys.path is a code-shadow surface. Walk each entry PER-FILE (like the executor tree),
-    # except the large base stdlib which is dir-level only. Resolve '' / relative entries to
-    # cwd so an attacker-writable cwd on sys.path (e.g. `python -m`) can't be skipped.
+    # sys.path is a code-shadow surface. Resolve '' / relative entries to cwd so an
+    # attacker-writable cwd on sys.path (e.g. `python -m`) can't be skipped. Containment in
+    # the base install is PATH-AWARE (`_within`, not startswith — else `C:\Python\base_evil`
+    # would masquerade as `C:\Python\base` and skip the per-file walk). Directories outside
+    # base are walked per-file; IMPORTABLE FILES on sys.path (zip/egg) are checked per-file
+    # too — skipping non-directories would let a writable importable archive shadow code.
     base = str(Path(sys.base_prefix).resolve())
     for entry in sys.path:
         e = str(entry or "").strip() or os.getcwd()
-        if not os.path.isdir(e):
+        try:
+            resolved = str(Path(e).resolve())
+        except OSError:
+            problems.append(f"sys.path entry unresolvable (code-shadow risk): {e}")
             continue
-        if str(Path(e).resolve()).startswith(base):     # base stdlib → dir-level (per-file impractical)
+        in_base = _within(resolved, base)
+        if os.path.isdir(e):
+            if in_base:                                  # base stdlib → dir-level (per-file impractical)
+                if _writable_by_others(e):
+                    problems.append(f"sys.path base dir writable by others: {e}")
+            else:
+                off = _recursive_writable(e)             # cwd / site-packages / script dir → per-file
+                if off:
+                    problems.append(f"sys.path entry file/dir writable by others (code-shadow risk): {off}")
+        elif os.path.exists(e):                          # importable zip/egg archive on sys.path
             if _writable_by_others(e):
-                problems.append(f"sys.path base dir writable by others: {e}")
-        else:
-            off = _recursive_writable(e)                 # cwd / site-packages / script dir → per-file
-            if off:
-                problems.append(f"sys.path entry file/dir writable by others (code-shadow risk): {off}")
+                problems.append(f"sys.path importable file writable by others (code-shadow risk): {e}")
+        # a non-existent entry imports nothing; Python skips it (no check).
     return problems
 
 

@@ -23,30 +23,75 @@ class ChangeClientTest(unittest.TestCase):
         self.tok = str(Path(self._tmp) / "ipc.token")
         Path(self.tok).write_text("boot-secret\n", encoding="utf-8")
 
-    def test_reads_token_and_posts_bearer_to_loopback(self):
-        captured: dict = {}
+    class _FakeSession:
+        """Stand-in for requests.Session — records every post + honours trust_env/close."""
+        posts: list = []
 
-        class _Resp:
-            def json(self_inner):
-                return {"ok": True, "change_run_id": "chg-1", "status": "pending_approval"}
+        def __init__(self):
+            self.trust_env = True
+            type(self).posts = []
 
-        def fake_post(url, json=None, headers=None, timeout=None):
-            captured.update(url=url, headers=headers, json=json)
+        def post(self, url, json=None, headers=None, timeout=None, allow_redirects=None):
+            type(self).posts.append(dict(url=url, headers=headers, json=json,
+                                         allow_redirects=allow_redirects, trust_env=self.trust_env))
+
+            class _Resp:
+                def json(self_inner):
+                    return {"ok": True, "change_run_id": "chg-1", "status": "pending_approval"}
             return _Resp()
 
+        def close(self):
+            pass
+
+    def _patch_session(self):
+        # patch requests.Session so _session() builds our fake but still sets trust_env=False
+        return unittest.mock.patch.object(change_client.requests, "Session", self._FakeSession)
+
+    def test_reads_token_and_posts_bearer_to_loopback(self):
         with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_IPC_TOKEN_FILE": self.tok,
-                                                   "ELIRA_CHANGE_IPC_PORT": "8790"}), \
-                unittest.mock.patch.object(change_client.requests, "post", side_effect=fake_post):
+                                                   "ELIRA_CHANGE_IPC_PORT": "8790"}), self._patch_session():
             out = change_client.request_plan("ai-server-netdata")
         self.assertEqual(out["change_run_id"], "chg-1")
-        self.assertEqual(captured["headers"]["Authorization"], "Bearer boot-secret")
-        self.assertTrue(captured["url"].startswith("http://127.0.0.1:8790/request_plan"))
-        self.assertEqual(captured["json"], {"target_id": "ai-server-netdata"})
+        sent = self._FakeSession.posts[-1]
+        self.assertEqual(sent["headers"]["Authorization"], "Bearer boot-secret")
+        self.assertTrue(sent["url"].startswith("http://127.0.0.1:8790/request_plan"))
+        self.assertEqual(sent["json"], {"target_id": "ai-server-netdata"})
+        self.assertFalse(sent["trust_env"])          # proxy/netrc env ignored
+        self.assertFalse(sent["allow_redirects"])    # a 3xx can't bounce the bearer off-box
 
     def test_missing_token_file_raises_unavailable(self):
         with unittest.mock.patch.dict(os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True):
             with self.assertRaises(change_client.ChangeExecutorUnavailable):
                 change_client.request_plan("ai-server-netdata")
+
+    def test_port_userinfo_injection_never_sends_bearer(self):
+        # ELIRA_CHANGE_IPC_PORT=8790@attacker.example → URL host would be attacker.example.
+        # The strict int guard must reject it BEFORE any request is built or token read.
+        self._FakeSession.posts = []                    # the port guard raises before __init__ runs
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_IPC_TOKEN_FILE": self.tok,
+                                                   "ELIRA_CHANGE_IPC_PORT": "8790@attacker.example"}), \
+                self._patch_session():
+            with self.assertRaises(change_client.ChangeExecutorUnavailable):
+                change_client.request_plan("ai-server-netdata")
+        self.assertEqual(self._FakeSession.posts, [])   # nothing ever sent
+
+    def test_port_out_of_range_and_nonnumeric_rejected(self):
+        for bad in ("0", "70000", "-1", "8790.0", "0x1", "  ", "८७९०"):
+            with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_IPC_TOKEN_FILE": self.tok,
+                                                       "ELIRA_CHANGE_IPC_PORT": bad}), self._patch_session():
+                with self.assertRaises(change_client.ChangeExecutorUnavailable, msg=bad):
+                    change_client.request_plan("ai-server-netdata")
+
+    def test_http_proxy_env_is_ignored(self):
+        # Even with HTTP(S)_PROXY set, the session must not trust env (else the bearer routes
+        # through the proxy). trust_env=False is the guarantee.
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_IPC_TOKEN_FILE": self.tok,
+                                                   "ELIRA_CHANGE_IPC_PORT": "8790",
+                                                   "HTTP_PROXY": "http://attacker.example:3128",
+                                                   "HTTPS_PROXY": "http://attacker.example:3128"}), \
+                self._patch_session():
+            change_client.request_plan("ai-server-netdata")
+        self.assertFalse(self._FakeSession.posts[-1]["trust_env"])
 
 
 class ChangeRouteTest(unittest.TestCase):
