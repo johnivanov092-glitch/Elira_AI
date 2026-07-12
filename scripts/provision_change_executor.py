@@ -263,8 +263,8 @@ def _next_steps(root: Path, account: str) -> None:
     print(f"  * remote: adduser elira-change + narrow sudoers; re-point reads to elira-ro; revoke old identity")
     print(f"  * code came from the VERIFIED artifact (not the live repo); rebuild + re-pin the")
     print(f"    manifest digest for any update, always from a clean checkout.")
-    print(f"  * then, AS {account}:  python scripts/provision_change_executor.py verify "
-          f"--root {root} --account {account}")
+    print(f"  * then, AS {account}, FROM the artifact copy (hash-checked first):")
+    print(f"      python \"{Path(__file__).resolve()}\" verify --root {root} --account {account}")
 
 
 def cmd_build(a: argparse.Namespace) -> int:
@@ -300,7 +300,18 @@ def cmd_build(a: argparse.Namespace) -> int:
     return 0
 
 
+def _require_run_from_artifact(cmd: str) -> None:
+    # deploy/verify carry executor rights + reach the protected root/key/bot-token; they must run
+    # from the VERIFIED, immutable artifact copy (REPO is None there), never the writable repo copy
+    # (which could be swapped). `build` is the only subcommand that runs from the repo.
+    if REPO is not None:
+        _fail(f"`{cmd}` must run from the VERIFIED artifact copy "
+              f"(<artifact>\\{_PROVISIONER}), not the repo checkout at {REPO}. Build first, "
+              f"hash-check the artifact out-of-band, then run this from it.")
+
+
 def cmd_deploy(a: argparse.Namespace) -> int:
+    _require_run_from_artifact("deploy")
     root = Path(a.root)
     _refuse_if_in_repo(root)
     account = _account_value(a)
@@ -322,6 +333,7 @@ def cmd_deploy(a: argparse.Namespace) -> int:
 
 
 def cmd_verify(a: argparse.Namespace) -> int:
+    _require_run_from_artifact("verify")
     root = Path(a.root).resolve()
     account = _account_value(a)            # required; preflight authoritatively checks running-as/owner
     py = _venv_python(root)

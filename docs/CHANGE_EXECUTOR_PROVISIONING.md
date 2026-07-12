@@ -65,22 +65,38 @@ Verify the checkout was clean first (e.g. a signed tag / `git verify`). Record *
 writable repo. The `MANIFEST.sha256` file bytes hash to exactly the printed digest, so you can
 re-check it with an external OS tool (below) rather than trusting the script.
 
-**2b. External trusted bootstrap — verify the provisioner BEFORE running it.** The provisioner
-lives in a writable checkout too; do NOT run the repo copy. Verify the artifact copy with
-`Get-FileHash` (an OS tool, not the script), then run *that* verified copy:
+**2b. Lock the artifact directory — REQUIRED, and BEFORE the hash-check.** `Get-FileHash` and the
+later `python <art>\…` are two separate reads of a mutable file; if the main user can write the
+artifact dir, it can pass the hash-check and then swap `provision_change_executor.py`, and the run
+would execute the swap **as `elira-change-exec`**. So the artifact dir must be **owned by and
+writable only by** `elira-change-exec`/SYSTEM (main principal: **no write**) from the moment it is
+placed, closing that window:
+
+```powershell
+$art = "C:\elira-artifacts\change-exec-v1"
+icacls $art /setowner "HOSTNAME\elira-change-exec" /T
+icacls $art /inheritance:r /grant:r "HOSTNAME\elira-change-exec:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
+# confirm NO non-{exec,SYSTEM} principal has write before proceeding:
+icacls $art    # inspect: only elira-change-exec + SYSTEM may appear with (W)/(M)/(F)
+```
+
+**2c. External trusted bootstrap — verify the artifact BEFORE running it.** Verify the lock
+(above) is in place, then verify the copy with `Get-FileHash` (an OS tool, not the script):
 
 ```powershell
 $pin  = "<MANIFEST sha256 from 2a>"
-$art  = "C:\elira-artifacts\change-exec-v1"
 if ((Get-FileHash "$art\MANIFEST.sha256" -Algorithm SHA256).Hash.ToLower() -ne $pin) { throw "MANIFEST tampered" }
 $want = ((Select-String -Path "$art\MANIFEST.sha256" -Pattern 'provision_change_executor.py').Line -split '\s+')[0].ToLower()
 if ((Get-FileHash "$art\provision_change_executor.py" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "provisioner tampered" }
 ```
 
-**2c. Deploy** (as `elira-change-exec`), running the **verified provisioner from the artifact**
-(not the repo), against the artifact + pinned digest. Root **outside the repository** (a run from
-`D:\AIWork\Elira_AI` MUST fail preflight); a **dedicated, protected base Python** — NOT the main
-backend's:
+**2d. Deploy** (as `elira-change-exec`), running the **verified provisioner from the artifact**
+(not the repo — `deploy`/`verify` refuse to run from a repo checkout). That refusal is a
+belt-and-suspenders guard against *accidental* repo-copy use (it keys on a `.git`, which a
+repo-writing attacker could remove); the **authoritative** defenses are the Step 2b lock and the
+Step 2c external hash-check — do not rely on `.git` detection alone. Run against the artifact +
+pinned digest. Root **outside the repository** (a run from `D:\AIWork\Elira_AI` MUST fail
+preflight); a **dedicated, protected base Python** — NOT the main backend's:
 
 ```powershell
 # runas /user:elira-change-exec ...  (or a scheduled task / service running as that account)
@@ -250,10 +266,11 @@ forwards only a `target_id`.
 
 ## 9. Verify — preflight from the deployed root  `[tool]` + `[you: run as the account]`
 
-Run **as `elira-change-exec`**:
+Run **as `elira-change-exec`**, from the **verified artifact copy** (not the repo — `verify`
+refuses to run from a repo checkout, so a swapped repo script can't be used by mistake):
 
 ```powershell
-python scripts\provision_change_executor.py verify --root C:\elira-change-exec --account "HOSTNAME\elira-change-exec"
+python "$art\provision_change_executor.py" verify --root C:\elira-change-exec --account "HOSTNAME\elira-change-exec"
 ```
 
 This runs the **deployed** `change_executor.preflight` via the **deployed** venv (so

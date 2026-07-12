@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -149,6 +150,18 @@ class GuardTest(unittest.TestCase):
     def test_base_python_missing_rejected(self):
         with self.assertRaises(SystemExit):
             prov._validate_base_python(str(self._tmp / "nope.exe"))
+
+    def test_deploy_verify_refuse_repo_copy(self):
+        # deploy/verify must run from the VERIFIED artifact copy (REPO is None there), not the
+        # writable repo checkout (REPO set) — the repo copy could be swapped.
+        with unittest.mock.patch.object(prov, "REPO", ROOT):
+            with self.assertRaises(SystemExit):
+                prov._require_run_from_artifact("verify")
+            with self.assertRaises(SystemExit):
+                prov._require_run_from_artifact("deploy")
+        with unittest.mock.patch.object(prov, "REPO", None):
+            prov._require_run_from_artifact("verify")     # bundled artifact copy -> allowed
+            prov._require_run_from_artifact("deploy")
 
     def test_make_venv_refuses_to_wipe_non_venv_dir(self):
         root = self._tmp / "root"
