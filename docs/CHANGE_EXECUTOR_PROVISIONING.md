@@ -85,17 +85,25 @@ foreach ($d in @("C:\elira-artifacts", $art)) {   # the dedicated parent AND the
 ```
 
 **2c. External trusted bootstrap — verify the whole chain + the hashes BEFORE running.** Walk from
-`$art` up to the drive root and refuse any non-{exec,SYSTEM,Administrators} principal holding
-write / delete / delete-child / change-permissions / take-ownership on **any ancestor** (SID-based,
-locale-independent), then hash-check with `Get-FileHash` (an OS tool, not the script):
+`$art` up to the drive root and refuse any non-{exec,SYSTEM,Administrators,TrustedInstaller}
+principal that **owns** — or holds write / delete / delete-child / change-permissions /
+take-ownership on — **any ancestor** (SID-based, locale-independent). The **owner** check is
+essential: on Windows an owner can rewrite a DACL regardless of its ACEs (implicit `WRITE_DAC`), so
+a main user owning a parent could add itself delete-child and swap `$art` even with a clean DACL.
+`C:\` is acceptable as a pre-declared trusted root (owned by SYSTEM/Administrators/TrustedInstaller).
+Then hash-check with `Get-FileHash` (an OS tool, not the script):
 
 ```powershell
 $pin = "<MANIFEST sha256 from 2a>"
-$trusted = @('S-1-5-18','S-1-5-32-544',
+$ti  = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'   # TrustedInstaller
+$trusted = @('S-1-5-18','S-1-5-32-544',$ti,
   (New-Object System.Security.Principal.NTAccount("HOSTNAME\elira-change-exec")).Translate([System.Security.Principal.SecurityIdentifier]).Value)
 $wr = [System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
 for ($p = Get-Item $art; $p; $p = $p.Parent) {                # $art -> ... -> C:\
-  foreach ($ace in (Get-Acl $p.FullName).Access | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $wr) }) {
+  $acl = Get-Acl $p.FullName
+  $osid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value    # OWNER (implicit WRITE_DAC)
+  if ($osid -notin $trusted) { throw "untrusted owner $osid on $($p.FullName)" }
+  foreach ($ace in $acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $wr) }) {
     $sid = try { $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $ace.IdentityReference.Value }
     if ($sid -notin $trusted) { throw "untrusted writer $sid on $($p.FullName)" }
   }
