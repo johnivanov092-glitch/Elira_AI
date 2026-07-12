@@ -65,26 +65,41 @@ Verify the checkout was clean first (e.g. a signed tag / `git verify`). Record *
 writable repo. The `MANIFEST.sha256` file bytes hash to exactly the printed digest, so you can
 re-check it with an external OS tool (below) rather than trusting the script.
 
-**2b. Lock the artifact directory — REQUIRED, and BEFORE the hash-check.** `Get-FileHash` and the
-later `python <art>\…` are two separate reads of a mutable file; if the main user can write the
-artifact dir, it can pass the hash-check and then swap `provision_change_executor.py`, and the run
-would execute the swap **as `elira-change-exec`**. So the artifact dir must be **owned by and
-writable only by** `elira-change-exec`/SYSTEM (main principal: **no write**) from the moment it is
-placed, closing that window:
+**2b. Lock the artifact directory AND its parent chain — REQUIRED, and BEFORE the hash-check.**
+`Get-FileHash` and the later `python <art>\…` are two separate reads of a mutable path; if the main
+user can write the artifact dir — **or its parent** — it can pass the hash-check and then swap
+`provision_change_executor.py`, or **delete/rename the whole `$art` and substitute a new dir**
+(a parent with write / delete-child is enough — the child's own ACL does not prevent that), and
+the run would execute the swap **as `elira-change-exec`**. So the artifact must live under a
+**dedicated protected parent** (e.g. `C:\elira-artifacts`), and the **entire chain from `$art` up
+to a trusted root** must be owned by and writable only by `elira-change-exec`/SYSTEM — main
+principal: **no write and no delete-child** — from the moment it is placed:
 
 ```powershell
 $art = "C:\elira-artifacts\change-exec-v1"
-icacls $art /setowner "HOSTNAME\elira-change-exec" /T
-icacls $art /inheritance:r /grant:r "HOSTNAME\elira-change-exec:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
-# confirm NO non-{exec,SYSTEM} principal has write before proceeding:
-icacls $art    # inspect: only elira-change-exec + SYSTEM may appear with (W)/(M)/(F)
+foreach ($d in @("C:\elira-artifacts", $art)) {   # the dedicated parent AND the artifact
+  icacls $d /setowner "HOSTNAME\elira-change-exec" /T
+  icacls $d /inheritance:r /grant:r "HOSTNAME\elira-change-exec:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
+}
+# C:\ (or the chosen drive root) must already deny standard users write/delete-child — verify (2c).
 ```
 
-**2c. External trusted bootstrap — verify the artifact BEFORE running it.** Verify the lock
-(above) is in place, then verify the copy with `Get-FileHash` (an OS tool, not the script):
+**2c. External trusted bootstrap — verify the whole chain + the hashes BEFORE running.** Walk from
+`$art` up to the drive root and refuse any non-{exec,SYSTEM,Administrators} principal holding
+write / delete / delete-child / change-permissions / take-ownership on **any ancestor** (SID-based,
+locale-independent), then hash-check with `Get-FileHash` (an OS tool, not the script):
 
 ```powershell
-$pin  = "<MANIFEST sha256 from 2a>"
+$pin = "<MANIFEST sha256 from 2a>"
+$trusted = @('S-1-5-18','S-1-5-32-544',
+  (New-Object System.Security.Principal.NTAccount("HOSTNAME\elira-change-exec")).Translate([System.Security.Principal.SecurityIdentifier]).Value)
+$wr = [System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
+for ($p = Get-Item $art; $p; $p = $p.Parent) {                # $art -> ... -> C:\
+  foreach ($ace in (Get-Acl $p.FullName).Access | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $wr) }) {
+    $sid = try { $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $ace.IdentityReference.Value }
+    if ($sid -notin $trusted) { throw "untrusted writer $sid on $($p.FullName)" }
+  }
+}
 if ((Get-FileHash "$art\MANIFEST.sha256" -Algorithm SHA256).Hash.ToLower() -ne $pin) { throw "MANIFEST tampered" }
 $want = ((Select-String -Path "$art\MANIFEST.sha256" -Pattern 'provision_change_executor.py').Line -split '\s+')[0].ToLower()
 if ((Get-FileHash "$art\provision_change_executor.py" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "provisioner tampered" }
