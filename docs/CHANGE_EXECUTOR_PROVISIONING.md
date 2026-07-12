@@ -78,20 +78,24 @@ principal: **no write and no delete-child** — from the moment it is placed:
 ```powershell
 $art = "C:\elira-artifacts\change-exec-v1"
 foreach ($d in @("C:\elira-artifacts", $art)) {   # the dedicated parent AND the artifact
-  icacls $d /setowner "HOSTNAME\elira-change-exec" /T
-  icacls $d /inheritance:r /grant:r "HOSTNAME\elira-change-exec:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
+  # /setowner /T (and any icacls) can PARTIALLY fail (locked/in-use files) and print "Failed
+  # processing N files" — check $LASTEXITCODE or a file could keep a main-user owner.
+  icacls $d /setowner "HOSTNAME\elira-change-exec" /T ; if ($LASTEXITCODE) { throw "setowner failed on $d" }
+  icacls $d /inheritance:r /grant:r "HOSTNAME\elira-change-exec:(OI)(CI)F" "SYSTEM:(OI)(CI)F" ; if ($LASTEXITCODE) { throw "grant failed on $d" }
 }
 # C:\ (or the chosen drive root) must already deny standard users write/delete-child — verify (2c).
 ```
 
-**2c. External trusted bootstrap — verify the whole chain + the hashes BEFORE running.** Walk from
-`$art` up to the drive root and refuse any non-{exec,SYSTEM,Administrators,TrustedInstaller}
-principal that **owns** — or holds write / delete / delete-child / change-permissions /
-take-ownership on — **any ancestor** (SID-based, locale-independent). The **owner** check is
-essential: on Windows an owner can rewrite a DACL regardless of its ACEs (implicit `WRITE_DAC`), so
-a main user owning a parent could add itself delete-child and swap `$art` even with a clean DACL.
-`C:\` is acceptable as a pre-declared trusted root (owned by SYSTEM/Administrators/TrustedInstaller).
-Then hash-check with `Get-FileHash` (an OS tool, not the script):
+**2c. External trusted bootstrap — verify the whole chain + every artifact file + the hashes
+BEFORE running.** Refuse any non-{exec,SYSTEM,Administrators,TrustedInstaller} principal that
+**owns** — or holds write / delete / delete-child / change-permissions / take-ownership on — **any
+ancestor directory OR any file inside the artifact** (SID-based, locale-independent). The **owner**
+check is essential on every node: an owner can rewrite a DACL regardless of its ACEs (implicit
+`WRITE_DAC`), so a main user owning a parent *or a single file* (e.g. if `/setowner /T` partially
+failed on `provision_change_executor.py`) could re-ACL and swap it after the hash-check. The **drive
+root** `C:\` is a pre-declared trusted root: verify its **owner** is trusted but accept its default
+DACL (which grants Authenticated Users create-subdir, but no delete-child over the locked dedicated
+parent). Then hash-check with `Get-FileHash`:
 
 ```powershell
 $pin = "<MANIFEST sha256 from 2a>"
@@ -99,15 +103,22 @@ $ti  = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'   # Trus
 $trusted = @('S-1-5-18','S-1-5-32-544',$ti,
   (New-Object System.Security.Principal.NTAccount("HOSTNAME\elira-change-exec")).Translate([System.Security.Principal.SecurityIdentifier]).Value)
 $wr = [System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'
-for ($p = Get-Item $art; $p; $p = $p.Parent) {                # $art -> ... -> C:\
-  $acl = Get-Acl $p.FullName
+function Assert-Trusted($path) {
+  $acl  = Get-Acl -LiteralPath $path
   $osid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value    # OWNER (implicit WRITE_DAC)
-  if ($osid -notin $trusted) { throw "untrusted owner $osid on $($p.FullName)" }
+  if ($osid -notin $trusted) { throw "untrusted owner $osid on $path" }
   foreach ($ace in $acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' -and ($_.FileSystemRights -band $wr) }) {
     $sid = try { $ace.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $ace.IdentityReference.Value }
-    if ($sid -notin $trusted) { throw "untrusted writer $sid on $($p.FullName)" }
+    if ($sid -notin $trusted) { throw "untrusted writer $sid on $path" }
   }
 }
+for ($p = Get-Item $art; $p; $p = $p.Parent) {
+  if ($null -eq $p.Parent) {              # drive root = pre-declared trusted root: OWNER only (its
+    $o = (Get-Acl -LiteralPath $p.FullName).GetOwner([System.Security.Principal.SecurityIdentifier]).Value  # default DACL grants
+    if ($o -notin $trusted) { throw "untrusted owner $o on drive root $($p.FullName)" }               # Authenticated Users
+  } else { Assert-Trusted $p.FullName }   # $art + the dedicated protected parent(s): full owner+DACL   # AppendData — accepted)
+}
+Get-ChildItem -LiteralPath $art -Recurse -Force | ForEach-Object { Assert-Trusted $_.FullName }  # every file/subdir INSIDE
 if ((Get-FileHash "$art\MANIFEST.sha256" -Algorithm SHA256).Hash.ToLower() -ne $pin) { throw "MANIFEST tampered" }
 $want = ((Select-String -Path "$art\MANIFEST.sha256" -Pattern 'provision_change_executor.py').Line -split '\s+')[0].ToLower()
 if ((Get-FileHash "$art\provision_change_executor.py" -Algorithm SHA256).Hash.ToLower() -ne $want) { throw "provisioner tampered" }
@@ -123,7 +134,8 @@ preflight); a **dedicated, protected base Python** — NOT the main backend's:
 
 ```powershell
 # runas /user:elira-change-exec ...  (or a scheduled task / service running as that account)
-python "$art\provision_change_executor.py" deploy `
+# Launch with the LOCKED base Python (not ambient `python`), so the interpreter is trusted too:
+& "C:\elira-base-python\python.exe" "$art\provision_change_executor.py" deploy `
   --root C:\elira-change-exec `
   --account "HOSTNAME\elira-change-exec" `
   --artifact $art --manifest-sha256 $pin `
@@ -293,7 +305,7 @@ Run **as `elira-change-exec`**, from the **verified artifact copy** (not the rep
 refuses to run from a repo checkout, so a swapped repo script can't be used by mistake):
 
 ```powershell
-python "$art\provision_change_executor.py" verify --root C:\elira-change-exec --account "HOSTNAME\elira-change-exec"
+& "C:\elira-base-python\python.exe" "$art\provision_change_executor.py" verify --root C:\elira-change-exec --account "HOSTNAME\elira-change-exec"
 ```
 
 This runs the **deployed** `change_executor.preflight` via the **deployed** venv (so
