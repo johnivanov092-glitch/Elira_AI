@@ -44,24 +44,47 @@ runtime is non-elevated — that is the core assumption you own. `[out-of-band]`
 
 ---
 
-## 2. Deploy the protected root — **run as `elira-change-exec`**  `[tool]`
+## 2. Build a trusted artifact, then deploy — **run as `elira-change-exec`**  `[tool]`
 
-Pick a root **outside the repository** (a run from `D:\AIWork\Elira_AI` MUST fail preflight —
-expected protection). Use a **dedicated, protected base Python** — NOT the main backend's
-interpreter/venv (sharing it couples the TCB to the main environment).
+The privileged code must **not** be copied from the live repo checkout: the model (via
+`run_bash`) shares the main user and could rewrite `change_executor\*.py` — or the provisioner
+itself — before deploy, and preflight only protects the *already-copied* install. So deploy
+consumes a **trusted, hash-manifested release artifact** built once from a **verified-clean**
+repo and kept **outside** any writable checkout.
+
+**2a. Build (once, from a clean/verified checkout):**
+
+```powershell
+python scripts\provision_change_executor.py build --out C:\elira-artifacts\change-exec-v1
+#  -> prints "MANIFEST sha256: <digest>" and the provisioner's own sha256.
+```
+
+Record the `MANIFEST sha256` **out-of-band** and move the artifact outside any writable repo.
+(Verify the checkout was clean — e.g. a signed tag / `git verify` — before trusting the build;
+pin the provisioner's printed hash too, and run deploy from a trusted copy of it.)
+
+**2b. Deploy** (as `elira-change-exec`), against the artifact + pinned digest — pick a root
+**outside the repository** (a run from `D:\AIWork\Elira_AI` MUST fail preflight). Use a
+**dedicated, protected base Python** — NOT the main backend's:
 
 ```powershell
 # runas /user:elira-change-exec ...  (or a scheduled task / service running as that account)
 python scripts\provision_change_executor.py deploy `
   --root C:\elira-change-exec `
   --account "HOSTNAME\elira-change-exec" `
+  --artifact C:\elira-artifacts\change-exec-v1 --manifest-sha256 <digest> `
   --base-python "C:\elira-base-python\python.exe" `
   --target-host 192.168.88.15 --remote-user elira-change --unit netdata.service
 ```
 
-The deployer refuses to run unless the current principal **is** `--account` (so files are owned
-by it), refuses a drive root, refuses a `--base-python` inside the repo, and (`--force`) refuses
-to overwrite a directory lacking its install marker.
+Deploy **verifies every artifact file against the manifest and the manifest against the pinned
+digest** (refusing any tamper), refuses to run unless the current principal **is** `--account`
+(so files are owned by it), refuses an artifact/root inside the repo or a drive root, refuses a
+`--base-python` inside the repo, and (`--force`) refuses to overwrite a directory lacking its
+install marker. Deploy into a **fresh** root: a pre-existing `change_executor\` is a **hard error**
+(it could be pre-planted, then laundered to executor-ownership by Step 3) — deploy also re-hashes
+the copied bytes against the manifest so *deployed == verified*. Updates = rebuild + re-pin from a
+clean checkout, then re-run with `--force`; deploy accepts only the artifact.
 
 ```
 C:\elira-change-exec\              ELIRA_CHANGE_EXECUTOR_ROOT
@@ -112,10 +135,16 @@ icacls C:\elira-change-exec\ipc /inheritance:r `
 icacls C:\elira-change-exec     /grant:r "MAINUSER:(RX)"      # traverse to reach ipc\ipc.token
 ```
 
-- preflight verifies (by SID) the tree is **owned by** `ELIRA_CHANGE_EXECUTOR_ACCOUNT` and that it
-  is **running as** that account, and flags any non-owner **writer** across root+parents, venv,
-  interpreter, sys.path (incl. zip/egg + escaping dir-symlinks), and every sensitive file.
-  A grant of **read/traverse** (not write) does not trip it. `[preflight]`
+- preflight verifies (by SID) that the executor is **running as** `ELIRA_CHANGE_EXECUTOR_ACCOUNT`
+  and that **every file is owned by** it (or SYSTEM/Administrators/TrustedInstaller) — per-file
+  across root+parents, venv, interpreter, sys.path, and the base runtime — because a Windows owner
+  keeps implicit WRITE_DAC even with a clean DACL. It also flags any non-owner **writer** across
+  the same tree (incl. zip/egg + escaping dir-symlinks) and every sensitive file. A grant of
+  **read/traverse** (not write) does not trip it. `[preflight]`
+- The **base Python** must be a dedicated, read-only, system/executor-owned install (not the main
+  backend's). preflight owner-checks it per-file (fast) and checks writability at the directory
+  level; own it and lock it: `icacls C:\elira-base-python /setowner "HOSTNAME\elira-change-exec" /T`
+  then `/inheritance:r /grant:r "…exec:(OI)(CI)RX" "SYSTEM:(OI)(CI)F"`. `[preflight/out-of-band]`
 - preflight checks non-**writability** and **ownership**, not non-**readability**. That the main
   user cannot *read* the key / bot-token is on you. `[out-of-band]`
 
@@ -218,10 +247,11 @@ principal other than the account, **fails by design**.
 
 `[preflight]` recap: required envs; approver allowlist well-formed; package + interpreter inside
 root; dedicated venv; not a git tree; **running as `ELIRA_CHANGE_EXECUTOR_ACCOUNT` (SID) and every
-file OWNED by it** (per-file across root+venv+interpreter+sys.path — Windows owners keep implicit
-WRITE_DAC); non-owner-**writable** checks over root+parents+venv+interpreter+base-dir+sys.path
-(incl. zip/egg + escaping dir-symlink); sensitive paths inside root + non-writable; registry valid
-+ target files.
+file OWNED by it** (per-file across root+parents+venv+interpreter+sys.path+**base runtime** —
+Windows owners keep implicit WRITE_DAC); non-owner-**writable** checks over
+root+parents+venv+interpreter+base-dir+sys.path (incl. zip/egg + escaping dir-symlink); sensitive
+paths inside root + non-writable; registry valid + target files. Deploy itself accepts code only
+from a **hash-verified release artifact** (not the live repo).
 
 ---
 

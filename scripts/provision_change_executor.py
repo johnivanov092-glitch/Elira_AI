@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import os
@@ -34,6 +35,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 PKG_SRC = REPO / "backend" / "app" / "change_executor"
 _MARKER = ".elira-change-exec-install"      # written on deploy; required before any --force wipe
+_MANIFEST = "MANIFEST.sha256"               # per-file hashes inside a release artifact
+
+
+def _sha256_file(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _fail(msg: str) -> None:
@@ -114,22 +124,72 @@ def _require_marker(root: Path) -> None:
               f"--force to a fresh root, or place the marker only if you are certain.")
 
 
-def _copy_package(root: Path, force: bool) -> Path:
-    if not PKG_SRC.is_dir():
-        _fail(f"frozen package not found at {PKG_SRC}")
+def _manifest_text(hashes: dict) -> str:
+    return "".join(f"{hashes[k]}  {k}\n" for k in sorted(hashes))
+
+
+def _manifest_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _verify_artifact(artifact: Path, expected_digest: str) -> dict:
+    """Verify a trusted release artifact and return its {filename: sha256}. Deploy accepts code
+    ONLY from such an artifact (built once from a known-good repo, then kept OUTSIDE any
+    model/main-user-writable checkout) — never from the live repo, which the model could rewrite
+    before deploy. Fail-closed on: artifact inside the repo, missing/tampered manifest, a
+    manifest digest that does not match the out-of-band pin, or any file hash / set mismatch."""
+    _refuse_if_in_repo(artifact)      # a trusted artifact must live outside the writable repo
+    man = artifact / _MANIFEST
+    if not man.is_file():
+        _fail(f"no {_MANIFEST} in artifact {artifact} - build it with `build --out <dir>`.")
+    text = man.read_text(encoding="utf-8")
+    digest = _manifest_digest(text)
+    if digest.lower() != expected_digest.strip().lower():
+        _fail(f"artifact manifest digest {digest} != pinned --manifest-sha256 "
+              f"({expected_digest.strip()}) - tampered artifact or wrong pin. Refusing.")
+    hashes: dict = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        h, _, name = line.partition("  ")
+        if not h or not name.strip():
+            _fail(f"malformed manifest line: {line!r}")
+        hashes[name.strip()] = h.strip().lower()
+    present = {p.name for p in artifact.iterdir() if p.is_file() and p.suffix == ".py"}
+    if present != set(hashes):
+        _fail(f"artifact .py set {sorted(present)} != manifest {sorted(hashes)}")
+    for name, want in hashes.items():
+        got = _sha256_file(artifact / name).lower()
+        if got != want:
+            _fail(f"artifact file {name}: sha256 {got} != manifest {want} (tampered). Refusing.")
+    return hashes
+
+
+def _copy_from_artifact(root: Path, artifact: Path, hashes: dict, force: bool) -> Path:
     dst = root / "change_executor"
-    if dst.exists() and not force:
-        print(f"  change_executor/ already present (use --force to overwrite): {dst}")
-        return dst
     if dst.exists():
+        # NEVER silently skip: a pre-existing change_executor/ (e.g. pre-planted by the main user
+        # into the published root path, then laundered to executor-ownership by `icacls /setowner`)
+        # would otherwise survive un-deployed while deploy reports success. Fail closed unless the
+        # operator explicitly --force-replaces it.
+        if not force:
+            _fail(f"{dst} already exists - refusing to deploy over pre-existing code (it could be "
+                  f"pre-planted). Deploy into a fresh root, or re-run with --force to replace it.")
         shutil.rmtree(dst)
     dst.mkdir(parents=True)
-    n = 0
-    for src in sorted(PKG_SRC.iterdir()):
-        if src.is_file() and src.suffix == ".py":      # copy only source; skip __pycache__/.pyc
-            shutil.copy2(src, dst / src.name)
-            n += 1
-    print(f"  copied {n} frozen module(s) -> {dst}")
+    for name in sorted(hashes):
+        shutil.copy2(artifact / name, dst / name)
+    # Re-verify the DEPLOYED bytes against the manifest, so "deployed" == "verified" (this also
+    # closes any check-to-use gap between _verify_artifact and the copy).
+    present = {p.name for p in dst.iterdir() if p.is_file() and p.suffix == ".py"}
+    if present != set(hashes):
+        _fail(f"deployed .py set {sorted(present)} != manifest {sorted(hashes)} after copy")
+    for name, want in hashes.items():
+        got = _sha256_file(dst / name).lower()
+        if got != want:
+            _fail(f"deployed {name} sha256 {got} != manifest {want} after copy - refusing.")
+    print(f"  copied + re-verified {len(hashes)} module(s) from artifact -> {dst}")
     return dst
 
 
@@ -184,8 +244,37 @@ def _next_steps(root: Path, account: str) -> None:
     print(f"  * ssh-keyscan -p 22 <host> > {cfg / 'known_hosts'}   (then verify fp out-of-band)")
     print(f"  * SEPARATE Telegram bot (@BotFather) -> ELIRA_CHANGE_BOT_TOKEN + APPROVER_*_IDS")
     print(f"  * remote: adduser elira-change + narrow sudoers; re-point reads to elira-ro; revoke old identity")
+    print(f"  * code came from the VERIFIED artifact (not the live repo); rebuild + re-pin the")
+    print(f"    manifest digest for any update, always from a clean checkout.")
     print(f"  * then, AS {account}:  python scripts/provision_change_executor.py verify "
           f"--root {root} --account {account}")
+
+
+def cmd_build(a: argparse.Namespace) -> int:
+    """Build a trusted release artifact from the (known-good) repo: copy the frozen package +
+    write MANIFEST.sha256, and print the manifest digest to pin OUT-OF-BAND. Run this ONCE from a
+    verified-clean checkout; thereafter deploy consumes only the artifact, not the live repo."""
+    out = Path(a.out)
+    _refuse_if_in_repo(out)                # the artifact must live outside the writable repo
+    if not PKG_SRC.is_dir():
+        _fail(f"frozen package not found at {PKG_SRC}")
+    out.mkdir(parents=True, exist_ok=True)
+    hashes: dict = {}
+    for src in sorted(PKG_SRC.iterdir()):
+        if src.is_file() and src.suffix == ".py":       # only source; skip __pycache__/.pyc
+            shutil.copy2(src, out / src.name)
+            hashes[src.name] = _sha256_file(out / src.name)
+    if not hashes:
+        _fail(f"no .py modules found in {PKG_SRC}")
+    text = _manifest_text(hashes)
+    (out / _MANIFEST).write_text(text, encoding="utf-8")
+    digest = _manifest_digest(text)
+    print(f"Built release artifact -> {out.resolve()}  ({len(hashes)} modules)")
+    print(f"  provisioner sha256 : {_sha256_file(Path(__file__))}")
+    print(f"  MANIFEST sha256    : {digest}")
+    print("\nNEXT: build from a verified-clean repo only; move the artifact outside any writable")
+    print("repo; record the MANIFEST sha256 out-of-band and pass it to deploy as --manifest-sha256.")
+    return 0
 
 
 def cmd_deploy(a: argparse.Namespace) -> int:
@@ -194,15 +283,17 @@ def cmd_deploy(a: argparse.Namespace) -> int:
     account = _account_value(a)
     _assert_running_as(account)            # files must be OWNED by the executor account
     base = _validate_base_python(a.base_python)
+    artifact = Path(a.artifact).resolve()
+    hashes = _verify_artifact(artifact, a.manifest_sha256)   # trusted code only; refuses the live repo
     if a.force and root.exists():
         _require_marker(root)              # never --force-wipe a directory that isn't our install
     root.mkdir(parents=True, exist_ok=True)
-    (root / _MARKER).write_text("elira change executor install root\n", encoding="utf-8")
     (root / "ipc").mkdir(exist_ok=True)    # dedicated token dir: main-read is inherited here (Step 3)
     print(f"Deploying isolated change executor -> {root.resolve()}")
-    _copy_package(root, a.force)
+    _copy_from_artifact(root, artifact, hashes, a.force)
     _make_venv(root, base, a.force)
     _write_registry_template(root, a.target_host, a.target_port, a.remote_user, a.unit, a.force)
+    (root / _MARKER).write_text("elira change executor install root\n", encoding="utf-8")   # mark a COMPLETED install (last)
     _next_steps(root, account)
     return 0
 
@@ -253,10 +344,18 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Provision / verify the isolated change executor.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    d = sub.add_parser("deploy", help="copy frozen package + venv + registry template into a protected root")
+    b = sub.add_parser("build", help="build a trusted, hash-manifested release artifact from a clean repo")
+    b.add_argument("--out", required=True, help="artifact output dir OUTSIDE this repo")
+    b.set_defaults(func=cmd_build)
+
+    d = sub.add_parser("deploy", help="deploy a VERIFIED release artifact + venv + registry into a protected root")
     d.add_argument("--root", required=True, help="protected executor root OUTSIDE this repo")
     d.add_argument("--account", default=None,
                    help="executor OS account (HOSTNAME\\elira-change-exec or a SID); deploy must run AS it")
+    d.add_argument("--artifact", required=True,
+                   help="trusted release artifact dir (from `build`), OUTSIDE the repo")
+    d.add_argument("--manifest-sha256", required=True,
+                   help="expected MANIFEST.sha256 digest, pinned out-of-band (deploy refuses a mismatch)")
     d.add_argument("--base-python", required=True,
                    help="a dedicated, protected base python to build the venv from (NOT the main backend's)")
     d.add_argument("--target-host", default="192.168.88.15", help="change target host (default ai-server)")

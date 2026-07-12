@@ -286,7 +286,12 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(preflight._account_sid(who), cur)      # name -> same SID
         self.assertEqual(preflight._account_sid(cur), cur)      # raw SID string roundtrips
         f = Path(self._tmp) / "owned.txt"; f.write_text("x", encoding="utf-8")
-        self.assertEqual(preflight._owner_sid(str(f)), cur)     # creator owns the file
+        owner = preflight._owner_sid(str(f))
+        # A new file's owner is the creator OR, in an elevated context, BUILTIN\Administrators —
+        # both are in the trusted set the owner check uses. Assert MEMBERSHIP, not equality to the
+        # current SID (an elevated creator makes files Administrators-owned).
+        self.assertTrue(owner and owner.startswith("S-1-"), owner)
+        self.assertIn(owner, {cur} | set(preflight._SYSTEM_SIDS), owner)
 
     def test_recursive_writable_flags_misowned_file(self):
         # P1 (adversarial review): a file OWNED by a non-executor principal (Windows implicit
@@ -325,6 +330,21 @@ class PreflightTest(unittest.TestCase):
     def test_make_owner_check_unset_account_is_none(self):
         with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_EXECUTOR_ACCOUNT": ""}):
             self.assertIsNone(preflight._make_owner_check())
+
+    def test_recursive_owner_untrusted_flags_deep_file(self):
+        # P1 (review): a base-runtime file (e.g. Lib\os.py) owned by a non-executor principal
+        # must be caught per-file, cheaply (owner-only, no icacls).
+        root = str(Path(self._tmp) / "bown"); Path(root).mkdir()
+        sub = Path(root) / "Lib"; sub.mkdir()
+        (sub / "ok.py").write_text("x", encoding="utf-8")
+        bad = sub / "os.py"; bad.write_text("x", encoding="utf-8")
+
+        def oc(p):
+            return os.path.normcase(os.path.abspath(p)) == os.path.normcase(os.path.abspath(str(bad)))
+        hit = preflight._recursive_owner_untrusted(root, oc)
+        self.assertEqual(os.path.normcase(os.path.abspath(hit or "")),
+                         os.path.normcase(os.path.abspath(str(bad))))
+        self.assertIsNone(preflight._recursive_owner_untrusted(root, None))   # no check -> noop
 
     def test_malformed_allowlist_reported(self):
         env = {"PATH": os.environ.get("PATH", ""), "ELIRA_CHANGE_STORE_PATH": "/s",

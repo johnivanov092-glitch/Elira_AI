@@ -430,6 +430,33 @@ def _recursive_writable(root_dir: str, owner_check=None) -> str | None:
     return None
 
 
+def _recursive_owner_untrusted(root_dir: str, owner_check) -> str | None:
+    """First path (dir OR file) under *root_dir* whose OWNER is untrusted (per *owner_check*),
+    else None. OWNER-only — fast in-process SID reads, no per-file `icacls` — so the large base
+    runtime can be checked per-file for the Windows implicit-WRITE_DAC class (a main-owned
+    stdlib file with a clean DACL) without the cost of a full recursive ACL walk. Fails closed:
+    an un-walkable tree returns the root."""
+    if not owner_check:
+        return None
+    try:
+        root_real = os.path.realpath(root_dir)
+        for dirpath, dirs, files in os.walk(root_dir):
+            if owner_check(dirpath):
+                return dirpath
+            for dn in dirs:                              # os.walk won't descend a symlinked dir
+                dp = os.path.join(dirpath, dn)
+                if os.path.islink(dp) and (
+                        not _within(os.path.realpath(dp), root_real) or owner_check(dp)):
+                    return dp
+            for fn in files:
+                fp = os.path.join(dirpath, fn)
+                if owner_check(fp):
+                    return fp
+    except OSError:
+        return root_dir
+    return None
+
+
 def _has_git_ancestor(path: Path) -> bool:
     try:
         p = path.resolve()
@@ -492,14 +519,16 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         off = _recursive_writable(d, owner_check)
         if off:
             problems.append(f"code/interpreter/venv file/dir writable-or-misowned: {off}")
-    # The large base install is checked at DIRECTORY level (writability + owner); a fully
-    # executor/system-owned, read-only base Python is a provisioning requirement (recursing all
-    # of stdlib per-file is impractical).
+    # The base runtime's OWNER is verified PER-FILE (fast, no icacls) so a main-owned Lib\*.py
+    # with a clean DACL cannot rewrite its own DACL and shadow an executor import. Writability is
+    # checked at DIRECTORY level (a full per-file icacls walk of stdlib at boot is impractical) —
+    # so the base MUST be a dedicated, read-only, system/executor-owned install.
     for d in dict.fromkeys([sys.base_prefix, str(Path(sys.base_prefix) / "Lib")]):
         if d and _writable_by_others(d):
             problems.append(f"base interpreter dir writable by others: {d}")
-        if d and owner_check and os.path.exists(d) and owner_check(d):
-            problems.append(f"base interpreter dir owned by a non-executor principal: {d}")
+    off = _recursive_owner_untrusted(sys.base_prefix, owner_check)
+    if off:
+        problems.append(f"base runtime file/dir owned by a non-executor principal: {off}")
 
     # Every executor-owned sensitive path (store, registry, IPC token file, and each target's
     # known_hosts + identity KEY) MUST live INSIDE ELIRA_CHANGE_EXECUTOR_ROOT. The recursive
