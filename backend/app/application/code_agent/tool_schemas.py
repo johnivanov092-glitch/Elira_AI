@@ -763,19 +763,20 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "file_gen",
                 "description": (
-                    "Generate a Word (.docx) or Excel (.xlsx) document. Returns a "
-                    "download URL and saves the file into the project's generated/ "
-                    "folder. For Word, pass `content` as plain text; lines starting "
-                    "with '## '/'### ' become headings, '- '/'* ' bullets, 'N. ' "
-                    "numbered list items. For Excel, pass `headers` (column names) "
-                    "and `data` (a list of row arrays)."
+                    "Generate a Word (.docx), Excel (.xlsx), or PDF (.pdf) document. "
+                    "Returns a download URL and saves the file into the project's "
+                    "generated/ folder. For Word, pass `content` as plain text; lines "
+                    "starting with '## '/'### ' become headings, '- '/'* ' bullets, "
+                    "'N. ' numbered list items. For PDF, pass `content` as plain text "
+                    "(rendered verbatim, line breaks preserved). For Excel, pass "
+                    "`headers` (column names) and `data` (a list of row arrays)."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "format": {"type": "string", "description": "Output format: 'word' or 'excel'."},
-                        "title": {"type": "string", "description": "Document title (Word heading / Excel sheet name)."},
-                        "content": {"type": "string", "description": "Word body text (markdown-lite). Required for format=word."},
+                        "format": {"type": "string", "description": "Output format: 'word', 'excel', or 'pdf'."},
+                        "title": {"type": "string", "description": "Document title (Word/PDF heading / Excel sheet name)."},
+                        "content": {"type": "string", "description": "Body text. Required for format=word (markdown-lite) or format=pdf (plain text)."},
                         "headers": {
                             "type": "array",
                             "items": {"type": "string"},

@@ -420,7 +420,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("archiver",       "Archiver",       "media",   "Create or extract ZIP archives",        60, 20000, False),
         ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
         ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
-        ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel file",            60,  5000, False),
+        ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel/PDF file",        60,  5000, False),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
     ]
     auto_side_effect_tools = [
@@ -491,9 +491,10 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     # only the names listed here gain *_ru fields; every other spec is untouched.
     _ru_search_terms = {
         "file_gen": (
-            "Генерация файла Word/Excel",
-            "Сгенерировать документ Word (.docx) или таблицу Excel (.xlsx): "
+            "Генерация файла Word/Excel/PDF",
+            "Сгенерировать документ Word (.docx), таблицу Excel (.xlsx) или PDF (.pdf): "
             "ворд, word, docx, doc, эксель, excel, xlsx, таблица, документ, "
+            "PDF, пдф, документ PDF, экспорт в PDF, "
             "отчёт, письмо, создать файл, сгенерировать файл",
         ),
     }

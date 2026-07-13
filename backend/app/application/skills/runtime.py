@@ -7,7 +7,9 @@ skills_service.py — 4 скилла Elira.
 4. Скриншот сайта (playwright)
 """
 from __future__ import annotations
+import html
 import logging
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -117,6 +119,70 @@ def generate_excel(title: str, data: list, headers: list = None, filename: str =
         fname += ".xlsx"
     path = OUTPUT_DIR / fname
     wb.save(str(path))
+    return {"ok": True, "path": str(path), "filename": fname, "size": path.stat().st_size,
+            "download_url": f"/api/skills/download/{fname}"}
+
+
+# ─── PDF (fixed static template → headless Chromium print) ───────────────────
+# Production-safe: a FIXED A4 HTML/CSS shell. title/content are html.escape'd and
+# rendered as PLAIN TEXT (white-space: pre-wrap keeps line breaks). NO raw HTML from
+# the model, NO URLs / external resources / <script> — so nothing the content carries
+# can execute or fetch. Reuses the already-installed Playwright + Chromium (no new
+# dependency, no shell, no external converter).
+_PDF_HTML_TEMPLATE = (
+    "<!doctype html><html><head><meta charset=\"utf-8\"><style>"
+    "@page {{ size: A4; margin: 20mm; }}"
+    "html, body {{ font-family: 'Segoe UI', Arial, sans-serif; color: #111; }}"
+    "h1 {{ font-size: 20pt; margin: 0 0 12pt 0; }}"
+    ".content {{ font-size: 12pt; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }}"
+    "</style></head><body>{title_block}<div class=\"content\">{content}</div></body></html>"
+)
+
+
+def _safe_pdf_basename(filename: str) -> str:
+    """Safe .pdf filename from caller input: basename ONLY (no path separators /
+    traversal), server-owned extension. NOTE: only the NEW PDF branch is hardened
+    here — the legacy Word/Excel filename paths are intentionally left as-is (that
+    sanitization debt is tracked separately)."""
+    raw = (filename or "").strip()
+    base = re.split(r"[\\/]", raw)[-1].strip()          # drop any directory part
+    if base.lower().endswith(".pdf"):
+        base = base[:-4]
+    base = base.strip().strip(".")                       # no leading/trailing dots ('..')
+    base = re.sub(r"[^\w.\- ]", "_", base).strip()       # conservative allowlist (keeps unicode \w)
+    if not base:
+        base = f"elira_{int(time.time())}"
+    return f"{base}.pdf"
+
+
+def generate_pdf(title: str, content: str, filename: str = "") -> dict:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return {"ok": False, "error": "pip install playwright && playwright install chromium"}
+
+    fname = _safe_pdf_basename(filename)
+    path = OUTPUT_DIR / fname
+
+    title_block = f"<h1>{html.escape(title)}</h1>" if title else ""
+    doc_html = _PDF_HTML_TEMPLATE.format(
+        title_block=title_block, content=html.escape(content or "")
+    )
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content(doc_html, wait_until="load", timeout=15000)
+                page.pdf(path=str(path), format="A4", print_background=True)
+            finally:
+                browser.close()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+    if not path.exists() or path.stat().st_size == 0:
+        return {"ok": False, "error": "PDF generation produced no output file"}
     return {"ok": True, "path": str(path), "filename": fname, "size": path.stat().st_size,
             "download_url": f"/api/skills/download/{fname}"}
 

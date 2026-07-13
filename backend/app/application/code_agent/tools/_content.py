@@ -271,11 +271,15 @@ def tool_file_gen(
         from app.application.skills import generate_excel
 
         result = generate_excel(title or "", data or [], headers or None, filename or "")
+    elif fmt == "pdf":
+        from app.application.skills import generate_pdf
+
+        result = generate_pdf(title or "", content or "", filename or "")
     else:
         return {
             "ok": False,
             "error": "unsupported_format",
-            "text": f"ERROR: unsupported format '{format}'. Use 'word' or 'excel'.",
+            "text": f"ERROR: unsupported format '{format}'. Use 'word', 'excel', or 'pdf'.",
         }
 
     if not result.get("ok"):

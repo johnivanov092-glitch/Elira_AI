@@ -443,24 +443,24 @@ def _ungrounded_files(answer: str, messages: list[dict], established_facts: list
     return sorted({b for b in claimed if b not in hay})
 
 
-# Anti-confabulation for generated documents (.docx / .xlsx). The run tracks the
-# filenames a VERIFIED file_gen actually produced (its download_name, already
-# existence-checked and backed by a real OOXML file). If the final answer presents a
-# document as ready whose EXACT name is not in that list, no real file_gen backs it and
-# the model is passing off draft text as a file. write_file/edit_file are DELIBERATELY
-# excluded: a plain write_file can emit a UTF-8 file literally named report.docx that is
-# not a Word document, so a written path is never proof of a real doc. Deliberately
-# narrow: only the two formats file_gen emits, exact-basename match.
+# Anti-confabulation for generated documents (.docx / .xlsx / .pdf). The run tracks
+# the filenames a VERIFIED file_gen actually produced (its download_name, already
+# existence-checked and backed by a real file). If the final answer presents a document
+# as ready whose EXACT name is not in that list, no real file_gen backs it and the model
+# is passing off draft text as a file. write_file/edit_file are DELIBERATELY excluded: a
+# plain write_file can emit a UTF-8 file literally named report.docx / report.pdf that is
+# not a real Word/PDF document, so a written path is never proof of a real doc.
+# Deliberately narrow: only the formats file_gen emits, exact-basename match.
 _DOCGEN_NUDGE_MAX = 1
-_ANSWER_DOC_RE = re.compile(r"[\w.\-/\\]+\.(?:docx|xlsx)\b", re.IGNORECASE)
+_ANSWER_DOC_RE = re.compile(r"[\w.\-/\\]+\.(?:docx|xlsx|pdf)\b", re.IGNORECASE)
 
 
 def _unbacked_docgen_claim(answer: str, generated_docs: list[str]) -> list[str]:
-    """Document filenames (.docx/.xlsx) the answer presents as ready that were NOT
+    """Document filenames (.docx/.xlsx/.pdf) the answer presents as ready that were NOT
     produced by a verified file_gen this run. `generated_docs` is the list of file_gen
     download_name values (each existence-checked). EXACT basename match — a produced
     actual.docx does not back a claimed report.docx. write_file/edit_file paths are not
-    passed in (a written report.docx may be plain UTF-8, not a Word doc). Returns the
+    passed in (a written report.pdf may be plain text, not a real PDF). Returns the
     unbacked claimed basenames; [] when every claimed doc was really generated / none
     claimed."""
     claimed = {_basename(m.group(0)).lower() for m in _ANSWER_DOC_RE.finditer(answer or "")}
