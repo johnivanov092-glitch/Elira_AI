@@ -542,6 +542,8 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     RECENT_TOOLS_PREFIX,
     _is_near_dup,
     _ungrounded_files,
+    _DOCGEN_NUDGE_MAX,
+    _unbacked_docgen_claim,
     _flatten_for_summary,
     _is_critical_call,
     _looks_like_intent_without_action,
@@ -870,6 +872,9 @@ def _stream_code_agent_core(
         # inventing test_main.py/setup.py). Bounded; only on an actual unverified
         # file claim, so normal answers never see it.
         grounding_nudge_fires = 0
+        # Anti-confabulation for generated documents: fires when the finalizing
+        # answer presents a .docx/.xlsx as ready while no successful file_gen ran.
+        docgen_nudge_fires = 0
         # Cross-step budget for degenerate generations: the provider's runaway
         # guard is per-generation, so a model that loops its reasoning EVERY step
         # could burn all 200 steps in cut-off generations. Two runaway events in
@@ -892,6 +897,11 @@ def _stream_code_agent_core(
         # on exhaustion, and stops honestly only when families/budget are spent.
         progress = ProgressEvaluator()
         touched_files: list[str] = []  # every file the run mutated (for the report)
+        # Filenames a VERIFIED file_gen produced this run (its download_name only). The
+        # ONLY proof a real .docx/.xlsx exists — write_file paths are NOT trusted here,
+        # since a plain write_file can emit a UTF-8 file named report.docx that is not a
+        # Word document. Feeds the anti-confabulation guard (exact-name match).
+        generated_docs: list[str] = []
         volume_nudge_fired = False     # one "converge, you're deep into the turn" nudge
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
@@ -1356,6 +1366,28 @@ def _stream_code_agent_core(
                             ),
                         })
                         continue
+                # Anti-confabulation for generated documents: the answer presents a
+                # .docx/.xlsx as ready but nothing in this run actually produced it
+                # (a successful file_gen mirrors its output into touched_files — as do
+                # write_file/edit_file). Nudge ONCE to really generate it via file_gen
+                # (or drop the claim); the deterministic honest-note at finalize is the
+                # backstop if it still ends unbacked.
+                _answer_doc = content or last_text
+                if _answer_doc and docgen_nudge_fires < _DOCGEN_NUDGE_MAX:
+                    _unbacked_doc = _unbacked_docgen_claim(_answer_doc, generated_docs)
+                    if _unbacked_doc:
+                        docgen_nudge_fires += 1
+                        messages.append({"role": "assistant", "content": _answer_doc})
+                        messages.append({"role": "user", "content": (
+                            "Ты заявил, что файл(ы) "
+                            f"{', '.join(_unbacked_doc[:4])} готов(ы), но успешного "
+                            "вызова `file_gen` в этом прогоне НЕ было — файл не создан. "
+                            "Либо сгенерируй его: `file_gen(format='word'|'excel', …)` "
+                            "(если инструмента нет в списке — активируй через "
+                            "`tool_search(\"file_gen\")`), либо убери утверждение о "
+                            "готовом файле. Не выдавай черновик текста за созданный файл."
+                        )})
+                        continue
                 # Criterion Closure Gate (Ph7.12): before finalizing a run with OPEN
                 # criteria, if there are concrete missing verifier calls, spend ONE
                 # bounded turn asking for exactly those — once per distinct missing-set,
@@ -1595,6 +1627,18 @@ def _stream_code_agent_core(
                     _report = criterion_closure.runtime_final_report(criteria)
                     if _report:
                         final_text = final_text.rstrip() + "\n\n" + _report
+                # Anti-confabulation (final, deterministic): if the answer still
+                # asserts a .docx/.xlsx that no tool in this run produced, append an
+                # honest runtime note — never rewrite the model's own text. Runs
+                # unconditionally (independent of a TaskSpec), which is exactly the
+                # gap where a bare "готово, вот файл.docx" used to pass untouched.
+                _unbacked_final = _unbacked_docgen_claim(final_text, generated_docs)
+                if _unbacked_final:
+                    final_text = final_text.rstrip() + "\n\n" + (
+                        "⚠️ Файл(ы) " + ", ".join(_unbacked_final[:4]) + " не был(и) "
+                        "созданы в этом прогоне — успешного `file_gen` не было. Текст "
+                        "выше — черновик содержимого, а не готовый файл."
+                    )
                 # W3 citation ledger (flag web_corpus): the RUNTIME renders the
                 # citation appendix from structured web_claim_add records — the
                 # model never numbers citations in its prose. Provenance only
@@ -2393,7 +2437,7 @@ def _stream_code_agent_core(
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                 }
-                for opt in ("touched_path", "old_content", "new_content", "diff_action", "exit_code", "verifier", "evidence"):
+                for opt in ("touched_path", "old_content", "new_content", "diff_action", "exit_code", "verifier", "evidence", "download_url", "download_name"):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
                         val = tool_meta[opt]
@@ -2421,6 +2465,11 @@ def _stream_code_agent_core(
                 )
                 if tool_meta.get("touched_path"):
                     touched_files.append(str(tool_meta.get("touched_path")))
+                # A verified file_gen sets download_name ONLY after existence-checking
+                # its output — so its presence is proof a real .docx/.xlsx exists. This
+                # (not touched_files) is what the anti-confabulation guard trusts.
+                if name == "file_gen" and tool_meta.get("download_name"):
+                    generated_docs.append(str(tool_meta.get("download_name")))
                 # ── Strategy router ──────────────────────────────────────────
                 # Did the world move? A "doing" tool that changed nothing burns its
                 # strategy_key's attempt budget; exhaustion → redirect to another
@@ -2835,6 +2884,7 @@ def run_code_agent(
                 **{k: event[k] for k in (
                     "ok", "exit_code", "verifier", "evidence",
                     "touched_path", "old_content", "new_content", "diff_action",
+                    "download_url", "download_name",
                 ) if k in event},
             })
         elif et == "final_response":

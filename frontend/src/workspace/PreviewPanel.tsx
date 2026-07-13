@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronRight, FileText, Folder, Loader2, X } from "lucide-react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { getAdvancedProjectTree, readAdvancedProjectFile } from "../api/project";
+import { buildApiUrl } from "../api/client";
 import { cn } from "../ui/cn";
 import { lineDiff, type Artifacts } from "./artifacts";
 
@@ -29,6 +30,22 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
           <X size={14} />
         </button>
       </div>
+
+      {artifacts.download && (
+        <div className="flex items-center gap-2 border-b border-line bg-card px-3 py-2.5">
+          <FileText size={15} className="shrink-0 text-ac" />
+          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-t2" title={artifacts.download.name}>
+            {artifacts.download.name}
+          </span>
+          <a
+            href={buildApiUrl(artifacts.download.url)}
+            download={artifacts.download.name}
+            className="shrink-0 rounded-md border border-line bg-surface px-2 py-1 text-[11.5px] font-medium text-ac hover:bg-hover"
+          >
+            📥 Скачать
+          </a>
+        </div>
+      )}
 
       <div className="flex gap-0.5 border-b border-line px-2 py-1.5">
         {TABS.map((t) => (

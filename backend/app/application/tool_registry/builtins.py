@@ -484,6 +484,23 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         })
+
+    # Russian search synonyms so tool_search matches Cyrillic / `docx` queries —
+    # the base ToolSpec haystack is English-only (name/display/description), so a
+    # natural query like tool_search("документ" / "ворд" / "docx") misses. Additive:
+    # only the names listed here gain *_ru fields; every other spec is untouched.
+    _ru_search_terms = {
+        "file_gen": (
+            "Генерация файла Word/Excel",
+            "Сгенерировать документ Word (.docx) или таблицу Excel (.xlsx): "
+            "ворд, word, docx, doc, эксель, excel, xlsx, таблица, документ, "
+            "отчёт, письмо, создать файл, сгенерировать файл",
+        ),
+    }
+    for _spec in result:
+        _ru = _ru_search_terms.get(_spec.get("name"))
+        if _ru:
+            _spec["display_name_ru"], _spec["description_ru"] = _ru
     return result
 
 

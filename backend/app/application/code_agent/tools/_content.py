@@ -272,20 +272,53 @@ def tool_file_gen(
 
         result = generate_excel(title or "", data or [], headers or None, filename or "")
     else:
-        return {"text": f"ERROR: unsupported format '{format}'. Use 'word' or 'excel'."}
+        return {
+            "ok": False,
+            "error": "unsupported_format",
+            "text": f"ERROR: unsupported format '{format}'. Use 'word' or 'excel'.",
+        }
 
     if not result.get("ok"):
-        return {"text": f"ERROR: file generation failed: {result.get('error') or 'unknown error'}"}
+        return {
+            "ok": False,
+            "error": "generation_failed",
+            "text": f"ERROR: file generation failed: {result.get('error') or 'unknown error'}",
+        }
+
+    # Verify-before-link: the runtime attaches a download link ONLY after confirming
+    # the file really exists on disk (the copy the /api/skills/download route serves).
+    # A generator that reports ok but wrote nothing must NOT surface a dead link.
+    src_path = str(result.get("path") or "")
+    try:
+        _p = Path(src_path)
+        _exists = _p.is_file() and _p.stat().st_size > 0
+    except OSError:
+        _exists = False
+    if not _exists:
+        return {
+            "ok": False,
+            "error": "missing_output",
+            "text": (
+                "ERROR: file generation reported success but no file was written at "
+                f"{src_path or '<unknown>'}."
+            ),
+        }
 
     fname = str(result.get("filename") or "")
-    rel = _mirror_into_project(project_root, str(result.get("path") or ""), fname)
+    download_url = str(result.get("download_url") or "")
+    rel = _mirror_into_project(project_root, src_path, fname)
     summary = (
         f"Generated {fmt} file {fname} ({result.get('size')} bytes).\n"
-        f"Download: {result.get('download_url')}"
+        f"Download: {download_url}"
     )
     if rel:
         summary += f"\nSaved into project: {rel}"
-    out: dict[str, Any] = {"text": summary}
+    out: dict[str, Any] = {"ok": True, "text": summary}
+    # Structured delivery fields — the UI renders a deterministic download artifact
+    # from these (it does NOT depend on the model echoing the URL in its answer).
+    if download_url:
+        out["download_url"] = download_url
+        out["download_name"] = fname
     if rel:
         out["touched_path"] = rel
         out["diff_action"] = "create"

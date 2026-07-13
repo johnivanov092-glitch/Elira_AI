@@ -17,7 +17,7 @@ import {
 import type { Turn } from "./types";
 import { pickFolder } from "../pickFolder";
 import { cn } from "../ui/cn";
-import { deriveArtifacts, fileArtifactKey } from "./artifacts";
+import { deriveArtifacts, fileArtifactKey, downloadArtifactKey } from "./artifacts";
 import { Sidebar } from "./Sidebar";
 import { Topbar, type MainTab } from "./Topbar";
 import { Composer } from "./Composer";
@@ -148,7 +148,9 @@ export default function WorkspaceShell() {
   }, []);
 
   useEffect(() => {
-    const key = fileArtifactKey(artifacts);
+    // Auto-open the preview when a new file OR download artifact appears — a
+    // generated .docx (file_gen) has no text preview but still deserves the panel.
+    const key = fileArtifactKey(artifacts) || downloadArtifactKey(artifacts);
     if (key && key !== lastFileKey.current) {
       lastFileKey.current = key;
       setPreviewOpen(true);
