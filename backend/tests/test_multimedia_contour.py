@@ -190,6 +190,36 @@ class Mp4AudioContainerTest(unittest.TestCase):
         self.assertEqual(body["kind"], "audio")            # routed to STT, not "document"
         self.assertEqual(body["text"], "расшифровка mp4")
 
+    def test_chat_attach_mp4_decode_failure_is_explicit_audio_error(self):
+        # STT cannot decode the container → the route returns an explicit AUDIO error:
+        # 200, ok=False, kind=audio, a readable STT note, and NO MP4 bytes/text leaked.
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.chat import router
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        with patch(
+            "app.application.voice.runtime.transcribe",
+            side_effect=RuntimeError("cannot decode mp4 container"),
+        ):
+            r = client.post(
+                "/api/chat/attach",
+                files={"file": ("voice.mp4", self._MP4, "video/mp4")},
+            )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertFalse(body["ok"])                       # explicit failure, not false success
+        self.assertEqual(body["kind"], "audio")            # a FAILED audio attachment
+        note = body["note"]
+        self.assertIn("не удалось расшифровать", note.lower())     # understandable STT error
+        self.assertIn("cannot decode mp4 container", note)        # underlying reason surfaced
+        # Raw MP4 bytes/text never leak into the attachment.
+        self.assertEqual(body.get("text", ""), "")
+        self.assertNotIn("ftyp", note)
+        self.assertNotIn("ftyp", str(body.get("text", "")))
+
 
 if __name__ == "__main__":
     unittest.main()

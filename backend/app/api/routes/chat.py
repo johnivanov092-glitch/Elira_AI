@@ -123,12 +123,17 @@ async def chat_attach(file: UploadFile) -> JSONResponse:
             )
         )
     if stripped.startswith("[") and (
-        "ошибка" in stripped.lower() or "не установлен" in stripped.lower()
+        "ошибка" in stripped.lower()
+        or "не установлен" in stripped.lower()
+        or "не удалось расшифровать" in stripped.lower()
     ):
+        # An extraction/transcription failure is an explicit attachment error (never a
+        # false success). `kind` mirrors the file type so an audio decode failure reads
+        # as a FAILED AUDIO attachment; text stays empty so raw bytes never leak.
         return _json_attach(
             _attach_result(
                 filename=filename,
-                kind="document",
+                kind="audio" if ext in _AUDIO_EXTS else "document",
                 text="",
                 ok=False,
                 note=stripped.strip("[]"),
