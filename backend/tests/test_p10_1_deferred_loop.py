@@ -236,5 +236,76 @@ class DeferredLoopTest(unittest.TestCase):
         self.assertFalse(deferred_tools.is_deferred_run("chat-run-xyz"))
 
 
+# ── PDF intent pre-activation (deterministic, next to the SSH intent-activation) ──
+# file_gen is added to the initial schema set ONLY when the user_message names a PDF,
+# so the model sees the real generator up front instead of improvising (write_file
+# raw bytes / run_bash pip-install). Needs file_gen's schema available to render.
+_FAKE_SCHEMAS_PDF = [_schema(n) for n in (list(_CODE_AGENT_BASE_TOOLS) + list(_LONG_TAIL) + ["file_gen"])]
+
+
+@contextlib.contextmanager
+def _loop_env_filegen():
+    with patch.object(agent_loop, "_resolve_code_route", return_value=("test-model", 16384, None)), \
+         patch.object(agent_loop, "_record_code_route_metric"), \
+         patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
+         patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS_PDF)), \
+         patch("app.application.agent_registry.sandbox.preflight_or_raise",
+               return_value={"limit": {"max_execution_seconds": 600}}):
+        yield
+
+
+def _run_msg(chat, *, run_id, user_message):
+    with tempfile.TemporaryDirectory() as tmp:
+        return list(agent_loop.stream_code_agent(
+            user_message=user_message, project_root=tmp, run_id=run_id,
+            auto_remember=False, chat_fn=chat,
+        ))
+
+
+class PdfIntentPreactivationTest(unittest.TestCase):
+    def tearDown(self):
+        for rid in ("pdf1", "pdf2", "pdf3", "pdf4"):
+            deferred_tools.clear_run(rid)
+
+    def test_pdf_request_preactivates_file_gen(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_filegen():
+            _run_msg(chat, run_id="pdf1", user_message="Сделай PDF-документ с одной строкой: Привет")
+        first = set(chat.tools_per_call[0])
+        self.assertIn("file_gen", first)                       # (1) PDF ask → file_gen up front
+        self.assertTrue(set(_CODE_AGENT_BASE_TOOLS) <= first)  # base set intact
+
+    def test_cyrillic_pdf_request_preactivates_file_gen(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_filegen():
+            _run_msg(chat, run_id="pdf2", user_message="нужен пдф файл, одна строка")
+        self.assertIn("file_gen", set(chat.tools_per_call[0]))  # (1) Cyrillic «пдф» also matches
+
+    def test_non_pdf_request_keeps_base_set_without_file_gen(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_filegen():
+            _run_msg(chat, run_id="pdf3", user_message="сделай Word-документ, одна строка")
+        first = set(chat.tools_per_call[0])
+        self.assertNotIn("file_gen", first)                    # (2) no PDF signal → unchanged
+        self.assertEqual(first, set(_CODE_AGENT_BASE_TOOLS) | {"tool_search", "ask_user", "ssh_request_host"})
+
+    def test_guessed_file_gen_blocked_on_non_pdf_run(self):
+        # (3) A non-PDF run does NOT pre-activate file_gen; if the model guesses its
+        # name the deferred executor blocks it before dispatch (visibility ≠ policy).
+        chat = ScriptedChat([_call("file_gen", format="pdf", content="x"), _final()])
+        classified = {
+            "name": "file_gen", "policy_classified": True, "enabled": True,
+            "permission": "require_approval", "scopes": ["fs.write"], "max_output_chars": 5000,
+        }
+        with _loop_env_filegen(), \
+             patch("app.application.tool_registry.runtime.get_tool", return_value=classified), \
+             patch.object(ToolRegistry, "dispatch_raw") as dispatch_spy:
+            events = _run_msg(chat, run_id="pdf4", user_message="напиши краткий отчёт")  # no pdf signal
+        self.assertFalse(dispatch_spy.called)                  # provider never reached
+        tc = [e for e in events if e.get("type") == "tool_call" and e.get("tool") == "file_gen"]
+        self.assertEqual(len(tc), 1)
+        self.assertIn("not activated", tc[0]["result"].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

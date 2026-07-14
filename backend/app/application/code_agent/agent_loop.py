@@ -731,6 +731,18 @@ def _stream_code_agent_core(
                         initial_tools = tuple(dict.fromkeys((*initial_tools, *_SSH_ACTIVATABLE_TOOLS)))
             except Exception:
                 pass
+            # PDF-shaped run → offer file_gen from step one, mirroring the SSH
+            # intent-activation above. The model has a strong prior to improvise a PDF
+            # (write raw %PDF bytes via write_file, or pip-install reportlab/fpdf via
+            # run_bash) instead of tool_search-ing file_gen; pre-activating it on an
+            # explicit PDF ask makes the real generator visible up front. Intent-gated
+            # (task names pdf/пдф) so non-PDF runs and the prompt canaries pay nothing.
+            # Visibility ONLY — the fail-closed kernel still gates every file_gen call
+            # (approval/policy unchanged), and a non-PDF run that guesses the name is
+            # still blocked by the deferred executor.
+            _low_pdf = (user_message or "").lower()
+            if "pdf" in _low_pdf or "пдф" in _low_pdf:
+                initial_tools = tuple(dict.fromkeys((*initial_tools, "file_gen")))
         enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _local_chat
         stream_chat = chat_stream_fn
