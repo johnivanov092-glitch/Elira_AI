@@ -206,7 +206,11 @@ def _extract_text(data: bytes, max_chars: int = 30000) -> str:
     return data.decode("utf-8", errors="replace")[:max_chars]
 
 
-_AUDIO_EXTS = (".ogg", ".oga", ".opus", ".wav", ".mp3", ".m4a", ".flac", ".webm", ".aac")
+# Canonical audio-container allowlist (single source of truth — chat.py and
+# library/runtime.py import THIS tuple, no second copy). `.mp4` is a WhatsApp voice
+# container: v1 semantics = extract & transcribe its audio track via STT, exactly
+# like .m4a/.webm. No video/frame analysis — the STT service decodes the container.
+_AUDIO_EXTS = (".ogg", ".oga", ".opus", ".wav", ".mp3", ".m4a", ".mp4", ".flac", ".webm", ".aac")
 
 
 def _transcribe_audio(contents: bytes, filename: str) -> str:

@@ -120,5 +120,76 @@ class ErrorPathTest(unittest.TestCase):
         self.assertIn("не удалось расшифровать", note)   # attachment degrades, run survives
 
 
+class Mp4AudioContainerTest(unittest.TestCase):
+    """.mp4 (WhatsApp voice) is an AUDIO container: extract & transcribe its audio
+    track via the existing STT — NOT video/frame analysis (test_no_video_tools_exist
+    still pins that no video tools exist). Single canonical allowlist, no drift."""
+
+    _MP4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\xff" * 32  # binary, not UTF-8
+
+    def test_mp4_in_canonical_audio_exts(self):
+        from app.application.file_extract.runtime import _AUDIO_EXTS
+        self.assertIn(".mp4", _AUDIO_EXTS)
+
+    def test_library_uses_the_same_canonical_allowlist(self):
+        # No second independent copy: Library imports the SAME tuple object.
+        from app.application.file_extract.runtime import _AUDIO_EXTS as FE_AUDIO
+        from app.application.library.runtime import _AUDIO_EXTS as LIB_AUDIO
+        self.assertIs(LIB_AUDIO, FE_AUDIO)
+        self.assertIn(".mp4", LIB_AUDIO)
+
+    def test_extract_file_mp4_calls_transcribe_with_original_filename(self):
+        from app.application.file_extract.runtime import extract_file
+        with patch("app.application.voice.runtime.transcribe", return_value="привет из mp4") as m:
+            out = extract_file("voice.mp4", self._MP4)
+        self.assertTrue(m.called)
+        self.assertEqual(m.call_args.kwargs.get("filename"), "voice.mp4")  # original filename passed
+        self.assertEqual(out["text"], "привет из mp4")                     # transcribed, not UTF-8 garbage
+        self.assertEqual(out["type"], ".mp4")
+
+    def test_mp4_decode_failure_is_explicit_error_not_utf8_garbage(self):
+        # If STT cannot decode the container → explicit attachment error, and the raw
+        # MP4 bytes are NEVER decoded as UTF-8 text.
+        from app.application.file_extract.runtime import extract_file
+        with patch("app.application.voice.runtime.transcribe", side_effect=RuntimeError("bad container")):
+            out = extract_file("voice.mp4", self._MP4)
+        self.assertIn("не удалось расшифровать", out["text"])
+        self.assertNotIn("ftyp", out["text"])  # container bytes not leaked as text
+
+    def test_library_preview_mp4_routes_to_transcribe(self):
+        from app.application.library.runtime import extract_preview
+        with patch("app.application.voice.runtime.transcribe", return_value="из библиотеки") as m:
+            preview = extract_preview("note.mp4", self._MP4)
+        self.assertTrue(m.called)
+        self.assertEqual(preview, "из библиотеки")
+
+    def test_existing_audio_exts_do_not_regress(self):
+        from app.application.file_extract.runtime import extract_file
+        for fn in ("v.ogg", "v.m4a", "v.webm"):
+            with patch("app.application.voice.runtime.transcribe", return_value="ok") as m:
+                out = extract_file(fn, b"audio-bytes")
+            self.assertTrue(m.called, fn)
+            self.assertEqual(out["text"], "ok", fn)
+
+    def test_chat_attach_mp4_returns_transcribed_text(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.chat import router
+
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        with patch("app.application.voice.runtime.transcribe", return_value="расшифровка mp4"):
+            r = client.post(
+                "/api/chat/attach",
+                files={"file": ("voice.mp4", self._MP4, "video/mp4")},
+            )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["kind"], "audio")            # routed to STT, not "document"
+        self.assertEqual(body["text"], "расшифровка mp4")
+
+
 if __name__ == "__main__":
     unittest.main()
