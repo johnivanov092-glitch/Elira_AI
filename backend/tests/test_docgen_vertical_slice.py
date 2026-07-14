@@ -127,6 +127,13 @@ def test_unbacked_docgen_claim_guard():
     assert _unbacked_docgen_claim("report.docx готов", ["generated/report.docx"]) == []
     # No document claim at all → nothing to flag.
     assert _unbacked_docgen_claim("Обычный ответ без файлов", []) == []
+    # Merely reporting an existing project file is not a claim that this run
+    # generated it. This is the exact false-positive seen in the CRM BOT chat.
+    assert _unbacked_docgen_claim("Файл data/base.xlsx существует и находится в проекте.", []) == []
+    assert _unbacked_docgen_claim(
+        "Инструкция.pdf была создана в предыдущем прогоне, не в этом.", []
+    ) == []
+    assert _unbacked_docgen_claim("В проекте найдены report.pdf и data/base.xlsx.", []) == []
 
 
 # ── 6. P1: error exits reach the kernel as status=error (not ok-by-default) ───

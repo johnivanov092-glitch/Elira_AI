@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 import uuid
@@ -731,17 +732,27 @@ def _stream_code_agent_core(
                         initial_tools = tuple(dict.fromkeys((*initial_tools, *_SSH_ACTIVATABLE_TOOLS)))
             except Exception:
                 pass
-            # PDF-shaped run → offer file_gen from step one, mirroring the SSH
-            # intent-activation above. The model has a strong prior to improvise a PDF
-            # (write raw %PDF bytes via write_file, or pip-install reportlab/fpdf via
-            # run_bash) instead of tool_search-ing file_gen; pre-activating it on an
-            # explicit PDF ask makes the real generator visible up front. Intent-gated
-            # (task names pdf/пдф) so non-PDF runs and the prompt canaries pay nothing.
+            # Explicit document-generation request → offer file_gen from step one,
+            # mirroring the SSH intent-activation above. The model otherwise tends to
+            # improvise binary formats through write_file/run_bash or omit generation.
+            # Reading an existing document is deliberately NOT a generation intent.
             # Visibility ONLY — the fail-closed kernel still gates every file_gen call
-            # (approval/policy unchanged), and a non-PDF run that guesses the name is
+            # (approval/policy unchanged), and a non-document run that guesses the name is
             # still blocked by the deferred executor.
-            _low_pdf = (user_message or "").lower()
-            if "pdf" in _low_pdf or "пдф" in _low_pdf:
+            _doc_request = (user_message or "").lower()
+            _doc_format = re.search(
+                r"(?:\bpdf\b|\bпдф\b|\bword\b|\bворд\w*\b|\bdocx?\b|"
+                r"\bexcel\b|\bэксел\w*\b|\bxlsx?\b|\bдокумент\w*\b)",
+                _doc_request,
+            )
+            _doc_generate = re.search(
+                r"(?:\bсозда\w*\b|\bсдела\w*\b|\bсгенерир\w*\b|"
+                r"\bподготов\w*\b|\bоформ\w*\b|\bвыгруз\w*\b|"
+                r"\bнуж(?:ен|на|но|ны)\b|\bхочу\b|\bдай\b|"
+                r"\b(?:create|generate|make|prepare|export|need|want)\b)",
+                _doc_request,
+            )
+            if _doc_format and _doc_generate:
                 initial_tools = tuple(dict.fromkeys((*initial_tools, "file_gen")))
         enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _local_chat
@@ -1394,7 +1405,7 @@ def _stream_code_agent_core(
                             "Ты заявил, что файл(ы) "
                             f"{', '.join(_unbacked_doc[:4])} готов(ы), но успешного "
                             "вызова `file_gen` в этом прогоне НЕ было — файл не создан. "
-                            "Либо сгенерируй его: `file_gen(format='word'|'excel', …)` "
+                            "Либо сгенерируй его: `file_gen(format='word'|'excel'|'pdf', …)` "
                             "(если инструмента нет в списке — активируй через "
                             "`tool_search(\"file_gen\")`), либо убери утверждение о "
                             "готовом файле. Не выдавай черновик текста за созданный файл."

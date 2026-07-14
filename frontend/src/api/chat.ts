@@ -27,6 +27,21 @@ export type ChatAttachment = {
   toLibrary?: boolean;
 };
 
+// Audio containers are transcribed by STT (server budget 3600s), so their upload
+// needs a matching BOUNDED client timeout — a little above the backend STT budget,
+// never infinite. Everything else keeps the standard 120s. Mirrors the backend
+// _AUDIO_EXTS allowlist (different language, kept in sync deliberately).
+const AUDIO_EXTS = new Set([
+  ".ogg", ".oga", ".opus", ".wav", ".mp3", ".m4a", ".mp4", ".flac", ".webm", ".aac",
+]);
+const DEFAULT_ATTACH_TIMEOUT_MS = 120_000;
+const AUDIO_ATTACH_TIMEOUT_MS = 3_630_000; // backend STT (3600s) + margin; NOT infinite
+
+function isAudioFile(name: string): boolean {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && AUDIO_EXTS.has(name.slice(dot).toLowerCase());
+}
+
 /**
  * Upload a single file to the "Чат" attach endpoint. The backend parses it
  * locally (vision for images, extract/OCR for documents) and returns the
@@ -38,6 +53,7 @@ export async function attachToChat(file: File): Promise<ChatAttachment> {
   const result = await request<UnknownRecord>("/api/chat/attach", {
     method: "POST",
     body: form,
+    timeoutMs: isAudioFile(file.name) ? AUDIO_ATTACH_TIMEOUT_MS : DEFAULT_ATTACH_TIMEOUT_MS,
   });
   const rec = isRecord(result) ? result : {};
   const kind = rec.kind === "image" ? "image" : "document";

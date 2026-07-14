@@ -144,6 +144,7 @@ class Mp4AudioContainerTest(unittest.TestCase):
             out = extract_file("voice.mp4", self._MP4)
         self.assertTrue(m.called)
         self.assertEqual(m.call_args.kwargs.get("filename"), "voice.mp4")  # original filename passed
+        self.assertEqual(m.call_args.kwargs.get("timeout"), 3600)           # bounded long-audio budget
         self.assertEqual(out["text"], "привет из mp4")                     # transcribed, not UTF-8 garbage
         self.assertEqual(out["type"], ".mp4")
 
@@ -219,6 +220,61 @@ class Mp4AudioContainerTest(unittest.TestCase):
         self.assertEqual(body.get("text", ""), "")
         self.assertNotIn("ftyp", note)
         self.assertNotIn("ftyp", str(body.get("text", "")))
+
+
+class AudioAttachSizeLimitTest(unittest.TestCase):
+    """Audio containers get a larger BOUNDED cap (100 MiB) than documents (25 MiB), so a
+    long WhatsApp .mp4 is not rejected before STT — while everything else keeps 25 MiB."""
+
+    def _client(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.api.routes.chat import router
+
+        app = FastAPI()
+        app.include_router(router)
+        return TestClient(app)
+
+    def test_limits_pin(self):
+        from app.api.routes import chat as chat_mod
+        self.assertEqual(chat_mod._MAX_ATTACH_BYTES, 25 * 1024 * 1024)      # documents stay 25 MiB
+        self.assertEqual(chat_mod._MAX_AUDIO_ATTACH_BYTES, 100 * 1024 * 1024)
+        self.assertGreater(chat_mod._MAX_AUDIO_ATTACH_BYTES, chat_mod._MAX_ATTACH_BYTES)
+
+    def test_over_document_cap_audio_allowed_but_document_rejected(self):
+        from app.api.routes import chat as chat_mod
+
+        payload = b"\0" * (chat_mod._MAX_ATTACH_BYTES + 1)  # ~25 MiB — over the DOCUMENT cap
+        client = self._client()
+        # Audio: well under the 100 MiB audio cap → accepted and transcribed.
+        with patch("app.application.voice.runtime.transcribe", return_value="длинная расшифровка"):
+            ra = client.post("/api/chat/attach", files={"file": ("voice.mp4", payload, "video/mp4")})
+        self.assertEqual(ra.status_code, 200)
+        self.assertTrue(ra.json()["ok"])
+        self.assertEqual(ra.json()["kind"], "audio")
+        self.assertEqual(ra.json()["text"], "длинная расшифровка")
+        # Same-size DOCUMENT: rejected 413 with a clear note.
+        rd = client.post("/api/chat/attach", files={"file": ("big.txt", payload, "text/plain")})
+        self.assertEqual(rd.status_code, 413)
+        self.assertFalse(rd.json()["ok"])
+        self.assertIn("Файл больше 25 МБ", rd.json()["note"])
+
+    def test_audio_over_its_limit_gets_413_with_clear_note(self):
+        from app.api.routes import chat as chat_mod
+
+        client = self._client()
+        # Enforce the audio branch at a small threshold to avoid a 100 MiB allocation;
+        # the real 100 MiB value is pinned by test_limits_pin.
+        with patch.object(chat_mod, "_MAX_AUDIO_ATTACH_BYTES", 2 * 1024 * 1024):
+            payload = b"\0" * (2 * 1024 * 1024 + 1)
+            r = client.post("/api/chat/attach", files={"file": ("huge.mp4", payload, "video/mp4")})
+        self.assertEqual(r.status_code, 413)
+        body = r.json()
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["kind"], "audio")            # a FAILED audio attachment
+        self.assertIn("Файл больше", body["note"])
+        self.assertIn("МБ", body["note"])
+        self.assertEqual(body.get("text", ""), "")         # no bytes leaked
 
 
 if __name__ == "__main__":

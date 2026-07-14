@@ -208,11 +208,14 @@ export function Composer({
         try {
           const att = await attachToChat(file);
           setAttachments((prev) => [...prev, att]);
-        } catch {
+        } catch (err) {
+          // Surface the real backend reason (e.g. "Файл больше 100 МБ") from the
+          // ApiError instead of a generic message.
+          const reason = err instanceof Error && err.message ? err.message : "Не удалось обработать файл";
           setAttachments((prev) => [...prev, {
             ok: false, filename: file.name,
             kind: file.type.startsWith("image/") ? "image" : "document",
-            text: "", chars: 0, note: "Не удалось обработать файл",
+            text: "", chars: 0, note: reason,
           }]);
         } finally {
           // Remove the first matching name so this file's spinner disappears as

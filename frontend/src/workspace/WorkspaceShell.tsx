@@ -29,6 +29,7 @@ import { PipelinesShell } from "./PipelinesShell";
 import { TerminalDock } from "./TerminalDock";
 import { useAgentRun } from "./useAgentRun";
 import * as bg from "./backgroundRuns";
+import { bindingFromSession, persistProjectSelection } from "./sessionBinding";
 
 let _draftSeq = 0;
 const newDraftKey = () => `draft-${Date.now()}-${++_draftSeq}`;
@@ -187,7 +188,21 @@ export default function WorkspaceShell() {
 
   async function pick() {
     const p = await pickFolder(project || undefined);
-    if (p) setProject(p);
+    if (!p) return;
+    try {
+      await persistProjectSelection(sessionId, p, patchCodeSession);
+    } catch {
+      setLoadError("Не удалось привязать папку к этому чату. Проект не изменён.");
+      return;
+    }
+    setProject(p);
+    setLoadError(null);
+    // Keep the sidebar metadata and the next background persist aligned with
+    // the server-owned session binding. A draft is persisted on first send.
+    if (sessionId) {
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, project_root: p } : s)));
+      bg.setPersist(activeKey, makePersist(activeKey, p, model));
+    }
   }
 
   function onSend(text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) {
@@ -258,9 +273,10 @@ export default function WorkspaceShell() {
       if (!bg.isRunning(id)) {
         bg.seed(id, s ? deserializeTurns(s.turns) : [], s?.task_ledger || [], s?.context_state || null);
       }
-      bg.setPersist(id, makePersist(id, s?.project_root || project, s?.model || model));
-      if (s?.project_root) setProject(s.project_root);
-      if (s?.model) setModel(s.model);
+      const binding = bindingFromSession(s);
+      bg.setPersist(id, makePersist(id, binding.projectRoot, binding.model));
+      setProject(binding.projectRoot);
+      setModel(binding.model);
     } catch {
       // Load FAILED (network / 5xx): do NOT seed a blank transcript and do NOT arm
       // persist — a later save would push the empty snapshot over the real server
@@ -296,6 +312,8 @@ export default function WorkspaceShell() {
       setActiveKey(key);
       bg.seed(key, []);
       setSessionId(null);
+      setProject("");
+      setModel("auto");
     }
     refreshSessions();
   }

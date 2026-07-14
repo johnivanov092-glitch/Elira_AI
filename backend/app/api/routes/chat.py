@@ -21,6 +21,10 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 _MAX_ATTACH_BYTES = 25 * 1024 * 1024
+# Audio containers (long voice notes — e.g. a ~50-min WhatsApp .mp4) get a larger but
+# still bounded cap: they are transcribed by STT, not held in-context as text, so the
+# tight 25 MiB document cap is wrong for them. Everything else keeps 25 MiB.
+_MAX_AUDIO_ATTACH_BYTES = 100 * 1024 * 1024
 
 
 def _attach_result(
@@ -68,14 +72,15 @@ async def chat_attach(file: UploadFile) -> JSONResponse:
             status_code=400,
         )
 
-    if len(contents) > _MAX_ATTACH_BYTES:
+    _max_bytes = _MAX_AUDIO_ATTACH_BYTES if ext in _AUDIO_EXTS else _MAX_ATTACH_BYTES
+    if len(contents) > _max_bytes:
         return _json_attach(
             _attach_result(
                 filename=filename,
-                kind="document",
+                kind="audio" if ext in _AUDIO_EXTS else "document",
                 text="",
                 ok=False,
-                note=f"Файл больше {_MAX_ATTACH_BYTES // (1024 * 1024)} МБ",
+                note=f"Файл больше {_max_bytes // (1024 * 1024)} МБ",
             ),
             status_code=413,
         )

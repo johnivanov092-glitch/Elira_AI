@@ -98,7 +98,9 @@ export function normalizeError(payload: unknown, status: number): string {
     return payload.detail.map(messageFromItem).join("; ");
   }
   if (isRecord(payload)) {
-    for (const key of ["detail", "message", "error"]) {
+    // `note` is the chat /attach error contract (e.g. "Файл больше 100 МБ") — surface
+    // it so the composer chip shows the real reason, not a generic fallback.
+    for (const key of ["detail", "message", "error", "note"]) {
       const value = payload[key];
       if (typeof value === "string" && value.trim()) return value;
     }

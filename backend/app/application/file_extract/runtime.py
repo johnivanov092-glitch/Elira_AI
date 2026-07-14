@@ -211,19 +211,26 @@ def _extract_text(data: bytes, max_chars: int = 30000) -> str:
 # container: v1 semantics = extract & transcribe its audio track via STT, exactly
 # like .m4a/.webm. No video/frame analysis — the STT service decodes the container.
 _AUDIO_EXTS = (".ogg", ".oga", ".opus", ".wav", ".mp3", ".m4a", ".mp4", ".flac", ".webm", ".aac")
+_AUDIO_STT_TIMEOUT_SECONDS = 3600
 
 
 def _transcribe_audio(contents: bytes, filename: str) -> str:
     """Расшифровать аудио-вложение через self-hosted whisper (STT).
 
-    whisper сам сегментирует длинное аудио по паузам/границам фраз; ставим
-    щедрый таймаут (на small/int8 ~0.14x реального времени → ~1.5ч аудио в 900с).
+    whisper сам сегментирует длинное аудио по паузам/границам фраз. CPU-only
+    small/int8 на реальном 51-минутном WhatsApp MP4 превысил 30 минут, поэтому
+    даём согласованный, но всё ещё bounded 60-минутный бюджет.
     Ошибку STT возвращаем текстом, чтобы вложение не падало с 500.
     """
     from app.application.voice.runtime import transcribe
 
     try:
-        text = transcribe(contents, filename=filename or "audio", language=None, timeout=900)
+        text = transcribe(
+            contents,
+            filename=filename or "audio",
+            language=None,
+            timeout=_AUDIO_STT_TIMEOUT_SECONDS,
+        )
     except Exception as exc:  # noqa: BLE001 — surface STT failure as attachment text
         return f"[не удалось расшифровать аудио: {exc}]"
     return (text or "").strip() or "[аудио распознано, но текст пустой]"

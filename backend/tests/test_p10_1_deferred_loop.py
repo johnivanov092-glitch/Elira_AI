@@ -262,9 +262,9 @@ def _run_msg(chat, *, run_id, user_message):
         ))
 
 
-class PdfIntentPreactivationTest(unittest.TestCase):
+class DocumentIntentPreactivationTest(unittest.TestCase):
     def tearDown(self):
-        for rid in ("pdf1", "pdf2", "pdf3", "pdf4"):
+        for rid in ("pdf1", "pdf2", "doc1", "xls1", "doc-read", "pdf4"):
             deferred_tools.clear_run(rid)
 
     def test_pdf_request_preactivates_file_gen(self):
@@ -281,12 +281,24 @@ class PdfIntentPreactivationTest(unittest.TestCase):
             _run_msg(chat, run_id="pdf2", user_message="нужен пдф файл, одна строка")
         self.assertIn("file_gen", set(chat.tools_per_call[0]))  # (1) Cyrillic «пдф» also matches
 
-    def test_non_pdf_request_keeps_base_set_without_file_gen(self):
+    def test_word_request_preactivates_file_gen(self):
         chat = ScriptedChat([_final()])
         with _loop_env_filegen():
-            _run_msg(chat, run_id="pdf3", user_message="сделай Word-документ, одна строка")
+            _run_msg(chat, run_id="doc1", user_message="сделай Word-документ, одна строка")
+        self.assertIn("file_gen", set(chat.tools_per_call[0]))
+
+    def test_excel_request_preactivates_file_gen(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_filegen():
+            _run_msg(chat, run_id="xls1", user_message="создай Excel-таблицу с итогами")
+        self.assertIn("file_gen", set(chat.tools_per_call[0]))
+
+    def test_document_read_request_keeps_base_set_without_file_gen(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_filegen():
+            _run_msg(chat, run_id="doc-read", user_message="прочитай Word-документ report.docx")
         first = set(chat.tools_per_call[0])
-        self.assertNotIn("file_gen", first)                    # (2) no PDF signal → unchanged
+        self.assertNotIn("file_gen", first)                    # reading is not generation
         self.assertEqual(first, set(_CODE_AGENT_BASE_TOOLS) | {"tool_search", "ask_user", "ssh_request_host"})
 
     def test_guessed_file_gen_blocked_on_non_pdf_run(self):
@@ -300,7 +312,7 @@ class PdfIntentPreactivationTest(unittest.TestCase):
         with _loop_env_filegen(), \
              patch("app.application.tool_registry.runtime.get_tool", return_value=classified), \
              patch.object(ToolRegistry, "dispatch_raw") as dispatch_spy:
-            events = _run_msg(chat, run_id="pdf4", user_message="напиши краткий отчёт")  # no pdf signal
+            events = _run_msg(chat, run_id="pdf4", user_message="напиши краткий отчёт")  # no document format signal
         self.assertFalse(dispatch_spy.called)                  # provider never reached
         tc = [e for e in events if e.get("type") == "tool_call" and e.get("tool") == "file_gen"]
         self.assertEqual(len(tc), 1)

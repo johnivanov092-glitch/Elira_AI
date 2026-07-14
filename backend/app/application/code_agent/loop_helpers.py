@@ -453,6 +453,35 @@ def _ungrounded_files(answer: str, messages: list[dict], established_facts: list
 # Deliberately narrow: only the formats file_gen emits, exact-basename match.
 _DOCGEN_NUDGE_MAX = 1
 _ANSWER_DOC_RE = re.compile(r"[\w.\-/\\]+\.(?:docx|xlsx|pdf)\b", re.IGNORECASE)
+_DOCGEN_READY_RE = re.compile(
+    r"(?:\bвот\b|\bготов(?:о|а|ы)?\b|\bсоздан(?:о|а|ы)?\b|"
+    r"\bсгенерирован(?:о|а|ы)?\b|\bподготовлен(?:о|а|ы)?\b|"
+    r"\bсохран(?:ен|ён)(?:о|а|ы)?\b|\bскачать\b|"
+    r"\b(?:here(?:'s| is)|ready|created|generated|saved|download)\b)",
+    re.IGNORECASE,
+)
+_DOCGEN_EXISTING_RE = re.compile(
+    r"(?:\bсуществу\w*\b|\bнаход\w*\b|\bнайден\w*\b|\bимеется\b|"
+    r"\bна месте\b|\bпредыдущ\w*\s+прогон\w*\b|\bранее\b|"
+    r"\bдо этого\b|\b(?:already existed|previous run|exists|found)\b|"
+    r"\bне\s+(?:был[оаи]?\s+)?(?:создан|сгенерирован|подготовлен|сохран[её]н)\w*\b)",
+    re.IGNORECASE,
+)
+
+
+def _doc_claim_context(answer: str, start: int, end: int) -> str:
+    """Return the sentence/line containing one filename without splitting its extension."""
+    left = 0
+    for marker in ("\n", "! ", "? ", ". "):
+        pos = answer.rfind(marker, 0, start)
+        if pos >= 0:
+            left = max(left, pos + len(marker))
+    right = len(answer)
+    for marker in ("\n", "! ", "? ", ". "):
+        pos = answer.find(marker, end)
+        if pos >= 0:
+            right = min(right, pos)
+    return answer[left:right]
 
 
 def _unbacked_docgen_claim(answer: str, generated_docs: list[str]) -> list[str]:
@@ -463,7 +492,13 @@ def _unbacked_docgen_claim(answer: str, generated_docs: list[str]) -> list[str]:
     passed in (a written report.pdf may be plain text, not a real PDF). Returns the
     unbacked claimed basenames; [] when every claimed doc was really generated / none
     claimed."""
-    claimed = {_basename(m.group(0)).lower() for m in _ANSWER_DOC_RE.finditer(answer or "")}
+    claimed: set[str] = set()
+    for match in _ANSWER_DOC_RE.finditer(answer or ""):
+        context = _doc_claim_context(answer, match.start(), match.end())
+        # The guard is about a document presented as newly delivered by THIS run.
+        # Reporting an existing/previously-created project file is not generation.
+        if _DOCGEN_READY_RE.search(context) and not _DOCGEN_EXISTING_RE.search(context):
+            claimed.add(_basename(match.group(0)).lower())
     if not claimed:
         return []
     produced = {_basename(p).lower() for p in (generated_docs or [])}
