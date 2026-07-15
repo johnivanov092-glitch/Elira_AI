@@ -1,10 +1,11 @@
-"""Executor-private change store (v1): explicit-verified migration incl. the EXACT partial
+"""Executor-private change store (v2): explicit-verified migration incl. the EXACT partial
 unique index DDL, atomic plan+capabilities creation, one-transaction capability consume +
 CAS, token-guarded finalize, deadline-only sweep (CAS-winners only), fresh-inspect-gated
 resolution, and the DB-enforced one-active-per-target invariant."""
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -44,15 +45,50 @@ class MigrationTest(unittest.TestCase):
     def tearDown(self):
         cs._DB_PATH_OVERRIDE = None
 
-    def test_v0_creates_and_verifies_v1(self):
+    def test_v0_creates_and_verifies_v2(self):
         cs.init_db()
         conn = cs._connect()
         try:
-            self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 1)
+            self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 2)
             cs._verify_contract(conn)
         finally:
             conn.close()
         cs.init_db()                    # idempotent verify-only
+
+    def test_exact_v1_migrates_index_to_v2_and_locks_rollback_failed(self):
+        conn = cs._connect()
+        try:
+            conn.executescript(cs._CREATE_SQL)
+            conn.execute(f"DROP INDEX {cs._INDEX_NAME}")
+            conn.execute(cs._V1_EXPECTED_INDEX_DDL)
+            conn.execute("PRAGMA user_version=1")
+            conn.commit()
+        finally:
+            conn.close()
+        cs.init_db()
+        conn = cs._connect()
+        try:
+            self.assertEqual(int(conn.execute("PRAGMA user_version").fetchone()[0]), 2)
+            cs._verify_contract(conn)
+            for cid in ("chg-a", "chg-b"):
+                with self.subTest(cid=cid):
+                    if cid == "chg-b":
+                        with self.assertRaises(sqlite3.IntegrityError):
+                            conn.execute(
+                                "INSERT INTO change_runs (change_run_id,target_id,unit,operation,"
+                                "change_run_status,snapshot,snapshot_hash,planned_argv_hash,"
+                                "planned_binding,approver,attempt_token,created_at,updated_at) "
+                                "VALUES (?,?,?,?,'rollback_failed','{}','','','{}','','',1,1)",
+                                (cid, "same-target", "netdata.service", "set_update_every_1"))
+                        break
+                    conn.execute(
+                        "INSERT INTO change_runs (change_run_id,target_id,unit,operation,"
+                        "change_run_status,snapshot,snapshot_hash,planned_argv_hash,"
+                        "planned_binding,approver,attempt_token,created_at,updated_at) "
+                        "VALUES (?,?,?,?,'rollback_failed','{}','','','{}','','',1,1)",
+                        (cid, "same-target", "netdata.service", "set_update_every_1"))
+        finally:
+            conn.close()
 
     def test_missing_partial_index_fails_closed(self):
         cs.init_db()
@@ -74,7 +110,8 @@ class MigrationTest(unittest.TestCase):
             conn.execute(f"DROP INDEX {cs._INDEX_NAME}")
             conn.execute(
                 f"CREATE UNIQUE INDEX {cs._INDEX_NAME} ON change_runs(target_id) "
-                f"WHERE change_run_status IN ('pending_approval','applying','apply_unknown') AND 0")
+                f"WHERE change_run_status IN ('pending_approval','applying','apply_unknown',"
+                f"'rollback_failed') AND 0")
             conn.commit()
         finally:
             conn.close()

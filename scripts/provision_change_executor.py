@@ -231,18 +231,27 @@ def _make_venv(root: Path, base_python: str, force: bool) -> Path:
 
 
 def _write_registry_template(root: Path, host: str, port: int, user: str, unit: str,
-                             force: bool) -> Path:
+                             helper_sha256: str, force: bool) -> Path:
     cfg = root / "config"
     cfg.mkdir(parents=True, exist_ok=True)
     reg = cfg / "registry.json"
     if reg.exists() and not force:
         print(f"  registry.json already present (left untouched): {reg}")
         return reg
-    doc = {"targets": {"ai-server-netdata": {
-        "host": host, "port": port, "remote_user": user,
-        "known_hosts": str(cfg / "known_hosts"),
-        "identity_file": str(cfg / "id_elira_change"),
-        "unit": unit, "operation": "restart"}}}
+    common = {"host": host, "port": port, "remote_user": user,
+              "known_hosts": str(cfg / "known_hosts"),
+              "identity_file": str(cfg / "id_elira_change"), "unit": unit}
+    doc = {"targets": {
+        "ai-server-netdata": {**common, "target_kind": "systemd_restart",
+                              "operation": "restart"},
+        "ai-server-netdata-config": {
+            **common, "target_kind": "netdata_config", "operation": "set_update_every_1",
+            "unit": "netdata.service",
+            "config_id": "netdata-main",
+            "helper_path": "/usr/local/sbin/elira-netdata-config",
+            "helper_sha256": helper_sha256,
+        },
+    }}
     reg.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote registry template -> {reg}")
     return reg
@@ -261,6 +270,9 @@ def _next_steps(root: Path, account: str) -> None:
     print(f"  * ssh-keyscan -p 22 <host> > {cfg / 'known_hosts'}   (then verify fp out-of-band)")
     print(f"  * SEPARATE Telegram bot (@BotFather) -> ELIRA_CHANGE_BOT_TOKEN + APPROVER_*_IDS")
     print(f"  * remote: adduser elira-change + narrow sudoers; re-point reads to elira-ro; revoke old identity")
+    print("  * remote config helper: copy the artifact's remote_netdata_config.py verbatim to")
+    print("    /usr/local/sbin/elira-netdata-config as root:root 0755, verify its SHA-256,")
+    print("    and allow only that executable in sudoers (the helper validates its fixed protocol).")
     print(f"  * code came from the VERIFIED artifact (not the live repo); rebuild + re-pin the")
     print(f"    manifest digest for any update, always from a clean checkout.")
     print(f"  * then, AS {account}, FROM the artifact copy (hash-checked first):")
@@ -326,7 +338,11 @@ def cmd_deploy(a: argparse.Namespace) -> int:
     print(f"Deploying isolated change executor -> {root.resolve()}")
     _copy_from_artifact(root, artifact, hashes, a.force)
     _make_venv(root, base, a.force)
-    _write_registry_template(root, a.target_host, a.target_port, a.remote_user, a.unit, a.force)
+    helper_hash = hashes.get("remote_netdata_config.py")
+    if not helper_hash:
+        _fail("artifact has no remote_netdata_config.py; config change target cannot be pinned")
+    _write_registry_template(root, a.target_host, a.target_port, a.remote_user, a.unit,
+                             helper_hash, a.force)
     (root / _MARKER).write_text("elira change executor install root\n", encoding="utf-8")   # mark a COMPLETED install (last)
     _next_steps(root, account)
     return 0

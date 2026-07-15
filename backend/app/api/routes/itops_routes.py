@@ -101,12 +101,18 @@ class SystemdInspectRequest(BaseModel):
     unit: str = Field(..., description="A human-selected systemd .service unit name (strictly validated)")
 
 
+class ConfigInspectRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    profile_id: str = Field(..., description="A SAVED, VERIFIED (enabled) linux connection profile id")
+    config_id: Literal["netdata-main"] = Field(..., description="A server-owned named config target")
+
+
 class ChangePlanRequest(BaseModel):
     model_config = {"extra": "forbid"}
     # The client supplies ONLY an opaque target_id label. The privileged executor resolves
     # everything (host/unit/argv/binding) from its OWN registry and validates it; the main
     # backend never sees or sends host/unit/argv/keys.
-    target_id: str = Field(..., description="An executor-registry target id (v1: ai-server-netdata)")
+    target_id: str = Field(..., description="An opaque executor-registry target id")
 
 
 # ── endpoints ─────────────────────────────────────────────────────────────
@@ -447,6 +453,38 @@ def systemd_inspect_start(payload: SystemdInspectRequest) -> dict[str, Any]:
     )
     return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id, "unit": unit,
             "tool": "itops_systemd_service_inspect", "message": message,
+            "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
+
+
+@router.post("/config/inspect/start")
+def config_inspect_start(payload: ConfigInspectRequest) -> dict[str, Any]:
+    """Start one typed read-only config inspect. No path/key/value is client input."""
+    _require_flag()
+    from app.application.agent_kernel import operation_scope
+    from app.application.it_ops import config_inspect as ci
+
+    spec = ci.resolve_config(payload.config_id)
+    store = _store()
+    profile = store.get_connection_profile(payload.profile_id)
+    if not profile or profile.get("transport") != "ssh":
+        raise HTTPException(status_code=404, detail="ssh profile not found")
+    asset = store.get_asset(str(profile.get("asset_id") or ""))
+    if not asset or asset.get("lifecycle_state") != "enabled":
+        raise HTTPException(status_code=409, detail="profile is not verified/enabled — verify it first")
+    if asset.get("kind") != "linux":
+        raise HTTPException(status_code=409, detail="config inspect requires a linux asset")
+
+    run_id = f"itops-diag-{uuid.uuid4().hex}"
+    operation_scope.bind_scope_config(
+        run_id, profile_id=payload.profile_id, config_id=spec.config_id,
+        allowed_tool="itops_config_inspect")
+    message = (
+        "Выполни read-only типизированную инспекцию конфигурации. Активируй инструмент "
+        "itops_config_inspect через tool_search, затем вызови его РОВНО ОДИН РАЗ БЕЗ "
+        "аргументов. Профиль и config target уже привязаны; не вызывай другие инструменты."
+    )
+    return {"ok": True, "run_id": run_id, "profile_id": payload.profile_id,
+            "config_id": spec.config_id, "tool": "itops_config_inspect", "message": message,
             "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
 
 

@@ -72,6 +72,13 @@ class SystemdTarget:
 
 
 @dataclass(frozen=True)
+class ConfigTarget:
+    """Typed target for a target_kind='config_file' scope. ``config_id`` resolves to
+    the server-owned path/format/projection; paths never enter the scope or model args."""
+    config_id: str
+
+
+@dataclass(frozen=True)
 class ScopeView:
     """Immutable snapshot handed to the executor gate (never the live dict)."""
     run_id: str
@@ -84,11 +91,13 @@ class ScopeView:
     # tool is never auto-runnable from an old scope.
     allowed_tool: str
     # Discriminated target. "ssh_profile" → profile_id; "network" → network;
-    # "systemd_service" → profile_id (principal) + systemd.unit.
+    # "systemd_service" → profile_id (principal) + systemd.unit;
+    # "config_file" → profile_id (principal) + config.config_id.
     target_kind: str = "ssh_profile"
     profile_id: str = ""
     network: NetworkTarget | None = None
     systemd: SystemdTarget | None = None
+    config: ConfigTarget | None = None
 
 
 def _norm(run_id: str) -> str:
@@ -115,6 +124,7 @@ def bind_scope(run_id: str, profile_id: str, *, allowed_tool: str,
             "profile_id": pid,
             "network": None,
             "systemd": None,
+            "config": None,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -141,6 +151,7 @@ def bind_scope_network(run_id: str, *, cidr: str, port_profile: str, allowed_too
             "profile_id": "",
             "network": {"cidr": c, "port_profile": pp},
             "systemd": None,
+            "config": None,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -168,6 +179,32 @@ def bind_scope_systemd(run_id: str, *, profile_id: str, unit: str, allowed_tool:
             "profile_id": pid,
             "network": None,
             "systemd": {"unit": u},
+            "config": None,
+            "mode": str(mode),
+            "expires_at": time.time() + float(ttl_seconds),
+            "operation_used": False,
+            "allowed_tool": tool,
+        }
+        return _view(rid)
+
+
+def bind_scope_config(run_id: str, *, profile_id: str, config_id: str, allowed_tool: str,
+                      mode: str = "read_only", ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
+    """Bind one enabled SSH profile to one server-owned configuration target."""
+    rid = _norm(run_id)
+    pid = str(profile_id or "").strip()
+    cid = str(config_id or "").strip()
+    tool = str(allowed_tool or "").strip()
+    if not rid or not pid or not cid or not tool:
+        return None
+    with _LOCK:
+        _sweep_locked()
+        _SCOPES[rid] = {
+            "target_kind": "config_file",
+            "profile_id": pid,
+            "network": None,
+            "systemd": None,
+            "config": {"config_id": cid},
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -213,12 +250,14 @@ def _view(rid: str) -> ScopeView | None:
         return None
     net = s.get("network")
     sysd = s.get("systemd")
+    cfg = s.get("config")
     return ScopeView(
         run_id=rid, mode=s["mode"], expires_at=s["expires_at"],
         operation_used=s["operation_used"], allowed_tool=s["allowed_tool"],
         target_kind=s.get("target_kind", "ssh_profile"), profile_id=s.get("profile_id", ""),
         network=NetworkTarget(net["cidr"], net["port_profile"]) if net else None,
-        systemd=SystemdTarget(sysd["unit"]) if sysd else None)
+        systemd=SystemdTarget(sysd["unit"]) if sysd else None,
+        config=ConfigTarget(cfg["config_id"]) if cfg else None)
 
 
 def get_active_scope(run_id: str) -> ScopeView | None:

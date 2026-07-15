@@ -317,6 +317,29 @@ def execute_tool(
                     error="profile_not_enabled",
                 )
             _authoritative_args = {}
+        elif _scope.target_kind == "config_file":
+            # A config inspect takes NO args. The enabled profile and named config target
+            # come only from the server-bound scope; paths/keys/values are never model input.
+            if request.args:
+                _emit_blocked(request, "config adapter takes no args")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "This adapter takes no arguments; the target comes "
+                            "only from the bound scope — blocked (fail-closed).",
+                            "error": "scope_args_forbidden"},
+                    error="scope_args_forbidden",
+                )
+            _pid = str(_scope.profile_id or "").strip()
+            if _scope.config is None or not _pid or not _itops_profile_enabled(_pid):
+                _emit_blocked(request, "operation scope target is not an enabled config asset")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "The bound profile/config target is unavailable "
+                            "or not verified/enabled — blocked (fail-closed).",
+                            "error": "profile_not_enabled"},
+                    error="profile_not_enabled",
+                )
+            _authoritative_args = {}
         else:
             _emit_blocked(request, f"unknown scope target_kind: {_scope.target_kind}")
             return ToolExecutionResult(

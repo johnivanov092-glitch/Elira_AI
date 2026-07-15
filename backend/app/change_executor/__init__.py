@@ -1,7 +1,8 @@
 """Elira IT-change privileged executor subsystem.
 
-This package is the *authority* for host-mutating IT operations (v1: a single
-`systemctl restart netdata.service`). It is designed to run as a SEPARATE OS
+This package is the *authority* for the currently named host mutations: a fixed
+`systemctl restart netdata.service` and one typed Netdata config change with rollback.
+It is designed to run as a SEPARATE OS
 principal (`elira-change-exec`) from the main Elira backend — the account under
 which the model's `run_bash` and the code-agent execute.
 

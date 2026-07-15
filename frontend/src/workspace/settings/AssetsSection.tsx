@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, ChevronRight, Cog, Fingerprint, History, ListChecks, Loader2, Power, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, ChevronRight, Cog, FileCog, Fingerprint, History, ListChecks, Loader2, Power, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
@@ -18,6 +18,7 @@ import {
   sshEnroll,
   sshPreview,
   startChangePlan,
+  startConfigInspect,
   getChangeStatus,
   type ChangeStatusResp,
   startDiagnostics,
@@ -92,6 +93,7 @@ function AssetsSurface({ project }: { project: string }) {
         <AssetsList assets={assets} onReload={reload} project={project} />
         <NetworkScanBlock project={project} />
         <SystemdInspectBlock assets={assets} project={project} />
+        <ConfigInspectBlock assets={assets} project={project} />
         <ChangeBlock />
         <EvidenceHistory assets={assets} />
       </div>
@@ -665,29 +667,126 @@ function SystemdInspectBlock({ assets, project }: { assets: ItopsAsset[] | null;
   );
 }
 
-// Change vertical (v1): plan a `systemctl restart netdata.service` via the privileged
-// executor and poll its capped status. Approval is OUT-OF-BAND in the executor's Telegram
-// bot — neither the model nor this UI can approve or apply.
+function ConfigInspectBlock({ assets, project }: { assets: ItopsAsset[] | null; project: string }) {
+  const linuxProfiles = (assets ?? [])
+    .filter((a) => a.kind === "linux" && a.lifecycle_state === "enabled")
+    .flatMap((a) => a.profiles.map((p) => ({ profile_id: p.profile_id, label: `${a.label} · ${p.profile_id}` })));
+  const [profileId, setProfileId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<{ text: string; err: string } | null>(null);
+  const chosen = profileId || (linuxProfiles[0]?.profile_id ?? "");
+
+  async function inspect() {
+    if (!chosen || busy) return;
+    setBusy(true);
+    setOut(null);
+    try {
+      const s = await startConfigInspect(chosen);
+      let toolOut = "";
+      let finalText = "";
+      let streamError = "";
+      await streamCodeAgent({
+        message: s.message,
+        projectRoot: project,
+        runId: s.run_id,
+        maxSteps: 8,
+        onEvent: (ev) => {
+          if (ev.type === "tool_call" && ev.tool === "itops_config_inspect") toolOut = ev.result || toolOut;
+          else if (ev.type === "final_response") finalText = ev.text || finalText;
+        },
+        onError: (e) => {
+          streamError = e.message;
+          setOut({ text: "", err: streamError });
+        },
+      });
+      if (!streamError) setOut({ text: toolOut || finalText || "готово", err: "" });
+    } catch (e) {
+      setOut({ text: "", err: errText(e, "Инспекция конфигурации не удалась") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
+        <FileCog size={13} /> Конфигурация (read-only inspect)
+      </div>
+      <Note>
+        Именованный target <span className="font-mono">netdata-main</span>. Сервер читает
+        фиксированный путь, возвращает hash/размер и только разрешённые типизированные поля.
+        Сырое содержимое и неизвестные значения не попадают в ответ или evidence.
+      </Note>
+      {linuxProfiles.length === 0 ? (
+        <div className="mt-2 rounded-lg border border-line px-3 py-2 text-[11.5px] text-mut">
+          Нет включённых Linux-подключений.
+        </div>
+      ) : (
+        <div className="mt-2 flex gap-2">
+          <select
+            value={chosen}
+            onChange={(e) => setProfileId(e.target.value)}
+            className="flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-tx outline-none focus:border-acl"
+          >
+            {linuxProfiles.map((p) => (
+              <option key={p.profile_id} value={p.profile_id}>{p.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => void inspect()}
+            disabled={busy || !chosen}
+            className={cn(
+              "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+              chosen && !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+            )}
+          >
+            {busy ? <Loader2 size={13} className="animate-spin" /> : <FileCog size={13} />} Инспектировать
+          </button>
+        </div>
+      )}
+      {out && (
+        <div className="mt-2">
+          {out.err ? (
+            <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{out.err}</div>
+          ) : (
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">{out.text}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Named privileged changes via the isolated executor. Approval is OUT-OF-BAND in the
+// executor's Telegram bot; neither the model nor this UI can approve or apply.
 const _CHANGE_TERMINAL = new Set([
   "applied", "command_failed", "postcheck_failed", "apply_unknown", "aborted_before_apply",
-  "rejected", "expired", "delivery_failed", "resolved_unknown",
+  "rolled_back", "rollback_failed", "rejected", "expired", "delivery_failed",
+  "resolved_unknown", "resolved_applied", "resolved_rolled_back",
 ]);
 
+const _CHANGE_TARGETS = [
+  { id: "ai-server-netdata", label: "Restart netdata", icon: Power },
+  { id: "ai-server-netdata-config", label: "Явно задать update every = 1", icon: FileCog },
+] as const;
+
 function ChangeBlock() {
-  const TARGET = "ai-server-netdata";
   const [busy, setBusy] = useState(false);
   const [changeId, setChangeId] = useState("");
+  const [targetId, setTargetId] = useState("");
   const [status, setStatus] = useState<ChangeStatusResp | null>(null);
   const [err, setErr] = useState("");
 
-  async function plan() {
+  async function plan(target: string) {
     if (busy) return;
     setBusy(true);
     setErr("");
     setStatus(null);
     setChangeId("");
+    setTargetId(target);
     try {
-      const r = await startChangePlan(TARGET);
+      const r = await startChangePlan(target);
       if (!r.ok || !r.change_run_id) {
         setErr(r.error ? `план отклонён: ${r.error}` : "план не создан");
         return;
@@ -728,25 +827,34 @@ function ChangeBlock() {
   return (
     <div>
       <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
-        <Power size={13} /> Изменение — restart (v1)
+        <Power size={13} /> Изменения с подтверждением
       </div>
       <Note>
-        Привилегированный executor планирует <span className="font-mono">systemctl restart netdata.service</span>,
-        делает snapshot и отправляет Telegram-кнопку. Подтверждение — <b>только в Telegram</b>;
-        ни модель, ни этот UI применить изменение не могут.
+        Привилегированный executor делает inspect и snapshot, затем отправляет Telegram-кнопку.
+        Подтверждение — <b>только в Telegram</b>. Для конфигурации доступны только заранее
+        определённые типизированные изменения с автоматическим rollback.
       </Note>
-      <div className="mt-2">
-        <button
-          type="button"
-          onClick={() => void plan()}
-          disabled={busy}
-          className={cn(
-            "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
-            !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
-          )}
-        >
-          {busy ? <Loader2 size={13} className="animate-spin" /> : <Power size={13} />} Подготовить restart netdata
-        </button>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {_CHANGE_TARGETS.map((target) => {
+          const Icon = target.icon;
+          return (
+            <button
+              key={target.id}
+              type="button"
+              onClick={() => void plan(target.id)}
+              disabled={busy}
+              className={cn(
+                "flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+                !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+              )}
+            >
+              {busy && targetId === target.id
+                ? <Loader2 size={13} className="animate-spin" />
+                : <Icon size={13} />}
+              {target.label}
+            </button>
+          );
+        })}
       </div>
       {err && (
         <div className="mt-2 rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{err}</div>
@@ -756,6 +864,7 @@ function ChangeBlock() {
           <div>
             <span className="text-mut">change:</span> <span className="font-mono">{changeId}</span> — <b>{st}</b>
           </div>
+          <div className="mt-1"><span className="text-mut">target:</span> {targetId}</div>
           {awaiting && (
             <div className="mt-1 text-mut">Ожидает подтверждения в Telegram (Approve / Reject).</div>
           )}

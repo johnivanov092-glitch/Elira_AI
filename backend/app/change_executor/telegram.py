@@ -52,6 +52,18 @@ def _tg(token: str, method: str, payload: dict, timeout: int = 15) -> dict:
 
 
 def _format_plan(change_run_id: str, target_id: str, snapshot: dict) -> str:
+    if snapshot.get("kind") == "netdata_config":
+        service = snapshot.get("service") if isinstance(snapshot.get("service"), dict) else {}
+        current = snapshot.get("safe_settings") if isinstance(snapshot.get("safe_settings"), dict) else {}
+        before = current.get("global.update_every", "built-in default")
+        return ("IT config change — approval required\n"
+                f"target: {target_id}\n"
+                f"config: {snapshot.get('config_id')}\n"
+                f"setting: global.update_every: {before} -> 1\n"
+                f"service: {service.get('id')} "
+                f"{service.get('active_state')}/{service.get('sub_state')}\n"
+                "rollback: automatic on definite post-check failure\n"
+                f"change: {change_run_id}")
     return ("IT change — approval required\n"
             f"target: {target_id}\n"
             f"unit: {snapshot.get('id')}\n"

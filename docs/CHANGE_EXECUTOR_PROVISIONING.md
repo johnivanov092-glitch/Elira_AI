@@ -1,9 +1,10 @@
-# Change Executor — Provisioning DoD (v1: `systemctl restart netdata.service`)
+# Change Executor — Provisioning DoD (v2: restart + typed Netdata config)
 
-The change-executor code is **frozen and accepted** (`8cf8c18` + `6f9a3d9`; identity/owner
-hardening in the correction batch). This runbook is the *provisioning* Definition of Done: the
-out-of-band host/OS work that must precede the two live smokes, and which `preflight`
-**verifies fail-closed** at every startup.
+The original restart executor was accepted at `8cf8c18` + `6f9a3d9` (with later
+identity/owner hardening). The v2 typed-config extension must be committed and reviewed before
+building its release artifact. This runbook is the *provisioning* Definition of Done: the
+out-of-band host/OS work that must precede any live smoke, and which `preflight` **verifies
+fail-closed** at every startup.
 
 Guiding principle (John): *provisioning must be **verified**, not merely documented.* Every item
 is tagged `[preflight]` (the executor refuses to start otherwise) or `[out-of-band]` (only you
@@ -56,7 +57,7 @@ repo and kept **outside** any writable checkout.
 **and the provisioner itself**, all hashed into `MANIFEST.sha256`.
 
 ```powershell
-python scripts\provision_change_executor.py build --out C:\elira-artifacts\change-exec-v1
+python scripts\provision_change_executor.py build --out C:\elira-artifacts\change-exec-v2
 #  -> prints "MANIFEST sha256: <digest>" and "provision_change_executor.py sha256: <phash>".
 ```
 
@@ -76,7 +77,7 @@ to a trusted root** must be owned by and writable only by `elira-change-exec`/SY
 principal: **no write and no delete-child** — from the moment it is placed:
 
 ```powershell
-$art = "C:\elira-artifacts\change-exec-v1"
+$art = "C:\elira-artifacts\change-exec-v2"
 foreach ($d in @("C:\elira-artifacts", $art)) {   # the dedicated parent AND the artifact
   # /setowner /T (and any icacls) can PARTIALLY fail (locked/in-use files) and print "Failed
   # processing N files" — check $LASTEXITCODE or a file could keep a main-user owner.
@@ -263,13 +264,37 @@ On the ai-server (192.168.88.15):
 ```bash
 sudo adduser --disabled-password --gecos "" elira-change
 # install id_elira_change.pub into /home/elira-change/.ssh/authorized_keys (mode 600)
-sudo visudo -f /etc/sudoers.d/elira-change      # EXACTLY one rule, no wildcards:
+sudo visudo -f /etc/sudoers.d/elira-change      # exactly these command paths:
 #   elira-change ALL=(root) NOPASSWD: /usr/bin/systemctl restart netdata.service
+#   elira-change ALL=(root) NOPASSWD: /usr/local/sbin/elira-netdata-config
 sudo visudo -c
 ```
 
 The apply argv is the fixed absolute `sudo -n /usr/bin/systemctl restart netdata.service`; the
-rule must match exactly and grant nothing wider. Invisible to preflight. `[out-of-band]`
+first rule must match exactly. The second executable accepts arguments, but its root-owned code
+allows only `inspect` or the fixed `apply --run-id <server-id> --before-sha256 <hash>
+--after-sha256 <hash>` protocol; it accepts no path/key/value/unit/command. Invisible to
+preflight. `[out-of-band]`
+
+Install the helper **from the same verified release artifact** and pin its exact hash in the
+executor-owned `ai-server-netdata-config` registry entry:
+
+```bash
+sudo install -o root -g root -m 0755 \
+  remote_netdata_config.py /usr/local/sbin/elira-netdata-config
+sha256sum /usr/local/sbin/elira-netdata-config
+sudo chown root:root /usr/local/sbin /usr/local/sbin/elira-netdata-config
+sudo chmod 0755 /usr/local/sbin /usr/local/sbin/elira-netdata-config
+sudo install -d -o root -g root -m 0700 /var/lib/elira-change/netdata
+sudo install -o root -g root -m 0600 /dev/null /var/lib/elira-change/netdata/.lock
+```
+
+The reported hash must equal `helper_sha256` in protected `registry.json`. Verify that neither
+`elira-change` nor the main runtime can write/delete the helper or `/usr/local/sbin`; root/admin
+remains TCB. The helper owns only `/etc/netdata/netdata.conf`, `netdata.service`, and its
+root-only `/var/lib/elira-change/netdata` snapshots/journal. It preserves unrelated config bytes,
+uses a before-hash CAS + atomic replace, and automatically restores the exact snapshot on a
+definite restart/post-check failure. Transport loss is recorded as `apply_unknown`, never guessed.
 
 ---
 
@@ -329,16 +354,20 @@ code only from a **hash-verified release artifact** — bundling the provisioner
 
 ---
 
-## 10. The two live smokes — after a green preflight  `[you: trigger]`
+## 10. Live smokes — after a green preflight  `[you: trigger]`
 
-Only two host-touching runs are authorized, both human-triggered (the model/UI can never approve
-or apply):
+Each host-touching run is human-triggered (the model/UI can never approve or apply):
 
 1. **Reject smoke.** UI → plan a netdata restart → Telegram **Reject**. Expect ChangeRun
    `rejected`; the host **untouched**; `GET /change/{id}/status` shows the capped status.
 2. **Restart smoke.** UI → plan again → Telegram **Approve**. Expect `applied`; on the host,
    `netdata.service` is `active/running` with a **changed MainPID**; the evidence shows the
    pre/post inspect.
+3. **Typed config smoke (only after helper provisioning + a fresh review).** Plan
+   `ai-server-netdata-config` → Telegram **Approve**. Expect a before-hash-CAS, exact snapshot,
+   explicit `[global] update every = 1`, restart + healthy changed MainPID, status `applied`, and
+   no raw config in Telegram/IPC/evidence. Do not manufacture a live failure to test rollback;
+   `rolled_back`/`rollback_failed` stay deterministic fake-transport/helper tests.
 
 Failure / unknown / drift paths are **test-only** (fake transport, never the real host). After the
 smokes, return `itops` to OFF unless deliberately keeping the feature enabled.

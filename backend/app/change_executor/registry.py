@@ -7,9 +7,10 @@ the main Elira user cannot write. Nothing here comes from the main it_ops store 
 the IPC caller: a tampered profile/alias in the main DB can never redirect a change,
 because the caller supplies only a `target_id` label.
 
-v1 is deliberately tiny: exactly one operation (`restart`) on `.service` units, with the
-apply argv fixed to the absolute systemctl path that the host's narrow sudoers rule
-authorizes.
+The registry supports two deliberately narrow target kinds:
+* `systemd_restart` — one fixed restart of a `.service` unit;
+* `netdata_config` — one fixed typed change (`[global] update every = 1`) applied by the
+  root-owned remote helper whose content hash is pinned here.
 """
 from __future__ import annotations
 
@@ -19,7 +20,14 @@ from dataclasses import dataclass
 
 from ._frozen import unit_name_ok
 
-_ALLOWED_OPERATIONS = ("restart",)     # v1: exactly one
+SYSTEMD_RESTART = "systemd_restart"
+NETDATA_CONFIG = "netdata_config"
+
+_RESTART_OPERATION = "restart"
+_NETDATA_OPERATION = "set_update_every_1"
+_NETDATA_UNIT = "netdata.service"
+_NETDATA_CONFIG_ID = "netdata-main"
+_NETDATA_HELPER_PATH = "/usr/local/sbin/elira-netdata-config"
 
 
 class RegistryError(RuntimeError):
@@ -34,8 +42,12 @@ class Target:
     remote_user: str
     known_hosts: str      # executor-owned path, pinned into StrictHostKeyChecking=yes
     identity_file: str    # executor-owned change key (ACL-denied to the main user)
+    target_kind: str
     unit: str
     operation: str
+    config_id: str = ""
+    helper_path: str = ""
+    helper_sha256: str = ""
 
 
 def _validate(target_id: str, raw: dict) -> Target:
@@ -45,6 +57,7 @@ def _validate(target_id: str, raw: dict) -> Target:
     remote_user = str(raw.get("remote_user") or "").strip()
     known_hosts = str(raw.get("known_hosts") or "").strip()
     identity_file = str(raw.get("identity_file") or "").strip()
+    target_kind = str(raw.get("target_kind") or SYSTEMD_RESTART).strip()
     unit = str(raw.get("unit") or "").strip()
     operation = str(raw.get("operation") or "").strip()
     try:
@@ -55,12 +68,30 @@ def _validate(target_id: str, raw: dict) -> Target:
         raise RegistryError(f"target {target_id!r}: host/remote_user/known_hosts/identity_file required")
     if not (0 < port < 65536):
         raise RegistryError(f"target {target_id!r}: port out of range")
+    if target_kind not in (SYSTEMD_RESTART, NETDATA_CONFIG):
+        raise RegistryError(f"target {target_id!r}: unsupported target_kind {target_kind!r}")
     if not unit_name_ok(unit):
         raise RegistryError(f"target {target_id!r}: invalid unit {unit!r}")
-    if operation not in _ALLOWED_OPERATIONS:
-        raise RegistryError(f"target {target_id!r}: operation {operation!r} not allowed (v1: {_ALLOWED_OPERATIONS})")
+    if target_kind == SYSTEMD_RESTART:
+        if operation != _RESTART_OPERATION:
+            raise RegistryError(f"target {target_id!r}: systemd operation must be {_RESTART_OPERATION!r}")
+        config_id = helper_path = helper_sha256 = ""
+    else:
+        config_id = str(raw.get("config_id") or "").strip()
+        helper_path = str(raw.get("helper_path") or "").strip()
+        helper_sha256 = str(raw.get("helper_sha256") or "").strip().lower()
+        if unit != _NETDATA_UNIT or operation != _NETDATA_OPERATION:
+            raise RegistryError(
+                f"target {target_id!r}: netdata config target must bind the fixed unit/operation")
+        if config_id != _NETDATA_CONFIG_ID or helper_path != _NETDATA_HELPER_PATH:
+            raise RegistryError(
+                f"target {target_id!r}: netdata config id/helper path do not match the fixed contract")
+        if len(helper_sha256) != 64 or any(c not in "0123456789abcdef" for c in helper_sha256):
+            raise RegistryError(f"target {target_id!r}: helper_sha256 must be 64 lowercase hex chars")
     return Target(target_id=target_id, host=host, port=port, remote_user=remote_user,
-                  known_hosts=known_hosts, identity_file=identity_file, unit=unit, operation=operation)
+                  known_hosts=known_hosts, identity_file=identity_file, target_kind=target_kind,
+                  unit=unit, operation=operation, config_id=config_id,
+                  helper_path=helper_path, helper_sha256=helper_sha256)
 
 
 def load_registry(path: str | None = None) -> dict[str, Target]:

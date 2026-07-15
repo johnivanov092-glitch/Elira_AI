@@ -12,8 +12,9 @@ Drives the store CAS transitions from real (or, in tests, fake) SSH results:
     SSH timeout / exit 255 / an INDEFINITE post-inspect             → apply_unknown;
 - resolve: a fresh inspect handed to the store's fresh-inspect-gated resolution.
 
-No automatic recovery restart; `rolled_back` never exists. `runner`/`sleep`/`gen_token`/
-`clock` are injectable so every path is deterministic without a host.
+The config target delegates its bounded file transaction and one compensating rollback
+to the pinned root helper. `runner`/`sleep`/`gen_token`/`clock` are injectable so every
+path is deterministic without a host.
 """
 from __future__ import annotations
 
@@ -24,12 +25,12 @@ import subprocess
 import time
 from typing import Any, Callable
 
-from . import registry, transport
+from . import config_change, registry, transport
 from . import store as cs
 from ._frozen import decode_console, parse_show_output
 
 CAPABILITY_TTL = 300.0        # approval window: a stale plan can't be approved against drift
-APPLY_DEADLINE_SECONDS = 90.0  # the `applying` deadline (>> restart + post-check budget)
+APPLY_DEADLINE_SECONDS = 360.0  # covers config apply + bounded verify/rollback + transport margin
 POSTCHECK_ATTEMPTS = 6
 POSTCHECK_INTERVAL = 2.0
 
@@ -91,6 +92,8 @@ def plan(target_id: str, *, registry_path: str | None = None, runner: Runner = t
     gen_token = gen_token or (lambda: secrets.token_urlsafe(12))
     clock = clock or time.time
     target = registry.resolve(target_id, path=registry_path)
+    if target.target_kind == registry.NETDATA_CONFIG:
+        return _plan_config(target, runner=runner, gen_token=gen_token, clock=clock)
     definite, _exit, fields = _inspect(target, runner)
     if not definite or not _precondition_ok(fields):
         raise PreconditionError(
@@ -112,6 +115,33 @@ def plan(target_id: str, *, registry_path: str | None = None, runner: Runner = t
             "approve_token": approve_token, "reject_token": reject_token}
 
 
+def _plan_config(target: "registry.Target", *, runner: Runner,
+                 gen_token: Callable[[], str], clock: Callable[[], float]) -> dict[str, Any]:
+    definite, _exit, snapshot = config_change.inspect(target, runner)
+    if (not definite or snapshot.get("before_sha256") == snapshot.get("planned_sha256")
+            or not config_change.healthy(snapshot.get("service") or {}, target.unit)):
+        raise PreconditionError(
+            f"target {target.target_id!r} is not in a plannable config state")
+    change_run_id = cs.new_change_run_id()
+    planned_argv = transport.config_apply_argv(
+        target, change_run_id=change_run_id,
+        before_sha256=snapshot["before_sha256"], after_sha256=snapshot["planned_sha256"])
+    planned_argv_hash = _sha(" ".join(planned_argv))
+    snapshot_hash = _sha(_canonical(snapshot))
+    planned_binding = _canonical(transport.target_binding(target))
+    approve_token, reject_token = gen_token(), gen_token()
+    cs.create_plan_with_capabilities(
+        change_run_id=change_run_id, target_id=target.target_id, unit=target.unit,
+        operation=target.operation, snapshot=_canonical(snapshot),
+        snapshot_main_pid=int(snapshot["service"]["main_pid"]), snapshot_hash=snapshot_hash,
+        planned_argv_hash=planned_argv_hash, planned_binding=planned_binding,
+        approve_hash=_sha(approve_token), reject_hash=_sha(reject_token),
+        capability_expires_at=clock() + CAPABILITY_TTL)
+    return {"change_run_id": change_run_id, "snapshot": snapshot,
+            "planned_argv": planned_argv, "approve_token": approve_token,
+            "reject_token": reject_token}
+
+
 def apply(change_run_id: str, *, registry_path: str | None = None, runner: Runner = transport.run,
           sleep: Callable[[float], None] = time.sleep) -> str:
     """Apply an already-approved (state `applying`) change and drive it to a terminal state.
@@ -127,9 +157,13 @@ def apply(change_run_id: str, *, registry_path: str | None = None, runner: Runne
     # (host/port/user/unit/op + known_hosts CONTENT hash) must equal the one captured at
     # plan; any drift (registry edited, host-key pin swapped) → aborted, no SSH.
     if not _binding_matches(cr, target):
-        _evi(change_run_id, cr["target_id"], "systemd_change:aborted_before_apply",
+        prefix = "config_change" if target.target_kind == registry.NETDATA_CONFIG else "systemd_change"
+        _evi(change_run_id, cr["target_id"], f"{prefix}:aborted_before_apply",
              {"reason": "target binding drift since plan"}, "")
         return _final(change_run_id, token, "aborted_before_apply", "target binding drift since plan")
+
+    if target.target_kind == registry.NETDATA_CONFIG:
+        return _apply_config(cr, target, runner=runner)
 
     # 1) pre-apply drift check — must still be the SAME MainPID identity from the plan.
     definite, exit_status, fields = _inspect(target, runner)
@@ -189,10 +223,17 @@ def resolve(change_run_id: str, *, resolver: str, registry_path: str | None = No
     """Perform the fresh server-side inspect for a locked `apply_unknown` and hand the
     STRUCTURED fields to the store's fresh-inspect-gated resolution."""
     cr = cs.get_change_run(change_run_id)
-    if cr is None or cr["change_run_status"] != "apply_unknown":
+    if cr is None or cr["change_run_status"] not in ("apply_unknown", "rollback_failed"):
         return False
     target = registry.resolve(cr["target_id"], path=registry_path)
     if not _binding_matches(cr, target):    # binding drift → no SSH, stays locked
+        return False
+    if target.target_kind == registry.NETDATA_CONFIG:
+        _definite, exit_status, fields = config_change.inspect(target, runner)
+        return cs.resolve_config_after_inspect(
+            change_run_id=change_run_id, resolver=resolver,
+            inspect_fields=fields, inspect_exit_status=exit_status)
+    if cr["change_run_status"] != "apply_unknown":
         return False
     _definite, exit_status, fields = _inspect(target, runner)
     return cs.resolve_after_inspect(change_run_id=change_run_id, resolver=resolver,
@@ -207,6 +248,43 @@ def _final(change_run_id: str, token: str, status: str, verdict: str) -> str:
         return status
     cr = cs.get_change_run(change_run_id)
     return cr["change_run_status"] if cr else status
+
+
+def _apply_config(cr: dict[str, Any], target: "registry.Target", *, runner: Runner) -> str:
+    change_run_id = cr["change_run_id"]
+    token = cr["attempt_token"]
+    try:
+        snapshot = json.loads(cr.get("snapshot") or "{}")
+    except (ValueError, TypeError):
+        snapshot = {}
+    definite, exit_status, current = config_change.inspect(target, runner)
+    same_plan = (definite and current.get("before_sha256") == snapshot.get("before_sha256")
+                 and current.get("planned_sha256") == snapshot.get("planned_sha256")
+                 and current.get("helper_sha256") == snapshot.get("helper_sha256")
+                 and int((current.get("service") or {}).get("main_pid") or -1)
+                 == int(cr.get("snapshot_main_pid") or -2))
+    if not same_plan:
+        _evi(change_run_id, cr["target_id"], "config_change:aborted_before_apply",
+             {"reason": "pre-apply config/service drift", "definite": definite}, exit_status)
+        return _final(change_run_id, token, "aborted_before_apply",
+                      "pre-apply config/service drift")
+    status, apply_exit, evidence = config_change.apply(
+        target, change_run_id=change_run_id,
+        before_sha256=snapshot["before_sha256"],
+        after_sha256=snapshot["planned_sha256"],
+        before_main_pid=int(snapshot["service"]["main_pid"]), runner=runner)
+    _evi(change_run_id, cr["target_id"], "config_change:apply", evidence, apply_exit)
+    if status == "apply_unknown":
+        return _mark_unknown(change_run_id, token,
+                             f"config apply outcome unknown: {evidence.get('outcome', 'unknown')}")
+    verdicts = {
+        "applied": "typed config applied; service healthy",
+        "rolled_back": "post-check failed; original config restored and service healthy",
+        "rollback_failed": "automatic rollback failed; target remains locked",
+        "aborted_before_apply": "remote helper rejected drift before write",
+        "command_failed": "remote helper failed before a confirmed apply",
+    }
+    return _final(change_run_id, token, status, verdicts.get(status, status))
 
 
 def _mark_unknown(change_run_id: str, token: str, verdict: str) -> str:

@@ -28,6 +28,7 @@ INV = "itops_linux_inventory"
 WIN = "itops_windows_inventory"
 NET = "itops_network_inventory"
 SYSD = "itops_systemd_service_inspect"
+CFG = "itops_config_inspect"
 
 
 def _fake_proc(out=b"", err=b"", code=0):
@@ -230,6 +231,32 @@ class ScopedGateTest(unittest.TestCase):
         res2, _ = self._exec(SYSD, {})
         self.assertEqual(res2.error, "scope_restricted")
 
+    # ── Phase 5: typed config_file scope ───────────────────────────────────────
+    def test_config_scope_allows_only_config_inspect(self):
+        opscope.bind_scope_config(self.rid, profile_id="prof-ok", config_id="netdata-main",
+                                  allowed_tool=CFG)
+        ok, calls = self._exec(CFG, {})
+        self.assertEqual(ok.status, "ok", ok.output)
+        self.assertEqual(calls, [(CFG, {})])
+        for other in (HEALTH, INV, SYSD, NET, "run_bash", "ssh_run", "itops_dummy_ro"):
+            res, c = self._exec(other, {"profile_id": "prof-ok", "path": "/etc/shadow"})
+            self.assertEqual(res.error, "scope_restricted", other)
+            self.assertEqual(c, [])
+
+    def test_config_tool_rejects_any_model_arg(self):
+        opscope.bind_scope_config(self.rid, profile_id="prof-ok", config_id="netdata-main",
+                                  allowed_tool=CFG)
+        res, calls = self._exec(CFG, {"path": "/etc/shadow"})
+        self.assertEqual(res.error, "scope_args_forbidden")
+        self.assertEqual(calls, [])
+
+    def test_config_scope_requires_enabled_profile(self):
+        opscope.bind_scope_config(self.rid, profile_id="prof-draft", config_id="netdata-main",
+                                  allowed_tool=CFG)
+        res, calls = self._exec(CFG, {})
+        self.assertEqual(res.error, "profile_not_enabled")
+        self.assertEqual(calls, [])
+
     def test_healthcheck_scope_allows_only_healthcheck(self):
         self._bind(HEALTH)
         res, c = self._exec(INV, {"profile_id": "prof-ok"})      # inventory blocked in a health scope
@@ -296,16 +323,18 @@ class ScopedGateTest(unittest.TestCase):
         from app.application import feature_flags as ff
         rid = "search-run-1"
         enable_deferred_tools(rid, ())
-        q = "itops ssh linux inventory health check diagnostic hostname uname"
+        q = "itops ssh linux inventory health check diagnostic hostname uname config inspect"
         try:
             with unittest.mock.patch.object(ff, "flag_enabled", side_effect=lambda n: n != "itops"):
                 off = [m.get("name") for m in tool_search(run_id=rid, query=q).get("matches", [])]
             self.assertNotIn(HEALTH, off)
             self.assertNotIn(INV, off)
+            self.assertNotIn(CFG, off)
             with unittest.mock.patch.object(ff, "flag_enabled", side_effect=lambda n: True):
                 on = [m.get("name") for m in tool_search(run_id=rid, query=q).get("matches", [])]
             self.assertIn(HEALTH, on)
             self.assertIn(INV, on)
+            self.assertIn(CFG, on)
         finally:
             clear_run(rid)
 

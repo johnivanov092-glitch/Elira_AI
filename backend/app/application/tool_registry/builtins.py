@@ -697,6 +697,16 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 120, "max_output_chars": 14000,
         },
+        {
+            "name": "itops_config_inspect", "handler": _noop,
+            "display_name": "IT-Ops Config Inspect", "display_name_ru": "Инспекция конфигурации",
+            "category": "itops",
+            "description": "Read-only typed inspection of a server-owned config target (no args, no raw content)",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 60, "max_output_chars": 6000,
+        },
     ]
 
 

@@ -29,6 +29,7 @@ _CAP = 200
 # get_status evidence projection — safe systemd status fields only. NO FragmentPath (a
 # path), NO stderr / raw output.
 _STATUS_RESULT_SCALARS = ("outcome", "verdict", "reason")
+_STATUS_CONFIG_SCALARS = ("config_id", "before_sha256", "after_sha256")
 _STATUS_FIELD_KEYS = ("id", "load_state", "active_state", "sub_state", "unit_file_state",
                       "main_pid", "exec_main_status", "n_restarts")
 
@@ -104,6 +105,12 @@ def _project_evidence_result(raw_json: str) -> dict[str, Any]:
         v = d.get(k)
         if isinstance(v, str):
             out[k] = v[:_CAP]
+    for k in _STATUS_CONFIG_SCALARS:
+        v = d.get(k)
+        if isinstance(v, str):
+            out[k] = v[:_CAP]
+    if isinstance(d.get("rollback_attempted"), bool):
+        out["rollback_attempted"] = d["rollback_attempted"]
     fields = d.get("fields")
     if isinstance(fields, dict):
         out["fields"] = {k: fields[k] for k in _STATUS_FIELD_KEYS

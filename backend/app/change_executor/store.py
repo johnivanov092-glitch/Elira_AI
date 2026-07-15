@@ -1,13 +1,13 @@
-"""Executor-private change store (v1).
+"""Executor-private change store (v2).
 
 A SEPARATE SQLite database owned exclusively by the `elira-change-exec` principal —
 the main Elira user gets no ACL on it. It holds the ChangeRun state machine, the
 hashed one-time approval capabilities, and typed change evidence. Nothing in the main
 it_ops store is trusted or referenced.
 
-Migration is explicit and fail-closed (mirrors the it_ops store): create canonical v1
-+ verify EXACT v1 (columns, NOT NULLs, PKs, AND the partial unique index) + stamp; v1 →
-verify only; v>1 → fail-closed. Any mismatch → ChangeStoreUnavailable, version untouched.
+Migration is explicit and fail-closed. v2 adds no columns; it expands the DB-enforced
+active-target predicate so `rollback_failed` remains locking until a typed resolution.
+v1 is verified exactly before that index-only migration; v2 is verify-only.
 
 Concurrency-critical transitions are CAS (compare-and-swap on `change_run_status`):
 - capability consume + `pending_approval → applying` happen in ONE transaction, so a
@@ -30,12 +30,13 @@ from typing import Any
 
 from ._frozen import connect_sqlite
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 # States in which a target is considered ACTIVE — the partial unique index makes at most
 # ONE change_run per target_id occupy this set (a second plan → 409). apply_unknown is a
 # LOCKING state: it stays active until a manual, freshly-inspected resolution.
-_ACTIVE_STATES = ("pending_approval", "applying", "apply_unknown")
+_V1_ACTIVE_STATES = ("pending_approval", "applying", "apply_unknown")
+_ACTIVE_STATES = (*_V1_ACTIVE_STATES, "rollback_failed")
 _INDEX_NAME = "uq_change_active_target"
 # One source of truth for the index predicate → both the CREATE and the exact
 # verification are built from it, so a tampered/weakened predicate (e.g. an extra
@@ -44,6 +45,12 @@ _INDEX_NAME = "uq_change_active_target"
 _INDEX_PREDICATE = "change_run_status IN (" + ", ".join(f"'{s}'" for s in _ACTIVE_STATES) + ")"
 _EXPECTED_INDEX_DDL = (
     f"CREATE UNIQUE INDEX {_INDEX_NAME} ON change_runs(target_id) WHERE {_INDEX_PREDICATE}"
+)
+_V1_INDEX_PREDICATE = (
+    "change_run_status IN (" + ", ".join(f"'{s}'" for s in _V1_ACTIVE_STATES) + ")"
+)
+_V1_EXPECTED_INDEX_DDL = (
+    f"CREATE UNIQUE INDEX {_INDEX_NAME} ON change_runs(target_id) WHERE {_V1_INDEX_PREDICATE}"
 )
 
 _CREATE_SQL = f"""
@@ -165,8 +172,8 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone() is not None
 
 
-def _verify_contract(conn: sqlite3.Connection) -> None:
-    """EXACT v1 structural contract: every table with its full column set + correct PK +
+def _verify_contract(conn: sqlite3.Connection, *, index_ddl: str = _EXPECTED_INDEX_DDL) -> None:
+    """Exact structural contract: every table with its full column set + correct PK +
     all required NOT NULLs, AND the partial unique index (unique, on target_id, with the
     exact active-state predicate). Any mismatch raises → caller → ChangeStoreUnavailable."""
     for table, cols in _EXPECTED_COLUMNS.items():
@@ -185,7 +192,7 @@ def _verify_contract(conn: sqlite3.Connection) -> None:
         for col in _REQUIRED_NOTNULL.get(table, set()):
             if col not in notnull_cols and col != _EXPECTED_PK[table]:
                 raise sqlite3.OperationalError(f"{table}: column {col!r} must be NOT NULL")
-    _verify_active_index(conn)
+    _verify_active_index(conn, expected_ddl=index_ddl)
 
 
 def _normalize_ddl(sql: str) -> str:
@@ -194,7 +201,7 @@ def _normalize_ddl(sql: str) -> str:
     return " ".join(str(sql or "").split()).lower().replace("if not exists ", "").strip()
 
 
-def _verify_active_index(conn: sqlite3.Connection) -> None:
+def _verify_active_index(conn: sqlite3.Connection, *, expected_ddl: str = _EXPECTED_INDEX_DDL) -> None:
     """The one-active-per-target invariant is DB-enforced, so the index is part of the
     structural contract. Verify the EXACT normalized DDL against the single-source-of-truth
     definition (not a substring/predicate scan) — a weakened predicate that still contains
@@ -209,16 +216,14 @@ def _verify_active_index(conn: sqlite3.Connection) -> None:
                  if r[1] == _INDEX_NAME), None)
     if meta is None or int(meta[2]) != 1:               # r[2] == unique flag
         raise sqlite3.OperationalError(f"index {_INDEX_NAME!r} is not UNIQUE")
-    if _normalize_ddl(row[0]) != _normalize_ddl(_EXPECTED_INDEX_DDL):
+    if _normalize_ddl(row[0]) != _normalize_ddl(expected_ddl):
         raise sqlite3.OperationalError(
             f"index {_INDEX_NAME!r} DDL does not match the contract: {row[0]!r}")
 
 
 def init_db() -> None:
-    """Fail-closed init: v0 with no change tables → create canonical v1, verify exact v1,
-    stamp 1; v0 with tables present → refuse (partial/unknown); v1 → verify only; v>1 →
-    fail-closed. Any sqlite failure / contract mismatch → ChangeStoreUnavailable, version
-    unchanged."""
+    """Fail-closed init: fresh v0 → canonical v2; partial v0 → refuse; exact v1 →
+    transactional index-only migration to v2; v2 → verify only; future → refuse."""
     conn = _connect()
     try:
         ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -236,6 +241,13 @@ def init_db() -> None:
             conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         elif ver == _SCHEMA_VERSION:
             _verify_contract(conn)                      # verify only, change nothing
+        elif ver == 1:
+            _verify_contract(conn, index_ddl=_V1_EXPECTED_INDEX_DDL)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"DROP INDEX {_INDEX_NAME}")
+            conn.execute(_EXPECTED_INDEX_DDL)
+            _verify_contract(conn)
+            conn.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
         else:
             raise ChangeStoreUnavailable(f"change store user_version={ver} has no known migration")
         conn.commit()
@@ -394,7 +406,8 @@ def finalize_apply(*, change_run_id: str, attempt_token: str, status: str,
     """Token-guarded terminal CAS from `applying`. Returns True iff this attempt won
     (state was still `applying` AND attempt_token matches). A late worker whose run was
     swept to `apply_unknown` matches 0 rows → cannot overwrite it."""
-    if status not in ("applied", "command_failed", "postcheck_failed", "aborted_before_apply"):
+    if status not in ("applied", "rolled_back", "rollback_failed", "command_failed",
+                      "postcheck_failed", "aborted_before_apply"):
         raise ValueError(f"invalid terminal status {status!r}")
     conn = _connect()
     try:
@@ -540,6 +553,107 @@ def resolve_after_inspect(*, change_run_id: str, resolver: str, inspect_fields: 
         except sqlite3.Error:
             pass
         raise ChangeStoreUnavailable(f"resolve_after_inspect failed: {exc}") from exc
+    finally:
+        conn.close()
+
+
+_CONFIG_RESOLUTION_OP = "config_change:resolution_inspect"
+
+
+def _validate_config_resolution(fields: Any, exit_status: Any) -> dict[str, Any] | None:
+    if str(exit_status) != "0" or not isinstance(fields, dict):
+        return None
+    if fields.get("kind") != "netdata_config" or fields.get("config_id") != "netdata-main":
+        return None
+    before = fields.get("before_sha256")
+    planned = fields.get("planned_sha256")
+    service = fields.get("service")
+    if (not isinstance(before, str) or len(before) != 64
+            or not isinstance(planned, str) or len(planned) != 64
+            or not isinstance(service, dict)):
+        return None
+    if any(c not in "0123456789abcdef" for c in before + planned):
+        return None
+    for key in ("id", "load_state", "active_state", "sub_state"):
+        if not isinstance(service.get(key), str) or not service[key].strip():
+            return None
+    pid = service.get("main_pid")
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        return None
+    return {"kind": "netdata_config", "config_id": "netdata-main",
+            "before_sha256": before, "planned_sha256": planned,
+            "service": {k: service[k] for k in
+                        ("id", "load_state", "active_state", "sub_state", "main_pid")}}
+
+
+def resolve_config_after_inspect(*, change_run_id: str, resolver: str,
+                                 inspect_fields: dict[str, Any],
+                                 inspect_exit_status: str) -> bool:
+    """Resolve a locking config `apply_unknown`/`rollback_failed` only from a fresh,
+    typed inspect of the bound config and unit. Current planned hash + healthy service →
+    `resolved_applied`; original hash + healthy service → `resolved_rolled_back`.
+    Anything else remains locked."""
+    projected = _validate_config_resolution(inspect_fields, inspect_exit_status)
+    if projected is None:
+        return False
+    conn = _connect()
+    try:
+        now = _now()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT target_id, unit, snapshot, snapshot_main_pid FROM change_runs WHERE change_run_id=? "
+            "AND change_run_status IN ('apply_unknown','rollback_failed')",
+            (change_run_id,)).fetchone()
+        if row is None:
+            conn.rollback()
+            return False
+        try:
+            snapshot = json.loads(row["snapshot"])
+        except (ValueError, TypeError):
+            conn.rollback()
+            return False
+        service = projected["service"]
+        if (snapshot.get("kind") != "netdata_config"
+                or snapshot.get("config_id") != projected["config_id"]
+                or service.get("id") != row["unit"]
+                or service.get("load_state") != "loaded"
+                or service.get("active_state") != "active"
+                or service.get("sub_state") != "running"
+                or int(service.get("main_pid") or 0) <= 0):
+            conn.rollback()
+            return False
+        current_sha = projected["before_sha256"]
+        if current_sha == snapshot.get("planned_sha256"):
+            if int(service.get("main_pid") or 0) == int(row["snapshot_main_pid"] or -1):
+                conn.rollback()
+                return False
+            final_status = "resolved_applied"
+        elif current_sha == snapshot.get("before_sha256"):
+            final_status = "resolved_rolled_back"
+        else:
+            conn.rollback()
+            return False
+        conn.execute(
+            """INSERT INTO change_evidence
+               (evidence_id, change_run_id, target_id, operation, result, exit_status, captured_at)
+               VALUES (?, ?, ?, ?, ?, '0', ?)""",
+            (f"cev-{uuid.uuid4().hex}", change_run_id, row["target_id"], _CONFIG_RESOLUTION_OP,
+             json.dumps(projected, ensure_ascii=False), now))
+        n = conn.execute(
+            """UPDATE change_runs SET change_run_status=?, approver=?, updated_at=?
+               WHERE change_run_id=? AND change_run_status IN ('apply_unknown','rollback_failed')""",
+            (final_status, resolver, now, change_run_id)).rowcount
+        if n != 1:
+            conn.rollback()
+            return False
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise ChangeStoreUnavailable(f"resolve_config_after_inspect failed: {exc}") from exc
     finally:
         conn.close()
 

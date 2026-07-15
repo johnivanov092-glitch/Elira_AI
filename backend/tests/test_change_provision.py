@@ -123,6 +123,31 @@ class CopyArtifactTest(unittest.TestCase):
         self.assertFalse((root / "change_executor" / prov._PROVISIONER).exists())
 
 
+class RegistryTemplateTest(unittest.TestCase):
+    def test_config_target_pins_artifact_helper_hash_and_fixed_contract(self):
+        root = Path(tempfile.mkdtemp())
+        helper_hash = "a" * 64
+        try:
+            path = prov._write_registry_template(
+                root, "192.168.88.15", 22, "elira-change", "other.service",
+                helper_hash, False)
+            import json
+            targets = json.loads(path.read_text(encoding="utf-8"))["targets"]
+            self.assertEqual(targets["ai-server-netdata"]["unit"], "other.service")
+            cfg = targets["ai-server-netdata-config"]
+            self.assertEqual(cfg["target_kind"], "netdata_config")
+            self.assertEqual(cfg["unit"], "netdata.service")
+            self.assertEqual(cfg["helper_sha256"], helper_hash)
+            self.assertEqual(cfg["helper_path"], "/usr/local/sbin/elira-netdata-config")
+            self.assertEqual(cfg["operation"], "set_update_every_1")
+            blob = json.dumps(cfg)
+            self.assertNotIn("/etc/netdata/netdata.conf", blob)
+            self.assertNotIn("update every", blob)
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class GuardTest(unittest.TestCase):
     def setUp(self):
         self._tmp = Path(tempfile.mkdtemp())

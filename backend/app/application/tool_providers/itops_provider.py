@@ -6,6 +6,8 @@ against the alias STORED on a saved, verified connection profile:
   * ``itops_linux_inventory(profile_id)`` — a curated Linux inventory set.
   * ``itops_windows_inventory(profile_id)`` — a curated Windows inventory set, run as
     STATIC PowerShell via -EncodedCommand (no quoting through cmd/sshd).
+  * ``itops_config_inspect()`` — one named config target from a typed scope, projected
+    through a strict parser without returning raw content.
 The model supplies only a profile_id — never a host/alias — and the executor's
 operation-scope gate has already pinned that profile_id to the run's read-only
 scope (bound to exactly ONE of these tools) before dispatch.
@@ -587,12 +589,106 @@ def tool_itops_systemd_service_inspect(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
+def tool_itops_config_inspect(**_ignored: Any) -> dict[str, Any]:
+    """Read one server-owned config target and persist only its typed safe projection."""
+    from app.application.agent_kernel import operation_scope
+    from app.application.code_agent.tools import get_current_run_id
+    from app.application.it_ops import config_inspect as ci
+    from app.application.it_ops import ssh_enroll
+    from app.infrastructure.it_ops import store
+
+    run_id = get_current_run_id()
+    scope = operation_scope.get_active_scope(run_id)
+    if scope is None or scope.target_kind != "config_file" or scope.config is None:
+        return {"ok": False, "text": "ERROR: no bound config scope", "error": "no_config_scope"}
+    pid = str(scope.profile_id or "").strip()
+    try:
+        spec = ci.resolve_config(scope.config.config_id)
+    except ci.ConfigInspectError as exc:
+        return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
+
+    try:
+        store.init_db()
+        prof = store.get_connection_profile(pid)
+        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
+    if not prof or prof.get("transport") != "ssh":
+        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
+    if not asset or asset.get("kind") != "linux":
+        return {"ok": False, "text": "ERROR: config inspect requires a linux asset",
+                "error": "not_linux_asset"}
+    if asset.get("lifecycle_state") != "enabled":
+        return {"ok": False, "text": "ERROR: config inspect requires a verified/enabled asset",
+                "error": "profile_not_enabled"}
+    alias = str(prof.get("ssh_alias") or "").strip()
+    if not ssh_enroll.alias_ok(alias):
+        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
+
+    code: int | None
+    raw_out: bytes
+    raw_err: bytes
+    try:
+        proc = subprocess.run(_ssh_argv(alias, ci.read_remote_command(spec)),
+                              capture_output=True, timeout=ci.INSPECT_TIMEOUT)
+        code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        code, raw_out, raw_err = None, b"", b"connection timed out"
+    except (OSError, subprocess.SubprocessError) as exc:
+        code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
+
+    projection: dict[str, Any] = {
+        "config_id": spec.config_id,
+        "path": spec.path,
+        "format": spec.format,
+        "status": "failed",
+    }
+    if code == 0:
+        try:
+            projection = {**ci.inspect_bytes(spec, raw_out), "status": "ok"}
+            ok, err = True, None
+        except ci.ConfigInspectError as exc:
+            projection["error"] = exc.reason
+            ok, err = False, exc.reason
+    else:
+        ok, err = False, "inspect_failed"
+        projection["error"] = err
+
+    target_identity = f"{asset.get('asset_id')}/{pid}"
+    evidence_ok = True
+    try:
+        store.record_evidence(
+            run_id=run_id, target_identity=target_identity, scanner_vantage=_SCANNER_VANTAGE,
+            operation="config_inspect:netdata-main", result=projection,
+            exit_status="0" if code == 0 else (str(code) if code is not None else ""))
+    except Exception:  # noqa: BLE001
+        evidence_ok = False
+        logger.warning("itops config_inspect: evidence write failed for %s/%s", pid, spec.config_id)
+    if not evidence_ok:
+        ok, err = False, "evidence_persist_failed"
+
+    if projection.get("status") == "ok":
+        text = (f"Config inspect {spec.config_id} ({alias}): sha256={projection['sha256']} "
+                f"bytes={projection['bytes']} comment_only={projection['comment_only']} "
+                f"safe_settings={projection['safe_settings']}")
+    elif code == 0:
+        text = f"Config inspect {spec.config_id} ({alias}): FAILED ({err})"
+    else:
+        text = f"Config inspect {spec.config_id} ({alias}): FAILED ({_clean(raw_err, 300) or ('exit ' + str(code))})"
+    out: dict[str, Any] = {"ok": ok, "text": text, "config": projection,
+                           "evidence_persisted": evidence_ok}
+    if err:
+        out["error"] = err
+    return out
+
+
 _DISPATCH = {
     "itops_ssh_healthcheck": tool_itops_ssh_healthcheck,
     "itops_linux_inventory": tool_itops_linux_inventory,
     "itops_windows_inventory": tool_itops_windows_inventory,
     "itops_network_inventory": tool_itops_network_inventory,
     "itops_systemd_service_inspect": tool_itops_systemd_service_inspect,
+    "itops_config_inspect": tool_itops_config_inspect,
 }
 
 
@@ -707,6 +803,19 @@ class ItopsToolProvider:
                         "runnable inside a bound systemd diagnostic run; one call per run."
                     ),
                     "parameters": {"type": "object", "properties": {}},   # NO args
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "itops_config_inspect",
+                    "description": (
+                        "Read-only typed configuration inspect for the named config target bound "
+                        "to this run. Takes NO arguments: profile, path, format and safe projected "
+                        "keys are server-owned. Returns hash/size and whitelisted typed settings; "
+                        "never raw config text or unknown values. One call per run."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},
                 },
             },
         ]

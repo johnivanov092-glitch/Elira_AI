@@ -196,6 +196,26 @@ export async function startSystemdInspect(profile_id: string, unit: string): Pro
   });
 }
 
+export type ConfigInspectResp = {
+  ok: boolean;
+  run_id: string;
+  profile_id: string;
+  config_id: "netdata-main";
+  tool: "itops_config_inspect";
+  message: string;
+  ttl_seconds: number;
+};
+
+export async function startConfigInspect(
+  profile_id: string,
+  config_id: "netdata-main" = "netdata-main",
+): Promise<ConfigInspectResp> {
+  return request<ConfigInspectResp>("/api/itops/config/inspect/start", {
+    method: "POST",
+    body: { profile_id, config_id },
+  });
+}
+
 // ── change vertical (v1) — thin proxy to the privileged executor ───────────
 
 export type ChangePlanResp = {
