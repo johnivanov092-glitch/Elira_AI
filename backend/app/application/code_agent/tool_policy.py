@@ -49,13 +49,16 @@ READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")
 SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
     {
         "computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver",
-        "encrypt", "webhook", "screenshot",
+        "encrypt", "webhook", "screenshot", "resource_materialize",
     }
 )
 
 # Auto-approved under "accept_edits" — filesystem-shaped, non-shell/non-net.
+# resource_materialize writes a new workspace file (no overwrite), so it is a
+# filesystem edit like write_file/file_gen — same three approval modes, no new policy.
 EDIT_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver", "sandbox_reset"}
+    {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver",
+     "sandbox_reset", "resource_materialize"}
 )
 
 # Tools that must ALWAYS be confirmed by the user, even in bypass. Reserved for

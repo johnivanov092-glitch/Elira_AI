@@ -441,3 +441,134 @@ def resource_ref(record: ResourceRecord) -> dict[str, Any]:
         "content_type": record.content_type,
         "size": record.size,
     }
+
+
+_COPY_CHUNK = 1024 * 1024
+_USE_WINDOWS_RENAME = os.name == "nt"
+
+
+def _workspace_destination(workspace_root: Path, dest_dir: Path, final_name: str) -> Path:
+    """Return a canonical destination or fail before touching the destination."""
+    if (not final_name or final_name in {".", ".."}
+            or "/" in final_name or "\\" in final_name or "\x00" in final_name):
+        raise ResourceError("invalid_destination", http_status=400)
+    try:
+        root = workspace_root.resolve()
+        if not root.is_dir():
+            raise ValueError("workspace is not a directory")
+        resolved_dir = dest_dir.resolve()
+        resolved_dir.relative_to(root)
+        resolved = (resolved_dir / final_name).resolve()
+        resolved.relative_to(root)
+    except Exception as exc:
+        raise ResourceError("invalid_destination", http_status=400) from exc
+    return resolved
+
+
+def _best_effort_unlink(path: Path) -> bool:
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def materialize(
+    record: ResourceRecord,
+    dest_dir: Path,
+    final_name: str,
+    *,
+    workspace_root: Path,
+) -> None:
+    """Stream a resource's durable blob into ``dest_dir/final_name``.
+
+    Streaming (chunked — never loads the whole blob into RAM), bounded (aborts if
+    the source exceeds the recorded size or the hard cap), integrity-checked (the
+    streamed size AND sha256 must match the ResourceRecord), atomic + no-overwrite
+    (temp file in dest_dir → fsync → atomic rename that fails if the target
+    exists). Any failure unlinks the partial temp and raises ResourceError with a
+    stable ``reason`` (destination_exists / integrity_mismatch / resource_too_large
+    / resource_blob_missing / materialize_failed).
+
+    ``workspace_root`` is server-owned. Containment is rechecked before directory
+    creation, after creation, and immediately before the atomic commit.
+    This protects against supplied paths and pre-existing reparse points. It is
+    not an OS isolation boundary against another process running as the same user,
+    which already has project-write access through the normal local tool runtime.
+    """
+    blob_path = Path(record.storage_path)
+    if not _within(_blobs_dir(), blob_path) or not blob_path.is_file():
+        raise ResourceError("resource_blob_missing", http_status=404)
+    workspace = workspace_root.resolve()
+    dest = _workspace_destination(workspace, dest_dir, final_name)
+    if dest.exists():
+        raise ResourceError("destination_exists", http_status=409)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = _workspace_destination(workspace, dest_dir, final_name)
+
+    cap = max_resource_bytes()
+    size = 0
+    fd, tmp_name = tempfile.mkstemp(dir=str(dest_dir), prefix=".materialize-", suffix=".part")
+    tmp_path = Path(tmp_name)
+    closed = False
+    temp_needs_cleanup = True
+    try:
+        with open(blob_path, "rb") as src:
+            while True:
+                chunk = src.read(_COPY_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > cap or size > record.size:
+                    raise ResourceTooLarge()
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("materialize write made no progress")
+                    view = view[written:]
+        os.fsync(fd)
+        os.lseek(fd, 0, os.SEEK_SET)
+        staged_hasher = hashlib.sha256()
+        staged_size = 0
+        while True:
+            chunk = os.read(fd, _COPY_CHUNK)
+            if not chunk:
+                break
+            staged_size += len(chunk)
+            staged_hasher.update(chunk)
+        if staged_size != record.size or staged_hasher.hexdigest() != record.sha256:
+            raise ResourceError("integrity_mismatch", http_status=500)
+        os.close(fd)
+        closed = True
+        current_dest = _workspace_destination(workspace, dest_dir, final_name)
+        if current_dest != dest:
+            raise ResourceError("invalid_destination", http_status=400)
+        if current_dest.exists():
+            raise ResourceError("destination_exists", http_status=409)
+        try:
+            if _USE_WINDOWS_RENAME:
+                # Windows os.rename is atomic and FAILS if the target exists.
+                os.rename(tmp_path, current_dest)
+                temp_needs_cleanup = False
+            else:
+                # POSIX: os.link fails if the target exists → atomic no-overwrite.
+                os.link(tmp_path, current_dest)
+                temp_needs_cleanup = not _best_effort_unlink(tmp_path)
+        except FileExistsError as exc:
+            raise ResourceError("destination_exists", http_status=409) from exc
+    except ResourceError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — never surface a raw path/exception
+        raise ResourceError("materialize_failed", http_status=500) from exc
+    finally:
+        if not closed:
+            try:
+                os.close(fd)
+            except Exception:  # noqa: BLE001
+                pass
+        if temp_needs_cleanup:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass

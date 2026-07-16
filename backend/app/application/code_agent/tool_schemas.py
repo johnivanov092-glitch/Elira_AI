@@ -267,6 +267,32 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "resource_materialize",
+                "description": (
+                    "Материализовать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) в текущую папку "
+                    "проекта, чтобы дальше обрабатывать его обычными инструментами "
+                    "(run_bash/ffmpeg/python/конвертация/архивы). Copy an attached resource "
+                    "(by resource_id) into THIS run's project workspace so the normal file / "
+                    "run_bash tools can process it. Takes a resource_id (NOT a path) and an "
+                    "optional destination_name (a RELATIVE name inside the workspace; default "
+                    "= the resource's safe basename). Writes a NEW file — it never overwrites "
+                    "an existing one. Returns a project-relative path only. Use this when the "
+                    "user wants to convert/encode/run/unpack an attached file locally."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "destination_name": {"type": "string", "description": "Optional relative filename inside the project workspace (no absolute path, no '..'). Default: the resource's safe basename."},
+                    },
+                    "required": ["resource_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "grep",
                 "description": "Search file contents for a regex pattern. Returns 'file:line:match' lines.",
                 "parameters": {

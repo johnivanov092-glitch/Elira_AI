@@ -57,6 +57,7 @@ from app.application.code_agent.tools._computer import (
     tool_computer,
 )
 from app.application.code_agent.tools._resources import (
+    tool_resource_materialize,
     tool_resource_process,
 )
 from app.application.code_agent.tools._drift import (
@@ -104,4 +105,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "computer": lambda **kw: tool_computer(project_root, **kw),
         # Reads a run-bound resource by opaque id (no project path involved).
         "resource_process": lambda **kw: tool_resource_process(**kw),
+        # Writes a run-bound resource into the run's project workspace (needs root).
+        "resource_materialize": lambda **kw: tool_resource_materialize(project_root, **kw),
     }

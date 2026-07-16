@@ -422,6 +422,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("webhook",        "Webhook",        "web",     "Store, list, or clear webhook payloads", 15, 10000, False),
         ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
         ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel/PDF file",        60,  5000, False),
+        ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
     ]
     auto_side_effect_tools = [
@@ -451,6 +452,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "read_image": ["fs.read", "net.outbound"], "ocr_file": ["fs.read", "net.outbound"],
         # Reads the run-bound resource blob (fs.read) and may call remote STT (net.outbound).
         "resource_process": ["fs.read", "net.outbound"],
+        # Reads the run-bound resource blob (fs.read) and writes a new workspace file (fs.write).
+        "resource_materialize": ["fs.read", "fs.write"],
         # Desktop control is shell-level power: gated like run_bash, so the
         # "accept_edits" mode never auto-approves it (only "bypass" / explicit ask).
         "computer": ["shell.exec", "net.outbound"],
@@ -508,6 +511,14 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "extract text, inspect, аудио, видео, mp4, ogg, голосовое, документ, "
             "локально, локальное железо, локальная видеокарта, на GPU, local gpu, "
             "local cpu, server, вычислительная цель, execution target",
+        ),
+        "resource_materialize": (
+            "Материализовать вложение/ресурс в папку проекта",
+            "Скопировать прикреплённый файл (ресурс, вложение) в рабочую папку проекта, "
+            "чтобы обработать его обычными инструментами: materialize, положи файл в проект, "
+            "сохрани вложение в проект, конвертировать, ffmpeg, распаковать архив, "
+            "прогнать через python, resource, attachment, materialize resource, "
+            "copy attachment into project, workspace",
         ),
     }
     for _spec in result:
