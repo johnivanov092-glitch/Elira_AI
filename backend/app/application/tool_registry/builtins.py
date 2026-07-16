@@ -697,6 +697,16 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 120, "max_output_chars": 14000,
         },
+        {
+            "name": "itops_mikrotik_inventory", "handler": _noop,
+            "display_name": "IT-Ops MikroTik Inventory", "display_name_ru": "Инвентарь MikroTik",
+            "category": "itops",
+            "description": "Read-only MikroTik inventory (system/interfaces/routes/DNS/DHCP) via the rostered mikrotik MCP for the router bound to the run (no args)",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["net.outbound"],
+            "timeout_seconds": 120, "max_output_chars": 14000,
+        },
     ]
 
 

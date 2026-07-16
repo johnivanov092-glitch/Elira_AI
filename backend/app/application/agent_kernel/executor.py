@@ -317,6 +317,29 @@ def execute_tool(
                     error="profile_not_enabled",
                 )
             _authoritative_args = {}
+        elif _scope.target_kind == "mikrotik_router":
+            # The MikroTik adapter takes NO args: the router comes ONLY from the scope.
+            # Forbid any model-supplied arg, AND (defense in depth) require the typed
+            # target to name the ONE rostered MCP server — a scope must never be able
+            # to point this adapter at a different MCP server.
+            if request.args:
+                _emit_blocked(request, "mikrotik adapter takes no args")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "This adapter takes no arguments; the target comes "
+                            "only from the bound scope — blocked (fail-closed).", "error": "scope_args_forbidden"},
+                    error="scope_args_forbidden",
+                )
+            _mk = _scope.mikrotik
+            if _mk is None or _mk.server_id != "mikrotik" or not str(_mk.router_id or "").strip():
+                _emit_blocked(request, "mikrotik scope target is missing or not the rostered server")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "The bound MikroTik target is invalid or not the "
+                            "rostered MCP server — blocked (fail-closed).", "error": "scope_mismatch"},
+                    error="scope_mismatch",
+                )
+            _authoritative_args = {}
         else:
             _emit_blocked(request, f"unknown scope target_kind: {_scope.target_kind}")
             return ToolExecutionResult(

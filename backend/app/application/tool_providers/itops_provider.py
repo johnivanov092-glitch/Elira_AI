@@ -587,12 +587,22 @@ def tool_itops_systemd_service_inspect(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
+def _tool_itops_mikrotik_inventory(**_ignored: Any) -> dict[str, Any]:
+    """Thin dispatch shim: the full adapter (scope re-check, allowlist, fixed MCP
+    call plan, projection, evidence, bounded text) lives in
+    app.application.it_ops.mikrotik_runtime. Imported lazily so the provider
+    module never grows a transport dependency."""
+    from app.application.it_ops.mikrotik_runtime import tool_itops_mikrotik_inventory
+    return tool_itops_mikrotik_inventory(**_ignored)
+
+
 _DISPATCH = {
     "itops_ssh_healthcheck": tool_itops_ssh_healthcheck,
     "itops_linux_inventory": tool_itops_linux_inventory,
     "itops_windows_inventory": tool_itops_windows_inventory,
     "itops_network_inventory": tool_itops_network_inventory,
     "itops_systemd_service_inspect": tool_itops_systemd_service_inspect,
+    "itops_mikrotik_inventory": _tool_itops_mikrotik_inventory,
 }
 
 
@@ -705,6 +715,21 @@ class ItopsToolProvider:
                         "state and path). Takes NO arguments — the profile and unit come only from the "
                         "bound scope. No status text, journal, unit-file content, or changes. Only "
                         "runnable inside a bound systemd diagnostic run; one call per run."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},   # NO args
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "itops_mikrotik_inventory",
+                    "description": (
+                        "Read-only MikroTik inventory via the rostered mikrotik MCP server: system "
+                        "(resource/identity/license/routerboard/clock), interfaces, routes, DNS and "
+                        "DHCP servers, whitelist-projected and bounded. Takes NO arguments — the "
+                        "router comes only from the bound scope. IP addresses are NOT covered "
+                        "(no read-only upstream tool); coverage is reported as partial. Only "
+                        "runnable inside a bound mikrotik diagnostic run; one call per run."
                     ),
                     "parameters": {"type": "object", "properties": {}},   # NO args
                 },

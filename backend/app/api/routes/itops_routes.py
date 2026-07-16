@@ -101,6 +101,14 @@ class SystemdInspectRequest(BaseModel):
     unit: str = Field(..., description="A human-selected systemd .service unit name (strictly validated)")
 
 
+class MikrotikInventoryStartRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # The client supplies ONLY a router id token. The MCP server id is fixed
+    # ("mikrotik"), the call plan is server-owned, and the id must be format-valid
+    # AND explicitly allowlisted in ITOPS_MIKROTIK_ALLOWED_ROUTERS.
+    router_id: str = Field(..., description="An allowlisted mikromcp router config entry id")
+
+
 class ChangePlanRequest(BaseModel):
     model_config = {"extra": "forbid"}
     # The client supplies ONLY an opaque target_id label. The privileged executor resolves
@@ -288,6 +296,11 @@ _EVIDENCE_SCALAR_FIELDS = (
     # CONTENT, status text or journal, which could carry Environment=/tokens/logs)
     "unit", "id", "load_state", "active_state", "sub_state", "unit_file_state",
     "main_pid", "exec_main_status", "n_restarts", "fragment_path",
+    # mikrotik inventory — typed scalar SUMMARY only (counts + canonical-JSON hash;
+    # the raw MCP envelope/records are never stored, so they can never leak here)
+    "router_id", "coverage", "contract", "projection_sha256", "error_code",
+    "interfaces_count", "routes_count", "dhcp_servers_count", "dns_servers_count",
+    "unavailable_count", "truncated_count",
 )
 _NET_STATE_KEYS = ("open", "refused", "timeout", "unreachable", "local_error")
 _NET_CAP_KEYS = ("rate_limit", "total_timeout", "per_connect_timeout", "in_flight", "max_hosts")
@@ -406,6 +419,44 @@ def network_start(payload: NetworkStartRequest) -> dict[str, Any]:
     )
     return {"ok": True, "run_id": run_id, "cidr": payload.cidr, "vantage": ni.VANTAGE,
             "hosts": len(hosts), "profile": {"name": profile.name, "ports": list(profile.ports)},
+            "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
+
+
+@router.post("/mikrotik/inventory/start")
+def mikrotik_inventory_start(payload: MikrotikInventoryStartRequest) -> dict[str, Any]:
+    """Start ONE scoped read-only MIKROTIK inventory run (Phase 7B). The server
+    validates the router id token (400) and the explicit env allowlist
+    ITOPS_MIKROTIK_ALLOWED_ROUTERS (403, default-deny; the handler re-checks the
+    same list before any MCP traffic), requires the rostered mikrotik MCP server
+    to be live (503), binds a mikrotik_router scope (router_id + fixed server_id)
+    to the ONE tool itops_mikrotik_inventory, and returns run_id + message. The
+    model then calls that tool with NO arguments — one call per run; the fixed
+    read-only MCP call plan is server-owned and never includes a write tool."""
+    _require_flag()
+    import uuid
+    from app.application.agent_kernel import operation_scope
+    from app.application.it_ops import mikrotik_runtime as mk
+
+    router_id = str(payload.router_id or "").strip()
+    if not mk.router_id_valid(router_id):
+        raise HTTPException(status_code=400, detail="invalid router_id")
+    if not mk.router_allowed(router_id):
+        raise HTTPException(status_code=403,
+                            detail="router not authorized (ITOPS_MIKROTIK_ALLOWED_ROUTERS)")
+    if mk.live_client() is None:
+        raise HTTPException(status_code=503, detail="mikrotik MCP server is not running")
+
+    _store()   # ensure the evidence table exists
+    run_id = f"itops-diag-{uuid.uuid4().hex}"
+    operation_scope.bind_scope_mikrotik(run_id, router_id=router_id, server_id=mk.SERVER_ID,
+                                        allowed_tool=mk.TOOL_NAME)
+    message = (
+        "Выполни read-only инвентаризацию MikroTik-роутера. Активируй инструмент "
+        "itops_mikrotik_inventory через tool_search, затем вызови его РОВНО ОДИН РАЗ БЕЗ "
+        "аргументов (роутер уже привязан к запуску) и покажи результат. Не вызывай другие "
+        "инструменты."
+    )
+    return {"ok": True, "run_id": run_id, "router_id": router_id, "tool": mk.TOOL_NAME,
             "message": message, "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
 
 

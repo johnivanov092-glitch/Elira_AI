@@ -72,6 +72,16 @@ class SystemdTarget:
 
 
 @dataclass(frozen=True)
+class MikrotikTarget:
+    """Typed target for a target_kind='mikrotik_router' scope. `router_id` names ONE
+    allowlisted mikromcp router config entry (human-selected, server-validated);
+    `server_id` pins the ONE rostered MCP server (exactly "mikrotik") — the gate
+    re-checks it so a scope can never point the adapter at another MCP server."""
+    router_id: str
+    server_id: str
+
+
+@dataclass(frozen=True)
 class ScopeView:
     """Immutable snapshot handed to the executor gate (never the live dict)."""
     run_id: str
@@ -84,11 +94,13 @@ class ScopeView:
     # tool is never auto-runnable from an old scope.
     allowed_tool: str
     # Discriminated target. "ssh_profile" → profile_id; "network" → network;
-    # "systemd_service" → profile_id (principal) + systemd.unit.
+    # "systemd_service" → profile_id (principal) + systemd.unit;
+    # "mikrotik_router" → mikrotik (router_id + server_id).
     target_kind: str = "ssh_profile"
     profile_id: str = ""
     network: NetworkTarget | None = None
     systemd: SystemdTarget | None = None
+    mikrotik: MikrotikTarget | None = None
 
 
 def _norm(run_id: str) -> str:
@@ -176,6 +188,34 @@ def bind_scope_systemd(run_id: str, *, profile_id: str, unit: str, allowed_tool:
         return _view(rid)
 
 
+def bind_scope_mikrotik(run_id: str, *, router_id: str, server_id: str, allowed_tool: str,
+                        mode: str = "read_only", ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
+    """Bind *run_id* to a read-only MIKROTIK-ROUTER scope: the ONE allowlisted router
+    config entry *router_id* on the ONE rostered MCP server *server_id*, permitting
+    exactly the one adapter tool *allowed_tool*. Same sticky lockdown / one-op reserve
+    machinery as the other scopes. No-op on empty args."""
+    rid = _norm(run_id)
+    router = str(router_id or "").strip()
+    server = str(server_id or "").strip()
+    tool = str(allowed_tool or "").strip()
+    if not rid or not router or not server or not tool:
+        return None
+    with _LOCK:
+        _sweep_locked()
+        _SCOPES[rid] = {
+            "target_kind": "mikrotik_router",
+            "profile_id": "",
+            "network": None,
+            "systemd": None,
+            "mikrotik": {"router_id": router, "server_id": server},
+            "mode": str(mode),
+            "expires_at": time.time() + float(ttl_seconds),
+            "operation_used": False,
+            "allowed_tool": tool,
+        }
+        return _view(rid)
+
+
 def _sweep_locked() -> None:
     """Drop entries whose run is long gone (expired more than the sweep grace ago),
     and claims older than the retention window.
@@ -213,12 +253,14 @@ def _view(rid: str) -> ScopeView | None:
         return None
     net = s.get("network")
     sysd = s.get("systemd")
+    mk = s.get("mikrotik")
     return ScopeView(
         run_id=rid, mode=s["mode"], expires_at=s["expires_at"],
         operation_used=s["operation_used"], allowed_tool=s["allowed_tool"],
         target_kind=s.get("target_kind", "ssh_profile"), profile_id=s.get("profile_id", ""),
         network=NetworkTarget(net["cidr"], net["port_profile"]) if net else None,
-        systemd=SystemdTarget(sysd["unit"]) if sysd else None)
+        systemd=SystemdTarget(sysd["unit"]) if sysd else None,
+        mikrotik=MikrotikTarget(mk["router_id"], mk["server_id"]) if mk else None)
 
 
 def get_active_scope(run_id: str) -> ScopeView | None:
