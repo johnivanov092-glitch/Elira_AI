@@ -405,7 +405,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("converter",   "Converter",    "media",   "Convert files between supported formats",  60, 10000, True),
         ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
         ("ocr_file",    "OCR File",     "vision",  "Extract text from a scanned document/image",   120, 50000, True),
-        ("resource_process", "Resource Process", "media", "Process a file attached to this run by resource_id: inspect metadata, extract document text, or transcribe audio/video (mp4/ogg). Read-only, no path.", 3630, 20000, True),
+        ("resource_process", "Resource Process", "media", "Process a file attached to this run by resource_id on a chosen execution target (auto/local_gpu/local_cpu/server_gpu): inspect metadata, extract document text, or transcribe audio/video (mp4/ogg). Read-only, no path.", 3630, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
     approval_tools = [
@@ -501,11 +501,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "отчёт, письмо, создать файл, сгенерировать файл",
         ),
         "resource_process": (
-            "Обработка прикреплённого файла / ресурса",
+            "Обработка прикреплённого файла / ресурса (авто / локальный GPU / CPU / сервер)",
             "Прочитать прикреплённый файл, извлечь текст, расшифровать/транскрибировать "
             "аудио или видео, проанализировать вложение: ресурс, вложение, attachment, "
             "resource, прочитай файл, извлеки текст, расшифруй, транскрибируй, transcribe, "
-            "extract text, inspect, аудио, видео, mp4, ogg, голосовое, документ",
+            "extract text, inspect, аудио, видео, mp4, ogg, голосовое, документ, "
+            "локально, локальное железо, локальная видеокарта, на GPU, local gpu, "
+            "local cpu, server, вычислительная цель, execution target",
         ),
     }
     for _spec in result:

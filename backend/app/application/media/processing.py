@@ -1,19 +1,27 @@
-"""Deferred resource processing (R1) — inspect / extract_text / transcribe.
+"""Deferred resource processing (R1 + R2) — inspect / extract_text / transcribe.
 
 Runs ONLY on an explicit ``resource_process`` tool call, never at upload time.
 Reuses the existing runtimes (no new extractor, no new STT client): documents go
-through ``file_extract.extract_file``; audio/video containers go through the
-existing STT runtime ``voice.runtime.transcribe``. Results are bounded; every
-failure is a stable machine-readable ``error`` with ``ok=False`` (a processing
-error can never be silently reported as success).
+through ``file_extract.extract_file``; audio/video containers are transcribed by a
+workload adapter chosen for the requested execution target (R2). Results are
+bounded; every failure is a stable machine-readable ``error`` with ``ok=False``
+(a processing error can never be silently reported as success).
+
+R2 adds ``execution_target`` (auto | local_gpu | local_cpu | server_gpu). inspect
+and extract_text run only on local_cpu; transcribe is routed by the selector in
+``execution`` — the general compute-target framework, of which transcription is
+the first workload adapter.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from app.application.file_extract.runtime import TEXT_EXTS, _AUDIO_EXTS
-from app.application.media import resource_store
+from app.application.media import execution, resource_store
+
+logger = logging.getLogger(__name__)
 
 INSPECT = "inspect"
 EXTRACT_TEXT = "extract_text"
@@ -21,7 +29,14 @@ TRANSCRIBE = "transcribe"
 SUPPORTED_OPERATIONS = (INSPECT, EXTRACT_TEXT, TRANSCRIBE)
 
 _MAX_RESULT_CHARS = 20000
-_STT_TIMEOUT_SECONDS = 3600
+_LOCAL_CPU = execution.ExecutionTarget.LOCAL_CPU.value
+_SAFE_ADAPTER_ERRORS = frozenset({
+    "transcription_failed",
+    "transcription_empty",
+    "local_gpu_unavailable",
+    "server_gpu_unavailable",
+    "local_cpu_unavailable",
+})
 
 # Extensions extract_text may hand to file_extract. Audio/video containers are
 # excluded on purpose: extract_file would route an audio extension into STT, so a
@@ -48,6 +63,35 @@ def _looks_like_extract_error(text: str) -> bool:
             or "не поддерживается" in low)
 
 
+def _execution_result(result: dict[str, Any], *, requested_target: str,
+                      selected_target: str | None, backend: str | None,
+                      fallback_chain: tuple[dict[str, str], ...] = ()) -> dict[str, Any]:
+    """Attach the public execution decision without exposing runtime details."""
+    result["requested_target"] = requested_target
+    result["selected_target"] = selected_target
+    result["backend"] = backend
+    # Keep the R1/R2 compatibility field while callers migrate to the explicit
+    # requested/selected axes.
+    result["execution_target"] = selected_target or requested_target
+    if requested_target == execution.ExecutionTarget.AUTO.value:
+        result["fallback_chain"] = [dict(item) for item in fallback_chain]
+    return result
+
+
+def _selection_error(operation: str, resource_id: str, requested_target: str,
+                     sel: "execution.Selection") -> dict[str, Any]:
+    out = _err(operation, resource_id, sel.error or "routing_error", sel.message or "routing failed")
+    if sel.available_targets:
+        out["available_targets"] = list(sel.available_targets)
+    return _execution_result(
+        out,
+        requested_target=requested_target,
+        selected_target=None,
+        backend=None,
+        fallback_chain=sel.fallback_chain,
+    )
+
+
 def _inspect(record: resource_store.ResourceRecord) -> dict[str, Any]:
     ref = resource_store.resource_ref(record)
     summary = (f"resource {ref['resource_id']}: name={ref['name']} kind={ref['kind']} "
@@ -56,7 +100,7 @@ def _inspect(record: resource_store.ResourceRecord) -> dict[str, Any]:
             "kind": record.kind, "name": record.original_name,
             "content_type": record.content_type, "size": record.size,
             "sha256": record.sha256, "created_at": record.created_at,
-            "text": summary}
+            "execution_target": _LOCAL_CPU, "text": summary}
 
 
 def _extract_text(record: resource_store.ResourceRecord) -> dict[str, Any]:
@@ -82,50 +126,124 @@ def _extract_text(record: resource_store.ResourceRecord) -> dict[str, Any]:
                     "text extraction failed")
     text = text[:_MAX_RESULT_CHARS]
     return {"ok": True, "operation": EXTRACT_TEXT, "resource_id": record.resource_id,
-            "kind": record.kind, "chars": len(text), "text": text}
+            "kind": record.kind, "execution_target": _LOCAL_CPU,
+            "chars": len(text), "text": text}
 
 
-def _transcribe(record: resource_store.ResourceRecord) -> dict[str, Any]:
-    from app.application.voice.runtime import transcribe
-
+def _transcribe(record: resource_store.ResourceRecord, execution_target: str,
+                 adapters: "execution.AdapterSet | None") -> dict[str, Any]:
+    # Format gate first — a non-audio resource is unsupported regardless of target.
     ext = Path(record.original_name).suffix.lower()
     if ext not in _AUDIO_EXTS:
-        return _err(TRANSCRIBE, record.resource_id, "unsupported_for_kind",
-                    "transcribe supports voice/audio containers "
-                    "(mp3, m4a, wav, ogg, opus, flac, aac, mp4, webm); "
-                    f"ext={ext or 'none'} is not one of them")
-    data = resource_store.read_bytes(record)
-    try:
-        # Reuse the existing remote STT runtime (unchanged) — R1 only moves the
-        # call from upload-time to this explicit tool-time. The original filename
-        # carries the container extension the STT service decodes.
-        text = transcribe(
-            data,
-            filename=record.original_name,
-            language=None,
-            timeout=_STT_TIMEOUT_SECONDS,
+        return _execution_result(
+            _err(TRANSCRIBE, record.resource_id, "unsupported_for_kind",
+                 "transcribe supports voice/audio containers "
+                 "(mp3, m4a, wav, ogg, opus, flac, aac, mp4, webm); "
+                 f"ext={ext or 'none'} is not one of them"),
+            requested_target=execution_target,
+            selected_target=None,
+            backend=None,
         )
-    except Exception:  # noqa: BLE001 — never surface the raw STT error/payload
-        return _err(TRANSCRIBE, record.resource_id, "transcription_failed",
-                    "speech-to-text failed")
-    text = str(text or "").strip()
-    if not text:
-        return _err(TRANSCRIBE, record.resource_id, "transcription_empty",
-                    "speech-to-text returned no text")
-    text = text[:_MAX_RESULT_CHARS]
-    return {"ok": True, "operation": TRANSCRIBE, "resource_id": record.resource_id,
-            "kind": record.kind, "chars": len(text), "text": text}
+    # Route to a workload adapter for the requested execution target (fallback
+    # only for auto: local_gpu → server_gpu → local_cpu).
+    sel = execution.select(TRANSCRIBE, execution_target, adapters)
+    if sel.error is not None or sel.adapter is None:
+        return _selection_error(TRANSCRIBE, record.resource_id, execution_target, sel)
+
+    def _run(adapter: "execution.WorkloadAdapter") -> dict[str, Any]:
+        try:
+            result = adapter.run(record)
+        except Exception as exc:  # noqa: BLE001 — adapter internals never cross the boundary
+            logger.warning(
+                "resource_execution_failed target=%s resource_id=%s error=%s exception_class=%s",
+                adapter.target, record.resource_id, "execution_failed", type(exc).__name__,
+            )
+            return _err(TRANSCRIBE, record.resource_id, "execution_failed",
+                        "resource execution failed")
+        if not isinstance(result, dict) or result.get("ok") not in (True, False):
+            logger.warning(
+                "resource_execution_failed target=%s resource_id=%s error=%s",
+                adapter.target, record.resource_id, "invalid_adapter_result",
+            )
+            return _err(TRANSCRIBE, record.resource_id, "execution_failed",
+                        "resource execution failed")
+        return result
+
+    if execution_target == execution.ExecutionTarget.AUTO.value:
+        fallback_chain: list[dict[str, str]] = []
+        last_failure = "all_execution_targets_failed"
+        for candidate in sel.candidates:
+            adapter = candidate.adapter
+            if adapter is None:
+                fallback_chain.append({
+                    "target": candidate.target,
+                    "reason": candidate.reason or f"{candidate.target}_unavailable",
+                })
+                continue
+            if not execution.adapter_capability(adapter).available:
+                fallback_chain.append({
+                    "target": candidate.target,
+                    "reason": f"{candidate.target}_unavailable",
+                })
+                continue
+            result = _run(adapter)
+            if result.get("ok") is True:
+                return _execution_result(
+                    result,
+                    requested_target=execution_target,
+                    selected_target=candidate.target,
+                    backend=adapter.backend,
+                    fallback_chain=tuple(fallback_chain),
+                )
+            raw_reason = str(result.get("error") or "")
+            reason = raw_reason if raw_reason in _SAFE_ADAPTER_ERRORS else "execution_failed"
+            last_failure = reason
+            fallback_chain.append({
+                "target": candidate.target,
+                "backend": adapter.backend,
+                "reason": reason,
+            })
+        return _execution_result(
+            _err(TRANSCRIBE, record.resource_id, last_failure,
+                 "all available transcription targets failed"),
+            requested_target=execution_target,
+            selected_target=None,
+            backend=None,
+            fallback_chain=tuple(fallback_chain),
+        )
+
+    result = _run(sel.adapter)
+    return _execution_result(
+        result,
+        requested_target=execution_target,
+        selected_target=sel.target,
+        backend=sel.adapter.backend,
+        fallback_chain=sel.fallback_chain,
+    )
 
 
-def process_resource(record: resource_store.ResourceRecord, operation: str) -> dict[str, Any]:
-    """Dispatch one bounded read-only operation on an already-authorized resource.
-    The caller MUST have verified the run binding first."""
+def process_resource(record: resource_store.ResourceRecord, operation: str,
+                     execution_target: str = execution.ExecutionTarget.AUTO.value,
+                     adapters: "execution.AdapterSet | None" = None) -> dict[str, Any]:
+    """Dispatch one bounded read-only operation on an already-authorized resource,
+    on the chosen execution target. The caller MUST have verified the run binding
+    first. inspect/extract_text run only on local_cpu; transcribe is routed."""
     op = str(operation or "").strip().lower()
-    if op == INSPECT:
-        return _inspect(record)
-    if op == EXTRACT_TEXT:
-        return _extract_text(record)
+    target = str(execution_target or execution.ExecutionTarget.AUTO.value).strip().lower()
+
+    if op in (INSPECT, EXTRACT_TEXT):
+        sel = execution.select(op, target, adapters)
+        if sel.error is not None:            # a GPU/server target for a local-only op
+            return _selection_error(op, record.resource_id, target, sel)
+        result = _inspect(record) if op == INSPECT else _extract_text(record)
+        backend = "resource-inspect" if op == INSPECT else "file-extract"
+        return _execution_result(
+            result,
+            requested_target=target,
+            selected_target=_LOCAL_CPU,
+            backend=backend,
+        )
     if op == TRANSCRIBE:
-        return _transcribe(record)
+        return _transcribe(record, target, adapters)
     return _err(op or "unknown", record.resource_id, "unknown_operation",
                 "unsupported resource operation")

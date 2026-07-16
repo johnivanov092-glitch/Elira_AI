@@ -245,13 +245,20 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "audio/video. Read-only, one call = one operation. operation='inspect' "
                     "returns metadata; 'extract_text' extracts document text; 'transcribe' "
                     "runs speech-to-text. Takes a resource_id (NOT a path); the file must be "
-                    "attached to THIS run."
+                    "attached to THIS run. execution_target chooses WHERE compute runs: "
+                    "'auto' (runtime picks: local GPU → server → local CPU), 'local_gpu' "
+                    "(строго локальная видеокарта — «используй локальное железо/видеокарту / "
+                    "обработай локально на GPU»; если недоступна — честная ошибка, файл НЕ "
+                    "уходит на сервер), 'local_cpu' (локальный CPU), 'server_gpu' (серверный "
+                    "STT). Use local_gpu ONLY when the user explicitly asks for local/GPU."
                 ),
                 "parameters": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
+                        "execution_target": {"type": "string", "enum": ["auto", "local_gpu", "local_cpu", "server_gpu"], "description": "Where to run compute. Default 'auto'. Use 'local_gpu' only when the user explicitly asks to run locally / on the GPU."},
                     },
                     "required": ["resource_id", "operation"],
                 },

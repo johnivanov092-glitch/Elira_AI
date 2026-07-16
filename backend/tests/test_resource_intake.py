@@ -310,8 +310,14 @@ class DeferredOperationsTest(unittest.TestCase):
         self.rid_run = "run-ops"
         run_binding.clear_run(self.rid_run)
         self._tok = set_current_run_id(self.rid_run)
+        # R2 advertises server_gpu only after a bounded live-health probe. Keep
+        # these R1 unit tests deterministic and focused on dispatch/STT behavior.
+        self._server_health = mock.patch(
+            "app.application.media.execution._server_stt_available", return_value=True)
+        self._server_health.start()
 
     def tearDown(self):
+        self._server_health.stop()
         reset_current_run_id(self._tok)
         run_binding.clear_run(self.rid_run)
 
