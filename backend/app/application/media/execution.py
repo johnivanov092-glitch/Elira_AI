@@ -354,10 +354,18 @@ class AdapterSet:
                      if adapter.operation == operation and adapter.target == target), None)
 
 def default_adapters() -> AdapterSet:
+    # R3: wire the REAL local faster-whisper runtime. capability() stays honest
+    # (available == detected AND wired): the strict readiness probes report ready
+    # only when the runtime prerequisites are present, so until the pinned deps are
+    # provisioned the local targets are unavailable and auto falls through to
+    # server_gpu. Imported lazily to avoid a media-package import cycle.
+    from app.application.media import local_transcription as lt
     return AdapterSet((
-        _LocalTranscribeAdapter(ExecutionTarget.LOCAL_GPU.value, _detect_local_gpu_transcribe),
+        _LocalTranscribeAdapter(ExecutionTarget.LOCAL_GPU.value, lt.gpu_runtime_ready,
+                                transcribe_fn=lt.gpu_transcribe_fn),
         ServerGpuTranscribeAdapter(),
-        _LocalTranscribeAdapter(ExecutionTarget.LOCAL_CPU.value, _detect_local_cpu_transcribe),
+        _LocalTranscribeAdapter(ExecutionTarget.LOCAL_CPU.value, lt.cpu_runtime_ready,
+                                transcribe_fn=lt.cpu_transcribe_fn),
     ))
 
 
