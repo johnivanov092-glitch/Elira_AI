@@ -405,6 +405,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("converter",   "Converter",    "media",   "Convert files between supported formats",  60, 10000, True),
         ("read_image",  "Read Image",   "vision",  "Describe an image file with the vision model", 120, 30000, True),
         ("ocr_file",    "OCR File",     "vision",  "Extract text from a scanned document/image",   120, 50000, True),
+        ("resource_process", "Resource Process", "media", "Process a file attached to this run by resource_id: inspect metadata, extract document text, or transcribe audio/video (mp4/ogg). Read-only, no path.", 3630, 20000, True),
     ]
     # ── Side-effect (require_approval) ─────────────────────────────────────
     approval_tools = [
@@ -448,6 +449,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "archiver": ["fs.read", "fs.write"], "screenshot": ["net.outbound", "fs.write"],
         "file_gen": ["fs.write"],
         "read_image": ["fs.read", "net.outbound"], "ocr_file": ["fs.read", "net.outbound"],
+        # Reads the run-bound resource blob (fs.read) and may call remote STT (net.outbound).
+        "resource_process": ["fs.read", "net.outbound"],
         # Desktop control is shell-level power: gated like run_bash, so the
         # "accept_edits" mode never auto-approves it (only "bypass" / explicit ask).
         "computer": ["shell.exec", "net.outbound"],
@@ -496,6 +499,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "ворд, word, docx, doc, эксель, excel, xlsx, таблица, документ, "
             "PDF, пдф, документ PDF, экспорт в PDF, "
             "отчёт, письмо, создать файл, сгенерировать файл",
+        ),
+        "resource_process": (
+            "Обработка прикреплённого файла / ресурса",
+            "Прочитать прикреплённый файл, извлечь текст, расшифровать/транскрибировать "
+            "аудио или видео, проанализировать вложение: ресурс, вложение, attachment, "
+            "resource, прочитай файл, извлеки текст, расшифруй, транскрибируй, transcribe, "
+            "extract text, inspect, аудио, видео, mp4, ogg, голосовое, документ",
         ),
     }
     for _spec in result:

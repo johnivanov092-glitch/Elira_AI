@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, BookmarkPlus, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, MessageCircleOff, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, MessageCircleOff, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode } from "../api/codeAgent";
-import { attachToChat, type ChatAttachment } from "../api/chat";
-import { uploadLibraryFile } from "../api/library";
+import { uploadResource, type ResourceAttachment } from "../api/resources";
 import { getActiveProfile, listProfiles, setActiveProfile, type ProfileInfo } from "../api/profiles";
 import { Chip } from "../ui/Chip";
 import { MicButton } from "./MicButton";
@@ -22,6 +21,11 @@ const THINKING_KEY = "elira.thinking";
 // human — Elira decides for itself. Mirror of the thinking chip's persistence.
 const NO_QUESTIONS_KEY = "elira.noQuestions";
 
+export type ComposerAttachControls = {
+  openFilePicker: () => void;
+  attachFiles: (files: File[]) => void;
+};
+
 /** Composer per v4: mode chip + "+" (project / files / skills) + plugins + send.
  *  Runs are always "code" mode — web_search/web_fetch are base tools available in
  *  every run, so a separate "Поиск" mode added nothing and was removed.
@@ -29,13 +33,16 @@ const NO_QUESTIONS_KEY = "elira.noQuestions";
  *  (opened in the
  *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
 export function Composer({
-  value, onChange, onPlus, onPlugins, onSend, onSendMultiAgent, running, onStop, contextUsage, onAttachReady,
+  value, onChange, sessionId, onPlus, onPlugins, onSend, onSendMultiAgent, running, onStop, contextUsage, onAttachReady,
 }: {
   value: string;
   onChange: (v: string) => void;
+  /** Session id that owns files uploaded from this composer (bound to the run so
+   *  the backend authorizes resource_process only for this session's resources). */
+  sessionId: string;
   onPlus: () => void;
   onPlugins: () => void;
-  onSend: (text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => void;
+  onSend: (text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => void;
   /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
    *  pick one of the 4 backend workflow templates. */
   onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean) => void;
@@ -44,7 +51,7 @@ export function Composer({
   contextUsage?: ContextUsage | null;
   /** Receives a function that opens the hidden file picker, so the "+" menu in
    *  the Shell can trigger "Прикрепить файл". Called once on mount. */
-  onAttachReady?: (openFilePicker: () => void) => void;
+  onAttachReady?: (controls: ComposerAttachControls) => void;
 }) {
   const [mode, setMode] = useState<Mode>("code");
   // "Мульти-агент" is a run MODE, not a profile: when on, submit() routes to the
@@ -104,14 +111,14 @@ export function Composer({
       /* quota / private mode — non-fatal */
     }
   }, [noQuestions]);
-  // Attachments (images + documents) parsed to text by the backend on pick. Kept
-  // across both modes; cleared after each send. The project root and these files
-  // travel together to the same code-agent stream.
-  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  // Attached resources: the file is UPLOADED (registered) on pick — NOT processed.
+  // Its content is read later, on demand, by the agent's resource_process tool.
+  // Kept across both modes; cleared after each send.
+  const [attachments, setAttachments] = useState<ResourceAttachment[]>([]);
   const [attaching, setAttaching] = useState(false);
-  // Names of files currently being uploaded/parsed by the backend. Drives a
-  // transient "загрузка…" chip per file while attachToChat is in flight (audio
-  // transcription / PDF parse take a few seconds); cleared as each resolves.
+  // Names of files whose UPLOAD is in flight. Drives a transient "загрузка…" chip
+  // per file — this is upload, not processing/transcription; cleared as each
+  // upload resolves.
   const [uploading, setUploading] = useState<string[]>([]);
   // Deferred send (Variant Б): if the user hits send while files are still
   // uploading, remember the intent and fire it automatically once `uploading`
@@ -141,8 +148,11 @@ export function Composer({
   // Hand the Shell a trigger for the hidden file input so the "+" menu's
   // "Прикрепить файл" can open it. Registered once on mount.
   useEffect(() => {
-    onAttachReady?.(() => fileRef.current?.click());
-  }, [onAttachReady]);
+    onAttachReady?.({
+      openFilePicker: () => fileRef.current?.click(),
+      attachFiles: (files) => { void onPickFiles(files); },
+    });
+  }, [onAttachReady, sessionId]);
 
   function submit() {
     const text = value.trim();
@@ -161,17 +171,9 @@ export function Composer({
       setPendingSend(true);
       return;
     }
-    const staged = attachments.length ? attachments : undefined;
-    // Fire-and-forget: persist any chips the user marked for the Library to
-    // data/uploads (/api/lib/add) so the document is reusable across chats. The
-    // chat send itself is unaffected — it still carries the parsed text inline.
-    if (staged) {
-      for (const a of staged) {
-        if (a.toLibrary && a.ok && a.file) {
-          void uploadLibraryFile(a.file, { useInContext: true }).catch(() => { /* best-effort */ });
-        }
-      }
-    }
+    // Only successfully-uploaded resources ride along; failed chips are dropped.
+    const ready = attachments.filter((a) => a.status === "ready");
+    const staged = ready.length ? ready : undefined;
     onSend(text, mode, staged, permissionMode, thinking, noQuestions);
     onChange("");
     setAttachments([]);
@@ -195,31 +197,31 @@ export function Composer({
     }
   }
 
-  async function onPickFiles(files: FileList | null) {
+  async function onPickFiles(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
     const picked = Array.from(files);
-    // Show a transient "загрузка…" chip per file while it is sent to the backend
-    // for parsing/transcription; each clears the moment its file resolves and is
-    // replaced by the real attachment chip.
+    // Show a transient "загрузка…" chip per file while its UPLOAD is in flight
+    // (registration only — no processing). The raw File is used solely here and
+    // is never kept after the upload resolves.
     setUploading(picked.map((f) => f.name));
     setAttaching(true);
     try {
       for (const file of picked) {
         try {
-          const att = await attachToChat(file);
-          setAttachments((prev) => [...prev, att]);
+          const ref = await uploadResource(file, sessionId);
+          setAttachments((prev) => [...prev, { ...ref, status: "ready" }]);
         } catch (err) {
-          // Surface the real backend reason (e.g. "Файл больше 100 МБ") from the
-          // ApiError instead of a generic message.
-          const reason = err instanceof Error && err.message ? err.message : "Не удалось обработать файл";
+          const reason = err instanceof Error && err.message
+            ? err.message
+            : "Не удалось загрузить файл";
           setAttachments((prev) => [...prev, {
-            ok: false, filename: file.name,
-            kind: file.type.startsWith("image/") ? "image" : "document",
-            text: "", chars: 0, note: reason,
+            resource_id: "", name: file.name,
+            kind: "other", content_type: file.type || "application/octet-stream",
+            size: file.size, status: "error", error: reason,
           }]);
         } finally {
           // Remove the first matching name so this file's spinner disappears as
-          // soon as it finishes, even mid-batch.
+          // soon as its upload finishes, even mid-batch.
           setUploading((prev) => {
             const idx = prev.indexOf(file.name);
             return idx === -1 ? prev : [...prev.slice(0, idx), ...prev.slice(idx + 1)];
@@ -283,30 +285,15 @@ export function Composer({
           <div className="mb-2 flex flex-wrap gap-1.5">
             {attachments.map((a, i) => (
               <span
-                key={`${a.filename}-${i}`}
-                title={a.ok ? `${a.chars.toLocaleString()} симв.${a.note ? ` · ${a.note}` : ""}` : (a.note || "Ошибка")}
+                key={a.resource_id || `err-${a.name}-${i}`}
+                title={a.status === "error" ? (a.error || "Ошибка загрузки") : `${a.kind} · ${a.size.toLocaleString()} байт`}
                 className={cn(
                   "flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px]",
-                  a.ok ? "border-line text-t2" : "border-red-500/50 text-red-400",
+                  a.status === "error" ? "border-red-500/50 text-red-400" : "border-line text-t2",
                 )}
               >
                 {a.kind === "image" ? <ImageIcon size={12} className="shrink-0" /> : <FileText size={12} className="shrink-0" />}
-                <span className="max-w-[160px] truncate">{a.filename}</span>
-                {a.ok && a.file && (
-                  <button
-                    type="button"
-                    onClick={() => setAttachments((prev) => prev.map((x, j) => (j === i ? { ...x, toLibrary: !x.toLibrary } : x)))}
-                    aria-pressed={Boolean(a.toLibrary)}
-                    title={a.toLibrary ? "Будет сохранён в Библиотеку (доступен в любом чате). Нажми, чтобы отменить" : "Сохранить в Библиотеку, чтобы переиспользовать в других чатах"}
-                    aria-label="Сохранить в Библиотеку"
-                    className={cn(
-                      "shrink-0 transition-colors",
-                      a.toLibrary ? "text-ac" : "text-mut hover:text-tx",
-                    )}
-                  >
-                    <BookmarkPlus size={12} />
-                  </button>
-                )}
+                <span className="max-w-[160px] truncate">{a.name}</span>
                 <button
                   type="button"
                   onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
@@ -320,7 +307,7 @@ export function Composer({
             {uploading.map((name, i) => (
               <span
                 key={`uploading-${name}-${i}`}
-                title="Файл загружается и обрабатывается…"
+                title="Файл загружается…"
                 className="flex items-center gap-1.5 rounded-full border border-line px-2 py-1 text-[11px] text-t2"
               >
                 <Loader2 size={12} className="shrink-0 animate-spin" />
@@ -335,7 +322,6 @@ export function Composer({
             ref={fileRef}
             type="file"
             multiple
-            accept="image/*,audio/*,.pdf,.txt,.md,.csv,.docx,.doc,.rtf,.json,.ogg,.oga,.opus,.wav,.mp3,.m4a,.mp4,audio/mp4,video/mp4,.flac,.webm,.aac"
             className="hidden"
             onChange={(e) => onPickFiles(e.target.files)}
           />

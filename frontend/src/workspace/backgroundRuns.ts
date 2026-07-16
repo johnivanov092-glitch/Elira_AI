@@ -13,7 +13,7 @@ import {
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
-import type { ChatAttachment } from "../api/chat";
+import type { ResourceAttachment } from "../api/resources";
 import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, FileEntry, Turn } from "./types";
 
@@ -374,7 +374,8 @@ export type SendArgs = {
   mode: CodeAgentMode;
   projectRoot: string;
   model: string;
-  attachments?: ChatAttachment[];
+  /** Durable resources attached to this message (uploaded, not processed). */
+  resources?: ResourceAttachment[];
   /** Active UI persona profile (the `agent_profile` global setting). Threaded
    *  into the code-agent stream so the user's selected mode reaches Elira's
    *  persona prompt; undefined falls back to the backend default. */
@@ -392,7 +393,7 @@ export type SendArgs = {
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode, thinking, noQuestions } = args;
+  const { sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, thinking, noQuestions } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -431,15 +432,15 @@ export function send(args: SendArgs): void {
   const agentId = nid();
   entry.runId = null;
   entry.lastMode = mode;
-  // Per-message attachments: surface a file chip in the transcript so the user
-  // sees the message carried a file (the parsed text/transcription itself goes
-  // to the agent inline). "attached" renders neutrally — no library status.
-  const fileEntries: FileEntry[] = (attachments ?? [])
-    .filter((a) => a && a.filename)
-    .map((a): FileEntry => ({
-      name: a.filename || "файл",
-      isImage: a.kind === "image",
-      status: a.ok === false ? "error" : "attached",
+  // Per-message resources: surface a file chip in the transcript so the user
+  // sees the message carried a file. The file is NOT processed here — the agent
+  // reads it on demand via resource_process. "attached" renders neutrally.
+  const fileEntries: FileEntry[] = (resources ?? [])
+    .filter((r) => r && r.name && r.status !== "uploading")
+    .map((r): FileEntry => ({
+      name: r.name || "файл",
+      isImage: r.kind === "image",
+      status: r.status === "error" ? "error" : "attached",
     }));
   update(entry, (s) => ({
     ...s,
@@ -451,11 +452,12 @@ export function send(args: SendArgs): void {
       { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
     ],
   }));
-  // One stream invoker for every mode: `/api/code-agent/stream` already accepts
-  // a project root and parsed attachments together, so the unified "Чат\Код"
-  // chip carries both at once.
+  // One stream invoker for every mode. Ready resources ride along as ResourceRefs
+  // (resource_id only); the agent reads their content via resource_process. The
+  // session id lets the backend bind only resources this session owns.
+  const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, permissionMode, thinking, noQuestions, ...handlers }));
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, thinking, noQuestions, ...handlers }));
 }
 
 /** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`

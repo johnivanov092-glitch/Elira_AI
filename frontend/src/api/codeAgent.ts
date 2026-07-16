@@ -1,5 +1,5 @@
 import { API_BASE, ApiError, buildApiUrl, request, withAuth } from "./client";
-import type { ChatAttachment } from "./chat";
+import { toWireResource, type ResourceRef } from "./resources";
 
 export const DEFAULT_CODE_AGENT_MODEL = "auto";
 
@@ -65,10 +65,14 @@ export type CodeAgentRunArgs = {
   mode?: CodeAgentMode;
   autoRemember?: boolean;
   conversationHistory?: ConversationMessage[];
-  /** Composer attachments (images / documents) already parsed to text by
-   *  `/api/chat/attach`. Carried alongside the project so the unified "Чат\Код"
-   *  chip can do both at once. Frontend-only fields are stripped before send. */
-  attachments?: ChatAttachment[];
+  /** Durable resources (files) attached to this run, by ResourceRef. Only the
+   *  resource_id crosses the wire — the raw File, bytes, extracted text, and any
+   *  path stay client-/server-side. The model reads them via `resource_process`,
+   *  never as auto-injected text. */
+  resources?: ResourceRef[];
+  /** Session id that owns the attached resources; the backend binds them to this
+   *  run only when it matches the resource owner. */
+  sessionId?: string;
   /** Persona mode (Авто / Личный / Баланс / Инженерный / Деловой / Инфраструктура); "Авто" lets Elira pick
    *  per message, a concrete mode locks it. Mirrors chat's profile_name field. */
   profileName?: string;
@@ -244,7 +248,8 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     mode = "code",
     autoRemember = true,
     conversationHistory,
-    attachments,
+    resources,
+    sessionId,
     profileName,
     permissionMode,
     thinking,
@@ -256,11 +261,9 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     onError,
   } = args;
 
-  // Strip frontend-only fields (the raw File, the toLibrary toggle) before the
-  // attachments cross the wire — the backend only consumes the parsed metadata.
-  const wireAttachments = (attachments ?? []).map(
-    ({ file: _file, toLibrary: _toLibrary, ...rest }) => rest,
-  );
+  // Only resource_id crosses the wire — never the raw File, bytes, extracted
+  // text, or any filesystem path. The backend re-derives the rest from the store.
+  const wireResources = (resources ?? []).map(toWireResource);
 
   const url = `${API_BASE}/api/code-agent/stream`;
   let response: Response;
@@ -282,7 +285,8 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         ...(permissionMode ? { permission_mode: permissionMode } : {}),
         ...(thinking ? { thinking: true } : {}),
         ...(noQuestions ? { no_questions: true } : {}),
-        ...(wireAttachments.length ? { attachments: wireAttachments } : {}),
+        ...(sessionId ? { session_id: sessionId } : {}),
+        ...(wireResources.length ? { resources: wireResources } : {}),
       }),
       signal,
     });

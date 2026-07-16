@@ -56,6 +56,9 @@ from app.application.code_agent.tools._vision import (
 from app.application.code_agent.tools._computer import (
     tool_computer,
 )
+from app.application.code_agent.tools._resources import (
+    tool_resource_process,
+)
 from app.application.code_agent.tools._drift import (
     tool_reconcile_server_facts,
 )
@@ -99,4 +102,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
         "ocr_file": lambda **kw: tool_ocr_file(project_root, **kw),
         "computer": lambda **kw: tool_computer(project_root, **kw),
+        # Reads a run-bound resource by opaque id (no project path involved).
+        "resource_process": lambda **kw: tool_resource_process(**kw),
     }

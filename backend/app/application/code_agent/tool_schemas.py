@@ -236,6 +236,30 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "resource_process",
+                "description": (
+                    "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) по явному запросу: "
+                    "прочитать файл, извлечь текст, расшифровать/транскрибировать аудио или "
+                    "видео (включая .mp4/.ogg голосовые). Process an attached resource / "
+                    "attachment by its resource_id — read file, extract text, transcribe "
+                    "audio/video. Read-only, one call = one operation. operation='inspect' "
+                    "returns metadata; 'extract_text' extracts document text; 'transcribe' "
+                    "runs speech-to-text. Takes a resource_id (NOT a path); the file must be "
+                    "attached to THIS run."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
+                    },
+                    "required": ["resource_id", "operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "grep",
                 "description": "Search file contents for a regex pattern. Returns 'file:line:match' lines.",
                 "parameters": {
