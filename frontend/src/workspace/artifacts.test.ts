@@ -89,3 +89,45 @@ describe("deriveArtifacts — file_gen download artifact", () => {
     expect(a.file?.path).toBe("src/a.ts");
   });
 });
+
+describe("deriveArtifacts — resource_publish download artifact (R4B)", () => {
+  it("turns a successful resource_publish into a download artifact", () => {
+    const a = deriveArtifacts([
+      agentTurn([
+        {
+          tool: "resource_publish",
+          ok: true,
+          download_url: "/api/skills/download/clip.mp3",
+          download_name: "clip.mp3",
+        },
+      ]),
+    ]);
+    expect(a.download).toEqual({
+      url: "/api/skills/download/clip.mp3",
+      name: "clip.mp3",
+      key: "1:/api/skills/download/clip.mp3",
+    });
+  });
+
+  it("ignores a failed resource_publish (no download card)", () => {
+    const a = deriveArtifacts([
+      agentTurn([{ tool: "resource_publish", ok: false, download_url: "/api/skills/download/x.mp3" }]),
+    ]);
+    expect(a.download).toBeUndefined();
+  });
+
+  it("gives the SAME published url from two tool-calls distinct artifact keys", () => {
+    const url = "/api/skills/download/clip.mp3";
+    const first = deriveArtifacts([
+      agentTurn([{ tool: "resource_publish", ok: true, download_url: url, download_name: "clip.mp3" }]),
+    ]);
+    const second = deriveArtifacts([
+      agentTurn([
+        { tool: "run_bash" },
+        { tool: "resource_publish", ok: true, download_url: url, download_name: "clip.mp3" },
+      ]),
+    ]);
+    expect(first.download?.url).toBe(second.download?.url);
+    expect(downloadArtifactKey(first)).not.toBe(downloadArtifactKey(second));
+  });
+});

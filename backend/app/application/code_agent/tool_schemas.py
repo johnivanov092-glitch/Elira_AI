@@ -293,6 +293,32 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "resource_publish",
+                "description": (
+                    "Опубликовать ГОТОВЫЙ файл из папки проекта пользователю для скачивания "
+                    "(кнопка «Скачать» в интерфейсе). Publish an already-produced workspace "
+                    "file to the user as a downloadable artifact. Use this AFTER you have "
+                    "created/converted/encoded the file with the normal tools (run_bash / "
+                    "ffmpeg / python / file_gen). Takes project_path (a RELATIVE path to an "
+                    "existing file in the project workspace, NOT absolute) and an optional "
+                    "download_name (a plain filename, no directories; default = the source's "
+                    "safe basename). It copies the file to the download area and returns a "
+                    "download_url — it never overwrites an existing download of the same name."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "project_path": {"type": "string", "description": "Relative path to an existing file in the project workspace to deliver (never absolute, no '..')."},
+                        "download_name": {"type": "string", "description": "Optional plain filename for the download (no path, no directories). Default: the source's safe basename."},
+                    },
+                    "required": ["project_path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "grep",
                 "description": "Search file contents for a regex pattern. Returns 'file:line:match' lines.",
                 "parameters": {

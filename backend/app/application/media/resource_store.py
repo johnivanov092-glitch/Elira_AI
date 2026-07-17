@@ -458,8 +458,16 @@ def _workspace_destination(workspace_root: Path, dest_dir: Path, final_name: str
             raise ValueError("workspace is not a directory")
         resolved_dir = dest_dir.resolve()
         resolved_dir.relative_to(root)
-        resolved = (resolved_dir / final_name).resolve()
+        candidate = resolved_dir / final_name
+        # Path.exists() follows links and is false for a dangling link.  The
+        # requested directory entry is occupied in either case and must never be
+        # followed as the publication destination.
+        if os.path.lexists(candidate):
+            raise ResourceError("destination_exists", http_status=409)
+        resolved = candidate.resolve()
         resolved.relative_to(root)
+    except ResourceError:
+        raise
     except Exception as exc:
         raise ResourceError("invalid_destination", http_status=400) from exc
     return resolved
@@ -471,6 +479,109 @@ def _best_effort_unlink(path: Path) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _copy_to_new_file(
+    *,
+    source: Path,
+    destination_root: Path,
+    dest_dir: Path,
+    final_name: str,
+    cap: int,
+    temp_prefix: str,
+    expected_size: int | None = None,
+    expected_sha256: str | None = None,
+    source_root: Path | None = None,
+) -> tuple[int, str]:
+    """Stream ``source`` to a verified, atomically-created destination.
+
+    ``source_root`` enables a final containment/regular-file check immediately
+    before opening a workspace source.  The destination root is always supplied
+    by the server; using ``dest_dir`` as its own root would make containment
+    vacuous for a symlinked download directory.
+    """
+    dest = _workspace_destination(destination_root, dest_dir, final_name)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = _workspace_destination(destination_root, dest_dir, final_name)
+
+    write_hasher = hashlib.sha256()
+    size = 0
+    fd, tmp_name = tempfile.mkstemp(dir=str(dest_dir), prefix=temp_prefix, suffix=".part")
+    tmp_path = Path(tmp_name)
+    closed = False
+    temp_needs_cleanup = True
+    try:
+        read_source = source
+        if source_root is not None:
+            try:
+                canonical_root = source_root.resolve()
+                read_source = source.resolve()
+                read_source.relative_to(canonical_root)
+            except Exception as exc:  # noqa: BLE001
+                raise ResourceError("source_outside_workspace", http_status=400) from exc
+            if not read_source.is_file():
+                raise ResourceError("source_not_file", http_status=400)
+
+        with open(read_source, "rb") as src:
+            while True:
+                chunk = src.read(_COPY_CHUNK)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > cap or (expected_size is not None and size > expected_size):
+                    raise ResourceTooLarge()
+                write_hasher.update(chunk)
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise OSError("copy write made no progress")
+                    view = view[written:]
+
+        os.fsync(fd)
+        os.lseek(fd, 0, os.SEEK_SET)
+        staged_hasher = hashlib.sha256()
+        staged_size = 0
+        while True:
+            chunk = os.read(fd, _COPY_CHUNK)
+            if not chunk:
+                break
+            staged_size += len(chunk)
+            staged_hasher.update(chunk)
+
+        wanted_size = size if expected_size is None else expected_size
+        wanted_sha256 = (
+            write_hasher.hexdigest() if expected_sha256 is None else expected_sha256
+        )
+        if staged_size != wanted_size or staged_hasher.hexdigest() != wanted_sha256:
+            raise ResourceError("integrity_mismatch", http_status=500)
+
+        os.close(fd)
+        closed = True
+        current_dest = _workspace_destination(destination_root, dest_dir, final_name)
+        if current_dest != dest:
+            raise ResourceError("invalid_destination", http_status=400)
+        try:
+            if _USE_WINDOWS_RENAME:
+                os.rename(tmp_path, current_dest)
+                temp_needs_cleanup = False
+            else:
+                os.link(tmp_path, current_dest)
+                temp_needs_cleanup = not _best_effort_unlink(tmp_path)
+        except FileExistsError as exc:
+            raise ResourceError("destination_exists", http_status=409) from exc
+        return size, write_hasher.hexdigest()
+    finally:
+        if not closed:
+            try:
+                os.close(fd)
+            except Exception:  # noqa: BLE001
+                pass
+        if temp_needs_cleanup:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def materialize(
@@ -500,75 +611,68 @@ def materialize(
     if not _within(_blobs_dir(), blob_path) or not blob_path.is_file():
         raise ResourceError("resource_blob_missing", http_status=404)
     workspace = workspace_root.resolve()
-    dest = _workspace_destination(workspace, dest_dir, final_name)
-    if dest.exists():
-        raise ResourceError("destination_exists", http_status=409)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = _workspace_destination(workspace, dest_dir, final_name)
-
-    cap = max_resource_bytes()
-    size = 0
-    fd, tmp_name = tempfile.mkstemp(dir=str(dest_dir), prefix=".materialize-", suffix=".part")
-    tmp_path = Path(tmp_name)
-    closed = False
-    temp_needs_cleanup = True
     try:
-        with open(blob_path, "rb") as src:
-            while True:
-                chunk = src.read(_COPY_CHUNK)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > cap or size > record.size:
-                    raise ResourceTooLarge()
-                view = memoryview(chunk)
-                while view:
-                    written = os.write(fd, view)
-                    if written <= 0:
-                        raise OSError("materialize write made no progress")
-                    view = view[written:]
-        os.fsync(fd)
-        os.lseek(fd, 0, os.SEEK_SET)
-        staged_hasher = hashlib.sha256()
-        staged_size = 0
-        while True:
-            chunk = os.read(fd, _COPY_CHUNK)
-            if not chunk:
-                break
-            staged_size += len(chunk)
-            staged_hasher.update(chunk)
-        if staged_size != record.size or staged_hasher.hexdigest() != record.sha256:
-            raise ResourceError("integrity_mismatch", http_status=500)
-        os.close(fd)
-        closed = True
-        current_dest = _workspace_destination(workspace, dest_dir, final_name)
-        if current_dest != dest:
-            raise ResourceError("invalid_destination", http_status=400)
-        if current_dest.exists():
-            raise ResourceError("destination_exists", http_status=409)
-        try:
-            if _USE_WINDOWS_RENAME:
-                # Windows os.rename is atomic and FAILS if the target exists.
-                os.rename(tmp_path, current_dest)
-                temp_needs_cleanup = False
-            else:
-                # POSIX: os.link fails if the target exists → atomic no-overwrite.
-                os.link(tmp_path, current_dest)
-                temp_needs_cleanup = not _best_effort_unlink(tmp_path)
-        except FileExistsError as exc:
-            raise ResourceError("destination_exists", http_status=409) from exc
+        _copy_to_new_file(
+            source=blob_path,
+            destination_root=workspace,
+            dest_dir=dest_dir,
+            final_name=final_name,
+            cap=max_resource_bytes(),
+            temp_prefix=".materialize-",
+            expected_size=record.size,
+            expected_sha256=record.sha256,
+        )
     except ResourceError:
         raise
     except Exception as exc:  # noqa: BLE001 — never surface a raw path/exception
         raise ResourceError("materialize_failed", http_status=500) from exc
-    finally:
-        if not closed:
-            try:
-                os.close(fd)
-            except Exception:  # noqa: BLE001
-                pass
-        if temp_needs_cleanup:
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
+
+
+def publish_copy(
+    *,
+    workspace_root: Path,
+    source: Path,
+    destination_root: Path,
+    dest_dir: Path,
+    final_name: str,
+    cap: int | None = None,
+) -> tuple[int, str]:
+    """Stream a REGULAR in-workspace file into ``dest_dir/final_name`` (a single
+    name component) for delivery via the existing download route.
+
+    Streaming (chunked — never loads the whole file into RAM), bounded by ``cap``,
+    integrity-checked (the staged copy is read back and its size + sha256 must
+    match what was written), atomic + no-overwrite (temp in dest_dir → fsync →
+    atomic rename/link that FAILS if the target exists). Re-asserts the source is
+    a regular file inside ``workspace_root`` immediately before reading (defends
+    against a supplied path or a pre-existing reparse point — not against an
+    equal-privilege concurrent process, which already has project-write). Returns
+    (size, sha256_hex); on any failure unlinks the temp and raises ResourceError
+    with a stable reason (source_outside_workspace / source_not_file /
+    destination_exists / integrity_mismatch / resource_too_large / publish_failed).
+    """
+    limit = cap if cap is not None else max_resource_bytes()
+    root = workspace_root.resolve()
+    # Re-check containment + regular-file RIGHT before reading.
+    try:
+        real_src = Path(source).resolve()
+        real_src.relative_to(root)
+    except Exception as exc:  # noqa: BLE001
+        raise ResourceError("source_outside_workspace", http_status=400) from exc
+    if not real_src.is_file():        # rejects dir / device / fifo / socket / missing
+        raise ResourceError("source_not_file", http_status=400)
+
+    try:
+        return _copy_to_new_file(
+            source=real_src,
+            source_root=root,
+            destination_root=destination_root,
+            dest_dir=dest_dir,
+            final_name=final_name,
+            cap=limit,
+            temp_prefix=".publish-",
+        )
+    except ResourceError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — never surface a raw path/exception
+        raise ResourceError("publish_failed", http_status=500) from exc

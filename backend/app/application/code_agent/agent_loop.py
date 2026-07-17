@@ -2460,7 +2460,11 @@ def _stream_code_agent_core(
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                 }
-                for opt in ("touched_path", "old_content", "new_content", "diff_action", "exit_code", "verifier", "evidence", "download_url", "download_name"):
+                for opt in (
+                    "touched_path", "old_content", "new_content", "diff_action",
+                    "exit_code", "verifier", "evidence", "download_url",
+                    "download_name", "project_path", "size", "sha256",
+                ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
                         val = tool_meta[opt]
@@ -2489,8 +2493,9 @@ def _stream_code_agent_core(
                 if tool_meta.get("touched_path"):
                     touched_files.append(str(tool_meta.get("touched_path")))
                 # A verified file_gen sets download_name ONLY after existence-checking
-                # its output — so its presence is proof a real .docx/.xlsx exists. This
-                # (not touched_files) is what the anti-confabulation guard trusts.
+                # its output — so its presence is proof a real .docx/.xlsx/.pdf exists.
+                # resource_publish proves byte delivery only; a plain-text report.pdf
+                # must not satisfy the document-format anti-confabulation guard.
                 if name == "file_gen" and tool_meta.get("download_name"):
                     generated_docs.append(str(tool_meta.get("download_name")))
                 # ── Strategy router ──────────────────────────────────────────
@@ -2907,7 +2912,7 @@ def run_code_agent(
                 **{k: event[k] for k in (
                     "ok", "exit_code", "verifier", "evidence",
                     "touched_path", "old_content", "new_content", "diff_action",
-                    "download_url", "download_name",
+                    "download_url", "download_name", "project_path", "size", "sha256",
                 ) if k in event},
             })
         elif et == "final_response":

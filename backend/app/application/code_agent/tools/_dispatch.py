@@ -59,6 +59,7 @@ from app.application.code_agent.tools._computer import (
 from app.application.code_agent.tools._resources import (
     tool_resource_materialize,
     tool_resource_process,
+    tool_resource_publish,
 )
 from app.application.code_agent.tools._drift import (
     tool_reconcile_server_facts,
@@ -107,4 +108,6 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "resource_process": lambda **kw: tool_resource_process(**kw),
         # Writes a run-bound resource into the run's project workspace (needs root).
         "resource_materialize": lambda **kw: tool_resource_materialize(project_root, **kw),
+        # Publishes a processed workspace file to the user as a download (needs root).
+        "resource_publish": lambda **kw: tool_resource_publish(project_root, **kw),
     }

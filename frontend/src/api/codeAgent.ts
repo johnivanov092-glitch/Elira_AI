@@ -24,11 +24,16 @@ export type CodeAgentToolCall = {
   old_content?: string;
   new_content?: string;
   diff_action?: "create" | "overwrite" | "edit";
-  /** file_gen only: server-served download URL + filename for the produced artifact.
-   *  Set by the runtime ONLY after the file is verified to exist on disk, so the UI
-   *  renders a deterministic download — it never depends on the model echoing a URL. */
+  /** file_gen / resource_publish: server-served download URL + filename for the
+   *  produced artifact. Set by the runtime ONLY after the file is verified to exist
+   *  on disk, so the UI renders a deterministic download — it never depends on the
+   *  model echoing a URL. */
   download_url?: string;
   download_name?: string;
+  /** resource_publish: safe project-relative source metadata. */
+  project_path?: string;
+  size?: number;
+  sha256?: string;
   /** The RUNTIME made this call itself (auto-verifier closure pass), not the model. */
   auto_verifier?: boolean;
 };

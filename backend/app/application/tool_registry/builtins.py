@@ -423,6 +423,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("screenshot",     "Screenshot",     "web",     "Capture a screenshot of a URL",        120, 10000, False),
         ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel/PDF file",        60,  5000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
+        ("resource_publish", "Publish Resource", "media", "Publish an already-produced project file to the user as a downloadable artifact (streaming, integrity-verified, no overwrite) via the existing download route", 60, 5000, True),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
     ]
     auto_side_effect_tools = [
@@ -454,6 +455,8 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "resource_process": ["fs.read", "net.outbound"],
         # Reads the run-bound resource blob (fs.read) and writes a new workspace file (fs.write).
         "resource_materialize": ["fs.read", "fs.write"],
+        # Reads a workspace file (fs.read) and writes a new download artifact (fs.write).
+        "resource_publish": ["fs.read", "fs.write"],
         # Desktop control is shell-level power: gated like run_bash, so the
         # "accept_edits" mode never auto-approves it (only "bypass" / explicit ask).
         "computer": ["shell.exec", "net.outbound"],
@@ -519,6 +522,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "сохрани вложение в проект, конвертировать, ffmpeg, распаковать архив, "
             "прогнать через python, resource, attachment, materialize resource, "
             "copy attachment into project, workspace",
+        ),
+        "resource_publish": (
+            "Опубликовать готовый файл пользователю для скачивания",
+            "Отдать/опубликовать готовый файл из проекта пользователю, сделать кнопку "
+            "Скачать, дать ссылку на скачивание результата: publish, download, скачать, "
+            "отдай файл, пришли файл, ссылка на скачивание, готовый файл, результат, "
+            "artifact, deliver file, download link, workspace file",
         ),
     }
     for _spec in result:

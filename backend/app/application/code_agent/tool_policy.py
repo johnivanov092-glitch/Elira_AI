@@ -49,7 +49,7 @@ READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")
 SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
     {
         "computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver",
-        "encrypt", "webhook", "screenshot", "resource_materialize",
+        "encrypt", "webhook", "screenshot", "resource_materialize", "resource_publish",
     }
 )
 
@@ -58,7 +58,7 @@ SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
 # filesystem edit like write_file/file_gen — same three approval modes, no new policy.
 EDIT_ONLY_TOOLS: frozenset[str] = frozenset(
     {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver",
-     "sandbox_reset", "resource_materialize"}
+     "sandbox_reset", "resource_materialize", "resource_publish"}
 )
 
 # Tools that must ALWAYS be confirmed by the user, even in bypass. Reserved for

@@ -81,6 +81,7 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
 import os as _os                                              # noqa: E402
 import re as _re                                              # noqa: E402
 from pathlib import Path as _Path                             # noqa: E402
+from urllib.parse import quote as _url_quote                 # noqa: E402
 
 _MAX_DEST_DEPTH = 8
 _MAX_NAME_CHARS = 200
@@ -216,4 +217,94 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
         "touched_path": rel,
         "diff_action": "create",
         "text": f"Materialized attached resource into {rel} ({record.size} bytes)",
+    }
+
+
+# ── resource_publish (R4B) — deliver a processed workspace file to the user as a
+#    structured download artifact via the EXISTING /api/skills/download route. ──
+
+_PUBLISH_ERROR_TEXT = {
+    "unsupported_arguments": "resource_publish accepts only project_path and download_name",
+    "invalid_source": "project_path must be a relative path inside the project workspace",
+    "source_not_file": "project_path must be an existing regular file",
+    "source_outside_workspace": "project_path is not inside the project workspace",
+    "invalid_download_name": "download_name must be a plain filename (no path, no '..')",
+    "destination_exists": "a download with that name already exists; choose another name",
+    "integrity_mismatch": "the published copy did not match the source; nothing was published",
+    "resource_too_large": "the file is too large to publish",
+    "publish_failed": "could not publish the file",
+}
+
+
+def _publish_refusal(code: str) -> dict[str, Any]:
+    """A stable refusal that never echoes the model input or any absolute path."""
+    return {"ok": False, "error": code, "text": f"ERROR: {_PUBLISH_ERROR_TEXT[code]}"}
+
+
+def _safe_download_name(name: str) -> str | None:
+    """A single-component download filename: no directories, no absolute/drive/UNC,
+    no ADS/reserved/trailing-dot-space/control/leading-or-trailing-whitespace.
+    Returns None if invalid (never silently normalizes a dangerous name)."""
+    raw = str(name or "")
+    if not raw or raw != raw.strip():             # reject leading/trailing whitespace
+        return None
+    if "/" in raw or "\\" in raw:                 # must be a bare filename, not a path
+        return None
+    if len(raw) > _MAX_NAME_CHARS or not _safe_component(raw):
+        return None
+    return raw
+
+
+def tool_resource_publish(project_root: Any, project_path: str = "",
+                          download_name: str = "", **extra: Any) -> dict[str, Any]:
+    """Publish an already-produced workspace file to the user as a structured
+    download artifact. Args: project_path (a relative path to an existing file in
+    the project workspace, NOT absolute) and optional download_name (a plain safe
+    filename, no directories; default = the source's safe basename). Copies the
+    file (streaming, integrity-verified, no-overwrite) into the server download dir
+    and returns a download_url for the existing /api/skills/download route — a
+    project-relative path only, never an absolute/storage path."""
+    from app.application.media import resource_store
+    from app.core.config import DATA_DIR, GENERATED_DIR
+
+    if extra:
+        return _publish_refusal("unsupported_arguments")
+    root = _Path(str(project_root)).resolve()
+    src = _safe_dest(root, str(project_path or ""))
+    if src is None:
+        return _publish_refusal("invalid_source")
+    if not src.is_file():                          # rejects dir / device / missing
+        return _publish_refusal("source_not_file")
+
+    requested = str(download_name or "")
+    chosen = requested if requested.strip() else _safe_basename(src.name)
+    name = _safe_download_name(chosen)
+    if name is None:
+        return _publish_refusal("invalid_download_name")
+
+    try:
+        size, sha256 = resource_store.publish_copy(
+            workspace_root=root,
+            source=src,
+            destination_root=DATA_DIR,
+            dest_dir=GENERATED_DIR,
+            final_name=name,
+        )
+    except resource_store.ResourceError as exc:
+        code = exc.reason if exc.reason in _PUBLISH_ERROR_TEXT else "publish_failed"
+        return _publish_refusal(code)
+    except Exception:  # noqa: BLE001 — never surface a raw path/exception
+        return _publish_refusal("publish_failed")
+
+    rel = src.relative_to(root).as_posix()
+    # download_name is set ONLY here, AFTER a verified atomic publish.  This proves
+    # byte delivery, not that an arbitrary .pdf/.docx suffix contains that format.
+    return {
+        "ok": True,
+        "text": f"Published {rel} as downloadable file {name} ({size} bytes).",
+        "project_path": rel,
+        "download_url": f"/api/skills/download/{_url_quote(name, safe='')}",
+        "download_name": name,
+        "size": size,
+        "sha256": sha256,
     }
