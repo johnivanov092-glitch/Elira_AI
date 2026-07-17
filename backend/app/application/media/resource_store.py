@@ -348,6 +348,31 @@ def register_resource(*, original_name: str, content_type: str, owner_session: s
         raise
 
 
+def discard(record: ResourceRecord) -> None:
+    """Best-effort removal of a resource's metadata sidecar AND durable blob.
+
+    Used to undo a resource that was just registered but could not be attached to
+    any run (e.g. a run-binding failure), so a registration unreachable by every
+    run does not leak durable bytes. Never raises. Only unlinks inside the
+    canonical meta/blobs roots — a malformed ``storage_path`` can never delete
+    elsewhere. Meta is removed FIRST so the resource becomes immediately
+    unresolvable (``get_record`` needs the sidecar); a crash between the two
+    unlinks leaves an orphan blob that ``sweep_stale`` reclaims."""
+    rid = str(record.resource_id or "").strip().lower()
+    if not _RESOURCE_ID_RE.match(rid):
+        return
+    with _STORE_LOCK:
+        meta_root = _meta_dir()
+        blobs_root = _blobs_dir()
+        for path, root in ((meta_root / f"{rid}.json", meta_root),
+                           (blobs_root / rid, blobs_root)):
+            try:
+                if _within(root, path):
+                    path.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001 — cleanup is best-effort
+                pass
+
+
 def _meta_payload(record: ResourceRecord) -> dict[str, Any]:
     return {
         "resource_id": record.resource_id,

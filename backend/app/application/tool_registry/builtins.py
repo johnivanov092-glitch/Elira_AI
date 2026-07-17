@@ -424,6 +424,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel/PDF file",        60,  5000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Publish an already-produced project file to the user as a downloadable artifact (streaming, integrity-verified, no overwrite) via the existing download route", 60, 5000, True),
+        ("resource_remote_process", "Remote OCR Process", "media", "Send a file attached to this run to the trusted remote OCR worker, verify the result, and attach the recognized text as a new resource (data egress; approval required)", 875, 5000, False),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
     ]
     auto_side_effect_tools = [
@@ -457,6 +458,12 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "resource_materialize": ["fs.read", "fs.write"],
         # Reads a workspace file (fs.read) and writes a new download artifact (fs.write).
         "resource_publish": ["fs.read", "fs.write"],
+        # Reads the run-bound resource blob (fs.read), sends it to the remote OCR
+        # worker (net.outbound), and registers the recognized text as a new
+        # durable resource — a blob + meta sidecar written under the data root,
+        # unlinked on a bind failure (fs.write). MANDATORY: a missing entry yields
+        # [] and the executor scope gate would then pass vacuously.
+        "resource_remote_process": ["fs.read", "fs.write", "net.outbound"],
         # Desktop control is shell-level power: gated like run_bash, so the
         # "accept_edits" mode never auto-approves it (only "bypass" / explicit ask).
         "computer": ["shell.exec", "net.outbound"],
@@ -529,6 +536,13 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "Скачать, дать ссылку на скачивание результата: publish, download, скачать, "
             "отдай файл, пришли файл, ссылка на скачивание, готовый файл, результат, "
             "artifact, deliver file, download link, workspace file",
+        ),
+        "resource_remote_process": (
+            "Удалённое распознавание текста (OCR) прикреплённого файла на воркере",
+            "Распознать текст из прикреплённого скана PDF или изображения на удалённом "
+            "OCR-воркере: удалённый OCR, распознать текст, распознавание, OCR, "
+            "remote ocr, recognize text, скан, PDF, изображение, картинка, вложение, "
+            "ресурс, attachment, resource, обработать удалённо, на воркере, remote worker",
         ),
     }
     for _spec in result:

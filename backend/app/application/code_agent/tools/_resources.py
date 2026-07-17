@@ -75,6 +75,56 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
     return processing.process_resource(record, operation, target)
 
 
+# ── resource_remote_process (R5C) — send a run-bound resource to the env-owned
+#    remote OCR worker and register the recognized text as a new ResourceRef. ────
+
+_REMOTE_ERROR_TEXT = {
+    "no_run_context": "resource_remote_process requires a run context",
+    "unsupported_arguments": "resource_remote_process accepts only resource_id and operation",
+    "unsupported_operation": "operation must be ocr",
+    "resource_not_bound": "resource is not attached to this run",
+    "resource_not_found": "resource not found",
+}
+
+
+def _remote_refusal(code: str) -> dict[str, Any]:
+    """A stable refusal that never echoes the model input or any absolute path."""
+    return {"ok": False, "error": code, "text": f"ERROR: {_REMOTE_ERROR_TEXT[code]}"}
+
+
+def tool_resource_remote_process(resource_id: str = "", operation: str = "ocr",
+                                 **extra: Any) -> dict[str, Any]:
+    """Process a run-bound resource on the trusted, env-configured remote OCR
+    worker and attach the recognized text to this run as a NEW resource. Args:
+    resource_id (opaque id, NOT a path) and operation (only "ocr"). Sends only the
+    resource bytes (data egress → approval); returns a bounded projection with a
+    new resource_ref — never the OCR text, a host/URL/token, or a storage path.
+    The derived resource works with resource_materialize / resource_publish."""
+    from app.application.code_agent.tools import get_current_run_id
+    from app.application.media import remote_execution, resource_store, run_binding
+
+    run_id = get_current_run_id()
+    resource_id = str(resource_id or "").strip()
+    operation = str(operation or "").strip().lower()
+
+    # Reject any unexpected argument without echoing its name/value — the schema
+    # already forbids extras; this is the defense-in-depth at dispatch.
+    if extra:
+        return _remote_refusal("unsupported_arguments")
+    if operation != "ocr":
+        return _remote_refusal("unsupported_operation")
+    if not run_id:
+        return _remote_refusal("no_run_context")
+    # Ownership/run gate FIRST — an unbound id (or a path passed as an id) is
+    # refused before any store lookup, byte read, or network call.
+    if not run_binding.is_bound(run_id, resource_id):
+        return _remote_refusal("resource_not_bound")
+    record = resource_store.get_record(resource_id)
+    if record is None:
+        return _remote_refusal("resource_not_found")
+    return remote_execution.run_remote_ocr(record=record, run_id=run_id)
+
+
 # ── resource_materialize (R4A) — bridge a run-bound ResourceRef into the run's
 #    project workspace so the existing file/run_bash tools can process it. ──────
 

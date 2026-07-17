@@ -56,6 +56,27 @@ def bound_resources(run_id: str) -> set[str]:
         return set(_BOUND.get(rid, set()))
 
 
+def add_bound(run_id: str, resource_id: str) -> bool:
+    """Atomically ADD a single id to a run's binding, preserving the existing set.
+
+    Unlike :func:`bind_resources` (which REPLACES the whole set), this unions
+    under the lock, so attaching a derived resource never drops the run's
+    original inputs. A read-union-write via ``bind_resources`` would race a
+    concurrent bind on the same run; this does not. Returns True on success,
+    False for an empty run_id or resource_id (nothing bound)."""
+    rid = _norm(run_id)
+    res = str(resource_id or "").strip()
+    if not rid or not res:
+        return False
+    with _LOCK:
+        current = _BOUND.get(rid)
+        if current is None:
+            _BOUND[rid] = {res}
+        else:
+            current.add(res)
+    return True
+
+
 def clear_run(run_id: str) -> None:
     """Drop a run's resource binding (call when the run ends)."""
     rid = _norm(run_id)

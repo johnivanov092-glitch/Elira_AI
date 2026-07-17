@@ -267,6 +267,34 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "resource_remote_process",
+                "description": (
+                    "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) на доверенном "
+                    "удалённом OCR-воркере: распознать текст из скана PDF/изображения и "
+                    "приложить результат к этому запуску как новый ресурс. Process an "
+                    "attached resource (by resource_id) on the trusted remote OCR worker: "
+                    "recognize text from a scanned PDF/image and attach it to THIS run as a "
+                    "new resource. operation is only 'ocr'. Takes a resource_id (NOT a "
+                    "path); the file must be attached to THIS run. Sends the file to the "
+                    "worker (data egress → requires approval); returns a new resource_ref "
+                    "you can then materialize or publish. Never returns the text itself or "
+                    "any host/URL/path. Use ONLY when the user asks to OCR / recognize / "
+                    "распознать text from an attached scan remotely."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "operation": {"type": "string", "enum": ["ocr"], "description": "What to do remotely. Only 'ocr' (recognize text from a scanned PDF/image)."},
+                    },
+                    "required": ["resource_id", "operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "resource_materialize",
                 "description": (
                     "Материализовать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) в текущую папку "
