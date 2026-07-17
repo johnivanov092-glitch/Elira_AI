@@ -285,7 +285,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["ocr"], "description": "What to do remotely. Only 'ocr' (recognize text from a scanned PDF/image)."},
                     },
                     "required": ["resource_id", "operation"],

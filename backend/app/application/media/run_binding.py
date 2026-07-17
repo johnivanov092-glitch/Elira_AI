@@ -12,12 +12,15 @@ model: resolution always goes id → is_bound(run_id, id) → store lookup.
 """
 from __future__ import annotations
 
+import itertools
 import threading
 from collections.abc import Iterable
 
 _LOCK = threading.RLock()
 # run_id -> set of resource ids attached to that run.
 _BOUND: dict[str, set[str]] = {}
+_GENERATIONS: dict[str, int] = {}
+_GENERATION_COUNTER = itertools.count(1)
 
 
 def _norm(run_id: str) -> str:
@@ -34,8 +37,10 @@ def bind_resources(run_id: str, resource_ids: Iterable[str]) -> set[str]:
     with _LOCK:
         if ids:
             _BOUND[rid] = set(ids)
+            _GENERATIONS[rid] = next(_GENERATION_COUNTER)
         else:
             _BOUND.pop(rid, None)
+            _GENERATIONS.pop(rid, None)
         return set(ids)
 
 
@@ -56,24 +61,44 @@ def bound_resources(run_id: str) -> set[str]:
         return set(_BOUND.get(rid, set()))
 
 
-def add_bound(run_id: str, resource_id: str) -> bool:
+def binding_generation(run_id: str, *, required_resource_id: str = "") -> int | None:
+    """Return the current opaque generation, optionally only if a source is bound."""
+    rid = _norm(run_id)
+    required = str(required_resource_id or "").strip()
+    if not rid:
+        return None
+    with _LOCK:
+        current = _BOUND.get(rid)
+        if current is None or (required and required not in current):
+            return None
+        return _GENERATIONS.get(rid)
+
+
+def add_bound(run_id: str, resource_id: str, *, required_resource_id: str = "",
+              required_generation: int | None = None) -> bool:
     """Atomically ADD a single id to a run's binding, preserving the existing set.
 
     Unlike :func:`bind_resources` (which REPLACES the whole set), this unions
     under the lock, so attaching a derived resource never drops the run's
     original inputs. A read-union-write via ``bind_resources`` would race a
     concurrent bind on the same run; this does not. Returns True on success,
-    False for an empty run_id or resource_id (nothing bound)."""
+    False for invalid input, when the run no longer has a live binding, or when
+    *required_resource_id* is no longer in that binding, or its opaque generation
+    changed. These checks atomically pin a derived result to the exact source run
+    binding across concurrent replacement (including same-source ABA replacement).
+    It deliberately never recreates a binding removed by :func:`clear_run`."""
     rid = _norm(run_id)
     res = str(resource_id or "").strip()
+    required = str(required_resource_id or "").strip()
     if not rid or not res:
         return False
     with _LOCK:
         current = _BOUND.get(rid)
-        if current is None:
-            _BOUND[rid] = {res}
-        else:
-            current.add(res)
+        if current is None or (required and required not in current):
+            return False
+        if required_generation is not None and _GENERATIONS.get(rid) != required_generation:
+            return False
+        current.add(res)
     return True
 
 
@@ -82,3 +107,4 @@ def clear_run(run_id: str) -> None:
     rid = _norm(run_id)
     with _LOCK:
         _BOUND.pop(rid, None)
+        _GENERATIONS.pop(rid, None)

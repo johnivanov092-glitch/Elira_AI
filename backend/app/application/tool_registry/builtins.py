@@ -424,7 +424,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("file_gen",       "File Gen",       "media",   "Generate a Word/Excel/PDF file",        60,  5000, False),
         ("resource_materialize", "Materialize Resource", "media", "Copy a file attached to this run into the project workspace (new file, no overwrite) so file/run_bash tools can process it", 60, 5000, True),
         ("resource_publish", "Publish Resource", "media", "Publish an already-produced project file to the user as a downloadable artifact (streaming, integrity-verified, no overwrite) via the existing download route", 60, 5000, True),
-        ("resource_remote_process", "Remote OCR Process", "media", "Send a file attached to this run to the trusted remote OCR worker, verify the result, and attach the recognized text as a new resource (data egress; approval required)", 875, 5000, False),
+        ("resource_remote_process", "Remote OCR Process", "media", "Send a file attached to this run to the trusted remote OCR worker, verify the result, and attach the recognized text as a new resource (data egress; approval required)", 900, 5000, False),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
     ]
     auto_side_effect_tools = [
@@ -491,7 +491,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         })
     for name, display, cat, desc, timeout, max_chars, idempotent in approval_tools:
-        result.append({
+        tool_def = {
             "name": name, "handler": _noop,
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
@@ -499,7 +499,20 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "scopes": _native_scopes.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
-        })
+        }
+        if name == "resource_remote_process":
+            # Persist the same strict boundary advertised to the model.  The
+            # executor enforces this before creating an approval record.
+            tool_def["parameters_schema"] = {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                    "operation": {"type": "string", "enum": ["ocr"]},
+                },
+                "required": ["resource_id", "operation"],
+            }
+        result.append(tool_def)
 
     # Russian search synonyms so tool_search matches Cyrillic / `docx` queries —
     # the base ToolSpec haystack is English-only (name/display/description), so a

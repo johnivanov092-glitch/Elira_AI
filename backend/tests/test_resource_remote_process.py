@@ -9,6 +9,7 @@ tool_search wiring, and non-regression of resource_process / deferred upload.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sys
@@ -37,8 +38,13 @@ from app.application.media import (  # noqa: E402
 
 
 # ── fakes / helpers ───────────────────────────────────────────────────────────
-def _caps(operations=("ocr",), max_upload=50 * 1024 * 1024):
-    return rwc.WorkerCapabilities(operations=tuple(operations), max_upload_bytes=max_upload)
+def _caps(operations=("ocr",), max_upload=50 * 1024 * 1024,
+          max_response=8 * 1024 * 1024, max_pages=100, response_timeout=600):
+    return rwc.WorkerCapabilities(
+        operations=tuple(operations), max_upload_bytes=max_upload,
+        max_response_bytes=max_response, max_pages=max_pages,
+        response_timeout_seconds=response_timeout,
+    )
 
 
 def _payload(text="Распознанный текст 123", *, digest=None, page_count=2,
@@ -51,14 +57,16 @@ def _payload(text="Распознанный текст 123", *, digest=None, pag
 
 
 class FakeClient:
-    def __init__(self, *, caps=None, caps_exc=None, job=None, job_exc=None):
+    def __init__(self, *, caps=None, caps_exc=None, job=None, job_exc=None,
+                 timeout_seconds=660.0):
         self._caps, self._caps_exc = caps, caps_exc
         self._job, self._job_exc = job, job_exc
         self.capability_calls = 0
         self.job_calls = 0
         self.last_job_kwargs = None
+        self.timeout_seconds = timeout_seconds
 
-    def capabilities(self):
+    def capabilities(self, **kw):
         self.capability_calls += 1
         if self._caps_exc:
             raise self._caps_exc
@@ -134,6 +142,7 @@ class SizeGateTest(_Base):
                 mock.patch.object(rs, "read_bytes", side_effect=AssertionError("read_bytes called")):
             out = remote_execution.run_remote_ocr(record=self.rec, run_id=self.run_id, client=client)
         self.assertEqual(out["error"], "remote_input_too_large")
+        self.assertIn(str(len(self.data) - 1), out["text"])
         self.assertEqual(client.capability_calls, 0)
         self.assertEqual(client.job_calls, 0)
 
@@ -142,6 +151,7 @@ class SizeGateTest(_Base):
         with mock.patch.object(rs, "read_bytes", side_effect=AssertionError("read_bytes called")):
             out = remote_execution.run_remote_ocr(record=self.rec, run_id=self.run_id, client=client)
         self.assertEqual(out["error"], "remote_input_too_large")
+        self.assertIn(str(len(self.data) - 1), out["text"])
         self.assertEqual(client.job_calls, 0)
 
 
@@ -154,6 +164,15 @@ class PolicyWiringTest(unittest.TestCase):
         self.assertEqual(spec["permission"], "require_approval")
         self.assertTrue(spec["side_effect"])
         self.assertFalse(spec["idempotent"])
+        self.assertFalse(spec["parameters_schema"]["additionalProperties"])
+        self.assertEqual(
+            set(spec["parameters_schema"]["properties"]),
+            {"resource_id", "operation"},
+        )
+        self.assertEqual(
+            spec["parameters_schema"]["properties"]["resource_id"]["pattern"],
+            "^[0-9a-f]{32}$",
+        )
         # MANDATORY scope wiring — a missing entry would make the executor scope
         # gate pass vacuously (test 22). fs.write is declared because the tool
         # registers (and may unlink) a durable derived resource.
@@ -183,6 +202,7 @@ class PolicyWiringTest(unittest.TestCase):
         self.assertFalse(params["additionalProperties"])
         self.assertEqual(set(params["properties"]), {"resource_id", "operation"})
         self.assertEqual(params["required"], ["resource_id", "operation"])
+        self.assertEqual(params["properties"]["resource_id"]["pattern"], "^[0-9a-f]{32}$")
         self.assertEqual(params["properties"]["operation"]["enum"], ["ocr"])
 
     def test_handler_rejects_injected_arguments(self):
@@ -237,6 +257,21 @@ class TransportConfigTest(unittest.TestCase):
                        ELIRA_REMOTE_WORKER_TOKEN="tok",
                        ELIRA_REMOTE_WORKER_CA=str(Path(tempfile.gettempdir()) / "does-not-exist-r5c.pem")):
             self.assertRaises(rwc.RemoteUnavailable, rwc.resolve_config)
+
+    def test_malformed_port_is_controlled_unavailable(self):
+        with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as fh:
+            ca_path = fh.name
+        try:
+            with self._env(
+                ELIRA_REMOTE_WORKER_URL="https://worker:not-a-port",
+                ELIRA_REMOTE_WORKER_TOKEN="tok",
+                ELIRA_REMOTE_WORKER_CA=ca_path,
+            ):
+                with self.assertRaises(rwc.RemoteUnavailable) as ctx:
+                    rwc.resolve_config()
+            self.assertEqual(ctx.exception.reason, "url_invalid")
+        finally:
+            os.unlink(ca_path)
 
     def test_https_with_ca_configures_verify(self):
         with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as fh:
@@ -355,6 +390,58 @@ class TransportConfigTest(unittest.TestCase):
         self.assertNotIn(secret, ctx.exception.reason)
         self.assertNotIn("/opt/model.bin", str(ctx.exception))
 
+    def test_client_construction_failure_is_controlled_transport_error(self):
+        client = self._https_client(lambda request: httpx.Response(200, json={}))
+        with mock.patch.object(client, "_open", side_effect=OSError("secret CA path")):
+            with self.assertRaises(rwc.RemoteTransportError) as ctx:
+                client.capabilities()
+        self.assertEqual(ctx.exception.reason, "transport")
+        self.assertNotIn("secret CA path", str(ctx.exception))
+
+    def test_capabilities_uses_short_timeout_and_response_cap_is_exact(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen[request.url.path] = request.extensions["timeout"]["read"]
+            if request.url.path.endswith("/capabilities"):
+                return httpx.Response(200, json={
+                    "operations": ["ocr"], "max_upload_bytes": 1024,
+                    "max_response_bytes": 4096, "max_pages": 10,
+                    "response_timeout_seconds": 600,
+                })
+            text = "ok"
+            return httpx.Response(200, json={
+                "request_id": "r", "operation": "ocr", "text": text,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                "language": "ru", "confidence": 0.5, "page_count": 1,
+                "processing_ms": 5, "errors": [],
+            })
+
+        client = self._https_client(handler)
+        client.capabilities()
+        client.run_ocr_job(
+            filename="scan.pdf", content_type="application/pdf", data=b"x",
+            content_sha256=hashlib.sha256(b"x").hexdigest(), response_cap=4096,
+        )
+        self.assertLessEqual(seen["/v1/capabilities"], rwc._CAPABILITIES_TIMEOUT_SECONDS)
+        self.assertEqual(rwc._JOB_RESPONSE_READ_CAP, 8 * 1024 * 1024)
+
+    def test_trickling_response_cannot_exceed_hard_deadline(self):
+        class SlowStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                await asyncio.sleep(1.0)
+                yield b"{}"
+
+        client = self._https_client(
+            lambda request: httpx.Response(200, stream=SlowStream())
+        )
+        # A blocked read is cancelled by the total deadline; it cannot wait for
+        # the stream's one-second yield merely because no inactivity timeout fired.
+        with mock.patch.object(rwc, "_MIN_TIMEOUT_SECONDS", 0.1):
+            with self.assertRaises(rwc.RemoteTransportError) as ctx:
+                client._read_bounded("GET", "/v1/capabilities", cap=1024, timeout_seconds=0.1)
+        self.assertEqual(ctx.exception.reason, "deadline_exceeded")
+
     def test_oversized_response_rejected_before_parse(self):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=b"x" * 500)
@@ -464,6 +551,31 @@ class VerificationTest(_Base):
         for value in out.values():
             self.assertNotIsInstance(value, remote_execution.RemoteJobResult)
 
+    def test_advertised_page_and_processing_caps_are_enforced(self):
+        for caps, payload in (
+            (_caps(max_pages=1), _payload(page_count=2)),
+            (_caps(response_timeout=1), _payload(processing_ms=1001)),
+        ):
+            with self.subTest(caps=caps, payload=payload), \
+                    mock.patch.object(rs, "register_resource", side_effect=AssertionError("registered")):
+                out = remote_execution.run_remote_ocr(
+                    record=self.rec, run_id=self.run_id,
+                    client=FakeClient(caps=caps, job=payload),
+                )
+            self.assertEqual(out["error"], "remote_invalid_response")
+
+    def test_one_total_deadline_suppresses_late_registration(self):
+        client = FakeClient(timeout_seconds=660.0)
+        with mock.patch.object(
+            remote_execution.time, "monotonic", side_effect=[100.0, 100.0, 110.0, 761.0]
+        ), mock.patch.object(rs, "register_resource", side_effect=AssertionError("registered")):
+            out = remote_execution.run_remote_ocr(
+                record=self.rec, run_id=self.run_id, client=client
+            )
+        self.assertEqual(out["error"], "remote_worker_failed")
+        self.assertEqual(client.job_calls, 1)
+        self.assertLessEqual(client.last_job_kwargs["timeout_seconds"], 650.0)
+
 
 # ── 14 / 15 / 16. derived resource lifecycle ──────────────────────────────────
 class DerivedResourceTest(_Base):
@@ -505,6 +617,79 @@ class DerivedResourceTest(_Base):
         self.assertFalse(Path(rec.storage_path).exists())
         self.assertFalse((rs._meta_dir() / f"{rec.resource_id}.json").exists())
         self.assertFalse(run_binding.is_bound(self.run_id, rec.resource_id))
+
+    def test_add_bound_never_resurrects_a_cleared_run(self):
+        run_binding.clear_run(self.run_id)
+        self.assertFalse(run_binding.add_bound(self.run_id, "f" * 32))
+        self.assertEqual(run_binding.bound_resources(self.run_id), set())
+
+    def test_run_cleared_during_job_discards_derived_resource(self):
+        created = {}
+        real_register = rs.register_resource
+
+        def capture(**kw):
+            rec = real_register(**kw)
+            created["rec"] = rec
+            return rec
+
+        class ClearingClient(FakeClient):
+            def run_ocr_job(inner_self, **kw):
+                run_binding.clear_run(self.run_id)
+                return super().run_ocr_job(**kw)
+
+        with mock.patch.object(rs, "register_resource", side_effect=capture):
+            out = remote_execution.run_remote_ocr(
+                record=self.rec, run_id=self.run_id, client=ClearingClient()
+            )
+        self.assertEqual(out["error"], "remote_bind_failed")
+        derived = created["rec"]
+        self.assertIsNone(rs.get_record(derived.resource_id))
+        self.assertFalse(Path(derived.storage_path).exists())
+        self.assertEqual(run_binding.bound_resources(self.run_id), set())
+
+    def test_same_source_replacement_cannot_receive_old_derived_resource(self):
+        created = {}
+        real_register = rs.register_resource
+
+        def capture(**kw):
+            rec = real_register(**kw)
+            created["rec"] = rec
+            return rec
+
+        class ReplacingClient(FakeClient):
+            def run_ocr_job(inner_self, **kw):
+                # Same source, new generation: proves this is not merely a set
+                # membership check and closes the run-id ABA race.
+                run_binding.bind_resources(self.run_id, [self.rec.resource_id])
+                return super().run_ocr_job(**kw)
+
+        with mock.patch.object(rs, "register_resource", side_effect=capture):
+            out = remote_execution.run_remote_ocr(
+                record=self.rec, run_id=self.run_id, client=ReplacingClient()
+            )
+        self.assertEqual(out["error"], "remote_bind_failed")
+        derived = created["rec"]
+        self.assertIsNone(rs.get_record(derived.resource_id))
+        self.assertEqual(run_binding.bound_resources(self.run_id), {self.rec.resource_id})
+
+    def test_bind_baseexception_still_discards_in_finally(self):
+        created = {}
+        real_register = rs.register_resource
+
+        def capture(**kw):
+            rec = real_register(**kw)
+            created["rec"] = rec
+            return rec
+
+        with mock.patch.object(rs, "register_resource", side_effect=capture), \
+                mock.patch.object(run_binding, "add_bound", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                remote_execution.run_remote_ocr(
+                    record=self.rec, run_id=self.run_id, client=FakeClient()
+                )
+        derived = created["rec"]
+        self.assertIsNone(rs.get_record(derived.resource_id))
+        self.assertFalse(Path(derived.storage_path).exists())
 
 
 # ── 18 / 19 / 20. non-regression + interop ────────────────────────────────────

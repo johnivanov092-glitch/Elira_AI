@@ -27,6 +27,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
+import time
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ _ERROR_TEXT = {
     "remote_invalid_response": "the remote worker returned an invalid response",
     "remote_verify_failed": "the remote result failed integrity verification",
     "remote_bind_failed": "the remote result could not be attached to this run",
+    "resource_not_bound": "the resource is no longer attached to this run",
     "resource_blob_missing": "the resource bytes are no longer available",
 }
 
@@ -68,6 +70,15 @@ def _refusal(code: str) -> dict[str, Any]:
     return {"ok": False, "error": code, "text": f"ERROR: {_ERROR_TEXT[code]}"}
 
 
+def _input_too_large(cap_bytes: int) -> dict[str, Any]:
+    """Refuse an oversized input while naming only the effective byte cap."""
+    return {
+        "ok": False,
+        "error": "remote_input_too_large",
+        "text": f"ERROR: {_ERROR_TEXT['remote_input_too_large']}; maximum is {cap_bytes} bytes",
+    }
+
+
 def _derived_name(original: str) -> str:
     """A safe metadata name for the derived text (the store re-sanitizes it)."""
     stem = Path(str(original or "")).stem.strip()
@@ -80,10 +91,16 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
 
     ``client`` is injectable for tests; in production it is built from env only
     after the local size gate, so an oversize never triggers config I/O either."""
+    binding_generation = run_binding.binding_generation(
+        run_id, required_resource_id=record.resource_id
+    )
+    if binding_generation is None:
+        return _refusal("resource_not_bound")
+
     # 1. Local cap FIRST — oversize is refused with zero read and zero HTTP.
     local_cap = rwc.max_input_bytes()
     if record.size > local_cap:
-        return _refusal("remote_input_too_large")
+        return _input_too_large(local_cap)
 
     # 2. Config validation (no I/O, no read) — fail closed before touching bytes.
     if client is None:
@@ -93,9 +110,16 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
             logger.warning("remote worker unavailable: %s", exc.reason)
             return _refusal("remote_worker_unavailable")
 
+    # One budget covers BOTH HTTP calls. The kernel abandons network tools after
+    # 900s and cannot cancel their Python thread; keeping transport work within
+    # at most 870s leaves time for local verification and registration.
+    deadline = time.monotonic() + client.timeout_seconds
+
     # 3. Capabilities first, then the operation allowlist intersection.
     try:
-        caps = client.capabilities()
+        caps = client.capabilities(
+            timeout_seconds=max(rwc._MIN_TIMEOUT_SECONDS, deadline - time.monotonic())
+        )
     except rwc.RemoteUnavailable as exc:
         logger.warning("remote worker unavailable: %s", exc.reason)
         return _refusal("remote_worker_unavailable")
@@ -112,7 +136,15 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
     # 4. Effective cap re-check before any byte is read.
     effective_cap = min(local_cap, caps.max_upload_bytes)
     if record.size > effective_cap:
-        return _refusal("remote_input_too_large")
+        return _input_too_large(effective_cap)
+
+    # Capabilities is network I/O. Re-pin the run immediately before reading and
+    # sending its bytes so a run cleared while that request was in flight cannot
+    # continue with data egress.
+    if run_binding.binding_generation(
+        run_id, required_resource_id=record.resource_id
+    ) != binding_generation:
+        return _refusal("resource_not_bound")
 
     # 5. Read the bound bytes; re-assert the recorded digest of what we send.
     try:
@@ -120,18 +152,24 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
     except resource_store.ResourceError as exc:
         code = exc.reason if exc.reason in _ERROR_TEXT else "remote_worker_failed"
         return _refusal(code)
-    except Exception:  # noqa: BLE001 — never surface a raw path/exception
+    except Exception as exc:  # noqa: BLE001 — never surface a raw path/exception
+        logger.warning("remote resource read failed: %s", type(exc).__name__)
         return _refusal("remote_worker_failed")
     if hashlib.sha256(data).hexdigest() != record.sha256:
         return _refusal("remote_verify_failed")
 
     # 6. Exactly one POST (retry=0).
     try:
+        remaining = deadline - time.monotonic()
+        if remaining <= rwc._MIN_TIMEOUT_SECONDS:
+            return _refusal("remote_worker_failed")
         payload = client.run_ocr_job(
             filename=record.original_name,
             content_type=record.content_type,
             data=data,
             content_sha256=record.sha256,
+            response_cap=min(rwc._JOB_RESPONSE_READ_CAP, caps.max_response_bytes),
+            timeout_seconds=remaining,
         )
     except rwc.RemoteTransportError as exc:
         logger.warning("remote job transport failure: %s", exc.reason)
@@ -143,6 +181,12 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
     # 7. Re-verify the text digest locally — do NOT trust the worker's claim.
     if hashlib.sha256(payload.text.encode("utf-8")).hexdigest() != payload.text_sha256:
         return _refusal("remote_verify_failed")
+    if payload.page_count > caps.max_pages:
+        return _refusal("remote_invalid_response")
+    if payload.processing_ms > caps.response_timeout_seconds * 1000:
+        return _refusal("remote_invalid_response")
+    if time.monotonic() >= deadline:
+        return _refusal("remote_worker_failed")
 
     result = RemoteJobResult(
         text=payload.text, pages=payload.page_count,
@@ -157,18 +201,27 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
             owner_session=record.owner_session,
             data=result.text.encode("utf-8"),
         )
-    except Exception:  # noqa: BLE001 — never surface a raw path/exception
+    except Exception as exc:  # noqa: BLE001 — never surface a raw path/exception
+        logger.warning("remote result registration failed: %s", type(exc).__name__)
         return _refusal("remote_worker_failed")
 
     # Atomic union into the run binding. If it fails, the just-registered resource
     # is unreachable by any run, so discard its blob AND metadata.
     bound = False
     try:
-        bound = run_binding.add_bound(run_id, derived.resource_id)
-    except Exception:  # noqa: BLE001
-        bound = False
+        try:
+            bound = run_binding.add_bound(
+                run_id, derived.resource_id,
+                required_resource_id=record.resource_id,
+                required_generation=binding_generation,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("remote result binding failed: %s", type(exc).__name__)
+            bound = False
+    finally:
+        if not bound:
+            resource_store.discard(derived)
     if not bound:
-        resource_store.discard(derived)
         return _refusal("remote_bind_failed")
 
     # 9. Bounded projection ONLY — exactly this key set. No OCR text, no bytes, no

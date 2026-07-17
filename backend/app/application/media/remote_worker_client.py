@@ -21,6 +21,7 @@ Security posture:
 """
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -36,8 +37,9 @@ _DEFAULT_MAX_INPUT_BYTES = 50 * 1024 * 1024      # matches the server default
 _DEFAULT_TIMEOUT_SECONDS = 660.0
 _MIN_TIMEOUT_SECONDS = 5.0
 _MAX_TIMEOUT_SECONDS = 870.0                      # stays below the executor's 900s class
+_CAPABILITIES_TIMEOUT_SECONDS = 10.0              # leaves the job most of the 900s class
 _CAPABILITIES_READ_CAP = 64 * 1024
-_JOB_RESPONSE_READ_CAP = 8 * 1024 * 1024 + 64 * 1024   # server caps serialized body at 8 MiB
+_JOB_RESPONSE_READ_CAP = 8 * 1024 * 1024          # server caps the final JSON body at 8 MiB
 _CAPABILITIES_PATH = "/v1/capabilities"
 _JOB_PATH = "/v1/jobs/ocr"
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
@@ -104,6 +106,9 @@ class WorkerConfig:
 class WorkerCapabilities:
     operations: tuple[str, ...]
     max_upload_bytes: int
+    max_response_bytes: int
+    max_pages: int
+    response_timeout_seconds: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -126,9 +131,14 @@ def resolve_config() -> WorkerConfig:
     url = _env("ELIRA_REMOTE_WORKER_URL")
     if not url:
         raise RemoteUnavailable("url_not_configured")
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        raise RemoteUnavailable("url_invalid") from None
     scheme = (parts.scheme or "").lower()
-    if scheme not in ("http", "https") or not parts.hostname:
+    if scheme not in ("http", "https") or not host:
         raise RemoteUnavailable("url_invalid")
 
     token = _env("ELIRA_REMOTE_WORKER_TOKEN")
@@ -140,7 +150,8 @@ def resolve_config() -> WorkerConfig:
     # automatic ``Authorization: Basic`` header, which would both defeat the
     # "no Authorization in insecure mode" rule and put a credential on a plaintext
     # wire. The bearer is the only auth we send, and only over https.
-    netloc = parts.hostname if parts.port is None else f"{parts.hostname}:{parts.port}"
+    rendered_host = f"[{host}]" if ":" in host else host
+    netloc = rendered_host if port is None else f"{rendered_host}:{port}"
     base_url = urlunsplit((scheme, netloc, parts.path, "", "")).rstrip("/")
     if scheme == "https":
         ca = _env("ELIRA_REMOTE_WORKER_CA")
@@ -171,10 +182,18 @@ class WorkerClient:
         self._config = config
         self._transport = transport
 
-    def _open(self) -> httpx.Client:
+    @property
+    def timeout_seconds(self) -> float:
+        """Total transport budget the orchestration must keep within."""
+        return self._config.timeout
+
+    def _open(self, timeout_seconds: float | None = None) -> httpx.AsyncClient:
+        timeout = self._config.timeout if timeout_seconds is None else min(
+            self._config.timeout, max(_MIN_TIMEOUT_SECONDS, float(timeout_seconds))
+        )
         kwargs: dict = {
             "base_url": self._config.base_url,
-            "timeout": httpx.Timeout(self._config.timeout, connect=min(10.0, self._config.timeout)),
+            "timeout": httpx.Timeout(timeout, connect=min(10.0, timeout)),
             "follow_redirects": False,
             # Ignore ambient HTTP(S)_PROXY / .netrc: the worker URL is server-owned
             # and must be reached directly, never redirected by env or given
@@ -195,7 +214,7 @@ class WorkerClient:
             # A pinned CA path for https; True (never False) for http where TLS is
             # not in play anyway.
             kwargs["verify"] = self._config.verify or True
-        return httpx.Client(**kwargs)
+        return httpx.AsyncClient(**kwargs)
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -206,36 +225,66 @@ class WorkerClient:
         return headers
 
     def _read_bounded(self, method: str, path: str, *, cap: int,
-                      extra_headers: dict[str, str] | None = None, **kw) -> bytes:
+                      extra_headers: dict[str, str] | None = None,
+                      timeout_seconds: float | None = None, **kw) -> bytes:
         """Send exactly one request and return the response body, bounded by *cap*
         (enforced while streaming, before any parse). Raises on status != 200,
         transport error, or an oversized body."""
         headers = self._headers(extra_headers)
-        with self._open() as client:
-            try:
-                with client.stream(method, path, headers=headers, **kw) as resp:
+        effective_timeout = self._config.timeout if timeout_seconds is None else min(
+            self._config.timeout, max(_MIN_TIMEOUT_SECONDS, float(timeout_seconds))
+        )
+        async def _request() -> bytes:
+            async with self._open(effective_timeout) as client:
+                async with client.stream(method, path, headers=headers, **kw) as resp:
                     if resp.status_code != 200:
                         # The error body (server envelope) is deliberately NOT read
                         # or trusted; the status alone drives a local code.
                         raise RemoteTransportError(f"status_{resp.status_code}")
                     buffer = bytearray()
-                    for chunk in resp.iter_bytes():
+                    async for chunk in resp.aiter_bytes():
                         buffer += chunk
                         if len(buffer) > cap:
                             raise RemoteProtocolError("response_too_large")
                     return bytes(buffer)
-            except (RemoteTransportError, RemoteProtocolError):
-                raise
-            except httpx.HTTPError as exc:
-                # No retry: a single failure surfaces as a transport error.
-                raise RemoteTransportError("transport") from exc
 
-    def capabilities(self) -> WorkerCapabilities:
-        raw = self._read_bounded("GET", _CAPABILITIES_PATH, cap=_CAPABILITIES_READ_CAP)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RemoteTransportError("transport")
+        try:
+            # httpx timeouts are per socket operation (inactivity), not a total
+            # wall-clock budget. wait_for is the authoritative hard deadline and
+            # cancellation closes the AsyncClient/socket before this call returns.
+            return asyncio.run(asyncio.wait_for(_request(), timeout=effective_timeout))
+        except (RemoteTransportError, RemoteProtocolError):
+            raise
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise RemoteTransportError("deadline_exceeded") from exc
+        except (httpx.HTTPError, OSError, ValueError) as exc:
+            # Client construction can fail on an unreadable/invalid CA before
+            # httpx wraps it. Keep that on the same stable no-retry boundary.
+            raise RemoteTransportError("transport") from exc
+        except RuntimeError as exc:
+            raise RemoteTransportError("transport") from exc
+
+    def capabilities(self, *, timeout_seconds: float | None = None) -> WorkerCapabilities:
+        raw = self._read_bounded(
+            "GET", _CAPABILITIES_PATH, cap=_CAPABILITIES_READ_CAP,
+            timeout_seconds=(
+                _CAPABILITIES_TIMEOUT_SECONDS
+                if timeout_seconds is None
+                else min(_CAPABILITIES_TIMEOUT_SECONDS, timeout_seconds)
+            ),
+        )
         return _parse_capabilities(raw)
 
     def run_ocr_job(self, *, filename: str, content_type: str, data: bytes,
-                    content_sha256: str) -> WorkerJobPayload:
+                    content_sha256: str,
+                    response_cap: int = _JOB_RESPONSE_READ_CAP,
+                    timeout_seconds: float | None = None) -> WorkerJobPayload:
         """POST the resource bytes as a single multipart request.
 
         Passing in-memory ``bytes`` makes httpx build a fully-sized multipart body
@@ -243,8 +292,9 @@ class WorkerClient:
         surface the worker refuses)."""
         files = {"file": (filename or "upload", data, content_type or "application/octet-stream")}
         raw = self._read_bounded(
-            "POST", _JOB_PATH, cap=_JOB_RESPONSE_READ_CAP,
-            extra_headers={"x-content-sha256": content_sha256}, files=files,
+            "POST", _JOB_PATH, cap=min(_JOB_RESPONSE_READ_CAP, max(1, int(response_cap))),
+            extra_headers={"x-content-sha256": content_sha256},
+            timeout_seconds=timeout_seconds, files=files,
         )
         return _parse_job(raw)
 
@@ -272,7 +322,20 @@ def _parse_capabilities(raw: bytes) -> WorkerCapabilities:
     if not isinstance(ops, list) or not all(isinstance(o, str) for o in ops):
         raise RemoteProtocolError("capabilities_operations")
     max_upload = _int_field(data, "max_upload_bytes", "capabilities_max_upload", minimum=1)
-    return WorkerCapabilities(operations=tuple(ops), max_upload_bytes=max_upload)
+    max_response = _int_field(
+        data, "max_response_bytes", "capabilities_max_response", minimum=1
+    )
+    max_pages = _int_field(data, "max_pages", "capabilities_max_pages", minimum=1)
+    response_timeout = _int_field(
+        data, "response_timeout_seconds", "capabilities_response_timeout", minimum=1
+    )
+    return WorkerCapabilities(
+        operations=tuple(ops),
+        max_upload_bytes=max_upload,
+        max_response_bytes=max_response,
+        max_pages=max_pages,
+        response_timeout_seconds=response_timeout,
+    )
 
 
 def _parse_job(raw: bytes) -> WorkerJobPayload:
