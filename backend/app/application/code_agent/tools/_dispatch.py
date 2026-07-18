@@ -56,6 +56,12 @@ from app.application.code_agent.tools._vision import (
 from app.application.code_agent.tools._computer import (
     tool_computer,
 )
+from app.application.code_agent.tools._resources import (
+    tool_resource_materialize,
+    tool_resource_process,
+    tool_resource_publish,
+    tool_resource_remote_process,
+)
 from app.application.code_agent.tools._drift import (
     tool_reconcile_server_facts,
 )
@@ -99,4 +105,12 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "read_image": lambda **kw: tool_read_image(project_root, **kw),
         "ocr_file": lambda **kw: tool_ocr_file(project_root, **kw),
         "computer": lambda **kw: tool_computer(project_root, **kw),
+        # Reads a run-bound resource by opaque id (no project path involved).
+        "resource_process": lambda **kw: tool_resource_process(**kw),
+        # Sends a run-bound resource to the env-owned remote OCR worker (no path).
+        "resource_remote_process": lambda **kw: tool_resource_remote_process(**kw),
+        # Writes a run-bound resource into the run's project workspace (needs root).
+        "resource_materialize": lambda **kw: tool_resource_materialize(project_root, **kw),
+        # Publishes a processed workspace file to the user as a download (needs root).
+        "resource_publish": lambda **kw: tool_resource_publish(project_root, **kw),
     }

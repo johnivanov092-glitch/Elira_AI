@@ -19,6 +19,7 @@ from app.api.routes.git_routes import router as git_router
 from app.api.routes.itops_routes import router as itops_router
 from app.api.routes.library import router as library_router
 from app.api.routes.library_sqlite import router as library_sqlite_router
+from app.api.routes.media_routes import router as media_router
 from app.api.routes.memory import router as memory_router
 from app.api.routes.models import router as models_router
 from app.api.routes.pdf_routes import router as pdf_router
@@ -60,6 +61,7 @@ ALL_ROUTERS = (
     file_ops_router,
     terminal_router,
     library_sqlite_router,
+    media_router,
     advanced_router,
     skills_router,
     skills_extra_router,

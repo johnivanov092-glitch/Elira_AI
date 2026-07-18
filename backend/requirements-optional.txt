@@ -18,3 +18,30 @@ playwright>=1.45
 # pyautogui needs a desktop session (absent on a headless host — the tool then
 # fails gracefully with a clear error instead of crashing the run).
 pyautogui>=0.9.54
+
+# === Local speech-to-text (resource_process transcribe on local_gpu/local_cpu) ===
+# The local faster-whisper / CTranslate2 workload behind resource_process. WITHOUT
+# these packages local_gpu/local_cpu stay UNAVAILABLE (honest) and `auto` falls
+# through to the server STT — nothing here changes behavior until installed.
+#
+# CPU-only (works on any host): faster-whisper pulls ctranslate2 + av (PyAV,
+# audio decode) + onnxruntime (VAD) + tokenizers/huggingface_hub.
+faster-whisper==1.1.1
+ctranslate2==4.5.0
+#
+# GPU (NVIDIA CUDA 12) — this optional bundle installs these for local_gpu.
+# CTranslate2 4.5 targets
+# CUDA 12 + cuDNN 9; on Windows the runtime adds these package bin dirs to the
+# DLL search path automatically (see media/local_transcription._ensure_cuda_dll_path).
+# Exact Windows wheels are pinned as one reproducible CUDA 12 pair; live
+# compatibility remains part of the deferred GPU smoke gate.
+nvidia-cublas-cu12==12.4.5.8
+nvidia-cudnn-cu12==9.5.0.50
+#
+# NOTE: the Systran faster-whisper-large-v3 (and -small) CTranslate2 weights are
+# already in this workstation's Hugging Face cache — no download is needed if
+# ELIRA_LOCAL_STT_CACHE_DIR points at it; otherwise the model downloads once into
+# the server-owned data/model_cache. Model/compute/cache are all server-owned:
+#   ELIRA_LOCAL_STT_MODEL         (allowlisted; default large-v3)
+#   ELIRA_LOCAL_STT_COMPUTE_TYPE  (allowlisted; default int8_float16 GPU / int8 CPU)
+#   ELIRA_LOCAL_STT_CACHE_DIR     (validated absolute path; default data/model_cache)

@@ -44,10 +44,11 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
           old: c.old_content,
           action: c.diff_action,
         };
-      } else if (c.tool === "file_gen" && c.ok !== false && c.download_url) {
-        // Deterministic: comes from the runtime's verified structured fields, not
-        // from any URL the model may or may not have written into its answer. The
-        // key folds this call's position so a repeat generation re-opens the panel.
+      } else if ((c.tool === "file_gen" || c.tool === "resource_publish") && c.ok !== false && c.download_url) {
+        // Deterministic: comes from the runtime's verified structured fields (set
+        // ONLY after the file is verified on disk), not from any URL the model may
+        // or may not have written into its answer. The key folds this call's
+        // position so a repeat publish of the SAME url re-opens the panel.
         download = {
           url: c.download_url,
           name: c.download_name || c.touched_path?.split(/[\\/]/).pop() || "файл",

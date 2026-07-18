@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { fetchContextProfile, type CodeAgentMode, type PermissionMode } from "../api/codeAgent";
-import type { ChatAttachment } from "../api/chat";
-import { uploadLibraryFile } from "../api/library";
+import type { ResourceAttachment } from "../api/resources";
 import { getActiveProfile } from "../api/profiles";
 import * as bg from "./backgroundRuns";
 import type { Turn } from "./types";
@@ -55,9 +54,9 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     return () => { cancelled = true; };
   }, [model, sessionId]);
 
-  const send = useCallback((text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => {
+  const send = useCallback((text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => {
     const profileName = profileRef.current || undefined;
-    bg.send({ sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode, thinking, noQuestions });
+    bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, thinking, noQuestions });
   }, [sessionId, projectRoot, model]);
 
   // Multi-agent run: streams per-step progress from the pipeline endpoint via
@@ -86,17 +85,6 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     });
   }, [sessionId, model]);
 
-  const addFiles = useCallback((files: File[]) => {
-    if (files.length === 0) return;
-    const names = files.map((f) => ({
-      name: f.name,
-      isImage: f.type.startsWith("image/"),
-      url: f.type.startsWith("image/") ? URL.createObjectURL(f) : undefined,
-    }));
-    const { setStatus } = bg.appendFilesTurn(sessionId, names);
-    files.forEach((f, i) => uploadLibraryFile(f, { useInContext: true }).then(() => setStatus(i, "saved")).catch(() => setStatus(i, "error")));
-  }, [sessionId]);
-
   const approve = useCallback((approvalId: string, decision: "approve" | "reject") => {
     bg.approve(sessionId, approvalId, decision);
   }, [sessionId]);
@@ -109,5 +97,5 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     bg.answer(sessionId, questionId, text);
   }, [sessionId]);
 
-  return { turns, running, send, sendMultiAgent, resume, stop, addFiles, reset, approve, approveAll, answer, autoApprove, contextUsage, taskLedger };
+  return { turns, running, send, sendMultiAgent, resume, stop, reset, approve, approveAll, answer, autoApprove, contextUsage, taskLedger };
 }

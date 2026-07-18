@@ -233,7 +233,9 @@ class CodeAgentRouteDefaultsTest(unittest.TestCase):
             captured.update(kwargs)
             return iter([{"type": "done", "ok": True, "steps": 0, "stop_reason": "done", "error": None}])
 
-        with patch.object(routes, "stream_code_agent", side_effect=fake_stream):
+        # Delivery: the stream route now goes through the delivery-session
+        # wrapper (same kwargs contract) — patch the new module-level seam.
+        with patch.object(routes, "stream_delivery_session", side_effect=fake_stream):
             response = routes.stream(routes.CodeAgentStreamRequest(message="m", project_root="/p"))
 
             async def _drain():

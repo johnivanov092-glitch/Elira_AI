@@ -13,7 +13,7 @@ import {
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
-import type { ChatAttachment } from "../api/chat";
+import type { ResourceAttachment } from "../api/resources";
 import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, FileEntry, Turn } from "./types";
 import { latestUserTaskLabel } from "./taskHistory";
@@ -75,6 +75,35 @@ type RunEntry = {
   /** Mode of the in-flight run. */
   lastMode: CodeAgentMode | null;
 };
+
+type CodeAgentDoneEvent = Extract<CodeAgentStreamEvent, { type: "done" }>;
+
+/** Ledger lines for a terminal `done`. Pure (exported for unit tests): the
+ * task-outcome line as before, plus — ONLY on a non-solved terminal that
+ * carries the server-derived `next_milestone` — an explicit
+ * «Следующий шаг: …» line so an honest partial tells the user what remains. */
+export function doneLedgerEntries(
+  e: CodeAgentDoneEvent,
+  action: string = e.stop_reason,
+): TaskLedgerEntry[] {
+  const cs = e.completion_status;
+  const solved = cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer");
+  const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
+  const ledgerResult =
+    e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
+  const entries: TaskLedgerEntry[] = [
+    { timestamp: Date.now(), type: ledgerType, action, result: ledgerResult },
+  ];
+  if (!solved && e.next_milestone) {
+    entries.push({
+      timestamp: Date.now(),
+      type: "partial",
+      action: "next_milestone",
+      result: `Следующий шаг: ${e.next_milestone}`,
+    });
+  }
+  return entries;
+}
 
 const _runs = new Map<string, RunEntry>();
 
@@ -325,23 +354,27 @@ function wire(
           tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
         }));
       } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput }));
+      else if (e.type === "delivery_continuing") {
+        // Informational slice boundary: the run keeps going on the SAME run_id
+        // (auto-continuation after a budget stop with proven progress). The turn
+        // stays `running`; only the ledger surfaces the transition honestly.
+        pushLedger({
+          timestamp: Date.now(),
+          type: "partial",
+          action: `delivery ${e.slice}→${e.next_slice}`,
+          result: `продолжаю тот же прогон (${e.auto_continuation}/${e.max_auto_continuations} автопродолжений, стоп: ${e.stop_reason})`,
+        });
+      }
       else if (e.type === "done") {
         // Ledger reports the TASK outcome (completion_status), not runtime ok — a
         // run can be ok=true yet unverified/partial/failed. SOLVED ("final") ⇔
         // completion_status === "confirmed", OR a no-criteria run that reached a
         // clean answer. failed verifier / runtime failure = "error". Everything
         // else that's ok-but-not-confirmed = "partial" (surfaced, never "solved").
-        const cs = e.completion_status;
-        const solved = cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer");
-        const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
-        const ledgerResult =
-          e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
-        pushLedger({
-          timestamp: Date.now(),
-          type: ledgerType,
-          action: latestUserTaskLabel(entry.snapshot.turns) || e.stop_reason,
-          result: ledgerResult,
-        });
+        // On an honest-partial terminal the server-derived next_milestone gets
+        // its own explicit ledger line (see doneLedgerEntries).
+        const action = latestUserTaskLabel(entry.snapshot.turns) || e.stop_reason;
+        for (const le of doneLedgerEntries(e, action)) pushLedger(le);
         patch((a) => ({
           ...a,
           running: false,
@@ -380,7 +413,8 @@ export type SendArgs = {
   mode: CodeAgentMode;
   projectRoot: string;
   model: string;
-  attachments?: ChatAttachment[];
+  /** Durable resources attached to this message (uploaded, not processed). */
+  resources?: ResourceAttachment[];
   /** Active UI persona profile (the `agent_profile` global setting). Threaded
    *  into the code-agent stream so the user's selected mode reaches Elira's
    *  persona prompt; undefined falls back to the backend default. */
@@ -398,7 +432,7 @@ export type SendArgs = {
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, attachments, profileName, permissionMode, thinking, noQuestions } = args;
+  const { sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, thinking, noQuestions } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -437,15 +471,15 @@ export function send(args: SendArgs): void {
   const agentId = nid();
   entry.runId = null;
   entry.lastMode = mode;
-  // Per-message attachments: surface a file chip in the transcript so the user
-  // sees the message carried a file (the parsed text/transcription itself goes
-  // to the agent inline). "attached" renders neutrally — no library status.
-  const fileEntries: FileEntry[] = (attachments ?? [])
-    .filter((a) => a && a.filename)
-    .map((a): FileEntry => ({
-      name: a.filename || "файл",
-      isImage: a.kind === "image",
-      status: a.ok === false ? "error" : "attached",
+  // Per-message resources: surface a file chip in the transcript so the user
+  // sees the message carried a file. The file is NOT processed here — the agent
+  // reads it on demand via resource_process. "attached" renders neutrally.
+  const fileEntries: FileEntry[] = (resources ?? [])
+    .filter((r) => r && r.name && r.status !== "uploading")
+    .map((r): FileEntry => ({
+      name: r.name || "файл",
+      isImage: r.kind === "image",
+      status: r.status === "error" ? "error" : "attached",
     }));
   update(entry, (s) => ({
     ...s,
@@ -457,11 +491,12 @@ export function send(args: SendArgs): void {
       { kind: "agent", id: agentId, toolCalls: [], text: "", running: true },
     ],
   }));
-  // One stream invoker for every mode: `/api/code-agent/stream` already accepts
-  // a project root and parsed attachments together, so the unified "Чат\Код"
-  // chip carries both at once.
+  // One stream invoker for every mode. Ready resources ride along as ResourceRefs
+  // (resource_id only); the agent reads their content via resource_process. The
+  // session id lets the backend bind only resources this session owns.
+  const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, attachments, profileName, permissionMode, thinking, noQuestions, ...handlers }));
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, thinking, noQuestions, ...handlers }));
 }
 
 /** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`

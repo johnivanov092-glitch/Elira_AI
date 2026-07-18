@@ -139,13 +139,15 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
             pass
 
     def _exec(self, tool_name: str, permission: str, run_id: str = "run-test",
-              *, agent_id: str = "test-agent", args: dict | None = None):
+              *, agent_id: str = "test-agent", args: dict | None = None,
+              spec_extra: dict | None = None):
         from app.application.agent_kernel.executor import (
             ToolExecutionRequest,
             execute_tool,
         )
         _spec = {"permission": permission, "max_output_chars": 50000,
                  "policy_classified": True, "enabled": True}
+        _spec.update(spec_extra or {})
         dispatch_calls = []
         self.last_dispatch_args = None
 
@@ -162,12 +164,49 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
                     agent_id=agent_id,
                     project_scope_id="scope:test",
                     tool_name=tool_name,
-                    args=args or {"x": 1},
+                    args={"x": 1} if args is None else args,
                     source="test",
                 ),
                 dispatch_fn=_dispatch,
             )
         return result, dispatch_calls
+
+    def test_strict_arguments_block_before_approval_persistence(self):
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+                "operation": {"type": "string", "enum": ["ocr"]},
+            },
+            "required": ["resource_id", "operation"],
+        }
+        for args in (
+            {"resource_id": "a" * 32, "operation": "ocr", "url": "https://injected"},
+            {"resource_id": "https://model-chosen.example/file", "operation": "ocr"},
+        ):
+            with self.subTest(args=args):
+                result, calls = self._exec(
+                    "resource_remote_process", "require_approval",
+                    args=args, spec_extra={"parameters_schema": schema},
+                )
+                self.assertEqual(result.status, "blocked")
+                self.assertEqual(result.error, "invalid_tool_arguments")
+                self.assertEqual(calls, [])
+        self.assertEqual(mon_store.list_approvals(self.db), [])
+
+    def test_strict_schema_union_is_validated_without_crashing(self):
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"value": {"type": ["string", "null"]}},
+            "required": ["value"],
+        }
+        result, _ = self._exec(
+            "strict_union", "auto", args={"value": None},
+            spec_extra={"parameters_schema": schema},
+        )
+        self.assertEqual(result.status, "ok")
 
     def test_auto_tool_passes_without_approval(self):
         result, calls = self._exec("search_memory", "auto")

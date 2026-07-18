@@ -236,6 +236,117 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "resource_process",
+                "description": (
+                    "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) по явному запросу: "
+                    "прочитать файл, извлечь текст, расшифровать/транскрибировать аудио или "
+                    "видео (включая .mp4/.ogg голосовые). Process an attached resource / "
+                    "attachment by its resource_id — read file, extract text, transcribe "
+                    "audio/video. Read-only, one call = one operation. operation='inspect' "
+                    "returns metadata; 'extract_text' extracts document text; 'transcribe' "
+                    "runs speech-to-text. Takes a resource_id (NOT a path); the file must be "
+                    "attached to THIS run. execution_target chooses WHERE compute runs: "
+                    "'auto' (runtime picks: local GPU → server → local CPU), 'local_gpu' "
+                    "(строго локальная видеокарта — «используй локальное железо/видеокарту / "
+                    "обработай локально на GPU»; если недоступна — честная ошибка, файл НЕ "
+                    "уходит на сервер), 'local_cpu' (локальный CPU), 'server_gpu' (серверный "
+                    "STT). Use local_gpu ONLY when the user explicitly asks for local/GPU."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
+                        "execution_target": {"type": "string", "enum": ["auto", "local_gpu", "local_cpu", "server_gpu"], "description": "Where to run compute. Default 'auto'. Use 'local_gpu' only when the user explicitly asks to run locally / on the GPU."},
+                    },
+                    "required": ["resource_id", "operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "resource_remote_process",
+                "description": (
+                    "Обработать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) на доверенном "
+                    "удалённом OCR-воркере: распознать текст из скана PDF/изображения и "
+                    "приложить результат к этому запуску как новый ресурс. Process an "
+                    "attached resource (by resource_id) on the trusted remote OCR worker: "
+                    "recognize text from a scanned PDF/image and attach it to THIS run as a "
+                    "new resource. operation is only 'ocr'. Takes a resource_id (NOT a "
+                    "path); the file must be attached to THIS run. Sends the file to the "
+                    "worker (data egress → requires approval); returns a new resource_ref "
+                    "you can then materialize or publish. Never returns the text itself or "
+                    "any host/URL/path. Use ONLY when the user asks to OCR / recognize / "
+                    "распознать text from an attached scan remotely."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "operation": {"type": "string", "enum": ["ocr"], "description": "What to do remotely. Only 'ocr' (recognize text from a scanned PDF/image)."},
+                    },
+                    "required": ["resource_id", "operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "resource_materialize",
+                "description": (
+                    "Материализовать ПРИКРЕПЛЁННЫЙ файл (ресурс/вложение) в текущую папку "
+                    "проекта, чтобы дальше обрабатывать его обычными инструментами "
+                    "(run_bash/ffmpeg/python/конвертация/архивы). Copy an attached resource "
+                    "(by resource_id) into THIS run's project workspace so the normal file / "
+                    "run_bash tools can process it. Takes a resource_id (NOT a path) and an "
+                    "optional destination_name (a RELATIVE name inside the workspace; default "
+                    "= the resource's safe basename). Writes a NEW file — it never overwrites "
+                    "an existing one. Returns a project-relative path only. Use this when the "
+                    "user wants to convert/encode/run/unpack an attached file locally."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "destination_name": {"type": "string", "description": "Optional relative filename inside the project workspace (no absolute path, no '..'). Default: the resource's safe basename."},
+                    },
+                    "required": ["resource_id"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "resource_publish",
+                "description": (
+                    "Опубликовать ГОТОВЫЙ файл из папки проекта пользователю для скачивания "
+                    "(кнопка «Скачать» в интерфейсе). Publish an already-produced workspace "
+                    "file to the user as a downloadable artifact. Use this AFTER you have "
+                    "created/converted/encoded the file with the normal tools (run_bash / "
+                    "ffmpeg / python / file_gen). Takes project_path (a RELATIVE path to an "
+                    "existing file in the project workspace, NOT absolute) and an optional "
+                    "download_name (a plain filename, no directories; default = the source's "
+                    "safe basename). It copies the file to the download area and returns a "
+                    "download_url — it never overwrites an existing download of the same name."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "project_path": {"type": "string", "description": "Relative path to an existing file in the project workspace to deliver (never absolute, no '..')."},
+                        "download_name": {"type": "string", "description": "Optional plain filename for the download (no path, no directories). Default: the source's safe basename."},
+                    },
+                    "required": ["project_path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "grep",
                 "description": "Search file contents for a regex pattern. Returns 'file:line:match' lines.",
                 "parameters": {

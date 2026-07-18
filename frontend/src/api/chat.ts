@@ -6,11 +6,13 @@ function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-// ── Chat attachments → code-agent stream ────────────────────────────────────
+// ── Chat attachments (LEGACY) ───────────────────────────────────────────────
 //
-// The composer's file picker uploads via `attachToChat`; the parsed metadata
-// rides along with the project on the unified /api/code-agent/stream call
-// (see `streamCodeAgent`). No separate chat stream invoker is needed.
+// LEGACY eager-attach helper. The composer now uploads durable resources via
+// `uploadResource` (see api/resources.ts) and reads them on demand through the
+// `resource_process` tool — it no longer calls `attachToChat`. This function and
+// the `/api/chat/attach` route are kept only for back-compat until nothing else
+// depends on them; new code should use the resource pipeline.
 
 export type ChatAttachment = {
   ok: boolean;

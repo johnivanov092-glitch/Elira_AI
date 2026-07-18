@@ -21,6 +21,7 @@ Design: dispatch_fn is injected by callers so that:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -29,6 +30,64 @@ DispatchFn = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 _TRUNCATION_SUFFIX = "\n[output truncated]"
 logger = logging.getLogger(__name__)
+
+
+def _strict_arguments_valid(schema: Any, args: Any) -> bool:
+    """Validate the small strict-object JSON-schema subset used by ToolSpecs.
+
+    Non-strict schemas keep their existing handler-owned validation.  A strict
+    schema (``additionalProperties: false``) is fail-closed here so unexpected
+    arguments cannot be persisted in an approval before the handler sees them.
+    """
+    if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
+        return True
+    if schema.get("type") != "object" or not isinstance(args, dict):
+        return False
+    properties = schema.get("properties")
+    required = schema.get("required", [])
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        return False
+    if any(not isinstance(name, str) for name in required):
+        return False
+    if any(name not in properties for name in args) or any(name not in args for name in required):
+        return False
+
+    type_checks = {
+        "string": lambda value: isinstance(value, str),
+        "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+        "number": lambda value: isinstance(value, (int, float)) and not isinstance(value, bool),
+        "boolean": lambda value: isinstance(value, bool),
+        "array": lambda value: isinstance(value, list),
+        "object": lambda value: isinstance(value, dict),
+        "null": lambda value: value is None,
+    }
+    for name, value in args.items():
+        rule = properties.get(name)
+        if not isinstance(rule, dict):
+            return False
+        expected = rule.get("type")
+        if expected is not None:
+            expected_types = expected if isinstance(expected, list) else [expected]
+            if not expected_types or any(not isinstance(item, str) for item in expected_types):
+                return False
+            if not any(
+                (check := type_checks.get(item)) is not None and check(value)
+                for item in expected_types
+            ):
+                return False
+        allowed = rule.get("enum")
+        if allowed is not None and (not isinstance(allowed, list) or value not in allowed):
+            return False
+        pattern = rule.get("pattern")
+        if pattern is not None:
+            if not isinstance(pattern, str) or not isinstance(value, str):
+                return False
+            try:
+                if re.search(pattern, value) is None:
+                    return False
+            except re.error:
+                return False
+    return True
 
 
 @dataclass
@@ -432,6 +491,21 @@ def execute_tool(
                     },
                     error="scope_block",
                 )
+
+    # 2c. Strict ToolSpec arguments are validated before the approval store.
+    # Handler-level checks remain defense in depth, but they are too late to
+    # prevent an injected URL/token/path from appearing in an approval card.
+    if not _strict_arguments_valid(spec.get("parameters_schema"), request.args):
+        _emit_blocked(request, "invalid_tool_arguments")
+        return ToolExecutionResult(
+            status="blocked",
+            output={
+                "ok": False,
+                "text": f"Tool '{tool_name}' received invalid arguments and was blocked.",
+                "error": "invalid_tool_arguments",
+            },
+            error="invalid_tool_arguments",
+        )
 
     # 3. Approval gate (implemented in Шаг 4/P1) — require_approval tools
     # need a valid human approval before dispatch.

@@ -162,6 +162,14 @@ class ApprovalPolicyTest(unittest.TestCase):
     def test_remote_change_tool_is_discoverable_before_approval(self) -> None:
         self.assertIn("itops_change_apply", SEARCH_ACTIVATABLE_SIDE_EFFECT)
 
+    def test_resource_tools_keep_the_three_mode_contract(self) -> None:
+        for tool in ("resource_materialize", "resource_publish"):
+            evidence = evidence_for_tool_call(tool, {})
+            self.assertEqual(decide_approval("accept_edits", "local", evidence), AUTO)
+        remote = evidence_for_tool_call("resource_remote_process", {})
+        self.assertEqual(decide_approval("accept_edits", "local", remote), ASK)
+        self.assertEqual(decide_approval("bypass", "local", remote), AUTO)
+
 
 if __name__ == "__main__":
     unittest.main()

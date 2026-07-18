@@ -51,12 +51,18 @@ SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
     {
         "computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver",
         "encrypt", "webhook", "screenshot", "itops_change_apply",
+        "resource_materialize", "resource_publish",
+        # Net egress (not a filesystem edit): tool_search may surface it in
+        # ask/accept_edits, but it is deliberately NOT in EDIT_ONLY_TOOLS, so the
+        # executor still asks for approval in both modes.
+        "resource_remote_process",
     }
 )
 
 # Compatibility inventory for filesystem-shaped, non-shell/non-net work.
 EDIT_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "file_gen", "converter", "archiver", "sandbox_reset"}
+    {"write_file", "edit_file", "file_gen", "converter", "archiver",
+     "sandbox_reset", "resource_materialize", "resource_publish"}
 )
 
 # Explicit high-risk tool identities. Reserved for future tools; destructive shell

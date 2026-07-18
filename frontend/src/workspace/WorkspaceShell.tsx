@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Code, FileSearch, FolderOpen, Globe, ListChecks, Sparkles, UploadCloud, Wand2, X } from "lucide-react";
 import { waitForBackend } from "../api/client";
-import type { ChatAttachment } from "../api/chat";
+import type { ResourceAttachment } from "../api/resources";
 import {
   type CodeAgentMode,
   type CodeSessionMeta,
@@ -20,7 +20,7 @@ import { cn } from "../ui/cn";
 import { deriveArtifacts, fileArtifactKey, downloadArtifactKey } from "./artifacts";
 import { Sidebar } from "./Sidebar";
 import { Topbar, type MainTab } from "./Topbar";
-import { Composer } from "./Composer";
+import { Composer, type ComposerAttachControls } from "./Composer";
 import { Transcript } from "./Transcript";
 import { PreviewPanel } from "./PreviewPanel";
 import { CommandPalette, type PaletteAction } from "./CommandPalette";
@@ -49,7 +49,7 @@ export default function WorkspaceShell() {
   const [verifyOpen, setVerifyOpen] = useState(false);
   // Trigger for the Composer's hidden file input, registered via onAttachReady.
   // Lets the "+" menu's "Прикрепить файл" open the picker that lives in Composer.
-  const openFilePicker = useRef<(() => void) | null>(null);
+  const attachControls = useRef<ComposerAttachControls | null>(null);
   const [project, setProject] = useState("");
   const [connected, setConnected] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -206,7 +206,7 @@ export default function WorkspaceShell() {
     }
   }
 
-  function onSend(text: string, mode: CodeAgentMode, attachments?: ChatAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) {
+  function onSend(text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) {
     // No project required: the backend defaults to a scratch workspace, so chat
     // works out of the box. Picking a folder targets a specific project.
     const msg = text.trim();
@@ -221,7 +221,7 @@ export default function WorkspaceShell() {
     // itself when it finishes — even if you've switched to another chat by then
     // (background completion). The closure captures the run's own project/model.
     bg.setPersist(activeKey, makePersist(activeKey, project, model));
-    run.send(text, mode, attachments, permissionMode, thinking, noQuestions);
+    run.send(text, mode, resources, permissionMode, thinking, noQuestions);
     // Create the session eagerly so it appears in the sidebar as soon as you
     // send — not only when the run finishes. ensureServerId dedupes against the
     // persist closure's own lazy create, so the run is saved exactly once.
@@ -361,7 +361,7 @@ export default function WorkspaceShell() {
             e.preventDefault();
             setDragging(false);
             const files = Array.from(e.dataTransfer.files);
-            if (files.length) run.addFiles(files);
+            if (files.length) attachControls.current?.attachFiles(files);
           }}
         >
           {tab === "pipe" ? (
@@ -376,7 +376,7 @@ export default function WorkspaceShell() {
           )}
           {dragging && (
             <div className="pointer-events-none absolute inset-0 grid place-items-center bg-bg/70 text-t2">
-              <div className="flex items-center gap-2 text-sm"><UploadCloud size={18} /> Отпусти — файл уйдёт в чат и в память</div>
+              <div className="flex items-center gap-2 text-sm"><UploadCloud size={18} /> Отпусти — файл прикрепится к сообщению</div>
             </div>
           )}
         </div>
@@ -396,9 +396,9 @@ export default function WorkspaceShell() {
           </div>
         )}
 
-        <Composer value={input} onChange={setInput} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(open) => { openFilePicker.current = open; }} />
+        <Composer key={activeKey} value={input} onChange={setInput} sessionId={activeKey} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(controls) => { attachControls.current = controls; }} />
 
-        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => openFilePicker.current?.()} onEditVerify={() => setVerifyOpen(true)} hasProject={!!project} />}
+        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => attachControls.current?.openFilePicker()} onEditVerify={() => setVerifyOpen(true)} hasProject={!!project} />}
         {verifyOpen && <VerifyCommandModal projectRoot={project} onClose={() => setVerifyOpen(false)} />}
       </section>
 
