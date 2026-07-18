@@ -75,6 +75,32 @@ type RunEntry = {
   lastMode: CodeAgentMode | null;
 };
 
+type CodeAgentDoneEvent = Extract<CodeAgentStreamEvent, { type: "done" }>;
+
+/** Ledger lines for a terminal `done`. Pure (exported for unit tests): the
+ * task-outcome line as before, plus — ONLY on a non-solved terminal that
+ * carries the server-derived `next_milestone` — an explicit
+ * «Следующий шаг: …» line so an honest partial tells the user what remains. */
+export function doneLedgerEntries(e: CodeAgentDoneEvent): TaskLedgerEntry[] {
+  const cs = e.completion_status;
+  const solved = cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer");
+  const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
+  const ledgerResult =
+    e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
+  const entries: TaskLedgerEntry[] = [
+    { timestamp: Date.now(), type: ledgerType, action: e.stop_reason, result: ledgerResult },
+  ];
+  if (!solved && e.next_milestone) {
+    entries.push({
+      timestamp: Date.now(),
+      type: "partial",
+      action: "next_milestone",
+      result: `Следующий шаг: ${e.next_milestone}`,
+    });
+  }
+  return entries;
+}
+
 const _runs = new Map<string, RunEntry>();
 
 /** Collapse consecutive duplicate paragraphs in an assistant answer before it
@@ -324,18 +350,26 @@ function wire(
           tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
         }));
       } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput }));
+      else if (e.type === "delivery_continuing") {
+        // Informational slice boundary: the run keeps going on the SAME run_id
+        // (auto-continuation after a budget stop with proven progress). The turn
+        // stays `running`; only the ledger surfaces the transition honestly.
+        pushLedger({
+          timestamp: Date.now(),
+          type: "partial",
+          action: `delivery ${e.slice}→${e.next_slice}`,
+          result: `продолжаю тот же прогон (${e.auto_continuation}/${e.max_auto_continuations} автопродолжений, стоп: ${e.stop_reason})`,
+        });
+      }
       else if (e.type === "done") {
         // Ledger reports the TASK outcome (completion_status), not runtime ok — a
         // run can be ok=true yet unverified/partial/failed. SOLVED ("final") ⇔
         // completion_status === "confirmed", OR a no-criteria run that reached a
         // clean answer. failed verifier / runtime failure = "error". Everything
         // else that's ok-but-not-confirmed = "partial" (surfaced, never "solved").
-        const cs = e.completion_status;
-        const solved = cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer");
-        const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
-        const ledgerResult =
-          e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
-        pushLedger({ timestamp: Date.now(), type: ledgerType, action: e.stop_reason, result: ledgerResult });
+        // On an honest-partial terminal the server-derived next_milestone gets
+        // its own explicit ledger line (see doneLedgerEntries).
+        for (const le of doneLedgerEntries(e)) pushLedger(le);
         patch((a) => ({
           ...a,
           running: false,

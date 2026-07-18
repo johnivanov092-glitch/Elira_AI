@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any, Callable
 
@@ -594,6 +595,188 @@ def gate_completion_claims(text: str, completion_status: str) -> str:
     if completion_status == "confirmed" or not text:
         return text
     return _COMPLETION_CLAIM_RE.sub(_COMPLETION_CLAIM_MASK, text)
+
+
+# ── Delivery-session ownership registry ─────────────────────────────────────
+# Lives in this LEAF module (not in delivery_session) so the core agent loop
+# can consult it without an import cycle: a session-level Stop that lands while
+# NO slice is registered (between slices / during continuation build) must
+# cancel the NEXT slice the moment it registers its run.
+_SESSION_LOCK = threading.Lock()
+_SESSION_CANCEL: dict[str, threading.Event] = {}
+
+
+class DeliverySessionActiveError(RuntimeError):
+    """A live delivery session already owns this run_id's cancel token."""
+
+
+def request_session_cancel(run_id: str) -> bool:
+    """Mark the delivery session for `run_id` cancelled. Returns True when a
+    live session was found."""
+    with _SESSION_LOCK:
+        ev = _SESSION_CANCEL.get(run_id)
+    if ev is None:
+        return False
+    ev.set()
+    return True
+
+
+def session_cancel_requested(run_id: str) -> bool:
+    """True when a live delivery session for `run_id` has a PENDING cancel —
+    consulted by the core loop right after _register_run so a Stop that landed
+    in the inter-slice window cancels the new slice before any model call."""
+    with _SESSION_LOCK:
+        ev = _SESSION_CANCEL.get(run_id)
+    return ev.is_set() if ev is not None else False
+
+
+def session_active(run_id: str) -> bool:
+    with _SESSION_LOCK:
+        return run_id in _SESSION_CANCEL
+
+
+def register_session(run_id: str) -> threading.Event:
+    """Atomic ownership claim. A live session's cancel token is NEVER
+    overwritten — a duplicate stream/resume of the same run_id raises
+    DeliverySessionActiveError and the original stays the sole owner."""
+    with _SESSION_LOCK:
+        if run_id in _SESSION_CANCEL:
+            raise DeliverySessionActiveError(run_id)
+        ev = threading.Event()
+        _SESSION_CANCEL[run_id] = ev
+    return ev
+
+
+def unregister_session(run_id: str, ev: threading.Event) -> None:
+    """Release ownership — identity-guarded: only the session that registered
+    `ev` may remove the entry, so a failed duplicate can never evict the
+    original owner's token."""
+    with _SESSION_LOCK:
+        if _SESSION_CANCEL.get(run_id) is ev:
+            _SESSION_CANCEL.pop(run_id, None)
+
+
+def tool_state_changed(tool_name: str, tool_meta: dict, *, exec_ok: bool) -> bool:
+    """Server-owned MUTATION signal for one executed tool call: True only when
+    the execution succeeded, reported a real touched target, AND the ToolSpec
+    registry declares the tool side-effectful. No hardcoded tool-name list —
+    the registry's `side_effect` flag is the single seam, so read-only tools
+    (read_file/ssh_read/glob/…) yield False by their own spec, blocked/error
+    calls fail the exec_ok gate, and a no-op (e.g. ssh_replace without a match)
+    reports no touched_path. Unknown/unregistered specs default to False —
+    conservative: never counts as delivery progress."""
+    if not exec_ok:
+        return False
+    meta = tool_meta or {}
+    if not str(meta.get("touched_path") or "").strip():
+        return False
+    # Proven NO-OP: when the tool itself reports the before/after content
+    # (write_file/edit_file), identical bytes mean nothing changed — an
+    # "overwrite with the same content" is not a mutation.
+    old, new = meta.get("old_content"), meta.get("new_content")
+    if isinstance(old, str) and isinstance(new, str) and old == new:
+        return False
+    try:
+        from app.application.tool_registry.runtime import get_tool
+
+        spec = get_tool(tool_name) or {}
+    except Exception:
+        logger.warning("tool_state_changed: spec lookup failed for %s", tool_name, exc_info=True)
+        return False
+    return bool(spec.get("side_effect"))
+
+
+def _norm_checklist_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).casefold()
+
+
+def format_checklist_state(items: list[dict], *, max_items: int = 30) -> str:
+    """Deterministic one-line-per-item digest of the durable run checklist,
+    built from the task_planner rows (server truth, not model prose)."""
+    lines: list[str] = []
+    for item in items[:max_items]:
+        status = str(item.get("status") or "pending")
+        mark = "x" if status == "completed" else ("~" if status == "in_progress" else " ")
+        lines.append(f"- [{mark}] ({item.get('id')}) [{status}] {item.get('text')}")
+    if len(items) > max_items:
+        lines.append(f"- … ещё {len(items) - max_items} пунктов")
+    return "\n".join(lines)
+
+
+def resume_checklist_guard(run_id: str, parsed_args: dict) -> str | None:
+    """Delivery (C): on a RESUMED slice the durable checklist is the plan of
+    record — `todo_update` may extend it, re-send it verbatim or flip statuses,
+    but may NOT replace existing items with a different plan. Covers BOTH write
+    channels of update_checklist: `items` (position/id upsert) and `updates`
+    (by-id mutation, which can also rewrite `text`). Returns the redirect text
+    (carrying the REAL checklist with ids) when a replacement is detected, None
+    when the call is safe (read / status-or-blocker-only updates / pure
+    extension / same-text re-send).
+
+    Mirrors update_checklist's landing semantics: explicit id wins, else the
+    row already holding the explicit position; items without id/position land on
+    fresh slots (extension) and are always allowed.
+    """
+    raw_items = parsed_args.get("items")
+    raw_updates = parsed_args.get("updates")
+    has_items = isinstance(raw_items, list) and raw_items
+    has_updates = isinstance(raw_updates, list) and raw_updates
+    if not has_items and not has_updates:
+        return None
+    try:
+        from app.application.task_planner.service import list_checklist
+
+        existing = list((list_checklist(run_id) or {}).get("items") or [])
+    except Exception:
+        logger.warning("resume_checklist_guard: checklist read failed for %s", run_id, exc_info=True)
+        return None
+    if not existing:
+        return None
+    by_id = {str(row.get("id") or ""): row for row in existing}
+    by_pos = {int(row.get("position") or 0): row for row in existing}
+
+    def _replaces(landing: dict | None, raw: dict) -> bool:
+        if landing is None:
+            return False
+        new_text = _norm_checklist_text(raw.get("text"))
+        return bool(new_text) and new_text != _norm_checklist_text(landing.get("text"))
+
+    violation = False
+    for raw in (raw_items or []) if has_items else []:
+        if not isinstance(raw, dict):
+            continue
+        raw_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+        landing = by_id.get(raw_id) if raw_id else None
+        if landing is None and not raw_id and raw.get("position") is not None:
+            try:
+                landing = by_pos.get(int(raw.get("position")))
+            except (TypeError, ValueError):
+                landing = None
+        # landing None → fresh slot: extension, allowed
+        if _replaces(landing, raw):
+            violation = True
+            break
+    if not violation and has_updates:
+        for raw in raw_updates:
+            if not isinstance(raw, dict):
+                continue
+            raw_id = str(raw.get("id") or raw.get("item_id") or "").strip()
+            # updates are by-id only; status/blocker-only entries carry no text
+            # and stay allowed — that is the advertised legitimate channel.
+            if _replaces(by_id.get(raw_id) if raw_id else None, raw):
+                violation = True
+                break
+    if not violation:
+        return None
+    done = sum(1 for row in existing if str(row.get("status")) == "completed")
+    return (
+        "[план уже существует] Это продолжение прогона: durable-чеклист создан "
+        f"ранее ({done}/{len(existing)} выполнено) и НЕ пересоздаётся другим планом.\n"
+        f"{format_checklist_state(existing)}\n"
+        "Продолжай с первого открытого пункта. Статусы меняй через "
+        "todo_update(updates=[{id, status}]) — без замены текста пунктов; новые "
+        "шаги добавляй отдельными items, не переписывая существующие."
+    )
 
 
 def _deterministic_stop_summary(

@@ -161,6 +161,23 @@ export type CodeAgentStreamEvent =
     }
   | { type: "final_response"; step: number; text: string; established_facts?: string; recent_tool_output?: string }
   | {
+      // Delivery session: informational slice boundary — the run CONTINUES on the
+      // same run_id (auto-continuation after a budget stop with proven progress).
+      // Never a terminal event; exactly one `done` still closes the stream.
+      type: "delivery_continuing";
+      run_id?: string;
+      slice: number;
+      next_slice: number;
+      auto_continuation: number;
+      max_auto_continuations: number;
+      stop_reason: string;
+      progress?: {
+        new_touched_paths?: number;
+        criteria_confirmed_delta?: number;
+        checklist_completed_delta?: number;
+      };
+    }
+  | {
       type: "done";
       ok: boolean;
       steps: number;
@@ -171,6 +188,11 @@ export type CodeAgentStreamEvent =
       run_id?: string;
       established_facts?: string;
       recent_tool_output?: string;
+      // Delivery session: server-derived "what comes next" (first open checklist
+      // item / first unconfirmed criterion) on an honest-partial terminal.
+      next_milestone?: string;
+      // How many automatic continuations this run consumed (absent for 1-slice runs).
+      auto_continuations?: number;
       // Task-completion axis — SEPARATE from runtime `ok`. "confirmed" means every
       // success criterion was proven by a verifier; consumers must gate "solved"
       // on this, not on `ok`.

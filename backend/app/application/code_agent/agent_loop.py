@@ -176,6 +176,16 @@ _ANTI_REPEAT_SAMPLING = {
 # its per-generation ceiling) a single run tolerates before being force-
 # finalized — the cross-step budget missing from the per-generation guard.
 _REASONING_RUNAWAY_LIMIT = 2
+# Delivery (B): the FIRST runaway in a Thinking-run no longer burns half the
+# budget silently — the run flips its remaining model calls to thinking-OFF
+# (one-shot, run-local; the user's global toggle and the journalled request are
+# untouched) and gets this server-owned instruction instead of the truncated
+# generation. A repeat after the fallback still hits _REASONING_RUNAWAY_LIMIT.
+_REASONING_FALLBACK_NUDGE = (
+    "[internal correction] Рассуждение зациклилось и было прервано. Прекрати "
+    "рассуждать. Проверь текущее состояние задачи (файлы, чеклист) и выполни "
+    "следующий конкретный шаг вызовом инструмента."
+)
 # Malformed inline tool-trace recoveries are nudge-and-retry; bound them so a
 # model stuck emitting broken tool markup can't burn all 200 steps.
 _MALFORMED_TRACE_LIMIT = 3
@@ -541,6 +551,10 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _recent_tool_snippet,
     _recent_tools_digest,
     RECENT_TOOLS_PREFIX,
+    format_checklist_state,
+    resume_checklist_guard,
+    session_cancel_requested,
+    tool_state_changed,
     _is_near_dup,
     _ungrounded_files,
     _DOCGEN_NUDGE_MAX,
@@ -592,6 +606,7 @@ def _stream_code_agent_core(
     permission_mode: str = "ask",
     thinking: bool = False,
     no_questions: bool = False,
+    resume: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -611,6 +626,12 @@ def _stream_code_agent_core(
     rid = run_id or uuid.uuid4().hex
     effective_agent_id = str(agent_id or "code-agent").strip() or "code-agent"
     cancel_event = _register_run(rid)
+    # Delivery: a session-level Stop may land while NO slice is registered
+    # (between slices / during continuation build), where request_cancel finds
+    # no live run. Make it visible to THIS slice the moment it registers — the
+    # loop's own cancel checks then terminate before any model or tool call.
+    if session_cancel_requested(rid):
+        cancel_event.set()
     # R2: initialized BEFORE the try — every early return (invalid root, preflight
     # block) reaches the finally, which consults this flag to stop run-owned servers.
     _keep_servers_on_exit = False
@@ -904,6 +925,10 @@ def _stream_code_agent_core(
         # one run → force-finalize (loop_guard-style). Malformed inline tool
         # traces get the same bounding (the recovery nudge used to be unlimited).
         reasoning_runaway_count = 0
+        # Delivery (B): one-shot thinking-OFF fallback after the first runaway in
+        # a Thinking-run. Run-local: the journalled request keeps the original
+        # thinking flag, so the user's toggle is never rewritten.
+        reasoning_fallback_fired = False
         malformed_trace_count = 0
         ask_user_count = 0
         prev_assistant_text = next(
@@ -1123,6 +1148,23 @@ def _stream_code_agent_core(
             # instead of burning the remaining steps on cut-off generations.
             if (response or {}).get("reasoning_runaway"):
                 reasoning_runaway_count += 1
+                if thinking and not reasoning_fallback_fired:
+                    # Delivery (B): first runaway in a Thinking-run — do not
+                    # finalize and do not process the truncated generation (it
+                    # never reaches history). Flip the REMAINING model calls of
+                    # this run to thinking-OFF (llm_options is rebuilt each step
+                    # from the local `thinking`), tell the model to act, and
+                    # keep TaskSpec/checklist/progress state untouched. Strictly
+                    # one-shot: a repeat still counts toward the runaway limit.
+                    reasoning_fallback_fired = True
+                    thinking = False
+                    yield {
+                        "type": "reasoning_fallback",
+                        "step": step,
+                        "runaway_count": reasoning_runaway_count,
+                    }
+                    messages.append({"role": "user", "content": _REASONING_FALLBACK_NUDGE})
+                    continue
                 if reasoning_runaway_count >= _REASONING_RUNAWAY_LIMIT:
                     final_text = _wrap_up_text(
                         chat, model, safe_num_ctx, messages, call_log,
@@ -2253,6 +2295,20 @@ def _stream_code_agent_core(
                     # The model never chooses the run_id; executor policy/audit
                     # still applies below because todo_update is a normal tool.
                     parsed_args["run_id"] = rid
+                    # Delivery (C): on a resumed slice the existing checklist may
+                    # not be replaced by a different plan — redirect with the
+                    # REAL state (updates / extension / same-plan re-send pass).
+                    if resume:
+                        _cl_guard = resume_checklist_guard(rid, parsed_args)
+                        if _cl_guard is not None:
+                            yield {
+                                "type": "tool_call", "step": step, "tool": name,
+                                "arguments": parsed_args, "result": _cl_guard, "ok": False,
+                            }
+                            messages.append({"role": "tool", "content": _cl_guard, "name": name})
+                            tool_round_trips += 1
+                            call_log.append("todo_update(resume-plan-guard)")
+                            continue
                 if name == "delegate_task":
                     # P12.2: subagents are children of the current run. The
                     # model chooses role/task, not parent_run_id.
@@ -2459,6 +2515,17 @@ def _stream_code_agent_core(
                     "arguments": parsed_args,
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
+                    # Server-owned mutation flag (ToolSpec.side_effect + real
+                    # touched target on a successful execution). Read-only
+                    # touched_path (read_file/ssh_read) stays False — delivery
+                    # auto-continuation counts MUTATIONS, not reads.
+                    "state_changed": tool_state_changed(
+                        name, tool_meta,
+                        exec_ok=(
+                            _exec_result.status == "ok"
+                            and bool(tool_meta.get("ok", True))
+                        ),
+                    ),
                 }
                 for opt in (
                     "touched_path", "old_content", "new_content", "diff_action",
@@ -2735,6 +2802,7 @@ def stream_code_agent(
             permission_mode=permission_mode,
             thinking=thinking,
             no_questions=no_questions,
+            resume=resume,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)

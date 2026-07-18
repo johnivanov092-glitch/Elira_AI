@@ -33,10 +33,14 @@ from app.application.code_agent.agent_loop import (
     run_code_agent,
     set_project_prompt,
     set_verify_command,
-    stream_code_agent,
     submit_answer,
     suggest_verify_command,
     summarize_history,
+)
+from app.application.code_agent.delivery_session import (
+    request_session_cancel,
+    stream_delivery_session,
+    stream_resume_session,
 )
 from app.application.code_agent import sessions as session_store
 from app.application.chat.local_chat import resolve_persona_mode
@@ -381,7 +385,11 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
 
     def gen():
         try:
-            for event in stream_code_agent(
+            # Delivery: a structural project task may span several bounded
+            # slices of the SAME run (auto-continuation on budget stops with
+            # proven progress). Simple tasks and itops-diag runs pass through
+            # as one ordinary stream_code_agent run.
+            for event in stream_delivery_session(
                 user_message=user_message,
                 project_root=_resolve_project_root(payload.project_root),
                 working_dir=payload.working_dir,
@@ -446,38 +454,14 @@ def resume_run(run_id: str) -> StreamingResponse:
     if not isinstance(request_data, dict):
         raise HTTPException(status_code=409, detail=f"run request is invalid: {run_id}")
 
-    history = list(request_data.get("conversation_history") or [])
-    original_message = str(request_data.get("user_message") or "").strip()
-    if original_message:
-        history.append({"role": "user", "content": original_message})
-    last_response = str(state.get("last_response") or "").strip()
-    if last_response:
-        history.append({"role": "assistant", "content": last_response})
-
     def gen():
-        for event in stream_code_agent(
-            user_message=(
-                "Продолжи незавершённую задачу с последнего подтверждённого результата. "
-                "Сначала проверь фактическое состояние файлов и не повторяй уже выполненные изменения."
-            ),
-            project_root=_resolve_project_root(str(request_data.get("project_root") or "")),
-            working_dir=request_data.get("working_dir"),
-            model=str(request_data.get("model") or "auto"),
-            agent_id=str(request_data.get("agent_id") or "code-agent"),
-            max_steps=int(request_data.get("max_steps") or DEFAULT_MAX_STEPS),
-            conversation_history=history,
-            run_id=run_id,
-            num_ctx=int(request_data.get("num_ctx") or DEFAULT_NUM_CTX),
-            base_tools=tuple(request_data.get("base_tools") or _CODE_AGENT_BASE_TOOLS),
-            execution_timeout_seconds=request_data.get("execution_timeout_seconds"),
-            auto_remember=bool(request_data.get("auto_remember", True)),
-            approval_wait_seconds=300,
-            resume=True,
-            access_mode=str(request_data.get("access_mode") or "project-workspace"),
-            permission_mode=str(request_data.get("permission_mode") or "ask"),
-            thinking=bool(request_data.get("thinking", False)),
-            no_questions=bool(request_data.get("no_questions", False)),
-        ):
+        # Delivery: manual Resume is one user action — it gets the enriched
+        # server-owned continuation context (checklist completed/open items,
+        # touched files, criteria state) and the same bounded session as a
+        # fresh submission. build_continuation_kwargs reads the persisted
+        # request, so project_root/permission_mode/thinking stay those of the
+        # original run.
+        for event in stream_resume_session(run_id, approval_wait_seconds=300):
             yield _sse_format(event)
 
     return StreamingResponse(
@@ -494,8 +478,11 @@ def resume_run(run_id: str) -> StreamingResponse:
 
 @router.post("/cancel")
 def cancel(payload: CodeAgentCancelRequest) -> dict[str, Any]:
+    # Delivery: a Stop must terminate the WHOLE session (all remaining slices),
+    # not just the live slice — the session flag covers the between-slice gap.
+    session_found = request_session_cancel(payload.run_id)
     found = request_cancel(payload.run_id)
-    return {"ok": True, "found": found, "run_id": payload.run_id}
+    return {"ok": True, "found": found or session_found, "run_id": payload.run_id}
 
 
 class QuestionAnswerRequest(BaseModel):

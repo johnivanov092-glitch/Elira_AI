@@ -104,9 +104,16 @@ class RunJournal:
         self.commands_path.parent.mkdir(parents=True, exist_ok=True)
         self._acquire_agent_lock()
         try:
+            self._acquire_run_lock()
+        except RuntimeError:
+            self._release_agent_lock()
+            raise
+
+    def _acquire_run_lock(self) -> None:
+        """Per-run_id write lock only (O_EXCL run.lock) — no global agent.lock."""
+        try:
             fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError as exc:
-            self._release_agent_lock()
             raise RuntimeError(f"run is already active: {self.run_id}") from exc
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump({"pid": os.getpid(), "acquired_at": _utc_now()}, handle)
@@ -217,6 +224,12 @@ class RunJournal:
             )
         if event_type == "final_response":
             self._state["last_response"] = str(event.get("text") or "")
+        if event_type == "reasoning_fallback":
+            # Delivery (B): the thinking-OFF fallback is one-shot for the whole
+            # RUN identity, not just the current process/HTTP session. Durable
+            # server-owned marker — continuation builders force thinking=False
+            # off it; the original request.thinking is never rewritten.
+            self._state["thinking_fallback_applied"] = True
         if event_type == "tool_call":
             touched = str(event.get("touched_path") or "").strip()
             if touched and touched not in self._state["changed_files"]:
@@ -259,6 +272,31 @@ class RunJournal:
             self._state["current_phase"] = "terminal"
         self._state["updated_at"] = _utc_now()
         self._write_state()
+
+    def append_external_event(self, event: dict[str, Any]) -> None:
+        """Append-only OBSERVER write for a supervisor that does NOT hold the
+        run lock (e.g. the delivery-session slice boundary): events.jsonl only.
+        _state and state.json are never touched, so this can never race the
+        lock-held writers (start/resume/append_event) or clobber a concurrent
+        manual resume's status."""
+        record = {"timestamp": _utc_now(), "run_id": self.run_id, **_clean(event)}
+        self._append_jsonl(self.events_path, record)
+
+    def record_terminal_event(self, event: dict[str, Any]) -> None:
+        """Lock-held TERMINAL write for a supervisor acting BETWEEN slices (no
+        live loop owns THIS run): serialized per run_id via run.lock ONLY — the
+        global agent.lock is deliberately NOT taken, so a different run's live
+        activity can never block recording a terminal for this inactive run.
+        The event goes through the normal append_event state machine (a
+        cancelled `done` lands as status='cancelled' exactly like an in-loop
+        terminal); health is refreshed. Raises if a writer owns THIS run."""
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        self._acquire_run_lock()
+        try:
+            self.append_event(event)
+            self._write_health(str(self._state.get("status") or "unknown"))
+        finally:
+            self.release()
 
     def append_command(self, event: dict[str, Any]) -> None:
         self._append_jsonl(
