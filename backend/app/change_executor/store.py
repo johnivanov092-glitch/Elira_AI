@@ -557,6 +557,121 @@ def resolve_after_inspect(*, change_run_id: str, resolver: str, inspect_fields: 
         conn.close()
 
 
+_DATABASE_RESOLUTION_OP = "database_change:resolution_inspect"
+_DATABASE_HASH_KEYS = ("schema_sha256", "data_sha256")
+
+
+def _validate_database_resolution(fields: Any, exit_status: Any) -> dict[str, Any] | None:
+    if str(exit_status) != "0" or not isinstance(fields, dict):
+        return None
+    if (fields.get("kind") != "sqlite_migration"
+            or fields.get("database_id") != "phase6-canary"
+            or fields.get("migration_id") != "canary_add_verified_at_v2"
+            or fields.get("state") not in ("before", "after")
+            or fields.get("quick_check") != "ok"
+            or fields.get("journal_mode") != "delete"):
+        return None
+    version = fields.get("user_version")
+    row_count = fields.get("row_count")
+    if (not isinstance(version, int) or isinstance(version, bool)
+            or not isinstance(row_count, int) or isinstance(row_count, bool)
+            or row_count < 0 or row_count > 1_000):
+        return None
+    for key in _DATABASE_HASH_KEYS:
+        value = fields.get(key)
+        if (not isinstance(value, str) or len(value) != 64
+                or any(c not in "0123456789abcdef" for c in value)):
+            return None
+    if (fields["state"], version) not in (("before", 1), ("after", 2)):
+        return None
+    return {
+        "kind": "sqlite_migration",
+        "database_id": "phase6-canary",
+        "migration_id": "canary_add_verified_at_v2",
+        "state": fields["state"],
+        "quick_check": "ok",
+        "journal_mode": "delete",
+        "user_version": version,
+        "schema_sha256": fields["schema_sha256"],
+        "row_count": row_count,
+        "data_sha256": fields["data_sha256"],
+    }
+
+
+def resolve_database_after_inspect(*, change_run_id: str, resolver: str,
+                                   inspect_fields: dict[str, Any],
+                                   inspect_exit_status: str) -> bool:
+    """Resolve a locking database run only from a fresh typed inspect of the bound canary.
+
+    The store owns the operation label and compares the inspect against its own immutable
+    plan snapshot in the same transaction as evidence insertion and the status CAS.
+    """
+    projected = _validate_database_resolution(inspect_fields, inspect_exit_status)
+    if projected is None:
+        return False
+    conn = _connect()
+    try:
+        now = _now()
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT target_id, unit, snapshot FROM change_runs WHERE change_run_id=? "
+            "AND change_run_status IN ('apply_unknown','rollback_failed')",
+            (change_run_id,),
+        ).fetchone()
+        if row is None or row["unit"] != "phase6-canary":
+            conn.rollback()
+            return False
+        try:
+            snapshot = json.loads(row["snapshot"])
+        except (ValueError, TypeError):
+            conn.rollback()
+            return False
+        same_target = (
+            snapshot.get("kind") == "sqlite_migration"
+            and snapshot.get("database_id") == projected["database_id"]
+            and snapshot.get("migration_id") == projected["migration_id"]
+            and snapshot.get("row_count") == projected["row_count"]
+            and snapshot.get("data_sha256") == projected["data_sha256"]
+        )
+        if not same_target:
+            conn.rollback()
+            return False
+        if projected["state"] == "after":
+            final_status = "resolved_applied"
+        elif (projected["schema_sha256"] == snapshot.get("schema_sha256")
+              and projected["user_version"] == snapshot.get("user_version")):
+            final_status = "resolved_rolled_back"
+        else:
+            conn.rollback()
+            return False
+        conn.execute(
+            """INSERT INTO change_evidence
+               (evidence_id, change_run_id, target_id, operation, result, exit_status, captured_at)
+               VALUES (?, ?, ?, ?, ?, '0', ?)""",
+            (f"cev-{uuid.uuid4().hex}", change_run_id, row["target_id"],
+             _DATABASE_RESOLUTION_OP, json.dumps(projected, ensure_ascii=False), now),
+        )
+        changed = conn.execute(
+            """UPDATE change_runs SET change_run_status=?, approver=?, updated_at=?
+               WHERE change_run_id=?
+                 AND change_run_status IN ('apply_unknown','rollback_failed')""",
+            (final_status, resolver, now, change_run_id),
+        ).rowcount
+        if changed != 1:
+            conn.rollback()
+            return False
+        conn.commit()
+        return True
+    except sqlite3.Error as exc:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+        raise ChangeStoreUnavailable(f"resolve_database_after_inspect failed: {exc}") from exc
+    finally:
+        conn.close()
+
+
 _CONFIG_RESOLUTION_OP = "config_change:resolution_inspect"
 
 

@@ -162,6 +162,7 @@ def process_message(token: str, message: dict[str, Any]) -> None:
             user_input=text,
             use_memory=use_memory,
             use_web_search=use_web,
+            agent_id="telegram",
         )
         answer = result.get("answer", "Не удалось получить ответ 😔")
         answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()

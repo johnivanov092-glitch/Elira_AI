@@ -178,6 +178,7 @@ class TelegramModelFallbackTest(unittest.TestCase):
     def test_empty_model_falls_back_to_auto(self):
         captured = self._process("")
         self.assertEqual(captured["model_name"], "auto")
+        self.assertEqual(captured["agent_id"], "telegram")
 
     def test_explicit_model_preserved(self):
         captured = self._process("explicit-model")

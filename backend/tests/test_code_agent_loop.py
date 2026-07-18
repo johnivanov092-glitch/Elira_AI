@@ -84,6 +84,22 @@ class SandboxedToolsTest(unittest.TestCase):
         with self.assertRaises(SandboxError):
             tool_write_file(self.root, path="../escape.py", content="oops")
 
+    def test_write_file_rejects_duplicate_project_root_prefix(self) -> None:
+        duplicated = f"{self.root.name}/index.html"
+        with self.assertRaisesRegex(SandboxError, "already relative to the project root"):
+            tool_write_file(self.root, path=duplicated, content="<h1>UFO</h1>")
+        self.assertFalse((self.root / self.root.name / "index.html").exists())
+
+    def test_edit_file_rejects_duplicate_project_root_prefix(self) -> None:
+        duplicated = f"{self.root.name}/hello.py"
+        with self.assertRaisesRegex(SandboxError, "already relative to the project root"):
+            tool_edit_file(
+                self.root,
+                path=duplicated,
+                old_string="print('hi')",
+                new_string="print('bye')",
+            )
+
     def test_edit_file_unique_replacement(self) -> None:
         res = tool_edit_file(
             self.root, path="hello.py", old_string="print('hi')", new_string="print('bye')"
@@ -1285,6 +1301,24 @@ class ApprovalPauseTest(unittest.TestCase):
         self.assertTrue(events[-1]["ok"])
         self.assertEqual(events[-1]["stop_reason"], "answer")
         self.assertEqual(ke.call_count, 2)  # waiting + re-exec after approve
+
+    def test_remote_bypass_cannot_inherit_local_auto_approval(self) -> None:
+        import app.application.code_agent.agent_loop as loop_mod
+
+        with patch.object(loop_mod, "_kernel_exec", return_value=self._waiting()) as ke, \
+             patch.object(loop_mod, "_mark_approval_approved") as approve:
+            events = list(loop_mod.stream_code_agent(
+                user_message="создай файл",
+                project_root=self.root,
+                chat_fn=self._chat_two_steps(),
+                agent_id="telegram",
+                permission_mode="bypass",
+                approval_wait_seconds=0,
+            ))
+
+        self.assertTrue(any(e["type"] == "tool_call" for e in events))
+        approve.assert_not_called()
+        self.assertEqual(ke.call_count, 1)
 
     def test_tool_started_for_approval_tool_waits_until_approved(self) -> None:
         import app.application.code_agent.agent_loop as loop_mod

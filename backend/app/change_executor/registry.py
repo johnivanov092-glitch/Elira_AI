@@ -7,10 +7,11 @@ the main Elira user cannot write. Nothing here comes from the main it_ops store 
 the IPC caller: a tampered profile/alias in the main DB can never redirect a change,
 because the caller supplies only a `target_id` label.
 
-The registry supports two deliberately narrow target kinds:
+The registry supports three deliberately narrow target kinds:
 * `systemd_restart` — one fixed restart of a `.service` unit;
 * `netdata_config` — one fixed typed change (`[global] update every = 1`) applied by the
-  root-owned remote helper whose content hash is pinned here.
+  root-owned remote helper whose content hash is pinned here;
+* `sqlite_migration` — one fixed migration of the executor-owned Phase-6 canary.
 """
 from __future__ import annotations
 
@@ -22,12 +23,17 @@ from ._frozen import unit_name_ok
 
 SYSTEMD_RESTART = "systemd_restart"
 NETDATA_CONFIG = "netdata_config"
+SQLITE_MIGRATION = "sqlite_migration"
 
 _RESTART_OPERATION = "restart"
 _NETDATA_OPERATION = "set_update_every_1"
 _NETDATA_UNIT = "netdata.service"
 _NETDATA_CONFIG_ID = "netdata-main"
 _NETDATA_HELPER_PATH = "/usr/local/sbin/elira-netdata-config"
+_DATABASE_ID = "phase6-canary"
+_DATABASE_TARGET_ID = "phase6-sqlite-canary"
+_DATABASE_MIGRATION_ID = "canary_add_verified_at_v2"
+_DATABASE_OPERATION = "migrate_v1_to_v2"
 
 
 class RegistryError(RuntimeError):
@@ -37,29 +43,57 @@ class RegistryError(RuntimeError):
 @dataclass(frozen=True)
 class Target:
     target_id: str
-    host: str
-    port: int
-    remote_user: str
-    known_hosts: str      # executor-owned path, pinned into StrictHostKeyChecking=yes
-    identity_file: str    # executor-owned change key (ACL-denied to the main user)
     target_kind: str
     unit: str
     operation: str
+    host: str = ""
+    port: int = 0
+    remote_user: str = ""
+    known_hosts: str = ""      # executor-owned path, pinned into StrictHostKeyChecking=yes
+    identity_file: str = ""    # executor-owned change key (ACL-denied to the main user)
     config_id: str = ""
     helper_path: str = ""
     helper_sha256: str = ""
+    database_id: str = ""
+    database_path: str = ""
+    backup_dir: str = ""
+    migration_id: str = ""
 
 
 def _validate(target_id: str, raw: dict) -> Target:
     if not isinstance(raw, dict):
         raise RegistryError(f"target {target_id!r}: not an object")
+    target_kind = str(raw.get("target_kind") or SYSTEMD_RESTART).strip()
+    operation = str(raw.get("operation") or "").strip()
+    if target_kind == SQLITE_MIGRATION:
+        database_id = str(raw.get("database_id") or "").strip()
+        database_path = str(raw.get("database_path") or "").strip()
+        backup_dir = str(raw.get("backup_dir") or "").strip()
+        migration_id = str(raw.get("migration_id") or "").strip()
+        if (target_id != _DATABASE_TARGET_ID or database_id != _DATABASE_ID
+                or migration_id != _DATABASE_MIGRATION_ID
+                or operation != _DATABASE_OPERATION):
+            raise RegistryError(
+                f"target {target_id!r}: sqlite target must bind the fixed canary migration")
+        if not database_path or not backup_dir:
+            raise RegistryError(f"target {target_id!r}: database_path/backup_dir required")
+        if not os.path.isabs(database_path) or not os.path.isabs(backup_dir):
+            raise RegistryError(f"target {target_id!r}: database_path/backup_dir must be absolute")
+        return Target(
+            target_id=target_id,
+            target_kind=SQLITE_MIGRATION,
+            unit=database_id,
+            operation=operation,
+            database_id=database_id,
+            database_path=database_path,
+            backup_dir=backup_dir,
+            migration_id=migration_id,
+        )
     host = str(raw.get("host") or "").strip()
     remote_user = str(raw.get("remote_user") or "").strip()
     known_hosts = str(raw.get("known_hosts") or "").strip()
     identity_file = str(raw.get("identity_file") or "").strip()
-    target_kind = str(raw.get("target_kind") or SYSTEMD_RESTART).strip()
     unit = str(raw.get("unit") or "").strip()
-    operation = str(raw.get("operation") or "").strip()
     try:
         port = int(raw.get("port", 22))
     except (TypeError, ValueError):

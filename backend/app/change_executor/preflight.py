@@ -5,8 +5,9 @@ The executor refuses to run unless its runtime is really isolated from the main 
     `sys.executable` (the venv python) must live INSIDE it — running from the main
     repo/backend or a shared venv fails closed;
   * the executor must NOT be inside a git working tree (a dev checkout);
-  * every executor-owned sensitive path (store, registry, IPC token file, each target's
-    known_hosts + identity key) must live INSIDE the executor root — so the recursive root
+  * every executor-owned sensitive path (store, registry, IPC token file, each SSH target's
+    known_hosts + identity key, and each database target's DB + backup directory) must live
+    INSIDE the executor root — so the recursive root
     check covers their whole ancestor chain — and none may be writable by a non-owner;
   * no sys.path entry may be writable by others (a route to shadow the frozen code),
     including importable zip/egg FILES on sys.path, with path-aware base containment;
@@ -37,7 +38,7 @@ from pathlib import Path
 
 from . import approvals
 from ._frozen import decode_console
-from .registry import RegistryError, load_registry
+from .registry import RegistryError, SQLITE_MIGRATION, load_registry
 
 _REQUIRED_ENVS = ("ELIRA_CHANGE_STORE_PATH", "ELIRA_CHANGE_REGISTRY_PATH",
                   "ELIRA_CHANGE_BOT_TOKEN", "ELIRA_CHANGE_EXECUTOR_ROOT",
@@ -529,6 +530,16 @@ def verify(*, registry_path: str | None = None) -> list[str]:
         problems.append(f"registry invalid: {exc}")
         reg = {}
     for tid, t in reg.items():
+        if t.target_kind == SQLITE_MIGRATION:
+            if not os.path.isfile(t.database_path):
+                problems.append(f"target {tid}: database_path missing: {t.database_path}")
+            else:
+                sensitive.append((f"target {tid} database_path", t.database_path))
+            if not os.path.isdir(t.backup_dir):
+                problems.append(f"target {tid}: backup_dir missing: {t.backup_dir}")
+            else:
+                sensitive.append((f"target {tid} backup_dir", t.backup_dir))
+            continue
         for label, p in (("known_hosts", t.known_hosts), ("identity_file", t.identity_file)):
             if not os.path.isfile(p):
                 problems.append(f"target {tid}: {label} missing: {p}")

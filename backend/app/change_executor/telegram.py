@@ -52,6 +52,18 @@ def _tg(token: str, method: str, payload: dict, timeout: int = 15) -> dict:
 
 
 def _format_plan(change_run_id: str, target_id: str, snapshot: dict) -> str:
+    if snapshot.get("kind") == "sqlite_migration":
+        return (
+            "IT database change - approval required\n"
+            f"target: {target_id}\n"
+            f"database: {snapshot.get('database_id')}\n"
+            f"migration: {snapshot.get('migration_id')}\n"
+            f"version: {snapshot.get('user_version')} -> 2\n"
+            f"rows protected: {snapshot.get('row_count')}\n"
+            "backup: executor-owned, created before write\n"
+            "rollback: automatic on definite post-check failure\n"
+            f"change: {change_run_id}"
+        )
     if snapshot.get("kind") == "netdata_config":
         service = snapshot.get("service") if isinstance(snapshot.get("service"), dict) else {}
         current = snapshot.get("safe_settings") if isinstance(snapshot.get("safe_settings"), dict) else {}

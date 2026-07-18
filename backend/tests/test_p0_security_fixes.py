@@ -69,8 +69,8 @@ class IsCriticalFailClosedTest(unittest.TestCase):
 
     def test_fail_closed_when_check_raises(self):
         from app.application.code_agent import loop_helpers
-        with patch("app.application.code_agent.tools.is_shell_critical",
-                   side_effect=RuntimeError("boom")):
+        with patch.object(loop_helpers, "evidence_for_tool_call",
+                          side_effect=RuntimeError("boom")):
             self.assertTrue(loop_helpers._is_critical_call("run_bash", {"command": "echo hi"}))
 
     def test_normal_path_still_classifies(self):

@@ -146,6 +146,32 @@ class PreflightTest(unittest.TestCase):
         self.assertTrue(any("NOT inside ELIRA_CHANGE_EXECUTOR_ROOT" in p and "change.sqlite3" in p
                             for p in problems), problems)
 
+    def test_database_and_backup_paths_are_executor_owned_sensitive_paths(self):
+        root = Path(self._tmp) / "exec_root"
+        root.mkdir()
+        outside = Path(self._tmp) / "outside"
+        outside.mkdir()
+        database = outside / "phase6_canary.sqlite3"
+        database.write_bytes(b"sqlite")
+        backups = root / "backups"
+        backups.mkdir()
+        reg = root / "registry.json"
+        reg.write_text(json.dumps({"targets": {"phase6-sqlite-canary": {
+            "target_kind": "sqlite_migration",
+            "database_id": "phase6-canary",
+            "database_path": str(database),
+            "backup_dir": str(backups),
+            "migration_id": "canary_add_verified_at_v2",
+            "operation": "migrate_v1_to_v2",
+        }}}), encoding="utf-8")
+        env = self._valid_env(str(root), str(reg))
+        with unittest.mock.patch.object(preflight, "_writable_by_others", return_value=False), \
+                unittest.mock.patch.object(preflight, "_recursive_writable", return_value=None), \
+                unittest.mock.patch.object(preflight, "_has_git_ancestor", return_value=False), \
+                unittest.mock.patch.dict(os.environ, env, clear=True):
+            problems = preflight.verify(registry_path=str(reg))
+        self.assertTrue(any("database_path" in p and "NOT inside" in p for p in problems), problems)
+
     def test_syspath_importable_zip_file_checked(self):
         # P1-B: an importable archive (zip/egg) is a FILE on sys.path — skipping non-directories
         # would let a writable archive shadow code. It must be checked per-file.

@@ -1,5 +1,5 @@
-"""Executor-side IPC surface — exactly TWO calls the main backend may make:
-`request_plan(target_id)` and `get_status(change_run_id)`.
+"""Executor-side IPC surface — three bounded calls the main backend may make:
+`request_plan(target_id)`, `apply_local(target_id)`, and `get_status(change_run_id)`.
 
 Non-negotiable: the IPC NEVER returns a raw capability token, the SSH argv, a key/path,
 or the registry binding. `request_plan` returns only `{change_run_id, status}`; the
@@ -7,19 +7,21 @@ executor itself does the plan, stores the capability, and sends the Telegram but
 raw tokens go only into callback_data). `get_status` returns a tight capped whitelist —
 no raw command output and no service/internal paths (e.g. FragmentPath is dropped).
 
-No `approve`/`reject`/`resolve`/argv/host/unit ever cross this boundary. `request_plan`
-is rate-limited so a misbehaving model can't spam Telegram, and fails closed if the
-dedicated bot / approver allowlist is not configured (no ChangeRun, no send).
+`apply_local` is the existing Tauri/bypass path: it performs plan + capability consume +
+apply entirely inside the executor and returns only the safe id/status envelope. It never
+sends Telegram and never returns a capability. No generic `approve`/`reject`/`resolve`/
+argv/host/unit crosses this boundary. Both mutation entrypoints are rate-limited.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
 import time
 from typing import Any, Callable, Protocol
 
-from . import engine
+from . import engine, policy
 from . import store as cs
 from .registry import RegistryError
 
@@ -30,6 +32,10 @@ _CAP = 200
 # path), NO stderr / raw output.
 _STATUS_RESULT_SCALARS = ("outcome", "verdict", "reason")
 _STATUS_CONFIG_SCALARS = ("config_id", "before_sha256", "after_sha256")
+_STATUS_DATABASE_SCALARS = (
+    "database_id", "migration_id", "backup_sha256", "schema_sha256",
+)
+_STATUS_DATABASE_INTS = ("before_user_version", "after_user_version", "row_count")
 _STATUS_FIELD_KEYS = ("id", "load_state", "active_state", "sub_state", "unit_file_state",
                       "main_pid", "exec_main_status", "n_restarts")
 
@@ -93,6 +99,62 @@ def request_plan(target_id: str, *, sender: ApprovalSender, registry_path: str |
     return {"ok": True, "change_run_id": plan["change_run_id"], "status": "pending_approval"}
 
 
+def apply_local(target_id: str, *, registry_path: str | None = None,
+                rate_limiter: RateLimiter | None = None,
+                runner: Callable | None = None) -> dict[str, Any]:
+    """Plan and apply one server-registered change for the local Tauri bypass path.
+
+    The raw one-time capability stays inside this function. The caller receives only a
+    bounded status envelope; target resolution, snapshot, drift checks, apply and
+    post-check remain executor-owned. Telegram is deliberately not involved.
+    """
+    if rate_limiter is not None and not rate_limiter.allow():
+        return {"ok": False, "error": "rate_limited"}
+    # Local bypass is granted only to targets with an explicit runtime-owned safety
+    # profile. A newly added registry target does not inherit auto-apply by accident.
+    if policy.decide_approval(
+        "bypass",
+        "local",
+        policy.evidence_for_registered_target(str(target_id or "").strip()),
+    ) != policy.AUTO:
+        return {"ok": False, "error": "approval_required"}
+    try:
+        plan = engine.plan(target_id, registry_path=registry_path,
+                           **({"runner": runner} if runner is not None else {}))
+    except engine.PreconditionError:
+        return {"ok": False, "error": "precondition_not_met"}
+    except cs.ActiveTargetConflict:
+        return {"ok": False, "error": "active_change_exists"}
+    except RegistryError:
+        return {"ok": False, "error": "unknown_or_invalid_target"}
+
+    change_run_id = plan["change_run_id"]
+    capability_hash = hashlib.sha256(plan["approve_token"].encode("utf-8")).hexdigest()
+    claimed = cs.consume_capability(
+        capability_hash=capability_hash,
+        approver="local:bypass",
+        apply_deadline_seconds=engine.APPLY_DEADLINE_SECONDS,
+    )
+    if claimed is None:
+        # This should be unreachable immediately after plan. Free a still-pending target
+        # rather than leave a local failure locked until the periodic expiry sweep.
+        cs.mark_delivery_failed(change_run_id=change_run_id)
+        current = cs.get_change_run(change_run_id)
+        return {
+            "ok": False,
+            "error": "local_claim_failed",
+            "change_run_id": change_run_id,
+            "status": (current or {}).get("change_run_status", "delivery_failed"),
+        }
+
+    status = engine.apply(
+        change_run_id,
+        registry_path=registry_path,
+        **({"runner": runner} if runner is not None else {}),
+    )
+    return {"ok": status == "applied", "change_run_id": change_run_id, "status": status}
+
+
 def _project_evidence_result(raw_json: str) -> dict[str, Any]:
     try:
         d = json.loads(raw_json)
@@ -109,6 +171,14 @@ def _project_evidence_result(raw_json: str) -> dict[str, Any]:
         v = d.get(k)
         if isinstance(v, str):
             out[k] = v[:_CAP]
+    for k in _STATUS_DATABASE_SCALARS:
+        v = d.get(k)
+        if isinstance(v, str):
+            out[k] = v[:_CAP]
+    for k in _STATUS_DATABASE_INTS:
+        v = d.get(k)
+        if isinstance(v, int) and not isinstance(v, bool):
+            out[k] = v
     if isinstance(d.get("rollback_attempted"), bool):
         out["rollback_attempted"] = d["rollback_attempted"]
     fields = d.get("fields")

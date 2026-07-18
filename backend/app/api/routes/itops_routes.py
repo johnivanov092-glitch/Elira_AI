@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/itops", tags=["it-operations"])
@@ -105,6 +105,13 @@ class ConfigInspectRequest(BaseModel):
     model_config = {"extra": "forbid"}
     profile_id: str = Field(..., description="A SAVED, VERIFIED (enabled) linux connection profile id")
     config_id: Literal["netdata-main"] = Field(..., description="A server-owned named config target")
+
+
+class DatabaseInspectRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    # The client names only an admitted logical database. Path, SQL, schema and query
+    # profile are server-owned and never cross this API boundary.
+    database_id: Literal["elira-state"] = Field(..., description="A server-owned database target")
 
 
 class ChangePlanRequest(BaseModel):
@@ -294,6 +301,11 @@ _EVIDENCE_SCALAR_FIELDS = (
     # CONTENT, status text or journal, which could carry Environment=/tokens/logs)
     "unit", "id", "load_state", "active_state", "sub_state", "unit_file_state",
     "main_pid", "exec_main_status", "n_restarts", "fragment_path",
+    # database inspect — flat, typed summary only; never path/DSN/SQL/row contents
+    "database_id", "engine", "quick_check", "user_version", "schema_version",
+    "migration_state", "table_count", "file_bytes", "file_modified_at",
+    "schema_summary", "safe_query_profile", "chat_count", "message_count", "backup_status",
+    "backup_count", "backup_age_seconds", "backup_stale_after_seconds",
 )
 _NET_STATE_KEYS = ("open", "refused", "timeout", "unreachable", "local_error")
 _NET_CAP_KEYS = ("rate_limit", "total_timeout", "per_connect_timeout", "in_flight", "max_hosts")
@@ -488,6 +500,41 @@ def config_inspect_start(payload: ConfigInspectRequest) -> dict[str, Any]:
             "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS}
 
 
+@router.post("/database/inspect/start")
+def database_inspect_start(payload: DatabaseInspectRequest) -> dict[str, Any]:
+    """Start one typed local SQLite read-only inspection.
+
+    The client/model cannot provide a path, connection string, schema or SQL. The
+    server resolves ``database_id`` to a fixed target and binds one no-argument tool.
+    """
+    _require_flag()
+    from app.application.agent_kernel import operation_scope
+    from app.application.it_ops import database_inspect as di
+
+    spec = di.resolve_database(payload.database_id)
+    _store()  # ensure the separate evidence journal exists before binding the run
+    run_id = f"itops-diag-{uuid.uuid4().hex}"
+    operation_scope.bind_scope_database(
+        run_id,
+        database_id=spec.database_id,
+        allowed_tool="itops_database_inspect",
+    )
+    message = (
+        "Выполни read-only инспекцию локальной базы данных. Активируй инструмент "
+        "itops_database_inspect через tool_search, затем вызови его РОВНО ОДИН РАЗ "
+        "БЕЗ аргументов. Database target, путь, схемы и безопасный запрос уже привязаны "
+        "сервером; не вызывай другие инструменты."
+    )
+    return {
+        "ok": True,
+        "run_id": run_id,
+        "database_id": spec.database_id,
+        "tool": "itops_database_inspect",
+        "message": message,
+        "ttl_seconds": operation_scope.DEFAULT_TTL_SECONDS,
+    }
+
+
 # ── change vertical (v1) — thin proxy to the privileged executor's loopback IPC ──────
 # The main backend NEVER plans, approves, applies, or holds keys/argv/binding — it only
 # forwards a target_id to the executor and reads capped status. Approval happens entirely
@@ -502,6 +549,26 @@ def change_plan(payload: ChangePlanRequest) -> dict[str, Any]:
     from app.application.it_ops import change_client
     try:
         return change_client.request_plan(payload.target_id)
+    except change_client.ChangeExecutorUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/change/apply-local")
+def change_apply_local(payload: ChangePlanRequest, request: Request) -> dict[str, Any]:
+    """Local Tauri policy path. Loopback-only; target details remain executor-owned.
+
+    This is deliberately separate from `/change/plan`, which remains the remote
+    Telegram-approval path.
+    """
+    _require_flag()
+    client_host = str(request.client.host if request.client else "")
+    if client_host not in {"127.0.0.1", "::1", "testclient"}:
+        raise HTTPException(status_code=403, detail="local change path is loopback-only")
+    from app.application.it_ops import change_client
+    if payload.target_id not in change_client.LOCAL_CHANGE_TARGETS:
+        raise HTTPException(status_code=400, detail="local change target is not allowed")
+    try:
+        return change_client.apply_local(payload.target_id)
     except change_client.ChangeExecutorUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 

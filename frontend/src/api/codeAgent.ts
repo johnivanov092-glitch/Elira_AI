@@ -52,8 +52,8 @@ export type CodeAgentMode = "code" | "search";
 
 /** Approval policy for a run, picked in the composer's permission selector:
  *  - "ask"          — pause for the user on every gated tool (default);
- *  - "accept_edits" — auto-approve filesystem edits, still pause shell/net;
- *  - "bypass"       — auto-approve every gated tool (forbidden stays blocked). */
+ *  - "accept_edits" — auto-approve low-risk runtime-reversible work;
+ *  - "bypass"       — auto-approve normal work; unprotected high-risk work still asks. */
 export type PermissionMode = "ask" | "accept_edits" | "bypass";
 
 export type CodeAgentRunArgs = {

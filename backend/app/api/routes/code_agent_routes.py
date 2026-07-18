@@ -200,8 +200,9 @@ class CodeAgentStreamRequest(CodeAgentRequest):
     )
     permission_mode: Literal["ask", "accept_edits", "bypass"] = Field(
         default="ask",
-        description="Approval policy: ask (pause on every gated tool), accept_edits "
-        "(auto-approve filesystem edits, pause shell/net), bypass (auto-approve all).",
+        description="Approval policy: ask (pause on every change), accept_edits "
+        "(auto-approve low-risk runtime-reversible work), bypass (auto-approve normal "
+        "work; unprotected high-risk work still pauses).",
     )
     thinking: bool = Field(
         default=False,

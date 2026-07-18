@@ -3,12 +3,13 @@ main backend, from executor-owned code/venv.
 
 Startup: VERIFY isolation (fail-closed) → init the private store → mint a per-boot IPC
 bearer token into an executor-owned token-file → start the dedicated-bot poller and the
-periodic sweep → serve the two-call loopback IPC bound HARD to 127.0.0.1.
+periodic sweep → serve the bounded loopback IPC bound HARD to 127.0.0.1.
 
 Re-negotiated IPC boundary (see the contract): the main backend and `run_bash` share one
 OS principal, so no transport can exclude `run_bash`; the bearer token separates OTHER
-local users, and the real guarantee is that `request_plan` cannot change a host (rate-
-limited read-only inspect + a Telegram the human must approve). The IPC never returns a
+local users. `request_plan` is the remote path and cannot change a target without the
+dedicated Telegram approval. `apply_local` is the explicitly trusted personal Tauri/
+bypass path. Both resolve only executor-registered targets, and the IPC never returns a
 token/argv/key/binding. Stdlib only.
 """
 from __future__ import annotations
@@ -55,7 +56,7 @@ def handle_request(path: str, auth_header: str | None, body: bytes | None, *, to
                    sender, rate_limiter, registry_path: str | None,
                    runner=None) -> tuple[int, dict]:
     """Pure IPC request handler (testable without a socket). A missing/wrong token → 401
-    and NO engine call. Body must be <=4 KiB JSON; only /request_plan and /get_status."""
+    and NO engine call. Body must be <=4 KiB JSON; paths are a fixed allowlist."""
     if not _auth_ok(auth_header, token):
         return 401, {"ok": False, "error": "unauthorized"}
     if body is not None and len(body) > _MAX_BODY:
@@ -70,6 +71,10 @@ def handle_request(path: str, auth_header: str | None, body: bytes | None, *, to
         return 200, ipc.request_plan(str(payload.get("target_id") or ""), sender=sender,
                                      registry_path=registry_path, rate_limiter=rate_limiter,
                                      runner=runner)
+    if path == "/apply_local":
+        return 200, ipc.apply_local(str(payload.get("target_id") or ""),
+                                    registry_path=registry_path, rate_limiter=rate_limiter,
+                                    runner=runner)
     if path == "/get_status":
         return 200, ipc.get_status(str(payload.get("change_run_id") or ""))
     return 404, {"ok": False, "error": "unknown_method"}

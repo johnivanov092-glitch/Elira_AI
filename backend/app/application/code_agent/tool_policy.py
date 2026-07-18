@@ -14,9 +14,10 @@ The gates (recap):
   * SEARCH_ACTIVATABLE_SIDE_EFFECT — side-effect tools tool_search may activate
                                even in "ask"/"accept_edits" mode. In "bypass"
                                tool_search activates ANY side-effect tool.
-  * EDIT_ONLY_TOOLS          — auto-approved under "accept_edits" (filesystem-
-                               shaped work; shell/net still pause).
-  * CRITICAL_TOOLS           — must ALWAYS be confirmed, even in bypass.
+  * EDIT_ONLY_TOOLS          — compatibility inventory for filesystem-shaped work;
+                               the shared approval policy owns the real decision.
+  * CRITICAL_TOOLS           — explicit high-risk tool identities; call-level shell
+                               impact is classified by the shared approval policy.
                                (Destructive SHELL commands are judged per-command
                                by _shell.is_shell_critical, not by tool name.)
 Being in a set grants VISIBILITY / auto-APPROVAL only — the executor still
@@ -49,15 +50,15 @@ READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")
 SEARCH_ACTIVATABLE_SIDE_EFFECT: frozenset[str] = frozenset(
     {
         "computer", "sandbox_run", "sandbox_reset", "sql", "file_gen", "archiver",
-        "encrypt", "webhook", "screenshot",
+        "encrypt", "webhook", "screenshot", "itops_change_apply",
     }
 )
 
-# Auto-approved under "accept_edits" — filesystem-shaped, non-shell/non-net.
+# Compatibility inventory for filesystem-shaped, non-shell/non-net work.
 EDIT_ONLY_TOOLS: frozenset[str] = frozenset(
-    {"write_file", "edit_file", "file_gen", "converter", "sql", "archiver", "sandbox_reset"}
+    {"write_file", "edit_file", "file_gen", "converter", "archiver", "sandbox_reset"}
 )
 
-# Tools that must ALWAYS be confirmed by the user, even in bypass. Reserved for
-# future high-risk tools; destructive shell is handled per-command elsewhere.
+# Explicit high-risk tool identities. Reserved for future tools; destructive shell
+# is handled per-command by app.change_executor.policy.
 CRITICAL_TOOLS: frozenset[str] = frozenset()

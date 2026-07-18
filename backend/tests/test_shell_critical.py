@@ -7,7 +7,11 @@ from app.application.code_agent.tools._shell import (
     is_shell_critical,
     is_shell_safe,
 )
-from app.application.code_agent.loop_helpers import _is_critical_call, _mode_auto_approves
+from app.application.code_agent.loop_helpers import (
+    _call_auto_approves,
+    _is_critical_call,
+    _mode_auto_approves,
+)
 
 
 class ShellCriticalTest(unittest.TestCase):
@@ -35,6 +39,13 @@ class ShellCriticalTest(unittest.TestCase):
             "pip uninstall requests",
             "DROP TABLE users",
             "delete from orders",
+            "sudo systemctl restart ssh.service",
+            "ufw disable",
+            "iptables -F",
+            "netsh advfirewall set allprofiles state off",
+            "ip route flush table main",
+            "alembic upgrade head",
+            "python manage.py migrate",
             "echo hi && rm important.txt",
         ):
             self.assertTrue(is_shell_critical(cmd), f"should be critical: {cmd!r}")
@@ -62,14 +73,16 @@ class ShellCriticalTest(unittest.TestCase):
         self.assertFalse(_is_critical_call("run_bash", None))
 
     def test_bypass_would_auto_but_critical_blocks_it(self) -> None:
-        # The loop auto-approves only when _mode_auto_approves AND NOT _is_critical_call.
+        # The exact-call policy incorporates the critical veto itself.
         name, args = "run_bash", {"command": "rm secret.txt"}
-        self.assertTrue(_mode_auto_approves("bypass", name))   # bypass would auto...
-        self.assertTrue(_is_critical_call(name, args))          # ...but critical vetoes it
+        self.assertTrue(_mode_auto_approves("bypass", name))
+        self.assertTrue(_is_critical_call(name, args))
+        self.assertFalse(_call_auto_approves("bypass", name, args))
         # benign command in bypass: auto, not critical
-        benign = {"command": "ls"}
+        benign = {"command": "npm install"}
         self.assertTrue(_mode_auto_approves("bypass", name))
         self.assertFalse(_is_critical_call(name, benign))
+        self.assertTrue(_call_auto_approves("bypass", name, benign))
 
 
 if __name__ == "__main__":

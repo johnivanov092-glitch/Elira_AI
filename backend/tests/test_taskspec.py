@@ -840,6 +840,78 @@ class AutoVerifierClosureTest(unittest.TestCase):
         # R4: criteria closed by the runtime carry the auto_verified flag (UI badge)
         self.assertTrue(all(c.get("auto_verified") for c in done["criteria"]))
 
+    def test_runtime_verifier_uses_exact_call_approval_policy(self):
+        """A runtime verifier that reaches the approval gate must use the same
+        exact-call policy as a model-issued tool call, then re-execute in-run."""
+        calls: list[tuple[str, dict]] = []
+        attempts: dict[str, int] = {}
+
+        def _exec(request, **_kw):
+            tool = str(getattr(request, "tool_name", ""))
+            args = dict(getattr(request, "args", {}) or {})
+            calls.append((tool, args))
+            attempts[tool] = attempts.get(tool, 0) + 1
+            if tool == "write_file":
+                return SimpleNamespace(
+                    status="ok",
+                    output={
+                        "ok": True,
+                        "text": "ok",
+                        "touched_path": "log-summarizer/index.js",
+                    },
+                )
+            if tool == "path_exists":
+                return SimpleNamespace(
+                    status="ok",
+                    output={
+                        "ok": True,
+                        "text": "log-summarizer/index.js: exists (file)",
+                        "verifier": True,
+                        "evidence": "log-summarizer/index.js: exists (file)",
+                    },
+                )
+            if tool == "run_bash" and attempts[tool] == 1:
+                return SimpleNamespace(
+                    status="waiting_approval",
+                    output={"ok": False, "approval_id": "approval-runtime-verifier"},
+                )
+            return SimpleNamespace(
+                status="ok",
+                output={
+                    "text": "$ node index.js sample.log\nexit=0\nSTDOUT:\nTOTAL: 5",
+                    "exit_code": 0,
+                },
+            )
+
+        chat = _RecordingChat(
+            [_call("write_file", path="log-summarizer/index.js", content="x"), _final("готово")],
+            _final("готово"),
+        )
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec), \
+             patch.object(agent_loop, "_mark_approval_approved") as approve:
+            evs = list(agent_loop.stream_code_agent(
+                user_message=self._LOCAL_TASK,
+                project_root=tmp,
+                run_id="ts-auto-green",
+                auto_remember=False,
+                permission_mode="bypass",
+                max_steps=20,
+                chat_fn=chat,
+            ))
+
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done.get("completion_status"), "confirmed")
+        self.assertEqual(attempts.get("run_bash"), 2)
+        approve.assert_called_once_with("approval-runtime-verifier")
+        self.assertEqual(
+            [args["command"] for tool, args in calls if tool == "run_bash"],
+            [
+                "cd log-summarizer && node index.js sample.log",
+                "cd log-summarizer && node index.js sample.log",
+            ],
+        )
+
     def test_red_pass_gives_short_report_then_honest_partial(self):
         # The auto run goes RED → the model gets ONE short report turn with the
         # evidence; it doesn't fix anything → the run ends honestly unverified

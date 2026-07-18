@@ -1,4 +1,4 @@
-import { Activity, CheckCircle2, ChevronRight, Cog, FileCog, Fingerprint, History, ListChecks, Loader2, Power, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import { Activity, CheckCircle2, ChevronRight, Cog, Database, FileCog, Fingerprint, History, ListChecks, Loader2, Power, Radar, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { request } from "../../api/client";
 import { streamCodeAgent } from "../../api/codeAgent";
@@ -15,10 +15,11 @@ import {
   getNetworkProfile,
   listAssets,
   listEvidenceRuns,
+  applyLocalChange,
   sshEnroll,
   sshPreview,
-  startChangePlan,
   startConfigInspect,
+  startDatabaseInspect,
   getChangeStatus,
   type ChangeStatusResp,
   startDiagnostics,
@@ -94,6 +95,7 @@ function AssetsSurface({ project }: { project: string }) {
         <NetworkScanBlock project={project} />
         <SystemdInspectBlock assets={assets} project={project} />
         <ConfigInspectBlock assets={assets} project={project} />
+        <DatabaseInspectBlock project={project} />
         <ChangeBlock />
         <EvidenceHistory assets={assets} />
       </div>
@@ -758,8 +760,80 @@ function ConfigInspectBlock({ assets, project }: { assets: ItopsAsset[] | null; 
   );
 }
 
-// Named privileged changes via the isolated executor. Approval is OUT-OF-BAND in the
-// executor's Telegram bot; neither the model nor this UI can approve or apply.
+function DatabaseInspectBlock({ project }: { project: string }) {
+  const [busy, setBusy] = useState(false);
+  const [out, setOut] = useState<{ text: string; err: string } | null>(null);
+
+  async function inspect() {
+    if (busy) return;
+    setBusy(true);
+    setOut(null);
+    try {
+      const s = await startDatabaseInspect();
+      let toolOut = "";
+      let finalText = "";
+      let streamError = "";
+      await streamCodeAgent({
+        message: s.message,
+        projectRoot: project,
+        runId: s.run_id,
+        maxSteps: 8,
+        onEvent: (ev) => {
+          if (ev.type === "tool_call" && ev.tool === "itops_database_inspect") toolOut = ev.result || toolOut;
+          else if (ev.type === "final_response") finalText = ev.text || finalText;
+        },
+        onError: (e) => {
+          streamError = e.message;
+          setOut({ text: "", err: streamError });
+        },
+      });
+      if (!streamError) setOut({ text: toolOut || finalText || "готово", err: "" });
+    } catch (e) {
+      setOut({ text: "", err: errText(e, "Инспекция базы данных не удалась") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
+        <Database size={13} /> База данных (read-only inspect)
+      </div>
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-line px-3 py-2">
+        <div className="min-w-0">
+          <div className="font-mono text-[12px] text-tx">elira-state</div>
+          <div className="mt-0.5 text-[11.5px] text-mut">
+            Схема, версия миграции, quick-check, свежесть backup и агрегатные счётчики.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => void inspect()}
+          disabled={busy}
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] text-[#14151b] transition-opacity",
+            !busy ? "bg-ac hover:opacity-90" : "cursor-not-allowed bg-ac/40",
+          )}
+        >
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Database size={13} />} Инспектировать
+        </button>
+      </div>
+      {out && (
+        <div className="mt-2">
+          {out.err ? (
+            <div className="rounded-lg border border-[#c98a8a]/40 bg-[#c98a8a]/10 px-3 py-2 text-[11.5px] text-[#d99a9a]">{out.err}</div>
+          ) : (
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">{out.text}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Named local changes via the isolated executor. Tauri is the local approval surface;
+// remote Telegram approval remains a separate executor entrypoint.
 const _CHANGE_TERMINAL = new Set([
   "applied", "command_failed", "postcheck_failed", "apply_unknown", "aborted_before_apply",
   "rolled_back", "rollback_failed", "rejected", "expired", "delivery_failed",
@@ -769,6 +843,7 @@ const _CHANGE_TERMINAL = new Set([
 const _CHANGE_TARGETS = [
   { id: "ai-server-netdata", label: "Restart netdata", icon: Power },
   { id: "ai-server-netdata-config", label: "Явно задать update every = 1", icon: FileCog },
+  { id: "phase6-sqlite-canary", label: "SQLite canary: migrate v1 to v2", icon: Database },
 ] as const;
 
 function ChangeBlock() {
@@ -780,15 +855,25 @@ function ChangeBlock() {
 
   async function plan(target: string) {
     if (busy) return;
+    try {
+      const mode = localStorage.getItem("elira.permissionMode") || "ask";
+      if (mode !== "bypass") {
+        const label = _CHANGE_TARGETS.find((item) => item.id === target)?.label || target;
+        if (!window.confirm(`Подтвердить локальное IT-изменение?\n\n${label}`)) return;
+      }
+    } catch {
+      setErr("Не удалось прочитать локальный режим доступа.");
+      return;
+    }
     setBusy(true);
     setErr("");
     setStatus(null);
     setChangeId("");
     setTargetId(target);
     try {
-      const r = await startChangePlan(target);
+      const r = await applyLocalChange(target);
       if (!r.ok || !r.change_run_id) {
-        setErr(r.error ? `план отклонён: ${r.error}` : "план не создан");
+        setErr(r.error ? `изменение не выполнено: ${r.error}` : "изменение не выполнено");
         return;
       }
       setChangeId(r.change_run_id);
@@ -827,12 +912,13 @@ function ChangeBlock() {
   return (
     <div>
       <div className="mb-2 flex items-center gap-1.5 text-[12.5px] font-medium text-tx">
-        <Power size={13} /> Изменения с подтверждением
+        <Power size={13} /> Локальные изменения
       </div>
       <Note>
-        Привилегированный executor делает inspect и snapshot, затем отправляет Telegram-кнопку.
-        Подтверждение — <b>только в Telegram</b>. Для конфигурации доступны только заранее
-        определённые типизированные изменения с автоматическим rollback.
+        Локальные изменения подтверждаются здесь, в Tauri; в режиме <b>«Без ограничений»</b>
+        обратимые операции с runtime-проверками выполняются без дополнительного вопроса.
+        Telegram Approve / Reject используется только для удалённых задач. SQLite-операция
+        работает исключительно с disposable canary.
       </Note>
       <div className="mt-2 flex flex-wrap gap-2">
         {_CHANGE_TARGETS.map((target) => {
@@ -865,9 +951,7 @@ function ChangeBlock() {
             <span className="text-mut">change:</span> <span className="font-mono">{changeId}</span> — <b>{st}</b>
           </div>
           <div className="mt-1"><span className="text-mut">target:</span> {targetId}</div>
-          {awaiting && (
-            <div className="mt-1 text-mut">Ожидает подтверждения в Telegram (Approve / Reject).</div>
-          )}
+          {awaiting && <div className="mt-1 text-mut">Ожидает подтверждения.</div>}
           {status?.verdict ? (
             <div className="mt-1"><span className="text-mut">verdict:</span> {status.verdict}</div>
           ) : null}
@@ -993,9 +1077,11 @@ function EvidenceHistory({ assets }: { assets: ItopsAsset[] | null }) {
                             <span className="font-mono">{e.operation}</span>
                             <span className="text-mut">{evidenceStatus(e)}{e.exit_status !== "" ? ` · exit ${e.exit_status}` : ""}</span>
                           </div>
-                          {(e.result?.stdout || e.result?.stderr) && (
+                          {(e.result?.stdout || e.result?.stderr || e.operation.startsWith("database_inspect:")) && (
                             <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[11px] text-t2">
-                              {e.result?.stdout || ""}{e.result?.stderr ? `\n[stderr] ${e.result.stderr}` : ""}
+                              {e.operation.startsWith("database_inspect:")
+                                ? JSON.stringify(e.result, null, 2)
+                                : `${e.result?.stdout || ""}${e.result?.stderr ? `\n[stderr] ${e.result.stderr}` : ""}`}
                             </pre>
                           )}
                         </div>

@@ -1,4 +1,4 @@
-"""Scoped Read-Only SSH — the itops diagnostic tool provider.
+"""IT-Ops tool provider: scoped read-only diagnostics plus reviewed local changes.
 
 Exposes read-only diagnostic adapters that run a FIXED command set over OS OpenSSH
 against the alias STORED on a saved, verified connection profile:
@@ -8,9 +8,13 @@ against the alias STORED on a saved, verified connection profile:
     STATIC PowerShell via -EncodedCommand (no quoting through cmd/sshd).
   * ``itops_config_inspect()`` — one named config target from a typed scope, projected
     through a strict parser without returning raw content.
-The model supplies only a profile_id — never a host/alias — and the executor's
-operation-scope gate has already pinned that profile_id to the run's read-only
-scope (bound to exactly ONE of these tools) before dispatch.
+  * ``itops_database_inspect()`` — one local named SQLite target, opened read-only and
+    projected to schema metadata, migration/backup state and fixed aggregate counts.
+  * ``itops_change_apply(target_id)`` — one executor-registered typed change through
+    local Tauri policy or the dedicated remote Telegram approval channel.
+For SSH adapters the model supplies only a profile_id, never a host/alias. The
+database adapter takes no arguments. In both cases the operation-scope gate pins
+one server-owned target and exactly one tool to the run before dispatch.
 
 Hard properties:
 - No raw shell, no model-supplied host, no ssh_acl allowlist, no generic SSH
@@ -682,6 +686,156 @@ def tool_itops_config_inspect(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
+def tool_itops_database_inspect(**_ignored: Any) -> dict[str, Any]:
+    """Inspect one server-owned SQLite database with no model/client arguments.
+
+    The typed scope carries only ``database_id``. The inspector owns the path, URI,
+    schemas, limits and fixed aggregate query. Evidence is a flat safe projection:
+    no path/DSN/SQL, schema details or row contents are persisted.
+    """
+    from app.application.agent_kernel import operation_scope
+    from app.application.code_agent.tools import get_current_run_id
+    from app.application.it_ops import database_inspect as di
+    from app.infrastructure.it_ops import store
+
+    run_id = get_current_run_id()
+    scope = operation_scope.get_active_scope(run_id)
+    if scope is None or scope.target_kind != "database" or scope.database is None:
+        return {"ok": False, "text": "ERROR: no bound database scope",
+                "error": "no_database_scope"}
+    try:
+        spec = di.resolve_database(scope.database.database_id)
+    except di.DatabaseInspectError as exc:
+        return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
+
+    try:
+        store.init_db()
+    except Exception:  # noqa: BLE001
+        logger.warning("itops database_inspect: evidence store unavailable for %s", spec.database_id)
+        return {"ok": False, "text": "ERROR: evidence store unavailable",
+                "error": "store_unavailable"}
+
+    inspection: dict[str, Any] | None = None
+    error: str | None = None
+    try:
+        inspection = di.inspect_database(spec)
+    except di.DatabaseInspectError as exc:
+        error = exc.reason
+
+    if inspection is not None:
+        safe_query = inspection["safe_query"]
+        backup = inspection["backup"]
+        evidence_result: dict[str, Any] = {
+            "database_id": spec.database_id,
+            "engine": spec.engine,
+            "status": "ok",
+            "quick_check": inspection["quick_check"],
+            "user_version": inspection["user_version"],
+            "schema_version": inspection["schema_version"],
+            "migration_state": inspection["migration_state"],
+            "table_count": inspection["table_count"],
+            "schema_summary": inspection["schema_summary"],
+            "file_bytes": inspection["file_bytes"],
+            "file_modified_at": inspection["file_modified_at"],
+            "safe_query_profile": safe_query["profile"],
+            "chat_count": safe_query["chat_count"],
+            "message_count": safe_query["message_count"],
+            "backup_status": backup["status"],
+            "backup_count": backup["count"],
+            "backup_stale_after_seconds": backup["stale_after_seconds"],
+        }
+        if "latest_age_seconds" in backup:
+            evidence_result["backup_age_seconds"] = backup["latest_age_seconds"]
+    else:
+        evidence_result = {
+            "database_id": spec.database_id,
+            "engine": spec.engine,
+            "status": "failed",
+        }
+
+    evidence_ok = True
+    try:
+        store.record_evidence(
+            run_id=run_id,
+            target_identity=f"database:{spec.database_id}",
+            scanner_vantage="elira-local:sqlite-ro",
+            operation=f"database_inspect:{spec.database_id}",
+            result=evidence_result,
+            exit_status="0" if inspection is not None else "1",
+        )
+    except Exception:  # noqa: BLE001
+        evidence_ok = False
+        logger.warning("itops database_inspect: evidence write failed for %s", spec.database_id)
+
+    if not evidence_ok:
+        return {"ok": False, "text": "Database inspect failed: evidence was not persisted",
+                "error": "evidence_persist_failed", "evidence_persisted": False}
+    if inspection is None:
+        return {"ok": False, "text": f"Database inspect {spec.database_id}: FAILED ({error})",
+                "error": error or "inspect_failed", "evidence_persisted": True}
+
+    safe_query = inspection["safe_query"]
+    backup = inspection["backup"]
+    text = (
+        f"Database inspect {spec.database_id}: quick_check={inspection['quick_check']} "
+        f"user_version={inspection['user_version']} tables={inspection['table_count']} "
+        f"chats={safe_query['chat_count']} messages={safe_query['message_count']} "
+        f"backup={backup['status']}\nSchema: {inspection['schema_summary']}"
+    )
+    return {"ok": True, "text": text, "database": inspection,
+            "evidence_persisted": True}
+
+
+def tool_itops_change_apply(
+    target_id: str = "",
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Apply locally or request a remote Telegram plan for one reviewed target.
+
+    The model supplies only an opaque target id from the schema enum. The main backend
+    performs a second exact allowlist check; the isolated executor resolves every
+    operational detail and owns snapshot, capability consume, apply and post-check.
+    """
+    from app.application.agent_kernel.execution_context import get_execution_channel
+    from app.application.it_ops import change_client
+
+    normalized = str(target_id or "").strip()
+    if normalized not in change_client.LOCAL_CHANGE_TARGETS:
+        return {"ok": False, "text": "Local change target is not allowed",
+                "error": "target_not_allowed"}
+    channel = get_execution_channel()
+    try:
+        result = (
+            change_client.request_plan(normalized)
+            if channel == "remote"
+            else change_client.apply_local(normalized)
+        )
+    except change_client.ChangeExecutorUnavailable as exc:
+        return {"ok": False, "text": f"Change executor unavailable: {exc}",
+                "error": "change_executor_unavailable"}
+
+    change_run_id = str(result.get("change_run_id") or "")
+    status = str(result.get("status") or result.get("error") or "unknown")
+    details: dict[str, Any] | None = None
+    if change_run_id:
+        try:
+            details = change_client.get_status(change_run_id)
+        except change_client.ChangeExecutorUnavailable:
+            details = None
+    return {
+        "ok": bool(result.get("ok")),
+        "text": (
+            f"Remote IT change plan {normalized}: {status}"
+            if channel == "remote"
+            else f"Local IT change {normalized}: {status}"
+        ),
+        "change_run_id": change_run_id,
+        "status": status,
+        "evidence": (details or {}).get("evidence", []),
+        **({"error": str(result.get("error"))} if result.get("error") else {}),
+    }
+
+
 _DISPATCH = {
     "itops_ssh_healthcheck": tool_itops_ssh_healthcheck,
     "itops_linux_inventory": tool_itops_linux_inventory,
@@ -689,6 +843,8 @@ _DISPATCH = {
     "itops_network_inventory": tool_itops_network_inventory,
     "itops_systemd_service_inspect": tool_itops_systemd_service_inspect,
     "itops_config_inspect": tool_itops_config_inspect,
+    "itops_database_inspect": tool_itops_database_inspect,
+    "itops_change_apply": tool_itops_change_apply,
 }
 
 
@@ -816,6 +972,48 @@ class ItopsToolProvider:
                         "never raw config text or unknown values. One call per run."
                     ),
                     "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "itops_database_inspect",
+                    "description": (
+                        "Read-only inspection of the local database target bound to this run. "
+                        "Takes NO arguments: path, engine, allowed schemas and the safe aggregate "
+                        "query are server-owned. Returns bounded schema metadata, migration and "
+                        "backup state, and aggregate counts; never row contents, SQL or a "
+                        "connection string. One call per run."
+                    ),
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "itops_change_apply",
+                    "description": (
+                        "Apply one reviewed IT change. Local runs use the Tauri permission mode; "
+                        "remote Telegram runs create a dedicated approve/reject plan. The target_id selects a server-registered typed "
+                        "operation; host, unit, path, argv, snapshot and verification are "
+                        "executor-owned. Never accepts a raw command."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target_id": {
+                                "type": "string",
+                                "enum": [
+                                    "ai-server-netdata",
+                                    "ai-server-netdata-config",
+                                    "phase6-sqlite-canary",
+                                ],
+                                "description": "Reviewed executor-registry target id.",
+                            },
+                        },
+                        "required": ["target_id"],
+                        "additionalProperties": False,
+                    },
                 },
             },
         ]

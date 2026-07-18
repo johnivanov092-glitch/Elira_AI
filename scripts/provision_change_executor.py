@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Provision / verify the isolated change executor (see docs/CHANGE_EXECUTOR_PROVISIONING.md).
 
-Two subcommands, both stdlib-only:
+Four subcommands, all stdlib-only:
 
   deploy  — copy the FROZEN `change_executor` package + a dedicated venv + a registry template
             into a protected root OUTSIDE this repo. Must be run AS the executor account
@@ -14,6 +14,9 @@ Two subcommands, both stdlib-only:
             A green result (exit 0) is the provisioning gate. Preflight itself enforces that the
             executor is OWNED by and RUNNING AS `--account` (SID-based) — a run from the repo, or
             by the wrong principal, fails by design.
+
+  add-database-canary — idempotently add the fixed disposable Phase-6 SQLite target to an
+            existing protected install without replacing any existing registry target.
 
 This script is provisioning tooling; it never modifies the frozen executor code. Destructive
 `--force` is guarded: no drive/filesystem root, and it refuses to overwrite a directory that
@@ -28,8 +31,10 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 def _find_repo() -> Path | None:
@@ -230,6 +235,40 @@ def _make_venv(root: Path, base_python: str, force: bool) -> Path:
     return venv_dir
 
 
+def _database_canary_target(root: Path) -> dict:
+    data_dir = root / "data"
+    backup_dir = root / "backups" / "database"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    canary = data_dir / "phase6_canary.sqlite3"
+    if not canary.exists():
+        conn = sqlite3.connect(canary)
+        try:
+            conn.executescript(
+                "PRAGMA journal_mode=DELETE;"
+                "PRAGMA user_version=1;"
+                "CREATE TABLE canary_items ("
+                "id INTEGER PRIMARY KEY, value TEXT NOT NULL);"
+                "INSERT INTO canary_items(id, value) VALUES (1, 'phase6-canary');"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return _database_canary_contract(root)
+
+
+def _database_canary_contract(root: Path) -> dict:
+    """Return the fixed registry document without creating files or directories."""
+    return {
+        "target_kind": "sqlite_migration",
+        "database_id": "phase6-canary",
+        "database_path": str(root / "data" / "phase6_canary.sqlite3"),
+        "backup_dir": str(root / "backups" / "database"),
+        "migration_id": "canary_add_verified_at_v2",
+        "operation": "migrate_v1_to_v2",
+    }
+
+
 def _write_registry_template(root: Path, host: str, port: int, user: str, unit: str,
                              helper_sha256: str, force: bool) -> Path:
     cfg = root / "config"
@@ -238,6 +277,7 @@ def _write_registry_template(root: Path, host: str, port: int, user: str, unit: 
     if reg.exists() and not force:
         print(f"  registry.json already present (left untouched): {reg}")
         return reg
+    database_target = _database_canary_target(root)
     common = {"host": host, "port": port, "remote_user": user,
               "known_hosts": str(cfg / "known_hosts"),
               "identity_file": str(cfg / "id_elira_change"), "unit": unit}
@@ -251,9 +291,48 @@ def _write_registry_template(root: Path, host: str, port: int, user: str, unit: 
             "helper_path": "/usr/local/sbin/elira-netdata-config",
             "helper_sha256": helper_sha256,
         },
+        "phase6-sqlite-canary": database_target,
     }}
     reg.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     print(f"  wrote registry template -> {reg}")
+    return reg
+
+
+def _add_database_canary(root: Path) -> Path:
+    reg = root / "config" / "registry.json"
+    try:
+        doc = json.loads(reg.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        _fail(f"registry unreadable/invalid: {exc}")
+    targets = doc.get("targets") if isinstance(doc, dict) else None
+    if not isinstance(targets, dict) or not targets:
+        _fail("registry has no targets")
+    expected = _database_canary_contract(root)
+    current = targets.get("phase6-sqlite-canary")
+    if current is not None:
+        if current != expected:
+            _fail("existing phase6-sqlite-canary target does not match the fixed contract")
+        created = _database_canary_target(root)
+        if created != expected:
+            _fail("generated phase6-sqlite-canary target does not match the fixed contract")
+        print("  phase6-sqlite-canary already configured (unchanged)")
+        return reg
+    created = _database_canary_target(root)
+    if created != expected:
+        _fail("generated phase6-sqlite-canary target does not match the fixed contract")
+    targets["phase6-sqlite-canary"] = expected
+    fd, temp_name = tempfile.mkstemp(prefix="registry-", suffix=".json", dir=reg.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(doc, fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_name, reg)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+    print(f"  added phase6-sqlite-canary -> {reg}")
     return reg
 
 
@@ -313,7 +392,7 @@ def cmd_build(a: argparse.Namespace) -> int:
 
 
 def _require_run_from_artifact(cmd: str) -> None:
-    # deploy/verify carry executor rights + reach the protected root/key/bot-token; they must run
+    # deploy/verify/add-database-canary carry executor rights + reach the protected root; they must run
     # from the VERIFIED, immutable artifact copy (REPO is None there), never the writable repo copy
     # (which could be swapped). `build` is the only subcommand that runs from the repo.
     if REPO is not None:
@@ -345,6 +424,18 @@ def cmd_deploy(a: argparse.Namespace) -> int:
                              helper_hash, a.force)
     (root / _MARKER).write_text("elira change executor install root\n", encoding="utf-8")   # mark a COMPLETED install (last)
     _next_steps(root, account)
+    return 0
+
+
+def cmd_add_database_canary(a: argparse.Namespace) -> int:
+    _require_run_from_artifact("add-database-canary")
+    root = Path(a.root).resolve()
+    _refuse_if_in_repo(root)
+    _require_marker(root)
+    account = _account_value(a)
+    _assert_running_as(account)
+    _add_database_canary(root)
+    print("Run `verify` again before starting the updated executor.")
     return 0
 
 
@@ -416,6 +507,15 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("--force", action="store_true",
                    help="overwrite an existing install (requires the install marker; never a drive root)")
     d.set_defaults(func=cmd_deploy)
+
+    dbc = sub.add_parser(
+        "add-database-canary",
+        help="idempotently add the fixed Phase-6 disposable SQLite target to an existing install",
+    )
+    dbc.add_argument("--root", required=True)
+    dbc.add_argument("--account", default=None,
+                     help="executor OS account; command must run AS it")
+    dbc.set_defaults(func=cmd_add_database_canary)
 
     v = sub.add_parser("verify", help="run the deployed preflight from the deployed venv")
     v.add_argument("--root", required=True)

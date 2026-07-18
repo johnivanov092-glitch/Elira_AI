@@ -138,7 +138,8 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
         except Exception:
             pass
 
-    def _exec(self, tool_name: str, permission: str, run_id: str = "run-test"):
+    def _exec(self, tool_name: str, permission: str, run_id: str = "run-test",
+              *, agent_id: str = "test-agent", args: dict | None = None):
         from app.application.agent_kernel.executor import (
             ToolExecutionRequest,
             execute_tool,
@@ -146,9 +147,11 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
         _spec = {"permission": permission, "max_output_chars": 50000,
                  "policy_classified": True, "enabled": True}
         dispatch_calls = []
+        self.last_dispatch_args = None
 
         def _dispatch(name, args):
             dispatch_calls.append(name)
+            self.last_dispatch_args = dict(args)
             return {"ok": True, "text": f"executed {name}"}
 
         with mock.patch("app.application.tool_registry.runtime.get_tool", return_value=_spec), \
@@ -156,10 +159,10 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
             result = execute_tool(
                 ToolExecutionRequest(
                     run_id=run_id,
-                    agent_id="test-agent",
+                    agent_id=agent_id,
                     project_scope_id="scope:test",
                     tool_name=tool_name,
-                    args={"x": 1},
+                    args=args or {"x": 1},
                     source="test",
                 ),
                 dispatch_fn=_dispatch,
@@ -176,6 +179,44 @@ class TestApprovalFlowViaExecutor(unittest.TestCase):
         self.assertEqual(result.status, "waiting_approval")
         self.assertEqual(calls, [])
         self.assertIn("approval_id", result.output)
+
+    def test_local_itops_change_does_not_send_generic_telegram_notification(self):
+        # Local changes use the Tauri approval/bypass path. Remote IT changes use the
+        # isolated executor's dedicated bot, never this generic notification channel.
+        with mock.patch("app.application.telegram.runtime.send_approval_notification") as notify:
+            result, calls = self._exec("itops_change_apply", "require_approval")
+        self.assertEqual(result.status, "waiting_approval")
+        self.assertEqual(calls, [])
+        notify.assert_not_called()
+
+    def test_local_generic_approval_stays_in_tauri(self):
+        with mock.patch("app.application.telegram.runtime.send_approval_notification") as notify:
+            result, calls = self._exec("write_file", "require_approval")
+        self.assertEqual(result.status, "waiting_approval")
+        self.assertEqual(calls, [])
+        notify.assert_not_called()
+
+    def test_remote_generic_approval_notifies_telegram(self):
+        with mock.patch("app.application.telegram.runtime.send_approval_notification") as notify:
+            result, calls = self._exec(
+                "write_file", "require_approval", agent_id="telegram"
+            )
+        self.assertEqual(result.status, "waiting_approval")
+        self.assertEqual(calls, [])
+        notify.assert_called_once()
+
+    def test_remote_itops_call_routes_directly_to_dedicated_plan_path(self):
+        with mock.patch("app.application.telegram.runtime.send_approval_notification") as notify:
+            result, calls = self._exec(
+                "itops_change_apply",
+                "require_approval",
+                agent_id="telegram",
+                args={"target_id": "ai-server-netdata"},
+            )
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(calls, ["itops_change_apply"])
+        self.assertEqual(self.last_dispatch_args, {"target_id": "ai-server-netdata"})
+        notify.assert_not_called()
 
     def test_require_approval_proceeds_after_approval(self):
         # First call: waiting
@@ -220,13 +261,13 @@ class TestPermissionModeAutoApprove(unittest.TestCase):
         # "ask" never auto-approves.
         self.assertFalse(_mode_auto_approves("ask", "edit_file"))
         self.assertFalse(_mode_auto_approves("ask", "run_bash"))
-        # "accept_edits" auto-approves filesystem-only edits, not shell/net.
+        # The middle mode auto-approves low-risk reversible local work, but not shell/net.
         self.assertTrue(_mode_auto_approves("accept_edits", "edit_file"))
         self.assertTrue(_mode_auto_approves("accept_edits", "write_file"))
         self.assertTrue(_mode_auto_approves("accept_edits", "file_gen"))
         self.assertFalse(_mode_auto_approves("accept_edits", "run_bash"))
-        self.assertFalse(_mode_auto_approves("accept_edits", "run_server"))
-        # "bypass" auto-approves everything that reached the gate.
+        self.assertTrue(_mode_auto_approves("accept_edits", "run_server"))
+        # "bypass" auto-approves normal calls; high-impact exact calls are tested below.
         self.assertTrue(_mode_auto_approves("bypass", "run_bash"))
         self.assertTrue(_mode_auto_approves("bypass", "edit_file"))
         # Unknown mode is treated as the safe default.

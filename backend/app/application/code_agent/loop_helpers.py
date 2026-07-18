@@ -21,6 +21,7 @@ from app.application.projects.scope import project_scope_id
 from app.application.code_agent.history import summarize_history
 from app.infrastructure.text import truncate_middle
 from app.application.code_agent.tool_policy import CRITICAL_TOOLS, EDIT_ONLY_TOOLS
+from app.change_executor.policy import AUTO, decide_approval, evidence_for_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,12 @@ logger = logging.getLogger(__name__)
 _EXECUTION_INTENT = re.compile(
     r"(?<!\w)(запусти|запустить|выполни|выполнить|проверь|проверить|"
     r"создай файл|создай тест|run|execute|run tests|run it|"
-    r"сделай это|поправь и запусти)(?!\w)",
+    r"сделай это|поправь и запусти|"
+    r"можно\s+ли.{0,80}(?:сделать|добавить|изменить|исправить|обновить))(?!\w)",
+    re.IGNORECASE | re.UNICODE,
+)
+_EXPLANATION_ONLY = re.compile(
+    r"(?:только\s+объясни|не\s+меняй|ничего\s+не\s+меняй|без\s+изменений)",
     re.IGNORECASE | re.UNICODE,
 )
 
@@ -42,7 +48,10 @@ def _maybe_inject_execution_reminder(user_message: str) -> str:
     text-answer turn'. Some local tool-calling models occasionally drift
     into 'helpful explanation' mode otherwise.
     """
-    if _EXECUTION_INTENT.search(user_message or ""):
+    if (
+        _EXECUTION_INTENT.search(user_message or "")
+        and not _EXPLANATION_ONLY.search(user_message or "")
+    ):
         return (
             user_message
             + "\n\n[reminder] Это задача на выполнение. Используй инструменты "
@@ -151,21 +160,33 @@ def _approval_status(approval_id: str) -> str:
 
 
 # Permission modes (selector in the composer, mirrored in Settings):
-#   "ask"          — every require_approval tool pauses for the user (default).
-#   "accept_edits" — auto-approve filesystem-only edits; still pause shell/net.
-#   "bypass"       — auto-approve every require_approval tool, no prompts.
-# Auto-approved under "accept_edits". Defined in tool_policy (single source of
-# truth); imported here to preserve the old name.
+#   "ask"          — every change pauses for the user (default).
+#   "accept_edits" — low-risk runtime-reversible work proceeds; impactful work pauses.
+#   "bypass"       — normal work proceeds; unprotected high-risk work still pauses.
+# Compatibility inventory from tool_policy; the shared policy owns exact-call decisions.
 _EDIT_ONLY_TOOLS = EDIT_ONLY_TOOLS
 
 
 def _mode_auto_approves(permission_mode: str, tool_name: str) -> bool:
-    """Whether the active permission mode pre-approves this tool without asking."""
-    if permission_mode == "bypass":
-        return True
-    if permission_mode == "accept_edits":
-        return tool_name in _EDIT_ONLY_TOOLS
-    return False
+    """Compatibility helper for coarse tests; real calls use exact arguments."""
+    args = {"command": "noncritical-command"} if tool_name == "run_bash" else {}
+    return _call_auto_approves(permission_mode, tool_name, args)
+
+
+def _call_auto_approves(
+    permission_mode: str,
+    tool_name: str,
+    args: dict[str, Any] | None,
+    *,
+    channel: str = "local",
+) -> bool:
+    """Decide one exact call from mode and runtime-owned safety evidence."""
+    try:
+        evidence = evidence_for_tool_call(tool_name, args)
+        return decide_approval(permission_mode, channel, evidence) == AUTO
+    except Exception:
+        logger.warning("approval policy failed; requiring approval", exc_info=True)
+        return False
 
 
 # Tools that must ALWAYS be confirmed, even in bypass (from tool_policy; shell
@@ -182,17 +203,11 @@ def _is_critical_call(tool_name: str, args: dict[str, Any] | None) -> bool:
     handful of operations that destroy data."""
     if tool_name in _CRITICAL_TOOLS:
         return True
-    if tool_name == "run_bash":
-        try:
-            from app.application.code_agent.tools import is_shell_critical
-            return is_shell_critical(str((args or {}).get("command", "")))
-        except Exception:
-            # Fail CLOSED: if the criticality check can't run (e.g. ImportError),
-            # treat the shell command as critical so it still asks for approval
-            # instead of silently auto-approving a possibly destructive command.
-            logger.warning("is_shell_critical failed; treating run_bash as critical", exc_info=True)
-            return True
-    return False
+    try:
+        return evidence_for_tool_call(tool_name, args).impact == "high"
+    except Exception:
+        logger.warning("approval classification failed; treating call as critical", exc_info=True)
+        return True
 
 
 _REPEAT_REQUEST_MARKERS = (
@@ -276,17 +291,21 @@ def _looks_like_intent_without_action(text: str) -> bool:
     """True when the model's prose is a forward-looking plan-to-act ("сейчас
     прочитаю…", "начну с…", "let me read…") rather than a delivered result —
     it announces the NEXT step but (the caller has already checked) calls no
-    tool. Conservative on purpose: matches only a first-person intent verb and
-    only when it sits at the TAIL of the message, so a substantive final answer
-    that merely mentions a future step in passing is not misread as a stop-on-
-    plan. Used to nudge the agent to actually act instead of ending the turn on
-    a promise (a failure mode amplified by thinking mode)."""
+    tool. Conservative on purpose: matches only a first-person intent verb at
+    the START or TAIL of the message. The start matters for long design
+    monologues: a model can open with "Я сделаю...", spend 300 chars describing
+    the plan, and otherwise evade a tail-only check. Used to nudge the agent to
+    actually act instead of ending the turn on a promise (a failure mode
+    amplified by thinking mode)."""
     t = (text or "").strip()
     if not t:
         return False
-    # Only the tail: a genuine answer does not END on "now I'll read the files".
+    # A delivered answer normally neither STARTS nor ENDS with an unfulfilled
+    # first-person action. Bounded windows avoid matching a future-step mention
+    # buried inside an otherwise substantive result.
+    head = t[:200]
     tail = t[-200:]
-    return bool(_INTENT_TO_ACT_RE.search(tail))
+    return bool(_INTENT_TO_ACT_RE.search(head) or _INTENT_TO_ACT_RE.search(tail))
 
 
 # --- Grounding across turns -------------------------------------------------

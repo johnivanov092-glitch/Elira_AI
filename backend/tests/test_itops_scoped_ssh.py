@@ -29,6 +29,8 @@ WIN = "itops_windows_inventory"
 NET = "itops_network_inventory"
 SYSD = "itops_systemd_service_inspect"
 CFG = "itops_config_inspect"
+DB = "itops_database_inspect"
+CHG = "itops_change_apply"
 
 
 def _fake_proc(out=b"", err=b"", code=0):
@@ -257,6 +259,25 @@ class ScopedGateTest(unittest.TestCase):
         self.assertEqual(res.error, "profile_not_enabled")
         self.assertEqual(calls, [])
 
+    # ── Phase 6: typed local database scope ───────────────────────────────────
+    def test_database_scope_allows_only_database_inspect(self):
+        opscope.bind_scope_database(self.rid, database_id="elira-state", allowed_tool=DB)
+        ok, calls = self._exec(DB, {})
+        self.assertEqual(ok.status, "ok", ok.output)
+        self.assertEqual(calls, [(DB, {})])
+        for other in (HEALTH, INV, SYSD, NET, CFG, "run_bash", "ssh_run", "itops_dummy_ro"):
+            res, blocked_calls = self._exec(other, {"path": "other.db", "sql": "DROP TABLE chats"})
+            self.assertEqual(res.error, "scope_restricted", other)
+            self.assertEqual(blocked_calls, [])
+
+    def test_database_tool_rejects_any_model_arg(self):
+        opscope.bind_scope_database(self.rid, database_id="elira-state", allowed_tool=DB)
+        for args in ({"path": "other.db"}, {"sql": "SELECT * FROM messages"}, {"schema": "temp"}):
+            with self.subTest(args=args):
+                res, calls = self._exec(DB, args)
+                self.assertEqual(res.error, "scope_args_forbidden")
+                self.assertEqual(calls, [])
+
     def test_healthcheck_scope_allows_only_healthcheck(self):
         self._bind(HEALTH)
         res, c = self._exec(INV, {"profile_id": "prof-ok"})      # inventory blocked in a health scope
@@ -272,6 +293,28 @@ class ScopedGateTest(unittest.TestCase):
             self.assertEqual(res.status, "blocked", tool)
             self.assertEqual(res.error, "no_operation_scope", tool)
             self.assertEqual(calls, [])
+
+    def test_local_change_is_explicitly_not_a_read_only_adapter(self):
+        # Change still goes through policy/approval, but it must not require a
+        # diagnostic OperationScope. Patch permission to auto here to isolate the
+        # scope boundary; approval behavior is covered by the kernel approval suite.
+        spec = {
+            "name": CHG, "source": "itops", "permission": "auto",
+            "side_effect": True, "idempotent": False, "enabled": True,
+            "policy_classified": True, "scopes": [], "max_output_chars": 10000,
+        }
+        with unittest.mock.patch("app.application.tool_registry.runtime.get_tool",
+                                 return_value=spec):
+            res, calls = self._exec(CHG, {"target_id": "ai-server-netdata"},
+                                    run_id="local-change-unscoped")
+        self.assertEqual(res.status, "ok", res.output)
+        self.assertEqual(calls, [(CHG, {"target_id": "ai-server-netdata"})])
+
+    def test_diagnostic_scope_blocks_local_change(self):
+        self._bind(INV)
+        res, calls = self._exec(CHG, {"target_id": "ai-server-netdata"})
+        self.assertEqual(res.error, "scope_restricted")
+        self.assertEqual(calls, [])
 
     def test_wrong_profile_is_blocked(self):
         self._bind(INV)
@@ -323,18 +366,22 @@ class ScopedGateTest(unittest.TestCase):
         from app.application import feature_flags as ff
         rid = "search-run-1"
         enable_deferred_tools(rid, ())
-        q = "itops ssh linux inventory health check diagnostic hostname uname config inspect"
+        q = "itops ssh linux inventory health check diagnostic hostname uname config database sqlite inspect local change apply"
         try:
             with unittest.mock.patch.object(ff, "flag_enabled", side_effect=lambda n: n != "itops"):
                 off = [m.get("name") for m in tool_search(run_id=rid, query=q).get("matches", [])]
             self.assertNotIn(HEALTH, off)
             self.assertNotIn(INV, off)
             self.assertNotIn(CFG, off)
+            self.assertNotIn(DB, off)
+            self.assertNotIn(CHG, off)
             with unittest.mock.patch.object(ff, "flag_enabled", side_effect=lambda n: True):
                 on = [m.get("name") for m in tool_search(run_id=rid, query=q).get("matches", [])]
             self.assertIn(HEALTH, on)
             self.assertIn(INV, on)
             self.assertIn(CFG, on)
+            self.assertIn(DB, on)
+            self.assertIn(CHG, on)
         finally:
             clear_run(rid)
 

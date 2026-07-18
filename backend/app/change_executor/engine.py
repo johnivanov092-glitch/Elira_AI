@@ -25,7 +25,7 @@ import subprocess
 import time
 from typing import Any, Callable
 
-from . import config_change, registry, transport
+from . import config_change, database_change, registry, transport
 from . import store as cs
 from ._frozen import decode_console, parse_show_output
 
@@ -92,6 +92,8 @@ def plan(target_id: str, *, registry_path: str | None = None, runner: Runner = t
     gen_token = gen_token or (lambda: secrets.token_urlsafe(12))
     clock = clock or time.time
     target = registry.resolve(target_id, path=registry_path)
+    if target.target_kind == registry.SQLITE_MIGRATION:
+        return _plan_database(target, gen_token=gen_token, clock=clock)
     if target.target_kind == registry.NETDATA_CONFIG:
         return _plan_config(target, runner=runner, gen_token=gen_token, clock=clock)
     definite, _exit, fields = _inspect(target, runner)
@@ -142,6 +144,41 @@ def _plan_config(target: "registry.Target", *, runner: Runner,
             "reject_token": reject_token}
 
 
+def _plan_database(target: "registry.Target", *, gen_token: Callable[[], str],
+                   clock: Callable[[], float]) -> dict[str, Any]:
+    definite, _exit, snapshot = database_change.inspect(target)
+    if not definite or not database_change.plannable(snapshot, target):
+        raise PreconditionError(
+            f"target {target.target_id!r} is not in a plannable database state")
+    change_run_id = cs.new_change_run_id()
+    planned_argv = database_change.planned_operation(target)
+    planned_argv_hash = _sha(" ".join(planned_argv))
+    snapshot_hash = _sha(_canonical(snapshot))
+    planned_binding = _canonical(transport.target_binding(target))
+    approve_token, reject_token = gen_token(), gen_token()
+    cs.create_plan_with_capabilities(
+        change_run_id=change_run_id,
+        target_id=target.target_id,
+        unit=target.unit,
+        operation=target.operation,
+        snapshot=_canonical(snapshot),
+        snapshot_main_pid=0,
+        snapshot_hash=snapshot_hash,
+        planned_argv_hash=planned_argv_hash,
+        planned_binding=planned_binding,
+        approve_hash=_sha(approve_token),
+        reject_hash=_sha(reject_token),
+        capability_expires_at=clock() + CAPABILITY_TTL,
+    )
+    return {
+        "change_run_id": change_run_id,
+        "snapshot": snapshot,
+        "planned_argv": planned_argv,
+        "approve_token": approve_token,
+        "reject_token": reject_token,
+    }
+
+
 def apply(change_run_id: str, *, registry_path: str | None = None, runner: Runner = transport.run,
           sleep: Callable[[float], None] = time.sleep) -> str:
     """Apply an already-approved (state `applying`) change and drive it to a terminal state.
@@ -157,11 +194,16 @@ def apply(change_run_id: str, *, registry_path: str | None = None, runner: Runne
     # (host/port/user/unit/op + known_hosts CONTENT hash) must equal the one captured at
     # plan; any drift (registry edited, host-key pin swapped) → aborted, no SSH.
     if not _binding_matches(cr, target):
-        prefix = "config_change" if target.target_kind == registry.NETDATA_CONFIG else "systemd_change"
+        if target.target_kind == registry.SQLITE_MIGRATION:
+            prefix = "database_change"
+        else:
+            prefix = "config_change" if target.target_kind == registry.NETDATA_CONFIG else "systemd_change"
         _evi(change_run_id, cr["target_id"], f"{prefix}:aborted_before_apply",
              {"reason": "target binding drift since plan"}, "")
         return _final(change_run_id, token, "aborted_before_apply", "target binding drift since plan")
 
+    if target.target_kind == registry.SQLITE_MIGRATION:
+        return _apply_database(cr, target)
     if target.target_kind == registry.NETDATA_CONFIG:
         return _apply_config(cr, target, runner=runner)
 
@@ -228,6 +270,21 @@ def resolve(change_run_id: str, *, resolver: str, registry_path: str | None = No
     target = registry.resolve(cr["target_id"], path=registry_path)
     if not _binding_matches(cr, target):    # binding drift → no SSH, stays locked
         return False
+    if target.target_kind == registry.SQLITE_MIGRATION:
+        try:
+            snapshot = json.loads(cr.get("snapshot") or "{}")
+        except (ValueError, TypeError):
+            return False
+        _definite, exit_status, fields = database_change.inspect(target)
+        resolved = cs.resolve_database_after_inspect(
+            change_run_id=change_run_id,
+            resolver=resolver,
+            inspect_fields=fields,
+            inspect_exit_status=exit_status,
+        )
+        if resolved:
+            database_change.cleanup_backup(target, change_run_id)
+        return resolved
     if target.target_kind == registry.NETDATA_CONFIG:
         _definite, exit_status, fields = config_change.inspect(target, runner)
         return cs.resolve_config_after_inspect(
@@ -285,6 +342,40 @@ def _apply_config(cr: dict[str, Any], target: "registry.Target", *, runner: Runn
         "command_failed": "remote helper failed before a confirmed apply",
     }
     return _final(change_run_id, token, status, verdicts.get(status, status))
+
+
+def _apply_database(cr: dict[str, Any], target: "registry.Target") -> str:
+    change_run_id = cr["change_run_id"]
+    token = cr["attempt_token"]
+    try:
+        snapshot = json.loads(cr.get("snapshot") or "{}")
+    except (ValueError, TypeError):
+        snapshot = {}
+    definite, exit_status, current = database_change.inspect(target)
+    if not definite or not database_change.matches_before(current, snapshot, target):
+        _evi(change_run_id, cr["target_id"], "database_change:aborted_before_apply",
+             {"reason": "pre-apply database drift", "definite": definite}, exit_status)
+        return _final(change_run_id, token, "aborted_before_apply",
+                      "pre-apply database drift")
+    status, apply_exit, evidence = database_change.apply(
+        target,
+        change_run_id=change_run_id,
+        snapshot=snapshot,
+    )
+    _evi(change_run_id, cr["target_id"], "database_change:apply", evidence, apply_exit)
+    if status == "apply_unknown":
+        return _mark_unknown(change_run_id, token, "database migration outcome unknown")
+    verdicts = {
+        "applied": "transaction committed; typed database post-check passed",
+        "rolled_back": "database post-check failed; backup restored and verified",
+        "rollback_failed": "database post-check failed; automatic restore failed",
+        "aborted_before_apply": "database drifted before write",
+        "command_failed": "migration failed with the approved state preserved",
+    }
+    final_status = _final(change_run_id, token, status, verdicts.get(status, status))
+    if final_status in {"applied", "rolled_back", "aborted_before_apply", "command_failed"}:
+        database_change.cleanup_backup(target, change_run_id)
+    return final_status
 
 
 def _mark_unknown(change_run_id: str, token: str, verdict: str) -> str:

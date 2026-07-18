@@ -54,7 +54,7 @@ export function Composer({
   const [multiAgent, setMultiAgent] = useState(false);
   const [useOrchestrator, setUseOrchestrator] = useState(true);
   const [useReflection, setUseReflection] = useState(true);
-  // Approval policy for the run (Спрашивать / Принимать правки / Без ограничений).
+  // Approval policy for the run (Спрашивать / Контроль риска / Без ограничений).
   // Local run-mode like multiAgent — passed per-send into the code-agent stream;
   // the backend approval gate enforces it. Persisted across chats/restarts (the
   // chip used to reset to "ask" every mount); first run with no stored value
@@ -502,19 +502,19 @@ const PERMISSION_MODES: { value: PermissionMode; label: string; hint: string; ic
   {
     value: "ask",
     label: "Спрашивать",
-    hint: "Подтверждение перед каждым изменением файлов, командой и сетью",
+    hint: "Подтверждение перед каждым изменением",
     icon: <Shield size={13} />,
   },
   {
     value: "accept_edits",
-    label: "Принимать правки",
-    hint: "Правки файлов — без вопросов; команды и сеть по-прежнему спрашивают",
+    label: "Контроль риска",
+    hint: "Обычные обратимые действия — автоматически; значимые изменения — после подтверждения",
     icon: <ShieldCheck size={13} />,
   },
   {
     value: "bypass",
     label: "Без ограничений",
-    hint: "Выполняет всё без подтверждений (запрещённые действия всё равно блокируются)",
+    hint: "Обычные изменения — автоматически; опасные без доказанного отката требуют подтверждения",
     icon: <ShieldAlert size={13} />,
   },
 ];

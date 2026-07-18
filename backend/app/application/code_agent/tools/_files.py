@@ -4,7 +4,7 @@ import difflib
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.tools._sandbox import _resolve_safe
+from app.application.code_agent.tools._sandbox import SandboxError, _resolve_safe
 
 # ── Encoding-safe file IO ────────────────────────────────────────────────────
 # The code-agent operates on whatever source tree the user opens, which on
@@ -101,6 +101,20 @@ _BOM_UTF16_BE = b"\xfe\xff"
 _CODEC_ALIASES = {
     "cp1125": "cp866",
 }
+
+
+def _reject_duplicate_project_root(project_root: Path, path: str) -> None:
+    """Reject ``ProjectName/file`` when paths are already project-relative."""
+    raw = (path or "").strip().replace("\\", "/")
+    first = raw.split("/", 1)[0].strip()
+    root_name = project_root.resolve().name
+    if first and first.casefold() == root_name.casefold():
+        rest = raw.split("/", 1)[1] if "/" in raw else ""
+        hint = rest or "<path>"
+        raise SandboxError(
+            f"path is already relative to the project root; use '{hint}', "
+            f"not '{raw}'"
+        )
 
 # Ordered fallback when charset-normalizer is unavailable: try the strictest
 # (no replacement) decoders first, ending at cp1252 which decodes nearly any
@@ -311,6 +325,7 @@ def tool_read_file(
 
 
 def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str, Any]:
+    _reject_duplicate_project_root(project_root, path)
     target = _resolve_safe(project_root, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     existed = target.exists()
@@ -364,6 +379,7 @@ def tool_edit_file(
     old_string: str,
     new_string: str,
 ) -> dict[str, Any]:
+    _reject_duplicate_project_root(project_root, path)
     target = _resolve_safe(project_root, path)
     if not target.is_file():
         return {"text": f"ERROR: not a file or does not exist: {path}"}

@@ -79,6 +79,13 @@ class ConfigTarget:
 
 
 @dataclass(frozen=True)
+class DatabaseTarget:
+    """Typed target for a target_kind='database' scope. ``database_id`` resolves to
+    the server-owned engine/path/schemas/query profile; none are model arguments."""
+    database_id: str
+
+
+@dataclass(frozen=True)
 class ScopeView:
     """Immutable snapshot handed to the executor gate (never the live dict)."""
     run_id: str
@@ -98,6 +105,7 @@ class ScopeView:
     network: NetworkTarget | None = None
     systemd: SystemdTarget | None = None
     config: ConfigTarget | None = None
+    database: DatabaseTarget | None = None
 
 
 def _norm(run_id: str) -> str:
@@ -125,6 +133,7 @@ def bind_scope(run_id: str, profile_id: str, *, allowed_tool: str,
             "network": None,
             "systemd": None,
             "config": None,
+            "database": None,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -152,6 +161,7 @@ def bind_scope_network(run_id: str, *, cidr: str, port_profile: str, allowed_too
             "network": {"cidr": c, "port_profile": pp},
             "systemd": None,
             "config": None,
+            "database": None,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -180,6 +190,7 @@ def bind_scope_systemd(run_id: str, *, profile_id: str, unit: str, allowed_tool:
             "network": None,
             "systemd": {"unit": u},
             "config": None,
+            "database": None,
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -205,6 +216,33 @@ def bind_scope_config(run_id: str, *, profile_id: str, config_id: str, allowed_t
             "network": None,
             "systemd": None,
             "config": {"config_id": cid},
+            "database": None,
+            "mode": str(mode),
+            "expires_at": time.time() + float(ttl_seconds),
+            "operation_used": False,
+            "allowed_tool": tool,
+        }
+        return _view(rid)
+
+
+def bind_scope_database(run_id: str, *, database_id: str, allowed_tool: str,
+                        mode: str = "read_only",
+                        ttl_seconds: float = DEFAULT_TTL_SECONDS) -> ScopeView | None:
+    """Bind one server-owned database target to exactly one read-only adapter."""
+    rid = _norm(run_id)
+    did = str(database_id or "").strip()
+    tool = str(allowed_tool or "").strip()
+    if not rid or not did or not tool:
+        return None
+    with _LOCK:
+        _sweep_locked()
+        _SCOPES[rid] = {
+            "target_kind": "database",
+            "profile_id": "",
+            "network": None,
+            "systemd": None,
+            "config": None,
+            "database": {"database_id": did},
             "mode": str(mode),
             "expires_at": time.time() + float(ttl_seconds),
             "operation_used": False,
@@ -251,13 +289,15 @@ def _view(rid: str) -> ScopeView | None:
     net = s.get("network")
     sysd = s.get("systemd")
     cfg = s.get("config")
+    db = s.get("database")
     return ScopeView(
         run_id=rid, mode=s["mode"], expires_at=s["expires_at"],
         operation_used=s["operation_used"], allowed_tool=s["allowed_tool"],
         target_kind=s.get("target_kind", "ssh_profile"), profile_id=s.get("profile_id", ""),
         network=NetworkTarget(net["cidr"], net["port_profile"]) if net else None,
         systemd=SystemdTarget(sysd["unit"]) if sysd else None,
-        config=ConfigTarget(cfg["config_id"]) if cfg else None)
+        config=ConfigTarget(cfg["config_id"]) if cfg else None,
+        database=DatabaseTarget(db["database_id"]) if db else None)
 
 
 def get_active_scope(run_id: str) -> ScopeView | None:

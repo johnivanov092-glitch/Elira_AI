@@ -123,7 +123,27 @@ export type EvidenceRecord = {
   target_identity: string;
   scanner_vantage: string;
   operation: string;
-  result: { alias?: string; command?: string; status?: string; stdout?: string; stderr?: string };
+  result: {
+    alias?: string;
+    command?: string;
+    status?: string;
+    stdout?: string;
+    stderr?: string;
+    database_id?: string;
+    engine?: string;
+    quick_check?: string;
+    user_version?: number;
+    schema_version?: number;
+    migration_state?: string;
+    table_count?: number;
+    schema_summary?: string;
+    safe_query_profile?: string;
+    chat_count?: number;
+    message_count?: number;
+    backup_status?: string;
+    backup_count?: number;
+    backup_age_seconds?: number;
+  };
   exit_status: string;
   captured_at: number;
 };
@@ -216,6 +236,28 @@ export async function startConfigInspect(
   });
 }
 
+// ── database inspect (read-only, Phase 6) ─────────────────────────────────
+
+export type DatabaseInspectResp = {
+  ok: boolean;
+  run_id: string;
+  database_id: "elira-state";
+  tool: "itops_database_inspect";
+  message: string;
+  ttl_seconds: number;
+};
+
+// The client names only an admitted logical database. Path, connection string,
+// schemas and SQL are resolved and enforced by the server.
+export async function startDatabaseInspect(
+  database_id: "elira-state" = "elira-state",
+): Promise<DatabaseInspectResp> {
+  return request<DatabaseInspectResp>("/api/itops/database/inspect/start", {
+    method: "POST",
+    body: { database_id },
+  });
+}
+
 // ── change vertical (v1) — thin proxy to the privileged executor ───────────
 
 export type ChangePlanResp = {
@@ -245,11 +287,20 @@ export type ChangeStatusResp = {
   error?: string;
 };
 
-// Ask the privileged executor to PLAN a change for an executor-registry target_id. The
-// main backend never sends host/unit/argv/keys — only the opaque target_id. Approval then
-// happens out-of-band in the executor's Telegram bot; the model cannot approve or apply.
+// Remote path: ask the privileged executor to PLAN a change. Approval happens
+// out-of-band in the dedicated Telegram bot.
 export async function startChangePlan(target_id: string): Promise<ChangePlanResp> {
   return request<ChangePlanResp>("/api/itops/change/plan", { method: "POST", body: { target_id } });
+}
+
+// Local Tauri path: the selected permission mode + explicit UI action authorize one
+// reviewed target. The executor still owns snapshot, argv, apply and verification;
+// Telegram is not used.
+export async function applyLocalChange(target_id: string): Promise<ChangePlanResp> {
+  return request<ChangePlanResp>("/api/itops/change/apply-local", {
+    method: "POST",
+    body: { target_id },
+  });
 }
 
 // Read the executor's capped status/evidence for a change run (read-only).

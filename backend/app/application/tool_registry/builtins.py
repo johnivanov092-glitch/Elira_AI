@@ -707,6 +707,26 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "scopes": ["net.outbound"],
             "timeout_seconds": 60, "max_output_chars": 6000,
         },
+        {
+            "name": "itops_database_inspect", "handler": _noop,
+            "display_name": "IT-Ops Database Inspect", "display_name_ru": "Инспекция базы данных",
+            "category": "itops",
+            "description": "Read-only typed inspection of a server-owned SQLite target (no args, SQL, DSN or row data)",
+            "source": "itops",
+            "permission": "auto", "side_effect": False, "idempotent": True,
+            "scopes": ["fs.read"],
+            "timeout_seconds": 30, "max_output_chars": 10000,
+        },
+        {
+            "name": "itops_change_apply", "handler": _noop,
+            "display_name": "IT-Ops Local Change", "display_name_ru": "Локальное IT-изменение",
+            "category": "itops",
+            "description": "Apply one reviewed executor target locally, or request its dedicated Telegram approval when invoked remotely",
+            "source": "itops",
+            "permission": "require_approval", "side_effect": True, "idempotent": False,
+            "scopes": ["net.outbound", "fs.write"],
+            "timeout_seconds": 180, "max_output_chars": 10000,
+        },
     ]
 
 

@@ -356,6 +356,17 @@ code only from a **hash-verified release artifact** — bundling the provisioner
 
 ## 10. Live smokes — after a green preflight  `[you: trigger]`
 
+For an existing protected install, add the Phase-6 disposable database target **as the
+executor account**, from the same verified artifact copy, then rerun Step 9:
+
+```powershell
+& "C:\elira-base-python\python.exe" "$art\provision_change_executor.py" add-database-canary --root C:\elira-change-exec --account "HOSTNAME\elira-change-exec"
+```
+
+This command preserves every existing registry target, refuses a conflicting canary target,
+and creates only `C:\elira-change-exec\data\phase6_canary.sqlite3` plus its protected backup
+directory. It never opens or mutates `data\elira_state.db` from the main Elira installation.
+
 Each host-touching run is human-triggered (the model/UI can never approve or apply):
 
 1. **Reject smoke.** UI → plan a netdata restart → Telegram **Reject**. Expect ChangeRun
@@ -368,6 +379,11 @@ Each host-touching run is human-triggered (the model/UI can never approve or app
    explicit `[global] update every = 1`, restart + healthy changed MainPID, status `applied`, and
    no raw config in Telegram/IPC/evidence. Do not manufacture a live failure to test rollback;
    `rolled_back`/`rollback_failed` stay deterministic fake-transport/helper tests.
+4. **Disposable SQLite smoke.** Plan `phase6-sqlite-canary` → Telegram **Approve**.
+   Expect `applied`, `user_version 1 -> 2`, the fixed `verified_at` column, unchanged row
+   count/data digest, and no remaining backup file. Do not point this target at `elira_state.db`
+   and do not manufacture a live failed migration; transaction failure, restore rollback,
+   tampered-backup refusal, and CAS-loss retention are deterministic local tests.
 
 Failure / unknown / drift paths are **test-only** (fake transport, never the real host). After the
 smokes, return `itops` to OFF unless deliberately keeping the feature enabled.

@@ -4,6 +4,7 @@ guard. These are the checks that keep deploy from copying privileged code out of
 model-writable repo or wiping an unrelated directory."""
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -143,6 +144,63 @@ class RegistryTemplateTest(unittest.TestCase):
             blob = json.dumps(cfg)
             self.assertNotIn("/etc/netdata/netdata.conf", blob)
             self.assertNotIn("update every", blob)
+            db = targets["phase6-sqlite-canary"]
+            self.assertEqual(db["target_kind"], "sqlite_migration")
+            self.assertEqual(db["database_id"], "phase6-canary")
+            self.assertEqual(db["migration_id"], "canary_add_verified_at_v2")
+            self.assertEqual(db["operation"], "migrate_v1_to_v2")
+            canary = Path(db["database_path"])
+            self.assertTrue(canary.is_file())
+            import sqlite3
+            conn = sqlite3.connect(canary)
+            try:
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 1)
+                self.assertEqual(
+                    [r[1] for r in conn.execute("PRAGMA table_info(canary_items)")],
+                    ["id", "value"],
+                )
+            finally:
+                conn.close()
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_add_database_canary_preserves_existing_targets_and_is_idempotent(self):
+        root = Path(tempfile.mkdtemp())
+        try:
+            (root / "config").mkdir()
+            registry = root / "config" / "registry.json"
+            original = {"targets": {"existing": {"custom": "kept"}}}
+            registry.write_text(json.dumps(original), encoding="utf-8")
+            prov._add_database_canary(root)
+            first = json.loads(registry.read_text(encoding="utf-8"))
+            self.assertEqual(first["targets"]["existing"], {"custom": "kept"})
+            self.assertIn("phase6-sqlite-canary", first["targets"])
+            prov._add_database_canary(root)
+            self.assertEqual(json.loads(registry.read_text(encoding="utf-8")), first)
+            first["targets"]["phase6-sqlite-canary"]["operation"] = "arbitrary_sql"
+            registry.write_text(json.dumps(first), encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                prov._add_database_canary(root)
+        finally:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_conflicting_canary_refuses_before_creating_database_files(self):
+        root = Path(tempfile.mkdtemp())
+        try:
+            (root / "config").mkdir()
+            registry = root / "config" / "registry.json"
+            registry.write_text(json.dumps({"targets": {
+                "existing": {"custom": "kept"},
+                "phase6-sqlite-canary": {"operation": "arbitrary_sql"},
+            }}), encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                prov._add_database_canary(root)
+
+            self.assertFalse((root / "data").exists())
+            self.assertFalse((root / "backups").exists())
         finally:
             import shutil
             shutil.rmtree(root, ignore_errors=True)

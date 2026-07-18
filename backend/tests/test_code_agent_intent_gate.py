@@ -3,7 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from app.application.code_agent.loop_helpers import _looks_like_intent_without_action
+from app.application.code_agent.loop_helpers import (
+    _looks_like_intent_without_action,
+    _maybe_inject_execution_reminder,
+)
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.prompts import BASE_SYSTEM_PROMPT_TEMPLATE
 
@@ -30,6 +33,20 @@ class IntentHeuristicTest(unittest.TestCase):
         self.assertTrue(_looks_like_intent_without_action("Сейчас проверим и исправим."))
         self.assertTrue(_looks_like_intent_without_action("Let's take a look."))
 
+    def test_matches_forward_intent_at_start_of_long_plan(self):
+        # Live regression: the model started with "Я сделаю", then spent more
+        # than 200 chars describing the design. The old tail-only check missed
+        # it and accepted the plan as a completed coding turn.
+        answer = (
+            "Я сделаю эффект полёта через вселенную при прокрутке страницы. "
+            "Фон будет двигаться медленнее контента, звёзды получат разные "
+            "скорости, а секции будут плавно появляться по мере движения. "
+            "Для этого подойдут несколько слоёв параллакса и небольшая "
+            "анимация камеры. В результате переходы станут динамичнее."
+        )
+        self.assertGreater(len(answer), 200)
+        self.assertTrue(_looks_like_intent_without_action(answer))
+
     def test_does_not_match_genuine_answers(self):
         # Delivered result — past tense, no forward intent.
         self.assertFalse(_looks_like_intent_without_action(
@@ -39,6 +56,12 @@ class IntentHeuristicTest(unittest.TestCase):
             "Теперь можешь запустить приложение командой npm run dev."))
         self.assertFalse(_looks_like_intent_without_action("2 + 2 = 4."))
         self.assertFalse(_looks_like_intent_without_action(""))
+
+    def test_project_change_question_gets_execution_reminder(self):
+        msg = "А можно ли сделать параллакс при прокрутке сайта?"
+        self.assertIn("[reminder]", _maybe_inject_execution_reminder(msg))
+        explain = "Только объясни, можно ли сделать параллакс, ничего не меняй"
+        self.assertEqual(_maybe_inject_execution_reminder(explain), explain)
 
 
 class IntentGateLoopTest(unittest.TestCase):

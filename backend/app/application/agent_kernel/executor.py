@@ -201,10 +201,13 @@ def execute_tool(
     # adapters, ssh_*, run_bash, filesystem, browser, change tools) is blocked here at
     # the single dispatch path. The allowlist is the EXACT bound tool NAME (not "any
     # itops tool"), so a future itops tool is never auto-runnable from an old scope.
-    # An itops adapter tool (spec.source == "itops") can NEVER run without a bound
-    # scope naming it, over the exact profile_id, on an ENABLED asset. Fail-closed
-    # throughout (import error / empty run_id / unknown profile all block).
+    # An itops READ adapter can NEVER run without a bound scope naming it, over the
+    # exact target. The one explicit exception is itops_change_apply: it is not a
+    # diagnostic adapter; it is a require_approval side-effect tool whose target_id is
+    # revalidated by the isolated change executor. It remains blocked inside any
+    # locked diagnostic run by clause (a).
     _is_itops_tool = spec.get("source") == "itops"
+    _requires_operation_scope = _is_itops_tool and tool_name != "itops_change_apply"
     try:
         from app.application.agent_kernel import operation_scope as _opscope
         # STICKY allowlist (locked_tool): once bound, a run stays locked until it ends
@@ -217,7 +220,7 @@ def execute_tool(
         # this holds even if the import above is what failed) and for any itops adapter
         # tool: if we cannot verify the lockdown we block. Normal runs are unaffected.
         _diag_run = str(request.run_id or "").startswith("itops-diag-")
-        if _diag_run or _is_itops_tool:
+        if _diag_run or _requires_operation_scope:
             _emit_blocked(request, f"operation scope unavailable: {exc}")
             return ToolExecutionResult(
                 status="blocked",
@@ -242,7 +245,7 @@ def execute_tool(
     # (b) An itops adapter tool requires a LIVE scope bound to it, over the exact
     # profile, on an ENABLED asset, with its one operation slot unused. (If a scope is
     # bound to a DIFFERENT adapter, clause (a) already blocked this call.)
-    if _is_itops_tool:
+    if _requires_operation_scope:
         if _scope is None:
             _emit_blocked(request, f"{tool_name} requires an operation scope")
             return ToolExecutionResult(
@@ -340,6 +343,27 @@ def execute_tool(
                     error="profile_not_enabled",
                 )
             _authoritative_args = {}
+        elif _scope.target_kind == "database":
+            # A database inspect takes NO args. The database id, engine, path, allowed
+            # schemas and fixed query profile come only from the server-bound scope.
+            if request.args:
+                _emit_blocked(request, "database adapter takes no args")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "This adapter takes no arguments; the database "
+                            "target comes only from the bound scope — blocked (fail-closed).",
+                            "error": "scope_args_forbidden"},
+                    error="scope_args_forbidden",
+                )
+            if _scope.database is None:
+                _emit_blocked(request, "operation scope has no database target")
+                return ToolExecutionResult(
+                    status="blocked",
+                    output={"ok": False, "text": "The bound database target is unavailable — "
+                            "blocked (fail-closed).", "error": "scope_mismatch"},
+                    error="scope_mismatch",
+                )
+            _authoritative_args = {}
         else:
             _emit_blocked(request, f"unknown scope target_kind: {_scope.target_kind}")
             return ToolExecutionResult(
@@ -416,6 +440,12 @@ def execute_tool(
     # without approval (P4 Шаг 11). This covers status/inspection commands
     # like `git status`, `ls`, `pytest --collect-only`, etc.
     _needs_approval = bool(spec and spec.get("permission") == "require_approval")
+    # A remote Telegram IT call cannot change the host here: dispatch only asks the
+    # isolated executor to create an immutable plan, whose dedicated bot performs the
+    # actual approve/reject gate. Requiring the generic approval first would create two
+    # approvals and leave remote work unable to reach the dedicated change channel.
+    if request.agent_id == "telegram" and tool_name == "itops_change_apply":
+        _needs_approval = False
     if _needs_approval and tool_name == "run_bash":
         _cmd = str(request.args.get("command", "")).strip()
         if _cmd:
@@ -470,12 +500,14 @@ def execute_tool(
                 args=request.args,
             )
             _emit_approval_pending(request, approval["id"])
-            # Best-effort Telegram notification — never blocks the agent
-            try:
-                from app.application.telegram.runtime import send_approval_notification
-                send_approval_notification(approval)
-            except Exception as exc:
-                logger.debug("Telegram approval notification failed", exc_info=exc)
+            # Local Tauri approvals stay local. Only a run that the Telegram poller
+            # server-side marks with agent_id="telegram" may notify Telegram.
+            if request.agent_id == "telegram" and tool_name != "itops_change_apply":
+                try:
+                    from app.application.telegram.runtime import send_approval_notification
+                    send_approval_notification(approval)
+                except Exception as exc:
+                    logger.debug("Telegram approval notification failed", exc_info=exc)
             return ToolExecutionResult(
                 status="waiting_approval",
                 output={
@@ -515,16 +547,27 @@ def execute_tool(
         # interrupted otherwise. Best-effort: tools that don't use it are
         # unaffected, and a missing helper must never break dispatch.
         _run_token = None
+        _channel_token = None
         try:
             from app.application.code_agent.tools import set_current_run_id
             _run_token = set_current_run_id(request.run_id)
         except Exception:
             _run_token = None
         try:
+            from app.application.agent_kernel.execution_context import set_execution_channel
+            _channel_token = set_execution_channel(
+                "remote" if request.agent_id == "telegram" else "local"
+            )
             _result_box["raw"] = dispatch_fn(tool_name, request.args)
         except Exception as exc:  # noqa: BLE001 — surfaced to the model as tool error
             _result_box["raw"] = {"ok": False, "text": f"ERROR: {exc}", "error": str(exc)}
         finally:
+            if _channel_token is not None:
+                try:
+                    from app.application.agent_kernel.execution_context import reset_execution_channel
+                    reset_execution_channel(_channel_token)
+                except Exception:
+                    pass
             if _run_token is not None:
                 try:
                     from app.application.code_agent.tools import reset_current_run_id

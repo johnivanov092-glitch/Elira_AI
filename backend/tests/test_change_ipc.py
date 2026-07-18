@@ -1,6 +1,5 @@
-"""The two-call IPC boundary: request_plan returns ONLY {change_run_id, status} (never a
-token/argv/key/binding); get_status is a tight capped whitelist (no raw output / service
-paths); plan is rate-limited and fails closed when the bot/allowlist is not configured."""
+"""Change IPC boundary: remote plans use Telegram; local bypass applies internally;
+status is a tight capped whitelist and no path leaks token/argv/key/binding."""
 from __future__ import annotations
 
 import json
@@ -90,6 +89,47 @@ class IpcTest(unittest.TestCase):
         self.assertEqual(len(s.sent), 1)
         self.assertTrue(s.sent[0]["approve_token"] and s.sent[0]["reject_token"])
 
+    def test_apply_local_applies_without_telegram_and_returns_safe_envelope(self):
+        runner = FakeRunner([
+            ("ok", F(1238)),   # plan inspect
+            ("ok", F(1238)),   # pre-apply drift inspect
+            ("ok", F(1238)),   # fixed restart argv (exit 0; stdout ignored)
+            ("ok", F(1240)),   # post-check: pid changed
+        ])
+        out = ipc.apply_local("ai-server-netdata", registry_path=self.reg, runner=runner)
+        self.assertEqual(out, {
+            "ok": True,
+            "change_run_id": out["change_run_id"],
+            "status": "applied",
+        })
+        self.assertEqual(cs.get_change_run(out["change_run_id"])["approver"], "local:bypass")
+        blob = json.dumps(out)
+        for leak in ("token", "argv", "binding", "known_hosts", "sudo", "systemctl", "identity"):
+            self.assertNotIn(leak, blob)
+
+    def test_apply_local_is_rate_limited_before_planning(self):
+        lim = ipc.RateLimiter(max_calls=0, window_seconds=1000.0)
+        out = ipc.apply_local("ai-server-netdata", registry_path=self.reg,
+                              runner=FakeRunner([("ok", F(1238))]), rate_limiter=lim)
+        self.assertEqual(out["error"], "rate_limited")
+        self.assertEqual(self._count(), 0)
+
+    def test_apply_local_refuses_target_without_runtime_reversibility_profile(self):
+        from app.change_executor import policy
+
+        with unittest.mock.patch.object(
+            policy,
+            "evidence_for_registered_target",
+            return_value=policy.SafetyEvidence(impact="high"),
+        ):
+            out = ipc.apply_local(
+                "ai-server-netdata",
+                registry_path=self.reg,
+                runner=FakeRunner([("ok", F(1238))]),
+            )
+        self.assertEqual(out["error"], "approval_required")
+        self.assertEqual(self._count(), 0)
+
     def test_fail_closed_when_sender_not_configured(self):
         out = self._req(FakeSender(configured=False))
         self.assertEqual(out["error"], "not_configured")
@@ -135,6 +175,35 @@ class IpcTest(unittest.TestCase):
                           "main_pid", "exec_main_status", "n_restarts"})     # no fragment_path
         self.assertLessEqual(len(res["reason"]), 200)                        # capped
         self.assertEqual(out["status"], "pending_approval")
+
+    def test_database_status_projection_drops_path_sql_and_row_values(self):
+        cid = self._req(FakeSender())["change_run_id"]
+        cs.record_change_evidence(
+            change_run_id=cid,
+            target_id="phase6-sqlite-canary",
+            operation="database_change:apply",
+            result=json.dumps({
+                "outcome": "applied",
+                "database_id": "phase6-canary",
+                "migration_id": "canary_add_verified_at_v2",
+                "backup_sha256": "a" * 64,
+                "schema_sha256": "b" * 64,
+                "before_user_version": 1,
+                "after_user_version": 2,
+                "row_count": 1,
+                "rollback_attempted": False,
+                "database_path": "C:/secret/canary.sqlite3",
+                "sql": "DROP TABLE users",
+                "row_value": "TOP-SECRET",
+            }),
+            exit_status="0",
+        )
+        result = ipc.get_status(cid)["evidence"][0]["result"]
+        self.assertEqual(result["database_id"], "phase6-canary")
+        self.assertEqual(result["row_count"], 1)
+        blob = json.dumps(result)
+        for forbidden in ("database_path", "C:/secret", "sql", "DROP TABLE", "TOP-SECRET"):
+            self.assertNotIn(forbidden, blob)
 
     def test_send_failure_frees_target_no_permanent_lock(self):
         class BoomSender(FakeSender):

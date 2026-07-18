@@ -1,6 +1,7 @@
 # Elira IT Operations — Program Plan
 
-**Status:** Foundation plan for approval · **Owner:** principal engineer · **Date:** 2026-07-10
+**Status:** implementation in progress; consolidated live verification deferred to the
+final program gate · **Owner:** principal engineer · **Updated:** 2026-07-15
 **PRD:** [.scratch/it-operations/PRD.md](../.scratch/it-operations/PRD.md) · **Issues:** [.scratch/it-operations/issues/](../.scratch/it-operations/issues/)
 
 This is a **program**, not a feature. It turns Elira from "an agent that can run
@@ -93,16 +94,28 @@ DPAPI blob** — nothing decryptable lives in the DB.
 **Approval (public tools) vs automatic rollback (runtime-internal)** → REUSE
 `monitoring/store.py` approvals in `agent_monitor.db` (`create_approval`,
 `canonical_args_digest`, `find_approved_approval`, TTL). The RAW-args-digest vs
-redacted-display split IS the secret contract's display half. `ChangeRun`
-references the approval by `approval_id`. **Public, model-callable tools** —
-`apply_change` and a **manual** `rollback_change` — are added to `CRITICAL_TOOLS`
-(`tool_policy.py:63`, **currently empty**) so they are force-ask even in bypass,
-and to the corpus-taint `SIDE_EFFECT_TOOLS` set. The **automatic compensating
-rollback is NOT a model-callable tool and is NOT in `CRITICAL_TOOLS`**: it is a
-runtime-internal action bound to the exact approved `ChangeRun` + snapshot +
-`rollback_kind=automatic`, fired only after a real failed targeted verifier —
-it compensates an already-approved apply, so it does not seek a second approval.
-The approval card for `apply_change` states the rollback strategy up front.
+redacted-display split IS the secret contract's display half, and an approved call
+cannot swap its arguments. One shared policy combines channel + permission mode +
+runtime-owned safety evidence: local `ask` confirms every change; `accept_edits`
+automates only low-risk reversible work; `bypass` automates normal work and high-risk
+work only with authoritative rollback/transaction/verified-backup + post-check proof.
+Unknown impact or model-supplied "proof" requires approval. Remote changes always use
+Telegram approve/reject. Automatic compensating rollback is runtime-internal, bound to
+the exact approved `ChangeRun` + snapshot, and does not seek a second approval.
+
+The inherited execution matrix is:
+
+| Channel / mode | Runtime decision |
+|---|---|
+| Local `ask` | Ask before every change. |
+| Local `accept_edits` (`Контроль риска`) | Auto only for low-risk runtime-controlled reversible work; ask for material/high/unknown impact. |
+| Local `bypass` | Auto for normal work; high-impact work is auto only with authoritative transaction, staged rollback, or verified backup+restore evidence and a post-check. |
+| Remote Telegram | Every change requires Approve/Reject, regardless of the saved local mode. |
+
+Existing generic command/SSH tools remain usable; this policy is not a command
+allowlist and does not add a second executor. A newly registered tool or change target
+defaults to `unknown`/approval-required until runtime code supplies a reviewed typed
+safety profile. Model arguments such as `backup_verified=true` never count as proof.
 
 **Snapshot + rollback** → CLONE the R2 server-lifecycle ownership: a run_id-keyed
 snapshot registry mirroring `_LIVE_SERVERS`/`_ServerHandle` (`_run.py:326-446`),
@@ -177,29 +190,34 @@ FLAG_META — **two-file sync or PUT 422s silently**). Approval card renders
 
 ## 4. Capability matrix
 
-Legend: **S** shipped · **Par** partial today · **P** planned (this program) ·
-**F** forbidden.
+Legend: **S** shipped and behavior-tested · **Par** a bounded vertical is implemented
+but the wider capability remains incomplete · **WIP** implemented in the current green
+working tree but not yet committed · **P** planned · **F** forbidden. Live status is a
+separate axis: the operator deferred one consolidated live smoke until the final gate.
 
 ### Foundation (Phase 0) — secrets, assets, scope, evidence, rollback
 | Capability | State |
 |---|---|
-| Windows Credential Manager vault (DPAPI internal) + secret_ref — no Linux/Fernet ops-cred path | P |
-| Secure write-only intake (pre-persistence, pre-LLM) | P |
-| Asset/ConnectionProfile/OperationScope/Snapshot/Evidence/ChangeRun store — ONE `it_ops.sqlite3`, forward-only migrations, no second secrets DB | P |
-| Sink-level redaction (event_bus + run_journal) + fix `GET /mcp/servers` leak | P (closes live leaks) |
-| `itops` flag OFF disables endpoints + schemas + UI + deferred tools (not just hides UI) | P |
-| Contract tests: raw secret in none of the 12 surfaces (see §3) | P |
-| Display redaction (`core/redaction.py`) | Par — necessary, insufficient |
+| Windows Credential Manager vault (DPAPI internal) + secret_ref — no Linux/Fernet ops-cred path | Par — implementation exists; current SSH v1 is intentionally OS-key-only and stores no secret |
+| Secure write-only intake (pre-persistence, pre-LLM) | Par — implemented foundation path; not used by key-only SSH v1 |
+| Asset/ConnectionProfile/OperationScope/Snapshot/Evidence stores + migrations | S — privileged ChangeRun state is intentionally isolated in the executor-owned store |
+| Sink-level redaction (event_bus + run_journal) + safe evidence projections | S |
+| `itops` flag OFF disables endpoints + schemas + UI + deferred tools (not just hides UI) | S |
+| Contract tests: raw secret does not cross the tested runtime surfaces | S for the current key-only vertical |
+| Display redaction (`core/redaction.py`) | S as defense in depth; never the only secret boundary |
 
 ### Core ops — network, hosts, services, configs, databases
 | Phase | State | Guardrails |
 |---|---|---|
-| 1 Connection Enrollment | P | password→key bootstrap → verify → **delete temp secret**; persistent password opt-in only; fingerprint approval |
-| 2 Asset Scope & Policy | P | per-run enforcement in executor; revocation blocks next call |
-| 3 Network Inventory (read-only) | P | explicit vantage; CIDR/port/rate/timeout caps; evidence-bound; CVE only w/ version evidence |
-| 4 Infrastructure Ops | P | adapters (systemd/Win svc/IIS/Docker); inspect→snapshot→apply→health→rollback |
-| 5 Configuration Ops | P | typed handlers; parse→diff→validate→snapshot→apply→reload→health→rollback |
-| 6 Database Ops | P | secret_ref + allowed schemas; read-only first; backup+approval before write |
+| 1 Connection Enrollment | S (key-only v1) | preview/fingerprint review → draft → real SSH verify → enabled; no stored password/secret |
+| 2 Asset Scope & Policy | S | exact tool+target per-run scope, one operation, fail-closed executor gate, evidence journal |
+| 3 Network Inventory (read-only) | S | explicit configured CIDR, local vantage, bounded TCP profile, mandatory partial/timeout summary |
+| 4 Infrastructure Ops | Par | Linux/Windows inventory, systemd inspect and one typed restart vertical shipped; IIS/Docker remain planned |
+| 5 Configuration Ops | Par | first typed netdata inspect/change/validate/rollback vertical shipped; broader config catalog remains planned |
+| 6 Database Ops | WIP | typed read-only SQLite inspect plus disposable canary transaction/backup/post-check vertical; no arbitrary SQL/path |
+| 7 Device Adapters | P | first candidate after Phase 6 stabilization: MikroTik read-only inventory; changes inherit the shared approval policy |
+| 8 Reporting/UI | Par | assets, diagnostics, evidence journal and local change surfaces shipped; task-history improvements are WIP |
+| 9 Verification/Release Discipline | Par | behavior suites and fail-closed gates exist; consolidated cross-domain live smoke is intentionally deferred |
 | brute-force / exploit / auth-scan / packet-evasion / full-port-UDP / "scan everything" | **F** | |
 | sshpass / password-in-argv / key-in-output / second SSH provider | **F** | |
 
@@ -291,7 +309,7 @@ Per-phase DoD is in each issue file. Program-level invariants every phase honors
 1. Windows Credential Manager vault + `secret_ref` type + secure intake endpoint + resolution-inside-dispatch (Windows-host only).
 2. `it_ops.sqlite3` store (assets/profiles/scopes/snapshots/evidence/change_runs + a secret-ref *state* table) + forward-only migration runner. **No second secrets DB.**
 3. Per-run `OperationScope` (asset-instance scope, not just capability class) + the executor gate (**scope miss = blocked, no fall-through**) + a separate approved scope-request flow.
-4. Runtime-owned snapshot/rollback lifecycle (run_id-keyed, guaranteed-terminal) on its OWN `change_run_status` axis, with adapter-declared `rollback_kind`; automatic compensating rollback is runtime-internal (not a tool, not in CRITICAL_TOOLS); public `apply_change`/manual `rollback_change` are critical.
+4. Runtime-owned snapshot/rollback lifecycle (run_id-keyed, guaranteed-terminal) on its OWN `change_run_status` axis, with adapter-declared `rollback_kind`; automatic compensating rollback is runtime-internal. Public changes use the shared mode + impact + reversibility policy, while remote changes always require Telegram approval.
 5. Ops post-state verifier intents (service-enabled / config-key-set / package-version / firewall-rule) added the catalog way.
 6. Closing live leak surfaces: sink-level redaction on event_bus + run_journal; fix `GET /mcp/servers`; output-canary for resolved values.
 

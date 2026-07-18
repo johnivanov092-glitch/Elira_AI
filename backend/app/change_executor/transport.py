@@ -64,8 +64,20 @@ def known_hosts_sha256(target: Target) -> str:
 
 
 def target_binding(target: Target) -> dict:
-    """The immutable binding an apply/resolve is pinned to. Compared against the current
-    registry binding before SSH; any drift → aborted_before_apply, no SSH."""
+    """The immutable binding an apply/resolve is pinned to.
+
+    It is compared against the current registry before any target access; drift aborts
+    before SSH or a local database is opened for write.
+    """
+    if target.target_kind == "sqlite_migration":
+        return {
+            "target_kind": target.target_kind,
+            "database_id": target.database_id,
+            "database_path": target.database_path,
+            "backup_dir": target.backup_dir,
+            "migration_id": target.migration_id,
+            "operation": target.operation,
+        }
     binding = {"host": target.host, "port": target.port, "remote_user": target.remote_user,
                "unit": target.unit, "operation": target.operation,
                "known_hosts_sha256": known_hosts_sha256(target)}

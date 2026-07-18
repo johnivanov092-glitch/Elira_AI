@@ -546,7 +546,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _DOCGEN_NUDGE_MAX,
     _unbacked_docgen_claim,
     _flatten_for_summary,
-    _is_critical_call,
+    _call_auto_approves,
     _looks_like_intent_without_action,
     _looks_like_repeat_request,
     _looks_like_dev_server_command,
@@ -554,7 +554,6 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _mark_approval_expired,
     _maybe_inject_execution_reminder,
     _messages_char_count,
-    _mode_auto_approves,
     _norm_answer,
     _normalized_fingerprint,
     _strip_think_blocks,
@@ -610,6 +609,7 @@ def _stream_code_agent_core(
     scope_id = project_scope_id(root)
     rid = run_id or uuid.uuid4().hex
     effective_agent_id = str(agent_id or "code-agent").strip() or "code-agent"
+    approval_channel = "remote" if effective_agent_id == "telegram" else "local"
     cancel_event = _register_run(rid)
     # R2: initialized BEFORE the try — every early return (invalid root, preflight
     # block) reaches the finally, which consults this flag to stop run-owned servers.
@@ -1493,8 +1493,12 @@ def _stream_code_agent_core(
                                 if (
                                     _a_result.status == "waiting_approval"
                                     and _a_approval
-                                    and _mode_auto_approves(permission_mode, _a_tool)
-                                    and not _is_critical_call(_a_tool, _a_args)
+                                    and _call_auto_approves(
+                                        permission_mode,
+                                        _a_tool,
+                                        _a_args,
+                                        channel=approval_channel,
+                                    )
                                 ):
                                     _mark_approval_approved(_a_approval)
                                     for _hb in _exec_with_heartbeat(
@@ -2296,11 +2300,11 @@ def _stream_code_agent_core(
                 # the model "waiting approval" and burning steps. The approval
                 # is consumed in the SAME run (binding incl. run_id intact).
                 _approval_id = str((_exec_result.output or {}).get("approval_id") or "")
-                # Permission selector: «Принимать правки»/«Без ограничений» grant
+                # Permission selector: «Контроль риска»/«Без ограничений» may grant
                 # the just-created approval and re-execute in the same run instead
                 # of pausing for the user (binding incl. run_id stays intact).
-                # Critical calls (destructive shell: rm/git reset/drop/kill…) are
-                # NEVER auto-approved — the user confirms them even in bypass.
+                # High-impact calls need authoritative recovery/post-check evidence;
+                # without it they still pause even in bypass.
                 # W1 intent-binding (contract §3): a side-effect call whose args carry
                 # VERBATIM web-corpus content the user never wrote is escalated the
                 # same way — bypass must not let a malicious page trigger an action
@@ -2310,8 +2314,9 @@ def _stream_code_agent_core(
                 if (
                     _exec_result.status == "waiting_approval"
                     and _approval_id
-                    and _mode_auto_approves(permission_mode, name)
-                    and not _is_critical_call(name, parsed_args)
+                    and _call_auto_approves(
+                        permission_mode, name, parsed_args, channel=approval_channel
+                    )
                 ):
                     try:
                         from app.application.web_evidence.taint import corpus_tainted
@@ -2321,8 +2326,9 @@ def _stream_code_agent_core(
                 if (
                     _exec_result.status == "waiting_approval"
                     and _approval_id
-                    and _mode_auto_approves(permission_mode, name)
-                    and not _is_critical_call(name, parsed_args)
+                    and _call_auto_approves(
+                        permission_mode, name, parsed_args, channel=approval_channel
+                    )
                     and not _taint_frag
                 ):
                     _mark_approval_approved(_approval_id)

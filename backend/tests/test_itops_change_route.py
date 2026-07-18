@@ -1,5 +1,4 @@
-"""Main-backend change client + the flag-gated proxy route. The main backend only forwards
-a target_id and reads capped status — it never plans/approves/applies or holds keys."""
+"""Main-backend change client + flag-gated routes for remote plan and local bypass."""
 from __future__ import annotations
 
 import os
@@ -33,7 +32,8 @@ class ChangeClientTest(unittest.TestCase):
 
         def post(self, url, json=None, headers=None, timeout=None, allow_redirects=None):
             type(self).posts.append(dict(url=url, headers=headers, json=json,
-                                         allow_redirects=allow_redirects, trust_env=self.trust_env))
+                                         timeout=timeout, allow_redirects=allow_redirects,
+                                         trust_env=self.trust_env))
 
             class _Resp:
                 def json(self_inner):
@@ -58,6 +58,21 @@ class ChangeClientTest(unittest.TestCase):
         self.assertEqual(sent["json"], {"target_id": "ai-server-netdata"})
         self.assertFalse(sent["trust_env"])          # proxy/netrc env ignored
         self.assertFalse(sent["allow_redirects"])    # a 3xx can't bounce the bearer off-box
+
+    def test_apply_local_uses_distinct_loopback_path(self):
+        with unittest.mock.patch.dict(os.environ, {"ELIRA_CHANGE_IPC_TOKEN_FILE": self.tok,
+                                                   "ELIRA_CHANGE_IPC_PORT": "8790"}), self._patch_session():
+            change_client.apply_local("ai-server-netdata")
+        sent = self._FakeSession.posts[-1]
+        self.assertTrue(sent["url"].endswith("/apply_local"))
+        self.assertEqual(sent["json"], {"target_id": "ai-server-netdata"})
+        self.assertEqual(sent["timeout"], change_client._LOCAL_APPLY_TIMEOUT)
+
+    def test_apply_local_rejects_unknown_target_before_ipc(self):
+        self._FakeSession.posts = []
+        out = change_client.apply_local("arbitrary-command")
+        self.assertEqual(out["error"], "target_not_allowed")
+        self.assertEqual(self._FakeSession.posts, [])
 
     def test_missing_token_file_raises_unavailable(self):
         with unittest.mock.patch.dict(os.environ, {"PATH": os.environ.get("PATH", "")}, clear=True):
@@ -104,6 +119,7 @@ class ChangeRouteTest(unittest.TestCase):
         self._flag.start()
         app = FastAPI()
         app.include_router(router)
+        self.app = app
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -123,6 +139,29 @@ class ChangeRouteTest(unittest.TestCase):
             r = self.client.post("/api/itops/change/plan", json={"target_id": "x"})
         self.assertEqual(r.status_code, 503)
 
+    def test_apply_local_proxies_without_remote_plan(self):
+        with unittest.mock.patch("app.application.it_ops.change_client.apply_local",
+                                 return_value={"ok": True, "change_run_id": "chg-local", "status": "applied"}) as p, \
+                unittest.mock.patch("app.application.it_ops.change_client.request_plan") as remote:
+            r = self.client.post("/api/itops/change/apply-local",
+                                 json={"target_id": "ai-server-netdata"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "applied")
+        p.assert_called_once_with("ai-server-netdata")
+        remote.assert_not_called()
+
+    def test_apply_local_rejects_non_allowlisted_target(self):
+        r = self.client.post("/api/itops/change/apply-local",
+                             json={"target_id": "arbitrary-command"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_apply_local_is_loopback_only(self):
+        from fastapi.testclient import TestClient
+        remote = TestClient(self.app, client=("192.168.88.50", 50000))
+        r = remote.post("/api/itops/change/apply-local",
+                        json={"target_id": "ai-server-netdata"})
+        self.assertEqual(r.status_code, 403)
+
     def test_plan_extra_field_422(self):
         r = self.client.post("/api/itops/change/plan", json={"target_id": "x", "unit": "sshd.service"})
         self.assertEqual(r.status_code, 422)     # client can't smuggle a unit/host/argv
@@ -139,7 +178,49 @@ class ChangeRouteTest(unittest.TestCase):
         with unittest.mock.patch.object(ff, "flag_enabled", return_value=False):
             self.assertEqual(self.client.post("/api/itops/change/plan",
                                               json={"target_id": "x"}).status_code, 404)
+            self.assertEqual(self.client.post("/api/itops/change/apply-local",
+                                              json={"target_id": "ai-server-netdata"}).status_code, 404)
             self.assertEqual(self.client.get("/api/itops/change/chg-1/status").status_code, 404)
+
+
+class LocalChangeProviderTest(unittest.TestCase):
+    def test_provider_rejects_unknown_target_before_ipc(self):
+        from app.application.tool_providers.itops_provider import tool_itops_change_apply
+        with unittest.mock.patch.object(change_client, "apply_local") as apply:
+            out = tool_itops_change_apply("arbitrary-command")
+        self.assertEqual(out["error"], "target_not_allowed")
+        apply.assert_not_called()
+
+    def test_provider_returns_capped_executor_status_and_evidence(self):
+        from app.application.tool_providers.itops_provider import tool_itops_change_apply
+        with unittest.mock.patch.object(
+                change_client, "apply_local",
+                return_value={"ok": True, "change_run_id": "chg-local", "status": "applied"}) as apply, \
+                unittest.mock.patch.object(
+                    change_client, "get_status",
+                    return_value={"ok": True, "evidence": [{"operation": "systemd_change:postcheck"}]}) as status:
+            out = tool_itops_change_apply("ai-server-netdata")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["status"], "applied")
+        self.assertEqual(len(out["evidence"]), 1)
+        apply.assert_called_once_with("ai-server-netdata")
+        status.assert_called_once_with("chg-local")
+
+    def test_remote_provider_requests_telegram_plan_without_local_apply(self):
+        from app.application.tool_providers.itops_provider import tool_itops_change_apply
+        with unittest.mock.patch(
+                "app.application.agent_kernel.execution_context.get_execution_channel",
+                return_value="remote"), \
+                unittest.mock.patch.object(
+                change_client, "request_plan",
+                return_value={"ok": True, "change_run_id": "chg-remote",
+                              "status": "pending_approval"}) as remote, \
+                unittest.mock.patch.object(change_client, "apply_local") as local:
+            out = tool_itops_change_apply("ai-server-netdata")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["status"], "pending_approval")
+        remote.assert_called_once_with("ai-server-netdata")
+        local.assert_not_called()
 
 
 if __name__ == "__main__":

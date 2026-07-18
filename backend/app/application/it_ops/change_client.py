@@ -2,9 +2,10 @@
 
 This lives in the MAIN backend (NOT the executor TCB), so it may use the app's normal
 deps. It reads the executor-written bearer token file (ACL: executor writes, main reads)
-and calls the two-call loopback IPC. It can never approve or apply — it only requests a
-plan (which the executor turns into a Telegram approval the human must act on) and reads
-the executor's already-capped status. The token is sent as a bearer header, never logged.
+and calls the bounded loopback IPC. Remote work requests a plan which the executor turns
+into a Telegram approval. Locally approved or policy-approved Tauri work may request one atomic plan+apply; the
+executor still owns capabilities, target binding, argv, snapshot and verification. The
+token is sent as a bearer header, never logged.
 """
 from __future__ import annotations
 
@@ -12,7 +13,17 @@ import os
 
 import requests
 
-_TIMEOUT = 120     # request_plan does a fresh inspect + Telegram send; get_status is fast
+_PLAN_TIMEOUT = 120
+_LOCAL_APPLY_TIMEOUT = 900   # aligns with the kernel's net.outbound tool budget
+_STATUS_TIMEOUT = 30
+
+# Local change execution is intentionally narrower than the executor registry. The model/UI can
+# name only these reviewed operations; host/unit/path/argv remain executor-owned.
+LOCAL_CHANGE_TARGETS = frozenset({
+    "ai-server-netdata",
+    "ai-server-netdata-config",
+    "phase6-sqlite-canary",
+})
 
 
 class ChangeExecutorUnavailable(RuntimeError):
@@ -57,12 +68,12 @@ def _session() -> requests.Session:
     return s
 
 
-def _post(path: str, payload: dict) -> dict:
+def _post(path: str, payload: dict, *, timeout: int) -> dict:
     url = f"http://127.0.0.1:{_ipc_port()}{path}"       # host pinned; port strictly validated above
     sess = _session()
     try:
         resp = sess.post(url, json=payload, headers={"Authorization": f"Bearer {_token()}"},
-                         timeout=_TIMEOUT, allow_redirects=False)
+                         timeout=timeout, allow_redirects=False)
         return resp.json()
     except (requests.RequestException, ValueError) as exc:
         raise ChangeExecutorUnavailable(f"change executor IPC unreachable: {exc}") from exc
@@ -73,9 +84,18 @@ def _post(path: str, payload: dict) -> dict:
 def request_plan(target_id: str) -> dict:
     """Ask the executor to plan a change for *target_id*. Returns only {ok, change_run_id,
     status} — the executor never returns a token/argv/key/binding."""
-    return _post("/request_plan", {"target_id": str(target_id or "")})
+    return _post("/request_plan", {"target_id": str(target_id or "")}, timeout=_PLAN_TIMEOUT)
+
+
+def apply_local(target_id: str) -> dict:
+    """Run one reviewed target through the executor's local Tauri policy path."""
+    normalized = str(target_id or "").strip()
+    if normalized not in LOCAL_CHANGE_TARGETS:
+        return {"ok": False, "error": "target_not_allowed"}
+    return _post("/apply_local", {"target_id": normalized}, timeout=_LOCAL_APPLY_TIMEOUT)
 
 
 def get_status(change_run_id: str) -> dict:
     """Read the executor's capped status/evidence for a change run."""
-    return _post("/get_status", {"change_run_id": str(change_run_id or "")})
+    return _post("/get_status", {"change_run_id": str(change_run_id or "")},
+                 timeout=_STATUS_TIMEOUT)

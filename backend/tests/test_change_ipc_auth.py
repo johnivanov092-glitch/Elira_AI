@@ -1,6 +1,5 @@
-"""Hardened loopback IPC: a per-boot bearer token (constant-time) gates the two calls; a
-missing/wrong token makes NO engine call; body is capped 4 KiB JSON; only two paths; the
-token never appears in a response."""
+"""Hardened loopback IPC: a per-boot bearer token gates every fixed path; a missing/
+wrong token makes no engine call; bodies are capped and the token is never returned."""
 from __future__ import annotations
 
 import json
@@ -30,6 +29,18 @@ def _show(pid):
 class FakeRunner:
     def __call__(self, argv, timeout):
         return transport.SshResult(0, _show(1238), b"")
+
+
+class LocalApplyRunner:
+    def __init__(self):
+        self.inspect_count = 0
+
+    def __call__(self, argv, timeout):
+        if "restart" in argv:
+            return transport.SshResult(0, b"", b"")
+        self.inspect_count += 1
+        pid = 1240 if self.inspect_count >= 3 else 1238
+        return transport.SshResult(0, _show(pid), b"")
 
 
 class FakeSender:
@@ -92,6 +103,22 @@ class IpcAuthTest(unittest.TestCase):
         self.assertEqual(set(res.keys()), {"ok", "change_run_id", "status"})
         self.assertNotIn(_TOKEN, json.dumps(res))   # token never in a response
         self.assertEqual(self._count(), 1)
+
+    def test_apply_local_requires_bearer_and_never_sends_telegram(self):
+        body = json.dumps({"target_id": "ai-server-netdata"}).encode()
+        code, _ = service.handle_request(
+            "/apply_local", None, body, token=_TOKEN, sender=self.sender,
+            rate_limiter=None, registry_path=self.reg, runner=LocalApplyRunner())
+        self.assertEqual(code, 401)
+        self.assertEqual(self._count(), 0)
+
+        code, res = service.handle_request(
+            "/apply_local", f"Bearer {_TOKEN}", body, token=_TOKEN, sender=self.sender,
+            rate_limiter=None, registry_path=self.reg, runner=LocalApplyRunner())
+        self.assertEqual(code, 200)
+        self.assertEqual(res["status"], "applied")
+        self.assertEqual(self.sender.sent, [])
+        self.assertNotIn(_TOKEN, json.dumps(res))
 
     def test_body_too_large(self):
         big = json.dumps({"target_id": "x" * 5000}).encode()
