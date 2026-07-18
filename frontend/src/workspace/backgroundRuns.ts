@@ -16,6 +16,7 @@ import {
 import type { ChatAttachment } from "../api/chat";
 import { streamAdvancedMultiAgent } from "../api/project";
 import type { AgentTurnData, FileEntry, Turn } from "./types";
+import { latestUserTaskLabel } from "./taskHistory";
 
 /**
  * Background run manager.
@@ -335,7 +336,12 @@ function wire(
         const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
         const ledgerResult =
           e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
-        pushLedger({ timestamp: Date.now(), type: ledgerType, action: e.stop_reason, result: ledgerResult });
+        pushLedger({
+          timestamp: Date.now(),
+          type: ledgerType,
+          action: latestUserTaskLabel(entry.snapshot.turns) || e.stop_reason,
+          result: ledgerResult,
+        });
         patch((a) => ({
           ...a,
           running: false,

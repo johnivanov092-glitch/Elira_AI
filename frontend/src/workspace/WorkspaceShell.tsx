@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Code, FileSearch, FolderOpen, Globe, Sparkles, UploadCloud, Wand2, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Code, FileSearch, FolderOpen, Globe, ListChecks, Sparkles, UploadCloud, Wand2, X } from "lucide-react";
 import { waitForBackend } from "../api/client";
 import type { ChatAttachment } from "../api/chat";
 import {
@@ -30,6 +30,7 @@ import { TerminalDock } from "./TerminalDock";
 import { useAgentRun } from "./useAgentRun";
 import * as bg from "./backgroundRuns";
 import { bindingFromSession, persistProjectSelection } from "./sessionBinding";
+import { taskHistoryItems } from "./taskHistory";
 
 let _draftSeq = 0;
 const newDraftKey = () => `draft-${Date.now()}-${++_draftSeq}`;
@@ -366,7 +367,10 @@ export default function WorkspaceShell() {
           {tab === "pipe" ? (
             <PipelinesShell />
           ) : run.turns.length > 0 ? (
-            <Transcript turns={run.turns} onApprove={run.approve} onApproveAll={run.approveAll} onResume={run.resume} onAnswer={run.answer} />
+            <>
+              <Transcript turns={run.turns} onApprove={run.approve} onApproveAll={run.approveAll} onResume={run.resume} onAnswer={run.answer} />
+              <TaskHistory ledger={run.taskLedger} turns={run.turns} />
+            </>
           ) : (
             <ChatEmptyState hasProject={!!project} onPick={pick} onSuggest={(p) => setInput(p)} />
           )}
@@ -403,6 +407,35 @@ export default function WorkspaceShell() {
       {settingsOpen && <Settings model={model} onModel={setModel} onClose={() => setSettingsOpen(false)} project={project} initialSection={settingsSection} />}
       {paletteOpen && <CommandPalette onAction={onPaletteAction} onClose={() => setPaletteOpen(false)} />}
     </div>
+  );
+}
+
+function TaskHistory({ ledger, turns }: { ledger: bg.RunSnapshot["taskLedger"]; turns: Turn[] }) {
+  const items = taskHistoryItems(ledger, turns);
+  if (items.length === 0) return null;
+  return (
+    <details className="mx-auto mb-5 max-w-[760px] border-t border-line px-5 pt-2 text-[12px]">
+      <summary className="flex cursor-pointer list-none items-center gap-2 py-1.5 text-t2 hover:text-tx">
+        <ListChecks size={14} className="text-ac" />
+        <span className="font-medium">Задачи чата</span>
+        <span className="text-mut">· последние {items.length}</span>
+        <ChevronDown size={13} className="ml-auto text-mut" />
+      </summary>
+      <ul className="divide-y divide-line/70 border-t border-line/70">
+        {items.map((item) => {
+          const Icon = item.type === "final" ? CheckCircle2 : item.type === "error" ? CircleAlert : CircleDashed;
+          const state = item.type === "final" ? "готово" : item.type === "error" ? "не завершено" : "частично";
+          const cls = item.type === "final" ? "text-success" : item.type === "error" ? "text-danger" : "text-ac";
+          return (
+            <li key={`${item.timestamp}:${item.action}`} className="flex min-w-0 items-start gap-2 py-2">
+              <Icon size={13} className={`${cls} mt-0.5 shrink-0`} />
+              <span className="min-w-0 flex-1 truncate text-t2" title={item.label}>{item.label}</span>
+              <span className={`${cls} shrink-0 text-[11px]`}>{state}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </details>
   );
 }
 
