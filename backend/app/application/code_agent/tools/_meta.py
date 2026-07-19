@@ -166,7 +166,21 @@ def tool_search(
 
 def _format_checklist_text(result: dict[str, Any]) -> str:
     if not result.get("ok"):
-        return f"ERROR: {result.get('error', 'todo_update failed')}"
+        error = str(result.get("error", "todo_update failed"))
+        if error == "item_not_found":
+            # Name the missing id AND the real ids, so the model can correct the
+            # call instead of guessing (the Mini CRM run got a bare
+            # `ERROR: item_not_found` for updates=[…, css] and stalled). The
+            # atomic no-partial-write semantics are unchanged (task_planner
+            # validates the whole payload before writing).
+            missing = str(result.get("item_id") or "?")
+            existing = [str(it.get("id")) for it in (result.get("items") or [])][:50]
+            listing = ", ".join(existing) if existing else "(пусто)"
+            return (
+                f"ERROR: item_not_found: {missing}. Ни одно обновление не применено "
+                f"(атомарно). Существующие id: {listing}"
+            )
+        return f"ERROR: {error}"
     items = result.get("items") or []
     changed = result.get("changed") or []
     header = f"Checklist for run {result.get('run_id', '')}: {len(items)} item(s)"
