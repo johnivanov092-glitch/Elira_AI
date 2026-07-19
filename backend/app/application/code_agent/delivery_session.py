@@ -478,9 +478,23 @@ def _run_session(
                 or progress["criteria_confirmed_delta"] > 0
                 or progress["checklist_completed_delta"] > 0
             )
+            stop = str(done_event.get("stop_reason") or "")
+            not_confirmed = str(done_event.get("completion_status") or "none") != "confirmed"
+            # An `answer` terminal is runtime-healthy but NOT solved when the
+            # criteria are unverified (done.ok stays runtime health — untouched).
+            # The real Mini CRM run ended exactly here: real mutations, an open
+            # durable checklist, 0/18 confirmed — and the session stopped. Such
+            # a slice earns the SAME bounded continuation toward verification;
+            # without progress or without an open checklist it still stops
+            # honestly (no answer→answer loop; the hard cap is shared).
+            answer_eligible = (
+                stop == "answer"
+                and bool(done_event.get("resumable"))
+                and _first_open_checklist_item(_checklist_items(rid)) is not None
+            )
             should_continue = (
-                str(done_event.get("stop_reason") or "") in AUTO_CONTINUE_STOP_REASONS
-                and str(done_event.get("completion_status") or "none") != "confirmed"
+                (stop in AUTO_CONTINUE_STOP_REASONS or answer_eligible)
+                and not_confirmed
                 and bool(done_event.get("partial"))
                 and proven_progress
                 and auto_used < max_auto_continuations

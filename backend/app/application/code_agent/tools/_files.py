@@ -203,6 +203,12 @@ def _encoding_for_write(codec: str, had_bom: bool) -> str:
     base = _normalize_codec(codec)
     if base in ("utf_8", "utf-8", "utf8"):
         return "utf-8"
+    # ASCII is a strict UTF-8 subset: promote so writing new Unicode content
+    # into an existing ASCII file succeeds as UTF-8 (no BOM) instead of
+    # raising UnicodeEncodeError ('ascii' codec can't encode …). Existing
+    # bytes are unchanged by the promotion; newlines are written as-is (LF).
+    if base in ("ascii", "us_ascii", "us-ascii"):
+        return "utf-8"
     if had_bom and base in ("utf_16", "utf-16", "utf16"):
         return "utf-16"
     return base
@@ -343,11 +349,13 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
             # Existing file whose encoding we can't pin down: refuse rather than
             # blindly rewrite it as utf-8 and corrupt its non-ASCII content.
             return {
+                "ok": False,
+                "error": "encoding_undetected",
                 "text": (
                     f"ERROR: cannot reliably detect the encoding of existing file "
                     f"{path}; refusing to overwrite it. Confirm the encoding or "
                     "remove the file first."
-                )
+                ),
             }
         codec, had_bom = detected
         write_codec = _encoding_for_write(codec, had_bom)
@@ -360,7 +368,27 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
         # recoverable (single-step undo).
         backup_path = _save_backup(path, raw)
 
-    target.write_bytes(content.encode(write_codec))
+    try:
+        encoded = content.encode(write_codec)
+    except (UnicodeEncodeError, LookupError) as exc:
+        # The new content does not fit the preserved legacy encoding (e.g. an
+        # emoji into a cp1251 file). Honest failure — never a silent success.
+        return {
+            "ok": False,
+            "error": "encoding_conflict",
+            "text": (
+                f"ERROR: new content cannot be encoded as {write_codec} "
+                f"(preserved encoding of {path}): {exc}"
+            ),
+        }
+    try:
+        target.write_bytes(encoded)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": "write_failed",
+            "text": f"ERROR: failed to write {path}: {exc}",
+        }
     action = "Overwrote" if existed else "Created"
     return {
         "text": f"{action} {path} ({len(content)} chars)",
@@ -382,21 +410,24 @@ def tool_edit_file(
     _reject_duplicate_project_root(project_root, path)
     target = _resolve_safe(project_root, path)
     if not target.is_file():
-        return {"text": f"ERROR: not a file or does not exist: {path}"}
+        return {"ok": False, "error": "file_not_found",
+                "text": f"ERROR: not a file or does not exist: {path}"}
     try:
         raw = target.read_bytes()
     except Exception as exc:
-        return {"text": f"ERROR: {exc}"}
+        return {"ok": False, "error": "read_failed", "text": f"ERROR: {exc}"}
 
     detected = _detect_encoding(raw, strict=True)
     if detected is None:
         # Can't pin down the encoding — refuse to edit so we don't corrupt the
         # rest of the file while replacing one line.
         return {
+            "ok": False,
+            "error": "encoding_undetected",
             "text": (
                 f"ERROR: cannot reliably detect the encoding of {path}; refusing "
                 "to edit it. Confirm the encoding or rewrite the file explicitly."
-            )
+            ),
         }
     codec, had_bom = detected
     write_codec = _encoding_for_write(codec, had_bom)
@@ -404,18 +435,36 @@ def tool_edit_file(
     current = _to_text_newlines(body.decode(codec))
 
     if old_string not in current:
-        return {"text": f"ERROR: old_string not found in {path}"}
+        return {"ok": False, "error": "old_string_not_found",
+                "text": f"ERROR: old_string not found in {path}"}
     occurrences = current.count(old_string)
     if occurrences > 1:
         return {
+            "ok": False,
+            "error": "old_string_ambiguous",
             "text": (
                 f"ERROR: old_string matches {occurrences} times in {path}. "
                 "Provide a larger surrounding context to make it unique."
-            )
+            ),
         }
     updated = current.replace(old_string, new_string, 1)
+    try:
+        encoded = updated.encode(write_codec)
+    except (UnicodeEncodeError, LookupError) as exc:
+        return {
+            "ok": False,
+            "error": "encoding_conflict",
+            "text": (
+                f"ERROR: edited content cannot be encoded as {write_codec} "
+                f"(preserved encoding of {path}): {exc}"
+            ),
+        }
     backup_path = _save_backup(path, raw)
-    target.write_bytes(updated.encode(write_codec))
+    try:
+        target.write_bytes(encoded)
+    except OSError as exc:
+        return {"ok": False, "error": "write_failed",
+                "text": f"ERROR: failed to write {path}: {exc}"}
     return {
         "text": f"Edited {path} (1 replacement)",
         "touched_path": path,

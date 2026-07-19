@@ -50,16 +50,22 @@ class BuiltinToolProvider:
     def dispatch(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         handler = self._dispatch_table.get(tool_name)
         if handler is None:
-            return {"text": f"ERROR: unknown built-in tool '{tool_name}'"}
+            return {"ok": False, "error": "unknown_tool",
+                    "text": f"ERROR: unknown built-in tool '{tool_name}'"}
         try:
             result = handler(**args)
         except SandboxError as exc:
-            return {"text": f"ERROR: sandbox violation: {exc}"}
+            return {"ok": False, "error": "sandbox_violation",
+                    "text": f"ERROR: sandbox violation: {exc}"}
         except TypeError as exc:
-            return {"text": f"ERROR: bad arguments to {tool_name}: {exc}"}
+            return {"ok": False, "error": "bad_arguments",
+                    "text": f"ERROR: bad arguments to {tool_name}: {exc}"}
         except Exception as exc:
             logger.exception("Built-in tool %s crashed", tool_name)
-            return {"text": f"ERROR: {exc}"}
+            # A crash is a FAILURE: without ok=False the loop/journal would
+            # record the ERROR text as a successful call (the real Mini CRM
+            # App.css event did exactly that).
+            return {"ok": False, "error": "tool_exception", "text": f"ERROR: {exc}"}
         # tools.py returns either a dict (with `text` + optional extras)
         # or, rarely, a non-dict — normalize to keep the registry's
         # caller invariants stable.

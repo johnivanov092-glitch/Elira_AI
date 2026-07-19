@@ -749,6 +749,19 @@ _SCOPE_RULE_CUES = (
 )
 
 
+# "test" must match REAL command/token patterns only. A bare substring check
+# falsely classified `npm create vite@latest` as a test run (the "test" inside
+# "latest" — the actual Mini CRM false confirmation). Word-boundary anchored:
+# runners (pytest/vitest/jest/…), npm-family scripts, `go test`, *.test.* files,
+# test-prefixed script names, and the Russian «тест…» word family.
+_TEST_KIND_RE = re.compile(
+    r"(?:\bpytest\b|\bunittest\b|\bjest\b|\bvitest\b|\bgo\s+test\b|"
+    r"\bnpm\s+(?:run\s+)?test\b|\byarn\s+(?:run\s+)?test\b|\bpnpm\s+(?:run\s+)?test\b|"
+    r"\bnpx\s+vitest\b|\.test\.|\bтест\w*|\btest\b|\btest[_.][\w.-]+)",
+    re.IGNORECASE,
+)
+
+
 def _command_kind(text: str) -> str:
     """The specific command a command_check criterion/verdict is about, or 'any' for a
     generic 'the available checks pass'. So a green typecheck confirms a typecheck
@@ -762,7 +775,7 @@ def _command_kind(text: str) -> str:
     if _has(low, ("run build", "vite build", "cargo build", "go build", "webpack", "rollup",
                   "npm build", "сборк", "собира", "билд", "компил", "bundl", "build")):
         return "build"
-    if _has(low, ("pytest", "unittest", "npm test", "jest", "go test", "vitest", ".test.", "тест", "test")):
+    if _TEST_KIND_RE.search(low):
         return "test"
     if "import" in low:
         return "import"
@@ -898,9 +911,12 @@ def _run_bash_verdict(cmd: str) -> dict | None:
         return None
     kind = _command_kind(low)
     if kind == "any":
-        # bare run_bash with no recognisable check verb is not a verdict
-        if not _has(low, ("tsc", "typecheck", "build", "test", "pytest", "vitest", "jest",
-                          "import", "smoke", "lint", "npm run", "cargo", "go ")):
+        # bare run_bash with no recognisable check verb is not a verdict.
+        # "test" goes through the token-anchored matcher — the substring falsely
+        # promoted `npm create vite@latest` into a check verdict.
+        if not (_TEST_KIND_RE.search(low)
+                or _has(low, ("tsc", "typecheck", "build", "pytest", "vitest", "jest",
+                              "import", "smoke", "lint", "npm run", "cargo", "go "))):
             return None
     return {"intents": {"command_check"}, "command_kind": kind, "files": set()}
 
@@ -977,7 +993,15 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         return True
     if it == "command_check":
         ck, vk = item.get("command_kind") or "any", v.get("command_kind") or "any"
-        return ck == "any" or vk == "any" or ck == vk
+        if ck == "any":
+            # a generic «доступные проверки проходят» criterion accepts any
+            # recognised check verdict (specific or generic)
+            return True
+        # A SPECIFIC criterion (test/build/typecheck/…) is confirmed only by a
+        # verdict of the SAME kind. A kind-"any" verdict (generic check verb,
+        # e.g. `npm run check`) must never confirm a specific criterion — the
+        # wildcard direction that let scaffold output confirm «тесты проходят».
+        return ck == vk
     if it == "command_output":
         exp = item.get("output_expected", "")
         cmd_c = item.get("command", "")
