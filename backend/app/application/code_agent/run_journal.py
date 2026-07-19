@@ -230,6 +230,25 @@ class RunJournal:
             # server-owned marker — continuation builders force thinking=False
             # off it; the original request.thinking is never rewritten.
             self._state["thinking_fallback_applied"] = True
+        if event_type == "planning_started":
+            # Durable "the planner already ran once" marker — so a Resume /
+            # auto-continuation after a planning_fallback (no stored plan) does
+            # NOT re-plan (bounded, fail-safe, never an infinite re-plan loop).
+            self._state["planning_attempted"] = True
+        if event_type == "plan_ready":
+            # Bounded planning: the validated PlanArtifact is durable so Resume /
+            # auto-continuation REUSE it and never re-plan.
+            plan = event.get("plan")
+            if isinstance(plan, dict):
+                self._state["plan"] = _clean(plan)
+        if event_type == "phase_changed":
+            # The ACTUALLY-applied thinking mode (planning_then_execution /
+            # planning_fallback / plan_reused / off / raw) — separate from the
+            # user's request.thinking, which is never rewritten.
+            mode = event.get("applied_thinking_mode")
+            if mode:
+                self._state["applied_thinking_mode"] = str(mode)
+            self._state["current_phase"] = str(event.get("phase") or self._state.get("current_phase"))
         if event_type == "tool_call":
             touched = str(event.get("touched_path") or "").strip()
             if touched and touched not in self._state["changed_files"]:

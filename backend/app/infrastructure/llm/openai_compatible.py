@@ -462,6 +462,17 @@ def _request_context_limit(options: dict[str, Any], *, configured_context: Any) 
     return min(limits) if limits else None
 
 
+def _apply_max_tokens_limit(
+    payload: dict[str, Any], options: dict[str, Any], *, configured_max: Any,
+) -> None:
+    """Apply a caller's per-request output cap without widening config policy."""
+    requested = _positive_int(options.get("max_tokens"))
+    configured = _positive_int(configured_max)
+    limits = [value for value in (requested, configured) if value]
+    if limits:
+        payload["max_tokens"] = min(limits)
+
+
 def chat_completion(
     *,
     model: str,
@@ -481,10 +492,8 @@ def chat_completion(
     }
     if tools:
         payload["tools"] = tools
-    if cfg.max_tokens:
-        payload["max_tokens"] = cfg.max_tokens
-
     opts = options or {}
+    _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
@@ -552,9 +561,8 @@ def chat_completion_stream(
         "messages": normalized_messages,
         "stream": True,
     }
-    if cfg.max_tokens:
-        payload["max_tokens"] = cfg.max_tokens
     opts = options or {}
+    _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)
@@ -624,9 +632,8 @@ def chat_completion_event_stream(
     }
     if tools:
         payload["tools"] = tools
-    if cfg.max_tokens:
-        payload["max_tokens"] = cfg.max_tokens
     opts = options or {}
+    _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
     _apply_thinking_option(payload, opts)

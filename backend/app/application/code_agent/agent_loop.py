@@ -32,6 +32,17 @@ from app.application.tool_providers import (
     build_mcp_providers,
 )
 from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE, strategy_family
+from app.application.code_agent.planning import (
+    PlanArtifact,
+    build_planning_messages,
+    error_fingerprint,
+    parse_plan_from_text,
+    plan_artifact_from_dict,
+    plan_context_block,
+    planner_limits,
+    recovery_hint,
+    recovery_next_step,
+)
 from app.application.code_agent.taskspec import (
     CriteriaTracker,
     derive_task_spec,
@@ -203,6 +214,7 @@ _ASK_USER_MAX = 3
 # same total (_ASK_USER_MAX + grace + 1 == _REPEATED_TOOL_CALL_LIMIT).
 _ASK_USER_OVER_CAP_GRACE = 2
 _LLM_HEARTBEAT_EVERY = 10.0
+_LLM_CANCEL_POLL_SECONDS = 0.1
 _REPEATED_TOOL_CALL_LIMIT = 6
 # Repeats at or above this count (but below the hard limit) get a loud nudge
 # appended to the tool result — a chance to change course before the run is
@@ -335,15 +347,22 @@ def _chat_events(
 
     threading.Thread(target=worker, name="elira-code-agent-llm", daemon=True).start()
     done = False
+    next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
     while not done:
         try:
-            kind, value = events.get(timeout=max(0.001, _LLM_HEARTBEAT_EVERY))
+            timeout = max(
+                0.001,
+                min(_LLM_CANCEL_POLL_SECONDS, next_heartbeat - time.monotonic()),
+            )
+            kind, value = events.get(timeout=timeout)
         except queue.Empty:
             if cancel_event is not None and cancel_event.is_set():
                 # Stop pumping the SSE stream immediately; the worker will
                 # observe the same flag and close the upstream connection.
                 return
-            yield {"type": "heartbeat"}
+            if time.monotonic() >= next_heartbeat:
+                next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
+                yield {"type": "heartbeat"}
             continue
         if kind == "done":
             done = True
@@ -581,6 +600,36 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _try_remember_turn,
     _wrap_up_text,
 )
+
+
+def _load_planning_state(run_id: str) -> "tuple[PlanArtifact | None, bool]":
+    """(reusable plan, planner_already_attempted) from the RunJournal — for
+    Resume / auto-continuation. A valid stored plan is REUSED; if the planner
+    already ran once but produced no plan (planning_fallback), the attempt flag
+    is True so the caller skips a second planner call (bounded, no re-plan
+    loop). Any read failure → (None, False), a safe fresh start."""
+    try:
+        from app.application.code_agent.run_journal import RunJournal
+
+        state = RunJournal.load(run_id).state
+    except Exception:
+        return None, False
+    stored = state.get("plan")
+    plan = plan_artifact_from_dict(stored) if isinstance(stored, dict) else None
+    return plan, bool(state.get("planning_attempted"))
+
+
+def _bounded_planning_recon(registry, *, char_cap: int) -> str:
+    """Deterministic, READ-ONLY recon handed to the planner: a bounded project
+    map. Uses the SAME registry (no second executor) and only a read-only tool,
+    so planning can never mutate anything. Best-effort — an empty string on any
+    failure keeps planning bounded and non-blocking."""
+    try:
+        result = registry.dispatch_raw("project_map", {"max_depth": 2})
+        text = str((result or {}).get("text") or "")
+        return text[:max(1, int(char_cap))]
+    except Exception:
+        return ""
 
 
 def _stream_code_agent_core(
@@ -849,6 +898,25 @@ def _stream_code_agent_core(
         edited_in_run = False
         ran_verification = False
         verify_gate_fired = False
+        # Bounded recovery (planning batch, req 7): a normalized error fingerprint
+        # (tool|path|stable-error) counts repeated identical failures. On a repeat
+        # we inject ONE precise, diagnosis-driven nudge — never the generic
+        # "read the file" when the journal shows the file was already read.
+        error_streaks: dict[str, int] = {}
+        read_paths: set[str] = set()
+        recovery_nudges_fired: dict[str, int] = {}
+        _last_failure: dict[str, str] = {}  # for the deterministic stop summary
+
+        def _next_step_after_failure() -> str:
+            if _last_failure:
+                target = _last_failure.get("path", "")
+                return recovery_next_step(
+                    tool=_last_failure.get("tool", "operation"),
+                    path=target,
+                    error_text=_last_failure.get("error", ""),
+                    already_read=target in read_paths,
+                )
+            return progress.next_step_hint()
         # TaskSpec per-criterion state (Ph7.4/7.5): DONE is decided by verifiers,
         # not the model's word. Each criterion is unconfirmed → confirmed (a matching
         # verifier passed) / failed (matching verifier red). completion_status is a
@@ -951,6 +1019,130 @@ def _stream_code_agent_core(
         # Word document. Feeds the anti-confabulation guard (exact-name match).
         generated_docs: list[str] = []
         volume_nudge_fired = False     # one "converge, you're deep into the turn" nudge
+
+        # ── Bounded planning stage (thinking=true + structural task) ──────────
+        # «Мозг» = ONE bounded planning stage, then every execution/verification
+        # model call runs thinking OFF (the local `thinking` flag is flipped once
+        # here; the per-step enable_thinking below then never re-enables it).
+        # The plan is durable in the RunJournal (state["plan"]): on Resume /
+        # auto-continuation the existing plan is REUSED and the planner never
+        # runs a second time. request.thinking (the user setting) is never
+        # rewritten; the actually-applied mode is journalled separately.
+        plan: PlanArtifact | None = None
+        applied_thinking_mode = "raw" if thinking else "off"
+        _existing_plan, _planned_before = _load_planning_state(rid)
+        if _existing_plan is not None:
+            plan = _existing_plan
+            thinking = False  # plan already made → execution phase, thinking OFF
+            applied_thinking_mode = "plan_reused"
+        elif _planned_before:
+            # Planner already ran once (fallback, no stored plan): do NOT re-plan.
+            thinking = False
+            applied_thinking_mode = "planning_fallback"
+        elif thinking and task_spec is not None:
+            if cancel_event.is_set():
+                yield {
+                    "type": "done", "ok": False, "steps": 0,
+                    "stop_reason": "cancelled", "error": "Cancelled by user",
+                    **_completion_fields(criteria, terminated_incomplete=True),
+                }
+                return
+            yield {"type": "planning_started", "run_id": rid}
+            _planner_max_tokens, _planner_project_chars = planner_limits(context_profile)
+            _project_ctx = _bounded_planning_recon(
+                registry, char_cap=_planner_project_chars,
+            )
+            _planner_response: dict[str, Any] = {}
+            _planner_failed = False
+            try:
+                _planner_kwargs = {
+                    "model": model,
+                    "messages": build_planning_messages(
+                        taskspec_context=taskspec_context(task_spec),
+                        project_context=_project_ctx,
+                        project_char_cap=_planner_project_chars,
+                    ),
+                    # No tools by construction. The per-call output cap is
+                    # enforced by the OpenAI-compatible provider.
+                    "options": {
+                        "num_ctx": safe_num_ctx,
+                        "active_context_limit": safe_num_ctx,
+                        "max_tokens": _planner_max_tokens,
+                        "chat_template_kwargs": {"enable_thinking": True},
+                    },
+                }
+                for _planner_event in _chat_events(
+                    chat_fn=chat,
+                    chat_stream_fn=stream_chat,
+                    kwargs=_planner_kwargs,
+                    cancel_event=cancel_event,
+                ):
+                    if cancel_event.is_set():
+                        break
+                    if _planner_event["type"] == "heartbeat":
+                        yield {"type": "heartbeat", "phase": "planning"}
+                    elif _planner_event["type"] == "response":
+                        _planner_response = dict(_planner_event["value"] or {})
+                    # Reasoning/delta output is intentionally not surfaced or
+                    # retained: only the validated PlanArtifact crosses phases.
+            except Exception:
+                _planner_failed = True
+            if not _planner_failed:
+                _planner_content = str(
+                    ((_planner_response.get("message") or {}).get("content") or "")
+                )
+                plan = parse_plan_from_text(_planner_content)
+            # One-shot: from here on execution & verification run thinking OFF.
+            thinking = False
+            if cancel_event.is_set():
+                yield {
+                    "type": "done", "ok": False, "steps": 0,
+                    "stop_reason": "cancelled", "error": "Cancelled by user",
+                    **_completion_fields(criteria, terminated_incomplete=True),
+                }
+                return
+            if plan is None or not plan.is_valid():
+                plan = None
+                applied_thinking_mode = "planning_fallback"
+                yield {
+                    "type": "planning_fallback", "run_id": rid,
+                    "reason": "planner produced no valid PlanArtifact",
+                }
+            else:
+                applied_thinking_mode = "planning_then_execution"
+                yield {"type": "plan_ready", "run_id": rid, "plan": plan.to_dict()}
+        # Structural event ONLY when planning actually engaged (planned this run,
+        # reused a plan, or is post-fallback). A plain thinking=false / simple run
+        # emits nothing new — existing event contracts stay byte-for-byte.
+        if applied_thinking_mode in (
+            "planning_then_execution", "planning_fallback", "plan_reused",
+        ):
+            yield {
+                "type": "phase_changed", "run_id": rid, "phase": "execution",
+                "applied_thinking_mode": applied_thinking_mode,
+            }
+        _brain_phase_tracking = applied_thinking_mode in (
+            "planning_then_execution", "plan_reused",
+        )
+        _verification_phase_emitted = False
+
+        def _enter_verification_phase() -> dict[str, Any] | None:
+            nonlocal _verification_phase_emitted
+            if not _brain_phase_tracking or _verification_phase_emitted:
+                return None
+            _verification_phase_emitted = True
+            return {
+                "type": "phase_changed", "run_id": rid, "phase": "verification",
+                "applied_thinking_mode": applied_thinking_mode,
+            }
+
+        if plan is not None:
+            # The plan is model-authored context, not higher-priority authority.
+            # Keep it in a normal user turn so it cannot elevate project-derived
+            # text into the system role and does not create assistant→assistant
+            # message ordering before the first execution call.
+            messages.append({"role": "user", "content": plan_context_block(plan)})
+
         for step in range(1, safe_max_steps + 1):
             if cancel_event.is_set():
                 yield {
@@ -970,7 +1162,7 @@ def _stream_code_agent_core(
                     touched_files,
                     established_facts,
                     exhausted_strategies=progress.exhausted_summary(),
-                    next_step=progress.next_step_hint(),
+                    next_step=_next_step_after_failure(),
                 )
                 yield {"type": "final_response", "step": step, "text": final_text}
                 yield {
@@ -1290,6 +1482,9 @@ def _stream_code_agent_core(
                     and not verify_passed
                     and verify_attempts < _VERIFY_GATE_MAX
                 ):
+                    _phase_event = _enter_verification_phase()
+                    if _phase_event is not None:
+                        yield _phase_event
                     verify_attempts += 1
                     from app.application.code_agent.tools import tool_run_bash as _verify_run
 
@@ -1492,6 +1687,9 @@ def _stream_code_agent_core(
                             # to run — a first finalize with no concrete calls (e.g. no
                             # server url yet) must not burn it (review F11).
                             auto_verifier_done = True
+                            _phase_event = _enter_verification_phase()
+                            if _phase_event is not None:
+                                yield _phase_event
                         for _a in _autoable[:_AUTO_VERIFIER_MAX_CALLS]:
                             if cancel_event.is_set():
                                 break
@@ -1827,7 +2025,7 @@ def _stream_code_agent_core(
                         touched_files,
                         established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
-                        next_step=progress.next_step_hint(),
+                        next_step=_next_step_after_failure(),
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -1931,7 +2129,7 @@ def _stream_code_agent_core(
                         f"повтор одного и того же вызова: {name}",
                         call_log, touched_files, established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
-                        next_step=progress.next_step_hint(),
+                        next_step=_next_step_after_failure(),
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -1961,7 +2159,7 @@ def _stream_code_agent_core(
                         f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",
                         call_log, touched_files, established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
-                        next_step=progress.next_step_hint(),
+                        next_step=_next_step_after_failure(),
                     )
                     yield {"type": "final_response", "step": step, "text": final_text}
                     yield {
@@ -2329,6 +2527,9 @@ def _stream_code_agent_core(
                     "ssh_exists", "ssh_not_exists", "ssh_read", "path_exists", "browser",
                 ):
                     ran_verification = True
+                    _phase_event = _enter_verification_phase()
+                    if _phase_event is not None:
+                        yield _phase_event
                 _request = ToolExecutionRequest(
                     run_id=rid,
                     agent_id=effective_agent_id,
@@ -2551,6 +2752,35 @@ def _stream_code_agent_core(
                 call_log.append(
                     f"{name}({_hint}) {'ok' if tool_meta.get('ok', True) else 'error'}"
                 )
+                _recovery_message = ""
+                # Bounded recovery: track successful reads (so a recovery hint
+                # never tells the model to read a file it already read), and on a
+                # REPEATED identical failure inject one precise, diagnosis-driven
+                # nudge instead of letting the model spin the same broken edit.
+                if name == "read_file" and bool(tool_meta.get("ok", True)):
+                    _rp = str(parsed_args.get("path") or "").strip()
+                    if _rp:
+                        read_paths.add(_rp)
+                _fp = error_fingerprint(name, parsed_args, tool_meta)
+                if _fp:
+                    error_streaks[_fp] = error_streaks.get(_fp, 0) + 1
+                    _path = str(parsed_args.get("path") or parsed_args.get("command") or "").strip()
+                    _err = str(tool_meta.get("error") or text_result.split("\n", 1)[0])[:180]
+                    _last_failure = {"tool": name, "path": _path, "error": _err}
+                    # Fire once per fingerprint, from the 2nd identical failure.
+                    if error_streaks[_fp] >= 2 and recovery_nudges_fired.get(_fp, 0) == 0:
+                        recovery_nudges_fired[_fp] = 1
+                        _open_crit = next(
+                            (str(c.get("text") or "") for c in criteria.report()
+                             if c.get("status") != "confirmed"),
+                            "",
+                        )
+                        _recovery_message = recovery_hint(
+                            tool=name, path=_path, error_text=_err,
+                            times=error_streaks[_fp],
+                            already_read=_path in read_paths,
+                            open_criterion=_open_crit,
+                        )
                 # Smart-truncate tool output before feeding it back to the
                 # LLM. Without this, a single huge `run_bash` or `read_file`
                 # could blow out `num_ctx` and start eating the system
@@ -2633,8 +2863,20 @@ def _stream_code_agent_core(
                     "content": _tool_content,
                     "name": name,
                 })
+                if _recovery_message:
+                    # OpenAI/Qwen tool protocol requires the tool response to
+                    # immediately follow the assistant tool-call. The recovery
+                    # instruction is a new user turn AFTER that response.
+                    messages.append({"role": "user", "content": _recovery_message})
                 if _fact:
                     established_facts.append(_fact)
+                elif _fp:
+                    # No grounding fact from a failure, but the deterministic stop
+                    # summary must still name the concrete file/command + error.
+                    established_facts.append(
+                        f"НЕУДАЧА: {name}({_last_failure.get('path','')}) — "
+                        f"{_last_failure.get('error','')}"
+                    )
                 _recent = _recent_tool_snippet(name, _hint, text_result)
                 if _recent:
                     recent_tool_outputs.append(_recent)
@@ -2646,7 +2888,7 @@ def _stream_code_agent_core(
                         f"нет прогресса — {verdict.stop_detail}",
                         call_log, touched_files, established_facts,
                         exhausted_strategies=progress.exhausted_summary(),
-                        next_step=progress.next_step_hint(),
+                        next_step=_next_step_after_failure(),
                     )
                     yield {"type": "final_response", "step": step, "text": _det}
                     yield {
@@ -2671,7 +2913,7 @@ def _stream_code_agent_core(
             f"достигнут max_steps={safe_max_steps}",
             call_log, touched_files, established_facts,
             exhausted_strategies=progress.exhausted_summary(),
-            next_step=progress.next_step_hint(),
+            next_step=_next_step_after_failure(),
         )
         yield {"type": "final_response", "step": safe_max_steps, "text": final_text}
         yield {

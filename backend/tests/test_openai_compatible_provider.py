@@ -110,6 +110,34 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs["json"]["temperature"], 0)
         self.assertIn("tools", post.call_args.kwargs["json"])
 
+    def test_per_request_max_tokens_is_enforced_without_widening_config(self) -> None:
+        response = _Response({
+            "model": "local-model",
+            "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+        })
+        env = {**_llama_env(), "LLAMA_SERVER_MAX_TOKENS": "2048"}
+        with patch.dict(os.environ, env, clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            openai_compatible.chat_completion(
+                model="local-model",
+                messages=[{"role": "user", "content": "plan"}],
+                options={"max_tokens": 700},
+            )
+        self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 700)
+
+        with patch.dict(os.environ, env, clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ) as post:
+            openai_compatible.chat_completion(
+                model="local-model",
+                messages=[{"role": "user", "content": "plan"}],
+                options={"max_tokens": 4096},
+            )
+        self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 2048)
+
     def test_chat_completion_retries_transient_then_succeeds(self) -> None:
         good = _Response({"model": "local-model", "choices": [{"message": {"role": "assistant", "content": "OK"}}]})
         attempts = [

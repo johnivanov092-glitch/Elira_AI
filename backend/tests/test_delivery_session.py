@@ -827,14 +827,16 @@ class ReasoningFallbackTest(unittest.TestCase):
             self.assertNotIn("chat_template_kwargs", options,
                              "no model call after the fallback may re-enable thinking")
 
-    def test_session_keeps_thinking_off_after_fallback(self):
-        """(B, session scope) a fallback in slice 1 pins thinking-OFF for the
-        following slices of the same session."""
+    def test_session_keeps_thinking_off_across_slices(self):
+        """(session scope) a structural thinking=true run routes through the
+        bounded PLANNING stage, so every EXECUTION model call — in every slice —
+        runs thinking-OFF (the planner call is a separate no-tools call and is
+        not captured here). Stronger than the old raw-fallback path."""
         rid = "dlv-fb-4"
         chat = _ScriptChat([
-            {**_call("glob", pattern="*"), "reasoning_runaway": True},   # slice 1: fallback
+            _call("glob", pattern="*"),
             _call("write_file", path="a.txt", content="A"),               # slice 1: progress
-            (_TIMEOUT_BUMP, _call("glob", pattern="*")),                            # slice 1: timeout
+            (_TIMEOUT_BUMP, _call("glob", pattern="*")),                  # slice 1: timeout
             _call("write_file", path="out.txt", content="ok"),            # slice 2
             _final(),
         ])
@@ -842,11 +844,12 @@ class ReasoningFallbackTest(unittest.TestCase):
             events = _run_session(_STRUCTURED_TASK, chat, tmp, run_id=rid, thinking=True)
         self.assertEqual(len(_continuings(events)), 1)
         self.assertEqual(len(_dones(events)), 1)
-        # slice-2 calls (index 3+) must run thinking-OFF.
-        self.assertEqual(chat.captured[0][0].get("chat_template_kwargs"),
-                         {"enable_thinking": True})
-        for options, _ in chat.captured[3:]:
-            self.assertNotIn("chat_template_kwargs", options)
+        # planning happened once; every captured EXECUTION call is thinking-OFF.
+        _planning = [e for e in events if e.get("type") in ("plan_ready", "planning_fallback")]
+        self.assertGreaterEqual(len(_planning), 1)
+        for options, _ in chat.captured:
+            self.assertNotIn("chat_template_kwargs", options,
+                             "execution/continuation must never enable thinking")
 
 
 class ResumeContextTest(unittest.TestCase):
