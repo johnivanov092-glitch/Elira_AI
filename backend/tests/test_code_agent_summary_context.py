@@ -83,30 +83,27 @@ class CoerceHistoryReTagsSummaryTest(unittest.TestCase):
 
 class SummarizeHistoryTranscriptCapTest(unittest.TestCase):
     def test_long_transcript_drops_oldest_with_marker(self) -> None:
-        """Build a synthetic 60-turn transcript that vastly exceeds the
-        30K cap; verify oldest are dropped and a marker is prepended."""
+        """History beyond the effective-window share drops oldest turns."""
         captured: dict[str, Any] = {}
 
         def fake_chat(**kwargs):
             captured["messages"] = kwargs.get("messages", [])
             return {"message": {"content": "summary OK", "tool_calls": []}}
 
-        # 60 turns alternating user/agent, each ~1500 chars → 90K total,
-        # well above the 30K cap.
+        # 60 turns alternating user/agent, each ~1500 chars → 90K total.
         big = "X" * 1500
         messages = []
         for i in range(30):
             messages.append({"role": "user", "content": f"task_{i}: " + big})
             messages.append({"role": "assistant", "content": f"answer_{i}: " + big})
 
-        result = summarize_history(messages, chat_fn=fake_chat)
+        result = summarize_history(messages, num_ctx=16_384, chat_fn=fake_chat)
         self.assertTrue(result["ok"])
         self.assertEqual(result["turn_count"], 60)
 
         # Inspect what the summarizer ACTUALLY received
         sent_user_msg = captured["messages"][1]["content"]
-        # Total transcript size sent must be reasonable — well below the
-        # 90K input; the cap is 30K so allow some slack for marker text.
+        # A 16K test window gives the summarizer only a proportional share.
         self.assertLess(len(sent_user_msg), 50000)
         # Marker indicating dropped turns must be present
         self.assertIn("dropped", sent_user_msg.lower())
@@ -140,8 +137,7 @@ class SummarizeHistoryTranscriptCapTest(unittest.TestCase):
         self.assertGreater(idx_follow, idx_small)
 
     def test_per_message_cap_truncates_individual_long_turn(self) -> None:
-        """A single 20K-char agent answer must be capped at the per-message
-        limit (4000 chars) BEFORE being added to the transcript."""
+        """One turn cannot dominate the proportional transcript budget."""
         captured: dict[str, Any] = {}
 
         def fake_chat(**kwargs):
@@ -153,7 +149,7 @@ class SummarizeHistoryTranscriptCapTest(unittest.TestCase):
             {"role": "user", "content": "ask"},
             {"role": "assistant", "content": big_answer},
         ]
-        summarize_history(messages, chat_fn=fake_chat)
+        summarize_history(messages, num_ctx=16_384, chat_fn=fake_chat)
         sent = captured["messages"][1]["content"]
         # No single 'Z' block of 5000+ chars should survive
         self.assertNotIn("Z" * 5000, sent)

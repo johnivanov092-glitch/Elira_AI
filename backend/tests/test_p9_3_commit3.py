@@ -72,12 +72,27 @@ class CodeAgentRouteResolutionTest(unittest.TestCase):
         self.assertEqual(model, "my-explicit:1b")
         self.assertEqual(decision.source, "explicit")
 
-    def test_monitoring_cap_applies(self):
-        _model, effective, _decision = self._run(
+    def test_route_passes_offline_context_hint_through(self):
+        # Routing does not own live context resolution. The middle value exists
+        # only for injected/offline runtimes; live resolution ignores it.
+        _model, requested, _decision = self._run(
             "local-model", 16384, available=["local-model"],
             profile=None, monitoring_max=4096,
         )
-        self.assertEqual(effective, 4096)
+        self.assertEqual(requested, 16384)
+        _model, auto, _decision = self._run(
+            "local-model", None, available=["local-model"],
+            profile=None, monitoring_max=4096,
+        )
+        self.assertEqual(auto, 0)
+
+    def test_monitoring_cap_does_not_shrink_live_resolution(self):
+        from app.application.context.profile import resolve_context_window
+        with patch("app.infrastructure.llm.openai_compatible.server_context_window",
+                   return_value=262144):
+            r = resolve_context_window(4096, live=True, fresh=True)
+        self.assertEqual(r["effective_context_window"], 262144)
+        self.assertEqual(r["limiting_source"], "server")
 
     def test_profile_context_limit_does_not_shrink_code_agent_default(self):
         _model, effective, decision = self._run(
@@ -309,14 +324,16 @@ class SummarizeHistoryAutoTest(unittest.TestCase):
 
 
 class CodeAgentEnsureLimitCapTest(unittest.TestCase):
-    """P9.3 fixup: _resolve_code_route uses ensure_agent_limit, so the default
-    max_context_tokens caps a too-large request to 16384 (vs reaching preflight
-    uncapped and being blocked) even on a fresh monitoring DB with no row."""
+    """Legacy monitoring rows do not participate in live context sizing."""
 
-    def test_request_above_default_cap_becomes_131072(self):
+    def test_default_limit_row_never_caps_a_request(self):
+        # Adaptive context: a freshly-seeded DEFAULT agent-limit row means Auto
+        # (max_context_tokens=0) — a request above the OLD 131072 default passes
+        # through untouched; only the live server window bounds it later.
         import tempfile
         from app.application.monitoring import runtime as mon
         from app.application.code_agent.agent_loop import _resolve_code_route
+        from app.application.context.profile import resolve_context_window
 
         with tempfile.TemporaryDirectory() as tmp:
             orig_db = mon.DB_PATH
@@ -327,12 +344,17 @@ class CodeAgentEnsureLimitCapTest(unittest.TestCase):
             try:
                 with patch("app.infrastructure.llm.local_models.get_models",
                            return_value={"ok": False, "models": []}):
-                    _model, effective, _decision = _resolve_code_route("local-model", 200000)
+                    _model, requested, _decision = _resolve_code_route("local-model", 200000)
             finally:
                 mon.DB_PATH = orig_db
                 mon._LIMIT_SEED_DONE = orig_seed
 
-        self.assertEqual(effective, 131072)
+        self.assertEqual(requested, 200000)
+        with patch("app.infrastructure.llm.openai_compatible.server_context_window",
+                   return_value=262144):
+            r = resolve_context_window(requested, live=True, fresh=True)
+        self.assertEqual(r["effective_context_window"], 262144)
+        self.assertEqual(r["limiting_source"], "server")
 
 
 if __name__ == "__main__":

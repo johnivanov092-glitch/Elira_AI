@@ -5,7 +5,7 @@ summarization path a home that does NOT import ``agent_loop`` — breaking
 the import cycle that previously blocked this split (``agent_loop`` uses
 ``summarize_history`` as ``summarize_fn=...``, while the function needs
 ``_coerce_history`` / ``_local_chat`` / ``_resolve_code_route`` and the
-``DEFAULT_MODEL`` / ``DEFAULT_NUM_CTX`` constants).
+``DEFAULT_MODEL`` constant).
 
 Every dependency below resolves to stdlib or the LLM-infra / config layers,
 so this module is a leaf relative to ``agent_loop``. ``agent_loop`` re-imports
@@ -41,11 +41,6 @@ _FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
 _RECENT_PREFIX = "[РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ ПРОШЛОГО ХОДА]"
 
 DEFAULT_MODEL = "local-model"
-# A long-thinking local model must not be cut off mid-task; this large window is
-# the default code-agent tool context.
-DEFAULT_NUM_CTX = 131072
-
-
 def _local_chat(**kwargs: Any) -> dict[str, Any]:
     """Wrapper so tests can monkeypatch one symbol."""
     model = str(kwargs.get("model") or "")
@@ -128,20 +123,19 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
     return out
 
 
-def _resolve_code_route(model: str, num_ctx: int, *, agent_id: str = "code-agent") -> tuple[str, int, Any]:
+def _resolve_code_route(model: str, num_ctx: int | None, *, agent_id: str = "code-agent") -> tuple[str, int, Any]:
     """P9.3: route code-agent through the shared model order (route='code'):
     explicit model -> enabled 'code' profile (if installed) -> route_model_map
-    -> DEFAULT_MODEL. Effective num_ctx = min(requested, monitoring cap,
-    selected profile context_limit), except a profile is not allowed to shrink
-    the default code-agent tool window below DEFAULT_NUM_CTX.
+    -> DEFAULT_MODEL.
+
+    Adaptive context: this function no longer computes an effective window.
+    The middle value is used only by injected/offline runtimes; live runs ignore
+    it and resolve the exact llama.cpp /props n_ctx in context.profile.
 
     MODEL_SAFE_CTX is deliberately NOT applied for code-agent: it is a
-    conservative chat-safe table (not a confirmed hard provider limit), while
-    code-agent intentionally uses a large tool-context window (DEFAULT_NUM_CTX).
-    Applying it can regress the default code-agent tool window. We skip it
-    by NOT passing `model=` to effective_context_limit.
+    conservative chat-safe table (not a confirmed hard provider limit).
     """
-    from app.core.config import effective_context_limit, resolve_model_for_route
+    from app.core.config import resolve_model_for_route
 
     available_models = None
     try:
@@ -160,30 +154,7 @@ def _resolve_code_route(model: str, num_ctx: int, *, agent_id: str = "code-agent
         available_models = None
 
     decision = resolve_model_for_route("code", model, available_models)
-
-    monitoring_max = None
-    try:
-        from app.application.monitoring.runtime import ensure_agent_limit
-
-        # ensure_agent_limit (not get_agent_limit): the default max_context_tokens
-        # must participate in effective_num_ctx even before any limit row exists,
-        # otherwise a request above the default cap reaches preflight uncapped and
-        # gets blocked.
-        limit = ensure_agent_limit(agent_id or "code-agent") or {}
-        cap = int(limit.get("max_context_tokens") or 0)
-        monitoring_max = cap if cap > 0 else None
-    except Exception:
-        monitoring_max = None
-
-    profile_ctx = decision.context_limit if decision.source == "profile" else None
-    if profile_ctx is not None:
-        profile_ctx = max(int(profile_ctx), DEFAULT_NUM_CTX)
-    effective = effective_context_limit(
-        int(num_ctx),
-        monitoring_max_context=monitoring_max,
-        profile_context_limit=profile_ctx,
-    )
-    return decision.model, int(effective), decision
+    return decision.model, int(num_ctx or 0), decision
 
 
 SUMMARIZE_SYSTEM_PROMPT = (
@@ -210,7 +181,7 @@ SUMMARIZE_SYSTEM_PROMPT = (
 def summarize_history(
     messages: list[dict[str, Any]],
     model: str = DEFAULT_MODEL,
-    num_ctx: int = DEFAULT_NUM_CTX,
+    num_ctx: int | None = None,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Ask the LLM to summarize the given user/assistant messages into a
@@ -233,22 +204,24 @@ def summarize_history(
         model = _resolve_code_route(model, num_ctx)[0]
 
     chat = chat_fn or _local_chat
+    from app.application.context.profile import resolve_context_window
 
-    # Build a compact transcript to summarize. Two layers of protection:
-    #
-    #   1. Per-message cap (4000 chars) so a single long agent answer
-    #      doesn't dominate the input.
-    #   2. Total transcript cap (TRANSCRIPT_CAP, ~30K chars ≈ 7.5K
-    #      tokens) so the whole prompt + SUMMARIZE_SYSTEM_PROMPT fits
-    #      inside `num_ctx` with room to spare. Without this, a long
-    #      session (50+ turns) would silently produce a garbage summary
-    #      because small provider defaults can truncate instructions off the front.
-    #
-    # When the cap kicks in we keep the MOST RECENT turns (oldest are
-    # least relevant) and emit a marker so the LLM knows context is
-    # incomplete.
-    TRANSCRIPT_CAP = 30000
-    PER_MESSAGE_CAP = 4000
+    context_profile = resolve_context_window(
+        num_ctx,
+        model=model,
+        live=chat_fn is None,
+        fresh=True,
+    )
+    effective_num_ctx = int(context_profile["ctx_size"])
+
+    # Preserve a proportional share of the server-owned input budget. Larger
+    # model windows therefore retain more history instead of hitting the old
+    # fixed 30K/4K character limits. The four-chars/token estimate matches the
+    # compaction estimator; using half the safe token budget leaves ample room
+    # for instructions, summary output, and tokenizer variance.
+    safe_input_tokens = max(1, int(context_profile["safe_input_budget"]))
+    transcript_cap = max(4_096, safe_input_tokens * 2)
+    per_message_cap = max(1_024, transcript_cap // 16)
 
     # First pass: walk newest -> oldest, take as much as fits.
     rev_lines: list[str] = []
@@ -266,11 +239,11 @@ def summarize_history(
             prefix = "USER:"
         else:
             prefix = "AGENT:"
-        if len(content) > PER_MESSAGE_CAP:
-            content = content[:PER_MESSAGE_CAP] + " [...]"
+        if len(content) > per_message_cap:
+            content = content[:per_message_cap] + " [...]"
         line = f"{prefix} {content}"
         # +2 for the "\n\n" separator we'll add when joining
-        if rev_lines and total + len(line) + 2 > TRANSCRIPT_CAP:
+        if rev_lines and total + len(line) + 2 > transcript_cap:
             dropped_any = True
             break
         rev_lines.append(line)
@@ -292,7 +265,10 @@ def summarize_history(
                 {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT},
                 {"role": "user", "content": "Диалог для сжатия:\n\n" + transcript},
             ],
-            options={"num_ctx": int(num_ctx), "active_context_limit": int(num_ctx)},
+            options={
+                "num_ctx": effective_num_ctx,
+                "active_context_limit": effective_num_ctx,
+            },
         )
     except Exception as exc:
         logger.exception("Summarize history failed")

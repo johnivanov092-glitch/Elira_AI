@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.agent_loop import DEFAULT_MAX_STEPS, DEFAULT_NUM_CTX, run_code_agent
+from app.application.code_agent.agent_loop import DEFAULT_MAX_STEPS, run_code_agent
 from app.application.library.runtime import build_library_context
 from app.core.data_files import data_subdir
 
@@ -102,7 +102,7 @@ def run_agent(
     use_memory: bool = True,
     use_library: bool = True,
     history: list[Any] | None = None,
-    num_ctx: int = DEFAULT_NUM_CTX,
+    num_ctx: int | None = None,  # None = Auto (live /props window via the ONE resolver)
     project_root: str | Path | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
     **_ignored_legacy_options: Any,
@@ -123,7 +123,7 @@ def run_agent(
         agent_id=str(agent_id or "code-agent"),
         max_steps=max_steps,
         conversation_history=_normalise_history(history),
-        num_ctx=int(num_ctx or DEFAULT_NUM_CTX),
+        num_ctx=num_ctx or None,  # Auto stays Auto — never silently 131072
         auto_remember=bool(use_memory),
         approval_wait_seconds=0,
     )

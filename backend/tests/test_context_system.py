@@ -37,22 +37,24 @@ from app.application.context.usage import calculate_budget, check_context_limit,
 
 
 class ContextProfileAndBudgetTest(unittest.TestCase):
-    def test_agent_entrypoint_defaults_are_128k(self) -> None:
+    def test_agent_entrypoint_defaults_are_auto(self) -> None:
+        # Adaptive contract: the default is AUTO (None) — never a hard-coded
+        # 131072. The live /props n_ctx becomes the window at run start.
         from app.application.chat.runtime import run_agent
         from app.application.code_agent.agent_loop import run_code_agent, stream_code_agent
 
         for function in (run_agent, run_code_agent, stream_code_agent):
-            self.assertEqual(inspect.signature(function).parameters["num_ctx"].default, 131_072)
+            self.assertIsNone(inspect.signature(function).parameters["num_ctx"].default)
 
     def test_256k_server_profile_is_not_reduced_to_16k(self) -> None:
+        # The live /props n_ctx wins over a small config window — verbatim.
         cfg = SimpleNamespace(context_window=16_384, model="local-model", base_url="http://server/v1")
         with patch("app.infrastructure.llm.openai_compatible.local_llm_config", return_value=cfg), patch(
-            "app.infrastructure.llm.openai_compatible.list_models",
-            return_value=[{"name": "local-model", "n_ctx": 262_144}],
+            "app.infrastructure.llm.openai_compatible.server_context_window",
+            return_value=262_144,
         ):
             profile = get_active_context_profile("local-model")
         self.assertEqual(profile["ctx_size"], 262_144)
-        self.assertEqual(profile["mode"], "256k-stress")
         self.assertEqual(profile["timeout_policy"]["long_context"], 900)
 
     def test_budget_formula_reserves_output_system_and_margin(self) -> None:

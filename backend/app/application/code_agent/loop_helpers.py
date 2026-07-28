@@ -344,10 +344,10 @@ _VERIFIER_GROUNDING_TOOLS = frozenset({
     "ssh_not_exists", "http_api", "browser",
 })
 # Fidelity of the cross-turn grounding digest. Raised (220→400 / 900→1500 /
-# 3000→6000) now that the real window is 64k, not a tight small-model budget:
+# 3000→6000): the effective window is resolved live from the server and is
 # more of each verified tool result survives into the next turn's [ПРОВЕРЕННЫЕ
 # ФАКТЫ] block, so the "compress old but keep it accurate" side of grounding loses
-# less. ~6000 chars ≈ 2000 tokens — negligible against 64k.
+# less. ~6000 chars ≈ 2000 tokens — negligible against any real window.
 _FACT_SNIPPET_CHARS = 400
 _ENUM_FACT_SNIPPET_CHARS = 1500
 _FACTS_DIGEST_CHARS = 6000  # room for one full enumeration + several read facts
@@ -392,7 +392,7 @@ def _facts_digest(facts: list[str]) -> str:
 # grounding-tool results in full-ish, not just the fact summary. Complements the
 # facts digest: the summary covers ALL turns compactly; this gives the immediately-
 # prior turn's raw output so a follow-up ("что там в файле про X?") reads the real
-# text, not a 400-char snippet. Bounded so it never dominates the 64k window.
+# text, not a 400-char snippet. Bounded so it never dominates the window.
 RECENT_TOOLS_PREFIX = "[РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ ПРОШЛОГО ХОДА]"
 _RECENT_TOOL_ENTRY_CHARS = 2500   # per single tool output
 _RECENT_TOOL_KEEP = 6             # last N grounding-tool results
@@ -705,6 +705,81 @@ def tool_state_changed(tool_name: str, tool_meta: dict, *, exec_ok: bool) -> boo
     return bool(spec.get("side_effect"))
 
 
+# ── Structural task-state digest ───────────────────────────────────────────
+# The protected [СОСТОЯНИЕ ЗАДАЧИ] block is rebuilt from typed durable state
+# and carried verbatim through compaction. It is intentionally bounded prompt
+# context, not a lossless store; the complete event/evidence record remains in
+# RunJournal.
+
+def build_task_state_block(
+    *,
+    goal: str = "",
+    constraints: list[str] | None = None,
+    criteria_rows: list[dict] | None = None,
+    checklist_items: list[dict] | None = None,
+    mutated_files: list[str] | None = None,
+    verifications: list[str] | None = None,
+    failed_attempts: list[str] | None = None,
+    next_step: str = "",
+) -> str:
+    """Deterministic, bounded digest of the run's typed state. Every input is
+    runtime/durable-store data — never model prose (criteria evidence comes from
+    verifier tool output, checklist rows from task_planner.db)."""
+    lines: list[str] = []
+    if goal.strip():
+        lines.append(f"Задача: {goal.strip()[:400]}")
+    if next_step.strip():
+        # Keep the immediate continuation target near the front so the global
+        # digest cap cannot remove it after a large criteria/checklist section.
+        lines.append(f"Следующий шаг: {next_step.strip()[:300]}")
+    for c in (constraints or [])[:8]:
+        lines.append(f"Ограничение: {str(c).strip()[:200]}")
+    rows = criteria_rows or []
+    if rows:
+        confirmed = sum(1 for r in rows if r.get("status") == "confirmed")
+        lines.append(f"Критерии ({confirmed}/{len(rows)} подтверждено):")
+        for r in rows[:18]:
+            mark = {"confirmed": "✓", "failed": "✗"}.get(str(r.get("status")), "·")
+            ev = str(r.get("evidence") or "").strip().replace("\n", " ")[:120]
+            lines.append(f"  {mark} {str(r.get('text'))[:160]}"
+                         + (f" [{r.get('verifier')}: {ev}]" if ev else ""))
+    items = checklist_items or []
+    if items:
+        done = sum(1 for it in items if str(it.get("status")) == "completed")
+        lines.append(f"Чеклист ({done}/{len(items)}):")
+        lines.append(format_checklist_state(items, max_items=20))
+    mutated = list(dict.fromkeys(mutated_files or []))
+    if mutated:
+        shown = ", ".join(mutated[:20])
+        more = f" (+{len(mutated) - 20})" if len(mutated) > 20 else ""
+        lines.append(f"Изменённые файлы ({len(mutated)}): {shown}{more}")
+    for v in (verifications or [])[-10:]:
+        lines.append(f"Проверка: {str(v)[:180]}")
+    for f in (failed_attempts or [])[-6:]:
+        lines.append(f"Неудачная попытка: {str(f)[:160]}")
+    return "\n".join(lines)[:6000]
+
+
+def upsert_task_state_message(
+    messages: list[dict[str, Any]], block_text: str
+) -> list[dict[str, Any]]:
+    """Replace (or insert right after the leading system prompt) the ONE
+    protected task-state message. Assistant-role like the rolling summary, so
+    strict chat templates that reject a second system message stay happy."""
+    from app.application.context.compaction import TASK_STATE_PREFIX
+
+    if not block_text.strip():
+        return messages
+    out = [
+        m for m in messages
+        if not (m.get("role") in ("system", "assistant")
+                and str(m.get("content") or "").startswith(TASK_STATE_PREFIX))
+    ]
+    insert_at = 1 if out and out[0].get("role") == "system" else 0
+    out.insert(insert_at, {"role": "assistant", "content": TASK_STATE_PREFIX + block_text})
+    return out
+
+
 def _norm_checklist_text(value: Any) -> str:
     return " ".join(str(value or "").split()).casefold()
 
@@ -972,8 +1047,17 @@ def _prepare_messages_for_llm(
     }
     usage = get_context_usage(messages, **usage_kwargs)
     compacted = False
-    compact_threshold = 60.0 if num_ctx < 16_384 else 75.0
-    strong_threshold = 80.0 if num_ctx < 16_384 else 90.0
+    # Adaptive context: thresholds come from the resolved profile as FRACTIONS
+    # of the effective window — identical percentages at 32K, 128K or 1M. No
+    # absolute "compact at 64K" marks anywhere; the fallbacks below only guard
+    # a caller that passed a profile without thresholds.
+    _thresholds = context_profile.get("compaction_thresholds") or {}
+    compact_threshold = float((_thresholds.get("auto") or {}).get("percent")
+                              or (60.0 if num_ctx < 16_384 else 75.0))
+    strong_threshold = float((_thresholds.get("strong") or {}).get("percent")
+                             or (80.0 if num_ctx < 16_384 else 90.0))
+    critical_threshold = float((_thresholds.get("critical") or {}).get("percent")
+                               or (90.0 if num_ctx < 16_384 else 95.0))
     should_compact = float(usage["percent"]) >= compact_threshold
     if not should_compact and num_ctx < 16_384 and len(messages) > 2:
         should_compact = True
@@ -1014,7 +1098,7 @@ def _prepare_messages_for_llm(
         usage = get_context_usage(messages, **usage_kwargs)
 
     safe_input_budget = int(context_profile.get("safe_input_budget") or 0)
-    if float(usage["percent"]) >= 95.0 or (
+    if float(usage["percent"]) >= critical_threshold or (
         safe_input_budget > 0 and int(usage["current_tokens"]) > safe_input_budget
     ):
         raise ContextBudgetError(

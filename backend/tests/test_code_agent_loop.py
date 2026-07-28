@@ -17,7 +17,6 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.code_agent.agent_loop import (  # noqa: E402
-    DEFAULT_NUM_CTX,
     _extract_inline_tool_calls,
     _resolve_code_route,
     _temperature_for_role,
@@ -423,12 +422,12 @@ class AgentLoopTest(unittest.TestCase):
         # spending another LLM call after the execution budget is exhausted.
         self.assertEqual(
             [event["type"] for event in events],
-            ["run_started", "final_response", "done"],
+            ["run_started", "context_resolved", "final_response", "done"],
         )
         self.assertFalse(events[-1]["ok"])
         self.assertEqual(events[-1]["stop_reason"], "timeout")
         self.assertIn("timed out", events[-1]["error"])
-        self.assertIn("timeout 10s", events[1]["text"])
+        self.assertIn("timeout 10s", events[2]["text"])
         self.assertEqual(chat_calls, [])
 
     def test_loop_rejects_invalid_project_root(self) -> None:
@@ -682,7 +681,7 @@ class AgentLoopTest(unittest.TestCase):
             )
         # Whatever the default, it must NOT be local provider's tiny 2048 default.
         self.assertGreaterEqual(captured["options"]["num_ctx"], 8192)
-        self.assertEqual(captured["options"]["num_ctx"], DEFAULT_NUM_CTX)
+        self.assertEqual(captured["options"]["num_ctx"], 131_072)
 
     def test_llama_server_code_profile_does_not_shrink_default_window(self) -> None:
         profile = {
@@ -704,13 +703,13 @@ class AgentLoopTest(unittest.TestCase):
             return_value=profile,
         ), patch(
             "app.application.monitoring.runtime.ensure_agent_limit",
-            return_value={"max_context_tokens": DEFAULT_NUM_CTX},
+            return_value={"max_context_tokens": 131_072},
         ):
-            model, effective_num_ctx, decision = _resolve_code_route("auto", DEFAULT_NUM_CTX)
+            model, effective_num_ctx, decision = _resolve_code_route("auto", 131_072)
 
         self.assertEqual(model, "local-model")
         self.assertEqual(decision.source, "profile")
-        self.assertEqual(effective_num_ctx, DEFAULT_NUM_CTX)
+        self.assertEqual(effective_num_ctx, 131_072)
 
     def test_summarize_history_returns_assistant_text(self) -> None:
         def fake_chat(**kwargs):

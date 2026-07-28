@@ -336,21 +336,12 @@ class AgentFailureRegressionTest(unittest.TestCase):
                 "response": {"message": {"content": "done", "tool_calls": []}},
             }
 
-        profile = {
-            "active_model": "local-model",
-            "model_alias": "local-model",
-            "main_endpoint": "http://server/v1",
-            "ctx_size": 32_768,
-            "reserved_output_tokens": 4096,
-            "reserved_system_tokens": 4096,
-            "safety_margin_tokens": 2048,
-            "safe_input_budget": 22_528,
-            "mode": "32k",
-            "source": "server",
-        }
+        # Adaptive context: the run resolves through the ONE resolver — mock the
+        # LIVE /props window at 32K; a stale legacy 131072 request cannot change
+        # the server-owned value.
         with tempfile.TemporaryDirectory() as tmp, patch(
-            "app.application.context.profile.get_active_context_profile",
-            return_value=profile,
+            "app.infrastructure.llm.openai_compatible.server_context_window",
+            return_value=32_768,
         ), patch(
             "app.application.code_agent.agent_loop._local_chat_stream",
             side_effect=fake_stream,
@@ -366,6 +357,9 @@ class AgentFailureRegressionTest(unittest.TestCase):
         self.assertEqual(captured["num_ctx"], 32_768)
         self.assertEqual(captured["active_context_limit"], 32_768)
         self.assertEqual(events[-1]["stop_reason"], "answer")
+        resolved = [e for e in events if e.get("type") == "context_resolved"][0]
+        self.assertEqual(resolved["server_context_window"], 32_768)
+        self.assertEqual(resolved["limiting_source"], "server")
 
     def test_large_tool_result_keeps_head_and_tail(self) -> None:
         value = "HEAD" + "X" * 30_000 + "TAIL"

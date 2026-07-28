@@ -1139,6 +1139,38 @@ class CriteriaTracker:
         crits = spec.success_criteria if spec else []
         return cls(items=[_criterion_item(c) for c in crits])
 
+    def restore_report(self, rows: list[dict] | None) -> None:
+        """Restore durable verifier results for the same TaskSpec.
+
+        Exact criterion text and one-time row consumption prevent stale,
+        duplicated, or unrelated reports from verifying a different task. Only
+        fields emitted by :meth:`report` are projected back into tracker state.
+        """
+        remaining = [row for row in (rows or []) if isinstance(row, dict)]
+        for item in self.items:
+            match_index = next(
+                (
+                    index
+                    for index, row in enumerate(remaining)
+                    if row.get("text") == item["text"]
+                ),
+                None,
+            )
+            if match_index is None:
+                continue
+            row = remaining.pop(match_index)
+            status = row.get("status")
+            if status not in {"confirmed", "failed", "skipped"}:
+                continue
+            verifier = row.get("verifier")
+            evidence = row.get("evidence")
+            item.update(
+                status=status,
+                verifier=verifier if isinstance(verifier, str) else None,
+                evidence=evidence if isinstance(evidence, str) else None,
+                auto_verified=bool(row.get("auto_verified")),
+            )
+
     def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str,
                meta: dict | None = None, auto: bool = False) -> bool:
         """Feed a verifier verdict (classified by tool + args + structured evidence).

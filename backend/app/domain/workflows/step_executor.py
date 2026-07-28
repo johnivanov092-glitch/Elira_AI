@@ -132,7 +132,7 @@ def _execute_agent_step(
     # Thread the selected project folder + context window from the run context so the
     # agent's file tools scope to the user's project (not the default workspace) and
     # the full production context window is used. Only forward when present/positive
-    # so run_agent's defaults (default project root, DEFAULT_NUM_CTX) stay intact.
+    # so run_agent's defaults (including server-owned context sizing) stay intact.
     extra_kwargs: dict[str, Any] = {}
     project_root = run_context.get("project_root")
     if project_root:
@@ -267,4 +267,3 @@ def _resolve_next_step(step: dict[str, Any], *, success: bool) -> str:
 def _step_label(step: dict[str, Any]) -> str:
     config = step.get("config", {}) or {}
     return str(config.get("label") or step.get("save_as") or step.get("id"))
-

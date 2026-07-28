@@ -37,7 +37,6 @@ from typing import Any, Callable, Iterator
 
 from app.application.code_agent.agent_loop import (
     DEFAULT_MAX_STEPS,
-    DEFAULT_NUM_CTX,
     _CODE_AGENT_BASE_TOOLS,
     stream_code_agent,
 )
@@ -255,7 +254,9 @@ def build_continuation_kwargs(
         "max_steps": int(req.get("max_steps") or DEFAULT_MAX_STEPS),
         "conversation_history": history,
         "run_id": run_id,
-        "num_ctx": int(req.get("num_ctx") or DEFAULT_NUM_CTX),
+        # Auto (None) stays Auto: the continuation slice re-resolves the LIVE
+        # window instead of freezing a historic number.
+        "num_ctx": req.get("num_ctx") or None,
         "base_tools": tuple(req.get("base_tools") or _CODE_AGENT_BASE_TOOLS),
         "execution_timeout_seconds": req.get("execution_timeout_seconds"),
         "auto_remember": bool(req.get("auto_remember", True)),
@@ -281,7 +282,7 @@ def stream_delivery_session(
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
-    num_ctx: int = DEFAULT_NUM_CTX,
+    num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,

@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from app.application.context.timeouts import TIMEOUT_POLICY_SECONDS
 
+# Offline fallback for injected/scripted runtimes. It is not used by a live
+# model run: live llama.cpp /props n_ctx is authoritative there.
 DEFAULT_CONTEXT_WINDOW = 131_072
-MAX_CONTEXT_WINDOW = 262_144
+
+# Compaction thresholds as FRACTIONS of the effective window — identical for
+# 32K, 64K, 128K, 256K, 1M and anything the server loads tomorrow. Tiny
+# explicit windows compact earlier (less headroom between turns).
+_COMPACT_AUTO_PCT = 75.0
+_COMPACT_STRONG_PCT = 90.0
+_COMPACT_CRITICAL_PCT = 95.0
+_SMALL_WINDOW_TOKENS = 16_384
+_SMALL_AUTO_PCT = 60.0
+_SMALL_STRONG_PCT = 80.0
+# Same critical mark as large windows: tiny debug windows (8K canaries) run the
+# full system prompt at ~90% by design — compaction (60/80) already fired; the
+# hard error must only catch a genuinely unservable prompt.
+_SMALL_CRITICAL_PCT = 95.0
+
+
+class ContextResolutionError(RuntimeError):
+    """The live server did not provide a trustworthy context window."""
 
 
 def _positive_int(value: Any) -> int | None:
@@ -16,107 +36,165 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def get_active_context_profile(
-    model: str = "local-model", *, ctx_size: int | None = None, thinking: bool = False
-) -> dict[str, Any]:
-    """Return the live llama.cpp context window with bounded config fallback.
+def _fmt_k(value: int) -> str:
+    return f"{max(1, int(value) // 1024)}K"
 
-    ``thinking=True`` enlarges the output reserve: reasoning and the answer share
-    one output budget, so without extra headroom a long chain-of-thought pushes
-    the answer past the window and the server context-shifts it away mid-stream
-    ("думала, а ответа нет"). The bigger reserve shrinks the input budget instead.
+
+def _reserves(effective: int, *, thinking: bool) -> tuple[int, int, int]:
+    """Output/system/safety reserves as SHARES of the effective window.
+
+    Pure proportions with small floors — no 64K/128K absolutes, so the same
+    formula scales from a 4K debug window to a 1M server without code changes:
+
+        reserved_output = max(2048, effective / 16)   (thinking: ×2, ≤ effective/3)
+        reserved_system = max(2048, effective / 32)
+        safety_margin   = max(2048, effective / 64)
+
+    Thinking enlarges the output reserve (reasoning + answer share one output
+    stream) but is hard-capped at a THIRD of the window — it must never halve
+    the usable input budget or pin the run to a fixed 64K.
+    """
+    if effective < _SMALL_WINDOW_TOKENS:
+        reserved_output = max(512, effective // 8)
+        reserved_system = max(512, effective // 8)
+        safety_margin = max(256, effective // 16)
+    else:
+        reserved_output = max(2048, effective // 16)
+        reserved_system = max(2048, effective // 32)
+        safety_margin = max(2048, effective // 64)
+    if thinking:
+        reserved_output = min(
+            max(reserved_output * 2, effective // 8),
+            max(2048, effective // 3),
+        )
+    return reserved_output, reserved_system, safety_margin
+
+
+def _thresholds(effective: int) -> dict[str, dict[str, float | int]]:
+    small = effective < _SMALL_WINDOW_TOKENS
+    auto_pct = _SMALL_AUTO_PCT if small else _COMPACT_AUTO_PCT
+    strong_pct = _SMALL_STRONG_PCT if small else _COMPACT_STRONG_PCT
+    critical_pct = _SMALL_CRITICAL_PCT if small else _COMPACT_CRITICAL_PCT
+    return {
+        "auto": {"percent": auto_pct, "tokens": int(effective * auto_pct / 100)},
+        "strong": {"percent": strong_pct, "tokens": int(effective * strong_pct / 100)},
+        "critical": {"percent": critical_pct, "tokens": int(effective * critical_pct / 100)},
+    }
+
+
+def resolve_context_window(
+    offline_context_window: int | None = None,
+    *,
+    model: str = "local-model",
+    thinking: bool = False,
+    live: bool = True,
+    fresh: bool = True,
+) -> dict[str, Any]:
+    """Resolve the context window for one model call path.
+
+    Contract:
+      - live=True: the positive llama.cpp /props n_ctx is used verbatim. There
+        is no frontend cap, model-profile cap, monitoring cap or product ceiling.
+      - live=False: injected/scripted runtimes may provide
+        ``offline_context_window`` because no server exists to query.
+      - /props unreachable on a LIVE run: fail closed. Environment/config
+        values may describe an offline injected runtime, but never substitute
+        for the live server's current window after a model or ``-c`` swap.
+
+    The result is frozen by the caller for the duration of one model slice.
     """
     from app.infrastructure.llm.openai_compatible import (
         local_llm_config,
-        list_models,
         server_context_window,
     )
 
     cfg = local_llm_config()
-    context_window = _positive_int(ctx_size) or _positive_int(cfg.context_window) or DEFAULT_CONTEXT_WINDOW
-    source = "effective_limit" if _positive_int(ctx_size) else "config"
-    if ctx_size is None:
-        # /props exposes the REAL loaded n_ctx and is the only truthful source:
-        # /v1/models omits the window, so trusting /models silently adopts the
-        # config default (e.g. 128k) even when the model is loaded at 64k, and we
-        # then over-size prompts past the real window (server truncates/errors →
-        # "stops holding context"). Read the truth from /props first; fall back to
-        # /models, then config, only when /props is unreachable.
-        live = None
-        try:
-            live = server_context_window()
-        except Exception:
-            live = None
-        if live:
-            context_window = live
-            source = "server_props"
-        else:
-            try:
-                models = list_models()
-                # Prefer an exact name match; fall back to the first served model
-                # when the caller passes an alias the server doesn't echo back
-                # (e.g. "auto", the frontend default). llama.cpp serves a single
-                # model, so the first entry is authoritative.
-                exact = next(
-                    (m for m in models if str(m.get("name") or m.get("model") or "").strip() == model),
-                    None,
-                )
-                chosen = exact or (models[0] if models else None)
-                if chosen is not None:
-                    discovered = _positive_int(chosen.get("context_window") or chosen.get("n_ctx"))
-                    if discovered:
-                        context_window = discovered
-                        source = "server"
-            except Exception:
-                source = "config_fallback"
+    env_window = _positive_int(os.getenv("LLAMA_SERVER_CONTEXT_WINDOW"))
 
-    context_window = min(MAX_CONTEXT_WINDOW, max(1024, context_window))
-    if context_window < 16_384:
-        # Small explicit windows still need room for prompt tokens; using the
-        # large-window reserves would make the request fail before the chat
-        # function is even called.
-        reserved_output = max(512, context_window // 8)
-        reserved_system = max(512, context_window // 8)
-        safety_margin = max(256, context_window // 16)
-    else:
-        reserved_output = 8192 if context_window > DEFAULT_CONTEXT_WINDOW else 4096
-        reserved_system = 4096
-        safety_margin = max(2048, context_window // 64)
-    if thinking:
-        # Reasoning + answer share the output stream — double the reserve (floor
-        # 8192) so a long chain-of-thought can't starve the answer. Capped at a
-        # third of the window so the input budget is never gutted.
-        reserved_output = min(max(reserved_output * 2, 8192), max(2048, context_window // 3))
-    if context_window >= MAX_CONTEXT_WINDOW:
-        mode = "256k-stress"
-    elif context_window >= 196_608:
-        mode = "192k"
-    elif context_window >= DEFAULT_CONTEXT_WINDOW:
-        mode = "128k-balanced"
-    else:
-        mode = f"{max(1, context_window // 1024)}k"
+    server_ctx: int | None = None
+    server_source = "offline"
+    if live:
+        server_ctx = server_context_window(fresh=fresh)
+        if server_ctx:
+            server_source = "server_props"
+        else:
+            raise ContextResolutionError(
+                "context window unavailable: llama.cpp /props did not return a "
+                "positive n_ctx; refusing to guess the live server window"
+            )
+    if not server_ctx:
+        server_ctx = (
+            _positive_int(offline_context_window)
+            or env_window
+            or _positive_int(cfg.context_window)
+            or DEFAULT_CONTEXT_WINDOW
+        )
+    if server_ctx < 1024:
+        raise ContextResolutionError(
+            f"context window reported by {server_source} is too small: {server_ctx}"
+        )
+
+    effective = server_ctx
+    limiting_source = "server" if server_source == "server_props" else server_source
+
+    reserved_output, reserved_system, safety_margin = _reserves(effective, thinking=thinking)
+    thresholds = _thresholds(effective)
+
     return {
         "active_model": model or cfg.model,
         "model_alias": cfg.model,
         "main_endpoint": cfg.base_url,
-        "ctx_size": context_window,
-        "mode": mode,
+        "ctx_size": effective,
+        "mode": _fmt_k(effective).lower(),
         "reserved_output_tokens": reserved_output,
         "reserved_system_tokens": reserved_system,
         "safety_margin_tokens": safety_margin,
         "safe_input_budget": max(
             1024,
-            context_window - reserved_output - reserved_system - safety_margin,
+            effective - reserved_output - reserved_system - safety_margin,
         ),
+        "compaction_thresholds": thresholds,
         "timeout_policy": {
             "chat": TIMEOUT_POLICY_SECONDS["chat"],
             "code": TIMEOUT_POLICY_SECONDS["code"],
             "long_context": (
                 TIMEOUT_POLICY_SECONDS["long_context_256k"]
-                if context_window >= MAX_CONTEXT_WINDOW
+                if effective >= 196_608
                 else TIMEOUT_POLICY_SECONDS["long_context_128k"]
             ),
         },
-        "source": source,
+        "source": server_source,
         "thinking": bool(thinking),
+        # ── adaptive-context observability (journal / SSE / UI meter) ──
+        "requested_context_mode": "server" if live else "offline",
+        "requested_context_cap": None,
+        "server_context_window": server_ctx,
+        "effective_context_window": effective,
+        "limiting_source": limiting_source,
+        "context_profile_source": server_source,
     }
+
+
+def get_active_context_profile(
+    model: str = "local-model", *, ctx_size: int | None = None,
+    thinking: bool = False, fresh: bool = False,
+) -> dict[str, Any]:
+    """Back-compat wrapper over resolve_context_window.
+
+    ``ctx_size`` is used only by the offline fallback for compatibility with
+    injected runtimes. Passive consumers may ride the short TTL cache; callers
+    that size a real model request pass ``fresh=True``. A read-only consumer
+    degrades to the offline/config window when the server is unavailable.
+    """
+    try:
+        return resolve_context_window(
+            None,
+            model=model,
+            thinking=thinking,
+            live=True,
+            fresh=fresh,
+        )
+    except ContextResolutionError:
+        return resolve_context_window(
+            _positive_int(ctx_size), model=model, thinking=thinking, live=False,
+        )

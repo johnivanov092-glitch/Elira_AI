@@ -182,7 +182,7 @@ class AgentMonitorServiceTest(AgentOsPhase5DbMixin):
         assert untouched is not None
         self.assertEqual(untouched["max_context_tokens"], 65536)
 
-    def test_context_limit_block_records_metric_and_event(self) -> None:
+    def test_context_limit_row_does_not_block_server_owned_window(self) -> None:
         agent_monitor.update_agent_limit(
             "builtin-universal",
             {
@@ -191,22 +191,19 @@ class AgentMonitorServiceTest(AgentOsPhase5DbMixin):
             },
         )
 
-        with self.assertRaises(agent_sandbox.SandboxPolicyError) as ctx:
-            agent_sandbox.preflight_or_raise(
-                agent_id="builtin-universal",
-                num_ctx=128,
-                selected_tools=[],
-                run_id="run-limit",
-                route="chat",
-                streaming=False,
-            )
-
-        self.assertEqual(ctx.exception.reason, "context_limit_exceeded")
+        result = agent_sandbox.preflight_or_raise(
+            agent_id="builtin-universal",
+            num_ctx=128,
+            selected_tools=[],
+            run_id="run-limit",
+            route="chat",
+            streaming=False,
+        )
+        self.assertTrue(result["ok"])
         blocked = agent_monitor.get_recent_blocked_runs()
-        self.assertEqual(len(blocked), 1)
-        self.assertEqual(blocked[0]["details"]["reason"], "context_limit_exceeded")
+        self.assertEqual(blocked, [])
         events, _ = bus.list_events(event_type="sandbox.policy.blocked", limit=10)
-        self.assertEqual(len(events), 1)
+        self.assertEqual(events, [])
 
     def test_tool_allowlist_and_rate_limit_blocks(self) -> None:
         current = agent_monitor.ensure_agent_limit("builtin-programmer")

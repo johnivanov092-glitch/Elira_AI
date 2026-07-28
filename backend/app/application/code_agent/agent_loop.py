@@ -92,11 +92,10 @@ from app.application.persona.service import mode_temperature, mode_tool_posture
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
 # (code_agent_routes, tests) and the loop's `summarize_fn=summarize_history`
-# resolving with no import cycle. DEFAULT_MODEL/DEFAULT_NUM_CTX live there because
-# summarize_history binds them as default-arg values.
+# resolving with no import cycle. DEFAULT_MODEL lives there because
+# summarize_history binds it as a default-arg value.
 from app.application.code_agent.history import (  # noqa: F401
     DEFAULT_MODEL,
-    DEFAULT_NUM_CTX,
     SUMMARIZE_SYSTEM_PROMPT,
     _SUMMARY_PREFIX,
     _coerce_history,
@@ -551,10 +550,12 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _recent_tool_snippet,
     _recent_tools_digest,
     RECENT_TOOLS_PREFIX,
+    build_task_state_block,
     format_checklist_state,
     resume_checklist_guard,
     session_cancel_requested,
     tool_state_changed,
+    upsert_task_state_message,
     _is_near_dup,
     _ungrounded_files,
     _DOCGEN_NUDGE_MAX,
@@ -593,7 +594,7 @@ def _stream_code_agent_core(
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
-    num_ctx: int = DEFAULT_NUM_CTX,
+    num_ctx: int | None = None,  # None = Auto (live /props window)
     base_tools: tuple[str, ...] | list[str] | None = None,
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
@@ -649,19 +650,35 @@ def _stream_code_agent_core(
             return
 
         safe_max_steps = max(1, min(int(max_steps), MAX_CODE_AGENT_STEPS))
-        # P9.3: shared model routing (route='code') + effective num_ctx cap.
-        # MODEL_SAFE_CTX is intentionally skipped here (see _resolve_code_route)
-        # so code-agent keeps its large DEFAULT_NUM_CTX window.
-        model, _effective_num_ctx, _route_decision = _resolve_code_route(model, num_ctx, agent_id=effective_agent_id)
-        safe_num_ctx = max(1024, _effective_num_ctx)
-        from app.application.context.profile import get_active_context_profile
-
-        if chat_fn is None:
-            discovered_profile = get_active_context_profile(model)
-            safe_num_ctx = min(safe_num_ctx, int(discovered_profile["ctx_size"]))
-        # thinking=on reserves more output room (reasoning + answer share the
-        # budget) so a long chain-of-thought never truncates the answer.
-        context_profile = get_active_context_profile(model, ctx_size=safe_num_ctx, thinking=thinking)
+        # P9.3: shared model routing (route='code'); MODEL_SAFE_CTX is skipped
+        # (see _resolve_code_route).
+        model, _offline_ctx_window, _route_decision = _resolve_code_route(model, num_ctx, agent_id=effective_agent_id)
+        # Adaptive context: ONE resolver. Auto (no requested cap) = the LIVE
+        # /props n_ctx, fetched FRESH so a model/-c swap on the same base_url is
+        # seen by THIS new run without any restart. No frontend, profile or
+        # monitoring value can shrink or enlarge the live server window. The
+        # result is frozen for this whole slice.
+        # Scripted runs (injected chat_fn) never touch the network (live=False).
+        from app.application.context.profile import ContextResolutionError, resolve_context_window
+        try:
+            context_profile = resolve_context_window(
+                _offline_ctx_window or None,
+                model=model,
+                thinking=thinking,
+                live=chat_fn is None,
+                fresh=True,
+            )
+        except ContextResolutionError as exc:
+            yield {"type": "run_started", "run_id": rid}
+            yield {
+                "type": "done",
+                "ok": False,
+                "steps": 0,
+                "stop_reason": "error",
+                "error": str(exc),
+            }
+            return
+        safe_num_ctx = int(context_profile["ctx_size"])
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
         try:
             from app.application.agent_registry.sandbox import preflight_or_raise
@@ -823,6 +840,26 @@ def _stream_code_agent_core(
         messages.append({"role": "user", "content": effective_user_message})
 
         yield {"type": "run_started", "run_id": rid}
+        # Adaptive-context observability: the FULL resolution reaches SSE and
+        # the durable journal BEFORE the first model call — server window,
+        # requested mode/cap, effective window, limiting source, reserve
+        # breakdown and compaction thresholds (tokens + percent).
+        yield {
+            "type": "context_resolved",
+            "step": 0,
+            "requested_context_mode": context_profile.get("requested_context_mode"),
+            "requested_context_cap": context_profile.get("requested_context_cap"),
+            "server_context_window": context_profile.get("server_context_window"),
+            "effective_context_window": context_profile.get("effective_context_window"),
+            "limiting_source": context_profile.get("limiting_source"),
+            "context_profile_source": context_profile.get("context_profile_source"),
+            "reserved_output_tokens": context_profile.get("reserved_output_tokens"),
+            "reserved_system_tokens": context_profile.get("reserved_system_tokens"),
+            "safety_margin_tokens": context_profile.get("safety_margin_tokens"),
+            "safe_input_budget": context_profile.get("safe_input_budget"),
+            "compaction_thresholds": context_profile.get("compaction_thresholds"),
+            "thinking": bool(thinking),
+        }
 
         last_text = ""
         tool_round_trips = 0
@@ -945,6 +982,23 @@ def _stream_code_agent_core(
         # on exhaustion, and stops honestly only when families/budget are spent.
         progress = ProgressEvaluator()
         touched_files: list[str] = []  # every file the run mutated (for the report)
+        # Structural task-state digest. Restore durable mutation/verification
+        # facts on resume so a new core slice cannot replace the protected block
+        # with an empty per-process view.
+        _durable_state: dict[str, Any] = {}
+        try:
+            from app.application.code_agent.run_journal import RunJournal
+
+            _durable_state = RunJournal.load(rid).state
+        except Exception:
+            _durable_state = {}
+        mutated_files: list[str] = list(_durable_state.get("mutated_files") or [])
+        verify_log: list[str] = list(_durable_state.get("verifications") or [])
+        durable_failed_attempts: list[str] = list(
+            _durable_state.get("failed_attempts") or []
+        )
+        if resume:
+            criteria.restore_report(list(_durable_state.get("criteria") or []))
         # Filenames a VERIFIED file_gen produced this run (its download_name only). The
         # ONLY proof a real .docx/.xlsx exists — write_file paths are NOT trusted here,
         # since a plain write_file can emit a UTF-8 file named report.docx that is not a
@@ -984,6 +1038,35 @@ def _stream_code_agent_core(
                 return
 
             yield {"type": "step_started", "step": step}
+
+            # Structural task-state layer: rebuild the protected block from
+            # TYPED state (task spec, verifier-backed criteria, durable
+            # checklist, proven mutations, verification runs, router hint) —
+            # compaction below carries it verbatim and only ever summarizes
+            # conversational noise. Simple untracked chats pay nothing.
+            _cl_items: list[dict] = []
+            try:
+                if task_spec is not None:
+                    from app.application.task_planner.service import list_checklist
+
+                    _cl_items = list((list_checklist(rid) or {}).get("items") or [])
+            except Exception:
+                _cl_items = []
+            if task_spec is not None or _cl_items:
+                _failed_calls = [
+                    *durable_failed_attempts,
+                    *(c for c in call_log if c.endswith("error")),
+                ]
+                messages = upsert_task_state_message(messages, build_task_state_block(
+                    goal=str(getattr(task_spec, "goal", "") or ""),
+                    constraints=list(getattr(task_spec, "constraints", None) or []),
+                    criteria_rows=criteria.report(),
+                    checklist_items=_cl_items,
+                    mutated_files=mutated_files,
+                    verifications=verify_log,
+                    failed_attempts=_failed_calls,
+                    next_step=str(progress.next_step_hint() or ""),
+                ))
 
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
@@ -2514,6 +2597,15 @@ def _stream_code_agent_core(
                         if not _server_url_alive(_last_server_url):
                             _last_server_url = ""
                 text_result = str(tool_meta.get("text", ""))
+                _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
+                _task_state_verification = ""
+                if name == "run_bash" and tool_meta.get("exit_code") is not None:
+                    from app.core.redaction import redact_text
+
+                    _vcmd = redact_text(str(parsed_args.get("command") or ""))[:120]
+                    _task_state_verification = (
+                        f"{_vcmd} → exit={tool_meta.get('exit_code')}"
+                    )
                 event: dict[str, Any] = {
                     "type": "tool_call",
                     "step": step,
@@ -2533,6 +2625,10 @@ def _stream_code_agent_core(
                         ),
                     ),
                 }
+                if _task_state_verification:
+                    event["task_state_verification"] = _task_state_verification
+                if not _tool_ok:
+                    event["task_state_failure"] = f"{name}: error"
                 for opt in (
                     "touched_path", "old_content", "new_content", "diff_action",
                     "exit_code", "verifier", "evidence", "download_url",
@@ -2556,7 +2652,6 @@ def _stream_code_agent_core(
                 # could blow out `num_ctx` and start eating the system
                 # prompt off the front of the context.
                 _tool_content = _truncate_for_llm(text_result)
-                _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
                 # Grounding fact from this call — computed HERE (before the tool
                 # message is appended) so the progress controller can judge whether
                 # the call revealed anything NEW.
@@ -2565,6 +2660,10 @@ def _stream_code_agent_core(
                 )
                 if tool_meta.get("touched_path"):
                     touched_files.append(str(tool_meta.get("touched_path")))
+                    if event.get("state_changed"):
+                        mutated_files.append(str(tool_meta.get("touched_path")))
+                if _task_state_verification:
+                    verify_log.append(_task_state_verification)
                 # A verified file_gen sets download_name ONLY after existence-checking
                 # its output — so its presence is proof a real .docx/.xlsx/.pdf exists.
                 # resource_publish proves byte delivery only; a plain-text report.pdf
@@ -2726,7 +2825,7 @@ def stream_code_agent(
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
-    num_ctx: int = DEFAULT_NUM_CTX,
+    num_ctx: int | None = None,  # None = Auto (live /props window)
     base_tools: tuple[str, ...] | list[str] | None = None,
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
@@ -2754,7 +2853,7 @@ def stream_code_agent(
         "agent_id": agent_id,
         "max_steps": int(max_steps),
         "conversation_history": conversation_history or [],
-        "num_ctx": int(num_ctx),
+        "num_ctx": int(num_ctx) if num_ctx else None,
         "base_tools": list(initial_tools),
         "execution_timeout_seconds": execution_timeout_seconds,
         "auto_remember": bool(auto_remember),
@@ -2929,7 +3028,7 @@ def run_code_agent(
     max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
-    num_ctx: int = DEFAULT_NUM_CTX,
+    num_ctx: int | None = None,  # None = Auto (live /props window)
     base_tools: tuple[str, ...] | list[str] | None = None,
     execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,

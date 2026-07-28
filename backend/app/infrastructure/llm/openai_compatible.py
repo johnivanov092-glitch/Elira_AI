@@ -821,7 +821,7 @@ def list_models() -> list[dict[str, Any]]:
     return result
 
 
-def server_context_window() -> int | None:
+def server_context_window(*, fresh: bool = False) -> int | None:
     """Authoritative context window (n_ctx) of the live llama.cpp server.
 
     Read from the server's ``/props`` endpoint
@@ -830,17 +830,23 @@ def server_context_window() -> int | None:
     fall back to the config default (e.g. 128k) and over-size prompts past the
     server's real window (e.g. 64k), which the server then truncates/errors —
     read as "the model stops holding context". Returns None when the server is
-    unreachable / unparseable so the caller can fall back to config. Cached for
-    ``_PROPS_CTX_TTL_S`` so a server ``-c`` change is picked up without an app
-    restart.
+    unreachable or the payload is unparseable; live model-call paths must fail
+    closed rather than substitute a possibly stale configured value.
+
+    ``fresh=True`` bypasses the TTL cache: a NEW model run must see a model /
+    ``-c`` change on the same base_url immediately (next run, no restart, no
+    two-minute stale window). The TTL cache stays for passive consumers
+    (meter previews, drift probes) where one probe per ``_PROPS_CTX_TTL_S``
+    is enough.
     """
     cfg = local_llm_config()
     if not cfg.enabled:
         return None
     now = time.monotonic()
-    cached = _props_ctx_cache.get(cfg.base_url)
-    if cached is not None and (now - cached[0]) < _PROPS_CTX_TTL_S:
-        return cached[1]
+    if not fresh:
+        cached = _props_ctx_cache.get(cfg.base_url)
+        if cached is not None and (now - cached[0]) < _PROPS_CTX_TTL_S:
+            return cached[1]
     value: int | None = None
     try:
         # base_url ends with /v1 (OpenAI-compat); /props lives at the server root.

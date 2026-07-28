@@ -9,7 +9,8 @@ export function codeAgentFaviconUrl(url: string): string {
   return buildApiUrl(`/api/code-agent/favicon?url=${encodeURIComponent(url)}`);
 }
 export const DEFAULT_CODE_AGENT_MAX_STEPS = 200;
-export const DEFAULT_CODE_AGENT_NUM_CTX = 131072;
+// The frontend sends no context size. The backend adopts the live llama.cpp
+// /props n_ctx for every run.
 
 export type CodeAgentToolCall = {
   step: number;
@@ -66,7 +67,6 @@ export type CodeAgentRunArgs = {
   projectRoot: string;
   model?: string;
   maxSteps?: number;
-  numCtx?: number;
   mode?: CodeAgentMode;
   autoRemember?: boolean;
   conversationHistory?: ConversationMessage[];
@@ -100,7 +100,6 @@ export async function runCodeAgent({
   projectRoot,
   model = DEFAULT_CODE_AGENT_MODEL,
   maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
-  numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
   mode = "code",
   autoRemember = true,
   conversationHistory,
@@ -113,7 +112,6 @@ export async function runCodeAgent({
       project_root: projectRoot,
       model,
       max_steps: maxSteps,
-      num_ctx: numCtx,
       mode,
       auto_remember: autoRemember,
       conversation_history: conversationHistory,
@@ -160,6 +158,13 @@ export type CodeAgentStreamEvent =
       profile?: ContextProfile;
     }
   | { type: "final_response"; step: number; text: string; established_facts?: string; recent_tool_output?: string }
+  | ({
+      // Adaptive context: emitted once per run BEFORE the first model call —
+      // the durable record of the window this run actually got.
+      type: "context_resolved";
+      step: number;
+      run_id?: string;
+    } & ContextResolution)
   | {
       // Delivery session: informational slice boundary — the run CONTINUES on the
       // same run_id (auto-continuation after a budget stop with proven progress).
@@ -199,6 +204,21 @@ export type CodeAgentStreamEvent =
       completion_status?: CompletionStatus;
       criteria?: CriterionState[];
     };
+
+export type ContextResolution = {
+  requested_context_mode?: "server" | "offline";
+  requested_context_cap?: number | null;
+  server_context_window?: number;
+  effective_context_window?: number;
+  limiting_source?: string;
+  context_profile_source?: string;
+  reserved_output_tokens?: number;
+  reserved_system_tokens?: number;
+  safety_margin_tokens?: number;
+  safe_input_budget?: number;
+  compaction_thresholds?: Record<string, { percent?: number; tokens?: number }>;
+  thinking?: boolean;
+};
 
 export type CompletionStatus = "confirmed" | "partial" | "unverified" | "failed" | "none";
 
@@ -271,7 +291,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     projectRoot,
     model = DEFAULT_CODE_AGENT_MODEL,
     maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
-    numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
     mode = "code",
     autoRemember = true,
     conversationHistory,
@@ -303,7 +322,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         project_root: projectRoot,
         model,
         max_steps: maxSteps,
-        num_ctx: numCtx,
         mode,
         auto_remember: autoRemember,
         conversation_history: conversationHistory,
@@ -510,7 +528,6 @@ export async function setVerifyCommand(projectRoot: string, command: string): Pr
 export type SummarizeHistoryArgs = {
   messages: ConversationMessage[];
   model?: string;
-  numCtx?: number;
 };
 
 export type SummarizeHistoryResult = {
@@ -523,11 +540,10 @@ export type SummarizeHistoryResult = {
 export async function summarizeHistory({
   messages,
   model = DEFAULT_CODE_AGENT_MODEL,
-  numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
 }: SummarizeHistoryArgs): Promise<SummarizeHistoryResult> {
   return request<SummarizeHistoryResult>("/api/code-agent/summarize-history", {
     method: "POST",
-    body: { messages, model, num_ctx: numCtx },
+    body: { messages, model },
   });
 }
 
@@ -589,7 +605,6 @@ export type CodeSessionCreateArgs = {
   title?: string;
   projectRoot?: string;
   model?: string;
-  numCtx?: number;
 };
 
 export async function createCodeSession(args: CodeSessionCreateArgs = {}): Promise<CodeSessionFull> {
@@ -599,7 +614,6 @@ export async function createCodeSession(args: CodeSessionCreateArgs = {}): Promi
       title: args.title,
       project_root: args.projectRoot,
       model: args.model,
-      num_ctx: args.numCtx,
     },
   });
   return res.session;
@@ -609,7 +623,6 @@ export type CodeSessionPatch = {
   title?: string;
   projectRoot?: string;
   model?: string;
-  numCtx?: number;
   pinned?: boolean;
   turns?: unknown[];
   contextState?: ContextState | null;
@@ -623,7 +636,6 @@ export async function patchCodeSession(sessionId: string, patch: CodeSessionPatc
       title: patch.title,
       project_root: patch.projectRoot,
       model: patch.model,
-      num_ctx: patch.numCtx,
       pinned: patch.pinned,
       turns: patch.turns,
       context_state: patch.contextState,
@@ -875,11 +887,9 @@ export async function getMcpServerTools(serverId: string): Promise<{ server_id: 
  *  composer show the window meter (0%) before the first model turn. */
 export async function fetchContextProfile(
   model?: string,
-  numCtx?: number,
 ): Promise<ContextUsage | null> {
   const params = new URLSearchParams();
   if (model) params.set("model", model);
-  if (numCtx && numCtx > 0) params.set("num_ctx", String(numCtx));
   const qs = params.toString();
   try {
     const res = await request<{ ok: boolean; context?: ContextUsage }>(

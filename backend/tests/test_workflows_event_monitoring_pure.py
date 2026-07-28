@@ -341,8 +341,11 @@ class MonitoringStoreConstantsTest(unittest.TestCase):
     def test_default_max_execution_seconds_positive(self) -> None:
         self.assertGreater(mon_store.DEFAULT_MAX_EXECUTION_SECONDS, 0)
 
-    def test_default_max_context_tokens_positive(self) -> None:
-        self.assertGreater(mon_store.DEFAULT_MAX_CONTEXT_TOKENS, 0)
+    def test_default_max_context_tokens_means_auto(self) -> None:
+        # Adaptive context: a DEFAULT limit row must NOT cap the window — 0 is
+        # the Auto sentinel; only an explicitly configured positive cap shrinks
+        # a run below the live server n_ctx.
+        self.assertEqual(mon_store.DEFAULT_MAX_CONTEXT_TOKENS, 0)
 
     def test_default_workflow_engine_agent_id_is_string(self) -> None:
         self.assertIsInstance(mon_store.DEFAULT_WORKFLOW_ENGINE_AGENT_ID, str)

@@ -12,7 +12,9 @@ from app.infrastructure.db.connection import connect_sqlite
 
 DEFAULT_MAX_RUNS_PER_HOUR = 120
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
-DEFAULT_MAX_CONTEXT_TOKENS = 131072
+# 0 = no generic sandbox context cap. The primary live model runtime resolves
+# its actual window from llama.cpp /props.
+DEFAULT_MAX_CONTEXT_TOKENS = 0
 DEFAULT_WORKFLOW_ENGINE_AGENT_ID = "workflow-engine"
 
 CREATE_SQL = """

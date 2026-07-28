@@ -88,21 +88,11 @@ def evaluate_preflight(
     num_ctx: int = 0,
     selected_tools: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
+    # ``num_ctx`` remains in the compatibility surface for existing callers and
+    # metrics, but is not a sandbox policy: the live model server owns n_ctx.
     normalized_agent_id = str(agent_id or "").strip() or "builtin-universal"
     limit = ensure_agent_limit(normalized_agent_id)
     tools = _normalize_tool_names(selected_tools)
-
-    max_context_tokens = int(limit.get("max_context_tokens", 0) or 0)
-    if max_context_tokens > 0 and int(num_ctx or 0) > max_context_tokens:
-        raise _make_error(
-            agent_id=normalized_agent_id,
-            reason="context_limit_exceeded",
-            message=f"Agent sandbox blocked run: context window {int(num_ctx or 0)} exceeds limit {max_context_tokens}.",
-            details={
-                "num_ctx": int(num_ctx or 0),
-                "max_context_tokens": max_context_tokens,
-            },
-        )
 
     allowed_tools = {str(item or "").strip() for item in limit.get("allowed_tools", []) if str(item or "").strip()}
     if allowed_tools:
