@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from app.application.projects.scope import project_scope_id
 from app.application.code_agent.history import summarize_history
+from app.application.code_agent import run_evidence
 from app.infrastructure.text import truncate_middle
 from app.application.code_agent.tool_policy import CRITICAL_TOOLS, EDIT_ONLY_TOOLS
 from app.change_executor.policy import (
@@ -441,101 +442,22 @@ def _recent_tools_digest(entries: list[str]) -> str:
 # materially depends on current/real-world facts, while ordinary explanations,
 # coding work and file-local questions remain untouched.
 _EXTERNAL_EVIDENCE_NUDGE_MAX = 1
-_EXTERNAL_FACT_INTENT_RE = re.compile(
-    r"(?:"
-    r"\b(?:интернет\w*|веб\w*|источник\w*|ссылк\w*|официальн\w+\s+"
-    r"(?:сайт|данн\w*|реестр\w*))\b|"
-    r"\b(?:проверь|проверить|перепроверь|перепроверить|найди|найти|узнай|узнать|"
-    r"поищи|поискать)\b.{0,80}\b(?:информац\w*|данн\w*|факт\w*|источник\w*|"
-    r"сайт\w*|интернет\w*|веб\w*|новост\w*|цен\w*|курс\w*)\b|"
-    r"\b(?:актуальн\w*|последн\w*|текущ\w*|сегодняшн\w*)\b.{0,40}"
-    r"\b(?:верси\w*|новост\w*|цен\w*|стоимост\w*|курс\w*|закон\w*|событи\w*)\b|"
-    r"\b(?:курс\s+валют\w*|цена\s+(?:акци\w*|товар\w*|нефт\w*)|котировк\w*)\b|"
-    r"(?:кто|кем).{0,40}(?:сдела\w*|созда\w*|основа\w*|разработа\w*|"
-    r"принадлеж\w*|владе\w*|руковод\w*)|"
-    r"\b(?:основател\w*|учредител\w*|владелец|владельц\w*|директор\w*|"
-    r"руководител\w*|биограф\w*)\b|"
-    r"(?:когда|где).{0,40}(?:создан\w*|основан\w*|родил\w*|произош\w*|выш\w*)|"
-    r"\b(?:беременн\w*|плацент\w*|кровотеч\w*|диагноз\w*|лечени\w*|"
-    r"лекарств\w*|дозиров\w*|симптом\w*|медицин\w*|юридическ\w*|"
-    r"закон\w*|налог\w*|инвестиц\w*|кредит\w*|страхов\w*|"
-    r"недвижимост\w*|наводнен\w*|затаплива\w*)\b|"
-    r"\b(?:fact[- ]?check|web\s+search|latest\s+(?:version|news|price)|"
-    r"current\s+(?:price|rate|law)|official\s+source|"
-    r"founder|owner|director|price|medical|legal)\b"
-    r")",
-    re.IGNORECASE | re.UNICODE,
-)
-_EXTERNAL_AUTHORITY_CLAIM_RE = re.compile(
-    r"(?:проверил\w*.{0,50}(?:официальн\w*|источник\w*|сайт\w*|реестр\w*)|"
-    r"по\s+официальн\w+\s+данн\w*|согласно\s+(?:источник\w*|данн\w*|реестр\w*)|"
-    r"(?:official|verified)\s+(?:source|data))",
-    re.IGNORECASE | re.UNICODE,
-)
-_EXTERNAL_UNCERTAINTY_RE = re.compile(
-    r"(?:не\s+(?:подтвердил\w*|подтвержден\w*|наш[её]л\w*|знаю|удалось\s+"
-    r"(?:найти|проверить|подтвердить))|источник\s+не\s+найден|"
-    r"не\s+могу\s+(?:достоверно\s+)?подтвердить|requires?\s+verification|"
-    r"not\s+(?:verified|confirmed))",
-    re.IGNORECASE | re.UNICODE,
-)
-_EXTERNAL_EVIDENCE_TOOLS = frozenset({
-    "web_fetch", "web_query", "web_claim_add", "browser", "http_api",
-    "paper_search",
-})
-_LOCAL_FACT_CONTEXT_RE = re.compile(
-    r"\b(?:файл\w*|код\w*|класс\w*|функци\w*|компонент\w*|коммит\w*|"
-    r"ветк\w*|репозитор\w*|проект\w*|сервер\w*|хост\w*|ssh|папк\w*|"
-    r"каталог\w*|лог\w*|баз\w+\s+данн\w*|file|code|class|function|"
-    r"commit|repository|project|server|host)\b",
-    re.IGNORECASE | re.UNICODE,
-)
-_EXPLICIT_EXTERNAL_CONTEXT_RE = re.compile(
-    r"\b(?:интернет\w*|веб\w*|источник\w*|ссылк\w*|официальн\w*|"
-    r"новост\w*|курс\w*|цен\w*|fact[- ]?check|web\s+search|"
-    r"official\s+source)\b",
-    re.IGNORECASE | re.UNICODE,
-)
 
 
 def _requires_external_evidence(user_message: str, answer: str = "") -> bool:
-    """Whether final factual prose requires a successfully-read external source."""
-    request = user_message or ""
-    if (
-        _LOCAL_FACT_CONTEXT_RE.search(request)
-        and not _EXPLICIT_EXTERNAL_CONTEXT_RE.search(request)
-    ):
-        return bool(_EXTERNAL_AUTHORITY_CLAIM_RE.search(answer or ""))
-    return bool(
-        _EXTERNAL_FACT_INTENT_RE.search(request)
-        or _EXTERNAL_AUTHORITY_CLAIM_RE.search(answer or "")
-    )
+    return run_evidence.requires_external_source(user_message, answer)
 
 
 def _answer_admits_missing_external_evidence(answer: str) -> bool:
-    """Allow a bounded, honest refusal instead of forcing repeated web calls."""
-    return bool(_EXTERNAL_UNCERTAINTY_RE.search(answer or ""))
+    return run_evidence.answer_admits_missing_external_source(answer)
 
 
 def _tool_provides_external_evidence(name: str, text_result: str) -> bool:
-    """True only for a successful content-bearing source read, not search snippets."""
-    tool = str(name or "").strip()
-    if not str(text_result or "").strip():
-        return False
-    if tool in _EXTERNAL_EVIDENCE_TOOLS:
-        return True
-    return tool.startswith("playwright__") and tool.rsplit("__", 1)[-1] in {
-        "browser_snapshot", "browser_network_requests",
-    }
+    return run_evidence.tool_provides_external_source(name, text_result)
 
 
 def _external_evidence_backstop() -> str:
-    return (
-        "Не могу подтвердить фактический ответ: в этом прогоне не был успешно "
-        "прочитан внешний источник. Я не буду выдавать сведения по памяти за "
-        "проверенные. Нужен успешный `web_search` → `web_fetch` либо честный ответ "
-        "«источник не найден / не подтверждено»."
-    )
+    return run_evidence.external_source_backstop()
 
 
 # --- Ungrounded-file nudge (residual grounding leak) ------------------------
@@ -547,34 +469,10 @@ def _external_evidence_backstop() -> str:
 # nudge it to verify via a tool before stating them. Deliberately narrow: it only
 # fires on an actual ungrounded FILE claim, so normal answers never see it.
 _GROUNDING_NUDGE_MAX = 2
-_ANSWER_FILE_RE = re.compile(
-    r"[\w.\-/\\]+\.(?:py|js|ts|tsx|jsx|json|md|txt|ya?ml|toml|cfg|ini|sh|bash|"
-    r"rs|go|java|kt|c|cpp|h|hpp|sql|html|css|scss|env|lock|rsc|conf|service)\b",
-    re.IGNORECASE,
-)
-
-
-def _basename(path: str) -> str:
-    return re.split(r"[\\/]", path)[-1]
 
 
 def _ungrounded_files(answer: str, messages: list[dict], established_facts: list[str]) -> list[str]:
-    """File names the answer states that nothing in the run grounds. Grounding =
-    a tool result, a [ПРОВЕРЕННЫЕ ФАКТЫ] block, or the user's own message — NOT the
-    system prompt (rule 20 lists calc.py/test_calc.py as NEGATIVE examples) and NOT
-    the model's own prior prose (else a confabulation self-grounds)."""
-    claimed = {_basename(m.group(0)).lower() for m in _ANSWER_FILE_RE.finditer(answer or "")}
-    if not claimed:
-        return []
-    parts = list(established_facts or [])
-    # Skip messages[0] (the system prompt); keep facts/summary (system), tool, user.
-    for m in (messages or [])[1:]:
-        if isinstance(m, dict) and m.get("role") in ("tool", "user", "system"):
-            c = m.get("content")
-            if isinstance(c, str):
-                parts.append(c)
-    hay = " ".join(parts).lower()
-    return sorted({b for b in claimed if b not in hay})
+    return run_evidence.ungrounded_file_claims(answer, messages, established_facts)
 
 
 # Anti-confabulation for generated documents (.docx / .xlsx / .pdf). The run tracks
@@ -586,36 +484,6 @@ def _ungrounded_files(answer: str, messages: list[dict], established_facts: list
 # not a real Word/PDF document, so a written path is never proof of a real doc.
 # Deliberately narrow: only the formats file_gen emits, exact-basename match.
 _DOCGEN_NUDGE_MAX = 1
-_ANSWER_DOC_RE = re.compile(r"[\w.\-/\\]+\.(?:docx|xlsx|pdf)\b", re.IGNORECASE)
-_DOCGEN_READY_RE = re.compile(
-    r"(?:\bвот\b|\bготов(?:о|а|ы)?\b|\bсоздан(?:о|а|ы)?\b|"
-    r"\bсгенерирован(?:о|а|ы)?\b|\bподготовлен(?:о|а|ы)?\b|"
-    r"\bсохран(?:ен|ён)(?:о|а|ы)?\b|\bскачать\b|"
-    r"\b(?:here(?:'s| is)|ready|created|generated|saved|download)\b)",
-    re.IGNORECASE,
-)
-_DOCGEN_EXISTING_RE = re.compile(
-    r"(?:\bсуществу\w*\b|\bнаход\w*\b|\bнайден\w*\b|\bимеется\b|"
-    r"\bна месте\b|\bпредыдущ\w*\s+прогон\w*\b|\bранее\b|"
-    r"\bдо этого\b|\b(?:already existed|previous run|exists|found)\b|"
-    r"\bне\s+(?:был[оаи]?\s+)?(?:создан|сгенерирован|подготовлен|сохран[её]н)\w*\b)",
-    re.IGNORECASE,
-)
-
-
-def _doc_claim_context(answer: str, start: int, end: int) -> str:
-    """Return the sentence/line containing one filename without splitting its extension."""
-    left = 0
-    for marker in ("\n", "! ", "? ", ". "):
-        pos = answer.rfind(marker, 0, start)
-        if pos >= 0:
-            left = max(left, pos + len(marker))
-    right = len(answer)
-    for marker in ("\n", "! ", "? ", ". "):
-        pos = answer.find(marker, end)
-        if pos >= 0:
-            right = min(right, pos)
-    return answer[left:right]
 
 
 def _unbacked_docgen_claim(answer: str, generated_docs: list[str]) -> list[str]:
@@ -626,17 +494,7 @@ def _unbacked_docgen_claim(answer: str, generated_docs: list[str]) -> list[str]:
     passed in (a written report.pdf may be plain text, not a real PDF). Returns the
     unbacked claimed basenames; [] when every claimed doc was really generated / none
     claimed."""
-    claimed: set[str] = set()
-    for match in _ANSWER_DOC_RE.finditer(answer or ""):
-        context = _doc_claim_context(answer, match.start(), match.end())
-        # The guard is about a document presented as newly delivered by THIS run.
-        # Reporting an existing/previously-created project file is not generation.
-        if _DOCGEN_READY_RE.search(context) and not _DOCGEN_EXISTING_RE.search(context):
-            claimed.add(_basename(match.group(0)).lower())
-    if not claimed:
-        return []
-    produced = {_basename(p).lower() for p in (generated_docs or [])}
-    return sorted({b for b in claimed if b not in produced})
+    return run_evidence.unbacked_document_claims(answer, generated_docs)
 
 
 # --- Near-duplicate loop detection ------------------------------------------

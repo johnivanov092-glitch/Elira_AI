@@ -55,6 +55,7 @@ from app.application.code_agent.taskspec import (
     taskspec_context,
     taskspec_report,
 )
+from app.application.code_agent.run_evidence import RunEvidence
 from app.application.code_agent import criterion_closure
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
@@ -578,16 +579,13 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _answer_admits_missing_external_evidence,
     _external_evidence_backstop,
     _requires_external_evidence,
-    _tool_provides_external_evidence,
     RECENT_TOOLS_PREFIX,
     format_checklist_state,
     resume_checklist_guard,
     session_cancel_requested,
     tool_state_changed,
     _is_near_dup,
-    _ungrounded_files,
     _DOCGEN_NUDGE_MAX,
-    _unbacked_docgen_claim,
     _flatten_for_summary,
     _call_auto_approves,
     _looks_like_intent_without_action,
@@ -947,12 +945,10 @@ def _stream_code_agent_core(
         # Verbatim buffer of recent grounding-tool outputs (last few, in full-ish),
         # carried into the next turn alongside the compact facts digest.
         recent_tool_outputs: list[str] = []
-        # Soft verification gate (Variant 2): if the run edited files but never
-        # ran tests/lint or started the app, nudge the model to verify once
-        # before it closes. Reminder-injection, not a hard block — and it fires
-        # at most once, never on a no-edit (conversational/read-only) run.
-        edited_in_run = False
-        ran_verification = False
+        # One run-local evidence ledger owns mutation, verification, artifact,
+        # remote-observation and external-source truth. A mutation advances its
+        # project epoch, making older verification receipts stale.
+        run_evidence = RunEvidence()
         verify_gate_fired = False
         # Bounded recovery (planning batch, req 7): a normalized error fingerprint
         # (tool|path|stable-error) counts repeated identical failures. On a repeat
@@ -1040,10 +1036,6 @@ def _stream_code_agent_core(
         # inventing test_main.py/setup.py). Bounded; only on an actual unverified
         # file claim, so normal answers never see it.
         grounding_nudge_fires = 0
-        # External factual claims need a source the runtime actually read. Search
-        # snippets are discovery, not evidence; web_fetch/browser/http_api (or a
-        # verified corpus query/claim) set this only after successful execution.
-        external_evidence_seen = False
         external_evidence_nudge_fires = 0
         # Anti-confabulation for generated documents: fires when the finalizing
         # answer presents a .docx/.xlsx as ready while no successful file_gen ran.
@@ -1074,11 +1066,6 @@ def _stream_code_agent_core(
         # on exhaustion, and stops honestly only when families/budget are spent.
         progress = ProgressEvaluator()
         touched_files: list[str] = []  # every file the run mutated (for the report)
-        # Filenames a VERIFIED file_gen produced this run (its download_name only). The
-        # ONLY proof a real .docx/.xlsx exists — write_file paths are NOT trusted here,
-        # since a plain write_file can emit a UTF-8 file named report.docx that is not a
-        # Word document. Feeds the anti-confabulation guard (exact-name match).
-        generated_docs: list[str] = []
         volume_nudge_fired = False     # one "converge, you're deep into the turn" nudge
         remote_fact_count = 0
         remote_fact_nudge_fired = False
@@ -1549,7 +1536,7 @@ def _stream_code_agent_core(
                 # and let the run finalize with the failure visible in history.
                 if (
                     verify_cmd
-                    and edited_in_run
+                    and run_evidence.has_mutations
                     and not verify_passed
                     and verify_attempts < _VERIFY_GATE_MAX
                 ):
@@ -1566,7 +1553,14 @@ def _stream_code_agent_core(
                     _vres = _verify_run(root, command=verify_cmd, timeout=_VERIFY_GATE_TIMEOUT_S)
                     _vtext = str(_vres.get("text") or "")
                     _passed = any(ln.strip() == "exit=0" for ln in _vtext.splitlines())
-                    ran_verification = True  # also satisfies the soft nudge below
+                    run_evidence.record_tool_result(
+                        tool_name="run_bash",
+                        arguments={"command": verify_cmd},
+                        execution_status="ok",
+                        output=_vres,
+                        text_result=_vtext,
+                        state_changed=False,
+                    )
                     yield {
                         "type": "tool_call", "step": step, "tool": "run_bash",
                         "arguments": {"command": verify_cmd},
@@ -1596,7 +1590,9 @@ def _stream_code_agent_core(
                 # never on a no-edit (conversational/read-only) run. Skipped when a
                 # TaskSpec with criteria is driving verification (handled above).
                 if (
-                    edited_in_run and not ran_verification and not verify_gate_fired
+                    run_evidence.has_mutations
+                    and not run_evidence.has_current_verification
+                    and not verify_gate_fired
                     and not (task_spec is not None and task_spec.success_criteria)
                 ):
                     verify_gate_fired = True
@@ -1655,7 +1651,7 @@ def _stream_code_agent_core(
                 if (
                     _answer_intent
                     and intent_gate_fires < _INTENT_GATE_MAX
-                    and not edited_in_run
+                    and not run_evidence.has_mutations
                     and _looks_like_intent_without_action(_answer_intent)
                 ):
                     intent_gate_fires += 1
@@ -1683,7 +1679,7 @@ def _stream_code_agent_core(
                 if (
                     _answer_external
                     and _requires_external_evidence(user_message, _answer_external)
-                    and not external_evidence_seen
+                    and not run_evidence.has_external_source
                     and not _answer_admits_missing_external_evidence(_answer_external)
                     and external_evidence_nudge_fires < _EXTERNAL_EVIDENCE_NUDGE_MAX
                 ):
@@ -1715,7 +1711,11 @@ def _stream_code_agent_core(
                 # real unverified file claim, so normal answers never see it.
                 _answer_ground = content or last_text
                 if _answer_ground and grounding_nudge_fires < _GROUNDING_NUDGE_MAX:
-                    _ungrounded = _ungrounded_files(_answer_ground, messages, established_facts)
+                    _ungrounded = run_evidence.ungrounded_file_claims(
+                        _answer_ground,
+                        messages,
+                        established_facts,
+                    )
                     if _ungrounded:
                         grounding_nudge_fires += 1
                         messages.append({"role": "assistant", "content": _answer_ground})
@@ -1732,14 +1732,12 @@ def _stream_code_agent_core(
                         })
                         continue
                 # Anti-confabulation for generated documents: the answer presents a
-                # .docx/.xlsx as ready but nothing in this run actually produced it
-                # (a successful file_gen mirrors its output into touched_files — as do
-                # write_file/edit_file). Nudge ONCE to really generate it via file_gen
-                # (or drop the claim); the deterministic honest-note at finalize is the
-                # backstop if it still ends unbacked.
+                # .docx/.xlsx as ready but no successful file_gen artifact receipt
+                # backs that exact name. Nudge ONCE to really generate it (or drop
+                # the claim); the deterministic honest-note is the final backstop.
                 _answer_doc = content or last_text
                 if _answer_doc and docgen_nudge_fires < _DOCGEN_NUDGE_MAX:
-                    _unbacked_doc = _unbacked_docgen_claim(_answer_doc, generated_docs)
+                    _unbacked_doc = run_evidence.unbacked_document_claims(_answer_doc)
                     if _unbacked_doc:
                         docgen_nudge_fires += 1
                         messages.append({"role": "assistant", "content": _answer_doc})
@@ -1976,7 +1974,7 @@ def _stream_code_agent_core(
                 final_text = _strip_tool_call_markup(content or last_text)
                 if (
                     _requires_external_evidence(user_message, final_text)
-                    and not external_evidence_seen
+                    and not run_evidence.has_external_source
                     and not _answer_admits_missing_external_evidence(final_text)
                 ):
                     final_text = _external_evidence_backstop()
@@ -2010,7 +2008,7 @@ def _stream_code_agent_core(
                 # honest runtime note — never rewrite the model's own text. Runs
                 # unconditionally (independent of a TaskSpec), which is exactly the
                 # gap where a bare "готово, вот файл.docx" used to pass untouched.
-                _unbacked_final = _unbacked_docgen_claim(final_text, generated_docs)
+                _unbacked_final = run_evidence.unbacked_document_claims(final_text)
                 if _unbacked_final:
                     final_text = final_text.rstrip() + "\n\n" + (
                         "⚠️ Файл(ы) " + ", ".join(_unbacked_final[:4]) + " не был(и) "
@@ -2069,8 +2067,9 @@ def _stream_code_agent_core(
                     from app.application.persona.proactive import consider_proactive
 
                     _pro = consider_proactive({
-                        "edited": edited_in_run,
-                        "verified": ran_verification,
+                        "edited": run_evidence.has_mutations,
+                        "verified": run_evidence.has_current_verification,
+                        "run_evidence": run_evidence.summary(),
                         "run_id": rid,
                         "project_scope_id": scope_id,
                         "project_root": str(root),
@@ -2608,18 +2607,9 @@ def _stream_code_agent_core(
                     # P12.2: subagents are children of the current run. The
                     # model chooses role/task, not parent_run_id.
                     parsed_args["run_id"] = rid
-                # Verification-gate signals — AFTER every redirect/guard branch, so a
-                # call that was redirected (never EXECUTED) doesn't count as an edit
-                # or a verification (review #18: a redirected `npm run dev` used to
-                # mark ran_verification and silently skip the unverified-edit nudge).
-                if name in ("write_file", "edit_file", "ssh_write", "ssh_replace"):
-                    edited_in_run = True
-                elif name in (
-                    "run_bash", "run_server", "ssh_run", "ssh_run_ps",
-                    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check",
-                    "ssh_exists", "ssh_not_exists", "ssh_read", "path_exists", "browser",
-                ):
-                    ran_verification = True
+                # Phase is presentation-only. Evidence is recorded only after
+                # successful executor return below, never from model intent.
+                if RunEvidence.is_verification_tool(name):
                     _phase_event = _enter_verification_phase()
                     if _phase_event is not None:
                         yield _phase_event
@@ -2808,6 +2798,14 @@ def _stream_code_agent_core(
                         if not _server_url_alive(_last_server_url):
                             _last_server_url = ""
                 text_result = str(tool_meta.get("text", ""))
+                _state_changed = tool_state_changed(
+                    name,
+                    tool_meta,
+                    exec_ok=(
+                        _exec_result.status == "ok"
+                        and bool(tool_meta.get("ok", True))
+                    ),
+                )
                 event: dict[str, Any] = {
                     "type": "tool_call",
                     "step": step,
@@ -2819,13 +2817,7 @@ def _stream_code_agent_core(
                     # touched target on a successful execution). Read-only
                     # touched_path (read_file/ssh_read) stays False — delivery
                     # auto-continuation counts MUTATIONS, not reads.
-                    "state_changed": tool_state_changed(
-                        name, tool_meta,
-                        exec_ok=(
-                            _exec_result.status == "ok"
-                            and bool(tool_meta.get("ok", True))
-                        ),
-                    ),
+                    "state_changed": _state_changed,
                 }
                 for opt in (
                     "touched_path", "old_content", "new_content", "diff_action",
@@ -2841,6 +2833,16 @@ def _stream_code_agent_core(
                             event[opt] = val[:40000] + "\n[... truncated]"
                         else:
                             event[opt] = val
+                run_evidence.record_tool_result(
+                    tool_name=name,
+                    arguments=parsed_args,
+                    execution_status=_exec_result.status,
+                    output=tool_meta,
+                    text_result=text_result,
+                    state_changed=_state_changed,
+                )
+                if _state_changed:
+                    criteria.invalidate_after_mutation()
                 yield event
                 tool_round_trips += 1
                 _hint = _short_arg_hint(parsed_args)
@@ -2895,12 +2897,6 @@ def _stream_code_agent_core(
                 )
                 if tool_meta.get("touched_path"):
                     touched_files.append(str(tool_meta.get("touched_path")))
-                # A verified file_gen sets download_name ONLY after existence-checking
-                # its output — so its presence is proof a real .docx/.xlsx/.pdf exists.
-                # resource_publish proves byte delivery only; a plain-text report.pdf
-                # must not satisfy the document-format anti-confabulation guard.
-                if name == "file_gen" and tool_meta.get("download_name"):
-                    generated_docs.append(str(tool_meta.get("download_name")))
                 # ── Strategy router ──────────────────────────────────────────
                 # Did the world move? A "doing" tool that changed nothing burns its
                 # strategy_key's attempt budget; exhaustion → redirect to another
@@ -3033,12 +3029,6 @@ def _stream_code_agent_core(
                 _recent = _recent_tool_snippet(name, _hint, text_result)
                 if _recent:
                     recent_tool_outputs.append(_recent)
-                if (
-                    _exec_result.status == "ok"
-                    and bool(tool_meta.get("ok", True))
-                    and _tool_provides_external_evidence(name, text_result)
-                ):
-                    external_evidence_seen = True
                 if _near_dup_should_stop:
                     final_text = _deterministic_stop_summary(
                         f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",

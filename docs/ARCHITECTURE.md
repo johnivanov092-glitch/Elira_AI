@@ -231,6 +231,10 @@ fail-closed tool dispatch) are specific instances of these rules.
 - Durable state is not enough without startup recovery.
 - Untrusted content must never change policy, scopes, approvals, or tool
   activation.
+- Model prose and tool intent are not evidence. Only executed tool results may
+  create run evidence receipts.
+- Verification is bound to the current project epoch. Every confirmed mutation
+  advances that epoch and makes earlier verification stale.
 - Do not add remote MCP transport / LSP child processes to the main path before
   the relevant stage; do not overload the local model's prompt with dozens of
   schemas. (Both are tracked in [`DEFERRED_TRACK.md`](DEFERRED_TRACK.md).)

@@ -1336,6 +1336,21 @@ class CriteriaTracker:
             return "partial"
         return "unverified"
 
+    def invalidate_after_mutation(self) -> int:
+        """Invalidate verifier verdicts captured before a later state change."""
+        invalidated = 0
+        for item in self.items:
+            if item["status"] not in ("confirmed", "failed"):
+                continue
+            item.update(
+                status="unconfirmed",
+                verifier=None,
+                evidence=None,
+                auto_verified=False,
+            )
+            invalidated += 1
+        return invalidated
+
     def finalize_conditionals(self) -> None:
         """At run end, a conditional criterion still unconfirmed is n/a (its precondition
         wasn't met / wasn't exercised) — mark it 'skipped' so the report shows it

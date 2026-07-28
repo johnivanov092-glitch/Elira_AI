@@ -302,7 +302,8 @@ class AgentLoopTest(unittest.TestCase):
         # loop behaviour, not P2 approval policy.
         with patch("app.application.tool_registry.runtime.get_tool",
                    return_value={"permission": "auto", "max_output_chars": 50000,
-                                 "policy_classified": True, "enabled": True}):
+                                 "policy_classified": True, "enabled": True,
+                                 "side_effect": True}):
             result = run_code_agent(
                 user_message="Создай out.txt с текстом Hello Elira",
                 project_root=self.root,
@@ -512,7 +513,8 @@ class AgentLoopTest(unittest.TestCase):
         # diff metadata propagation, not P2 approval policy.
         with patch("app.application.tool_registry.runtime.get_tool",
                    return_value={"permission": "auto", "max_output_chars": 50000,
-                                 "policy_classified": True, "enabled": True}):
+                                 "policy_classified": True, "enabled": True,
+                                 "side_effect": True}):
             events = list(stream_code_agent(
                 user_message="bump version",
                 project_root=self.root,
@@ -1164,7 +1166,7 @@ class AgentLoopTest(unittest.TestCase):
     # --- Soft verification gate (Variant 2) -----------------------------
 
     _AUTO_SPEC = {"permission": "auto", "max_output_chars": 50000,
-                  "policy_classified": True, "enabled": True}
+                  "policy_classified": True, "enabled": True, "side_effect": True}
 
     def test_verify_gate_nudges_once_after_edit_without_tests(self) -> None:
         """Edited a file, then tried to answer with no run_bash/run_server:
@@ -1195,6 +1197,76 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(result["stop_reason"], "answer")
         # The gate forced a third model call it would not otherwise make.
         self.assertEqual(turns["n"], 3)
+
+    def test_mutation_after_green_check_makes_verification_stale(self) -> None:
+        """A green check proves only the project epoch it inspected."""
+        turns = {"n": 0}
+
+        def fake_chat(**kwargs):
+            turns["n"] += 1
+            scripted = {
+                1: {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "write_file",
+                                "arguments": {"path": "out.txt", "content": "v1"},
+                            },
+                        }],
+                    },
+                },
+                2: {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "run_bash",
+                                "arguments": {
+                                    "command": "python -c \"print('ok')\"",
+                                    "timeout": 10,
+                                },
+                            },
+                        }],
+                    },
+                },
+                3: {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [{
+                            "function": {
+                                "name": "edit_file",
+                                "arguments": {
+                                    "path": "out.txt",
+                                    "old_string": "v1",
+                                    "new_string": "v2",
+                                },
+                            },
+                        }],
+                    },
+                },
+            }
+            return scripted.get(
+                turns["n"],
+                {"message": {"content": "Готово.", "tool_calls": []}},
+            )
+
+        with patch(
+            "app.application.tool_registry.runtime.get_tool",
+            return_value=self._AUTO_SPEC,
+        ):
+            result = run_code_agent(
+                user_message="Обнови out.txt",
+                project_root=self.root,
+                model="test-model",
+                chat_fn=fake_chat,
+            )
+
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual((self.root / "out.txt").read_text(encoding="utf-8"), "v2")
+        # Turn 4 tried to finalize, but the edit after the green command moved
+        # project_epoch and forced exactly one fresh-verification reminder.
+        self.assertEqual(turns["n"], 5)
 
     def test_verify_gate_does_not_fire_when_tests_were_run(self) -> None:
         """Edit + run_bash in the same run satisfies the gate — no extra round."""
