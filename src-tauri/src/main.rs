@@ -41,8 +41,31 @@ fn walk_up_for_backend(start: &std::path::PathBuf) -> Option<std::path::PathBuf>
     None
 }
 
+/// Keep WebView2's browser profile with Elira's runtime data instead of filling
+/// the Windows system drive. An explicit WebView2 override still wins.
+fn configure_webview_data_dir() {
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_some() {
+        return;
+    }
+
+    let data_dir = std::env::var_os("ELIRA_DATA_DIR")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| find_project_root().map(|root| root.join("data")));
+
+    if let Some(data_dir) = data_dir {
+        let webview_dir = data_dir.join("webview2");
+        if std::fs::create_dir_all(&webview_dir).is_ok() {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", webview_dir);
+        }
+    }
+}
+
 #[tauri::command]
-fn start_backend(_app: tauri::AppHandle, state: tauri::State<BackendState>) -> Result<String, String> {
+fn start_backend(
+    _app: tauri::AppHandle,
+    state: tauri::State<BackendState>,
+) -> Result<String, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(child) = guard.as_ref() {
         return Ok(format!("Backend already running with pid {}", child.id()));
@@ -99,7 +122,9 @@ fn start_backend(_app: tauri::AppHandle, state: tauri::State<BackendState>) -> R
 fn stop_backend(state: tauri::State<BackendState>) -> Result<String, String> {
     let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     if let Some(mut child) = guard.take() {
-        child.kill().map_err(|e| format!("Failed to stop backend: {e}"))?;
+        child
+            .kill()
+            .map_err(|e| format!("Failed to stop backend: {e}"))?;
         // Wait for the process to fully exit to avoid zombies
         let _ = child.wait();
         return Ok("Backend stopped".to_string());
@@ -136,6 +161,7 @@ fn backend_status(state: tauri::State<BackendState>) -> Result<serde_json::Value
 }
 
 fn main() {
+    configure_webview_data_dir();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())

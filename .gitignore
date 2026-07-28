@@ -157,6 +157,7 @@ data/elira_api_token
 # user-uploaded runtime files — personal data, never commit
 data/uploads/
 data/chat_agent_workspace/
+data/webview2/
 # durable resource store (R1 adaptive resources) — uploaded originals + meta
 data/resources/
 .elira_chat_uploads/
