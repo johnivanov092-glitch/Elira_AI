@@ -914,6 +914,30 @@ class AgentLoopTest(unittest.TestCase):
         self.assertEqual(out[0]["function"]["name"], "glob")
         self.assertEqual(out[0]["function"]["arguments"]["pattern"], "**/*.py")
 
+    def test_inline_tool_call_fallback_parses_action_envelope(self) -> None:
+        """Live 35B output uses the canonical kind/tool/arguments envelope."""
+        out = _extract_inline_tool_calls(
+            '{"kind":"tool_request","tool":"tool_search",'
+            '"arguments":{"query":"image extract text ocr vision"}}\n</tool_call>',
+            {"tool_search"},
+        )
+        self.assertEqual(
+            out,
+            [{
+                "function": {
+                    "name": "tool_search",
+                    "arguments": {"query": "image extract text ocr vision"},
+                },
+            }],
+        )
+
+    def test_inline_tool_call_action_envelope_drops_unknown_tool(self) -> None:
+        out = _extract_inline_tool_calls(
+            '{"kind":"tool_request","tool":"missing","arguments":{}}',
+            {"tool_search"},
+        )
+        self.assertEqual(out, [])
+
     def test_inline_tool_call_fallback_handles_code_fences(self) -> None:
         known = {"read_file"}
         out = _extract_inline_tool_calls(

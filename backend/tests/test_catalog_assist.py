@@ -40,13 +40,15 @@ class CatalogIndexTest(unittest.TestCase):
             "report", "file_exists", "file_not_exists", "content_contains",
             "content_not_contains", "dom_contains", "viewport_layout", "page_open",
             "server_started", "command_check", "command_output", "generic",
+            "behavior_test",
         }
         self.assertEqual(catalog.drift_intents(classifier_intents), [])
 
     def test_supported_intents_are_not_unsupported(self):
         for intent in ("file_exists", "file_not_exists", "content_contains",
                        "dom_contains", "viewport_layout", "command_output",
-                       "command_check", "server_started", "page_open"):
+                       "command_check", "server_started", "page_open",
+                       "behavior_test"):
             self.assertFalse(catalog.unsupported_intent(intent), intent)
 
     def test_generic_and_report_are_unsupported_by_design(self):

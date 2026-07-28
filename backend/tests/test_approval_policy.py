@@ -17,8 +17,10 @@ from app.change_executor.policy import (  # noqa: E402
     decide_approval,
     evidence_for_tool_call,
     shell_command_is_high_impact,
+    tool_call_is_change,
 )
 from app.application.code_agent.tool_policy import SEARCH_ACTIVATABLE_SIDE_EFFECT  # noqa: E402
+from app.application.code_agent.loop_helpers import _call_auto_approves  # noqa: E402
 
 
 class ApprovalPolicyTest(unittest.TestCase):
@@ -169,6 +171,73 @@ class ApprovalPolicyTest(unittest.TestCase):
         remote = evidence_for_tool_call("resource_remote_process", {})
         self.assertEqual(decide_approval("accept_edits", "local", remote), ASK)
         self.assertEqual(decide_approval("bypass", "local", remote), AUTO)
+
+    def test_creative_mcp_calls_follow_local_three_mode_contract(self) -> None:
+        blender_edit = evidence_for_tool_call(
+            "blender__batch_edit", {"operations": [{"op": "add_primitive"}]}
+        )
+        unity_edit = evidence_for_tool_call(
+            "unity__batch_execute",
+            {"commands": [{"tool": "manage_gameobject", "params": {"action": "create"}}]},
+        )
+        for evidence in (blender_edit, unity_edit):
+            self.assertEqual(decide_approval("ask", "local", evidence), ASK)
+            self.assertEqual(decide_approval("accept_edits", "local", evidence), ASK)
+            self.assertEqual(decide_approval("bypass", "local", evidence), AUTO)
+
+    def test_creative_arbitrary_code_and_nested_code_stay_explicit(self) -> None:
+        calls = (
+            ("blender__execute_blender_code", {"code": "import bpy"}),
+            ("unity__execute_code", {"action": "execute", "code": "return 1;"}),
+            (
+                "unity__batch_execute",
+                {"commands": [{"tool": "execute_code", "params": {"code": "return 1;"}}]},
+            ),
+        )
+        for name, args in calls:
+            with self.subTest(name=name):
+                evidence = evidence_for_tool_call(name, args)
+                self.assertEqual(decide_approval("bypass", "local", evidence), ASK)
+
+    def test_creative_read_only_calls_are_not_changes(self) -> None:
+        calls = (
+            ("blender__get_scene_info", {}),
+            ("blender__get_viewport_screenshot", {"max_size": 800}),
+            ("unity__read_console", {"action": "get"}),
+            ("unity__manage_camera", {"action": "screenshot", "include_image": True}),
+            ("unity__execute_code", {"action": "get_history"}),
+        )
+        for name, args in calls:
+            with self.subTest(name=name):
+                self.assertFalse(tool_call_is_change(name, args))
+                self.assertEqual(
+                    decide_approval(
+                        "ask",
+                        "local",
+                        evidence_for_tool_call(name, args),
+                        is_change=False,
+                    ),
+                    AUTO,
+                )
+
+    def test_creative_policy_is_used_by_the_live_approval_helper(self) -> None:
+        self.assertTrue(
+            _call_auto_approves("ask", "blender__get_blender_status", {})
+        )
+        self.assertTrue(
+            _call_auto_approves(
+                "bypass",
+                "unity__batch_execute",
+                {"commands": [{"tool": "manage_gameobject", "params": {}}]},
+            )
+        )
+        self.assertFalse(
+            _call_auto_approves(
+                "bypass",
+                "unity__batch_execute",
+                {"commands": [{"tool": "execute_code", "params": {"code": "return 1;"}}]},
+            )
+        )
 
 
 if __name__ == "__main__":

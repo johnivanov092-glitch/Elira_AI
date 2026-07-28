@@ -124,10 +124,15 @@ def _tracker(criterion: str) -> CriteriaTracker:
     return CriteriaTracker.from_spec(spec)
 
 
-def _record_bash(crit: CriteriaTracker, command: str, exit_code: int = 0) -> bool:
+def _record_bash(
+    crit: CriteriaTracker,
+    command: str,
+    exit_code: int = 0,
+    output: str = "out",
+) -> bool:
     return crit.record(
         tool_name="run_bash", args={"command": command}, ok=exit_code == 0,
-        evidence=f"$ {command}\nexit={exit_code}\nSTDOUT:\nout",
+        evidence=f"$ {command}\nexit={exit_code}\nSTDOUT:\n{output}",
         meta={"exit_code": exit_code},
     )
 
@@ -149,6 +154,30 @@ class VerifierKindMatchingTest(unittest.TestCase):
         _record_bash(crit, "npm create vite@latest . -- --template react-ts 2>&1")
         self.assertEqual(crit.items[0]["status"], "unconfirmed",
                          crit.items[0].get("evidence"))
+
+    def test_dependency_install_with_test_packages_does_not_confirm_tests(self):
+        """The live Test 123 false evidence: installing jest/testing-library is
+        dependency mutation, not execution of the test suite."""
+        cmd = (
+            "npm install -D @testing-library/react @testing-library/jest-dom "
+            "@testing-library/user-event jest @types/jest ts-jest jsdom"
+        )
+        self.assertEqual(_command_kind(cmd), "any")
+        crit = _tracker("тесты проходят")
+        _record_bash(crit, cmd)
+        self.assertEqual(crit.items[0]["status"], "unconfirmed")
+
+    def test_wrapped_dependency_install_does_not_confirm_tests(self):
+        cmd = 'cmd /c "npm install -D jest ts-jest @testing-library/react"'
+        self.assertEqual(_command_kind(cmd), "any")
+        crit = _tracker("тесты проходят")
+        _record_bash(crit, cmd)
+        self.assertEqual(crit.items[0]["status"], "unconfirmed")
+
+    def test_install_then_real_test_uses_the_executed_test_segment(self):
+        crit = _tracker("тесты проходят")
+        _record_bash(crit, "npm install --silent && npm test")
+        self.assertEqual(crit.items[0]["status"], "confirmed")
 
     def test_green_test_run_confirms_and_red_fails(self):
         crit = _tracker("тесты проходят")
@@ -178,6 +207,87 @@ class VerifierKindMatchingTest(unittest.TestCase):
         anyc = _tracker("доступные проверки проходят")
         _record_bash(anyc, "npm run typecheck")
         self.assertEqual(anyc.items[0]["status"], "confirmed")
+
+
+class TaskSpecWorkflowBoundaryTest(unittest.TestCase):
+    def test_work_order_after_criteria_does_not_become_more_criteria(self):
+        task = """Цель:
+Сделать Mini CRM.
+
+Критерии готовности:
+- приложение запускается
+- тесты проходят
+
+Порядок работы:
+1. Осмотри текущую папку и существующий стек.
+2. Сразу реализуй приложение целиком.
+3. Запусти тесты и самостоятельно исправь ошибки.
+4. Запусти приложение и сообщи локальный URL.
+Не спрашивай о мелких деталях.
+"""
+        spec = derive_task_spec(task)
+        self.assertIsNotNone(spec)
+        self.assertEqual(spec.success_criteria, ["приложение запускается", "тесты проходят"])
+        details = " ".join(spec.details).lower()
+        self.assertIn("осмотри текущую папку", details)
+        self.assertIn("локальный url", details)
+
+
+class NamedBehaviorEvidenceTest(unittest.TestCase):
+    def test_plain_green_summary_does_not_claim_crud_behavior(self):
+        crit = _tracker("клиент создаётся, редактируется, ищется и удаляется")
+        _record_bash(crit, "npm test", output="Tests: 24 passed, 24 total")
+        self.assertEqual(crit.items[0]["status"], "unconfirmed")
+
+    def test_all_named_passed_operations_confirm_crud_behavior(self):
+        crit = _tracker("клиент создаётся, редактируется, ищется и удаляется")
+        output = """
+PASS src/App.test.tsx
+  ✓ creates a new client
+  ✓ edits an existing client
+  ✓ searches clients by name
+  ✓ deletes a client with confirmation
+Tests: 4 passed, 4 total
+"""
+        _record_bash(crit, "npm test -- --verbose", output=output)
+        self.assertEqual(crit.items[0]["status"], "confirmed")
+
+    def test_missing_named_operation_keeps_behavior_unconfirmed(self):
+        crit = _tracker("клиент создаётся, редактируется, ищется и удаляется")
+        output = """
+  ✓ creates a new client
+  ✓ edits an existing client
+  ✓ deletes a client
+Tests: 3 passed, 3 total
+"""
+        _record_bash(crit, "npm test -- --verbose", output=output)
+        self.assertEqual(crit.items[0]["status"], "unconfirmed")
+
+    def test_named_deal_task_and_persistence_checks_are_supported(self):
+        cases = [
+            (
+                "сделка создаётся и меняет этап",
+                "  ✓ adds a deal linked to a client\n  ✓ changes deal stage\n",
+            ),
+            (
+                "задача создаётся и завершается",
+                "  ✓ adds a task linked to a client\n  ✓ completes a task\n",
+            ),
+            (
+                "данные переживают перезагрузку",
+                "  ✓ loads existing data from localStorage after reload\n",
+            ),
+        ]
+        for text, output in cases:
+            with self.subTest(text=text):
+                crit = _tracker(text)
+                _record_bash(crit, "npm test -- --verbose", output=output)
+                self.assertEqual(crit.items[0]["status"], "confirmed")
+
+    def test_focused_tests_criterion_is_a_test_check(self):
+        crit = _tracker("добавлены focused-тесты для хранилища и основных CRUD-операций")
+        _record_bash(crit, "npm test", output="Tests: 24 passed, 24 total")
+        self.assertEqual(crit.items[0]["status"], "confirmed")
 
 
 # ── D3: delivery continues after answer/unverified with open checklist ───────

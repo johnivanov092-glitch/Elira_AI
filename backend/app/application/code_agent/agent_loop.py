@@ -31,6 +31,11 @@ from app.application.tool_providers import (
     build_lsp_providers,
     build_mcp_providers,
 )
+from app.application.tool_providers.mcp_provider import (
+    creative_batch_redirect,
+    creative_procedural_companion,
+    creative_workflow_prompt,
+)
 from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE, strategy_family
 from app.application.code_agent.planning import (
     PlanArtifact,
@@ -558,6 +563,7 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     _SSH_REQUEST_HOST_SCHEMA,
     _TOOL_SEARCH_SCHEMA,
     FACTS_PREFIX,
+    _EXTERNAL_EVIDENCE_NUDGE_MAX,
     _GROUNDING_NUDGE_MAX,
     _NEAR_DUP_LIMIT,
     _NEAR_DUP_NUDGE_AT,
@@ -569,6 +575,10 @@ from app.application.code_agent.loop_helpers import (  # noqa: F401
     gate_completion_claims,
     _recent_tool_snippet,
     _recent_tools_digest,
+    _answer_admits_missing_external_evidence,
+    _external_evidence_backstop,
+    _requires_external_evidence,
+    _tool_provides_external_evidence,
     RECENT_TOOLS_PREFIX,
     format_checklist_state,
     resume_checklist_guard,
@@ -785,10 +795,12 @@ def _stream_code_agent_core(
             narrowed = tuple(t for t in initial_tools if t in _CODE_AGENT_READONLY_TOOLS)
             initial_tools = narrowed or _CODE_AGENT_READONLY_TOOLS
         else:
-            # SSH-shaped run → offer ssh_run/ssh_read/ssh_write/ssh_run_ps from step
-            # one, so the model uses the clean remote tools instead of drowning in
-            # raw `ssh host "…"` through run_bash. Intent-gated (task names ssh or an
-            # allowlisted host) so normal runs and the prompt canaries pay nothing.
+            # SSH-shaped conversation → offer ssh_run/ssh_read/ssh_write/ssh_run_ps
+            # from step one. Activations are run-scoped, while a chat follow-up is a
+            # new run, so current-message-only detection made "повтори" forget the
+            # SSH tools and fall back to raw run_bash. Include a bounded recent-chat
+            # window for visibility only; executor policy and the host allowlist
+            # remain authoritative.
             try:
                 from app.application.tool_providers.ssh_acl import (
                     get_allowed_hosts as _ssh_hosts,
@@ -796,7 +808,14 @@ def _stream_code_agent_core(
                 )
 
                 if _ssh_on():
-                    _low = (user_message or "").lower()
+                    _ssh_context = [str(user_message or "")]
+                    for _turn in list(conversation_history or [])[-8:]:
+                        if not isinstance(_turn, dict):
+                            continue
+                        _content = _turn.get("content")
+                        if isinstance(_content, str) and _content:
+                            _ssh_context.append(_content[:4000])
+                    _low = "\n".join(_ssh_context).lower()
                     _hosts = [h.lower() for h in _ssh_hosts()]
                     if "ssh" in _low or any(h and h in _low for h in _hosts):
                         initial_tools = tuple(dict.fromkeys((*initial_tools, *_SSH_ACTIVATABLE_TOOLS)))
@@ -824,6 +843,26 @@ def _stream_code_agent_core(
             )
             if _doc_format and _doc_generate:
                 initial_tools = tuple(dict.fromkeys((*initial_tools, "file_gen")))
+            # Explicit desktop-control intent -> offer the real `computer` tool
+            # from step one. It is intentionally not a BASE_TOOL, but requiring
+            # the model to discover a tool the user named caused false claims
+            # that desktop control did not exist. Visibility only: the executor
+            # still applies the normal approval/bypass policy to every action.
+            _computer_context = [str(user_message or "")]
+            for _turn in list(conversation_history or [])[-8:]:
+                if not isinstance(_turn, dict):
+                    continue
+                _content = _turn.get("content")
+                if isinstance(_content, str) and _content:
+                    _computer_context.append(_content[:4000])
+            if re.search(
+                r"(?:\bcomputer(?:[\s_-]*use)?\b|"
+                r"(?:управл\w*|работ\w*).{0,40}(?:рабоч\w*\s+стол|мыш\w*|клавиатур\w*)|"
+                r"(?:сделай|сними|покажи).{0,30}скриншот.{0,20}(?:экрана|рабочего\s+стола))",
+                "\n".join(_computer_context),
+                re.IGNORECASE,
+            ):
+                initial_tools = tuple(dict.fromkeys((*initial_tools, "computer")))
         enable_deferred_tools(rid, initial_tools)
         chat = chat_fn or _local_chat
         stream_chat = chat_stream_fn
@@ -834,6 +873,22 @@ def _stream_code_agent_core(
             root, working_dir=working_dir, active_tools=initial_tools, model_name=model,
             profile_name=profile_name, task_text=user_message,
         )
+        _creative_context = [str(user_message or "")]
+        for _turn in list(conversation_history or [])[-8:]:
+            if isinstance(_turn, dict) and isinstance(_turn.get("content"), str):
+                _creative_context.append(str(_turn["content"])[:4000])
+        if re.search(
+            r"(?:\bblender\b|\bunity\b|блендер|юнити|сцен\w*|scene\w*|"
+            r"префаб\w*|prefab\w*|террейн\w*|terrain\w*|\b3d\b)",
+            "\n".join(_creative_context),
+            re.IGNORECASE,
+        ):
+            _creative_prompt = creative_workflow_prompt({
+                _schema_tool_name(schema) for schema in all_schemas
+                if _schema_tool_name(schema)
+            })
+            if _creative_prompt:
+                system_prompt += "\n\n" + _creative_prompt
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
         # Anti-refusal nudge: if user clearly asks to execute, remind the model.
@@ -883,6 +938,7 @@ def _stream_code_agent_core(
         # the exact-fingerprint guard below misses. Streak = consecutive near-dups.
         near_dup_recent: list[tuple[str, frozenset[str]]] = []
         near_dup_streak = 0
+        creative_batch_streak = 0
         # Grounding across turns: compact facts the discovery tools revealed this
         # run, handed back next turn as an authoritative context block so the
         # model grounds instead of confabulating (see loop_helpers._fact_from_tool
@@ -984,6 +1040,11 @@ def _stream_code_agent_core(
         # inventing test_main.py/setup.py). Bounded; only on an actual unverified
         # file claim, so normal answers never see it.
         grounding_nudge_fires = 0
+        # External factual claims need a source the runtime actually read. Search
+        # snippets are discovery, not evidence; web_fetch/browser/http_api (or a
+        # verified corpus query/claim) set this only after successful execution.
+        external_evidence_seen = False
+        external_evidence_nudge_fires = 0
         # Anti-confabulation for generated documents: fires when the finalizing
         # answer presents a .docx/.xlsx as ready while no successful file_gen ran.
         docgen_nudge_fires = 0
@@ -1019,6 +1080,8 @@ def _stream_code_agent_core(
         # Word document. Feeds the anti-confabulation guard (exact-name match).
         generated_docs: list[str] = []
         volume_nudge_fired = False     # one "converge, you're deep into the turn" nudge
+        remote_fact_count = 0
+        remote_fact_nudge_fired = False
 
         # ── Bounded planning stage (thinking=true + structural task) ──────────
         # «Мозг» = ONE bounded planning stage, then every execution/verification
@@ -1216,6 +1279,14 @@ def _stream_code_agent_core(
             step_schemas.append(_TOOL_SEARCH_SCHEMA)
             step_schemas.append(_ASK_USER_SCHEMA)
             step_schemas.append(_SSH_REQUEST_HOST_SCHEMA)
+            # Inline recovery must use exactly what the model was offered this
+            # step. ask_user/ssh_request_host are loop-owned schemas and are not
+            # provider registry entries, so registry.known_tools() incorrectly
+            # dropped their otherwise valid action envelopes as plain text.
+            _visible_tool_names = {
+                name for schema in step_schemas
+                if (name := _schema_tool_name(schema))
+            }
             llm_prompt_chars = _messages_char_count(messages)
             llm_start = time.monotonic()
             try:
@@ -1412,7 +1483,7 @@ def _stream_code_agent_core(
             # loop still works.
             inline_calls: list[dict[str, Any]] = []
             if not tool_calls and content:
-                inline_calls = _extract_inline_tool_calls(content, registry.known_tools())
+                inline_calls = _extract_inline_tool_calls(content, _visible_tool_names)
                 if inline_calls:
                     tool_calls = inline_calls
                     content = ""  # JSON was the tool call, not a text reply
@@ -1425,7 +1496,7 @@ def _stream_code_agent_core(
             # malformed turn we ask the model to re-send once; after that we
             # fall back to the existing behaviour rather than loop forever.
             if tool_calls and envelopes_enabled():
-                known = registry.known_tools()
+                known = _visible_tool_names
                 all_valid = all(
                     validate_tool_request(c, known) is not None for c in tool_calls
                 )
@@ -1600,6 +1671,40 @@ def _stream_code_agent_core(
                             "вызова инструмента нельзя — это не выполненная "
                             "работа. Дай итог только когда правки реально внесены "
                             "и проверены."
+                        ),
+                    })
+                    continue
+                # External-fact evidence gate: prompts alone did not stop local
+                # models from inventing founders, dates, medical advice and
+                # official-source checks. Give the model one bounded chance to
+                # read a real source. If it still refuses, finalization below
+                # replaces the unsupported prose with an honest runtime backstop.
+                _answer_external = content or last_text
+                if (
+                    _answer_external
+                    and _requires_external_evidence(user_message, _answer_external)
+                    and not external_evidence_seen
+                    and not _answer_admits_missing_external_evidence(_answer_external)
+                    and external_evidence_nudge_fires < _EXTERNAL_EVIDENCE_NUDGE_MAX
+                ):
+                    external_evidence_nudge_fires += 1
+                    try:
+                        from app.application.agent_kernel.deferred_tools import activate_tools
+
+                        activate_tools(rid, ["web_search", "web_fetch"])
+                    except Exception:
+                        pass
+                    messages.append({"role": "assistant", "content": _answer_external})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Ты собираешься дать внешний фактический ответ без "
+                            "прочитанного источника. Не отвечай по памяти: выполни "
+                            "`web_search`, затем прочитай внешний источник через "
+                            "`web_fetch(store=true)` (для нескольких URL используй "
+                            "один пакетный вызов). Только после успешного чтения дай "
+                            "ответ со ссылкой. Если источник недоступен или факт не "
+                            "подтверждается — честно так и скажи без догадок."
                         ),
                     })
                     continue
@@ -1869,6 +1974,12 @@ def _stream_code_agent_core(
                             "— реестр добавит runtime. Затем дай финальный ответ.")})
                         continue
                 final_text = _strip_tool_call_markup(content or last_text)
+                if (
+                    _requires_external_evidence(user_message, final_text)
+                    and not external_evidence_seen
+                    and not _answer_admits_missing_external_evidence(final_text)
+                ):
+                    final_text = _external_evidence_backstop()
                 # Finalizing for real (closure gate is done): a conditional criterion
                 # still open is n/a (e.g. no `npm run typecheck` script) → mark skipped so
                 # it isn't reported as an unanswered failure.
@@ -2142,39 +2253,18 @@ def _stream_code_agent_core(
                         **_completion_fields(criteria, terminated_incomplete=True),
                     }
                     return
-                # Near-duplicate loop: same tool, slightly-varying args (ping/recall
-                # churn). Collapses variants the exact guard above misses, so a spin
-                # is cut in ~6 calls instead of ~50. Exempt tools (todo/tool_search/
-                # ask_user) are skipped; legit different-file calls have low overlap.
+                # Near-duplicate CANDIDATE only. The stop decision is made after
+                # execution, when the progress router knows whether this call produced
+                # a fresh grounded fact. Similar read-only probes on one host are not
+                # a loop when each one discovers something new.
                 _nd_tokens = _arg_tokens(parsed_args)
-                if name not in _LOOP_GUARD_EXEMPT_TOOLS and _is_near_dup(name, _nd_tokens, near_dup_recent):
-                    near_dup_streak += 1
-                else:
-                    near_dup_streak = 0
+                _near_dup_candidate = (
+                    name not in _LOOP_GUARD_EXEMPT_TOOLS
+                    and _is_near_dup(name, _nd_tokens, near_dup_recent)
+                )
                 near_dup_recent.append((name, _nd_tokens))
                 if len(near_dup_recent) > 8:
                     near_dup_recent = near_dup_recent[-8:]
-                if near_dup_streak >= _NEAR_DUP_LIMIT:
-                    final_text = _deterministic_stop_summary(
-                        f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",
-                        call_log, touched_files, established_facts,
-                        exhausted_strategies=progress.exhausted_summary(),
-                        next_step=_next_step_after_failure(),
-                    )
-                    yield {"type": "final_response", "step": step, "text": final_text}
-                    yield {
-                        "type": "done",
-                        "ok": False,
-                        "steps": step,
-                        "stop_reason": "loop_guard",
-                        "error": f"near-duplicate tool loop: {name}",
-                        # Carry the verified facts forward even on an interrupted run,
-                        # so the NEXT turn keeps its grounding instead of starting blind
-                        # (the wrap-up summary alone used to be all that survived).
-                        "established_facts": _facts_digest(established_facts),
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
                 # Scoped Read-Only SSH: in a bound read-only diagnostic run the ONLY
                 # allowed tools are tool_search (discovery) and the ONE bound adapter
                 # tool (kernel-gated). The meta-tools below (ask_user / ssh_request_host
@@ -2383,6 +2473,7 @@ def _stream_code_agent_core(
                     # call, not the model's.
                     from app.application.tool_providers.ssh_acl import (
                         get_allowed_hosts as _get_hosts,
+                        resolve_allowed_host as _resolve_ssh_host,
                         set_allowed_hosts as _set_hosts,
                     )
 
@@ -2402,9 +2493,11 @@ def _stream_code_agent_core(
                         tool_round_trips += 1
                         call_log.append("ssh_request_host(empty)")
                         continue
-                    if _host in _get_hosts():
+                    _allowed_alias = _resolve_ssh_host(_host)
+                    if _allowed_alias is not None:
+                        _host = _allowed_alias
                         yield from _ssh_req_return(
-                            f"Хост '{_host}' уже в SSH-интеграции — ssh_run к нему уже работает.",
+                            f"Хост '{_host}' уже в SSH-интеграции — используй этот точный alias в ssh_*.",
                             True, "already")
                         tool_round_trips += 1
                         call_log.append(f"ssh_request_host({_host}:already)")
@@ -2738,6 +2831,8 @@ def _stream_code_agent_core(
                     "touched_path", "old_content", "new_content", "diff_action",
                     "exit_code", "verifier", "evidence", "download_url",
                     "download_name", "project_path", "size", "sha256",
+                    "actual_url", "local_url", "actual_port", "port", "pid",
+                    "server_started",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
@@ -2781,6 +2876,11 @@ def _stream_code_agent_core(
                             already_read=_path in read_paths,
                             open_criterion=_open_crit,
                         )
+                elif _exec_result.status == "ok" and bool(tool_meta.get("ok", True)):
+                    # A later successful operation makes an unrelated old failure a
+                    # bad deterministic continuation hint. Keep historical failure
+                    # evidence, but clear the ACTIVE failure context.
+                    _last_failure = {}
                 # Smart-truncate tool output before feeding it back to the
                 # LLM. Without this, a single huge `run_bash` or `read_file`
                 # could blow out `num_ctx` and start eating the system
@@ -2830,6 +2930,48 @@ def _stream_code_agent_core(
                     name=name, args=parsed_args, tool_meta=tool_meta, fact=_fact,
                     criterion_progress=criterion_progress,
                 )
+                _creative_companion = creative_procedural_companion(name)
+                if _creative_companion:
+                    creative_batch_streak += 1
+                    # Make the correct procedural escape hatch visible before the
+                    # model needs it. This grants visibility only; the kernel still
+                    # applies the explicit arbitrary-code approval gate.
+                    try:
+                        from app.application.agent_kernel.deferred_tools import activate_tools
+
+                        activate_tools(rid, [_creative_companion])
+                    except Exception:
+                        logger.warning(
+                            "failed to activate creative companion %s",
+                            _creative_companion,
+                            exc_info=True,
+                        )
+                elif name.startswith(("blender__", "unity__")):
+                    creative_batch_streak = 0
+                # Similarity alone is not a loop. Count only consecutive similar
+                # calls that failed to move state OR reveal a fresh grounded fact.
+                if verdict.status == "progress":
+                    near_dup_streak = 0
+                elif _near_dup_candidate:
+                    near_dup_streak += 1
+                else:
+                    near_dup_streak = 0
+                _near_dup_should_stop = near_dup_streak >= _NEAR_DUP_LIMIT
+                if (
+                    verdict.status == "progress"
+                    and _fact
+                    and name in {"ssh_run", "ssh_run_ps", "ssh_read"}
+                ):
+                    remote_fact_count += 1
+                    if remote_fact_count >= 10 and not remote_fact_nudge_fired:
+                        remote_fact_nudge_fired = True
+                        _tool_content += (
+                            "\n\n[investigation-budget] Уже собрано 10 новых "
+                            "подтверждённых фактов с удалённого хоста. Сформируй "
+                            "итоговый ответ сейчас. Вызывай ещё один инструмент только "
+                            "если можешь назвать конкретный отсутствующий факт, без "
+                            "которого нельзя ответить пользователю."
+                        )
                 # Repetition nudges (exact / near-dup) — orthogonal to the router.
                 _rc = repeated_tool_calls.get(fingerprint, 0)
                 if name not in _LOOP_GUARD_EXEMPT_TOOLS and _REPEATED_TOOL_CALL_NUDGE_AT <= _rc < _REPEATED_TOOL_CALL_LIMIT:
@@ -2841,10 +2983,21 @@ def _stream_code_agent_core(
                     )
                 elif name not in _LOOP_GUARD_EXEMPT_TOOLS and _NEAR_DUP_NUDGE_AT <= near_dup_streak < _NEAR_DUP_LIMIT:
                     _left = _NEAR_DUP_LIMIT - near_dup_streak
+                    _creative_redirect = creative_batch_redirect(name)
                     _tool_content += (
                         f"\n\n[loop-guard] Ты повторяешь похожие вызовы {name} с чуть разными "
-                        f"аргументами — это не двигает задачу. Смени ПОДХОД: другой инструмент/данные, "
-                        f"прочитай реальные файлы или спроси пользователя. Ещё {_left} до остановки."
+                        f"аргументами — это не двигает задачу. "
+                        + (
+                            _creative_redirect
+                            if _creative_redirect
+                            else "Смени ПОДХОД: другой инструмент/данные, прочитай реальные файлы или спроси пользователя."
+                        )
+                        + f" Ещё {_left} до остановки."
+                    )
+                if creative_batch_streak >= 3 and _creative_companion:
+                    _tool_content += (
+                        "\n\n[creative-workflow] "
+                        + creative_batch_redirect(name)
                     )
                 # Strategy redirect (SOFT — not a stop): this method is exhausted,
                 # switch families. Injected once per exhaustion; movement re-arms it.
@@ -2880,6 +3033,30 @@ def _stream_code_agent_core(
                 _recent = _recent_tool_snippet(name, _hint, text_result)
                 if _recent:
                     recent_tool_outputs.append(_recent)
+                if (
+                    _exec_result.status == "ok"
+                    and bool(tool_meta.get("ok", True))
+                    and _tool_provides_external_evidence(name, text_result)
+                ):
+                    external_evidence_seen = True
+                if _near_dup_should_stop:
+                    final_text = _deterministic_stop_summary(
+                        f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",
+                        call_log, touched_files, established_facts,
+                        exhausted_strategies=progress.exhausted_summary(),
+                        next_step=_next_step_after_failure(),
+                    )
+                    yield {"type": "final_response", "step": step, "text": final_text}
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "loop_guard",
+                        "error": f"near-duplicate tool loop: {name}",
+                        "established_facts": _facts_digest(established_facts),
+                        **_completion_fields(criteria, terminated_incomplete=True),
+                    }
+                    return
                 # Honest stop: the families/budget for this target are spent.
                 # Deterministic report from the journal (never a retelling by the
                 # stuck model), with the exhausted strategies named.
@@ -3229,6 +3406,8 @@ def run_code_agent(
                     "ok", "exit_code", "verifier", "evidence",
                     "touched_path", "old_content", "new_content", "diff_action",
                     "download_url", "download_name", "project_path", "size", "sha256",
+                    "actual_url", "local_url", "actual_port", "port", "pid",
+                    "server_started",
                 ) if k in event},
             })
         elif et == "final_response":

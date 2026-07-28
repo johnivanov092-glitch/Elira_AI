@@ -19,11 +19,32 @@ export type DownloadArtifact = {
   key: string;
 };
 
+export type ServerArtifact = {
+  url: string;
+  port?: number;
+  pid?: number;
+  key: string;
+};
+
 export type Artifacts = {
   file?: FileArtifact;
   console?: string;
   download?: DownloadArtifact;
+  server?: ServerArtifact;
 };
+
+function safeLoopbackUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if ((url.protocol !== "http:" && url.protocol !== "https:")
+      || !["localhost", "127.0.0.1"].includes(host)) return undefined;
+    return url.href.replace(/\/$/, "");
+  } catch {
+    return undefined;
+  }
+}
 
 /** Derive previewable artifacts from a run's tool calls: the latest written
  *  file (write_file/edit_file), the latest generated download (file_gen), and
@@ -32,6 +53,7 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
   let file: FileArtifact | undefined;
   let consoleOut: string | undefined;
   let download: DownloadArtifact | undefined;
+  let server: ServerArtifact | undefined;
   let callIdx = 0; // global tool-call position across the run — the download's identity
   for (const t of turns) {
     if (t.kind !== "agent") continue;
@@ -54,12 +76,32 @@ export function deriveArtifacts(turns: Turn[]): Artifacts {
           name: c.download_name || c.touched_path?.split(/[\\/]/).pop() || "файл",
           key: `${callIdx}:${c.download_url}`,
         };
+      } else if (c.tool === "run_server") {
+        const action = String(c.arguments?.action || "start").toLowerCase();
+        const url = c.ok !== false ? safeLoopbackUrl(c.actual_url || c.local_url) : undefined;
+        if (url && c.server_started !== false) {
+          server = {
+            url,
+            port: c.actual_port ?? c.port,
+            pid: c.pid,
+            key: `${callIdx}:${url}`,
+          };
+        } else if (c.ok !== false && action === "stop_all") {
+          server = undefined;
+        } else if (c.ok !== false && action === "stop"
+          && (!server?.pid || Number(c.arguments?.pid) === server.pid)) {
+          server = undefined;
+        }
       } else if (c.tool === "sandbox_run" || c.tool === "run_bash") {
         consoleOut = c.result;
       }
     }
   }
-  return { file, console: consoleOut, download };
+  return { file, console: consoleOut, download, server };
+}
+
+export function serverArtifactKey(a: Artifacts): string {
+  return a.server?.key ?? "";
 }
 
 /** Stable key for the current download artifact (tool-call position + URL) — drives

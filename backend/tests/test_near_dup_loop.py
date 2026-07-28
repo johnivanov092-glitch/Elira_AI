@@ -80,8 +80,10 @@ class _SeqChat:
         self._r = responses
         self._fb = fallback
         self._i = 0
+        self.requests = []
 
     def __call__(self, **kw):
+        self.requests.append(kw)
         r = self._r[self._i] if self._i < len(self._r) else self._fb
         self._i += 1
         return r
@@ -97,7 +99,7 @@ def _final(text="готово"):
 
 class NearDupLoopTest(unittest.TestCase):
     def tearDown(self):
-        for rid in ("nd-ping", "nd-files"):
+        for rid in ("nd-ping", "nd-files", "nd-ssh-investigation"):
             deferred_tools.clear_run(rid)
 
     def test_ping_churn_is_cut_fast(self):
@@ -130,6 +132,76 @@ class NearDupLoopTest(unittest.TestCase):
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "answer")
         self.assertNotIn("near-duplicate", str(done.get("error")))
+
+    def test_distinct_successful_ssh_investigation_is_not_near_dup(self):
+        """The live services audit used one host/tool but inspected different
+        resources. Fresh successful facts must break the similarity streak."""
+        commands = [
+            "ps aux --sort=-%mem | head -60",
+            "ss -tlnp | sort -t: -k2 -n",
+            'docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"',
+            "curl -s http://127.0.0.1:8003/ | head -5",
+            "curl -s http://127.0.0.1:8005/ | head -5",
+            'sudo docker ps --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"',
+            "curl -s http://127.0.0.1:8005/docs 2>&1 | head -20",
+            "cat /etc/netdata/.env 2>/dev/null; ls /etc/netdata/ 2>/dev/null | head -20",
+            "ls /app/ 2>/dev/null",
+            "cat /home/claude/silero-tts/bin/python --version 2>&1; "
+            "ls /home/claude/silero-tts/ 2>/dev/null | head -20",
+            "cat /etc/go2rtc.yaml 2>/dev/null | head -30",
+            "ls -la /home/claude/silero-tts/ | head -20",
+            "ls /usr/local/bin/ | grep -E 'searxng|ocr|whisper|tts|mcp|home' 2>/dev/null",
+            "ls /opt/ 2>/dev/null",
+            "ls /home/ 2>/dev/null",
+            "ls /opt/elira/ 2>/dev/null",
+            "ls /home/aiadmin/ 2>/dev/null",
+        ]
+        failed = {commands[2], commands[5], commands[8], commands[12], commands[16]}
+        calls = [_call("ssh_run", host="elira-ai-server", command=cmd, timeout=10)
+                 for cmd in commands]
+        chat = _SeqChat(calls + [_final("сводка сервисов")], _final())
+
+        def _exec(request, **_kwargs):
+            cmd = str(request.args.get("command") or "")
+            if cmd in failed:
+                return SimpleNamespace(
+                    status="error",
+                    output={"text": f"$ {cmd}\nexit=1", "ok": False, "exit_code": 1},
+                )
+            return SimpleNamespace(
+                status="ok",
+                output={
+                    "text": f"$ {cmd}\nexit=0\nSTDOUT: confirmed {cmd}",
+                    "ok": True,
+                    "exit_code": 0,
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message="проверь сервисы на AI server", project_root=tmp,
+                run_id="nd-ssh-investigation", auto_remember=False,
+                permission_mode="bypass", max_steps=40, chat_fn=chat,
+            ))
+
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")
+        self.assertNotIn("near-duplicate", str(done.get("error")))
+        injected = "\n".join(
+            str(message.get("content") or "")
+            for request in chat.requests
+            for message in request.get("messages", [])
+            if isinstance(message, dict)
+        )
+        self.assertNotIn("[loop-guard] Ты повторяешь похожие вызовы ssh_run", injected)
+        final_messages = chat.requests[-1].get("messages", [])
+        final_context = "\n".join(
+            str(message.get("content") or "")
+            for message in final_messages
+            if isinstance(message, dict)
+        )
+        self.assertEqual(final_context.count("[investigation-budget]"), 1)
 
 
 if __name__ == "__main__":

@@ -61,7 +61,9 @@ class ScriptedChat:
         self._i = 0
         self.tools_per_call: list[list[str]] = []
 
-    def __call__(self, *, model, messages, tools, options):
+    def __call__(self, *, model, messages, tools=None, options):
+        if tools is None:
+            return _final("summary")
         self.tools_per_call.append([(t.get("function") or {}).get("name") for t in (tools or [])])
         resp = self._responses[min(self._i, len(self._responses) - 1)]
         self._i += 1
@@ -108,6 +110,35 @@ class DeferredLoopTest(unittest.TestCase):
             self.assertNotIn(lt, first)
         for core in ("write_file", "edit_file", "run_bash"):
             self.assertIn(core, first)
+
+    def test_followup_reuses_recent_ssh_context_for_tool_visibility(self):
+        chat = ScriptedChat([_final()])
+        ssh_schemas = [
+            _schema(n)
+            for n in (
+                list(_CODE_AGENT_BASE_TOOLS)
+                + list(_LONG_TAIL)
+                + list(agent_loop._SSH_ACTIVATABLE_TOOLS)
+            )
+        ]
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_resolve_code_route", return_value=("test-model", 65536, None)), \
+             patch.object(ToolRegistry, "collect_schemas", return_value=ssh_schemas), \
+             patch("app.application.tool_providers.ssh_acl.is_ssh_enabled", return_value=True), \
+             patch("app.application.tool_providers.ssh_acl.get_allowed_hosts", return_value=["ai-server"]):
+            list(agent_loop.stream_code_agent(
+                user_message="повтори",
+                conversation_history=[
+                    {"role": "user", "content": "Выполни через ssh ai-server"},
+                    {"role": "assistant", "content": "Не удалось, повторю другим способом."},
+                ],
+                project_root=tmp,
+                run_id="rSshFollowup",
+                auto_remember=False,
+                chat_fn=chat,
+            ))
+        first = set(chat.tools_per_call[0])
+        self.assertTrue(set(agent_loop._SSH_ACTIVATABLE_TOOLS) <= first)
 
     def test_tool_search_called_with_injected_run_id(self):
         chat = ScriptedChat([_call("tool_search", query="web"), _final()])
@@ -317,6 +348,63 @@ class DocumentIntentPreactivationTest(unittest.TestCase):
         tc = [e for e in events if e.get("type") == "tool_call" and e.get("tool") == "file_gen"]
         self.assertEqual(len(tc), 1)
         self.assertIn("not activated", tc[0]["result"].lower())
+
+
+# Explicit desktop-control intent must expose the real tool up front. The tool
+# remains deferred for unrelated turns, so the base schema budget is unchanged.
+_FAKE_SCHEMAS_COMPUTER = [
+    _schema(n)
+    for n in (list(_CODE_AGENT_BASE_TOOLS) + list(_LONG_TAIL) + ["computer"])
+]
+
+
+@contextlib.contextmanager
+def _loop_env_computer():
+    with patch.object(agent_loop, "_resolve_code_route", return_value=("test-model", 16384, None)), \
+         patch.object(agent_loop, "_record_code_route_metric"), \
+         patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
+         patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS_COMPUTER)), \
+         patch("app.application.agent_registry.sandbox.preflight_or_raise",
+               return_value={"limit": {"max_execution_seconds": 600}}):
+        yield
+
+
+class ComputerIntentPreactivationTest(unittest.TestCase):
+    def tearDown(self):
+        for rid in ("computer1", "computer2", "computer3"):
+            deferred_tools.clear_run(rid)
+
+    def test_explicit_computer_use_is_visible_on_first_model_call(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_computer():
+            _run_msg(
+                chat,
+                run_id="computer1",
+                user_message="используй computer use и сделай screenshot",
+            )
+        self.assertIn("computer", set(chat.tools_per_call[0]))
+
+    def test_recent_desktop_context_keeps_computer_visible_on_followup(self):
+        chat = ScriptedChat([_final()])
+        with tempfile.TemporaryDirectory() as tmp, _loop_env_computer():
+            list(agent_loop.stream_code_agent(
+                user_message="продолжай",
+                conversation_history=[
+                    {"role": "user", "content": "Открой computer use и управляй рабочим столом"},
+                    {"role": "assistant", "content": "Приступаю."},
+                ],
+                project_root=tmp,
+                run_id="computer2",
+                auto_remember=False,
+                chat_fn=chat,
+            ))
+        self.assertIn("computer", set(chat.tools_per_call[0]))
+
+    def test_unrelated_turn_keeps_computer_deferred(self):
+        chat = ScriptedChat([_final()])
+        with _loop_env_computer():
+            _run_msg(chat, run_id="computer3", user_message="прочитай README")
+        self.assertNotIn("computer", set(chat.tools_per_call[0]))
 
 
 if __name__ == "__main__":

@@ -59,6 +59,25 @@ def _base_tools_for_mode(mode: CodeAgentMode) -> tuple[str, ...] | None:
     return None
 
 
+def _base_tools_for_request(
+    mode: CodeAgentMode,
+    resource_refs: list[dict] | None,
+) -> tuple[str, ...] | None:
+    """Expose only the resource tools needed by this request.
+
+    They remain outside the global base set, but an attached resource must not
+    depend on fuzzy tool_search ranking before the model can read it.
+    """
+    configured = _base_tools_for_mode(mode)
+    if not resource_refs:
+        return configured
+    tools = list(configured if configured is not None else _CODE_AGENT_BASE_TOOLS)
+    tools.append("resource_process")
+    if any(str(ref.get("kind") or "") == "image" for ref in resource_refs):
+        tools.append("read_image")
+    return tuple(dict.fromkeys(tools))
+
+
 def _inject_library_context(message: str) -> str:
     """Prepend active library-file previews to the user's message.
 
@@ -180,6 +199,13 @@ def _inject_resource_context(message: str, refs: list[dict] | None) -> str:
         "по нужному resource_id. Не придумывай содержимое и не проси прислать файл.]",
     ]
     for ref in refs:
+        if str(ref.get("kind") or "") == "image":
+            lines.append(
+                "[ATTACHED IMAGE ROUTE: this attachment is not a project file path. "
+                f"Call read_image(resource_id=\"{ref['resource_id']}\") to describe it. "
+                "Do not call read_file or read_image(path=...) for its display name, "
+                "and never substitute another file.]"
+            )
         lines.append(json.dumps({
             "resource_id": ref["resource_id"],
             "name": ref["name"],
@@ -377,6 +403,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                                 detail="diagnostic run already used or not bound to a live scope")
     history = [m.model_dump() for m in (payload.conversation_history or [])]
     resource_refs = _bind_run_resources(run_id, payload.session_id, payload.resources)
+    request_base_tools = _base_tools_for_request(payload.mode, resource_refs)
     user_message = _inject_library_context(
         _inject_resource_context(
             _inject_attachment_context(payload.message, payload.attachments),
@@ -398,7 +425,7 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 max_steps=payload.max_steps,
                 conversation_history=history,
                 num_ctx=payload.num_ctx,
-                base_tools=_base_tools_for_mode(payload.mode),
+                base_tools=request_base_tools,
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
                 approval_wait_seconds=payload.approval_wait_seconds,

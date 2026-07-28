@@ -32,8 +32,8 @@ from typing import Any
 
 from app.application.tool_providers.ssh_acl import (
     get_allowed_hosts,
-    is_host_allowed,
     is_ssh_enabled,
+    resolve_allowed_host,
 )
 from app.infrastructure.encoding import decode_console
 from app.infrastructure.text import truncate_middle
@@ -60,12 +60,16 @@ def _truncate_for_llm(text: str, limit: int = _LLM_OUTPUT_LIMIT) -> str:
 def _ssh_args(host: str) -> list[str]:
     """Shared ssh flags every tool uses. Order matters here — flags
     before the destination."""
+    # Public tools validate first. Re-resolve here so a human-facing spelling is
+    # never passed to ssh; if the ACL changes in the tiny gap, let ssh fail on the
+    # already-validated argv token instead of raising outside helper try-blocks.
+    canonical = resolve_allowed_host(host) or host.strip()
     return [
         "ssh",
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=10",
         "-o", "StrictHostKeyChecking=accept-new",
-        host,
+        canonical,
     ]
 
 
@@ -76,9 +80,9 @@ def _validate_host(host: str) -> str | None:
     h = host.strip()
     # Block obvious metacharacters that could confuse argv parsing
     # elsewhere or be a sign the agent is trying something weird.
-    if any(c in h for c in (" ", "\t", "\n", "\r", ";", "|", "&", "$", "`", "<", ">")):
+    if any(c in h for c in ("\t", "\n", "\r", ";", "|", "&", "$", "`", "<", ">")):
         return f"host contains invalid characters: {host!r}"
-    if not is_host_allowed(h):
+    if resolve_allowed_host(h) is None:
         return (
             f"host '{h}' is not in the SSH allowlist. "
             f"Add it via Settings → SSH or the /api/code-agent/ssh/config endpoint."
@@ -592,8 +596,73 @@ def tool_ssh_list_hosts() -> dict[str, Any]:
     only one match in the allowlist."""
     hosts = get_allowed_hosts()
     if not hosts:
-        return {"text": "SSH is disabled — no hosts in the allowlist. The user must add hosts in Settings → SSH first."}
-    return {"text": "Allowed SSH hosts:\n" + "\n".join(f"- {h}" for h in hosts)}
+        return {
+            "ok": False,
+            "hosts": [],
+            "text": "SSH is disabled — no hosts in the allowlist. The user must add hosts in Settings → SSH first.",
+        }
+
+    asset_by_id: dict[str, dict[str, Any]] = {}
+    profile_by_alias: dict[str, dict[str, Any]] = {}
+    try:
+        from app.infrastructure.it_ops import store as _itops_store
+
+        asset_by_id = {
+            str(asset.get("asset_id") or ""): asset
+            for asset in _itops_store.list_assets()
+        }
+        profile_by_alias = {
+            str(profile.get("ssh_alias") or ""): profile
+            for profile in _itops_store.list_connection_profiles()
+            if str(profile.get("ssh_alias") or "") in hosts
+        }
+    except Exception as exc:
+        # Asset metadata is enrichment only.  The SSH allowlist remains usable
+        # if the IT-Ops store is disabled or temporarily unavailable.
+        logger.warning("ssh_list_hosts: asset enrichment unavailable: %s", type(exc).__name__)
+
+    try:
+        from app.application.it_ops.ssh_enroll import resolve_alias as _resolve_alias
+    except Exception:
+        _resolve_alias = None
+
+    items: list[dict[str, Any]] = []
+    lines = ["Allowed SSH targets (pass the alias field to ssh_* tools):"]
+    for alias in hosts:
+        profile = profile_by_alias.get(alias) or {}
+        asset = asset_by_id.get(str(profile.get("asset_id") or "")) or {}
+        item: dict[str, Any] = {"alias": alias}
+        for key in ("asset_id", "label", "kind", "lifecycle_state"):
+            value = asset.get(key)
+            if isinstance(value, str) and value:
+                item[key] = value
+        if _resolve_alias is not None:
+            try:
+                effective = _resolve_alias(alias)
+            except Exception:
+                effective = {}
+            if effective.get("ok"):
+                for key in ("hostname", "port", "user"):
+                    value = effective.get(key)
+                    if isinstance(value, str) and value:
+                        item[key] = value
+        items.append(item)
+        details = [alias]
+        if item.get("label"):
+            details.append(f"asset={item['label']}")
+        if item.get("kind"):
+            details.append(f"kind={item['kind']}")
+        if item.get("lifecycle_state"):
+            details.append(f"state={item['lifecycle_state']}")
+        if item.get("hostname"):
+            endpoint = str(item["hostname"])
+            if item.get("port"):
+                endpoint += f":{item['port']}"
+            if item.get("user"):
+                endpoint = f"{item['user']}@{endpoint}"
+            details.append(f"target={endpoint}")
+        lines.append("- " + " | ".join(details))
+    return {"ok": True, "hosts": items, "text": "\n".join(lines)}
 
 
 def _shell_quote(value: str) -> str:
@@ -726,7 +795,9 @@ def _schemas() -> list[dict[str, Any]]:
                 "name": "ssh_assert_contains",
                 "description": (
                     "Verifier: assert a remote file CONTAINS a substring. Returns "
-                    "ok=true/false — a real pass/fail check, not raw text to eyeball."
+                    "ok=true/false — a real pass/fail check, not raw text to eyeball. "
+                    "Use only after the exact file and expected pattern are known; "
+                    "never use this to search or discover files."
                 ),
                 "parameters": {
                     "type": "object",
@@ -745,7 +816,9 @@ def _schemas() -> list[dict[str, Any]]:
                 "name": "ssh_assert_not_contains",
                 "description": (
                     "Verifier: assert a remote file does NOT contain a substring "
-                    "(e.g. proving a line was removed). Returns ok=true/false."
+                    "(e.g. proving a line was removed). Returns ok=true/false. "
+                    "Use only after the exact file and expected absence are known; "
+                    "never use this to search or discover files."
                 ),
                 "parameters": {
                     "type": "object",
@@ -785,7 +858,8 @@ def _schemas() -> list[dict[str, Any]]:
                     "Verifier: does a path EXIST on the remote host (file or "
                     "directory)? Returns ok=true with the kind as evidence — use "
                     "this to prove a file/folder was actually created, instead of "
-                    "eyeballing a Test-Path in ssh_run_ps."
+                    "eyeballing a Test-Path in ssh_run_ps. This checks one known "
+                    "path; it is not a discovery/search tool."
                 ),
                 "parameters": {
                     "type": "object",

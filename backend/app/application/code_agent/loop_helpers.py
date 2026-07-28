@@ -22,7 +22,12 @@ from app.application.projects.scope import project_scope_id
 from app.application.code_agent.history import summarize_history
 from app.infrastructure.text import truncate_middle
 from app.application.code_agent.tool_policy import CRITICAL_TOOLS, EDIT_ONLY_TOOLS
-from app.change_executor.policy import AUTO, decide_approval, evidence_for_tool_call
+from app.change_executor.policy import (
+    AUTO,
+    decide_approval,
+    evidence_for_tool_call,
+    tool_call_is_change,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +189,12 @@ def _call_auto_approves(
     """Decide one exact call from mode and runtime-owned safety evidence."""
     try:
         evidence = evidence_for_tool_call(tool_name, args)
-        return decide_approval(permission_mode, channel, evidence) == AUTO
+        return decide_approval(
+            permission_mode,
+            channel,
+            evidence,
+            is_change=tool_call_is_change(tool_name, args),
+        ) == AUTO
     except Exception:
         logger.warning("approval policy failed; requiring approval", exc_info=True)
         return False
@@ -422,6 +432,110 @@ def _recent_tools_digest(entries: list[str]) -> str:
     if len(body) > _RECENT_TOOL_DIGEST_CHARS:
         body = body[-_RECENT_TOOL_DIGEST_CHARS:]  # keep the most-recent tail
     return body
+
+
+# --- External-fact evidence gate -------------------------------------------
+# The web-evidence corpus validates provenance after web_fetch(store=true), but
+# it cannot help when the model skips the web entirely and answers from memory.
+# Keep this detector deliberately intent-based: it covers requests whose answer
+# materially depends on current/real-world facts, while ordinary explanations,
+# coding work and file-local questions remain untouched.
+_EXTERNAL_EVIDENCE_NUDGE_MAX = 1
+_EXTERNAL_FACT_INTENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:интернет\w*|веб\w*|источник\w*|ссылк\w*|официальн\w+\s+"
+    r"(?:сайт|данн\w*|реестр\w*))\b|"
+    r"\b(?:проверь|проверить|перепроверь|перепроверить|найди|найти|узнай|узнать|"
+    r"поищи|поискать)\b.{0,80}\b(?:информац\w*|данн\w*|факт\w*|источник\w*|"
+    r"сайт\w*|интернет\w*|веб\w*|новост\w*|цен\w*|курс\w*)\b|"
+    r"\b(?:актуальн\w*|последн\w*|текущ\w*|сегодняшн\w*)\b.{0,40}"
+    r"\b(?:верси\w*|новост\w*|цен\w*|стоимост\w*|курс\w*|закон\w*|событи\w*)\b|"
+    r"\b(?:курс\s+валют\w*|цена\s+(?:акци\w*|товар\w*|нефт\w*)|котировк\w*)\b|"
+    r"(?:кто|кем).{0,40}(?:сдела\w*|созда\w*|основа\w*|разработа\w*|"
+    r"принадлеж\w*|владе\w*|руковод\w*)|"
+    r"\b(?:основател\w*|учредител\w*|владелец|владельц\w*|директор\w*|"
+    r"руководител\w*|биограф\w*)\b|"
+    r"(?:когда|где).{0,40}(?:создан\w*|основан\w*|родил\w*|произош\w*|выш\w*)|"
+    r"\b(?:беременн\w*|плацент\w*|кровотеч\w*|диагноз\w*|лечени\w*|"
+    r"лекарств\w*|дозиров\w*|симптом\w*|медицин\w*|юридическ\w*|"
+    r"закон\w*|налог\w*|инвестиц\w*|кредит\w*|страхов\w*|"
+    r"недвижимост\w*|наводнен\w*|затаплива\w*)\b|"
+    r"\b(?:fact[- ]?check|web\s+search|latest\s+(?:version|news|price)|"
+    r"current\s+(?:price|rate|law)|official\s+source|"
+    r"founder|owner|director|price|medical|legal)\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+_EXTERNAL_AUTHORITY_CLAIM_RE = re.compile(
+    r"(?:проверил\w*.{0,50}(?:официальн\w*|источник\w*|сайт\w*|реестр\w*)|"
+    r"по\s+официальн\w+\s+данн\w*|согласно\s+(?:источник\w*|данн\w*|реестр\w*)|"
+    r"(?:official|verified)\s+(?:source|data))",
+    re.IGNORECASE | re.UNICODE,
+)
+_EXTERNAL_UNCERTAINTY_RE = re.compile(
+    r"(?:не\s+(?:подтвердил\w*|подтвержден\w*|наш[её]л\w*|знаю|удалось\s+"
+    r"(?:найти|проверить|подтвердить))|источник\s+не\s+найден|"
+    r"не\s+могу\s+(?:достоверно\s+)?подтвердить|requires?\s+verification|"
+    r"not\s+(?:verified|confirmed))",
+    re.IGNORECASE | re.UNICODE,
+)
+_EXTERNAL_EVIDENCE_TOOLS = frozenset({
+    "web_fetch", "web_query", "web_claim_add", "browser", "http_api",
+    "paper_search",
+})
+_LOCAL_FACT_CONTEXT_RE = re.compile(
+    r"\b(?:файл\w*|код\w*|класс\w*|функци\w*|компонент\w*|коммит\w*|"
+    r"ветк\w*|репозитор\w*|проект\w*|сервер\w*|хост\w*|ssh|папк\w*|"
+    r"каталог\w*|лог\w*|баз\w+\s+данн\w*|file|code|class|function|"
+    r"commit|repository|project|server|host)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+_EXPLICIT_EXTERNAL_CONTEXT_RE = re.compile(
+    r"\b(?:интернет\w*|веб\w*|источник\w*|ссылк\w*|официальн\w*|"
+    r"новост\w*|курс\w*|цен\w*|fact[- ]?check|web\s+search|"
+    r"official\s+source)\b",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _requires_external_evidence(user_message: str, answer: str = "") -> bool:
+    """Whether final factual prose requires a successfully-read external source."""
+    request = user_message or ""
+    if (
+        _LOCAL_FACT_CONTEXT_RE.search(request)
+        and not _EXPLICIT_EXTERNAL_CONTEXT_RE.search(request)
+    ):
+        return bool(_EXTERNAL_AUTHORITY_CLAIM_RE.search(answer or ""))
+    return bool(
+        _EXTERNAL_FACT_INTENT_RE.search(request)
+        or _EXTERNAL_AUTHORITY_CLAIM_RE.search(answer or "")
+    )
+
+
+def _answer_admits_missing_external_evidence(answer: str) -> bool:
+    """Allow a bounded, honest refusal instead of forcing repeated web calls."""
+    return bool(_EXTERNAL_UNCERTAINTY_RE.search(answer or ""))
+
+
+def _tool_provides_external_evidence(name: str, text_result: str) -> bool:
+    """True only for a successful content-bearing source read, not search snippets."""
+    tool = str(name or "").strip()
+    if not str(text_result or "").strip():
+        return False
+    if tool in _EXTERNAL_EVIDENCE_TOOLS:
+        return True
+    return tool.startswith("playwright__") and tool.rsplit("__", 1)[-1] in {
+        "browser_snapshot", "browser_network_requests",
+    }
+
+
+def _external_evidence_backstop() -> str:
+    return (
+        "Не могу подтвердить фактический ответ: в этом прогоне не был успешно "
+        "прочитан внешний источник. Я не буду выдавать сведения по памяти за "
+        "проверенные. Нужен успешный `web_search` → `web_fetch` либо честный ответ "
+        "«источник не найден / не подтверждено»."
+    )
 
 
 # --- Ungrounded-file nudge (residual grounding leak) ------------------------
@@ -687,7 +801,8 @@ def tool_state_changed(tool_name: str, tool_meta: dict, *, exec_ok: bool) -> boo
     if not exec_ok:
         return False
     meta = tool_meta or {}
-    if not str(meta.get("touched_path") or "").strip():
+    provider_confirmed_change = meta.get("state_changed") is True
+    if not provider_confirmed_change and not str(meta.get("touched_path") or "").strip():
         return False
     # Proven NO-OP: when the tool itself reports the before/after content
     # (write_file/edit_file), identical bytes mean nothing changed — an

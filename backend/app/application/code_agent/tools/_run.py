@@ -122,12 +122,10 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             hint = (" Если это очистка на удалённом хосте — используй "
                     "ssh_run_ps / ssh_not_exists на нужном host, не локальный shell.")
         return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}.{hint}", "ok": False}
-    # Redirect (not ban) raw `ssh host "…"` to the ssh_* tools — the quoting-hell
-    # trap that burned a whole run. ok=False so it reads as no-progress and the
-    # progress controller / loop-guard see a stuck strategy if the model ignores it.
-    redirect = raw_ssh_redirect(cleaned_command)
-    if redirect is not None:
-        return {"text": redirect, "ok": False}
+    # Raw SSH is allowed under the same approval policy as every other run_bash
+    # command. Keep specialized-tool guidance only as a fallback after a real
+    # non-zero exit; blocking it here produced artificial failures and loops.
+    raw_ssh_hint = raw_ssh_redirect(cleaned_command)
     safe_timeout = max(1, min(int(timeout), _SHELL_TIMEOUT_MAX))
 
     run_id = _CURRENT_RUN_ID.get()
@@ -244,6 +242,8 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
         parts.append(f"STDOUT:\n{_truncate_middle(stdout.rstrip(), _SHELL_STDOUT_LIMIT)}")
     if stderr:
         parts.append(f"STDERR:\n{_truncate_middle(stderr.rstrip(), _SHELL_STDERR_LIMIT)}")
+    if proc.returncode not in (0, None) and raw_ssh_hint:
+        parts.append(raw_ssh_hint)
     # exit_code travels in the meta so the UI can colour the call by SEMANTIC
     # success (a non-zero exit reads as failure) instead of "the process ran".
     # We keep the top-level `ok` unset (a non-zero exit isn't always a failure —

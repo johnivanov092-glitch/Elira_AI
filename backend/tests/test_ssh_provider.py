@@ -84,6 +84,19 @@ class AclTest(SshProviderTestBase):
         self.assertFalse(self.ssh_acl.is_host_allowed("prod-2"))
         self.assertFalse(self.ssh_acl.is_host_allowed(""))
 
+    def test_display_name_resolves_only_to_unique_allowed_alias(self) -> None:
+        self.ssh_acl.set_allowed_hosts(["elira-ai-server", "home-srv01"])
+        self.assertEqual(
+            self.ssh_acl.resolve_allowed_host("Elira AI Server"),
+            "elira-ai-server",
+        )
+        self.assertEqual(self.ssh_acl.resolve_allowed_host("HOME-SRV01"), "home-srv01")
+        self.assertIsNone(self.ssh_acl.resolve_allowed_host("unknown server"))
+
+    def test_display_name_resolution_fails_closed_on_collision(self) -> None:
+        self.ssh_acl.set_allowed_hosts(["prod-one", "prod_one"])
+        self.assertIsNone(self.ssh_acl.resolve_allowed_host("prod one"))
+
     def test_persistence_across_imports(self) -> None:
         self.ssh_acl.set_allowed_hosts(["host1"])
         # Reload to simulate process restart
@@ -140,6 +153,15 @@ class SshRunTest(SshProviderTestBase):
         self.assertIn("StrictHostKeyChecking=accept-new", argv)
         self.assertIn("prod-1", argv)
         self.assertIn("echo hello", argv)
+
+    def test_display_name_executes_only_resolved_allowlist_alias(self) -> None:
+        self.ssh_acl.set_allowed_hosts(["elira-ai-server"])
+        with patch("subprocess.run", return_value=_proc(0, "ok\n", "")) as mock:
+            result = self.ssh.tool_ssh_run(host="Elira AI Server", command="hostname")
+        self.assertTrue(result["ok"])
+        argv = mock.call_args[0][0]
+        self.assertIn("elira-ai-server", argv)
+        self.assertNotIn("Elira AI Server", argv)
 
     def test_run_returns_exit_code_and_semantic_ok(self) -> None:
         with patch("subprocess.run", return_value=_proc(0, "hi", "")):
@@ -577,6 +599,43 @@ class SshListHostsTest(SshProviderTestBase):
         r = self.ssh.tool_ssh_list_hosts()
         self.assertIn("- a", r["text"])
         self.assertIn("- b", r["text"])
+
+    def test_lists_structured_asset_identity_without_secrets(self) -> None:
+        self.ssh_acl.set_allowed_hosts(["ai-server", "unmanaged"])
+        assets = [{
+            "asset_id": "ssh-ai-server", "label": "AI server", "kind": "linux",
+            "lifecycle_state": "enabled", "endpoint": "secret-endpoint",
+        }]
+        profiles = [{
+            "asset_id": "ssh-ai-server", "ssh_alias": "ai-server",
+            "auth_ref": "secret-ref", "host_key_fingerprint": "secret-fingerprint",
+        }]
+        with patch("app.infrastructure.it_ops.store.list_assets", return_value=assets), \
+             patch("app.infrastructure.it_ops.store.list_connection_profiles", return_value=profiles), \
+             patch(
+                 "app.application.it_ops.ssh_enroll.resolve_alias",
+                 side_effect=lambda alias: {
+                     "ok": True, "hostname": "192.0.2.10", "port": "22",
+                     "user": "reader", "identity_files": ["secret-key-path"],
+                 },
+             ):
+            result = self.ssh.tool_ssh_list_hosts()
+        self.assertEqual(result["hosts"], [
+            {
+                "alias": "ai-server", "asset_id": "ssh-ai-server",
+                "label": "AI server", "kind": "linux", "lifecycle_state": "enabled",
+                "hostname": "192.0.2.10", "port": "22", "user": "reader",
+            },
+            {
+                "alias": "unmanaged", "hostname": "192.0.2.10", "port": "22",
+                "user": "reader",
+            },
+        ])
+        dumped = repr(result)
+        self.assertNotIn("secret-ref", dumped)
+        self.assertNotIn("secret-fingerprint", dumped)
+        self.assertNotIn("secret-endpoint", dumped)
+        self.assertNotIn("secret-key-path", dumped)
 
 
 # ── Provider integration with ToolRegistry ─────────────────────

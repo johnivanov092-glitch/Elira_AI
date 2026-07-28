@@ -47,7 +47,9 @@ _HEADERS: dict[str, tuple[str, ...]] = {
     # `details` and never inflate success_criteria (Subnet Helper: 10 such lines leaked).
     "details": ("функциональность", "функционал", "программа", "описание",
                 "функциональные требования", "спецификация", "specification", "spec",
-                "features", "поведение", "что делает", "что должно делать", "фичи"),
+                "features", "поведение", "что делает", "что должно делать", "фичи",
+                "порядок работы", "порядок выполнения", "план работы", "этапы работы",
+                "workflow", "workflow steps", "work plan"),
     "stop": ("условия остановки", "stop conditions", "стоп-условия"),
     # Report-only sections: their items describe WHAT TO REPORT, not verifiable
     # success criteria (FIX-9 #3), so they are routed away from criteria. Header
@@ -761,12 +763,117 @@ _TEST_KIND_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Dependency installation is not execution of a check. Package names such as
+# `jest`, `ts-jest` and `@testing-library/*` used to make a green `npm install`
+# confirm «тесты проходят». Filter only install/add/remove command SEGMENTS; a
+# later `&& npm test` segment remains visible and is classified normally.
+_DEPENDENCY_MUTATION_RE = re.compile(
+    r"^\s*(?:(?:cmd(?:\.exe)?\s+/[ck]|powershell(?:\.exe)?[^\n]*?-command)\s+)?"
+    r"[\"']?\s*"
+    r"(?:npm\s+(?:i|install|add|uninstall|remove)|pnpm\s+(?:i|install|add|remove)|"
+    r"yarn\s+(?:install|add|remove)|pip(?:\d+)?\s+install|python\s+-m\s+pip\s+install|"
+    r"uv\s+add|cargo\s+add)\b",
+    re.IGNORECASE,
+)
+
+
+def _check_command_text(text: str) -> str:
+    """Executable check segments, excluding dependency mutation segments."""
+    parts = re.split(r"(?:&&|\|\||;|\r?\n)", text or "")
+    return "\n".join(p for p in parts if p.strip() and not _DEPENDENCY_MUTATION_RE.search(p))
+
+
+_BEHAVIOR_ENTITY_STEMS: dict[str, tuple[str, ...]] = {
+    "client": ("client", "клиент"),
+    "deal": ("deal", "сделк"),
+    "task": ("task", "задач"),
+    "data": ("data", "данн", "localstorage", "storage"),
+}
+_BEHAVIOR_ACTION_STEMS: dict[str, tuple[str, ...]] = {
+    "create": ("creat", "add", "созда", "добав"),
+    "edit": ("edit", "updat", "редакт", "обнов"),
+    "search": ("search", "find", "filter", "ищ", "поиск", "фильтр"),
+    "delete": ("delet", "remov", "удал"),
+    "complete": ("complet", "finish", "toggle", "заверш", "выполн"),
+    "persist": ("persist", "reload", "localstorage", "load", "сохран", "перезагруз"),
+}
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"\w+", (text or "").lower(), flags=re.UNICODE)
+
+
+def _stem_positions(tokens: list[str], stems: tuple[str, ...]) -> list[int]:
+    return [i for i, token in enumerate(tokens) if any(token.startswith(s) for s in stems)]
+
+
+def _behavior_requirements(text: str) -> tuple[tuple[str, str], ...]:
+    """Domain-small but language-stable CRUD requirements from a criterion.
+
+    These are not proof by themselves. They only define which named PASSED tests
+    a later test verdict must contain. Unknown prose stays generic/unverified.
+    """
+    toks = _tokens(text)
+    entities = [name for name, stems in _BEHAVIOR_ENTITY_STEMS.items()
+                if _stem_positions(toks, stems)]
+    actions: list[str] = []
+    for name, stems in _BEHAVIOR_ACTION_STEMS.items():
+        if _stem_positions(toks, stems):
+            actions.append(name)
+    # Stage transition needs both a change cue and a stage/этап cue. Keep it
+    # separate from ordinary entity editing.
+    has_stage = bool(_stem_positions(toks, ("stage", "этап")))
+    has_change = bool(_stem_positions(toks, ("chang", "transition", "смен", "меня", "измен")))
+    if has_stage and has_change:
+        actions = [a for a in actions if a != "edit"]
+        actions.append("transition")
+    if not entities or not actions:
+        return ()
+    return tuple((entity, action) for entity in entities for action in dict.fromkeys(actions))
+
+
+_PASSED_TEST_LINE_RE = re.compile(
+    r"^\s*(?:[✓√✔]|(?:test|it|should)[\w .:/\\-]*\bPASSED\b|"
+    r"[\w .:/\\-]+\.\.\.\s+ok\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _passed_test_lines(output: str) -> tuple[str, ...]:
+    """Only individually named passing tests; aggregate `24 passed` is not proof."""
+    return tuple(line.strip() for line in (output or "").splitlines()
+                 if _PASSED_TEST_LINE_RE.search(line))
+
+
+def _line_proves_behavior(line: str, entity: str, action: str) -> bool:
+    toks = _tokens(line)
+    entity_pos = _stem_positions(toks, _BEHAVIOR_ENTITY_STEMS[entity])
+    if not entity_pos:
+        return False
+    if action == "transition":
+        action_pos = _stem_positions(toks, ("chang", "transition", "смен", "меня", "измен"))
+        if not action_pos or not _stem_positions(toks, ("stage", "этап")):
+            return False
+    else:
+        action_pos = _stem_positions(toks, _BEHAVIOR_ACTION_STEMS[action])
+    # Tie the verb to the entity. This prevents "add a deal linked to a client"
+    # from falsely proving client creation merely because both words occur.
+    return bool(action_pos and min(abs(a - e) for a in action_pos for e in entity_pos) <= 4)
+
+
+def _behavior_evidence_matches(requirements: tuple[tuple[str, str], ...], output: str) -> bool:
+    lines = _passed_test_lines(output)
+    return bool(requirements and lines) and all(
+        any(_line_proves_behavior(line, entity, action) for line in lines)
+        for entity, action in requirements
+    )
+
 
 def _command_kind(text: str) -> str:
     """The specific command a command_check criterion/verdict is about, or 'any' for a
     generic 'the available checks pass'. So a green typecheck confirms a typecheck
     criterion but NOT a separate build criterion."""
-    low = (text or "").lower()
+    low = _check_command_text((text or "").lower())
     if _has(low, ("доступные провер", "проходят провер", "проверки проход", "все проверки",
                   "сборки/typecheck", "сборки / typecheck", "проект проходит провер", "проходит провер")):
         return "any"
@@ -794,6 +901,10 @@ def _criterion_intent(text: str) -> str:
                   "что создано", "что было создано", "перечисл", "report-only",
                   "описан в отч", "описать в отч", "команды очистки опис")):
         return "report"
+    # A requirement ABOUT tests is a command check. A behavioral outcome is
+    # separate: it needs individually named passing tests, not just a green suite.
+    if _TEST_KIND_RE.search(low) and _has(low, ("добав", "focused", "фокус", "покры", "проход")):
+        return "command_check"
     # Context comes from the criterion's PROSE, not from the target strings: a file
     # criterion "содержит строку `dom=verified`" must not read as a DOM criterion just
     # because the pattern contains "dom". So detect the DOM/file context on the text
@@ -860,6 +971,8 @@ def _criterion_intent(text: str) -> str:
         return "file_not_exists"
     if exists_verb and (fil or has_path):
         return "file_exists"
+    if _behavior_requirements(text):
+        return "behavior_test"
     return "generic"
 
 
@@ -906,7 +1019,7 @@ def _run_bash_verdict(cmd: str) -> dict | None:
     """A green run_bash command → a command_check verdict tagged with its kind. A
     bundle grep (findstr/grep) is NOT a verdict — it proves a string is in the bundle,
     not that anything passed or is visible."""
-    low = (cmd or "").lower()
+    low = _check_command_text((cmd or "").lower())
     if _has(low, ("findstr", "grep ", "select-string")) and not _has(low, ("pytest", "npm test", "&&")):
         return None
     kind = _command_kind(low)
@@ -956,6 +1069,8 @@ def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: d
             intents.add("command_output")
         if not intents:
             return None
+        if (base or {}).get("command_kind") == "test" and _passed_test_lines(evidence):
+            intents.add("behavior_test")
         return {"intents": intents, "command_kind": (base or {}).get("command_kind", "any"),
                 "files": set(), "command": cmd, "output": (evidence or "").lower(),
                 "exit_code": (meta or {}).get("exit_code")}
@@ -1002,6 +1117,11 @@ def _verdict_target_matches(item: dict, v: dict) -> bool:
         # e.g. `npm run check`) must never confirm a specific criterion — the
         # wildcard direction that let scaffold output confirm «тесты проходят».
         return ck == vk
+    if it == "behavior_test":
+        return _behavior_evidence_matches(
+            tuple(item.get("behavior_requirements") or ()),
+            str(v.get("output") or ""),
+        )
     if it == "command_output":
         exp = item.get("output_expected", "")
         cmd_c = item.get("command", "")
@@ -1117,6 +1237,13 @@ def _verdict_outcome(item: dict, v: dict, ok: bool) -> str | None:
         ec = v.get("exit_code")
         succeeded = (ec == 0) if isinstance(ec, int) else bool(ok)
         return "confirm" if succeeded else "fail"
+    if it == "behavior_test":
+        if not _verdict_target_matches(item, v):
+            return None
+        ec = v.get("exit_code")
+        # A red suite is not attributable to this one behavior unless the
+        # runner provides a structured failing-test contract. Stay neutral.
+        return "confirm" if (ec is None or ec == 0) else None
     if it == "viewport_layout":
         # A measured viewport is a real verdict: no horizontal overflow → confirm; overflow
         # at the tested width → FAIL (broken layout is a genuine red, like a failing test).
@@ -1141,6 +1268,7 @@ def _criterion_item(text: str) -> dict:
         "command": cmd["command"], "output_expected": cmd["output_expected"],
         "expect_nonzero": cmd["expect_nonzero"], "output_absent": cmd["output_absent"],
         "viewport_width": _viewport_target(text),
+        "behavior_requirements": _behavior_requirements(text),
     }
 
 

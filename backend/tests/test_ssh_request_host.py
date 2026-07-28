@@ -34,6 +34,32 @@ def _ssh_req_chat(host="elira-ai-server", reason="ключ установлен"
     return chat_fn
 
 
+def _ssh_req_inline_chat(host="elira-ai-server", reason="ключ установлен"):
+    """Local 35B emits the canonical action envelope in message.content."""
+    state = {"asked": False}
+
+    def chat_fn(**kw):
+        if not kw.get("tools"):
+            return {"message": {"content": "summary", "tool_calls": []}}
+        if not state["asked"]:
+            state["asked"] = True
+            return {
+                "message": {
+                    "content": (
+                        '{"kind":"tool_request","tool":"ssh_request_host",'
+                        f'"arguments":{{"host":"{host}","reason":"{reason}"}}}}'
+                    ),
+                    "tool_calls": [],
+                },
+            }
+        last_tool = next(
+            (m for m in reversed(kw.get("messages") or []) if m.get("role") == "tool"), {}
+        )
+        return {"message": {"content": f"OK. {last_tool.get('content', '')}", "tool_calls": []}}
+
+    return chat_fn
+
+
 def _answer_pending(value, deadline_s=25):
     """From another thread: answer the first pending question with `value`."""
     def worker():
@@ -76,6 +102,18 @@ class SshRequestHostTest(unittest.TestCase):
             finals = [e for e in evs if e.get("type") == "final_response"]
             self.assertIn("добавлен", finals[-1]["text"])
 
+    def test_inline_action_envelope_opens_approval_instead_of_leaking_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            acl = Path(d) / "ssh_acl.json"
+            t = _answer_pending("Одобрить")
+            evs = self._run(_ssh_req_inline_chat(), "ssh-inline", acl)
+            t.join(timeout=2)
+            pending = [e for e in evs if e.get("type") == "question_pending"]
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["options"], ["Одобрить", "Отклонить"])
+            finals = [e for e in evs if e.get("type") == "final_response"]
+            self.assertNotIn('"kind":"tool_request"', finals[-1]["text"])
+
     def test_deny_does_not_add_host(self):
         with tempfile.TemporaryDirectory() as d:
             acl = Path(d) / "ssh_acl.json"
@@ -97,6 +135,20 @@ class SshRequestHostTest(unittest.TestCase):
             self.assertEqual([e for e in evs if e.get("type") == "question_pending"], [])
             finals = [e for e in evs if e.get("type") == "final_response"]
             self.assertIn("уже", finals[-1]["text"])
+
+    def test_display_name_of_existing_alias_skips_the_prompt(self):
+        with tempfile.TemporaryDirectory() as d:
+            acl = Path(d) / "ssh_acl.json"
+            with mock.patch.object(ssh_acl, "ACL_PATH", acl):
+                ssh_acl.set_allowed_hosts(["elira-ai-server"])
+            evs = self._run(
+                _ssh_req_chat("Elira AI Server"),
+                "ssh-display-already",
+                acl,
+            )
+            self.assertEqual([e for e in evs if e.get("type") == "question_pending"], [])
+            calls = [e for e in evs if e.get("type") == "tool_call"]
+            self.assertIn("elira-ai-server", calls[0]["result"])
 
     def test_pauses_even_with_no_questions(self):
         # Unlike ask_user, opening the SSH allowlist is a security decision — it

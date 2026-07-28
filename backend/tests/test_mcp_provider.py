@@ -7,12 +7,14 @@ fake MCP server from tests/_mcp_fake_server.py.
 """
 from __future__ import annotations
 
+import base64
 import importlib
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -232,6 +234,171 @@ class ProviderDispatchTest(McpProviderTestBase):
         provider = self.provider_mod.McpToolProvider("x")
         result = provider.dispatch("x__echo", {"text": "anything"})
         self.assertIn("ERROR", result["text"])
+
+    def test_inline_image_is_described_by_existing_vision_runtime(self) -> None:
+        payload = base64.b64encode(b"small-png-payload").decode("ascii")
+        with (
+            mock.patch(
+                "app.infrastructure.llm.vision_ocr.is_vision_enabled",
+                return_value=True,
+            ),
+            mock.patch(
+                "app.infrastructure.llm.vision_ocr.describe_image",
+                return_value="A Unity scene with a clipped button.",
+            ) as describe,
+        ):
+            result = self.provider_mod._flatten_mcp_result({
+                "content": [{"type": "image", "mimeType": "image/png", "data": payload}],
+            })
+
+        self.assertIn("MCP image description", result["text"])
+        self.assertIn("clipped button", result["text"])
+        self.assertNotIn(payload, result["text"])
+        args, kwargs = describe.call_args
+        self.assertEqual(args[0], "mcp-capture-1.png")
+        self.assertEqual(args[1], b"small-png-payload")
+        self.assertIn("actionable visual defects", kwargs["prompt"])
+
+    def test_inline_image_failure_never_echoes_payload(self) -> None:
+        secret_payload = "not-base64-secret-payload"
+        result = self.provider_mod._flatten_mcp_result({
+            "content": [{
+                "type": "image",
+                "mimeType": "image/png",
+                "data": secret_payload,
+            }],
+        })
+        self.assertIn("invalid base64", result["text"])
+        self.assertNotIn(secret_payload, result["text"])
+
+    def test_inline_image_disabled_is_explicit_and_bounded(self) -> None:
+        payload = base64.b64encode(b"image").decode("ascii")
+        with mock.patch(
+            "app.infrastructure.llm.vision_ocr.is_vision_enabled",
+            return_value=False,
+        ):
+            result = self.provider_mod._flatten_mcp_result({
+                "content": [
+                    {"type": "text", "text": "Screenshot captured."},
+                    {"type": "image", "mimeType": "image/jpeg", "data": payload},
+                ],
+            })
+        self.assertIn("Screenshot captured.", result["text"])
+        self.assertIn("vision is disabled", result["text"])
+        self.assertNotIn(payload, result["text"])
+
+
+class CreativeEditorMcpTest(McpProviderTestBase):
+    @staticmethod
+    def _provider(module, server_id: str, original_name: str):
+        provider = module.McpToolProvider(server_id)
+        qualified = f"{server_id}__{original_name}"
+        provider._populated = True
+        provider._owned = {qualified}
+        provider._qualified_to_original = {qualified: original_name}
+        return provider, qualified
+
+    def test_unity_batch_rejects_nested_execute_code_before_mcp(self) -> None:
+        provider, qualified = self._provider(self.provider_mod, "unity", "batch_execute")
+        client = mock.Mock()
+        with mock.patch.object(self.provider_mod, "get_live_client", return_value=client):
+            result = provider.dispatch(qualified, {
+                "commands": [{
+                    "tool": "execute_code",
+                    "params": {"action": "execute", "code": "return 1;"},
+                }],
+            })
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "nested_execute_code_forbidden")
+        client.call_tool.assert_not_called()
+
+    def test_blender_code_gets_backup_and_inline_screenshot(self) -> None:
+        provider, qualified = self._provider(
+            self.provider_mod, "blender", "execute_blender_code"
+        )
+        client = mock.Mock()
+        client.call_tool.side_effect = [
+            {"content": [{"type": "text", "text": "backup ok"}]},
+            {"content": [{"type": "text", "text": "scene changed"}]},
+        ]
+        with mock.patch.object(self.provider_mod, "get_live_client", return_value=client):
+            result = provider.dispatch(qualified, {"code": "import bpy"})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["state_changed"])
+        self.assertEqual(client.call_tool.call_count, 2)
+        backup_call, execute_call = client.call_tool.call_args_list
+        self.assertEqual(backup_call.args[0], "execute_blender_code")
+        self.assertIn(".elira-backups", backup_call.args[1]["code"])
+        self.assertEqual(execute_call.args[0], "execute_blender_code")
+        self.assertEqual(execute_call.args[1]["code"], "import bpy")
+        self.assertTrue(execute_call.args[1]["return_screenshot"])
+
+    def test_unity_code_gets_backup_then_screenshot(self) -> None:
+        provider, qualified = self._provider(self.provider_mod, "unity", "execute_code")
+        client = mock.Mock()
+        client.call_tool.side_effect = [
+            {"content": [{"type": "text", "text": "backup ok"}]},
+            {"content": [{"type": "text", "text": "code ok"}]},
+            {"content": [{"type": "text", "text": "screenshot ok"}]},
+        ]
+        with mock.patch.object(self.provider_mod, "get_live_client", return_value=client):
+            result = provider.dispatch(
+                qualified, {"action": "execute", "code": "return 1;"}
+            )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["state_changed"])
+        self.assertIn("screenshot ok", result["text"])
+        self.assertEqual(
+            [call.args[0] for call in client.call_tool.call_args_list],
+            ["execute_code", "execute_code", "manage_camera"],
+        )
+        self.assertIn(".elira-backups", client.call_tool.call_args_list[0].args[1]["code"])
+        screenshot_args = client.call_tool.call_args_list[2].args[1]
+        self.assertEqual(screenshot_args["action"], "screenshot")
+        self.assertTrue(screenshot_args["include_image"])
+
+    def test_creative_workflow_prompt_is_scoped_and_bounded(self) -> None:
+        absent = self.provider_mod.creative_workflow_prompt({"github__search"})
+        self.assertEqual(absent, "")
+        prompt = self.provider_mod.creative_workflow_prompt({
+            "blender__batch_edit",
+            "blender__execute_blender_code",
+            "unity__batch_execute",
+            "unity__execute_code",
+        })
+        self.assertIn("inspect", prompt)
+        self.assertIn("максимум одна коррекция", prompt)
+        self.assertIn("не вкладывай execute_code", prompt)
+        self.assertIn("резервную копию", prompt)
+
+    def test_creative_batch_redirect_names_procedural_tool(self) -> None:
+        self.assertIn(
+            "blender__execute_blender_code",
+            self.provider_mod.creative_batch_redirect("blender__batch_edit"),
+        )
+        self.assertIn(
+            "unity__execute_code",
+            self.provider_mod.creative_batch_redirect("unity__batch_execute"),
+        )
+        self.assertEqual(self.provider_mod.creative_batch_redirect("github__search"), "")
+
+    def test_provider_mutation_signal_counts_without_fake_file_path(self) -> None:
+        from app.application.code_agent.loop_helpers import tool_state_changed
+
+        with mock.patch(
+            "app.application.tool_registry.runtime.get_tool",
+            return_value={"side_effect": True},
+        ):
+            self.assertTrue(tool_state_changed(
+                "blender__batch_edit",
+                {"ok": True, "state_changed": True},
+                exec_ok=True,
+            ))
+            self.assertFalse(tool_state_changed(
+                "blender__batch_edit",
+                {"ok": False, "state_changed": True},
+                exec_ok=False,
+            ))
 
 
 class BuildProvidersTest(McpProviderTestBase):

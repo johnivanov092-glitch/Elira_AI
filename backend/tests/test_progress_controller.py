@@ -5,8 +5,8 @@ different calls that all fail to move the world (the raw-ssh escaping spiral: 80
 distinct commands, zero file changed, test still 7/8 — evaded near-dup for ~55
 steps). This suite pins the closing behaviours:
 
-  * raw `ssh host "…"` through run_bash is REDIRECTED to the ssh_* tools (not
-    banned — an explicit marker still forces it);
+  * raw SSH through run_bash executes normally; specialized ssh_* tools are
+    suggested only after a real command failure;
   * a run of "doing" calls with no state change stops honestly (`no_progress`)
     with a DETERMINISTIC summary, not a model retelling;
   * calls that actually change files never trip it.
@@ -14,6 +14,7 @@ steps). This suite pins the closing behaviours:
 from __future__ import annotations
 
 import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -93,11 +94,20 @@ class RawSshRedirectTest(unittest.TestCase):
         # `ssh -V` / `ssh -G host` are diagnostics, not the remote-exec trap.
         self.assertIsNone(raw_ssh_redirect("ssh -V"))
 
-    def test_tool_run_bash_returns_redirect_with_ok_false(self) -> None:
+    def test_tool_run_bash_executes_raw_ssh_instead_of_returning_redirect(self) -> None:
+        proc = SimpleNamespace(
+            stdout=io.BytesIO(b"remote-ok\n"),
+            stderr=io.BytesIO(b""),
+            returncode=0,
+            poll=lambda: 0,
+        )
         with tempfile.TemporaryDirectory() as tmp:
-            res = tool_run_bash(Path(tmp), command='ssh root@home-srv01 "type C:\\a.ps1"')
-        self.assertFalse(res.get("ok", True))
-        self.assertIn("ssh_run", res["text"])
+            with patch("subprocess.Popen", return_value=proc) as popen:
+                res = tool_run_bash(Path(tmp), command='ssh root@home-srv01 "type C:\\a.ps1"')
+        popen.assert_called_once()
+        self.assertEqual(res["exit_code"], 0)
+        self.assertIn("remote-ok", res["text"])
+        self.assertNotIn("ssh_run", res["text"])
 
 
 # ── progress classification helpers ─────────────────────────────
@@ -436,7 +446,7 @@ _DISTINCT_CMDS = [
 
 class NoProgressLoopTest(unittest.TestCase):
     def tearDown(self):
-        for rid in ("np-stuck", "np-progress"):
+        for rid in ("np-stuck", "np-progress", "np-stale-failure"):
             deferred_tools.clear_run(rid)
 
     def test_distinct_but_stateless_calls_stop_as_no_progress(self):
@@ -473,6 +483,39 @@ class NoProgressLoopTest(unittest.TestCase):
             ))
         done = [e for e in evs if e.get("type") == "done"][-1]
         self.assertEqual(done["stop_reason"], "answer")
+
+    def test_success_clears_stale_failure_from_stop_advice(self):
+        calls = [
+            _call("run_bash", command="false"),
+            _call("run_bash", command="echo recovered"),
+            *[_call("run_bash", command=c) for c in _DISTINCT_CMDS],
+        ]
+        chat = _SeqChat(calls, calls[-1])
+
+        def _exec(request, **_kwargs):
+            command = str(request.args.get("command") or "")
+            if command == "false":
+                return SimpleNamespace(
+                    status="error",
+                    output={"text": "exit=1", "ok": False, "exit_code": 1},
+                )
+            return SimpleNamespace(
+                status="ok",
+                output={"text": "out", "ok": True, "exit_code": 0},
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec", side_effect=_exec):
+            evs = list(agent_loop.stream_code_agent(
+                user_message="почини сервис", project_root=tmp,
+                run_id="np-stale-failure", auto_remember=False,
+                permission_mode="bypass", max_steps=40, chat_fn=chat,
+            ))
+
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "no_progress")
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertNotIn("Исправь причину сбоя run_bash для false", final)
 
 
 # ── coding strategy families (Ph7.1) ────────────────────────────

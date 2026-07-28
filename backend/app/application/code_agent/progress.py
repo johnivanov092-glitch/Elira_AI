@@ -91,7 +91,7 @@ def step_made_progress(
     progress (semantic ok). Mutations (touched_path) and a server FIRST starting on
     a port are progress; fresh knowledge from a read/search resets the streak.
     Mutates `seen_fact_shapes`."""
-    if tool_meta.get("touched_path"):
+    if tool_meta.get("touched_path") or tool_meta.get("state_changed") is True:
         return True  # a file was created / edited / written (local or remote)
     if name == "run_server" and tool_meta.get("ok", True):
         # Only STARTING a server on a NEW port changes the running state. `list`/

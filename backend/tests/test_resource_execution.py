@@ -103,14 +103,18 @@ class CapabilityCatalogTest(unittest.TestCase):
             health_fn=mock.Mock(side_effect=RuntimeError("SECRET endpoint")))
         self.assertFalse(broken.capability().available)
 
-    def test_default_adapter_set_local_targets_unavailable_in_r2(self):
-        # Environment-independent: R2 ships no wired local runtime, so the default
-        # registry's local targets are unavailable regardless of host GPU/whisper.
+    def test_default_adapter_set_matches_runtime_readiness(self):
+        # R3 wires the optional local runtime. Availability must reflect the real
+        # readiness probes on both provisioned and unprovisioned test hosts.
+        from app.application.media import local_transcription as lt
         with mock.patch("app.application.media.execution._server_stt_available",
                         return_value=True):
             cat = {c["target"]: c for c in ex.capability_catalog()}
-        self.assertFalse(cat["local_gpu"]["available"])
-        self.assertFalse(bool(set(cat["local_cpu"]["operations"]) & {"transcribe"}))
+        self.assertEqual(cat["local_gpu"]["available"], lt.gpu_runtime_ready()[0])
+        self.assertEqual(
+            "transcribe" in cat["local_cpu"]["operations"],
+            lt.cpu_runtime_ready()[0],
+        )
 
 
 class SelectorSemanticsTest(unittest.TestCase):
@@ -205,7 +209,8 @@ class EndToEndRoutingTest(unittest.TestCase):
         rec = self._bound("v.ogg", _OGG, "audio/ogg")
         server = mock.Mock()
         server_health = mock.Mock(return_value=True)
-        with mock.patch("app.application.media.execution._server_stt_available", server_health), \
+        with mock.patch.object(ex, "_DEFAULT_ADAPTERS", _reg(local_gpu=False)), \
+                mock.patch("app.application.media.execution._server_stt_available", server_health), \
                 mock.patch("app.application.voice.runtime.transcribe", server):
             out = tool_resource_process(resource_id=rec.resource_id, operation="transcribe",
                                         execution_target="local_gpu")
@@ -220,7 +225,8 @@ class EndToEndRoutingTest(unittest.TestCase):
 
     def test_auto_transcribe_uses_server_and_reports_target(self):
         rec = self._bound("v.mp4", b"\x00\x00\x00\x18ftypmp42" + b"\xff" * 20, "video/mp4")
-        with mock.patch("app.application.media.execution._server_stt_available", return_value=True), \
+        with mock.patch.object(ex, "_DEFAULT_ADAPTERS", _reg(local_gpu=False)), \
+                mock.patch("app.application.media.execution._server_stt_available", return_value=True), \
                 mock.patch("app.application.voice.runtime.transcribe", return_value="привет") as stt:
             out = tool_resource_process(resource_id=rec.resource_id, operation="transcribe",
                                         execution_target="auto")

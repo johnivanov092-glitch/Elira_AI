@@ -131,3 +131,60 @@ describe("deriveArtifacts — resource_publish download artifact (R4B)", () => {
     expect(downloadArtifactKey(first)).not.toBe(downloadArtifactKey(second));
   });
 });
+
+describe("deriveArtifacts — live server preview", () => {
+  it("creates a preview artifact from the server-owned actual_url", () => {
+    const call = {
+      tool: "run_server",
+      ok: true,
+      arguments: { action: "start", command: "npm run dev" },
+      actual_url: "http://localhost:5174",
+      actual_port: 5174,
+      pid: 4242,
+    } satisfies Partial<CodeAgentToolCall>;
+    const a = deriveArtifacts([agentTurn([call])]);
+    expect(a.server).toEqual({
+      url: "http://localhost:5174",
+      port: 5174,
+      pid: 4242,
+      key: "1:http://localhost:5174",
+    });
+  });
+
+  it("clears only the matching preview on a successful stop", () => {
+    const calls = [
+      {
+        tool: "run_server", ok: true,
+        arguments: { action: "start", command: "npm run dev" },
+        actual_url: "http://localhost:5174", actual_port: 5174, pid: 4242,
+      },
+      { tool: "run_server", ok: true, arguments: { action: "stop", pid: 4242 } },
+    ] satisfies Partial<CodeAgentToolCall>[];
+    const a = deriveArtifacts([agentTurn(calls)]);
+    expect(a.server).toBeUndefined();
+  });
+
+  it("keeps the preview when an unrelated or failed server call occurs", () => {
+    const calls = [
+      {
+        tool: "run_server", ok: true,
+        arguments: { action: "start", command: "npm run dev" },
+        actual_url: "http://localhost:5174", actual_port: 5174, pid: 4242,
+      },
+      { tool: "run_server", ok: false, arguments: { action: "logs", pid: 9999 } },
+    ] satisfies Partial<CodeAgentToolCall>[];
+    const a = deriveArtifacts([agentTurn(calls)]);
+    expect(a.server?.url).toBe("http://localhost:5174");
+  });
+
+  it("rejects a non-loopback URL even when a tool event claims success", () => {
+    const a = deriveArtifacts([agentTurn([{
+      tool: "run_server",
+      ok: true,
+      actual_url: "https://example.com/app",
+      actual_port: 443,
+      pid: 4242,
+    }])]);
+    expect(a.server).toBeUndefined();
+  });
+});

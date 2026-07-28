@@ -59,6 +59,7 @@ def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict
 
     Recognized formats (any may appear in code fences, multiple times,
     with prose around them):
+      {"kind": "tool_request", "tool": "tool", "arguments": {...}}
       {"name": "tool", "arguments": {...}}
       {"name": "tool", "parameters": {...}}
       [{"name": ...}, ...]
@@ -78,8 +79,13 @@ def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict
     def _normalize(item: Any) -> dict[str, Any] | None:
         if not isinstance(item, dict):
             return None
+        # Recover the repository's canonical action envelope. Local models may
+        # emit it in message.content instead of structured OpenAI tool_calls.
+        if item.get("kind") == "tool_request":
+            name = item.get("tool")
+            args = item.get("arguments") or {}
         # Unwrap {"function": {...}}
-        if "function" in item and isinstance(item["function"], dict):
+        elif "function" in item and isinstance(item["function"], dict):
             fn = item["function"]
             name = fn.get("name")
             args = fn.get("arguments") or fn.get("parameters") or {}

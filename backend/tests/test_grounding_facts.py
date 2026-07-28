@@ -30,8 +30,11 @@ from app.application.code_agent import agent_loop  # noqa: E402
 from app.application.code_agent.agent_loop import _CODE_AGENT_BASE_TOOLS  # noqa: E402
 from app.application.code_agent.loop_helpers import (  # noqa: E402
     FACTS_PREFIX,
+    _answer_admits_missing_external_evidence,
     _fact_from_tool,
     _facts_digest,
+    _requires_external_evidence,
+    _tool_provides_external_evidence,
     _ungrounded_files,
 )
 from app.application.code_agent.history import _coerce_history  # noqa: E402
@@ -78,6 +81,52 @@ class FactHelperTest(unittest.TestCase):
 
     def test_empty_digest(self):
         self.assertEqual(_facts_digest([]), "")
+
+
+class ExternalEvidenceHelperTest(unittest.TestCase):
+    def test_real_company_creator_requires_external_evidence(self):
+        self.assertTrue(_requires_external_evidence(
+            "Кто сделал модель Laguna и из какой она компании?"
+        ))
+
+    def test_high_stakes_advice_requires_external_evidence(self):
+        self.assertTrue(_requires_external_evidence(
+            "Можно ли при беременности и низкой плаценте заниматься сексом?"
+        ))
+
+    def test_ordinary_code_question_does_not_require_web(self):
+        self.assertFalse(_requires_external_evidence(
+            "Объясни, почему эта функция возвращает None."
+        ))
+
+    def test_local_project_checks_do_not_require_web(self):
+        for question in (
+            "Проверь последний проект и запусти тесты.",
+            "Найди файл config.py и прочитай его.",
+            "Посмотри текущую нагрузку на моём сервере через SSH.",
+            "Кто сделал этот коммит в проекте?",
+        ):
+            with self.subTest(question=question):
+                self.assertFalse(_requires_external_evidence(question))
+
+    def test_claimed_official_check_requires_evidence(self):
+        self.assertTrue(_requires_external_evidence(
+            "Расскажи об этом районе.",
+            "Я проверил официальный реестр и сайт акимата.",
+        ))
+
+    def test_honest_uncertainty_can_finalize(self):
+        self.assertTrue(_answer_admits_missing_external_evidence(
+            "Источник не найден, поэтому факт не подтвержден."
+        ))
+
+    def test_search_snippet_is_not_content_evidence(self):
+        self.assertFalse(_tool_provides_external_evidence(
+            "web_search", "1. Example https://example.com"
+        ))
+        self.assertTrue(_tool_provides_external_evidence(
+            "web_fetch", "[web_fetch: https://example.com] full page"
+        ))
 
 
 class CoerceHistoryFactsTest(unittest.TestCase):
@@ -202,6 +251,10 @@ class LoopEmitsFactsTest(unittest.TestCase):
 class GroundingNudgeLoopTest(unittest.TestCase):
     def tearDown(self):
         deferred_tools.clear_run("gn1")
+        deferred_tools.clear_run("gn-external")
+        deferred_tools.clear_run("gn-search-only")
+        deferred_tools.clear_run("gn-fetch")
+        deferred_tools.clear_run("gn-backstop")
 
     def test_ungrounded_file_answer_triggers_nudge_then_finalizes(self):
         # 1st answer names ungrounded files → gate nudges + continues; 2nd answer
@@ -226,6 +279,135 @@ class GroundingNudgeLoopTest(unittest.TestCase):
         self.assertTrue(state["nudge_seen"], "nudge must reach the model on the retry")
         self.assertGreaterEqual(state["step"], 2)  # the gate forced a re-answer
         done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertEqual(done["stop_reason"], "answer")
+
+    def test_external_company_facts_without_web_are_not_finalized(self):
+        state = {"step": 0, "nudge_seen": False}
+
+        def chat(**kw):
+            if not kw.get("tools"):
+                return {"message": {"content": "summary", "tool_calls": []}}
+            state["step"] += 1
+            if state["step"] == 1:
+                return _final(
+                    "Laguna создана Дарио Амодеи и Дэниелом Йи в компании "
+                    "Poolside в октябре 2024 года."
+                )
+            state["nudge_seen"] = any(
+                "прочитай внешний источник" in (m.get("content") or "").lower()
+                for m in (kw.get("messages") or [])
+            )
+            return _final(
+                "Я не подтвердил создателей Laguna по внешнему источнику, "
+                "поэтому не буду называть имена по памяти."
+            )
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env():
+            evs = list(agent_loop.stream_code_agent(
+                user_message="Кто сделал модель Laguna и из какой она компании?",
+                project_root=tmp,
+                run_id="gn-external",
+                auto_remember=False,
+                permission_mode="bypass",
+                chat_fn=chat,
+            ))
+
+        self.assertTrue(state["nudge_seen"], "runtime must require external evidence")
+        self.assertGreaterEqual(state["step"], 2)
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertNotIn("Дарио Амодеи", final)
+        self.assertNotIn("Дэниелом Йи", final)
+
+    def test_web_search_snippets_alone_still_require_source_read(self):
+        state = {"step": 0, "nudge_seen": False}
+
+        def chat(**kw):
+            if not kw.get("tools"):
+                return {"message": {"content": "summary", "tool_calls": []}}
+            state["step"] += 1
+            if state["step"] == 1:
+                return _call("web_search", query="Laguna model founders")
+            if state["step"] == 2:
+                return _final("Laguna создана Дарио Амодеи в 2024 году.")
+            state["nudge_seen"] = any(
+                "прочитай внешний источник" in (m.get("content") or "").lower()
+                for m in (kw.get("messages") or [])
+            )
+            return _final("Источник не найден, факт не подтвержден.")
+
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(
+                              status="ok",
+                              output={
+                                  "text": "1. Laguna overview https://example.test/laguna",
+                                  "ok": True,
+                              })):
+            evs = list(agent_loop.stream_code_agent(
+                user_message="Кто сделал модель Laguna?",
+                project_root=tmp,
+                run_id="gn-search-only",
+                auto_remember=False,
+                permission_mode="bypass",
+                chat_fn=chat,
+            ))
+
+        self.assertTrue(state["nudge_seen"])
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertNotIn("Дарио Амодеи", final)
+
+    def test_successful_web_fetch_allows_sourced_answer(self):
+        chat = _ScriptedChat([
+            _call("web_fetch", url="https://example.test/laguna", store=True),
+            _final(
+                "Согласно прочитанному источнику, Laguna выпустила Poolside: "
+                "https://example.test/laguna"
+            ),
+        ])
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(
+                              status="ok",
+                              output={
+                                  "text": (
+                                      "[web_fetch: https://example.test/laguna] "
+                                      "Poolside released Laguna."
+                                  ),
+                                  "ok": True,
+                              })):
+            evs = list(agent_loop.stream_code_agent(
+                user_message="Кто сделал модель Laguna?",
+                project_root=tmp,
+                run_id="gn-fetch",
+                auto_remember=False,
+                permission_mode="bypass",
+                chat_fn=chat,
+            ))
+
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertIn("https://example.test/laguna", final)
+        self.assertNotIn("Не могу подтвердить фактический ответ", final)
+
+    def test_unsupported_external_claim_is_replaced_after_one_retry(self):
+        chat = _ScriptedChat([
+            _final("Компания основана Иваном Ивановым в 2025 году."),
+            _final("Компания основана Иваном Ивановым в 2025 году."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp, _loop_env():
+            evs = list(agent_loop.stream_code_agent(
+                user_message="Проверь в интернете, кто основал эту компанию.",
+                project_root=tmp,
+                run_id="gn-backstop",
+                auto_remember=False,
+                permission_mode="bypass",
+                chat_fn=chat,
+            ))
+
+        final = [e for e in evs if e.get("type") == "final_response"][-1]["text"]
+        self.assertIn("не был успешно прочитан внешний источник", final)
+        self.assertNotIn("Иваном Ивановым", final)
+        done = [e for e in evs if e.get("type") == "done"][-1]
+        self.assertTrue(done["ok"])
         self.assertEqual(done["stop_reason"], "answer")
 
 

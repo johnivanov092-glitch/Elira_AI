@@ -166,6 +166,86 @@ _LOW_RISK_REVERSIBLE_TOOLS = frozenset({
 _REMOTE_WRITE_TOOLS = frozenset({"ssh_write", "ssh_replace"})
 _REMOTE_COMMAND_TOOLS = frozenset({"ssh_run", "ssh_run_ps"})
 
+_BLENDER_READ_ONLY_TOOLS = frozenset({
+    "get_blender_status",
+    "get_scene_info",
+    "get_object_info",
+    "get_viewport_screenshot",
+    "get_polyhaven_categories",
+    "search_polyhaven_assets",
+    "get_polyhaven_status",
+    "get_hyper3d_status",
+    "get_sketchfab_status",
+    "search_sketchfab_models",
+    "get_sketchfab_model_preview",
+    "poll_rodin_job_status",
+    "get_hunyuan3d_status",
+    "poll_hunyuan_job_status",
+})
+_UNITY_READ_ONLY_TOOLS = frozenset({
+    "debug_request_context",
+    "find_gameobjects",
+    "find_in_file",
+    "validate_script",
+    "manage_script_capabilities",
+    "get_sha",
+    "read_console",
+    "get_test_job",
+    "unity_docs",
+    "unity_reflect",
+})
+_UNITY_CAMERA_READ_ACTIONS = frozenset({
+    "ping", "get_brain_status", "list_cameras", "screenshot", "screenshot_multiview",
+})
+
+
+def _creative_mcp_parts(tool_name: str) -> tuple[str, str] | None:
+    name = str(tool_name or "").strip()
+    if "__" not in name:
+        return None
+    server, original = name.split("__", 1)
+    if server not in {"blender", "unity"}:
+        return None
+    return server, original
+
+
+def creative_batch_contains_arbitrary_code(value: Any) -> bool:
+    """Detect an arbitrary-code tool hidden anywhere in model-supplied batch JSON."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).casefold() in {"tool", "name", "tool_name"} and str(item).casefold() in {
+                "execute_code", "execute_blender_code",
+            }:
+                return True
+            if creative_batch_contains_arbitrary_code(item):
+                return True
+        return False
+    if isinstance(value, (list, tuple)):
+        return any(creative_batch_contains_arbitrary_code(item) for item in value)
+    return False
+
+
+def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
+    """Call-level read/change classification for mixed creative MCP surfaces.
+
+    Only the two explicitly configured editor bridges receive this treatment.
+    Unknown MCP tools remain changes and therefore fail closed to approval.
+    """
+    parts = _creative_mcp_parts(tool_name)
+    if parts is None:
+        return True
+    server, original = parts
+    payload = args if isinstance(args, dict) else {}
+    if server == "blender":
+        return original not in _BLENDER_READ_ONLY_TOOLS
+    if original in _UNITY_READ_ONLY_TOOLS:
+        return False
+    if original == "execute_code" and str(payload.get("action") or "").strip().casefold() == "get_history":
+        return False
+    if original == "manage_camera":
+        return str(payload.get("action") or "").strip().casefold() not in _UNITY_CAMERA_READ_ACTIONS
+    return True
+
 
 def evidence_for_registered_target(target_id: str) -> SafetyEvidence:
     """Return the reviewed safety profile for an executor-owned target id.
@@ -207,6 +287,31 @@ def evidence_for_tool_call(tool_name: str, args: dict[str, Any] | None) -> Safet
     """
     name = str(tool_name or "").strip()
     payload = args if isinstance(args, dict) else {}
+    creative = _creative_mcp_parts(name)
+    if creative is not None:
+        server, original = creative
+        if not tool_call_is_change(name, payload):
+            return SafetyEvidence.low_risk_reversible()
+        if (
+            (server == "blender" and original == "execute_blender_code")
+            or (
+                server == "unity"
+                and original == "execute_code"
+                and str(payload.get("action") or "").strip().casefold() in {"execute", "replay"}
+            )
+            or (
+                server == "unity"
+                and original == "batch_execute"
+                and creative_batch_contains_arbitrary_code(payload)
+            )
+        ):
+            # Arbitrary editor code is intentionally not declared reversible here.
+            # The provider takes a scene backup and captures a post-check, but Python/
+            # C# can still touch more than the scene, so one explicit approval remains.
+            return SafetyEvidence(impact="high")
+        # Dedicated editor primitives are bounded to the open scene/project. Local
+        # bypass may proceed; ask/accept_edits still pause under the shared policy.
+        return SafetyEvidence(impact="material")
     if name in _LOW_RISK_REVERSIBLE_TOOLS:
         return SafetyEvidence.low_risk_reversible()
     if name == "itops_change_apply":

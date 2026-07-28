@@ -909,19 +909,23 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "read_image",
                 "description": (
-                    "Describe an image file from the project using the vision model "
-                    "(screenshots, photos, diagrams, scanned pages). Returns a text "
+                    "Describe an attached image by resource_id or an image file from "
+                    "the project by path using the vision model (screenshots, photos, "
+                    "diagrams, scanned pages). Returns a text "
                     "description that also transcribes any visible text. Use this to "
-                    "'see' an image the project already contains. Requires the vision "
-                    "service to be enabled; returns an error otherwise."
+                    "'see' an image. For a chat attachment, use its resource_id and do "
+                    "not guess a project path. Provide exactly one of path/resource_id. "
+                    "Requires the vision service to be enabled; returns an error otherwise."
                 ),
                 "parameters": {
                     "type": "object",
+                    "additionalProperties": False,
                     "properties": {
                         "path": {"type": "string", "description": "Path to the image, relative to project root or absolute inside it."},
+                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque id of an image attached to this run. Use this instead of path for chat attachments."},
                         "prompt": {"type": "string", "description": "Optional instruction for what to focus on. Defaults to a full description."},
                     },
-                    "required": ["path"],
+                    "required": [],
                 },
             },
         },
@@ -956,6 +960,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "keyboard. Always call action='screenshot' FIRST to read the screen and its "
                     "size before clicking — coordinates are absolute pixels and grounding is "
                     "approximate, so re-screenshot to verify the result of each action. "
+                    "This tool controls the GUI only; it does not select or run compute "
+                    "on the local GPU. For attached audio/video processing on local "
+                    "hardware, use resource_process with execution_target='local_gpu'. "
                     "Actions: 'screenshot' (returns a description + screen size), 'left_click'/"
                     "'right_click'/'double_click'/'middle_click' (need x,y), 'move' (x,y), "
                     "'type' (text), 'key' (keys, e.g. [\"ctrl\",\"c\"] or [\"enter\"]), 'scroll' "

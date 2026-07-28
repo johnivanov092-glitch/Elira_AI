@@ -18,14 +18,19 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artifacts; project: string; onClose: () => void }) {
   const file = artifacts.file;
+  const server = artifacts.server;
   const isHtml = !!file && /\.html?$/i.test(file.path);
   const isMd = !!file && /\.(md|markdown)$/i.test(file.path);
-  const [tab, setTab] = useState<Tab>(isHtml || isMd ? "preview" : file ? "code" : "console");
+  const [tab, setTab] = useState<Tab>(server || isHtml || isMd ? "preview" : file ? "code" : "console");
+
+  useEffect(() => {
+    if (server) setTab("preview");
+  }, [server?.key]);
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-line bg-side">
       <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
-        <span className="truncate font-mono text-[11.5px] text-t2">{file?.path ?? "превью"}</span>
+        <span className="truncate font-mono text-[11.5px] text-t2">{server?.url ?? file?.path ?? "превью"}</span>
         <button type="button" onClick={onClose} aria-label="Закрыть" className="ml-auto grid h-6 w-6 place-items-center rounded-md border border-line text-t2 hover:bg-hover hover:text-tx">
           <X size={14} />
         </button>
@@ -65,7 +70,14 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
 
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === "preview" && (
-          isHtml && file ? (
+          server ? (
+            <iframe
+              title="live preview"
+              sandbox="allow-scripts allow-forms allow-modals allow-same-origin"
+              src={server.url}
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : isHtml && file ? (
             <iframe title="preview" sandbox="allow-scripts" srcDoc={file.content} className="h-full w-full border-0 bg-white" />
           ) : isMd && file ? (
             <div className="px-4 py-3 text-[13px]"><MarkdownRenderer content={file.content} /></div>

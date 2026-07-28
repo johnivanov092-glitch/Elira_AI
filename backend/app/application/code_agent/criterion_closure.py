@@ -116,6 +116,15 @@ def _action_for(item: dict, *, host: str, url: str) -> dict | None:
     elif intent == "command_check":
         cmd = _COMMAND_FOR_KIND.get(item.get("command_kind") or "any", "нужную проверку")
         return {"tool": "run_bash", "call": f"run_bash(`{cmd}`) — должно пройти (exit 0)", "why": text}
+    elif intent == "behavior_test":
+        return {
+            "tool": "run_bash",
+            "call": (
+                "запусти существующий focused test suite в verbose-режиме: каждый "
+                "заявленный сценарий должен иметь отдельный именованный PASSED-тест"
+            ),
+            "why": text,
+        }
     elif intent == "viewport_layout":
         # Render at the width the criterion names (mobile for narrow/ambiguous, desktop for
         # wide) and let the browser MEASURE horizontal overflow — a real layout verdict, not

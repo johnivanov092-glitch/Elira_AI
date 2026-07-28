@@ -268,16 +268,13 @@ def is_shell_critical(command: str) -> bool:
     return shell_command_is_high_impact(command)
 
 
-# ─── Raw-SSH-via-run_bash redirect ──────────────────────────────────────────
+# ─── Raw-SSH-via-run_bash failure guidance ──────────────────────────────────
 #
-# A raw `ssh <host> "<remote command>"` issued through run_bash is the quoting-
-# hell trap that burned a whole real run: the body is parsed by the LOCAL shell →
-# ssh → the REMOTE shell (cmd.exe → PowerShell on Windows), so every quote / pipe /
-# `$_` has to survive four layers. The ssh_* provider tools sidestep this entirely
-# (content over stdin for ssh_write; base64 EncodedCommand for ssh_run_ps/ssh_read),
-# turning ~80 escaping attempts into ONE clean call. So run_bash REDIRECTS a raw
-# ssh invocation to the right tool — it does NOT ban it: the model can still force
-# the raw pipe (tunnels, scp-style one-offs) with an explicit `#!raw-ssh` marker.
+# A raw `ssh <host> "<remote command>"` issued through run_bash can be a quoting
+# trap, especially against Windows. The ssh_* tools avoid those layers. This is
+# guidance, not a security boundary: run_bash is already governed by the active
+# approval mode, and the old hard redirect created failures even when raw SSH was
+# valid. The caller now appends this hint only after the real command fails.
 _RAW_SSH_OVERRIDE = "#!raw-ssh"
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _WRAPPED_RAW_SSH_RE = re.compile(
@@ -348,8 +345,9 @@ def _wrapped_raw_ssh_payload(command: str) -> str | None:
 
 def raw_ssh_redirect(command: str) -> str | None:
     """If *command* is a raw ``ssh [opts] <host> <cmd>`` remote-exec invocation,
-    return an actionable redirect message pointing at the ssh_* tools; else None.
-    Returns None when the explicit ``#!raw-ssh`` override marker is present."""
+    return actionable fallback guidance pointing at the ssh_* tools; else None.
+    The caller does not block execution. The explicit ``#!raw-ssh`` marker merely
+    suppresses the fallback hint."""
     cmd = (command or "").strip()
     if not cmd or _RAW_SSH_OVERRIDE in cmd:
         return None
@@ -357,7 +355,7 @@ def raw_ssh_redirect(command: str) -> str | None:
     if not (_ssh_is_remote_exec(cmd) or (wrapped and _ssh_is_remote_exec(wrapped))):
         return None
     return (
-        "ERROR: raw `ssh …` через run_bash — ловушка экранирования: тело команды "
+        "Подсказка: raw `ssh …` через run_bash может ломать экранирование: тело команды "
         "проходит 4 слоя (локальный shell → ssh → cmd.exe → PowerShell), и кавычки/"
         "пайпы/`$_` рвутся по дороге. Используй специализированные инструменты "
         "(экранировать НЕ нужно):\n"
@@ -366,6 +364,5 @@ def raw_ssh_redirect(command: str) -> str | None:
         "• ssh_write(host, path, content) — записать файл (контент идёт через stdin);\n"
         "• ssh_run_ps(host, script) — PowerShell-скрипт на Windows-хосте (base64, "
         "без quoting).\n"
-        "host бери из ssh_list_hosts. Если raw ssh нужен ОСОЗНАННО (туннель/scp) — "
-        f"добавь в конец команды маркер {_RAW_SSH_OVERRIDE} ."
+        "host бери из ssh_list_hosts."
     )

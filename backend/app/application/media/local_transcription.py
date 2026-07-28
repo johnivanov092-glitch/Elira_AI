@@ -161,9 +161,29 @@ def _load_cuda_library(name: str) -> Any:
 def _cuda_runtime_libraries_ready() -> bool:
     """Verify the speech runtime's direct CUDA libraries without loading a model."""
     names = (
-        ("cublas64_12.dll", "cudnn_ops64_9.dll")
+        (
+            "cublas64_12.dll",
+            "cudnn64_9.dll",
+            "cudnn_ops64_9.dll",
+            "cudnn_graph64_9.dll",
+            "cudnn_engines_precompiled64_9.dll",
+            "cudnn_engines_runtime_compiled64_9.dll",
+            "cudnn_heuristic64_9.dll",
+            "cudnn_adv64_9.dll",
+            "cudnn_cnn64_9.dll",
+        )
         if os.name == "nt"
-        else ("libcublas.so.12", "libcudnn_ops.so.9")
+        else (
+            "libcublas.so.12",
+            "libcudnn.so.9",
+            "libcudnn_ops.so.9",
+            "libcudnn_graph.so.9",
+            "libcudnn_engines_precompiled.so.9",
+            "libcudnn_engines_runtime_compiled.so.9",
+            "libcudnn_heuristic.so.9",
+            "libcudnn_adv.so.9",
+            "libcudnn_cnn.so.9",
+        )
     )
     with _CUDA_STATE_LOCK:
         for name in names:

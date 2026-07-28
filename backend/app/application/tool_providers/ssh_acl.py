@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from app.core.data_files import data_file
@@ -74,6 +75,36 @@ def is_host_allowed(host: str) -> bool:
     if not host or not isinstance(host, str):
         return False
     return host.strip() in get_allowed_hosts()
+
+
+def resolve_allowed_host(host: str) -> str | None:
+    """Resolve a human-facing host name to one existing allowlist alias.
+
+    Exact aliases remain the security boundary.  The relaxed key is used only
+    to select an already-allowed alias, and ambiguous matches fail closed.
+    This lets ``Elira AI Server`` resolve to ``elira-ai-server`` without ever
+    widening the allowlist or passing the display name to ``ssh``.
+    """
+    if not isinstance(host, str) or not host.strip():
+        return None
+    requested = host.strip()
+    hosts = get_allowed_hosts()
+    if requested in hosts:
+        return requested
+
+    folded = requested.casefold()
+    case_matches = [candidate for candidate in hosts if candidate.casefold() == folded]
+    if len(case_matches) == 1:
+        return case_matches[0]
+
+    key = re.sub(r"[^a-z0-9]+", "", folded)
+    if not key:
+        return None
+    key_matches = [
+        candidate for candidate in hosts
+        if re.sub(r"[^a-z0-9]+", "", candidate.casefold()) == key
+    ]
+    return key_matches[0] if len(key_matches) == 1 else None
 
 
 def is_ssh_enabled() -> bool:

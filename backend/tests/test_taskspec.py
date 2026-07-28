@@ -1334,6 +1334,33 @@ class ServerLifecycleLoopTest(unittest.TestCase):
         self.assertTrue(stop_mock.called)
         self.assertEqual(stop_mock.call_args_list[-1].args[0], "ts-srv-loopstop")
 
+    def test_run_server_tool_event_exposes_server_owned_preview_fields(self):
+        """The frontend can only open a live preview from structured runtime
+        fields. The model's prose URL is not an artifact contract."""
+        chat = _SeqChat([
+            _call("run_server", action="start", command="npm run dev"),
+            _final("сервер запущен"),
+        ], _final())
+        output = {
+            "text": "started", "ok": True, "verifier": True,
+            "server_started": True, "actual_port": 5174,
+            "actual_url": "http://localhost:5174", "local_url": "http://localhost:5174",
+            "pid": 4242, "evidence": "dev server running: http://localhost:5174",
+        }
+        with tempfile.TemporaryDirectory() as tmp, _loop_env(), \
+             patch.object(agent_loop, "_kernel_exec",
+                          return_value=SimpleNamespace(status="ok", output=output)):
+            evs = list(agent_loop.stream_code_agent(
+                user_message="подними dev-сервер", project_root=tmp,
+                run_id="ts-preview-event", auto_remember=False,
+                permission_mode="bypass", max_steps=10, chat_fn=chat,
+            ))
+        event = next(e for e in evs if e.get("type") == "tool_call"
+                     and e.get("tool") == "run_server")
+        self.assertEqual(event.get("actual_url"), "http://localhost:5174")
+        self.assertEqual(event.get("actual_port"), 5174)
+        self.assertEqual(event.get("pid"), 4242)
+
     def test_stop_all_forgets_server_url(self):
         # After run_server stop_all the remembered URL must NOT feed the closure/auto
         # layer — no auto browser probe against a dead endpoint. Liveness flips to

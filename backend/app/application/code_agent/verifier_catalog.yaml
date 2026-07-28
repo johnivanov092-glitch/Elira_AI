@@ -29,6 +29,7 @@ meta:
     - server_started
     - command_check       # +command_kind: typecheck|build|test|import|smoke|lint|any
     - command_output      # Batch A; +flag output_absent (R6 «НЕ выводит `X`»)
+    - behavior_test       # named PASSED tests cover every operation in a CRUD criterion
     - generic             # no verifier -> stays unverified (honest)
   flags:
     interaction: "dom_contains criterion that needs a user action first (fill/click)"
@@ -304,6 +305,17 @@ categories:
     overflow_measure: "documentElement.scrollWidth <= documentElement.clientWidth + 1 (both scrollbar-exclusive — innerWidth would mask overflow up to the scrollbar width; Batch D review)."
     residual_limit: "(1) measures overflow at the set width, doesn't cross-check the DOM there IS the responsive layout (Batch B class). (2) a multi-width criterion ('mobile и desktop') is confirmed by whichever single width the model measured — closure steers to mobile (the stricter); we don't require both."
     code: "tools/_web.py:tool_browser(viewport)+_browser_render; taskspec.py:_verdict_target_matches/_verdict_outcome(viewport_layout), _viewport_target; criterion_closure.py:_action_for(viewport_layout)"
+
+  - id: behavior_test
+    domain: coding
+    support: partial
+    criterion_patterns: ["клиент создаётся, редактируется, ищется и удаляется", "задача создаётся и завершается"]
+    intent: behavior_test
+    verifier_tools: [run_bash]
+    evidence_required: ["green test command plus one individually named PASSED test for every declared entity/action pair"]
+    closes: [behavior_test]
+    does_not_close: ["aggregate counts such as `24 passed` without named tests", "a green suite missing any declared operation", "a failed test command"]
+    code: "taskspec.py:_behavior_requirements/_passed_test_lines/_behavior_evidence_matches"
 
 # ── Negative rules (invariants the verifier layer MUST keep) ─────────────────
 negative_rules:

@@ -34,6 +34,14 @@ export type CodeAgentToolCall = {
   project_path?: string;
   size?: number;
   sha256?: string;
+  /** run_server: server-owned address of the process that actually survived
+   *  startup. Used for live Preview; never parsed from model prose. */
+  actual_url?: string;
+  local_url?: string;
+  actual_port?: number;
+  port?: number;
+  pid?: number;
+  server_started?: boolean;
   /** The RUNTIME made this call itself (auto-verifier closure pass), not the model. */
   auto_verifier?: boolean;
 };

@@ -166,10 +166,37 @@ class ProbeHonestyTest(unittest.TestCase):
         factory.assert_not_called()
 
     def test_loaded_cuda_library_handles_are_retained(self):
-        handles = [object(), object()]
+        handles = [object() for _ in range(9)]
         with mock.patch.object(lt, "_load_cuda_library", side_effect=handles) as load:
             self.assertTrue(lt._cuda_runtime_libraries_ready())
-            self.assertEqual(load.call_count, 2)
+            self.assertEqual(
+                [call.args[0] for call in load.call_args_list],
+                (
+                    [
+                        "cublas64_12.dll",
+                        "cudnn64_9.dll",
+                        "cudnn_ops64_9.dll",
+                        "cudnn_graph64_9.dll",
+                        "cudnn_engines_precompiled64_9.dll",
+                        "cudnn_engines_runtime_compiled64_9.dll",
+                        "cudnn_heuristic64_9.dll",
+                        "cudnn_adv64_9.dll",
+                        "cudnn_cnn64_9.dll",
+                    ]
+                    if os.name == "nt"
+                    else [
+                        "libcublas.so.12",
+                        "libcudnn.so.9",
+                        "libcudnn_ops.so.9",
+                        "libcudnn_graph.so.9",
+                        "libcudnn_engines_precompiled.so.9",
+                        "libcudnn_engines_runtime_compiled.so.9",
+                        "libcudnn_heuristic.so.9",
+                        "libcudnn_adv.so.9",
+                        "libcudnn_cnn.so.9",
+                    ]
+                ),
+            )
         with lt._CUDA_STATE_LOCK:
             self.assertEqual(list(lt._CUDA_LIBRARY_HANDLES.values()), handles)
 

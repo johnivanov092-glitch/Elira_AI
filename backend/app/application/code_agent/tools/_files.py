@@ -253,11 +253,12 @@ def tool_read_file(
             resolved_note = f"[имя '{path}' не найдено точно — открыл ближайшее: {alt.name}]\n"
             target = alt
         else:
-            return {"text": f"ERROR: not a file or does not exist: {path}{_dir_hint(target)}"}
+            return {"ok": False, "error": "file_not_found",
+                    "text": f"ERROR: not a file or does not exist: {path}{_dir_hint(target)}"}
     try:
         raw = target.read_bytes()
     except Exception as exc:
-        return {"text": f"ERROR: {exc}"}
+        return {"ok": False, "error": "read_failed", "text": f"ERROR: {exc}"}
 
     # Documents (pdf/docx/pptx/xls/xlsx): extract text via the shared file_extract
     # pipeline (pdf: pypdf→pdfplumber→OCR fallback for scans; docx/pptx/excel via
@@ -269,7 +270,8 @@ def tool_read_file(
             from app.application.file_extract.runtime import extract_file
             doc_text = str((extract_file(target.name, raw) or {}).get("text") or "")
         except Exception as exc:
-            return {"text": f"ERROR: не удалось извлечь текст из {target.suffix} ({path}): {exc}"}
+            return {"ok": False, "error": "extraction_failed",
+                    "text": f"ERROR: не удалось извлечь текст из {target.suffix} ({path}): {exc}"}
         if not doc_text.strip():
             return {"text": (
                 f"[{target.suffix}: текст не извлечён — вероятно скан без текстового "
@@ -302,7 +304,8 @@ def tool_read_file(
                 f"[{target.suffix} {target.name}: OCR не нашёл текста (похоже, обычное "
                 f"фото, а не скан документа). Для описания изображения вызови `read_image`.]"
             )}
-        return {"text": f"ERROR: binary file (not text): {path}"}
+        return {"ok": False, "error": "binary_file",
+                "text": f"ERROR: binary file (not text): {path}"}
 
     detected = _detect_encoding(raw, strict=False)
     if detected is not None:
