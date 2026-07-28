@@ -345,8 +345,15 @@ def tool_write_file(project_root: Path, *, path: str, content: str) -> dict[str,
     if existed:
         try:
             raw = target.read_bytes()
-        except Exception:
-            raw = b""
+        except OSError:
+            return {
+                "ok": False,
+                "error": "read_failed",
+                "text": (
+                    f"ERROR: failed to read existing file {path}; "
+                    "refusing to overwrite it."
+                ),
+            }
         detected = _detect_encoding(raw, strict=True)
         if detected is None:
             # Existing file whose encoding we can't pin down: refuse rather than

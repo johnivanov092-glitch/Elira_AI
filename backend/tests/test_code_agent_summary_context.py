@@ -99,7 +99,7 @@ class SummarizeHistoryTranscriptCapTest(unittest.TestCase):
             messages.append({"role": "user", "content": f"task_{i}: " + big})
             messages.append({"role": "assistant", "content": f"answer_{i}: " + big})
 
-        result = summarize_history(messages, chat_fn=fake_chat)
+        result = summarize_history(messages, num_ctx=16_384, chat_fn=fake_chat)
         self.assertTrue(result["ok"])
         self.assertEqual(result["turn_count"], 60)
 
@@ -153,7 +153,7 @@ class SummarizeHistoryTranscriptCapTest(unittest.TestCase):
             {"role": "user", "content": "ask"},
             {"role": "assistant", "content": big_answer},
         ]
-        summarize_history(messages, chat_fn=fake_chat)
+        summarize_history(messages, num_ctx=16_384, chat_fn=fake_chat)
         sent = captured["messages"][1]["content"]
         # No single 'Z' block of 5000+ chars should survive
         self.assertNotIn("Z" * 5000, sent)

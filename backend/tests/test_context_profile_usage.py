@@ -19,12 +19,12 @@ class ContextProfileTest(unittest.TestCase):
     def test_reads_live_server_context(self) -> None:
         cfg = SimpleNamespace(context_window=16384, model="local-model", base_url="http://server/v1")
         with patch("app.infrastructure.llm.openai_compatible.local_llm_config", return_value=cfg), patch(
-            "app.infrastructure.llm.openai_compatible.list_models",
-            return_value=[{"name": "local-model", "context_window": 131072}],
+            "app.infrastructure.llm.openai_compatible.server_context_window",
+            return_value=131072,
         ):
             profile = get_active_context_profile("local-model")
         self.assertEqual(profile["ctx_size"], 131072)
-        self.assertEqual(profile["source"], "server")
+        self.assertEqual(profile["source"], "server_props")
 
     def test_auto_alias_adopts_served_window(self) -> None:
         # The frontend default model is "auto", which the server never echoes
@@ -32,21 +32,22 @@ class ContextProfileTest(unittest.TestCase):
         # n_ctx instead of falling through to the (larger) config default.
         cfg = SimpleNamespace(context_window=131072, model="local-model", base_url="http://server/v1")
         with patch("app.infrastructure.llm.openai_compatible.local_llm_config", return_value=cfg), patch(
-            "app.infrastructure.llm.openai_compatible.list_models",
-            return_value=[{"name": "local-model", "n_ctx": 32768}],
+            "app.infrastructure.llm.openai_compatible.server_context_window",
+            return_value=32768,
         ):
             profile = get_active_context_profile("auto")
         self.assertEqual(profile["ctx_size"], 32768)
-        self.assertEqual(profile["source"], "server")
+        self.assertEqual(profile["source"], "server_props")
 
-    def test_effective_limit_avoids_second_server_lookup(self) -> None:
+    def test_legacy_ctx_size_does_not_skip_live_server_lookup(self) -> None:
         cfg = SimpleNamespace(context_window=131072, model="local-model", base_url="http://server/v1")
         with patch("app.infrastructure.llm.openai_compatible.local_llm_config", return_value=cfg), patch(
-            "app.infrastructure.llm.openai_compatible.list_models"
-        ) as models:
+            "app.infrastructure.llm.openai_compatible.server_context_window",
+            return_value=65536,
+        ) as props:
             profile = get_active_context_profile("local-model", ctx_size=32768)
-        self.assertEqual(profile["ctx_size"], 32768)
-        models.assert_not_called()
+        self.assertEqual(profile["ctx_size"], 65536)
+        props.assert_called_once_with(fresh=False)
 
 
 class ContextUsageTest(unittest.TestCase):

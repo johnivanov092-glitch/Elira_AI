@@ -424,12 +424,12 @@ class AgentLoopTest(unittest.TestCase):
         # spending another LLM call after the execution budget is exhausted.
         self.assertEqual(
             [event["type"] for event in events],
-            ["run_started", "final_response", "done"],
+            ["run_started", "context_resolved", "final_response", "done"],
         )
         self.assertFalse(events[-1]["ok"])
         self.assertEqual(events[-1]["stop_reason"], "timeout")
         self.assertIn("timed out", events[-1]["error"])
-        self.assertIn("timeout 10s", events[1]["text"])
+        self.assertIn("timeout 10s", events[2]["text"])
         self.assertEqual(chat_calls, [])
 
     def test_loop_rejects_invalid_project_root(self) -> None:
@@ -1177,8 +1177,18 @@ class AgentLoopTest(unittest.TestCase):
             turns["n"] += 1
             if turns["n"] == 1:
                 return {"message": {"content": "", "tool_calls": [{
-                    "function": {"name": "write_file",
-                                 "arguments": {"path": "out.txt", "content": "x"}},
+                    "function": {
+                        "name": "write_file",
+                        "arguments": {
+                            "path": "test_out.py",
+                            "content": (
+                                "import unittest\n\n"
+                                "class SmokeTest(unittest.TestCase):\n"
+                                "    def test_ok(self):\n"
+                                "        self.assertTrue(True)\n"
+                            ),
+                        },
+                    },
                 }]}}
             # turn 2: model tries to close without verifying -> gate fires.
             # turn 3: model answers again -> gate already fired, run closes.
@@ -1281,8 +1291,10 @@ class AgentLoopTest(unittest.TestCase):
                 }]}}
             if turns["n"] == 2:
                 return {"message": {"content": "", "tool_calls": [{
-                    "function": {"name": "run_bash",
-                                 "arguments": {"command": "echo ok"}},
+                    "function": {
+                        "name": "run_bash",
+                        "arguments": {"command": "python -m unittest -q"},
+                    },
                 }]}}
             return {"message": {"content": "Готово, проверено.", "tool_calls": []}}
 

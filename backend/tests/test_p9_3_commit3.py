@@ -72,12 +72,12 @@ class CodeAgentRouteResolutionTest(unittest.TestCase):
         self.assertEqual(model, "my-explicit:1b")
         self.assertEqual(decision.source, "explicit")
 
-    def test_monitoring_cap_applies(self):
-        _model, effective, _decision = self._run(
+    def test_monitoring_cap_does_not_change_offline_hint(self):
+        _model, requested, _decision = self._run(
             "local-model", 16384, available=["local-model"],
             profile=None, monitoring_max=4096,
         )
-        self.assertEqual(effective, 4096)
+        self.assertEqual(requested, 16384)
 
     def test_profile_context_limit_does_not_shrink_code_agent_default(self):
         _model, effective, decision = self._run(
@@ -313,7 +313,7 @@ class CodeAgentEnsureLimitCapTest(unittest.TestCase):
     max_context_tokens caps a too-large request to 16384 (vs reaching preflight
     uncapped and being blocked) even on a fresh monitoring DB with no row."""
 
-    def test_request_above_default_cap_becomes_131072(self):
+    def test_request_above_old_default_cap_passes_through(self):
         import tempfile
         from app.application.monitoring import runtime as mon
         from app.application.code_agent.agent_loop import _resolve_code_route
@@ -332,7 +332,7 @@ class CodeAgentEnsureLimitCapTest(unittest.TestCase):
                 mon.DB_PATH = orig_db
                 mon._LIMIT_SEED_DONE = orig_seed
 
-        self.assertEqual(effective, 131072)
+        self.assertEqual(effective, 200000)
 
 
 if __name__ == "__main__":

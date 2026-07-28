@@ -12,7 +12,7 @@ from app.infrastructure.db.connection import connect_sqlite
 
 DEFAULT_MAX_RUNS_PER_HOUR = 120
 DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
-DEFAULT_MAX_CONTEXT_TOKENS = 131072
+DEFAULT_MAX_CONTEXT_TOKENS = 0
 DEFAULT_WORKFLOW_ENGINE_AGENT_ID = "workflow-engine"
 
 CREATE_SQL = """
@@ -232,11 +232,10 @@ def migrate_model_profiles_table(db_path: str | Path) -> None:
         )
 
 
-# Built-in runtime rows that should never be capped below the production
-# context window. The multi-agent templates run under these agent_ids
-# (builtin-* + workflow-engine); the chat/code-agent rows were the original
-# pair. Any of these still carrying the old 16384 cap silently shrinks the
-# effective context window via effective_context_limit()'s min().
+# Built-in rows whose historical execution timeout is migrated below. Context
+# limits are deliberately left untouched: interactive live runtimes bypass this
+# administrative policy explicitly, while workflows and offline callers still
+# enforce any configured value.
 _BUILTIN_RUNTIME_AGENT_IDS = (
     "chat",
     "code-agent",
@@ -253,15 +252,8 @@ _BUILTIN_RUNTIME_AGENT_IDS = (
 
 
 def migrate_default_runtime_limits(db_path: str | Path) -> None:
-    """Raise built-in runtime rows still carrying the old 16384 context cap."""
+    """Migrate historical execution timeouts without rewriting context policy."""
     with get_connection(db_path) as con:
-        con.execute(
-            f"""UPDATE agent_limits
-                SET max_context_tokens = ?, updated_at = ?
-                WHERE agent_id IN ({",".join("?" for _ in _BUILTIN_RUNTIME_AGENT_IDS)})
-                  AND max_context_tokens = 16384""",
-            (DEFAULT_MAX_CONTEXT_TOKENS, now_utc(), *_BUILTIN_RUNTIME_AGENT_IDS),
-        )
         con.execute(
             f"""UPDATE agent_limits
                 SET max_execution_seconds = ?, updated_at = ?

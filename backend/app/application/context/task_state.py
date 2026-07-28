@@ -100,7 +100,8 @@ def compress_now(session_id: str) -> dict[str, Any]:
     messages = _turn_messages(list(session.get("turns") or []))
     profile = get_active_context_profile(
         str(session.get("model") or "local-model"),
-        ctx_size=int(session.get("num_ctx") or 131_072),
+        ctx_size=None,
+        fresh=True,
     )
     usage_before = get_context_usage(
         messages,

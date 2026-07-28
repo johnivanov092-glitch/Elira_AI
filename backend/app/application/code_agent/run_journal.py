@@ -173,6 +173,11 @@ class RunJournal:
             "todo": [],
             "done": [],
             "changed_files": [],
+            "mutated_files": [],
+            "verifications": [],
+            "failed_attempts": [],
+            "project_epoch": 0,
+            "criteria_epoch": 0,
             "resumable": False,
             "resume_instruction": "",
             "project_root": str(request.get("project_root") or ""),
@@ -224,6 +229,8 @@ class RunJournal:
             )
         if event_type == "final_response":
             self._state["last_response"] = str(event.get("text") or "")
+        if event_type == "context_resolved":
+            self._state["context_resolution"] = _clean(event)
         if event_type == "reasoning_fallback":
             # Delivery (B): the thinking-OFF fallback is one-shot for the whole
             # RUN identity, not just the current process/HTTP session. Durable
@@ -253,6 +260,30 @@ class RunJournal:
             touched = str(event.get("touched_path") or "").strip()
             if touched and touched not in self._state["changed_files"]:
                 self._state["changed_files"].append(touched)
+            if event.get("state_changed"):
+                self._state["project_epoch"] = (
+                    int(self._state.get("project_epoch") or 0) + 1
+                )
+                self._state["criteria_epoch"] = -1
+                self._state["criteria"] = []
+                self._state["verifications"] = []
+                self._state["completion_status"] = "unverified"
+                if touched:
+                    mutated = list(self._state.get("mutated_files") or [])
+                    if touched not in mutated:
+                        self._state["mutated_files"] = [*mutated, touched][-500:]
+            verification = str(event.get("task_state_verification") or "").strip()
+            if verification:
+                self._state["verifications"] = [
+                    *list(self._state.get("verifications") or []),
+                    verification[:400],
+                ][-200:]
+            failure = str(event.get("task_state_failure") or "").strip()
+            if failure:
+                self._state["failed_attempts"] = [
+                    *list(self._state.get("failed_attempts") or []),
+                    failure[:240],
+                ][-200:]
         if event_type == "tool_decision":
             self._state["tool_decisions"] = [
                 *list(self._state.get("tool_decisions") or []),
@@ -281,6 +312,7 @@ class RunJournal:
                 "stop_reason": stop_reason,
                 "completion_status": completion,
                 "criteria": list(event.get("criteria") or []),
+                "criteria_epoch": int(self._state.get("project_epoch") or 0),
                 "resumable": resumable,
                 "error": event.get("error"),
                 "last_error": event.get("error"),

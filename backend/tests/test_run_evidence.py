@@ -70,6 +70,19 @@ def test_crm_verification_is_bound_to_latest_project_epoch() -> None:
     assert not evidence.has_current_passing_verification
 
 
+def test_non_verifier_shell_command_does_not_create_verification_receipt() -> None:
+    evidence = RunEvidence()
+    _record(
+        evidence,
+        "run_bash",
+        args={"command": "mkdir test"},
+        output={"exit_code": 0},
+        text="exit=0",
+    )
+    assert not evidence.has_current_verification
+    assert not evidence.has_current_passing_verification
+
+
 def test_ssh_requires_executed_observation_and_postcheck_after_change() -> None:
     evidence = RunEvidence()
 

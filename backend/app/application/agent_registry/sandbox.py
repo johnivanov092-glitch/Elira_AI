@@ -87,17 +87,25 @@ def evaluate_preflight(
     agent_id: str,
     num_ctx: int = 0,
     selected_tools: list[str] | tuple[str, ...] | None = None,
+    enforce_context_limit: bool = True,
 ) -> dict[str, Any]:
     normalized_agent_id = str(agent_id or "").strip() or "builtin-universal"
     limit = ensure_agent_limit(normalized_agent_id)
     tools = _normalize_tool_names(selected_tools)
 
     max_context_tokens = int(limit.get("max_context_tokens", 0) or 0)
-    if max_context_tokens > 0 and int(num_ctx or 0) > max_context_tokens:
+    if (
+        enforce_context_limit
+        and max_context_tokens > 0
+        and int(num_ctx or 0) > max_context_tokens
+    ):
         raise _make_error(
             agent_id=normalized_agent_id,
             reason="context_limit_exceeded",
-            message=f"Agent sandbox blocked run: context window {int(num_ctx or 0)} exceeds limit {max_context_tokens}.",
+            message=(
+                f"Agent sandbox blocked run: context window {int(num_ctx or 0)} "
+                f"exceeds limit {max_context_tokens}."
+            ),
             details={
                 "num_ctx": int(num_ctx or 0),
                 "max_context_tokens": max_context_tokens,
@@ -151,12 +159,14 @@ def preflight_or_raise(
     step_id: str = "",
     route: str = "",
     streaming: bool = False,
+    enforce_context_limit: bool = True,
 ) -> dict[str, Any]:
     try:
         result = evaluate_preflight(
             agent_id=agent_id,
             num_ctx=num_ctx,
             selected_tools=selected_tools,
+            enforce_context_limit=enforce_context_limit,
         )
         result["route"] = route
         result["streaming"] = bool(streaming)

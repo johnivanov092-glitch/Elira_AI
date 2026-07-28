@@ -9,7 +9,6 @@ export function codeAgentFaviconUrl(url: string): string {
   return buildApiUrl(`/api/code-agent/favicon?url=${encodeURIComponent(url)}`);
 }
 export const DEFAULT_CODE_AGENT_MAX_STEPS = 200;
-export const DEFAULT_CODE_AGENT_NUM_CTX = 131072;
 
 export type CodeAgentToolCall = {
   step: number;
@@ -108,7 +107,6 @@ export async function runCodeAgent({
   projectRoot,
   model = DEFAULT_CODE_AGENT_MODEL,
   maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
-  numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
   mode = "code",
   autoRemember = true,
   conversationHistory,
@@ -121,7 +119,6 @@ export async function runCodeAgent({
       project_root: projectRoot,
       model,
       max_steps: maxSteps,
-      num_ctx: numCtx,
       mode,
       auto_remember: autoRemember,
       conversation_history: conversationHistory,
@@ -168,6 +165,11 @@ export type CodeAgentStreamEvent =
       profile?: ContextProfile;
     }
   | { type: "final_response"; step: number; text: string; established_facts?: string; recent_tool_output?: string }
+  | ({
+      type: "context_resolved";
+      step: number;
+      run_id?: string;
+    } & ContextResolution)
   | {
       // Delivery session: informational slice boundary — the run CONTINUES on the
       // same run_id (auto-continuation after a budget stop with proven progress).
@@ -246,6 +248,24 @@ export type ContextProfile = {
   source: string;
 };
 
+export type ContextResolution = {
+  requested_context_mode?: "server" | "offline";
+  requested_context_cap?: number | null;
+  server_context_window?: number;
+  effective_context_window?: number;
+  limiting_source?: string;
+  context_profile_source?: string;
+  reserved_output_tokens?: number;
+  reserved_system_tokens?: number;
+  safety_margin_tokens?: number;
+  safe_input_budget?: number;
+  compaction_thresholds?: Record<
+    string,
+    { percent?: number; tokens?: number }
+  >;
+  thinking?: boolean;
+};
+
 // ── Approvals (Agent OS) ─────────────────────────────────────────────────
 
 /** Resolve a pending tool-call approval. The paused agent run picks the
@@ -279,7 +299,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     projectRoot,
     model = DEFAULT_CODE_AGENT_MODEL,
     maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
-    numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
     mode = "code",
     autoRemember = true,
     conversationHistory,
@@ -311,7 +330,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         project_root: projectRoot,
         model,
         max_steps: maxSteps,
-        num_ctx: numCtx,
         mode,
         auto_remember: autoRemember,
         conversation_history: conversationHistory,
@@ -531,11 +549,10 @@ export type SummarizeHistoryResult = {
 export async function summarizeHistory({
   messages,
   model = DEFAULT_CODE_AGENT_MODEL,
-  numCtx = DEFAULT_CODE_AGENT_NUM_CTX,
 }: SummarizeHistoryArgs): Promise<SummarizeHistoryResult> {
   return request<SummarizeHistoryResult>("/api/code-agent/summarize-history", {
     method: "POST",
-    body: { messages, model, num_ctx: numCtx },
+    body: { messages, model },
   });
 }
 
@@ -607,7 +624,6 @@ export async function createCodeSession(args: CodeSessionCreateArgs = {}): Promi
       title: args.title,
       project_root: args.projectRoot,
       model: args.model,
-      num_ctx: args.numCtx,
     },
   });
   return res.session;
@@ -631,7 +647,6 @@ export async function patchCodeSession(sessionId: string, patch: CodeSessionPatc
       title: patch.title,
       project_root: patch.projectRoot,
       model: patch.model,
-      num_ctx: patch.numCtx,
       pinned: patch.pinned,
       turns: patch.turns,
       context_state: patch.contextState,
@@ -883,11 +898,9 @@ export async function getMcpServerTools(serverId: string): Promise<{ server_id: 
  *  composer show the window meter (0%) before the first model turn. */
 export async function fetchContextProfile(
   model?: string,
-  numCtx?: number,
 ): Promise<ContextUsage | null> {
   const params = new URLSearchParams();
   if (model) params.set("model", model);
-  if (numCtx && numCtx > 0) params.set("num_ctx", String(numCtx));
   const qs = params.toString();
   try {
     const res = await request<{ ok: boolean; context?: ContextUsage }>(

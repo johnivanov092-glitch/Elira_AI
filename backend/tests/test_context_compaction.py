@@ -26,8 +26,8 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.context.compaction import (  # noqa: E402
     _FALLBACK_PLACEHOLDER,
-    _MAX_SUMMARY_CHARS,
     _SUMMARY_PREFIX,
+    _summary_char_budget,
     extract_rolling_summary,
     maybe_compact,
 )
@@ -254,22 +254,32 @@ class TestMaybeCompactEdgeCases(unittest.TestCase):
         self.assertIn("Pending work: keep this.", summary["content"])
 
     def test_summary_size_is_capped(self):
-        huge_summary = "S" * (_MAX_SUMMARY_CHARS + 1_000)
+        num_ctx = 999_999
+        summary_limit = _summary_char_budget(num_ctx)
+        huge_summary = "S" * (summary_limit + 1_000)
 
         def huge_summary_fn(**_kwargs):
             return {"ok": True, "summary": huge_summary, "error": None, "turn_count": 0}
 
         result, _ = maybe_compact(
             [_SYSTEM] + _make_turns(10),
-            num_ctx=999_999,
+            num_ctx=num_ctx,
             model="m",
             chat_fn=None,
             summarize_fn=huge_summary_fn,
             threshold=0.0,
         )
         summary = next(m for m in result if _SUMMARY_PREFIX in m.get("content", ""))
-        self.assertLessEqual(len(summary["content"]), len(_SUMMARY_PREFIX) + _MAX_SUMMARY_CHARS)
+        self.assertLessEqual(
+            len(summary["content"]),
+            len(_SUMMARY_PREFIX) + summary_limit,
+        )
         self.assertIn("[summary truncated]", summary["content"])
+
+    def test_summary_budget_scales_without_an_upper_cap(self):
+        self.assertEqual(_summary_char_budget(65_536), 4_096)
+        self.assertEqual(_summary_char_budget(131_072), 8_192)
+        self.assertEqual(_summary_char_budget(1_048_576), 65_536)
 
     def test_deterministic_fallback_summarizes_tool_results(self):
         messages = [_SYSTEM]
@@ -346,16 +356,17 @@ class TestDeepCompaction(unittest.TestCase):
 
         old = "OLD " * 1000   # ~4000 chars — fills the cap alone
         new = "NEW-FACTS " * 30
-        merged = _merge_summary([old], new)
+        limit = _summary_char_budget(65_536)
+        merged = _merge_summary([old], new, limit=limit)
         self.assertIn("NEW-FACTS", merged)          # newest survives intact
         self.assertIn("[older summaries dropped]", merged)
         self.assertNotIn("OLD", merged)             # oldest evicted
-        self.assertLessEqual(len(merged), _MAX_SUMMARY_CHARS)
+        self.assertLessEqual(len(merged), limit)
 
     def test_merge_summary_keeps_all_when_under_cap(self):
         from app.application.context.compaction import _merge_summary
 
-        merged = _merge_summary(["first block"], "second block")
+        merged = _merge_summary(["first block"], "second block", limit=4_096)
         self.assertEqual(merged, "first block\n\nsecond block")
 
 

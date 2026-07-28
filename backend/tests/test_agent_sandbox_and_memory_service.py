@@ -166,12 +166,22 @@ class EvaluatePreflightTest(unittest.TestCase):
             )
         self.assertEqual(result["selected_tools"], ["search", "calc"])
 
-    def test_preflight_raises_on_context_exceeded(self) -> None:
+    def test_preflight_enforces_context_policy_by_default(self) -> None:
         limit = {**self._ALLOW_ALL_LIMIT, "max_context_tokens": 100}
         with self._mock_limit(limit):
             with self.assertRaises(SandboxPolicyError) as ctx:
                 evaluate_preflight(agent_id="a1", num_ctx=200)
         self.assertEqual(ctx.exception.reason, "context_limit_exceeded")
+
+    def test_interactive_live_runtime_can_bypass_context_policy(self) -> None:
+        limit = {**self._ALLOW_ALL_LIMIT, "max_context_tokens": 100}
+        with self._mock_limit(limit):
+            result = evaluate_preflight(
+                agent_id="a1",
+                num_ctx=200,
+                enforce_context_limit=False,
+            )
+        self.assertTrue(result["ok"])
 
     def test_preflight_allows_context_at_limit(self) -> None:
         limit = {**self._ALLOW_ALL_LIMIT, "max_context_tokens": 1000}

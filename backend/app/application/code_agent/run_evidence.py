@@ -284,8 +284,19 @@ class RunEvidence:
         return requires_external_source(user_message, answer)
 
     @staticmethod
-    def is_verification_tool(tool_name: str) -> bool:
+    def is_verification_tool(
+        tool_name: str,
+        *,
+        arguments: dict[str, Any] | None = None,
+        output: dict[str, Any] | None = None,
+    ) -> bool:
         tool = str(tool_name or "").strip()
+        if (output or {}).get("verifier") is True:
+            return True
+        if tool == "run_bash":
+            from app.application.code_agent.taskspec import is_run_check_command
+
+            return is_run_check_command(str((arguments or {}).get("command") or ""))
         return tool in _VERIFICATION_TOOLS or tool.startswith("playwright__")
 
     @staticmethod
@@ -346,7 +357,11 @@ class RunEvidence:
             ))
             self._remember_grounding(arguments, text_result)
 
-        if self._is_verification_tool(tool, output):
+        if self.is_verification_tool(
+            tool,
+            arguments=arguments,
+            output=output,
+        ):
             self._receipts.append(EvidenceReceipt(
                 EvidenceKind.VERIFICATION,
                 tool,
@@ -399,10 +414,6 @@ class RunEvidence:
     @staticmethod
     def _is_observation_tool(tool: str) -> bool:
         return tool in _OBSERVATION_TOOLS or tool.startswith("playwright__")
-
-    @staticmethod
-    def _is_verification_tool(tool: str, output: dict[str, Any]) -> bool:
-        return output.get("verifier") is True or RunEvidence.is_verification_tool(tool)
 
     @staticmethod
     def _passed(output: dict[str, Any]) -> bool:

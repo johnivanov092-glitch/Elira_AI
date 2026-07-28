@@ -45,28 +45,25 @@ class ContextWindowFromPropsTest(unittest.TestCase):
         # sanity: still a usable budget (~54k after reserves), not collapsed
         self.assertGreater(prof["safe_input_budget"], 40_000)
 
-    def test_falls_back_to_config_when_props_unreachable(self):
-        # /props down AND /v1/models exposes no window → config default (128k).
+    def test_live_resolver_rejects_stale_env_when_props_unreachable(self):
         with mock.patch(
             "app.infrastructure.llm.openai_compatible.server_context_window",
             return_value=None,
-        ), mock.patch(
-            "app.infrastructure.llm.openai_compatible.list_models",
-            return_value=[],
+        ), mock.patch.dict(
+            "os.environ",
+            {"LLAMA_SERVER_CONTEXT_WINDOW": "131072"},
         ):
-            prof = profile_mod.get_active_context_profile("local-model")
-        self.assertEqual(prof["ctx_size"], profile_mod.DEFAULT_CONTEXT_WINDOW)
-        self.assertIn(prof["source"], {"config", "config_fallback"})
+            with self.assertRaises(profile_mod.ContextResolutionError):
+                profile_mod.resolve_context_window(None, live=True, fresh=True)
 
-    def test_explicit_ctx_size_is_respected_and_skips_discovery(self):
-        # When a caller passes an effective limit, we must NOT probe the server.
+    def test_legacy_ctx_size_cannot_override_live_server(self):
         with mock.patch(
             "app.infrastructure.llm.openai_compatible.server_context_window",
-            side_effect=AssertionError("must not probe /props when ctx_size given"),
+            return_value=131072,
         ):
             prof = profile_mod.get_active_context_profile("local-model", ctx_size=32768)
-        self.assertEqual(prof["ctx_size"], 32768)
-        self.assertEqual(prof["source"], "effective_limit")
+        self.assertEqual(prof["ctx_size"], 131072)
+        self.assertEqual(prof["limiting_source"], "server")
 
 
 if __name__ == "__main__":

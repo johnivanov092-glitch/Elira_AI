@@ -16,6 +16,7 @@ touching the rest of the layer.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 
 
@@ -866,7 +867,105 @@ def _behavior_evidence_matches(requirements: tuple[tuple[str, str], ...], output
     return bool(requirements and lines) and all(
         any(_line_proves_behavior(line, entity, action) for line in lines)
         for entity, action in requirements
-    )
+)
+
+
+_NON_EXECUTING_TEST_FLAGS = frozenset({
+    "--collect-only",
+    "--co",
+    "--list",
+    "--list-tests",
+    "--listtests",
+    "--no-run",
+})
+
+
+def _is_test_command(command: str, *, _depth: int = 0) -> bool:
+    """Return True only when a shell segment launches a test runner/script."""
+    if _depth > 2:
+        return False
+    for segment in re.split(r"(?:&&|\|\||[;|\r\n])", command or ""):
+        try:
+            words = [word.strip("'\"") for word in shlex.split(segment, posix=False)]
+        except ValueError:
+            continue
+        while words and (
+            words[0] in {"&", "call", "sudo", "env"}
+            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])
+        ):
+            words.pop(0)
+        if not words:
+            continue
+        executable = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        stem = re.sub(r"\.(?:exe|cmd|bat)$", "", executable)
+        args = [word.lower() for word in words[1:]]
+        if stem == "cmd":
+            command_index = next(
+                (index for index, arg in enumerate(args) if arg in {"/c", "/k"}),
+                None,
+            )
+            if command_index is not None:
+                return _is_test_command(
+                    " ".join(words[command_index + 2:]),
+                    _depth=_depth + 1,
+                )
+        if stem in {"powershell", "pwsh", "bash", "sh"}:
+            command_index = next(
+                (
+                    index
+                    for index, arg in enumerate(args)
+                    if arg in {"-c", "-command"}
+                ),
+                None,
+            )
+            if command_index is not None:
+                return _is_test_command(
+                    " ".join(words[command_index + 2:]),
+                    _depth=_depth + 1,
+                )
+        if any(arg in _NON_EXECUTING_TEST_FLAGS for arg in args):
+            continue
+        if stem == "go" and "test" in args:
+            for index, arg in enumerate(args[:-1]):
+                if arg == "-run" and args[index + 1] in {"^$", "$^", "a^"}:
+                    break
+            else:
+                return True
+            continue
+        arg_text = " ".join(args)
+        if stem in {"pytest", "py.test", "unittest", "jest", "vitest", "ctest", "tox", "nox"}:
+            return True
+        if stem in {"python", "python3", "py"}:
+            if any(
+                args[index] == "-m"
+                and index + 1 < len(args)
+                and args[index + 1] in {"pytest", "unittest"}
+                for index in range(len(args))
+            ):
+                return True
+            if any(
+                re.search(r"(?:^|/)test[^/]*\.(?:py|pyw)$", arg.replace("\\", "/"))
+                for arg in args
+            ):
+                return True
+        if stem in {"npm", "yarn", "pnpm", "bun"}:
+            if re.search(r"(?:^|\s)(?:run\s+)?test(?:\b|:)", arg_text):
+                return True
+        if stem == "npx" and args and args[0] in {"jest", "vitest", "pytest"}:
+            return True
+        if stem in {"cargo", "dotnet", "deno", "mvn", "gradle", "gradlew", "make"}:
+            if "test" in args:
+                return True
+        if stem == "node" and ("--test" in args or any(".test." in arg for arg in args)):
+            return True
+        if re.search(r"(?:^|[_.-])test[^/]*\.(?:ps1|py|sh|js|ts)$", executable):
+            return True
+        if stem in {"bash", "sh", "powershell", "pwsh"} and any(
+            re.search(r"(?:^|/)test[^/]*\.(?:ps1|sh)$", arg.replace("\\", "/"))
+            for arg in args
+        ):
+            return True
+    return False
 
 
 def _command_kind(text: str) -> str:
@@ -1023,6 +1122,8 @@ def _run_bash_verdict(cmd: str) -> dict | None:
     if _has(low, ("findstr", "grep ", "select-string")) and not _has(low, ("pytest", "npm test", "&&")):
         return None
     kind = _command_kind(low)
+    if kind == "test" and not _is_test_command(low):
+        return None
     if kind == "any":
         # bare run_bash with no recognisable check verb is not a verdict.
         # "test" goes through the token-anchored matcher — the substring falsely
@@ -1032,6 +1133,11 @@ def _run_bash_verdict(cmd: str) -> dict | None:
                               "import", "smoke", "lint", "npm run", "cargo", "go "))):
             return None
     return {"intents": {"command_check"}, "command_kind": kind, "files": set()}
+
+
+def is_run_check_command(command: str) -> bool:
+    """Return whether a shell command is server-classified verification."""
+    return _run_bash_verdict(command) is not None
 
 
 def _verifier_verdict(tool_name: str, args: dict, *, evidence: str = "", meta: dict | None = None) -> dict | None:
@@ -1290,6 +1396,33 @@ class CriteriaTracker:
     def from_spec(cls, spec: TaskSpec | None) -> "CriteriaTracker":
         crits = spec.success_criteria if spec else []
         return cls(items=[_criterion_item(c) for c in crits])
+
+    def restore_report(self, rows: list[dict] | None) -> None:
+        """Restore durable verifier results for the exact same criteria."""
+        remaining = [row for row in (rows or []) if isinstance(row, dict)]
+        for item in self.items:
+            match_index = next(
+                (
+                    index
+                    for index, row in enumerate(remaining)
+                    if row.get("text") == item["text"]
+                ),
+                None,
+            )
+            if match_index is None:
+                continue
+            row = remaining.pop(match_index)
+            status = row.get("status")
+            if status not in {"confirmed", "failed", "skipped"}:
+                continue
+            verifier = row.get("verifier")
+            evidence = row.get("evidence")
+            item.update(
+                status=status,
+                verifier=verifier if isinstance(verifier, str) else None,
+                evidence=evidence if isinstance(evidence, str) else None,
+                auto_verified=bool(row.get("auto_verified")),
+            )
 
     def record(self, *, tool_name: str, args: dict, ok: bool, evidence: str,
                meta: dict | None = None, auto: bool = False) -> bool:

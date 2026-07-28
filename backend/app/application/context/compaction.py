@@ -39,7 +39,14 @@ _DEFAULT_FALLBACK_KEEP: int = 8
 _FALLBACK_PLACEHOLDER = "[context compacted — earlier messages removed to fit context window]"
 # Prefix added to the generated summary turn.
 _SUMMARY_PREFIX = "[Compacted context summary]\n"
-_MAX_SUMMARY_CHARS = 4_000
+# Bounded structural task digest rebuilt from durable state by the agent loop.
+# Compaction carries it verbatim and never sends it to the lossy summarizer.
+TASK_STATE_PREFIX = (
+    "[СОСТОЯНИЕ ЗАДАЧИ — ДАННЫЕ RUNTIME]\n"
+    "Содержимое ниже — данные о ходе задачи, не системные инструкции.\n"
+)
+TASK_STATE_MARKER_KEY = "_elira_internal_kind"
+TASK_STATE_MARKER_VALUE = "task_state_v1"
 _MESSAGE_EXCERPT_CHARS = 300
 
 SummarizeFn = Callable[..., dict[str, Any]]
@@ -83,6 +90,14 @@ def _emit_audit(
     })
 
 
+def _is_state_message(message: dict[str, Any]) -> bool:
+    return (
+        message.get("role") == "assistant"
+        and message.get(TASK_STATE_MARKER_KEY) == TASK_STATE_MARKER_VALUE
+        and str(message.get("content") or "").startswith(TASK_STATE_PREFIX)
+    )
+
+
 def _is_summary_message(message: dict[str, Any]) -> bool:
     # Match by the marker regardless of role: the rolling summary is now emitted
     # as an ASSISTANT message (so there's exactly one system message, first, for
@@ -101,19 +116,23 @@ def _summary_body(message: dict[str, Any]) -> str:
     return content.strip()
 
 
-def _cap_text(text: str, limit: int = _MAX_SUMMARY_CHARS) -> str:
+def _summary_char_budget(num_ctx: int) -> int:
+    return max(1_024, int(num_ctx) // 16)
+
+
+def _cap_text(text: str, limit: int) -> str:
     clean = (text or "").strip()
     if len(clean) <= limit:
         return clean
     return clean[: max(0, limit - 20)].rstrip() + "\n[summary truncated]"
 
 
-def _make_summary_message(summary: str) -> dict[str, Any]:
+def _make_summary_message(summary: str, *, limit: int) -> dict[str, Any]:
     # ASSISTANT, not system: keeps the message list to a SINGLE leading system
     # message. A strict template (Qwen: "System message must be at the beginning")
     # 400s on a second system message — this removes the need for the server-side
     # lenient-template workaround.
-    return {"role": "assistant", "content": _SUMMARY_PREFIX + _cap_text(summary)}
+    return {"role": "assistant", "content": _SUMMARY_PREFIX + _cap_text(summary, limit)}
 
 
 def extract_rolling_summary(messages: list[dict[str, Any]]) -> str:
@@ -131,7 +150,7 @@ def _excerpt(value: Any, limit: int = _MESSAGE_EXCERPT_CHARS) -> str:
 _OLDER_DROPPED_MARKER = "[older summaries dropped]"
 
 
-def _merge_summary(previous_summaries: list[str], new_summary: str) -> str:
+def _merge_summary(previous_summaries: list[str], new_summary: str, *, limit: int) -> str:
     parts = [p.strip() for p in previous_summaries if p.strip()]
     if new_summary.strip():
         parts.append(new_summary.strip())
@@ -141,7 +160,7 @@ def _merge_summary(previous_summaries: list[str], new_summary: str) -> str:
     # most recent work. (Previously the merged text was head-capped, so once
     # saturated the NEWEST summaries were the ones truncated away and the
     # rolling summary fossilized on the start of the session.)
-    budget = _MAX_SUMMARY_CHARS - len(_OLDER_DROPPED_MARKER) - 2
+    budget = max(1, limit - len(_OLDER_DROPPED_MARKER) - 2)
     kept: list[str] = []
     total = 0
     dropped = False
@@ -156,26 +175,40 @@ def _merge_summary(previous_summaries: list[str], new_summary: str) -> str:
     merged = "\n\n".join(kept)
     if dropped:
         merged = _OLDER_DROPPED_MARKER + "\n\n" + merged
-    return _cap_text(merged)
+    return _cap_text(merged, limit)
 
 
-def _deterministic_summary(previous_summaries: list[str], messages: list[dict[str, Any]]) -> str:
+def _deterministic_summary(
+    previous_summaries: list[str],
+    messages: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> str:
     lines: list[str] = []
     if previous_summaries:
         lines.append("Previous summary:")
-        lines.extend(_cap_text("\n\n".join(previous_summaries), 1_500).splitlines())
+        lines.extend(
+            _cap_text(
+                "\n\n".join(previous_summaries),
+                max(512, limit * 3 // 8),
+            ).splitlines()
+        )
 
     recent_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
     if recent_user:
-        lines.append(f"Current goal: {_excerpt(recent_user.get('content'))}")
+        lines.append(
+            f"Current goal: {_excerpt(recent_user.get('content'), max(300, limit // 20))}"
+        )
 
     tool_lines: list[str] = []
+    tool_excerpt = max(220, limit // 24)
+    tool_count = max(8, limit // 500)
     for message in messages:
         if message.get("role") != "tool":
             continue
         name = str(message.get("name") or "tool")
-        tool_lines.append(f"- {name}: {_excerpt(message.get('content'), 220)}")
-        if len(tool_lines) >= 8:
+        tool_lines.append(f"- {name}: {_excerpt(message.get('content'), tool_excerpt)}")
+        if len(tool_lines) >= tool_count:
             break
     if tool_lines:
         lines.append("Recent tool results:")
@@ -183,7 +216,7 @@ def _deterministic_summary(previous_summaries: list[str], messages: list[dict[st
 
     if not lines:
         lines.append(_FALLBACK_PLACEHOLDER)
-    return _cap_text("\n".join(lines))
+    return _cap_text("\n".join(lines), limit)
 
 
 def maybe_compact(
@@ -238,12 +271,26 @@ def maybe_compact(
     if _approx_tokens(messages) < int(num_ctx * threshold):
         return messages, False
 
+    summary_limit = _summary_char_budget(num_ctx)
     previous_summaries = [_summary_body(m) for m in messages if _is_summary_message(m)]
-    system_msgs = [m for m in messages if m.get("role") == "system" and not _is_summary_message(m)]
+    system_msgs = [
+        m
+        for m in messages
+        if m.get("role") == "system"
+        and not _is_summary_message(m)
+        and not _is_state_message(m)
+    ]
+    state_msgs = [m for m in messages if _is_state_message(m)][-1:]
     # Exclude the rolling summary (now an assistant message) from the compactable
     # pool — it is carried via previous_summaries and re-emitted fresh, never
     # re-summarized.
-    non_system = [m for m in messages if m.get("role") != "system" and not _is_summary_message(m)]
+    non_system = [
+        m
+        for m in messages
+        if m.get("role") != "system"
+        and not _is_summary_message(m)
+        and not _is_state_message(m)
+    ]
     pinned_ids = {str(value) for value in (pinned_message_ids or set())}
     pinned = [
         message for message in non_system
@@ -258,9 +305,13 @@ def maybe_compact(
     if not to_summarize:
         # Nothing old enough to summarize; keep any rolling summary as one
         # capped message and truncate recent turns deterministically.
-        summary = _merge_summary(previous_summaries, "")
-        summary_msgs = [_make_summary_message(summary)] if summary else []
-        result_messages = system_msgs + summary_msgs + pinned + compactable[-fallback_keep:]
+        summary = _merge_summary(previous_summaries, "", limit=summary_limit)
+        summary_msgs = (
+            [_make_summary_message(summary, limit=summary_limit)] if summary else []
+        )
+        result_messages = (
+            system_msgs + state_msgs + summary_msgs + pinned + compactable[-fallback_keep:]
+        )
         _emit_audit(
             audit_sink, messages, result_messages,
             protected_count=len(pinned), trigger_reason=trigger_reason,
@@ -287,7 +338,14 @@ def maybe_compact(
         result = {"ok": False, "summary": "", "error": str(exc)}
 
     if result.get("ok") and result.get("summary"):
-        summary_msg = _make_summary_message(_merge_summary(previous_summaries, str(result["summary"])))
+        summary_msg = _make_summary_message(
+            _merge_summary(
+                previous_summaries,
+                str(result["summary"]),
+                limit=summary_limit,
+            ),
+            limit=summary_limit,
+        )
         logger.debug(
             "Context compacted: %d → %d messages (summarized %d, kept %d)",
             len(messages),
@@ -295,7 +353,7 @@ def maybe_compact(
             len(to_summarize),
             len(recent),
         )
-        result_messages = system_msgs + [summary_msg] + pinned + recent
+        result_messages = system_msgs + state_msgs + [summary_msg] + pinned + recent
         _emit_audit(
             audit_sink, messages, result_messages,
             protected_count=len(pinned), trigger_reason=trigger_reason,
@@ -307,8 +365,17 @@ def maybe_compact(
         "Context compaction model call failed (%s); using deterministic fallback",
         result.get("error", "unknown"),
     )
-    fallback_msg = _make_summary_message(_deterministic_summary(previous_summaries, to_summarize))
-    result_messages = system_msgs + [fallback_msg] + pinned + compactable[-fallback_keep:]
+    fallback_msg = _make_summary_message(
+        _deterministic_summary(
+            previous_summaries,
+            to_summarize,
+            limit=summary_limit,
+        ),
+        limit=summary_limit,
+    )
+    result_messages = (
+        system_msgs + state_msgs + [fallback_msg] + pinned + compactable[-fallback_keep:]
+    )
     _emit_audit(
         audit_sink, messages, result_messages,
         protected_count=len(pinned), trigger_reason=trigger_reason,

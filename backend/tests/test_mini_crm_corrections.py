@@ -34,6 +34,7 @@ from app.application.code_agent.delivery_session import stream_delivery_session 
 from app.application.code_agent.taskspec import (  # noqa: E402
     CriteriaTracker,
     _command_kind,
+    _run_bash_verdict,
     derive_task_spec,
 )
 from app.application.tool_providers import ToolRegistry  # noqa: E402
@@ -91,6 +92,23 @@ class WriteFileHonestyTest(unittest.TestCase):
                 "write_file", res.output, exec_ok=res.status == "ok"))
             self.assertEqual((root / "x.txt").read_text(encoding="utf-8"), "old")
 
+    def test_existing_file_read_failure_refuses_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "x.txt"
+            target.write_text("ORIGINAL", encoding="utf-8")
+            with patch("pathlib.Path.read_bytes", side_effect=OSError("access denied")):
+                res = _exec_builtin(
+                    root,
+                    "write_file",
+                    {"path": "x.txt", "content": "REPLACED"},
+                )
+            self.assertEqual(res.status, "error")
+            self.assertIs(res.output.get("ok"), False)
+            self.assertEqual(res.output.get("error"), "read_failed")
+            self.assertNotIn("access denied", str(res.output.get("text")).lower())
+            self.assertEqual(target.read_text(encoding="utf-8"), "ORIGINAL")
+
     def test_edit_file_explicit_failures_carry_ok_false(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -143,9 +161,29 @@ class VerifierKindMatchingTest(unittest.TestCase):
             _command_kind("npm create vite@latest . -- --template react-ts"), "test")
 
     def test_real_test_commands_still_classify(self):
-        for cmd in ("npm test", "npm run test", "npx vitest run", "jest",
-                    "pytest -q", "go test ./...", "node app.test.js"):
+        for cmd in (
+            "npm test",
+            "npm run test",
+            "npx vitest run",
+            "jest",
+            "pytest -q",
+            "go test ./...",
+            "node app.test.js",
+            'cmd /c "npm test"',
+            'powershell -NoProfile -Command "pytest -q"',
+        ):
             self.assertEqual(_command_kind(cmd), "test", cmd)
+            self.assertIsNotNone(_run_bash_verdict(cmd), cmd)
+
+    def test_non_executing_test_modes_are_not_verification(self):
+        for cmd in (
+            "pytest --collect-only",
+            "python -m pytest --co",
+            "cargo test --no-run",
+            "go test -run ^$ ./...",
+            "npx jest --listTests",
+        ):
+            self.assertIsNone(_run_bash_verdict(cmd), cmd)
 
     def test_vite_scaffold_does_not_confirm_tests_pass(self):
         """The REAL false evidence: `npm create vite@latest` exit 0 confirmed
@@ -154,6 +192,20 @@ class VerifierKindMatchingTest(unittest.TestCase):
         _record_bash(crit, "npm create vite@latest . -- --template react-ts 2>&1")
         self.assertEqual(crit.items[0]["status"], "unconfirmed",
                          crit.items[0].get("evidence"))
+
+    def test_test_named_path_is_not_a_test_verdict(self):
+        for cmd in (
+            "mkdir test",
+            "mkdir pytest",
+            "echo test",
+            "echo pytest",
+            "type test",
+            "rm -rf test",
+        ):
+            self.assertIsNone(_run_bash_verdict(cmd), cmd)
+            crit = _tracker("тесты проходят")
+            _record_bash(crit, cmd)
+            self.assertEqual(crit.items[0]["status"], "unconfirmed", cmd)
 
     def test_dependency_install_with_test_packages_does_not_confirm_tests(self):
         """The live Test 123 false evidence: installing jest/testing-library is

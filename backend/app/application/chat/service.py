@@ -423,6 +423,7 @@ def prepare_chat_execution(
         run_id=run_id,
         route=chat_plan.route,
         streaming=streaming,
+        enforce_context_limit=False,
     )
 
     # P9.3: record routing provenance into run metrics (no schema change —

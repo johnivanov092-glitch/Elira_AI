@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 from app.application.code_agent.agent_loop import (
     DEFAULT_MAX_STEPS,
     DEFAULT_MODEL,
-    DEFAULT_NUM_CTX,
     _CODE_AGENT_BASE_TOOLS,
     get_project_prompt,
     get_verify_command,
@@ -264,7 +263,7 @@ class CodeAgentRequest(BaseModel):
     # an explicit model is preserved. (CodeAgentStreamRequest inherits this.)
     model: str = Field(default="auto")
     max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1, le=200)
-    num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
+    num_ctx: Optional[int] = Field(default=None, ge=1024)
     mode: CodeAgentMode = Field(default="code", description="Composer mode: code or search")
     auto_remember: bool = Field(default=True, description="Save a short summary of successful turns into RAG")
     conversation_history: list[ConversationMessage] | None = None
@@ -342,7 +341,7 @@ class ProjectPromptInitRequest(BaseModel):
 class SummarizeHistoryRequest(BaseModel):
     messages: list[ConversationMessage]
     model: str = Field(default=DEFAULT_MODEL)
-    num_ctx: int = Field(default=DEFAULT_NUM_CTX, ge=1024, le=131072)
+    num_ctx: Optional[int] = Field(default=None, ge=1024)
 
 
 class SummarizeHistoryResponse(BaseModel):
@@ -528,14 +527,17 @@ def answer_question(question_id: str, payload: QuestionAnswerRequest) -> dict[st
 
 @router.get("/context-profile")
 def read_context_profile(model: str = DEFAULT_MODEL, num_ctx: Optional[int] = None) -> dict[str, Any]:
-    """Initial (empty-history) context usage so the composer can show the
-    window meter before the first model turn. The same get_context_usage path
-    the agent loop emits per-step, seeded with the live ctx_size profile."""
-    from app.application.context.profile import get_active_context_profile
+    """Return empty-history usage for the exact live server context window."""
+    from app.application.context.profile import (
+        ContextResolutionError,
+        resolve_context_window,
+    )
     from app.application.context.usage import get_context_usage
 
-    ctx_size = num_ctx if (num_ctx and num_ctx > 0) else None
-    profile = get_active_context_profile(model, ctx_size=ctx_size)
+    try:
+        profile = resolve_context_window(None, model=model, live=True, fresh=True)
+    except ContextResolutionError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
     usage = get_context_usage(
         [],
         ctx_size=int(profile["ctx_size"]),
@@ -543,7 +545,18 @@ def read_context_profile(model: str = DEFAULT_MODEL, num_ctx: Optional[int] = No
         reserved_system_tokens=int(profile["reserved_system_tokens"]),
         safety_margin_tokens=int(profile["safety_margin_tokens"]),
     )
-    return {"ok": True, "context": usage, "source": profile.get("source")}
+    return {
+        "ok": True,
+        "context": usage,
+        "source": profile.get("source"),
+        "requested_context_mode": profile.get("requested_context_mode"),
+        "requested_context_cap": profile.get("requested_context_cap"),
+        "server_context_window": profile.get("server_context_window"),
+        "effective_context_window": profile.get("effective_context_window"),
+        "limiting_source": profile.get("limiting_source"),
+        "context_profile_source": profile.get("context_profile_source"),
+        "compaction_thresholds": profile.get("compaction_thresholds"),
+    }
 
 
 @router.get("/favicon")

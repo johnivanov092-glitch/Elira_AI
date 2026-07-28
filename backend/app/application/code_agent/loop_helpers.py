@@ -678,6 +678,86 @@ def tool_state_changed(tool_name: str, tool_meta: dict, *, exec_ok: bool) -> boo
     return bool(spec.get("side_effect"))
 
 
+def build_task_state_block(
+    *,
+    goal: str = "",
+    constraints: list[str] | None = None,
+    criteria_rows: list[dict] | None = None,
+    checklist_items: list[dict] | None = None,
+    mutated_files: list[str] | None = None,
+    verifications: list[str] | None = None,
+    failed_attempts: list[str] | None = None,
+    next_step: str = "",
+) -> str:
+    """Build a bounded digest exclusively from typed runtime state."""
+    lines: list[str] = []
+    if goal.strip():
+        lines.append(f"Задача: {goal.strip()[:400]}")
+    if next_step.strip():
+        lines.append(f"Следующий шаг: {next_step.strip()[:300]}")
+    for constraint in (constraints or [])[:8]:
+        lines.append(f"Ограничение: {str(constraint).strip()[:200]}")
+    rows = criteria_rows or []
+    if rows:
+        confirmed = sum(1 for row in rows if row.get("status") == "confirmed")
+        lines.append(f"Критерии ({confirmed}/{len(rows)} подтверждено):")
+        for row in rows[:18]:
+            mark = {"confirmed": "✓", "failed": "✗"}.get(
+                str(row.get("status")),
+                "·",
+            )
+            evidence = str(row.get("evidence") or "").strip().replace("\n", " ")[:120]
+            line = f"  {mark} {str(row.get('text') or '')[:160]}"
+            if evidence:
+                line += f" [{row.get('verifier')}: {evidence}]"
+            lines.append(line)
+    items = checklist_items or []
+    if items:
+        completed = sum(1 for item in items if item.get("status") == "completed")
+        lines.append(f"Чеклист ({completed}/{len(items)}):")
+        lines.append(format_checklist_state(items, max_items=20))
+    mutated = list(dict.fromkeys(mutated_files or []))
+    if mutated:
+        shown = ", ".join(mutated[:20])
+        more = f" (+{len(mutated) - 20})" if len(mutated) > 20 else ""
+        lines.append(f"Изменённые файлы ({len(mutated)}): {shown}{more}")
+    for verification in (verifications or [])[-10:]:
+        lines.append(f"Проверка: {str(verification)[:180]}")
+    for failure in (failed_attempts or [])[-6:]:
+        lines.append(f"Неудачная попытка: {str(failure)[:160]}")
+    return "\n".join(lines)[:6000]
+
+
+def upsert_task_state_message(
+    messages: list[dict[str, Any]],
+    block_text: str,
+) -> list[dict[str, Any]]:
+    """Replace or insert the one compaction-protected task-state message."""
+    from app.application.context.compaction import (
+        TASK_STATE_MARKER_KEY,
+        TASK_STATE_MARKER_VALUE,
+        TASK_STATE_PREFIX,
+    )
+
+    if not block_text.strip():
+        return messages
+    out = [
+        message
+        for message in messages
+        if message.get(TASK_STATE_MARKER_KEY) != TASK_STATE_MARKER_VALUE
+    ]
+    insert_at = 1 if out and out[0].get("role") == "system" else 0
+    out.insert(
+        insert_at,
+        {
+            "role": "assistant",
+            "content": TASK_STATE_PREFIX + block_text,
+            TASK_STATE_MARKER_KEY: TASK_STATE_MARKER_VALUE,
+        },
+    )
+    return out
+
+
 def _norm_checklist_text(value: Any) -> str:
     return " ".join(str(value or "").split()).casefold()
 
@@ -945,8 +1025,18 @@ def _prepare_messages_for_llm(
     }
     usage = get_context_usage(messages, **usage_kwargs)
     compacted = False
-    compact_threshold = 60.0 if num_ctx < 16_384 else 75.0
-    strong_threshold = 80.0 if num_ctx < 16_384 else 90.0
+    thresholds = context_profile.get("compaction_thresholds") or {}
+    compact_threshold = float(
+        (thresholds.get("auto") or {}).get("percent")
+        or (60.0 if num_ctx < 16_384 else 75.0)
+    )
+    strong_threshold = float(
+        (thresholds.get("strong") or {}).get("percent")
+        or (80.0 if num_ctx < 16_384 else 90.0)
+    )
+    critical_threshold = float(
+        (thresholds.get("critical") or {}).get("percent") or 95.0
+    )
     should_compact = float(usage["percent"]) >= compact_threshold
     if not should_compact and num_ctx < 16_384 and len(messages) > 2:
         should_compact = True
@@ -987,7 +1077,7 @@ def _prepare_messages_for_llm(
         usage = get_context_usage(messages, **usage_kwargs)
 
     safe_input_budget = int(context_profile.get("safe_input_budget") or 0)
-    if float(usage["percent"]) >= 95.0 or (
+    if float(usage["percent"]) >= critical_threshold or (
         safe_input_budget > 0 and int(usage["current_tokens"]) > safe_input_budget
     ):
         raise ContextBudgetError(
