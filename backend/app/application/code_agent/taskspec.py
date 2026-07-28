@@ -16,6 +16,7 @@ touching the rest of the layer.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass, field
 
 
@@ -762,6 +763,56 @@ _TEST_KIND_RE = re.compile(
 )
 
 
+def _is_test_command(command: str) -> bool:
+    """True only when a shell segment actually launches a test runner/script.
+
+    Criterion prose may contain a standalone ``test`` token, but commands such
+    as ``mkdir test`` or ``echo pytest`` are not verification evidence. This is
+    deliberately conservative: an unrecognised runner leaves the criterion
+    unconfirmed instead of producing a false confirmation.
+    """
+    for segment in re.split(r"(?:&&|\|\||[;|\r\n])", command or ""):
+        try:
+            words = [w.strip("'\"") for w in shlex.split(segment, posix=False)]
+        except ValueError:
+            continue
+        while words and (words[0] in {"&", "call", "sudo", "env"}
+                         or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0])):
+            words.pop(0)
+        if not words:
+            continue
+        exe = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        stem = re.sub(r"\.(?:exe|cmd|bat)$", "", exe)
+        args = [w.lower() for w in words[1:]]
+        arg_text = " ".join(args)
+        if stem in {"pytest", "py.test", "unittest", "jest", "vitest", "ctest", "tox", "nox"}:
+            return True
+        if stem in {"python", "python3", "py"}:
+            if any(args[i] == "-m" and i + 1 < len(args)
+                   and args[i + 1] in {"pytest", "unittest"} for i in range(len(args))):
+                return True
+            if any(re.search(r"(?:^|/)test[^/]*\.(?:py|pyw)$", a.replace("\\", "/")) for a in args):
+                return True
+        if stem in {"npm", "yarn", "pnpm", "bun"}:
+            if re.search(r"(?:^|\s)(?:run\s+)?test(?:\b|:)", arg_text):
+                return True
+        if stem == "npx" and args and args[0] in {"jest", "vitest", "pytest"}:
+            return True
+        if stem in {"go", "cargo", "dotnet", "deno", "mvn", "gradle", "gradlew", "make"}:
+            if "test" in args:
+                return True
+        if stem == "node" and ("--test" in args or any(".test." in a for a in args)):
+            return True
+        if re.search(r"(?:^|[_.-])test[^/]*\.(?:ps1|py|sh|js|ts)$", exe):
+            return True
+        if stem in {"bash", "sh", "powershell", "pwsh"} and any(
+            re.search(r"(?:^|/)test[^/]*\.(?:ps1|sh)$", a.replace("\\", "/"))
+            for a in args
+        ):
+            return True
+    return False
+
+
 def _command_kind(text: str) -> str:
     """The specific command a command_check criterion/verdict is about, or 'any' for a
     generic 'the available checks pass'. So a green typecheck confirms a typecheck
@@ -910,6 +961,10 @@ def _run_bash_verdict(cmd: str) -> dict | None:
     if _has(low, ("findstr", "grep ", "select-string")) and not _has(low, ("pytest", "npm test", "&&")):
         return None
     kind = _command_kind(low)
+    if kind == "test" and not _is_test_command(low):
+        # The text mentions `test`, but no test runner/script is being
+        # executed (e.g. `mkdir test`, `echo test`). It is not evidence.
+        return None
     if kind == "any":
         # bare run_bash with no recognisable check verb is not a verdict.
         # "test" goes through the token-anchored matcher — the substring falsely
