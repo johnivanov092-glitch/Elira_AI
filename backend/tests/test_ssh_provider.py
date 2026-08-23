@@ -103,10 +103,28 @@ class SshExecutionTest(SshProviderTestBase):
         self.assertIn("hello", result["text"])
         argv = runner.call_args.args[0]
         self.assertEqual(argv[0], "ssh")
+        self.assertIn("-n", argv)
         self.assertIn("BatchMode=yes", argv)
         self.assertIn("StrictHostKeyChecking=accept-new", argv)
         self.assertIn("192.168.88.42", argv)
         self.assertIn("echo hello", argv)
+
+    def test_write_forwards_stdin_without_ssh_null_input_flag(self) -> None:
+        with patch.object(
+            self.ssh,
+            "run_registered_process",
+            return_value=_proc(),
+        ) as runner:
+            result = self.ssh.tool_ssh_write(
+                host="192.168.88.42",
+                path="/tmp/elira.txt",
+                content="payload",
+            )
+
+        self.assertIn("Wrote", result["text"])
+        argv = runner.call_args.args[0]
+        self.assertNotIn("-n", argv)
+        self.assertEqual(runner.call_args.kwargs["input"], b"payload")
 
     def test_saved_friendly_name_resolves_before_execution(self) -> None:
         self.ssh_acl.set_allowed_hosts(["elira-ai-server"])
