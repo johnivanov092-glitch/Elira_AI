@@ -33,11 +33,15 @@ returns to the same `run_code_agent`, executor and provider registry.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- The first model turn sees only the compact built-in core plus
-  `capability_load` and `runtime_control`. The model loads optional built-in
-  groups (`web`, `desktop`, `resources`, `data`, `memory`, `operations`) only
-  when the task needs them. MCP/LSP/SSH/IT Ops follow the same per-run schema
-  visibility rule through `runtime_control`.
+- The first model turn sees only the compact built-in core, including
+  `capability_load`, `runtime_control`, and managed background process control
+  through `run_server`. Auto first resolves the task to one effective persona,
+  then that profile receives its narrow starter groups: Personal=`memory`,
+  Business=`web+resources+data`, Infrastructure=typed IT Ops,
+  Science=`web+data`, Medicine=`web+resources`; Balance and Engineering use the
+  core (which already contains project/code tools). The model can load any
+  additional group through `capability_load`. MCP/LSP/SSH remain per-run and
+  appear only after a relevant `runtime_control` request.
 - A new-chat plain greeting has no tool schemas at all; any task, continuation,
   path, command, MCP/SSH request, or existing history uses the normal agent loop.
 - No tool/path/asset/LAN authorization scope, internal ApprovalStore,
@@ -85,6 +89,14 @@ permission decision. A hidden built-in schema does not remove its canonical
 dispatch owner; if a valid native/inline call reaches the runtime, it still uses
 the same ToolExecutor and handler.
 
+`PROFILE_CAPABILITY_GROUPS` and `PROFILE_ITOPS_DEFAULTS` are the deterministic
+profile-to-starter-tool map. They receive the already-resolved effective mode,
+so `Auto + network` becomes `Infrastructure + IT Ops`, while `Auto + code`
+becomes `Engineering + project/code core`. IT Ops is not injected into unrelated
+profiles. This map grants no permission and creates no executor/provider. TCP
+checks in Infrastructure should use `itops_network_inventory` with explicit
+per-connect timeout and concurrency, not sequential shell `Test-NetConnection`.
+
 MCP, LSP, SSH shortcuts, Telegram, IT Ops, plugins, Workflow scheduling,
 memory/library administration and vault operations are behind the agent's
 `runtime_control` tool. It returns a single structured capability envelope:
@@ -92,8 +104,17 @@ memory/library administration and vault operations are behind the agent's
 `waiting_approval`, or `cancelled`. Existing domain runtimes remain owners;
 `runtime_control` is an adapter, not a second executor or registry.
 
-MCP servers do not auto-start with FastAPI. A run uses `mcp_list` and
-`mcp_start(server_id)` when the task needs one; only that server's schemas are
+Long finite commands use the existing `run_server(kind="job")` process runtime.
+`start` returns a PID immediately; `list`/`logs` expose running or terminal state
+and captured output; `stop` and Workflow Stop kill the owned process tree. A
+completed job result is retained in a bounded in-memory tail. There is no
+product wall-clock deadline. Short typed tools stay synchronous; backgrounding
+does not replace transport liveness timeouts such as TCP `connect_timeout`.
+
+MCP servers do not auto-start with FastAPI or merely because of a persona. When
+the user explicitly requests MCP, or the task requires a configured external
+integration absent from active tools, the model uses `mcp_list`, selects one
+relevant server, and calls `mcp_start(server_id)`; only that server's schemas are
 added to the next model turn. LSP follows the same per-run rule. `ssh_hosts`
 reveals the existing SSH provider and `itops_assets` reveals the IT Ops provider
 without turning those discovery calls into authorization gates.

@@ -17,6 +17,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 
 from app.application.code_agent.tools import _run  # noqa: E402
 from app.application.code_agent.tools._run import _parse_server_url, active_server_ports  # noqa: E402
@@ -272,6 +273,55 @@ class ServerLifecycleOwnershipTest(unittest.TestCase):
             with _run._SERVERS_LOCK:
                 _run._LIVE_SERVERS.pop(proc.pid, None)
         self.assertFalse(_run.url_is_live_server(f"http://localhost:{port}"))  # dead proc → dead
+
+
+class BackgroundJobLifecycleTest(unittest.TestCase):
+    def tearDown(self):
+        _run.stop_all_servers()
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS.clear()
+
+    def test_completed_job_keeps_status_and_final_output_until_cleanup(self):
+        command = (
+            f'"{sys.executable}" -c "import time; '
+            'print(\'JOB_STARTED\', flush=True); time.sleep(2); '
+            'print(\'JOB_DONE\')"'
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(_run, "_auto_verify_gui") as verify_gui:
+            started_at = time.monotonic()
+            started = _run.tool_run_server(
+                Path(tmp),
+                action="start",
+                command=command,
+                kind="job",
+            )
+            start_elapsed = time.monotonic() - started_at
+            self.assertTrue(started.get("ok"), started.get("text"))
+            self.assertLess(start_elapsed, 1.0)
+            pid = int(started["pid"])
+
+            live_result: dict[str, object] = {}
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                live_result = _run.tool_run_server(Path(tmp), action="logs", pid=pid)
+                if "JOB_STARTED" in str(live_result.get("text", "")):
+                    break
+                time.sleep(0.05)
+            self.assertEqual(live_result.get("status"), "running")
+            self.assertIn("JOB_STARTED", str(live_result.get("text", "")))
+
+            with _run._SERVERS_LOCK:
+                handle = _run._LIVE_SERVERS[pid]
+            handle.proc.wait(timeout=5)
+
+            result = _run.tool_run_server(Path(tmp), action="logs", pid=pid)
+
+        verify_gui.assert_not_called()
+        self.assertTrue(result.get("ok"), result.get("text"))
+        self.assertEqual(result.get("status"), "completed")
+        self.assertEqual(result.get("exit_code"), 0)
+        self.assertIn("JOB_DONE", result.get("text", ""))
 
 
 if __name__ == "__main__":

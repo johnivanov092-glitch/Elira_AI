@@ -522,7 +522,14 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
                 base_tools=request_base_tools,
                 auto_remember=payload.auto_remember,
                 run_id=run_id,
-                profile_name=resolve_persona_mode(payload.profile_name, user_message),
+                # Route Auto from the user's actual request, not from injected
+                # attachment/library text. Terse continuations may use recent
+                # chat history to retain the previous task profile.
+                profile_name=resolve_persona_mode(
+                    payload.profile_name,
+                    payload.message,
+                    history,
+                ),
                 permission_mode=payload.permission_mode,
                 thinking=payload.thinking,
                 reasoning_effort=payload.reasoning_effort,

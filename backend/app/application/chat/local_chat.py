@@ -61,15 +61,16 @@ _CODE_SIGNALS = re.compile(
     r"python|питон|скрипт\w*|"  # language markers so code wins over science math terms
     r"имплемент|merge|pull\s*request|pr\b|api\b|endpoint|роутинг|миграци|"
     r"bug|fix|refactor|implement|deploy|compile|build|debug|stack\s*trace|"
-    r"exception|commit|function|class\b)"
+    r"exception|commit|function|class\b|код\b)"
     r"|\.(?:py|ts|tsx|js|jsx|go|rs|java|c|cpp|h|sql|json|yaml|yml|sh|toml)\b"
     r"|`[^`]+`)",
     re.IGNORECASE,
 )
 _PERSONAL_SIGNALS = re.compile(
-    r"\b(?:устал|устала|грустно|тяжело|одиноко|спасибо|как\s+(?:ты|дела|сама)|"
-    r"поговор|посоветуй\s+по\s+жизни|переживаю|тревож|настроени|скуч|"
-    r"люблю|нравишься|поддержи|обними|расскажи\s+о\s+себе)\b",
+    r"\b(?:устал\w*|грустн\w*|тяжело|одиноко|спасибо|"
+    r"как\s+(?:ты|дела|сама)|поговор\w*|посоветуй\s+по\s+жизни|"
+    r"пережива\w*|тревож\w*|скуч\w*|люблю|нравишься|"
+    r"поддерж\w*|обним\w*|расскажи\s+о\s+себе)\b",
     re.IGNORECASE,
 )
 # Business signals (Деловой): documents, counterparties, marketing copy, money.
@@ -83,7 +84,7 @@ _BUSINESS_SIGNALS = re.compile(
     r"договор|контракт|контрагент|поставщик|инвойс|счёт[- ]фактур|счет[- ]фактур|"
     r"протокол\s+встречи|переговор|прайс|смет[аоуые]|бюджет|маржинальн|марж[ауеи]|"
     r"юнит.?экономик|рентабельн|прибыль|прибыли|выручк|"
-    r"оффер|лендинг|рассылк|воронк|реклам|маркетинг|"
+    r"оффер|лендинг|рассылк|воронк|реклам|маркетинг|отч[её]т|презентац|"
     r"учредител|юридическ)"
     r"|\b(?:бин|иин|инн|огрн|кп)\b)",
     re.IGNORECASE,
@@ -97,8 +98,8 @@ _INFRA_SIGNALS = re.compile(
     r"(?:\b(?:роутер|router|mikrotik|routeros|cisco|коммутатор|свитч|"
     r"firewall|брандмауэр|iptables|nftables|подсет|маршрутизаци|"
     r"systemctl|systemd|демон|nginx|apache|proxmox|traceroute|nslookup|"
-    r"инфраструктур|сетев|просканир\w*\s+сет|настро\w*\s+сервер)"
-    r"|\b(?:vlan|dns|dhcp|nat|ssh)\b)",
+    r"инфраструктур|сетев|порт\w*|просканир\w*\s+сет|настро\w*\s+сервер)"
+    r"|\b(?:tcp|udp|icmp|ping|tracert|dig|vlan|dns|dhcp|nat|ssh|rdp|smb|snmp)\b)",
     re.IGNORECASE,
 )
 
@@ -135,10 +136,37 @@ _SCIENCE_SIGNALS = re.compile(
 )
 
 
-def classify_mode(user_input: str | None) -> str:
+_CONTINUATION_ONLY = re.compile(
+    r"^\s*(?:да|ок(?:ей)?|хорошо|продолжай(?:те)?|продолжи(?:те)?|"
+    r"делай(?:те)?|сделай(?:те)?|исправляй(?:те)?|дальше|поехали)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _routing_text(
+    user_input: str | None,
+    conversation_history: list[dict[str, object]] | None,
+) -> str:
+    """Keep terse Auto follow-ups in the profile selected by the prior task."""
+    current = (user_input or "").strip()
+    if not _CONTINUATION_ONLY.fullmatch(current):
+        return current
+    for item in reversed(conversation_history or []):
+        if str(item.get("role") or "").lower() != "user":
+            continue
+        content = item.get("content")
+        if isinstance(content, str) and content.strip():
+            return f"{content[-4000:]}\n{current}"
+    return current
+
+
+def classify_mode(
+    user_input: str | None,
+    conversation_history: list[dict[str, object]] | None = None,
+) -> str:
     """Heuristic mode for "Авто": Инженерный / Личный / Деловой / Инфраструктура /
     Медицина / Научный / Баланс."""
-    text = (user_input or "").strip()
+    text = _routing_text(user_input, conversation_history)
     if not text:
         return DEFAULT_PROFILE
     if _CODE_SIGNALS.search(text):
@@ -156,7 +184,11 @@ def classify_mode(user_input: str | None) -> str:
     return DEFAULT_PROFILE
 
 
-def resolve_persona_mode(requested: str | None, user_input: str | None) -> str:
+def resolve_persona_mode(
+    requested: str | None,
+    user_input: str | None,
+    conversation_history: list[dict[str, object]] | None = None,
+) -> str:
     """Resolve the effective mode for a live request (hybrid Авто + lock).
 
     Priority: an explicit per-request mode wins (lock); else the saved
@@ -171,5 +203,5 @@ def resolve_persona_mode(requested: str | None, user_input: str | None) -> str:
         except Exception:
             req = AUTO_PROFILE
     if req == AUTO_PROFILE or req.lower() == "auto":
-        return classify_mode(user_input)
+        return classify_mode(user_input, conversation_history)
     return normalize_profile(req)

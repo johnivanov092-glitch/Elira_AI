@@ -271,11 +271,14 @@ def _await_server_url(log_path: Path, deadline: float) -> tuple[str, int] | None
 
 
 class _ServerHandle:
-    __slots__ = ("pid", "command", "proc", "log_path", "port", "url", "started_at", "run_id")
+    __slots__ = (
+        "pid", "command", "proc", "log_path", "port", "url", "started_at",
+        "run_id", "kind",
+    )
 
     def __init__(self, pid: int, command: str, proc: subprocess.Popen,
                  log_path: Path, port: int | None, url: str | None = None,
-                 run_id: str | None = None) -> None:
+                 run_id: str | None = None, kind: str = "server") -> None:
         self.pid = pid
         self.command = command
         self.proc = proc
@@ -286,16 +289,35 @@ class _ServerHandle:
         # The run that started this server owns it, so explicit Workflow Stop can
         # terminate the correct process tree without affecting unrelated servers.
         self.run_id = run_id
+        self.kind = "job" if kind == "job" else "server"
 
 
 _LIVE_SERVERS: dict[int, _ServerHandle] = {}
 _SERVERS_LOCK = threading.Lock()
+_COMPLETED_JOB_RETENTION_SECONDS = 3600
+_COMPLETED_JOB_RETAIN_LIMIT = 32
 
 
 def _reap_dead_servers() -> None:
-    """Drop handles whose process has exited so `list` stays honest."""
+    """Drop exited servers; retain a bounded tail of completed job results."""
     with _SERVERS_LOCK:
-        dead = [pid for pid, h in _LIVE_SERVERS.items() if h.proc.poll() is not None]
+        now = time.time()
+        dead = {
+            pid for pid, h in _LIVE_SERVERS.items()
+            if h.proc.poll() is not None and (
+                h.kind == "server"
+                or now - h.started_at > _COMPLETED_JOB_RETENTION_SECONDS
+            )
+        }
+        retained_jobs = sorted(
+            (
+                (pid, h) for pid, h in _LIVE_SERVERS.items()
+                if pid not in dead and h.kind == "job" and h.proc.poll() is not None
+            ),
+            key=lambda item: item[1].started_at,
+            reverse=True,
+        )
+        dead.update(pid for pid, _ in retained_jobs[_COMPLETED_JOB_RETAIN_LIMIT:])
         for pid in dead:
             _LIVE_SERVERS.pop(pid, None)
 
@@ -355,7 +377,10 @@ def run_owned_servers(run_id: str) -> list[dict[str, Any]]:
     _reap_dead_servers()
     with _SERVERS_LOCK:
         handles = [h for h in _LIVE_SERVERS.values() if h.run_id == run_id]
-    return [{"pid": h.pid, "port": h.port, "url": h.url, "command": h.command}
+    return [{
+                "pid": h.pid, "port": h.port, "url": h.url,
+                "command": h.command, "kind": h.kind,
+            }
             for h in handles if h.proc.poll() is None]
 
 
@@ -571,8 +596,9 @@ def tool_run_server(
     command: str = "",
     port: int | None = None,
     pid: int | None = None,
+    kind: str = "server",
 ) -> dict[str, Any]:
-    """Manage long-lived background processes (dev servers, watchers).
+    """Manage background servers and finite jobs through one process runtime.
 
     action:
         start  — launch `command` in the background, return immediately (pid + log).
@@ -582,6 +608,9 @@ def tool_run_server(
         stop_all — terminate every tracked server.
     """
     act = (action or "start").strip().lower()
+    process_kind = (kind or "server").strip().lower()
+    if process_kind not in {"server", "job"}:
+        return {"text": "ERROR: kind must be 'server' or 'job'.", "ok": False}
     _reap_dead_servers()
 
     if act == "list":
@@ -593,15 +622,20 @@ def tool_run_server(
         canonical = None
         for h in sorted(handles, key=lambda x: x.started_at):
             age = int(time.time() - h.started_at)
+            returncode = h.proc.poll()
+            status = "running" if returncode is None else f"exited(code={returncode})"
             port_s = f" port={h.port}" if h.port else ""
-            lines.append(f"  pid={h.pid}{port_s} age={age}s — {h.command}")
-            if h.port and h.proc.poll() is None:
+            lines.append(
+                f"  pid={h.pid} kind={h.kind} status={status}{port_s} "
+                f"age={age}s — {h.command}"
+            )
+            if h.kind == "server" and h.port and returncode is None:
                 canonical = h
         return _server_verdict("\n".join(lines), canonical, "list")
 
     if act == "stop_all":
         n = stop_all_servers()
-        return {"text": f"Stopped {n} background server(s)."}
+        return {"text": f"Stopped {n} running background process(es); cleared completed jobs."}
 
     if act == "logs":
         if pid is None:
@@ -612,7 +646,8 @@ def tool_run_server(
             return {"text": f"ERROR: no tracked server with pid={pid}.", "ok": False}
         tail = _read_log_tail(h.log_path)
         running = h.proc.poll() is None
-        status = "running" if running else f"exited (code={h.proc.returncode})"
+        exit_code = h.proc.returncode
+        status = "running" if running else ("completed" if exit_code == 0 else "failed")
         body = tail or "(no output captured yet)"
         # A log tail may reveal the URL a still-running server bound (e.g. Vite's
         # "Local:" line) — adopt it so the verifier reaches the right port.
@@ -620,8 +655,23 @@ def tool_run_server(
             parsed = _parse_server_url(tail)
             if parsed:
                 h.url, h.port = parsed
-        text = f"server pid={pid} [{status}]\n$ {h.command}\n\n{body}"
-        return _server_verdict(text, h if (running and h.port) else None, "logs")
+        text = (
+            f"{h.kind} pid={pid} [{status}]"
+            + ("" if running else f" exit={exit_code}")
+            + f"\n$ {h.command}\n\n{body}"
+        )
+        if h.kind == "server":
+            return _server_verdict(text, h if (running and h.port) else None, "logs")
+        return {
+            "text": text,
+            "ok": running or exit_code == 0,
+            "action": "logs",
+            "kind": "job",
+            "pid": h.pid,
+            "status": status,
+            "exit_code": exit_code,
+            "log_path": str(h.log_path),
+        }
 
     if act == "stop":
         if pid is None:
@@ -650,7 +700,7 @@ def tool_run_server(
                             f"останови вручную.", "ok": False}
         with _SERVERS_LOCK:
             _LIVE_SERVERS.pop(int(pid), None)
-        return {"text": f"Stopped server pid={pid} — {h.command}"}
+        return {"text": f"Stopped {h.kind} pid={pid} — {h.command}"}
 
     if act != "start":
         return {"text": f"ERROR: unknown action '{action}'. Use start|list|logs|stop|stop_all."}
@@ -669,7 +719,7 @@ def tool_run_server(
     # BEFORE our start, our child cannot be the one bound there — the requested-port
     # fallback below must not adopt it, or liveness/verification would bless a
     # FOREIGN app on that port (review #2/#7/#19).
-    _pre_bound = _port_listening(int(port)) if port else False
+    _pre_bound = _port_listening(int(port)) if (process_kind == "server" and port) else False
 
     try:
         # Binary: the server child writes its raw bytes straight to this fd; we
@@ -699,27 +749,57 @@ def tool_run_server(
         except Exception:
             pass
         return {"text": f"ERROR: {exc}", "ok": False}
+    # Popen inherited/duplicated the descriptor it needs. Keeping the parent's
+    # Python file object open locks the log on Windows even after a finite job
+    # exits, so release the parent handle immediately.
+    try:
+        log_fh.close()
+    except Exception:
+        pass
 
     # R2: tag ownership — the executor's worker thread binds the run_id ContextVar,
     # so the runtime later knows which servers THIS run launched (report/stop them).
-    handle = _ServerHandle(proc.pid, cleaned_command, proc, log_path, port,
-                           run_id=_CURRENT_RUN_ID.get())
+    handle = _ServerHandle(
+        proc.pid,
+        cleaned_command,
+        proc,
+        log_path,
+        port if process_kind == "server" else None,
+        run_id=_CURRENT_RUN_ID.get(),
+        kind=process_kind,
+    )
     with _SERVERS_LOCK:
         _LIVE_SERVERS[proc.pid] = handle
 
     # Give it a moment to either bind its port or crash, so we can report
     # something useful instead of a bare "started" for a command that died.
-    time.sleep(_SERVER_STARTUP_GRACE)
+    time.sleep(_SERVER_STARTUP_GRACE if process_kind == "server" else 0.05)
     if proc.poll() is not None:
-        with _SERVERS_LOCK:
-            _LIVE_SERVERS.pop(proc.pid, None)
+        if process_kind == "server":
+            with _SERVERS_LOCK:
+                _LIVE_SERVERS.pop(proc.pid, None)
         try:
             log_fh.close()
         except Exception:
             pass
         tail = _read_log_tail(log_path)
         body = f"\n{tail}" if tail else ""
-        # A start that died (incl. "Port … is already in use") is NOT ok — otherwise
+        if process_kind == "job":
+            status = "completed" if proc.returncode == 0 else "failed"
+            return {
+                "text": (
+                    f"job pid={proc.pid} [{status}] exit={proc.returncode}\n"
+                    f"$ {cleaned_command}{body}"
+                ),
+                "ok": proc.returncode == 0,
+                "action": "start",
+                "kind": "job",
+                "pid": proc.pid,
+                "status": status,
+                "exit_code": proc.returncode,
+                "log_path": str(log_path),
+            }
+        # A server start that died (incl. "Port … is already in use") is NOT ok — otherwise
         # the loop reads a missing `ok` as True and a failed start looks like success,
         # and a server_started criterion would falsely confirm.
         return {"text": (
@@ -734,7 +814,7 @@ def tool_run_server(
     # (a port was requested or the command is a known dev server) so a plain
     # background process doesn't pay the poll.
     parsed = None
-    if _expects_web_url(cleaned_command, port):
+    if process_kind == "server" and _expects_web_url(cleaned_command, port):
         parsed = _await_server_url(handle.log_path, time.monotonic() + _SERVER_URL_WAIT)
     if parsed:
         actual_url, actual_port = parsed
@@ -747,6 +827,24 @@ def tool_run_server(
         handle.port = None
     actual_url = handle.url
     actual_port = handle.port
+
+    if process_kind == "job":
+        return {
+            "text": (
+                "Job started in background.\n"
+                f"  pid={proc.pid}\n"
+                f"  log={log_path}\n"
+                f"  $ {cleaned_command}\n"
+                f"Use run_server(action='logs', pid={proc.pid}) for status/output, "
+                f"run_server(action='stop', pid={proc.pid}) to stop it."
+            ),
+            "ok": True,
+            "action": "start",
+            "kind": "job",
+            "pid": proc.pid,
+            "status": "running",
+            "log_path": str(log_path),
+        }
 
     if actual_url:
         url_line = (

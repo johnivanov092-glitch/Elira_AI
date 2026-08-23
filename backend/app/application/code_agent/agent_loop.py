@@ -33,7 +33,9 @@ from app.application.tool_providers.mcp_provider import (
 from app.application.code_agent.capabilities import (
     ALL_BUILTIN_TOOLS,
     builtin_tools_for_groups,
+    capability_groups_for_profile,
     normalize_capability_groups,
+    profile_preloads_itops,
 )
 from app.application.code_agent.answer_media import merge_answer_media
 from app.application.code_agent.planning import (
@@ -757,15 +759,32 @@ def _stream_code_agent_core(
             itops_tools_active,
             active_capability_groups,
         ) = _load_runtime_activation_state(rid)
+        # Auto has already resolved to one effective persona before entering the
+        # loop. Give that profile its narrow starter bundle; other capabilities
+        # remain available through capability_load/runtime_control.
+        active_capability_groups.update(capability_groups_for_profile(profile_name))
+        if profile_preloads_itops(profile_name):
+            itops_tools_active = True
+
+        requested_builtin_tools = {
+            str(name).strip()
+            for name in (base_tools or ())
+            if str(name).strip() in ALL_BUILTIN_TOOLS
+        }
 
         def rebuild_registry() -> ToolRegistry:
+            builtin_names = set(builtin_tools_for_groups(active_capability_groups))
+            # Search mode and attachment/resource routing arrive through
+            # base_tools. Preserve those targeted schema additions instead of
+            # merely journalling and then discarding them.
+            builtin_names.update(requested_builtin_tools)
             return build_runtime_tool_registry(
                 root,
                 include_builtin=not simple_greeting,
                 builtin_tool_names=(
                     ()
                     if simple_greeting
-                    else builtin_tools_for_groups(active_capability_groups)
+                    else builtin_names
                 ),
                 mcp_server_ids=() if simple_greeting else active_mcp_server_ids,
                 lsp_server_ids=() if simple_greeting else active_lsp_server_ids,
@@ -883,7 +902,12 @@ def _stream_code_agent_core(
             }
         messages.append({"role": "user", "content": effective_user_message})
 
-        yield {"type": "run_started", "run_id": rid}
+        yield {
+            "type": "run_started",
+            "run_id": rid,
+            "profile_name": profile_name,
+            "runtime_activation": runtime_activation_snapshot(),
+        }
         yield {
             "type": "context_resolved",
             "step": 0,
@@ -1398,7 +1422,7 @@ def _stream_code_agent_core(
                 # Evidence remains structured in the done event for observability,
                 # but it cannot block finalization or rewrite the model's answer.
                 criteria.finalize_conditionals()
-                # Background servers are reported, never auto-stopped on a healthy
+                # Background processes are reported, never auto-stopped on a healthy
                 # final answer. Explicit run_server(stop) or Workflow Stop owns
                 # termination.
                 try:
@@ -1407,10 +1431,11 @@ def _stream_code_agent_core(
                         # Background runtimes are not auto-stopped at finalization.
                         # They stop only through run_server(action='stop') or Workflow Stop.
                         _srv = "; ".join(
-                            f"pid={s['pid']}" + (f" — {s['url']}" if s.get("url") else "")
+                            f"{s.get('kind', 'server')} pid={s['pid']}"
+                            + (f" — {s['url']}" if s.get("url") else "")
                             for s in _alive)
                         final_text = final_text.rstrip() + (
-                            f"\n\n[Серверы оставлены работать: {_srv}. "
+                            f"\n\n[Фоновые процессы оставлены работать: {_srv}. "
                             "Остановить: run_server(action='stop', pid=…) или кнопкой Stop.]"
                         )
                 except Exception:

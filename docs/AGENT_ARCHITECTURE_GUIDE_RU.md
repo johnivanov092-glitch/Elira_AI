@@ -117,8 +117,10 @@ sequenceDiagram
 - модель сразу видит компактное ядро, `capability_load` и `runtime_control`;
 - нужную группу builtin tools выбирает сама LLM, а полные схемы группы появляются
   на следующем model turn;
-- схемы MCP/LSP/SSH/IT Ops добавляются в текущий прогон только после явного
-  runtime-запроса модели;
+- `Авто` сначала выбирает профиль по запросу, затем профиль получает свой
+  стартовый набор tools; IT Ops заранее получает только `Инфраструктура`;
+- MCP/LSP/SSH не запускаются из-за профиля: LLM вызывает runtime только когда
+  конкретной задаче нужна соответствующая внешняя интеграция;
 - отдельного `tool_search`, второго registry или run-scoped authorization
   allowlist нет;
 - tool call не уходит в параллельный executor;
@@ -130,9 +132,10 @@ sequenceDiagram
 
 ### 3.1. Как LLM подгружает инструменты
 
-На первом ходе обычной технической задачи модель получает 12 builtin tools
-ядра и два loop-owned tools (`ask_user`, `workflow_request`). В ядре остаются
-файлы, поиск по проекту, shell, checklist/delegation и два диспетчера:
+На первом ходе модель получает 13 builtin tools ядра и два loop-owned tools
+(`ask_user`, `workflow_request`), а затем узкий стартовый набор выбранного
+профиля. В ядре остаются файлы, поиск по проекту, shell, управляемые фоновые
+процессы, checklist/delegation и два диспетчера:
 
 ```text
 Задача пользователя
@@ -146,6 +149,23 @@ LLM видит компактный каталог групп в схеме capa
                          следующий model turn видит tools группы
 ```
 
+Маршрутизация `Авто` и стартовые tools:
+
+| Запрос | Эффективный профиль | Стартовые возможности сверх ядра |
+|---|---|---|
+| личное общение/поддержка | `Личный` | `memory` |
+| обычный универсальный вопрос | `Баланс` | нет, подгрузка по задаче |
+| код/проект/ошибка/рефактор | `Инженерный` | ядро уже содержит project/code tools |
+| документы/бизнес/контрагенты/расчёты | `Деловой` | `web + resources + data` |
+| сеть/сервер/SSH/DNS/DHCP/TCP | `Инфраструктура` | typed `IT Ops` |
+| физика/химия/биология/математика | `Научный` | `web + data` |
+| здоровье/симптомы/лечение | `Медицина` | `web + resources` |
+
+Явно выбранный в UI профиль остаётся зафиксированным. Он не является запретом:
+если внутри него возникла другая задача, LLM может вызвать `capability_load` или
+`runtime_control` и добавить нужные tools. Короткое продолжение вроде
+«Продолжай» в `Авто` наследует профиль предыдущего пользовательского запроса.
+
 | Группа | Что появляется |
 |---|---|
 | `web` | поиск/чтение web, HTTP API, browser, URL screenshot |
@@ -153,7 +173,7 @@ LLM видит компактный каталог групп в схеме capa
 | `resources` | вложения, OCR/vision, DOCX/XLSX/PDF, публикация файлов |
 | `data` | sandbox, regex, CSV, converter, SQLite, encryption, archives |
 | `memory` | recall и remember |
-| `operations` | background server, server-facts reconciliation, webhooks |
+| `operations` | server-facts reconciliation, webhooks |
 
 Это не permission и не guard. `capability_load` лишь уменьшает prompt: handler
 и ToolExecutor остаются теми же. Если валидный native/inline call скрытого
@@ -162,10 +182,33 @@ builtin всё же пришёл от модели, registry не отвечае
 переживает автоматическое продолжение и Resume. Новый run снова начинается с
 ядра; unload внутри run пока не нужен.
 
-По текущему грубому счётчику `chars / 4` полный builtin-набор вместе с двумя
-loop-owned schemas занимает около `8 771` токена. Стартовое ядро — около `2 470`
-токенов, то есть примерно на 72% меньше. После загрузки учитываются точные схемы
-фактически выбранных групп; UI получает это в `context_prepared`.
+По текущему грубому счётчику `chars / 4` registry schemas полного builtin-набора
+занимают около `8 346` токенов. Стартовое ядро — около `2 302`, а профиль
+`Инфраструктура` с IT Ops — около `3 402`. Остальные профили получают только
+указанные в таблице группы; UI получает фактический набор в `context_prepared`.
+
+### 3.1.1. Управляемые фоновые задания
+
+`run_server` остаётся одним canonical process runtime, но поддерживает два вида:
+
+```text
+короткая typed-операция
+  → обычный tool call до результата
+
+долгая конечная команда без typed tool
+  → run_server(start, kind=job, command=...)
+  → PID возвращается сразу
+  → run_server(logs, pid) показывает running/completed/failed и вывод
+  → run_server(stop, pid) или Workflow Stop убивает дерево процесса
+
+dev server / watcher
+  → run_server(start, kind=server, command=..., port=...)
+```
+
+Глобального тайм-аута нет. Завершённый job сохраняет финальный лог и exit code в
+ограниченном хвосте registry, поэтому LLM не теряет результат между опросами.
+Фоновый режим не заменяет транспортные тайм-ауты: например, TCP scanner всё равно
+использует свой `connect_timeout`.
 
 ### 3.2. Как агент узнаёт о подключённой папке проекта
 
@@ -377,8 +420,9 @@ cancelled
 `_runtime_control_data.py`. Они не исполняют tools сами и не создают второй
 registry.
 
-FastAPI не запускает MCP автоматически. В начале прогона MCP/LSP/SSH/IT Ops не
-добавляют схемы в prompt. Если задача требует интеграцию, модель действует явно:
+FastAPI не запускает MCP автоматически. В начале обычного прогона MCP/LSP/SSH
+не добавляют схемы в prompt; IT Ops заранее получает только эффективный профиль
+`Инфраструктура`. Если задача требует другую интеграцию, модель действует явно:
 
 ```text
 MCP: runtime_control(mcp_list)
@@ -392,9 +436,19 @@ LSP: runtime_control(lsp_list)
 SSH: runtime_control(ssh_hosts)
   → SSH tools текущего прогона
 
-IT Ops: runtime_control(itops_assets)
-  → IT Ops tools текущего прогона
+IT Ops вне профиля Инфраструктура: runtime_control(itops_assets)
+  → IT Ops tools текущего прогона по решению LLM
 ```
+
+В режиме `Авто` сетевой/серверный запрос сначала маршрутизируется в профиль
+`Инфраструктура`, поэтому typed IT Ops доступны уже на первом model turn. Явно
+зафиксированный другой профиль не получает IT Ops автоматически, но LLM может
+подключить их через `runtime_control(itops_assets)`, если конкретная задача этого
+требует. Это не permission и не guard: вызов проходит через тот же provider,
+ToolExecutor и режим Workflow. Для TCP-проверок модель должна использовать
+`itops_network_inventory` с `/32` для одного IP, явными портами,
+`connect_timeout` и `concurrency`, а не последовательный `Test-NetConnection`
+через shell.
 
 Обычные SSH-команды запускаются с нативным `ssh -n`: если ошибочная удалённая
 команда попробует читать stdin, она сразу получит EOF и не повесит Workflow.
@@ -667,5 +721,7 @@ run timeout. Для скорости переключите chip на `medium/lo
 6. Интеграции управляются через Workflow/runtime, не отдельными Settings-пультами.
 7. Секрет в model/tool/event payload — только `secret_ref`.
 8. Windows elevation — только через Workflow card + native Tauri UAC bridge.
-9. Built-in schemas видимы сразу; integration schemas — только после явного выбора в текущем run.
+9. Видимо компактное builtin-ядро и выбранные группы; integration schemas обычно
+   появляются после выбора в run, а typed IT Ops может быть предзагружен по
+   явному инфраструктурному intent независимо от persona profile.
 10. Один финальный ответ или явный Stop; объективная provider/OS error остаётся честной ошибкой.

@@ -572,12 +572,14 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "run_server",
                 "description": (
-                    "Start and manage LONG-LIVED background processes (dev servers, watchers) "
-                    "that never exit on their own. Unlike run_bash, this returns IMMEDIATELY and "
-                    "the process keeps running across turns; output is captured to a log file you "
-                    "can tail. Use this for `npm run dev`, `uvicorn`, `flask run`, `vite`, etc. "
+                    "Start and manage background processes: LONG-LIVED dev servers/watchers or "
+                    "finite managed jobs. Unlike run_bash, this returns IMMEDIATELY and the process "
+                    "keeps running across turns; output and terminal status remain available through "
+                    "logs. Use kind='server' for `npm run dev`/`uvicorn`/`vite`; use kind='job' for "
+                    "a long scan, download, build or other finite command. "
                     "Actions: 'start' (launch `command`, optional `port`), 'list' (show running "
-                    "servers), 'logs' (tail output of `pid`), 'stop' (terminate `pid`), 'stop_all'. "
+                    "processes), 'logs' (status + tail output of `pid`), 'stop' (terminate/clear "
+                    "`pid`), 'stop_all'. "
                     "The process runs until run_server(action='stop') or explicit Workflow Stop."
                 ),
                 "parameters": {
@@ -591,6 +593,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "command": {"type": "string", "description": "Shell command to launch (action='start')."},
                         "port": {"type": "integer", "description": "Optional port the server binds, for reporting."},
                         "pid": {"type": "integer", "description": "Target server pid (action='logs'|'stop')."},
+                        "kind": {
+                            "type": "string",
+                            "enum": ["server", "job"],
+                            "description": "Background process kind; default 'server'.",
+                        },
                     },
                     "required": [],
                 },

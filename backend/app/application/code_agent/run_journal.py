@@ -239,6 +239,9 @@ class RunJournal:
         self._append_jsonl(self.events_path, record)
         event_type = str(event.get("type") or "")
         step = int(event.get("step") or event.get("steps") or 0)
+        runtime_activation = event.get("runtime_activation")
+        if isinstance(runtime_activation, dict):
+            self._state["runtime_activation"] = _clean(runtime_activation)
         self._state["step"] = max(int(self._state.get("step") or 0), step)
         if event_type == "step_started":
             self._state["current_phase"] = "agent_step"
@@ -282,9 +285,6 @@ class RunJournal:
                 self._state["applied_thinking_mode"] = str(mode)
             self._state["current_phase"] = str(event.get("phase") or self._state.get("current_phase"))
         if event_type == "tool_call":
-            runtime_activation = event.get("runtime_activation")
-            if isinstance(runtime_activation, dict):
-                self._state["runtime_activation"] = _clean(runtime_activation)
             touched = str(event.get("touched_path") or "").strip()
             if touched and touched not in self._state["changed_files"]:
                 self._state["changed_files"].append(touched)

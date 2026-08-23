@@ -22,6 +22,7 @@ CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
     "todo_update",
     "delegate_task",
     "run_bash",
+    "run_server",
 )
 
 CORE_BUILTIN_TOOLS = frozenset(CORE_BUILTIN_TOOL_ORDER)
@@ -42,7 +43,7 @@ CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
         "converter", "sql", "encrypt", "archiver",
     }),
     "memory": frozenset({"recall", "remember"}),
-    "operations": frozenset({"run_server", "reconcile_server_facts", "webhook"}),
+    "operations": frozenset({"reconcile_server_facts", "webhook"}),
 }
 
 
@@ -52,7 +53,7 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "resources": "attachments, OCR/vision, generated DOCX/XLSX/PDF and downloads",
     "data": "sandboxed code, regex, CSV, conversion, SQLite, encryption and archives",
     "memory": "semantic recall and durable user facts/corrections",
-    "operations": "long-lived dev servers, inference-server facts and webhooks",
+    "operations": "inference-server facts and webhooks",
 }
 
 
@@ -60,6 +61,33 @@ ALL_BUILTIN_TOOLS = frozenset().union(
     CORE_BUILTIN_TOOLS,
     *CAPABILITY_GROUPS.values(),
 )
+
+
+# The effective persona selected by Auto (or explicitly locked in the UI)
+# determines only the useful starter schemas. This is prompt composition, not
+# authorization: capability_load/runtime_control can still add another group
+# when the concrete task crosses profile boundaries.
+PROFILE_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
+    "Личный": frozenset({"memory"}),
+    "Баланс": frozenset(),
+    "Инженерный": frozenset(),  # project/code tools are already in the core
+    "Деловой": frozenset({"web", "resources", "data"}),
+    "Инфраструктура": frozenset(),  # typed IT Ops is a provider, see below
+    "Научный": frozenset({"web", "data"}),
+    "Медицина": frozenset({"web", "resources"}),
+}
+
+PROFILE_ITOPS_DEFAULTS = frozenset({"Инфраструктура"})
+
+
+def capability_groups_for_profile(profile_name: str) -> frozenset[str]:
+    """Starter built-in groups for one already-resolved persona profile."""
+    return PROFILE_CAPABILITY_GROUPS.get(str(profile_name or "").strip(), frozenset())
+
+
+def profile_preloads_itops(profile_name: str) -> bool:
+    """Whether this effective profile starts with typed IT Ops schemas."""
+    return str(profile_name or "").strip() in PROFILE_ITOPS_DEFAULTS
 
 
 def normalize_capability_groups(groups: Collection[str] | None) -> frozenset[str]:
