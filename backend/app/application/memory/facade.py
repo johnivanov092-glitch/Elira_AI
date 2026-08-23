@@ -8,9 +8,10 @@ Two engines, one door:
   - **semantic / episodic** → ``rag_memory`` (vectors + reflection episodes):
     the "what's related / what did we discuss" store, with decay.
 
-``recall()`` combines both into one ready-to-inject context blob — the intended
-single recall call for the chat / code-agent path (wiring it into the live path
-is a later phase). The per-engine helpers stay for callers that need one side.
+``recall()`` combines both into one ready-to-inject context blob. The live
+chat/code-agent runtime exposes this path through ``recall`` and
+``runtime_control(memory_recall)``; the per-engine helpers stay for callers that
+need one side.
 
 Engine imports are lazy (inside functions) to match the house style and avoid
 triggering each engine's import-time DB init just by importing this module.
@@ -182,7 +183,7 @@ def recall(
     """Single recall over both engines: curated facts (lexical) + semantic /
     episodic (vector). Returns the raw context blobs plus a combined, length-
     capped ``context`` string ready to prepend to a prompt. This is the one
-    door the live recall path should call once it is wired in."""
+    door used by the live recall path."""
     facts = fact_context(query, max_items=fact_limit, profile=profile) if fact_limit > 0 else ""
     semantic = (
         semantic_context(query, max_items=semantic_limit, project=project)

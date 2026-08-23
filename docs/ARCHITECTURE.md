@@ -45,7 +45,11 @@ returns to the same `run_code_agent`, executor and provider registry.
 - Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
   protocol and physical context-window failures remain real errors.
 - Command-only SSH calls use OpenSSH `-n`: accidental remote stdin reads receive
-  EOF instead of hanging the workflow. SSH file writes explicitly forward stdin.
+  EOF instead of hanging the workflow. IT Ops reuses the same SSH argument
+  builder; SSH file writes explicitly forward stdin.
+- Selecting a project folder persists `project_root` in the session and injects
+  its absolute path plus an explicit connected-project block into every new run
+  prompt. No parallel project-awareness helper exists.
 - Legacy ToolSpec policy columns are inventory compatibility only.
 
 ## Permission selector
@@ -151,6 +155,9 @@ The default root is `data/`, overridden by `ELIRA_DATA_DIR`.
 - `smart_memory.db` + `rag_memory.db`: facts and semantic memory.
 - `library.db`, `projects.db`, `web_corpus.sqlite3`, `elira_state.db`,
   `drift_facts.db`: domain-specific persistence.
+- `web_corpus.sqlite3` is a run-scoped, seven-day web-evidence cache populated
+  only by `web_fetch(store=true)` and queried by `web_query`; it is not durable
+  agent memory.
 - `.agent/runs/<run_id>`: code-agent journal.
 - `data/resources`: durable raw resources.
 - `data/portable_vault.json`: AES-256-GCM portable vault.

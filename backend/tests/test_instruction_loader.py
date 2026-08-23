@@ -246,6 +246,22 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
         self.assertIn("Elira", prompt)  # base prompt always present
         self.assertNotIn("Instructions", prompt)
 
+    def test_connected_project_is_explicit_in_every_model_prompt(self):
+        from app.application.code_agent.agent_loop import _build_system_prompt
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with mock.patch(
+                "app.application.instructions.loader.Path.home",
+                return_value=root / "no_home",
+            ):
+                prompt = _build_system_prompt(root)
+
+        self.assertIn("## Текущая директория проекта", prompt)
+        self.assertIn(str(root), prompt)
+        self.assertIn("## Проект подключён", prompt)
+        self.assertNotIn("## Проект не подключён", prompt)
+
 
 class TestCodeAgentInstructionRoutes(unittest.TestCase):
     def test_init_project_prompt_endpoint_is_idempotent(self):
