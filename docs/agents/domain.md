@@ -16,7 +16,8 @@ This repo has no `CONTEXT.md` yet — its domain language and architecture live 
 If a `CONTEXT.md` / `docs/adr/` is later added, read those too. This project
 does not currently use ADRs; architectural decisions live as the `docs/*.md`
 files above — the runtime guardrails in `docs/ARCHITECTURE.md` and the
-forward-looking deferred track in `docs/DEFERRED_TRACK.md`.
+forward-looking continuation work in `docs/BACKLOG.md`. The completed D1-D3
+track is historical and lives in `docs/archive/DEFERRED_TRACK.md`.
 
 If any referenced file doesn't exist, **proceed silently** — don't flag its
 absence or suggest creating it upfront.
@@ -28,7 +29,8 @@ absence or suggest creating it upfront.
 ├── AGENTS.md
 ├── docs/
 │   ├── ARCHITECTURE.md                      ← architecture + runtime guardrails
-│   ├── DEFERRED_TRACK.md                    ← deferred track (D1-D3, not yet built)
+│   ├── BACKLOG.md                           ← continuation work
+│   ├── archive/DEFERRED_TRACK.md            ← completed D1-D3 history
 │   ├── PROJECT_MAP.md
 │   ├── AGENT_ARCHITECTURE_GUIDE_RU.md
 │   ├── SERVER.md

@@ -3,7 +3,7 @@
 > **Archived 2026-06-24.** This file is kept for history only. Its live content
 > was split out:
 >
-> - Deferred track (D1–D3) → [`../DEFERRED_TRACK.md`](../DEFERRED_TRACK.md)
+> - Deferred track (D1–D3) → [`DEFERRED_TRACK.md`](DEFERRED_TRACK.md)
 > - Runtime guardrails + quality bar → [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
 >   (→ Runtime Guardrails)
 >

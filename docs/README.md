@@ -18,7 +18,6 @@ been superseded; they stay only for the decisions/history they record.
 - `POST_SERVER_BACKLOG.md` - current server migration status and remaining
   follow-up work.
 - `BACKLOG.md` - consolidated continuation work after the shipped refactor.
-- `DEFERRED_TRACK.md` - final status of the completed/superseded D1-D3 track.
 - `AGENT_EVALS.md` - real Workflow-path evals for profile routing, tools, MCP,
   answers, latency, and token usage.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
@@ -43,9 +42,12 @@ Current Docs above, not these.
 - `archive/AGENT_CORE_AUDIT.md` - point-in-time stabilization audit (2026-06-20).
 - `archive/CONTEXT_SYSTEM_AUDIT.md` - point-in-time context/memory audit
   (2026-06-20).
+- `archive/DEFERRED_TRACK.md` - final status of the completed/superseded D1-D3
+  track.
 - `archive/UI_AFTER_CONTEXT_2026-06-20.png` - dated UI screenshot artifact.
 - `archive/ELIRA_RUNTIME_INTELLIGENCE_ROADMAP.md` - pre-split roadmap snapshot
-  (deferred track moved to `DEFERRED_TRACK.md`, guardrails to `ARCHITECTURE.md`).
+  (deferred track later closed in `archive/DEFERRED_TRACK.md`, guardrails moved
+  to `ARCHITECTURE.md`).
 
 The completed P9-P12 plan and per-step preflight/proposal notes were removed in
 the 2026-06-14 docs cleanup; their history remains in git.

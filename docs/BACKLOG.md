@@ -22,8 +22,9 @@ abstraction.
    chunks. Сейчас в prompt попадают до 10 самых свежих активных файлов, до 2500
    символов каждый; UI честно показывает, какие из них находятся в контексте.
 5. Добавить project-corpus ingestion для больших локальных наборов репозиториев:
-   `.gitignore`/исключения, incremental hashes, chunks, embeddings, метаданные
-   repo/file/commit/language, resumable indexing и удаление устаревших chunks.
+   рекурсивный обход, `.gitignore`/исключения, incremental hashes, chunks,
+   embeddings, метаданные repo/file/commit/language, resumable indexing,
+   удаление устаревших chunks и единый поиск между несколькими проектами.
 6. Расширить memory eval: remember/search/list/delete, исправление факта,
    дедупликация, устаревшие volatile facts, backup/restore и строгое разделение
    user memory, project RAG и временного web Corpus.

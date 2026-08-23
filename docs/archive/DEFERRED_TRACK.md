@@ -1,8 +1,8 @@
 # Deferred Track — итоговый статус
 
 Исторический deferred track закрыт. Активное продолжение работ ведётся в
-[`BACKLOG.md`](BACKLOG.md); runtime-инварианты — в
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+[`BACKLOG.md`](../BACKLOG.md); runtime-инварианты — в
+[`ARCHITECTURE.md`](../ARCHITECTURE.md).
 
 ## D1 — Remote MCP (streamable HTTP) — ✅ реализовано
 
@@ -29,6 +29,6 @@ Workflow permission contract. URL всё равно обязан иметь ко
 упрощении runtime. Production path использует native provider tool calls,
 ограниченное восстановление inline tool JSON и существующую schema validation
 без отдельного обязательного envelope-слоя. Решение зафиксировано в
-[`ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md`](ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md).
+[`ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md`](../ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md).
 
 В этом документе больше нет активных implementation items.
