@@ -385,6 +385,21 @@ class BuildProvidersTest(McpProviderTestBase):
         self.assertIn("mcp:a", names)
         self.assertNotIn("mcp:b", names)
 
+    def test_explicit_activation_set_exposes_only_selected_running_server(self) -> None:
+        self.runtime.save_servers([self._fake_spec("a"), self._fake_spec("b")])
+        self.runtime.start_server("a")
+        self.runtime.start_server("b")
+
+        providers = self.provider_mod.build_mcp_providers({"b"})
+
+        self.assertEqual([provider.name for provider in providers], ["mcp:b"])
+
+    def test_empty_activation_set_exposes_no_running_server(self) -> None:
+        self.runtime.save_servers([self._fake_spec("a")])
+        self.runtime.start_server("a")
+
+        self.assertEqual(self.provider_mod.build_mcp_providers(set()), [])
+
 
 # ── Integration with ToolRegistry ──────────────────────────────
 

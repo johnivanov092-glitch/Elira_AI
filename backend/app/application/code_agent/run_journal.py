@@ -205,6 +205,12 @@ class RunJournal:
                 if isinstance(value, dict) and value.get("available")
             ],
             "active_skills": [],
+            "runtime_activation": {
+                "mcp_server_ids": [],
+                "lsp_server_ids": [],
+                "ssh": False,
+                "itops": False,
+            },
             "tool_decisions": [],
             "web_sources": [],
             "unavailable_tools": [],
@@ -275,6 +281,9 @@ class RunJournal:
                 self._state["applied_thinking_mode"] = str(mode)
             self._state["current_phase"] = str(event.get("phase") or self._state.get("current_phase"))
         if event_type == "tool_call":
+            runtime_activation = event.get("runtime_activation")
+            if isinstance(runtime_activation, dict):
+                self._state["runtime_activation"] = _clean(runtime_activation)
             touched = str(event.get("touched_path") or "").strip()
             if touched and touched not in self._state["changed_files"]:
                 self._state["changed_files"].append(touched)

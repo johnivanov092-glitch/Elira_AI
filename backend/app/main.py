@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Elira AI API")
 
 
+def _shutdown_integration_runtimes() -> None:
+    """Release explicitly started child runtimes on a graceful backend stop."""
+    from app.application.tool_providers import lsp_runtime, mcp_runtime
+
+    mcp_runtime.stop_all_servers()
+    lsp_runtime.stop_all_servers()
+
+
+app.add_event_handler("shutdown", _shutdown_integration_runtimes)
+
+
 # Global safety net (FIX-16): any UNhandled route exception returns a generic 500
 # body — never the raw exception text (which can leak internal paths/state) — and
 # logs the full traceback server-side. FastAPI keeps handling HTTPException (404 /
@@ -135,31 +146,6 @@ try:
     start_drift_scheduler()
 except Exception as exc:
     logger.warning("drift detector startup failed: %s", exc)
-
-# Auto-start enabled MCP servers on boot. start_all_enabled() existed ("Used on
-# agent startup") but was never wired, so MCP servers stayed STOPPED after every
-# restart until the user clicked ▷ by hand — their tools never reached the agent.
-# Run it in a daemon thread so a slow server (e.g. serena's LSP init) never blocks
-# backend startup; start_server is idempotent and failures are per-server + logged.
-try:
-    import sys as _sys
-
-    # Tests import app.main and must not spawn real npx/serena subprocesses.
-    _mcp_autostart_on = "pytest" not in _sys.modules
-    if _mcp_autostart_on:
-        import threading as _threading
-
-        def _autostart_mcp() -> None:
-            try:
-                from app.application.tool_providers.mcp_runtime import start_all_enabled
-
-                logger.info("MCP autostart: %s", start_all_enabled().get("started"))
-            except Exception as exc:  # never let a bad server take down boot
-                logger.warning("MCP autostart failed: %s", exc)
-
-        _threading.Thread(target=_autostart_mcp, name="mcp-autostart", daemon=True).start()
-except Exception as exc:
-    logger.warning("MCP autostart scheduling failed: %s", exc)
 
 @app.get("/health")
 def health():

@@ -29,6 +29,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+from collections.abc import Collection
 from typing import Any
 
 from app.application.agent_kernel.impact_policy import tool_call_is_change
@@ -399,7 +400,11 @@ def _mcp_noop_handler(args: dict[str, Any]) -> dict[str, Any]:
     return {"ok": False, "text": "ERROR: MCP tool — dispatch via MCP provider, not tool_registry"}
 
 
-def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
+def sync_mcp_tool_specs(
+    providers: list["McpToolProvider"],
+    *,
+    disable_absent: bool = True,
+) -> None:
     """Mirror running MCP tools into the shared inventory.
 
     A running user-configured server makes its tools visible immediately.
@@ -430,7 +435,7 @@ def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
             params = fn.get("parameters")
             live.add(qname)
             try:
-                _tr.register_dynamic_tool(
+                stored = _tr.register_dynamic_tool(
                     qname,
                     _mcp_noop_handler,
                     display_name=qname,
@@ -442,9 +447,13 @@ def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
                     scopes=[],
                     timeout_seconds=60,
                 )
+                if not bool(stored.get("enabled", True)):
+                    _tr.update_tool(qname, {"enabled": True})
             except Exception as exc:
                 logger.warning("mcp spec sync for %r failed: %s", qname, exc)
 
+    if not disable_absent:
+        return
     try:
         for tool in _tr.list_tools_with_schemas(source="mcp", enabled_only=False):
             tname = tool.get("name")
@@ -463,17 +472,28 @@ def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
         logger.warning("mcp spec sweep failed: %s", exc)
 
 
-def build_mcp_providers() -> list[McpToolProvider]:
-    """Construct a provider per **running** MCP server.
+def build_mcp_providers(
+    server_ids: Collection[str] | None = None,
+) -> list[McpToolProvider]:
+    """Construct providers for the requested **running** MCP servers.
 
-    Called once at agent_loop start. Servers that aren't running
-    are skipped here so the registry doesn't get providers that
-    contribute zero schemas — that's just noise."""
+    ``None`` preserves the inventory/API view of every running provider. An
+    explicit collection is the agent-run activation set: an empty collection
+    exposes no MCP schemas, and a selected server becomes visible only after an
+    explicit ``runtime_control(mcp_start)`` call.
+    """
+    allowed = None if server_ids is None else {
+        str(server_id).strip() for server_id in server_ids if str(server_id).strip()
+    }
     providers: list[McpToolProvider] = []
     for spec in list_servers():
         if spec.get("status") != "running":
             continue
+        if allowed is not None and str(spec.get("id") or "") not in allowed:
+            continue
         providers.append(McpToolProvider(spec["id"]))
     # Mirror discovered MCP tools into the shared inventory.
-    sync_mcp_tool_specs(providers)
+    # A session-scoped subset must not mark tools from other live sessions as
+    # stale in the global inventory.
+    sync_mcp_tool_specs(providers, disable_absent=allowed is None)
     return providers

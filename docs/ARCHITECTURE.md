@@ -33,8 +33,12 @@ returns to the same `run_code_agent`, executor and provider registry.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- Every connected provider schema is visible from the first model turn.
-- No deferred activation, tool/path/asset/LAN scope, internal ApprovalStore,
+- The first model turn sees only the compact core. MCP/LSP are selected per run
+  through `runtime_control`; SSH and IT Ops schemas are revealed only after the
+  model explicitly requests their runtime discovery operation.
+- A new-chat plain greeting has no tool schemas at all; any task, continuation,
+  path, command, MCP/SSH request, or existing history uses the normal agent loop.
+- No tool/path/asset/LAN authorization scope, internal ApprovalStore,
   feature dispatch gate, max steps, run deadline or no-progress self-stop.
 - Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
   protocol and physical context-window failures remain real errors.
@@ -70,6 +74,12 @@ memory/library administration and vault operations are behind the agent's
 `waiting_approval`, or `cancelled`. Existing domain runtimes remain owners;
 `runtime_control` is an adapter, not a second executor or registry.
 
+MCP servers do not auto-start with FastAPI. A run uses `mcp_list` and
+`mcp_start(server_id)` when the task needs one; only that server's schemas are
+added to the next model turn. LSP follows the same per-run rule. `ssh_hosts`
+reveals the existing SSH provider and `itops_assets` reveals the IT Ops provider
+without turning those discovery calls into authorization gates.
+
 The former Pipelines control plane is not mounted. Interval schedules are
 `workflow_triggers` in `workflow_engine.db`; they start existing Workflow
 templates and inherit `ask`, `accept_edits`, or `bypass`.
@@ -79,6 +89,13 @@ templates and inherit `ask`, `accept_edits`, or `bypass`.
 `infrastructure/llm/openai_compatible.py` sends OpenAI-compatible requests.
 
 - Chat generation has a finite connect timeout and no read/generation deadline.
+- Workflow Stop closes the active provider `requests.Response` before the cancel
+  endpoint acknowledges. One run-scoped handle covers planning, context
+  compaction and normal generation; llama.cpp prompt processing stops as soon
+  as its streaming response is bound.
+- Context usage and prompt telemetry include the exact activated tool schemas;
+  integrations can no longer fill the server window while the UI reports only
+  message text. `context_prepared` updates the UI before prompt prefill starts.
 - Every chat payload sets `cache_prompt: true`.
 - Reasoning modes are `none`, `low`, `medium`, `xhigh`.
 - Qwen reads `enable_thinking` + `reasoning_effort`.

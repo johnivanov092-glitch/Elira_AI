@@ -433,6 +433,10 @@ def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 class ContextBudgetError(RuntimeError):
     """Protected/recent context cannot fit the active server window."""
 
+    def __init__(self, message: str, *, usage: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.usage = dict(usage) if isinstance(usage, dict) else None
+
 
 def _prepare_messages_for_llm(
     messages: list[dict[str, Any]],
@@ -441,17 +445,28 @@ def _prepare_messages_for_llm(
     model: str,
     chat_fn: Callable[..., dict[str, Any]],
     context_profile: dict[str, Any],
+    tool_schemas: list[dict[str, Any]] | None = None,
+    cancel_handle: Any | None = None,
     audit_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], bool, dict[str, Any]]:
     """Compact at policy thresholds and enforce the effective request budget."""
     from app.application.context.compaction import maybe_compact
     from app.application.context.usage import get_context_usage
 
+    def compaction_chat(**kwargs: Any) -> dict[str, Any]:
+        options = dict(kwargs.get("options") or {})
+        if cancel_handle is not None:
+            options["_stream_cancel_handle"] = cancel_handle
+        return chat_fn(**{**kwargs, "options": options})
+
     usage_kwargs = {
         "ctx_size": num_ctx,
         "reserved_output_tokens": int(context_profile["reserved_output_tokens"]),
         "reserved_system_tokens": int(context_profile.get("reserved_system_tokens") or 4096),
         "safety_margin_tokens": int(context_profile.get("safety_margin_tokens") or 2048),
+        "extra_categories": (
+            {"tools": list(tool_schemas)} if tool_schemas else None
+        ),
     }
     usage = get_context_usage(messages, **usage_kwargs)
     compacted = False
@@ -477,7 +492,7 @@ def _prepare_messages_for_llm(
             messages,
             num_ctx,
             model,
-            chat_fn,
+            compaction_chat,
             summarize_fn=summarize_history,
             threshold=0.0,
             keep_pairs=1 if strong else 4,
@@ -494,7 +509,7 @@ def _prepare_messages_for_llm(
             messages,
             num_ctx,
             model,
-            chat_fn,
+            compaction_chat,
             summarize_fn=summarize_history,
             threshold=0.0,
             keep_pairs=1,
@@ -513,7 +528,8 @@ def _prepare_messages_for_llm(
         raise ContextBudgetError(
             "Контекст остаётся критически заполненным после сжатия: "
             f"{usage['current_tokens']} входных токенов, окно {usage['ctx_size']}. "
-            "Начните новый чат или оставьте только необходимые материалы."
+            "Начните новый чат или оставьте только необходимые материалы.",
+            usage=usage,
         )
     return messages, compacted, usage
 

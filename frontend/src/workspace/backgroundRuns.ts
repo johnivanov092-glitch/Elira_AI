@@ -339,6 +339,13 @@ function wire(
           };
         });
         pushLedger({ timestamp: Date.now(), type: "compression", action: `step ${e.step}`, result: "completed" });
+      } else if (e.type === "context_prepared") {
+        update(entry, (s) => ({
+          ...s,
+          usageSeeded: true,
+          contextUsage: e.context,
+          contextState: withUsageState(s.contextState, e.context),
+        }));
       } else if (e.type === "usage") {
         if (e.context) {
           update(entry, (s) => ({
@@ -605,15 +612,22 @@ export function resume(sessionId: string, agentId: string, runId: string): void 
   wire(entry, agentId, (handlers) => resumeCodeAgent(runId, handlers));
 }
 
-/** Stop a session's run: cancel server-side and drop the reader. */
+/** Stop a session's run: cancel upstream first, then drop the local reader. */
 export function stop(sessionId: string): void {
   const entry = _runs.get(sessionId);
   if (!entry) return;
   const rid = entry.runId;
+  const readerAbort = entry.abort;
   if (rid) {
-    void cancelCodeAgent(rid).catch(() => {});
+    // Keep the SSE connection alive until the backend acknowledges cancellation.
+    // Aborting it first can dispose the run reader while its LLM HTTP worker is
+    // still blocked in prefill. UI state still flips to stopped immediately.
+    void cancelCodeAgent(rid)
+      .catch(() => { /* UI is already stopped; still release the local reader. */ })
+      .finally(() => readerAbort?.abort());
+  } else {
+    readerAbort?.abort();
   }
-  entry.abort?.abort();
   entry.abort = null;
   entry.runId = null;
   entry.activeAgentId = null;

@@ -49,6 +49,18 @@ class _Response:
 
 
 class OpenAICompatibleProviderTest(unittest.TestCase):
+    def test_stream_cancel_handle_closes_current_and_late_response(self) -> None:
+        current = _Response({})
+        handle = openai_compatible.LLMStreamCancelHandle()
+        handle.bind(current)
+
+        handle.close()
+
+        self.assertTrue(current.closed)
+        late = _Response({})
+        handle.bind(late)
+        self.assertTrue(late.closed)
+
     def test_request_messages_drop_invalid_empty_and_merge_trailing_assistants(self) -> None:
         normalized = openai_compatible._normalize_messages_for_request([
             {"role": "invalid", "content": "drop"},

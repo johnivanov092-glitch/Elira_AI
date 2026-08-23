@@ -91,7 +91,7 @@ sequenceDiagram
     UI->>API: POST /api/code-agent/stream
     API->>WF: Создаёт durable Workflow run
     API->>A: stream_delivery_session
-    A->>L: messages + все доступные tool schemas
+    A->>L: messages + компактные core tool schemas
     L-->>A: текст или tool_call
     A->>E: ToolExecutionRequest
     alt UI-разрешение уже позволяет call
@@ -112,7 +112,9 @@ sequenceDiagram
 
 Что важно:
 
-- модель сразу видит схемы всех реально подключённых providers;
+- модель сразу видит только компактное ядро и `runtime_control`;
+- схемы MCP/LSP/SSH/IT Ops добавляются в текущий прогон только после явного
+  runtime-запроса модели;
 - `tool_search`, deferred activation и run-scoped allowlist больше не нужны;
 - tool call не уходит в параллельный executor;
 - approval не хранится во второй approval-базе;
@@ -223,7 +225,9 @@ live:     GET /api/agent-os/events/stream
 Stop
   ├─ ставит cancel event agent run
   ├─ отменяет Workflow run
-  ├─ закрывает чтение LLM stream
+  ├─ синхронно закрывает upstream HTTP Response модели
+  │  (планирование, сжатие истории или основной ответ)
+  ├─ после ответа cancel endpoint закрывает UI SSE reader
   └─ убивает зарегистрированное дерево shell-процесса
 ```
 
@@ -304,8 +308,37 @@ cancelled
 `_runtime_control_data.py`. Они не исполняют tools сами и не создают второй
 registry.
 
-После старта MCP agent core пересобирает canonical registry и уже на следующем
-model turn показывает новые MCP schemas.
+FastAPI не запускает MCP автоматически. В начале прогона MCP/LSP/SSH/IT Ops не
+добавляют схемы в prompt. Если задача требует интеграцию, модель действует явно:
+
+```text
+MCP: runtime_control(mcp_list)
+  → runtime_control(mcp_start, server_id)
+  → schemas только выбранного MCP на следующем model turn
+
+LSP: runtime_control(lsp_list)
+  → runtime_control(lsp_start, server_id)
+  → три LSP tools текущего прогона
+
+SSH: runtime_control(ssh_hosts)
+  → SSH tools текущего прогона
+
+IT Ops: runtime_control(itops_assets)
+  → IT Ops tools текущего прогона
+```
+
+Даже если другой прогон уже держит MCP-процесс запущенным, его сотни схем не
+попадут в текущий prompt без выбора этого `server_id` текущим агентом.
+Выбор записывается в journal прогона и сохраняется между его автоматическими
+продолжениями и Resume; новый прогон начинает с пустого набора интеграций.
+
+Счётчик контекста учитывает не только сообщения, но и точные schemas активных
+tools. Поэтому большой выбранный MCP виден в UI/телеметрии и не маскируется как
+«пустой» чат.
+
+Чистое приветствие в новом чате (`Привет`, `Ты тут?`, `Hello`) отправляется без
+tool schemas вообще. Это узкий fast path: наличие истории или любой фактической
+задачи возвращает обычный agent loop со всеми доступными runtime-механизмами.
 
 ## 9. Windows, права и UAC
 
@@ -528,5 +561,5 @@ run timeout. Для скорости переключите chip на `medium/lo
 6. Интеграции управляются через Workflow/runtime, не отдельными Settings-пультами.
 7. Секрет в model/tool/event payload — только `secret_ref`.
 8. Windows elevation — только через Workflow card + native Tauri UAC bridge.
-9. Все доступные provider schemas видимы модели сразу.
+9. Built-in schemas видимы сразу; integration schemas — только после явного выбора в текущем run.
 10. Один финальный ответ или явный Stop; объективная provider/OS error остаётся честной ошибкой.
