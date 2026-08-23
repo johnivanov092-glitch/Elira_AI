@@ -31,6 +31,7 @@ move Elira's backend state or tools into that repository.
 | Context rollover | `backend/app/application/code_agent/delivery_session.py` |
 | Planning | `backend/app/application/code_agent/planning.py` |
 | Prompts/schemas | `backend/app/application/code_agent/prompts.py`, `tool_schemas.py` |
+| Built-in capability groups | `backend/app/application/code_agent/capabilities.py` |
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |

@@ -210,6 +210,7 @@ class RunJournal:
                 "lsp_server_ids": [],
                 "ssh": False,
                 "itops": False,
+                "capability_groups": [],
             },
             "tool_decisions": [],
             "web_sources": [],

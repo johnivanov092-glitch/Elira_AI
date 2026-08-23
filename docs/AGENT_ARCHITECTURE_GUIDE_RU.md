@@ -23,7 +23,8 @@ Code-agent core: понять → спланировать → вызвать to
 Единый ToolExecutor
     ↓
 Единый Runtime Registry
-    ├─ встроенные tools
+    ├─ компактное ядро встроенных tools
+    ├─ группы tools по запросу LLM
     ├─ SSH
     ├─ IT Ops
     ├─ MCP
@@ -68,6 +69,7 @@ Transcript + Workflow request card
 | Impact policy | Только классифицирует опасность для `accept_edits` | `application/agent_kernel/impact_policy.py` |
 | Runtime registry | Собирает схемы и направляет call владельцу | `application/tool_providers/runtime_registry.py` |
 | Providers | Builtin, SSH, IT Ops, MCP, LSP | `application/tool_providers/` |
+| Capability catalog | Группирует необязательные builtin-схемы для загрузки моделью | `application/code_agent/capabilities.py` |
 | Runtime control | Управляет скрытыми интеграциями из Workflow | `application/code_agent/tools/_runtime_control.py` |
 | LLM client | OpenAI-compatible HTTP, reasoning kwargs, prompt cache | `infrastructure/llm/openai_compatible.py` |
 | Vault | Переносимые секреты AES-256-GCM | `infrastructure/secrets/vault.py` |
@@ -112,16 +114,56 @@ sequenceDiagram
 
 Что важно:
 
-- модель сразу видит только компактное ядро и `runtime_control`;
+- модель сразу видит компактное ядро, `capability_load` и `runtime_control`;
+- нужную группу builtin tools выбирает сама LLM, а полные схемы группы появляются
+  на следующем model turn;
 - схемы MCP/LSP/SSH/IT Ops добавляются в текущий прогон только после явного
   runtime-запроса модели;
-- `tool_search`, deferred activation и run-scoped allowlist больше не нужны;
+- отдельного `tool_search`, второго registry или run-scoped authorization
+  allowlist нет;
 - tool call не уходит в параллельный executor;
 - approval не хранится во второй approval-базе;
 - Resume продолжает тот же `run_id`, а не создаёт новую задачу;
 - долгий корректный run не имеет wall-clock timeout или лимита шагов.
 - дочерние shell/sandbox/plugin процессы наследуют текущую среду Elira и права
   текущего Windows token; отдельной скрытой env-allowlist нет.
+
+### 3.1. Как LLM подгружает инструменты
+
+На первом ходе обычной технической задачи модель получает 12 builtin tools
+ядра и два loop-owned tools (`ask_user`, `workflow_request`). В ядре остаются
+файлы, поиск по проекту, shell, checklist/delegation и два диспетчера:
+
+```text
+Задача пользователя
+    ↓
+LLM видит компактный каталог групп в схеме capability_load
+    ├─ хватает ядра → сразу выполняет задачу
+    └─ нужна возможность → capability_load(group)
+                              ↓
+                         Runtime Registry пересобирает schemas
+                              ↓
+                         следующий model turn видит tools группы
+```
+
+| Группа | Что появляется |
+|---|---|
+| `web` | поиск/чтение web, HTTP API, browser, URL screenshot |
+| `desktop` | локальный Windows computer control |
+| `resources` | вложения, OCR/vision, DOCX/XLSX/PDF, публикация файлов |
+| `data` | sandbox, regex, CSV, converter, SQLite, encryption, archives |
+| `memory` | recall и remember |
+| `operations` | background server, server-facts reconciliation, webhooks |
+
+Это не permission и не guard. `capability_load` лишь уменьшает prompt: handler
+и ToolExecutor остаются теми же. Группа остаётся видимой до конца текущего
+`run_id`, переживает автоматическое продолжение и Resume. Новый run снова
+начинается с ядра; unload внутри run пока не нужен.
+
+По текущему грубому счётчику `chars / 4` полный builtin-набор вместе с двумя
+loop-owned schemas занимает около `8 771` токена. Стартовое ядро — около `2 470`
+токенов, то есть примерно на 72% меньше. После загрузки учитываются точные схемы
+фактически выбранных групп; UI получает это в `context_prepared`.
 
 ## 4. Multi-agent — не второй агентный движок
 
@@ -517,7 +559,7 @@ evidence и audit events разные lifecycle и recovery semantics.
 | Stop/cancel | `agent_loop.py`, `delivery_session.py`, `code_agent_routes.py`, `_shell.py` |
 | Reasoning chip | `Composer.tsx`, `agent_loop.py` |
 | LLM payload/cache | `infrastructure/llm/openai_compatible.py` |
-| Новый built-in tool | существующий `tool_schemas.py` + `_dispatch.py`, без второго registry |
+| Новый built-in tool | `capabilities.py` + существующие `tool_schemas.py`/`_dispatch.py`, без второго registry |
 | Новый provider | `application/tool_providers/`, зарегистрировать в runtime registry |
 | Integration control | `_runtime_control.py` |
 | Workflow request | `workflows/request_lifecycle.py`, `request_recovery.py`, `request_validation.py`, `WorkflowRequestCard.tsx` |
@@ -538,8 +580,9 @@ run timeout. Для скорости переключите chip на `medium/lo
 
 ### Tool не появился
 
-Проверьте, запущен ли owning runtime. Для MCP: `runtime_control(mcp_list/start)`;
-после старта registry обновляется на следующем turn.
+Для встроенного tool проверьте его группу и успешный `capability_load(group)`.
+Для MCP проверьте `runtime_control(mcp_list/start)`. В обоих случаях registry
+обновляется на следующем turn; выбранное состояние видно в journal run.
 
 ### Windows вернула Access denied
 

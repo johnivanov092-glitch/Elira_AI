@@ -388,6 +388,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
 
     # ── Read-only (auto) ────────────────────────────────────────────────────
     auto_tools = [
+        ("capability_load", "Load Capability", "system", "Expose one optional built-in tool group for the current run", 15, 10000, True),
         ("read_file",   "Read File",    "project", "Read a file in the project root",         15, 50000, True),
         ("glob",        "Glob",         "project", "List files matching a glob pattern",       15, 20000, True),
         ("path_exists", "Path Exists",  "project", "Check whether a local file or directory exists (verifier for 'папка/файл создан')", 15, 5000, True),

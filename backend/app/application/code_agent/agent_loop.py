@@ -30,6 +30,10 @@ from app.application.tool_providers import (
 from app.application.tool_providers.mcp_provider import (
     creative_workflow_prompt,
 )
+from app.application.code_agent.capabilities import (
+    builtin_tools_for_groups,
+    normalize_capability_groups,
+)
 from app.application.code_agent.answer_media import merge_answer_media
 from app.application.code_agent.planning import (
     PlanArtifact,
@@ -611,8 +615,8 @@ def _load_planning_state(run_id: str) -> "tuple[PlanArtifact | None, bool]":
 
 def _load_runtime_activation_state(
     run_id: str,
-) -> tuple[set[str], set[str], bool, bool]:
-    """Restore integration visibility for another slice of the same run."""
+) -> tuple[set[str], set[str], bool, bool, set[str]]:
+    """Restore run-scoped integration and built-in schema visibility."""
     try:
         from app.application.code_agent.run_journal import RunJournal
 
@@ -626,6 +630,7 @@ def _load_runtime_activation_state(
         {str(value) for value in stored.get("lsp_server_ids") or [] if str(value)},
         bool(stored.get("ssh")),
         bool(stored.get("itops")),
+        set(normalize_capability_groups(stored.get("capability_groups"))),
     )
 
 
@@ -749,17 +754,32 @@ def _stream_code_agent_core(
             active_lsp_server_ids,
             ssh_tools_active,
             itops_tools_active,
+            active_capability_groups,
         ) = _load_runtime_activation_state(rid)
 
         def rebuild_registry() -> ToolRegistry:
             return build_runtime_tool_registry(
                 root,
                 include_builtin=not simple_greeting,
+                builtin_tool_names=(
+                    ()
+                    if simple_greeting
+                    else builtin_tools_for_groups(active_capability_groups)
+                ),
                 mcp_server_ids=() if simple_greeting else active_mcp_server_ids,
                 lsp_server_ids=() if simple_greeting else active_lsp_server_ids,
                 include_ssh=not simple_greeting and ssh_tools_active,
                 include_itops=not simple_greeting and itops_tools_active,
             )
+
+        def runtime_activation_snapshot() -> dict[str, Any]:
+            return {
+                "mcp_server_ids": sorted(active_mcp_server_ids),
+                "lsp_server_ids": sorted(active_lsp_server_ids),
+                "ssh": ssh_tools_active,
+                "itops": itops_tools_active,
+                "capability_groups": sorted(active_capability_groups),
+            }
 
         # Aggregate the compact core into one registry. The agent loop only
         # talks to the registry from here on.
@@ -778,8 +798,8 @@ def _stream_code_agent_core(
             seed_builtin_tools()
         registry = rebuild_registry()
         all_schemas = registry.collect_schemas()
-        # Every core tool is visible from the first step. Integration schemas
-        # are added only after an explicit runtime_control activation in this run.
+        # Only the compact built-in core is visible from the first step.
+        # Optional built-ins and integrations appear after explicit model calls.
         initial_tools = tuple(dict.fromkeys(
             name for schema in all_schemas
             if (name := _schema_tool_name(schema))
@@ -1992,6 +2012,23 @@ def _stream_code_agent_core(
                     call_log.append(f"runtime_control({_runtime_request_status})")
                     continue
                 if (
+                    name == "capability_load"
+                    and _exec_result.status == "ok"
+                    and bool(tool_meta.get("ok", True))
+                ):
+                    _capability_group = str(
+                        tool_meta.get("capability_group")
+                        or parsed_args.get("group")
+                        or ""
+                    ).strip().lower()
+                    if _capability_group in normalize_capability_groups(
+                        (_capability_group,)
+                    ):
+                        active_capability_groups.add(_capability_group)
+                        registry = rebuild_registry()
+                        all_schemas = registry.collect_schemas()
+                        _runtime_activation_snapshot = runtime_activation_snapshot()
+                if (
                     name == "runtime_control"
                     and _exec_result.status == "ok"
                     and bool(tool_meta.get("ok", True))
@@ -2027,12 +2064,7 @@ def _stream_code_agent_core(
                         itops_tools_active = True
                     registry = rebuild_registry()
                     all_schemas = registry.collect_schemas()
-                    _runtime_activation_snapshot = {
-                        "mcp_server_ids": sorted(active_mcp_server_ids),
-                        "lsp_server_ids": sorted(active_lsp_server_ids),
-                        "ssh": ssh_tools_active,
-                        "itops": itops_tools_active,
-                    }
+                    _runtime_activation_snapshot = runtime_activation_snapshot()
                 if name == "run_server":
                     _rs_act = str(parsed_args.get("action") or "start").lower()
                     if tool_meta.get("actual_url"):

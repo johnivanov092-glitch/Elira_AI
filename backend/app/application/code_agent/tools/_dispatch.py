@@ -65,10 +65,12 @@ from app.application.code_agent.tools._drift import (
     tool_reconcile_server_facts,
 )
 from app.application.code_agent.tools._runtime_control import tool_runtime_control
+from app.application.code_agent.tools._capability import tool_capability_load
 
 
 def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str, Any]]]:
     return {
+        "capability_load": lambda **kw: tool_capability_load(**kw),
         "read_file": lambda **kw: tool_read_file(project_root, **kw),
         "write_file": lambda **kw: tool_write_file(project_root, **kw),
         "edit_file": lambda **kw: tool_edit_file(project_root, **kw),

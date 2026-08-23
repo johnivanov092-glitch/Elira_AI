@@ -17,6 +17,7 @@ def build_runtime_tool_registry(
     project_root: Path | str,
     *,
     include_builtin: bool = True,
+    builtin_tool_names: Collection[str] | None = None,
     mcp_server_ids: Collection[str] | None = None,
     lsp_server_ids: Collection[str] | None = None,
     include_ssh: bool = True,
@@ -24,14 +25,15 @@ def build_runtime_tool_registry(
 ) -> ToolRegistry:
     """Build the one registry over existing providers.
 
-    ``None`` keeps the full inventory/API view for compatibility. The agent
-    passes explicit per-run activation sets and false provider flags so hidden
-    integrations contribute no schemas until requested through runtime_control.
+    ``builtin_tool_names=None`` keeps the full inventory/API view for
+    compatibility. The agent passes explicit per-run built-in groups and
+    integration sets, so optional schemas contribute no prompt tokens until
+    requested by the model.
     """
     root = Path(project_root).expanduser().resolve()
     providers: list[ToolProvider] = []
     if include_builtin:
-        providers.append(BuiltinToolProvider(root))
+        providers.append(BuiltinToolProvider(root, builtin_tool_names))
     if include_ssh:
         providers.append(SshToolProvider())
     if include_itops:

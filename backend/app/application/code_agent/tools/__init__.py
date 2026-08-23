@@ -78,6 +78,7 @@ from app.application.code_agent.tools._vision import (  # noqa: F401
     tool_read_image,
 )
 from app.application.code_agent.tools._dispatch import build_tool_dispatch  # noqa: F401
+from app.application.code_agent.tools._capability import tool_capability_load  # noqa: F401
 from app.application.code_agent.tools._runtime_control import tool_runtime_control  # noqa: F401
 
 __all__ = [
@@ -102,6 +103,7 @@ __all__ = [
     "tool_remember",
     "tool_todo_update",
     "tool_delegate_task",
+    "tool_capability_load",
     "tool_runtime_control",
     "tool_run_bash",
     "tool_run_server",
