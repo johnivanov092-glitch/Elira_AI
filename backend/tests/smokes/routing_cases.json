@@ -58,6 +58,7 @@
       "capability_groups": []
     },
     "required_answer_contains": ["8000", "65534"],
+    "require_network_answer_grounding": true,
     "max_tool_calls": 4
   },
   "science_web": {
@@ -69,6 +70,7 @@
       "capability_groups": ["data", "web"]
     },
     "required_answer_contains": ["https://"],
+    "answer_source_tools": ["web_search"],
     "max_tool_calls": 8
   },
   "medical_web": {
@@ -80,6 +82,7 @@
       "capability_groups": ["resources", "web"]
     },
     "required_answer_contains": ["ВОЗ", "https://"],
+    "answer_source_tools": ["web_search", "web_fetch"],
     "max_tool_calls": 8
   },
   "mcp_context7": {
@@ -89,11 +92,20 @@
     "required_tool_prefixes": ["context7__"],
     "forbidden_tools": ["web_search", "run_bash"],
     "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_stop"],
+    "required_tool_sequence": [
+      {"tool": "runtime_control", "operation": "mcp_list"},
+      {"tool": "runtime_control", "operation": "mcp_start", "server_id": "context7"},
+      {"tool_prefix": "context7__"},
+      {"tool": "runtime_control", "operation": "mcp_stop", "server_id": "context7"}
+    ],
     "required_mcp_servers": ["context7"],
     "expected_initial_activation": {
       "itops": false,
       "mcp_server_ids": [],
       "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": []
     },
     "required_answer_contains": ["BackgroundTasks"],
     "max_tool_calls": 10
@@ -101,11 +113,15 @@
   "mcp_negative": {
     "task": "Объясни простыми словами разницу между JSON и YAML. Внешние интеграции не требуются.",
     "expected_profile": "Баланс",
-    "forbidden_runtime_operations": ["mcp_list", "mcp_start"],
+    "forbidden_runtime_operation_prefixes": ["mcp_"],
+    "forbid_mcp_activation": true,
     "expected_initial_activation": {
       "itops": false,
       "mcp_server_ids": [],
       "capability_groups": []
+    },
+    "expected_final_activation": {
+      "mcp_server_ids": []
     },
     "required_answer_contains": ["JSON", "YAML"],
     "max_tool_calls": 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sys
 import time
 import urllib.request
@@ -19,6 +20,34 @@ from driver import run_smoke
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 DEFAULT_CASES_PATH = HERE / "routing_cases.json"
+_NON_OPEN_TERMS = (
+    "не открыт", "закрыт", "closed", "not open", "timeout", "refused",
+    "не ответ", "недоступ",
+)
+
+
+def _trace_item_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    tool_name = str(actual.get("tool") or "")
+    prefix = str(expected.get("tool_prefix") or "")
+    if prefix and not tool_name.startswith(prefix):
+        return False
+    for key in ("tool", "operation", "server_id"):
+        value = expected.get(key)
+        if value is not None and str(actual.get(key) or "") != str(value):
+            return False
+    return actual.get("ok") is True
+
+
+def _port_states(answer: str, port: int) -> set[str]:
+    states: set[str] = set()
+    for clause in re.split(r"[\n,;]|(?<=[.!?])\s+", answer.casefold()):
+        if re.search(rf"(?<!\d){int(port)}(?!\d)", clause) is None:
+            continue
+        if any(term in clause for term in _NON_OPEN_TERMS):
+            states.add("not_open")
+        elif re.search(r"\bopen\b|открыт\w*", clause):
+            states.add("open")
+    return states
 
 
 def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
@@ -45,24 +74,61 @@ def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
         if str(tool_name) in tool_names:
             failures.append(f"forbidden tool used: {tool_name}")
 
-    operations = {str(name) for name in summary.get("runtime_operations") or []}
+    runtime_calls = summary.get("runtime_calls")
+    if isinstance(runtime_calls, list):
+        operations = {
+            str(call.get("operation") or "")
+            for call in runtime_calls
+            if isinstance(call, dict) and call.get("ok") is True
+        }
+    else:  # backwards-compatible evaluation of reports written by older drivers
+        operations = {str(name) for name in summary.get("runtime_operations") or []}
+    all_operations = {str(name) for name in summary.get("runtime_operations") or []}
     for operation in spec.get("required_runtime_operations") or []:
         if str(operation) not in operations:
             failures.append(f"missing runtime operation: {operation}")
     for operation in spec.get("forbidden_runtime_operations") or []:
-        if str(operation) in operations:
+        if str(operation) in all_operations:
             failures.append(f"forbidden runtime operation used: {operation}")
+    for prefix in spec.get("forbidden_runtime_operation_prefixes") or []:
+        for operation in sorted(all_operations):
+            if operation.startswith(str(prefix)):
+                failures.append(f"forbidden runtime operation used: {operation}")
+
+    tool_trace = summary.get("tool_trace") or []
+    cursor = 0
+    for position, expected in enumerate(spec.get("required_tool_sequence") or [], 1):
+        found = next(
+            (
+                index
+                for index in range(cursor, len(tool_trace))
+                if isinstance(tool_trace[index], dict)
+                and _trace_item_matches(dict(expected), tool_trace[index])
+            ),
+            None,
+        )
+        if found is None:
+            failures.append(f"missing successful tool sequence item {position}: {expected}")
+            break
+        cursor = found + 1
 
     active_mcp = {str(name) for name in summary.get("activated_mcp_server_ids") or []}
     for server_id in spec.get("required_mcp_servers") or []:
         if str(server_id) not in active_mcp:
             failures.append(f"MCP server was not activated: {server_id}")
+    if spec.get("forbid_mcp_activation") and active_mcp:
+        failures.append(f"MCP activation is forbidden: {', '.join(sorted(active_mcp))}")
 
     initial_activation = summary.get("initial_runtime_activation") or {}
     for key, expected in (spec.get("expected_initial_activation") or {}).items():
         actual = initial_activation.get(key)
         if actual != expected:
             failures.append(f"initial activation {key}={actual!r}; expected={expected!r}")
+    final_activation = summary.get("final_runtime_activation") or {}
+    for key, expected in (spec.get("expected_final_activation") or {}).items():
+        actual = final_activation.get(key)
+        if actual != expected:
+            failures.append(f"final activation {key}={actual!r}; expected={expected!r}")
 
     answer = str(summary.get("answer") or "")
     folded_answer = answer.casefold()
@@ -72,6 +138,39 @@ def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
     for fragment in spec.get("forbidden_answer_contains") or []:
         if str(fragment).casefold() in folded_answer:
             failures.append(f"answer contains forbidden text: {fragment}")
+
+    source_tools = [str(name) for name in spec.get("answer_source_tools") or []]
+    if source_tools:
+        tool_source_urls = summary.get("tool_source_urls") or {}
+        observed_urls = {
+            str(url)
+            for tool_name in source_tools
+            for url in tool_source_urls.get(tool_name) or []
+        }
+        answer_urls = {str(url) for url in summary.get("answer_urls") or []}
+        if not observed_urls.intersection(answer_urls):
+            failures.append(
+                f"answer does not cite a URL returned by: {', '.join(source_tools)}"
+            )
+
+    if spec.get("require_network_answer_grounding"):
+        inventories = [
+            item for item in summary.get("network_inventories") or []
+            if isinstance(item, dict) and item.get("ok") is True
+        ]
+        if not inventories:
+            failures.append("no successful network inventory to ground the answer")
+        else:
+            inventory = inventories[-1]
+            open_ports = {int(port) for port in inventory.get("open_ports") or []}
+            for port_value in inventory.get("requested_ports") or []:
+                port = int(port_value)
+                states = _port_states(answer, port)
+                expected_state = "open" if port in open_ports else "not_open"
+                opposite_state = "not_open" if expected_state == "open" else "open"
+                if expected_state not in states or opposite_state in states:
+                    label = "open" if expected_state == "open" else "not open"
+                    failures.append(f"answer does not report port {port} as {label}")
 
     max_tool_calls = spec.get("max_tool_calls")
     if max_tool_calls is not None and int(summary.get("tool_calls") or 0) > int(max_tool_calls):

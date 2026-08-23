@@ -46,15 +46,17 @@ one is required for CI.
 - on-demand MCP discovery, start, tool use, and stop;
 - the negative MCP case: an ordinary chat must not start an integration.
 
-Each case can assert the effective profile, initial runtime activation, required
-or forbidden tools, runtime-control operations, MCP servers, answer fragments,
-and the maximum number of tool calls.
+Each case can assert the effective profile, initial/final runtime activation,
+successful ordered tool sequences, forbidden operation families, MCP servers,
+answer fragments, citations returned by source tools, network states grounded
+in typed inventory output, and the maximum number of tool calls.
 
 ## Observability and reports
 
 The driver derives results only from the public Workflow SSE contract. It
-records the effective profile, initial and dynamic runtime activation, tools,
-MCP lifecycle operations, stop reason, answer, TTFT, duration, token usage, and
+records the effective profile, initial/dynamic/final runtime activation,
+successful and failed tools, ordered MCP lifecycle operations, answer/source
+URLs, typed network observations, stop reason, TTFT, duration, token usage, and
 generation speed.
 
 Every run writes ignored local artifacts under:
@@ -71,4 +73,3 @@ The command exits non-zero when any contract fails. Unit coverage for the
 reporter and evaluator lives in `backend/tests/test_live_eval_driver.py`; live
 model runs remain opt-in because they require the backend and LAN inference
 server and can take several minutes.
-
