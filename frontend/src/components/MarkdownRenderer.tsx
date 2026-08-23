@@ -7,8 +7,9 @@
  *   • CopyButton и CodeBlock мемоизированы
  */
 import React, { useState, useCallback, type ReactNode } from "react";
-import { buildApiUrl, request } from "../api/client";
+import { buildApiUrl } from "../api/client";
 import { isLocalApiAssetUrl } from "../api/apiUtils";
+import { DownloadLink } from "./DownloadLink";
 import { ExternalBrowserLink } from "./ExternalLink";
 
 type InlinePattern = {
@@ -32,27 +33,6 @@ type MarkdownRendererProps = {
 // ─── Утилиты (создаются один раз) ──────────────────────────────
 const extractFilename = (url: string): string | null => { const p = url.split("/"); const l = p[p.length - 1]; return l && l.includes(".") ? decodeURIComponent(l) : null; };
 const isFilename = (s: string): boolean => /\.\w{1,5}$/.test(s);
-
-function doDownload(url: string, label: string) {
-  const full = buildApiUrl(url);
-  const fname = isFilename(label) ? label : extractFilename(url) || label || "download";
-  request<Blob>(full, { responseType: "blob" })
-    .then(blob => {
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = fname;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 200);
-    })
-    .catch(() => {
-      const a = document.createElement("a");
-      a.href = full; a.download = fname; a.target = "_self";
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => a.remove(), 200);
-    });
-}
 
 // Shorten a bare URL to its hostname for display — cleaner than a raw URL soup.
 // The full URL stays in href (click) and title (hover).
@@ -84,7 +64,7 @@ const INLINE_PATTERNS: InlinePattern[] = [
     const url = m[2]; const label = m[1];
     if (isLocalApiAssetUrl(url)) {
       const displayName = isFilename(label) ? label : (extractFilename(url) || label);
-      return <button key={k} className="md-link md-download-btn" onClick={() => doDownload(url, label)}>📥 {displayName}</button>;
+      return <DownloadLink key={k} url={url} name={displayName} className="md-link md-download-btn">📥 {displayName}</DownloadLink>;
     }
     return <ExternalBrowserLink key={k} href={url} className="md-link">{label}</ExternalBrowserLink>;
   }},

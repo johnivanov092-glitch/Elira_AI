@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ChevronRight, FileText, Folder, Loader2, X } from "lucide-react";
+import { DownloadLink } from "../components/DownloadLink";
 import MarkdownRenderer from "../components/MarkdownRenderer";
 import { getAdvancedProjectTree, readAdvancedProjectFile } from "../api/project";
 import { buildApiUrl } from "../api/client";
@@ -16,21 +17,36 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "tree", label: "Дерево" },
 ];
 
+function pdfPreviewUrl(url: string, name: string): string | null {
+  if (!/\.pdf$/i.test(name) && !/\.pdf(?:$|[?#])/i.test(url)) return null;
+  const full = buildApiUrl(url);
+  try {
+    const parsed = new URL(full);
+    parsed.pathname = parsed.pathname.replace("/api/skills/download/", "/api/skills/view/");
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artifacts; project: string; onClose: () => void }) {
   const file = artifacts.file;
   const server = artifacts.server;
   const isHtml = !!file && /\.html?$/i.test(file.path);
   const isMd = !!file && /\.(md|markdown)$/i.test(file.path);
-  const [tab, setTab] = useState<Tab>(server || isHtml || isMd ? "preview" : file ? "code" : "console");
+  const pdfUrl = artifacts.download
+    ? pdfPreviewUrl(artifacts.download.url, artifacts.download.name)
+    : null;
+  const [tab, setTab] = useState<Tab>(server || isHtml || isMd || pdfUrl ? "preview" : file ? "code" : "console");
 
   useEffect(() => {
-    if (server) setTab("preview");
-  }, [server?.key]);
+    if (server || pdfUrl) setTab("preview");
+  }, [server?.key, artifacts.download?.key, pdfUrl]);
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-l border-line bg-side">
       <div className="flex items-center gap-2 border-b border-line px-3 py-2.5">
-        <span className="truncate font-mono text-[11.5px] text-t2">{server?.url ?? file?.path ?? "превью"}</span>
+        <span className="truncate font-mono text-[11.5px] text-t2">{server?.url ?? file?.path ?? artifacts.download?.name ?? "превью"}</span>
         <button type="button" onClick={onClose} aria-label="Закрыть" className="ml-auto grid h-6 w-6 place-items-center rounded-md border border-line text-t2 hover:bg-hover hover:text-tx">
           <X size={14} />
         </button>
@@ -42,13 +58,13 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
           <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-t2" title={artifacts.download.name}>
             {artifacts.download.name}
           </span>
-          <a
-            href={buildApiUrl(artifacts.download.url)}
-            download={artifacts.download.name}
+          <DownloadLink
+            url={artifacts.download.url}
+            name={artifacts.download.name}
             className="shrink-0 rounded-md border border-line bg-surface px-2 py-1 text-[11.5px] font-medium text-ac hover:bg-hover"
           >
             📥 Скачать
-          </a>
+          </DownloadLink>
         </div>
       )}
 
@@ -75,6 +91,12 @@ export function PreviewPanel({ artifacts, project, onClose }: { artifacts: Artif
               title="live preview"
               sandbox="allow-scripts allow-forms allow-modals allow-same-origin"
               src={server.url}
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : pdfUrl ? (
+            <iframe
+              title="PDF preview"
+              src={pdfUrl}
               className="h-full w-full border-0 bg-white"
             />
           ) : isHtml && file ? (

@@ -22,4 +22,23 @@ describe("PreviewPanel live server", () => {
     expect(html).toContain('title="live preview"');
     expect(html).toContain('src="http://localhost:5174"');
   });
+
+  it("renders a generated PDF through the inline view endpoint", () => {
+    const html = renderToStaticMarkup(
+      <PreviewPanel
+        artifacts={{
+          download: {
+            url: "/api/skills/download/report.pdf",
+            name: "report.pdf",
+            key: "1:/api/skills/download/report.pdf",
+          },
+        }}
+        project="C:/workspace/crm"
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('title="PDF preview"');
+    expect(html).toContain('src="http://127.0.0.1:8000/api/skills/view/report.pdf"');
+  });
 });

@@ -2,6 +2,7 @@
 skills_routes.py — API скиллов: генерация файлов, SQL, HTTP, скриншоты.
 """
 from __future__ import annotations
+import mimetypes
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -54,15 +55,16 @@ def download_file(filename: str):
     path = OUTPUT_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Не найден: {filename}")
-    return FileResponse(path, filename=filename, media_type="application/octet-stream")
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(path, filename=filename, media_type=media_type)
 
 @router.get("/view/{filename}")
 def view_file(filename: str):
     path = OUTPUT_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Не найден: {filename}")
-    mt = "image/png" if filename.endswith(".png") else "application/octet-stream"
-    return FileResponse(path, media_type=mt)
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
 
 @router.get("/files")
 def list_generated():
