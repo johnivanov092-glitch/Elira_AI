@@ -17,6 +17,9 @@ Runtime model:
   * `ssh -o StrictHostKeyChecking=accept-new` — first-time hosts
     get auto-recorded in known_hosts; existing host-key changes
     are rejected (no silent MITM).
+  * Command-only calls use `ssh -n` so a remote program that accidentally reads
+    stdin receives EOF instead of keeping the workflow open forever. File writes
+    explicitly forward stdin and omit `-n`.
   * No `-t` (TTY allocation) — purely batch mode.
 """
 from __future__ import annotations
@@ -56,14 +59,20 @@ def _truncate_for_llm(text: str, limit: int = _LLM_OUTPUT_LIMIT) -> str:
     return truncate_middle(text, limit)
 
 
-def _ssh_args(host: str) -> list[str]:
+def _ssh_args(host: str, *, forward_stdin: bool = False) -> list[str]:
     """Shared ssh flags every tool uses. Order matters here — flags
     before the destination."""
     # Saved aliases are only friendly discovery metadata; an arbitrary direct
     # hostname/IP is preserved and passed as one argv item.
     canonical = resolve_allowed_host(host) or host.strip()
+    args = ["ssh"]
+    if not forward_stdin:
+        # OpenSSH's native null-stdin mode is required in addition to Popen's
+        # DEVNULL on Windows: it closes the SSH channel's input, so a malformed
+        # remote command that reads stdin cannot remain blocked in pipe_read.
+        args.append("-n")
     return [
-        "ssh",
+        *args,
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=accept-new",
         canonical,
@@ -242,7 +251,10 @@ def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = Fal
     if _is_windows_path(path):
         try:
             proc = run_registered_process(
-                [*_ssh_args(host), _windows_write_encoded(path, append=append)],
+                [
+                    *_ssh_args(host, forward_stdin=True),
+                    _windows_write_encoded(path, append=append),
+                ],
                 input=data,
             )
         except FileNotFoundError:
@@ -254,12 +266,18 @@ def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = Fal
     op = ">>" if append else ">"
     remote_cmd = f"cat {op} {_shell_quote(path)}"
     try:
-        proc = run_registered_process([*_ssh_args(host), remote_cmd], input=data)
+        proc = run_registered_process(
+            [*_ssh_args(host, forward_stdin=True), remote_cmd],
+            input=data,
+        )
     except FileNotFoundError:
         return "`ssh` binary not found on this machine"
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
         proc = run_registered_process(
-            [*_ssh_args(host), _windows_write_encoded(path, append=append)],
+            [
+                *_ssh_args(host, forward_stdin=True),
+                _windows_write_encoded(path, append=append),
+            ],
             input=data,
         )
     if proc.returncode != 0:

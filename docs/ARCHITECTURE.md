@@ -44,6 +44,8 @@ returns to the same `run_code_agent`, executor and provider registry.
   feature dispatch gate, max steps, run deadline or no-progress self-stop.
 - Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
   protocol and physical context-window failures remain real errors.
+- Command-only SSH calls use OpenSSH `-n`: accidental remote stdin reads receive
+  EOF instead of hanging the workflow. SSH file writes explicitly forward stdin.
 - Legacy ToolSpec policy columns are inventory compatibility only.
 
 ## Permission selector
