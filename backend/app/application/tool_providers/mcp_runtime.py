@@ -348,12 +348,28 @@ def stop_server(server_id: str) -> dict[str, Any]:
 def _stop_locked(server_id: str) -> None:
     """Internal helper. Caller must hold _LOCK."""
     client = _LIVE_CLIENTS.pop(server_id, None)
-    if client is None:
-        return
+    if client is not None:
+        try:
+            client.stop()
+        except Exception as exc:
+            logger.warning("mcp_runtime: stop_server(%r) raised: %s", server_id, exc)
     try:
-        client.stop()
-    except Exception as exc:
-        logger.warning("mcp_runtime: stop_server(%r) raised: %s", server_id, exc)
+        from app.application.tool_registry import runtime as tool_registry
+
+        prefix = f"{server_id}__"
+        for tool in tool_registry.list_tools_with_schemas(
+            source="mcp",
+            enabled_only=False,
+        ):
+            name = str(tool.get("name") or "")
+            if name.startswith(prefix) and bool(tool.get("enabled", False)):
+                tool_registry.update_tool(name, {"enabled": False})
+    except Exception:
+        logger.warning(
+            "mcp_runtime: failed to mark tools inactive for %r",
+            server_id,
+            exc_info=True,
+        )
 
 
 def restart_server(server_id: str) -> dict[str, Any]:
@@ -387,9 +403,11 @@ def _find_spec_locked(server_id: str) -> dict[str, Any] | None:
 
 
 def start_all_enabled() -> dict[str, Any]:
-    """Convenience: start every enabled server. Used on agent startup
-    so the first chat turn has the tool list ready. Failures are
-    captured per-server, never abort the loop."""
+    """Explicit batch operation for maintenance; never called at app startup.
+
+    Normal agent runs select one server through ``runtime_control(mcp_start)``.
+    Failures are captured per server and never abort the batch.
+    """
     results: dict[str, Any] = {}
     for spec in list_servers():
         if not spec.get("enabled", True):

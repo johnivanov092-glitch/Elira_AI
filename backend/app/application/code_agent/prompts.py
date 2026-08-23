@@ -183,8 +183,9 @@ def _shell_guidance(platform: str | None = None) -> str:
     )
 
 
-# Compatibility ordering for the prompt. Runtime schemas expose every available
-# provider tool; this tuple is not an allowlist or permission boundary.
+# Compatibility ordering for the compact core prompt. Integration schemas are
+# activated per run through runtime_control; this tuple is not an authorization
+# boundary.
 _CODE_AGENT_BASE_TOOLS = tool_policy.BASE_TOOLS
 
 _CODE_AGENT_READONLY_TOOLS = tool_policy.READONLY_TOOLS
@@ -205,7 +206,14 @@ TOOL_PROMPT_LINES: dict[str, str] = {
     "remember":      "- remember(fact, correction=False) — сохранить долгоживущий факт/поправку пользователя как источник правды (correction=True — если ты ошибся и тебя поправили)",
     "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
     "delegate_task": "- delegate_task(role, task) — запустить дочернего агента с тем же workflow permission mode",
-    "runtime_control": "- runtime_control(operation, ...) — управлять vault, MCP/LSP, Telegram и IT Ops через workflow; секреты только как secret_ref",
+    "runtime_control": (
+        "- runtime_control(operation, ...) — скрытый control plane интеграций. "
+        "MCP: сначала mcp_list, затем mcp_start(server_id) — только после этого "
+        "инструменты выбранного MCP появятся на следующем ходе. LSP: lsp_list → "
+        "lsp_start. SSH-инструменты раскрываются после ssh_hosts, IT Ops — после "
+        "itops_assets. Telegram и остальные runtime управляются здесь же; секреты "
+        "только как secret_ref"
+    ),
     "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",
     "web_fetch":     "- web_fetch(url) — прочитать полный текст веб-страницы (после web_search)",
     "http_api":      "- http_api(url, method='GET', headers?, body?, timeout=15) — исходящий HTTP-запрос к API (GET/POST/PUT/DELETE), по явному запросу пользователя",

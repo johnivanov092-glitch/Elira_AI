@@ -148,6 +148,7 @@ export type CodeAgentStreamEvent =
       arguments: Record<string, unknown>;
     }
   | ({ type: "tool_call" } & CodeAgentToolCall)
+  | { type: "context_prepared"; step: number; context: ContextUsage }
   | { type: "context_compacted"; step: number; context?: ContextUsage; rolling_summary?: string | null }
   | {
       type: "usage";

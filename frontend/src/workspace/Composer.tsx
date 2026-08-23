@@ -649,12 +649,13 @@ function PermissionModeChip({
  *  Hover reveals the full usage breakdown via the native title tooltip. */
 function ContextGauge({ usage, tone }: { usage: ContextUsage; tone: string }) {
   const pct = Math.max(0, Math.min(100, usage.percent));
+  const toolTokens = Math.max(0, Number(usage.breakdown?.tools || 0));
   const r = 7;
   const c = 2 * Math.PI * r;
   return (
     <span
       className={cn("flex h-7 w-7 shrink-0 items-center justify-center", tone)}
-      title={`Контекст: ${Math.round(pct)}% · ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} токенов · свободно ${usage.free_tokens.toLocaleString()}`}
+      title={`Контекст: ${Math.round(pct)}% · ${usage.current_tokens.toLocaleString()} / ${usage.ctx_size.toLocaleString()} токенов · инструменты ${toolTokens.toLocaleString()} · свободно ${usage.free_tokens.toLocaleString()}`}
       aria-label={`Контекст заполнен на ${Math.round(pct)}%`}
     >
       <svg width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">

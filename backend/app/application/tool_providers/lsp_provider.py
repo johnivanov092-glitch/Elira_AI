@@ -12,10 +12,10 @@ Its three schemas are static; the right server is chosen at dispatch time
 from the ``language`` argument (falling back to the single live server).
 This mirrors `ssh_provider.py`, which also has a fixed static schema set.
 
-Disabled-by-default: with no configured/running server, `is_enabled()` is
-False and `get_schemas()` returns ``[]`` — the agent never sees the tools
-and pays nothing. Servers come up only via the explicit ``/lsp/start``
-route (see `code_agent_routes.py`), never from `main.py`.
+Disabled-by-default for agent runs: the runtime registry passes an empty
+activation set, so the agent never sees these schemas until an explicit
+``runtime_control(lsp_start)`` succeeds. The unfiltered inventory/API view keeps
+the static provider available for compatibility.
 
 Never-raises invariant (ported from `mcp_provider.py`): `dispatch` catches
 ``LspError`` and every other ``Exception``, returning ``{"text": "ERROR:
@@ -29,6 +29,7 @@ column); the schemas say so explicitly because the LLM tends to assume
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -244,8 +245,18 @@ class LspToolProvider:
 
     name = "lsp"
 
+    def __init__(self, server_ids: Collection[str] | None = None) -> None:
+        self._server_ids = None if server_ids is None else frozenset(
+            str(server_id).strip()
+            for server_id in server_ids
+            if str(server_id).strip()
+        )
+
     def is_enabled(self) -> bool:
-        return True
+        if self._server_ids is None:
+            return True
+        clients = live_clients()
+        return any(server_id in clients for server_id in self._server_ids)
 
     def get_schemas(self) -> list[dict[str, Any]]:
         return _schemas()
@@ -263,8 +274,14 @@ class LspToolProvider:
         if there's only one → error listing what's available.
         """
         clients = live_clients()
+        if self._server_ids is not None:
+            clients = {
+                server_id: client
+                for server_id, client in clients.items()
+                if server_id in self._server_ids
+            }
         if not clients:
-            return None, None, "no running LSP server (start one via /lsp/start)"
+            return None, None, "no selected running LSP server (use runtime_control lsp_list → lsp_start)"
 
         if isinstance(language, str) and language.strip():
             wanted = language.strip().lower()
@@ -417,6 +434,8 @@ class LspToolProvider:
         }
 
 
-def build_lsp_providers() -> list[LspToolProvider]:
-    """Expose LSP tools permanently; runtime_control owns server lifecycle."""
-    return [LspToolProvider()]
+def build_lsp_providers(
+    server_ids: Collection[str] | None = None,
+) -> list[LspToolProvider]:
+    """Build the LSP provider for an inventory view or an agent activation set."""
+    return [LspToolProvider(server_ids)]

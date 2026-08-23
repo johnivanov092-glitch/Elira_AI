@@ -61,6 +61,7 @@ from app.application.agent_kernel.executor import (
 )
 from app.application.monitoring.inference import extract_llm_usage, record_inference_telemetry
 from app.infrastructure.llm.openai_compatible import (
+    LLMStreamCancelHandle,
     chat_completion_event_stream,
     is_local_llm_model,
     local_llm_config,
@@ -234,12 +235,28 @@ def _effective_temperature(profile_name: str, role: str | None) -> float:
     return _temperature_for_role(role)
 
 
+def _is_simple_greeting(
+    user_message: str,
+    conversation_history: list[dict[str, Any]] | None,
+) -> bool:
+    """True only for a new-chat greeting that cannot require a tool."""
+    if conversation_history:
+        return False
+    normalized = " ".join(str(user_message or "").strip().split()).casefold()
+    return bool(re.fullmatch(
+        r"(?:привет|здравствуй|здравствуйте|добрый день|добрый вечер|"
+        r"привет,? ты тут|ты тут|hi|hello|hey|are you there)[!?. ]*",
+        normalized,
+    ))
+
+
 def _chat_events(
     *,
     chat_fn: Callable[..., dict[str, Any]],
     chat_stream_fn: Callable[..., Any] | None,
     kwargs: dict[str, Any],
     cancel_event: "threading.Event | None" = None,
+    cancel_handle: LLMStreamCancelHandle | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Run a blocking provider call without leaving the SSE stream silent.
 
@@ -249,16 +266,21 @@ def _chat_events(
     it generate the full answer into a queue nobody reads.
     """
     events: queue.Queue[tuple[str, Any]] = queue.Queue()
+    upstream_handle = cancel_handle or LLMStreamCancelHandle()
+    worker_kwargs = dict(kwargs)
+    worker_options = dict(worker_kwargs.get("options") or {})
+    worker_options["_stream_cancel_handle"] = upstream_handle
+    worker_kwargs["options"] = worker_options
 
     def worker() -> None:
         stream = None
         try:
             if chat_stream_fn is None:
-                events.put(("response", chat_fn(**kwargs)))
+                events.put(("response", chat_fn(**worker_kwargs)))
                 return
             final_response: dict[str, Any] | None = None
             collected: list[str] = []
-            stream = chat_stream_fn(**kwargs)
+            stream = chat_stream_fn(**worker_kwargs)
             for item in stream:
                 if cancel_event is not None and cancel_event.is_set():
                     break
@@ -305,28 +327,33 @@ def _chat_events(
     threading.Thread(target=worker, name="elira-code-agent-llm", daemon=True).start()
     done = False
     next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
-    while not done:
-        try:
-            timeout = max(
-                0.001,
-                min(_LLM_CANCEL_POLL_SECONDS, next_heartbeat - time.monotonic()),
-            )
-            kind, value = events.get(timeout=timeout)
-        except queue.Empty:
-            if cancel_event is not None and cancel_event.is_set():
-                # Stop pumping the SSE stream immediately; the worker will
-                # observe the same flag and close the upstream connection.
-                return
-            if time.monotonic() >= next_heartbeat:
-                next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
-                yield {"type": "heartbeat"}
-            continue
-        if kind == "done":
-            done = True
-        elif kind == "error":
-            raise value
-        else:
-            yield {"type": kind, "value": value}
+    try:
+        while not done:
+            try:
+                timeout = max(
+                    0.001,
+                    min(_LLM_CANCEL_POLL_SECONDS, next_heartbeat - time.monotonic()),
+                )
+                kind, value = events.get(timeout=timeout)
+            except queue.Empty:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                if time.monotonic() >= next_heartbeat:
+                    next_heartbeat = time.monotonic() + _LLM_HEARTBEAT_EVERY
+                    yield {"type": "heartbeat"}
+                continue
+            if kind == "done":
+                done = True
+            elif kind == "error":
+                raise value
+            else:
+                yield {"type": kind, "value": value}
+    finally:
+        # The run owns the shared handle across planning, compaction and normal
+        # generation. Only cancellation makes it permanently closed; normal
+        # completion merely releases the provider response for the next call.
+        if cancel_event is not None and cancel_event.is_set():
+            upstream_handle.close()
 
 
 def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
@@ -345,6 +372,7 @@ def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
 # Global registry of active cancel events so an external HTTP route can flip
 # the flag mid-stream. Keys are run_ids handed back to the client.
 _CANCEL_REGISTRY: dict[str, threading.Event] = {}
+_UPSTREAM_HANDLE_REGISTRY: dict[int, LLMStreamCancelHandle] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 def _server_url_alive(url: str) -> bool:
@@ -473,6 +501,20 @@ def request_cancel(run_id: str) -> bool:
     process is what makes Stop abort a hung command immediately instead of
     waiting out the shell timeout.
     """
+    # Cancel inference first. Shell/server cleanup can involve OS process-tree
+    # work and must not delay closing a hot llama.cpp connection.
+    with _REGISTRY_LOCK:
+        ev = _CANCEL_REGISTRY.get(run_id)
+        upstream_handle = (
+            _UPSTREAM_HANDLE_REGISTRY.get(id(ev)) if ev is not None else None
+        )
+    if ev is not None:
+        ev.set()
+    if upstream_handle is not None:
+        # Do not acknowledge /cancel until the provider's HTTP response is
+        # closed. The UI may safely abort its SSE reader after this returns.
+        upstream_handle.close()
+
     # Kill live shell processes regardless of whether the event is registered,
     # so Stop works even on a run whose event was already cleaned up.
     try:
@@ -484,24 +526,33 @@ def request_cancel(run_id: str) -> bool:
         _stop_run_servers(run_id)
     except Exception:
         logger.warning("stop_run_servers failed for run %s", run_id, exc_info=True)
-    with _REGISTRY_LOCK:
-        ev = _CANCEL_REGISTRY.get(run_id)
-    if ev is None:
-        return False
-    ev.set()
-    return True
+    return ev is not None
 
 
 def _register_run(run_id: str) -> threading.Event:
     ev = threading.Event()
     with _REGISTRY_LOCK:
         _CANCEL_REGISTRY[run_id] = ev
+        _UPSTREAM_HANDLE_REGISTRY[id(ev)] = LLMStreamCancelHandle()
     return ev
+
+
+def _cancel_handle_for(cancel_event: threading.Event) -> LLMStreamCancelHandle:
+    with _REGISTRY_LOCK:
+        handle = _UPSTREAM_HANDLE_REGISTRY.get(id(cancel_event))
+    if handle is None:
+        raise RuntimeError("run cancellation handle is not registered")
+    return handle
 
 
 def _unregister_run(run_id: str) -> None:
     with _REGISTRY_LOCK:
-        _CANCEL_REGISTRY.pop(run_id, None)
+        ev = _CANCEL_REGISTRY.pop(run_id, None)
+        upstream_handle = (
+            _UPSTREAM_HANDLE_REGISTRY.pop(id(ev), None) if ev is not None else None
+        )
+    if upstream_handle is not None:
+        upstream_handle.close()
 
 
 # Text/format, Workflow-request, context-window, RAG and telemetry helpers
@@ -556,6 +607,26 @@ def _load_planning_state(run_id: str) -> "tuple[PlanArtifact | None, bool]":
     stored = state.get("plan")
     plan = plan_artifact_from_dict(stored) if isinstance(stored, dict) else None
     return plan, bool(state.get("planning_attempted"))
+
+
+def _load_runtime_activation_state(
+    run_id: str,
+) -> tuple[set[str], set[str], bool, bool]:
+    """Restore integration visibility for another slice of the same run."""
+    try:
+        from app.application.code_agent.run_journal import RunJournal
+
+        stored = RunJournal.load(run_id).state.get("runtime_activation") or {}
+    except Exception:
+        stored = {}
+    if not isinstance(stored, dict):
+        stored = {}
+    return (
+        {str(value) for value in stored.get("mcp_server_ids") or [] if str(value)},
+        {str(value) for value in stored.get("lsp_server_ids") or [] if str(value)},
+        bool(stored.get("ssh")),
+        bool(stored.get("itops")),
+    )
 
 
 def _bounded_planning_recon(registry, *, char_cap: int) -> str:
@@ -621,6 +692,7 @@ def _stream_code_agent_core(
         dict(workflow_approval) if isinstance(workflow_approval, dict) else {}
     )
     cancel_event = _register_run(rid)
+    upstream_cancel_handle = _cancel_handle_for(cancel_event)
     # Delivery: a session-level Stop may land while NO slice is registered
     # (between slices / during continuation build), where request_cancel finds
     # no live run. Make it visible to THIS slice the moment it registers — the
@@ -669,25 +741,45 @@ def _stream_code_agent_core(
             return
         safe_num_ctx = int(context_profile["ctx_size"])
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
-        # Aggregate every tool source into one registry. The agent
-        # loop only talks to the registry from here on.
-        #   - BuiltinToolProvider is always on.
-        #   - SshToolProvider accepts arbitrary explicit targets; saved hosts
-        #     are discovery shortcuts only.
-        #   - build_mcp_providers() returns one provider per RUNNING
-        #     MCP server; servers that aren't started are skipped
-        #     entirely (the user manages them through the MCP API
-        #     routes / dialog).
+        simple_greeting = _is_simple_greeting(user_message, conversation_history)
+        # Hidden integrations are activated per run through runtime_control.
+        # A greeting must not serialize every globally running MCP schema.
+        (
+            active_mcp_server_ids,
+            active_lsp_server_ids,
+            ssh_tools_active,
+            itops_tools_active,
+        ) = _load_runtime_activation_state(rid)
+
+        def rebuild_registry() -> ToolRegistry:
+            return build_runtime_tool_registry(
+                root,
+                include_builtin=not simple_greeting,
+                mcp_server_ids=() if simple_greeting else active_mcp_server_ids,
+                lsp_server_ids=() if simple_greeting else active_lsp_server_ids,
+                include_ssh=not simple_greeting and ssh_tools_active,
+                include_itops=not simple_greeting and itops_tools_active,
+            )
+
+        # Aggregate the compact core into one registry. The agent loop only
+        # talks to the registry from here on.
+        #   - BuiltinToolProvider is on for tasks, but omitted for the narrow
+        #     new-chat greeting fast path.
+        #   - SSH/IT Ops schemas appear after their runtime_control discovery
+        #     request in this run.
+        #   - MCP/LSP schemas appear only for servers explicitly started by this
+        #     run; other globally running integrations remain hidden.
         # The HTTP app seeds these at startup, but the runtime is also called
         # directly by tests and CLI integrations. Reuse the same idempotent
         # seeder so ToolExecutor never sees an unregistered built-in spec.
         from app.application.tool_registry.runtime import seed_builtin_tools
 
-        seed_builtin_tools()
-        registry = build_runtime_tool_registry(root)
+        if not simple_greeting:
+            seed_builtin_tools()
+        registry = rebuild_registry()
         all_schemas = registry.collect_schemas()
-        # Every provider tool is visible from the first step. There is no
-        # activation/deferred-tools layer; Workflow permission is the only policy.
+        # Every core tool is visible from the first step. Integration schemas
+        # are added only after an explicit runtime_control activation in this run.
         initial_tools = tuple(dict.fromkeys(
             name for schema in all_schemas
             if (name := _schema_tool_name(schema))
@@ -697,10 +789,26 @@ def _stream_code_agent_core(
         if chat_fn is None and stream_chat is None:
             stream_chat = _local_chat_stream
 
-        system_prompt = _build_system_prompt(
-            root, working_dir=working_dir, active_tools=initial_tools, model_name=model,
-            profile_name=profile_name, task_text=user_message,
-        )
+        if simple_greeting:
+            try:
+                from app.application.persona.service import build_persona_prompt
+
+                system_prompt = build_persona_prompt(profile_name, model).strip()
+            except Exception:
+                system_prompt = "Ты — Elira, локальный AI-ассистент пользователя."
+            system_prompt += (
+                "\nЭто обычное приветствие в новом чате. Ответь естественно и кратко; "
+                "инструменты не требуются."
+            )
+        else:
+            system_prompt = _build_system_prompt(
+                root,
+                working_dir=working_dir,
+                active_tools=initial_tools,
+                model_name=model,
+                profile_name=profile_name,
+                task_text=user_message,
+            )
         _creative_context = [str(user_message or "")]
         for _turn in list(conversation_history or [])[-8:]:
             if isinstance(_turn, dict) and isinstance(_turn.get("content"), str):
@@ -871,6 +979,7 @@ def _stream_code_agent_core(
                     chat_stream_fn=stream_chat,
                     kwargs=_planner_kwargs,
                     cancel_event=cancel_event,
+                    cancel_handle=upstream_cancel_handle,
                 ):
                     if cancel_event.is_set():
                         break
@@ -983,6 +1092,13 @@ def _stream_code_agent_core(
                 )
                 refresh_task_state = False
 
+            # Context accounting must include the exact JSON schemas sent this
+            # step. Previously the UI could report ~11% while MCP schemas filled
+            # almost the complete 128K server window.
+            step_schemas = list(all_schemas)
+            if not simple_greeting:
+                step_schemas.append(_ASK_USER_SCHEMA)
+                step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
                     messages,
@@ -990,9 +1106,27 @@ def _stream_code_agent_core(
                     model=model,
                     chat_fn=chat,
                     context_profile=context_profile,
+                    tool_schemas=step_schemas,
+                    cancel_handle=upstream_cancel_handle,
                     audit_sink=compaction_audit_sink,
                 )
             except ContextBudgetError as exc:
+                if cancel_event.is_set():
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step - 1,
+                        "stop_reason": "cancelled",
+                        "error": "Cancelled by user",
+                        **_completion_fields(criteria, terminated_incomplete=True),
+                    }
+                    return
+                if exc.usage is not None:
+                    yield {
+                        "type": "context_prepared",
+                        "step": step,
+                        "context": exc.usage,
+                    }
                 yield {"type": "final_response", "step": step, "text": str(exc)}
                 yield {
                     "type": "done",
@@ -1000,6 +1134,16 @@ def _stream_code_agent_core(
                     "steps": step - 1,
                     "stop_reason": "context_limit",
                     "error": str(exc),
+                    **_completion_fields(criteria, terminated_incomplete=True),
+                }
+                return
+            if cancel_event.is_set():
+                yield {
+                    "type": "done",
+                    "ok": False,
+                    "steps": step - 1,
+                    "stop_reason": "cancelled",
+                    "error": "Cancelled by user",
                     **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
@@ -1017,18 +1161,25 @@ def _stream_code_agent_core(
                     "context": context_usage,
                     "rolling_summary": rolling_summary or None,
                 }
+            yield {
+                "type": "context_prepared",
+                "step": step,
+                "context": context_usage,
+            }
 
-            # Every available tool is visible in every permission mode.
-            step_schemas = list(all_schemas)
-            step_schemas.append(_ASK_USER_SCHEMA)
-            step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
+            # Every activated tool is visible in every permission mode.
             # Inline recovery must use exactly what the model was offered this
             # step. ask_user is loop-owned and is not a provider registry entry.
             _visible_tool_names = {
                 name for schema in step_schemas
                 if (name := _schema_tool_name(schema))
             }
-            llm_prompt_chars = _messages_char_count(messages)
+            schema_chars = (
+                len(json.dumps(step_schemas, ensure_ascii=False, separators=(",", ":")))
+                if step_schemas
+                else 0
+            )
+            llm_prompt_chars = _messages_char_count(messages) + schema_chars
             llm_start = time.monotonic()
             try:
                 response: dict[str, Any] = {}
@@ -1064,6 +1215,7 @@ def _stream_code_agent_core(
                     chat_stream_fn=stream_chat,
                     kwargs=llm_kwargs,
                     cancel_event=cancel_event,
+                    cancel_handle=upstream_cancel_handle,
                 ):
                     if cancel_event.is_set():
                         break
@@ -1098,6 +1250,16 @@ def _stream_code_agent_core(
                 if not suppress_deltas and not _contains_tool_trace(response_content) and pending_delta:
                     yield {"type": "delta", "step": step, "text": pending_delta}
             except Exception as exc:
+                if cancel_event.is_set():
+                    yield {
+                        "type": "done",
+                        "ok": False,
+                        "steps": step,
+                        "stop_reason": "cancelled",
+                        "error": "Cancelled by user",
+                        **_completion_fields(criteria, terminated_incomplete=True),
+                    }
+                    return
                 llm_duration_ms = int((time.monotonic() - llm_start) * 1000)
                 record_inference_telemetry(
                     agent_id=effective_agent_id,
@@ -1697,6 +1859,7 @@ def _stream_code_agent_core(
                             error="workflow_request_declined",
                         )
                 tool_meta = _exec_result.output
+                _runtime_activation_snapshot: dict[str, Any] | None = None
                 _runtime_request_status = str(
                     tool_meta.get("status") or ""
                 ).strip()
@@ -1833,12 +1996,43 @@ def _stream_code_agent_core(
                     and _exec_result.status == "ok"
                     and bool(tool_meta.get("ok", True))
                 ):
-                    # MCP schemas are discovered only after a server starts. Rebuild
-                    # the same canonical registry after any successful runtime
-                    # lifecycle operation so the next model turn immediately sees
-                    # newly available MCP/LSP tools without restarting the run.
-                    registry = build_runtime_tool_registry(root)
+                    # Reveal only the provider explicitly selected in THIS run.
+                    # Other configured/running integrations remain behind the
+                    # compact runtime_control surface and add zero prompt tokens.
+                    _runtime_operation = str(
+                        parsed_args.get("operation") or ""
+                    ).strip().lower()
+                    _runtime_config = parsed_args.get("config")
+                    _runtime_server_id = str(
+                        tool_meta.get("server_id")
+                        or parsed_args.get("server_id")
+                        or (
+                            _runtime_config.get("id")
+                            if isinstance(_runtime_config, dict)
+                            else ""
+                        )
+                        or ""
+                    ).strip()
+                    if _runtime_operation in {"mcp_start", "mcp_restart"} and _runtime_server_id:
+                        active_mcp_server_ids.add(_runtime_server_id)
+                    elif _runtime_operation in {"mcp_stop", "mcp_remove"}:
+                        active_mcp_server_ids.discard(_runtime_server_id)
+                    elif _runtime_operation in {"lsp_start", "lsp_restart"} and _runtime_server_id:
+                        active_lsp_server_ids.add(_runtime_server_id)
+                    elif _runtime_operation in {"lsp_stop", "lsp_remove"}:
+                        active_lsp_server_ids.discard(_runtime_server_id)
+                    elif _runtime_operation in {"ssh_hosts", "ssh_set_hosts"}:
+                        ssh_tools_active = True
+                    elif _runtime_operation.startswith("itops_"):
+                        itops_tools_active = True
+                    registry = rebuild_registry()
                     all_schemas = registry.collect_schemas()
+                    _runtime_activation_snapshot = {
+                        "mcp_server_ids": sorted(active_mcp_server_ids),
+                        "lsp_server_ids": sorted(active_lsp_server_ids),
+                        "ssh": ssh_tools_active,
+                        "itops": itops_tools_active,
+                    }
                 if name == "run_server":
                     _rs_act = str(parsed_args.get("action") or "start").lower()
                     if tool_meta.get("actual_url"):
@@ -1876,6 +2070,8 @@ def _stream_code_agent_core(
                     # auto-continuation counts MUTATIONS, not reads.
                     "state_changed": _state_changed,
                 }
+                if _runtime_activation_snapshot is not None:
+                    event["runtime_activation"] = _runtime_activation_snapshot
                 task_state_verification = ""
                 if (
                     name == "run_bash"

@@ -1,10 +1,8 @@
-"""MCP servers must auto-start (start_all_enabled was defined but never wired).
+"""The explicit batch-start helper remains available but is not a boot hook.
 
-Without a caller, every MCP server stayed STOPPED after a restart until the user
-clicked start by hand — so their tools never reached the agent ("MCP не включены
-после перезапуска"). main.py now calls start_all_enabled() in a boot daemon
-thread. This locks down the function it relies on: starts enabled servers, skips
-disabled ones.
+FastAPI intentionally leaves MCP stopped. A model/user selects a server through
+runtime_control. These tests cover only the manually invoked helper: it starts
+enabled servers, skips disabled ones, and isolates per-server failures.
 """
 from __future__ import annotations
 

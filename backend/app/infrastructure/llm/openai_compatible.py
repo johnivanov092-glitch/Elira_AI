@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Generator
@@ -22,6 +23,72 @@ class OpenAICompatibleConfig:
     timeout_seconds: float
     max_tokens: int | None
     context_window: int | None
+
+
+class LLMStreamCancelHandle:
+    """Thread-safe ownership of one streaming provider response.
+
+    Agent cancellation happens on a different thread while the provider may be
+    blocked before its first SSE line. Closing the bound Response interrupts the
+    socket read; closing before bind makes a later response close immediately.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._response: requests.Response | None = None
+        self._closed = False
+
+    def bind(self, response: requests.Response) -> None:
+        close_now = False
+        with self._lock:
+            if self._closed:
+                close_now = True
+            else:
+                self._response = response
+        if close_now:
+            response.close()
+
+    def release(self, response: requests.Response) -> None:
+        with self._lock:
+            if self._response is response:
+                self._response = None
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            response = self._response
+            self._response = None
+        if response is not None:
+            response.close()
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+
+def _stream_cancel_handle(options: dict[str, Any]) -> LLMStreamCancelHandle | None:
+    handle = options.get("_stream_cancel_handle")
+    return handle if isinstance(handle, LLMStreamCancelHandle) else None
+
+
+def _bind_cancelable_response(
+    response: requests.Response,
+    cancel_handle: LLMStreamCancelHandle | None,
+) -> None:
+    if cancel_handle is not None:
+        cancel_handle.bind(response)
+
+
+def _close_cancelable_response(
+    response: requests.Response | None,
+    cancel_handle: LLMStreamCancelHandle | None,
+) -> None:
+    if response is None:
+        return
+    response.close()
+    if cancel_handle is not None:
+        cancel_handle.release(response)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -450,6 +517,29 @@ def chat_completion(
     if not cfg.enabled:
         raise RuntimeError("local llama-server provider is disabled")
 
+    opts = options or {}
+    cancel_handle = _stream_cancel_handle(opts)
+    if cancel_handle is not None:
+        # A cancellable synchronous caller (notably context compaction) still
+        # uses server-side SSE. Client-side ``requests(..., stream=True)`` alone
+        # would leave payload.stream=false and llama.cpp could withhold the
+        # Response until generation ended, making Stop ineffective.
+        final_response: dict[str, Any] | None = None
+        for event in chat_completion_event_stream(
+            model=model,
+            messages=messages,
+            tools=tools,
+            options=opts,
+            timeout=timeout,
+        ):
+            if event.get("type") == "message" and isinstance(event.get("response"), dict):
+                final_response = dict(event["response"])
+        if final_response is not None:
+            return final_response
+        if cancel_handle.is_closed:
+            raise RuntimeError("OpenAI-compatible request cancelled")
+        raise RuntimeError("OpenAI-compatible stream ended without a response")
+
     normalized_messages = _normalize_messages_for_request(messages)
     payload: dict[str, Any] = {
         "model": model or cfg.model,
@@ -458,7 +548,6 @@ def chat_completion(
     }
     if tools:
         payload["tools"] = tools
-    opts = options or {}
     _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
     if "temperature" in opts:
         payload["temperature"] = opts["temperature"]
@@ -541,6 +630,7 @@ def chat_completion_stream(
     )
 
     response: requests.Response | None = None
+    cancel_handle = _stream_cancel_handle(opts)
     try:
         response = requests.post(
             f"{cfg.base_url}/chat/completions",
@@ -549,6 +639,7 @@ def chat_completion_stream(
             timeout=_chat_http_timeout(timeout, cfg.timeout_seconds),
             stream=True,
         )
+        _bind_cancelable_response(response, cancel_handle)
         response.raise_for_status()
         for raw_line in response.iter_lines(decode_unicode=False):
             if not raw_line:
@@ -573,8 +664,7 @@ def chat_completion_stream(
     except requests.RequestException as exc:
         raise RuntimeError(f"OpenAI-compatible stream failed: {exc}") from exc
     finally:
-        if response is not None:
-            response.close()
+        _close_cancelable_response(response, cancel_handle)
 
 
 def chat_completion_event_stream(
@@ -613,6 +703,7 @@ def chat_completion_event_stream(
     )
 
     response: requests.Response | None = None
+    cancel_handle = _stream_cancel_handle(opts)
     started = time.monotonic_ns()
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -626,6 +717,7 @@ def chat_completion_event_stream(
             timeout=_chat_http_timeout(timeout, cfg.timeout_seconds),
             stream=True,
         )
+        _bind_cancelable_response(response, cancel_handle)
         response.raise_for_status()
         for raw_line in response.iter_lines(decode_unicode=False):
             if not raw_line:
@@ -682,8 +774,7 @@ def chat_completion_event_stream(
     except requests.RequestException as exc:
         raise RuntimeError(f"OpenAI-compatible stream failed: {exc}") from exc
     finally:
-        if response is not None:
-            response.close()
+        _close_cancelable_response(response, cancel_handle)
 
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
