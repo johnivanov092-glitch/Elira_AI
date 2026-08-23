@@ -25,7 +25,7 @@ embeddings use `ghcr.io/ggml-org/llama.cpp:server` (CPU), OCR uses PaddleOCR (CP
 
 | Service | Container | Endpoint | OpenAI model | Backing model (current, swappable) | Compute |
 |---------|-----------|----------|--------------|------------------------------------|---------|
-| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model` | Qwen3.6-35B-A3B (Q5_K_M), 64K ctx | GPU (ROCm) |
+| Chat / completions | `elira-llama-server` | `http://192.168.88.15:8000/v1` | `local-model` | Qwen3.8 (swappable), 131K ctx | GPU (ROCm) |
 | Vision (multimodal) | `elira-llama-vision` | `http://192.168.88.15:8004/v1` | `vision-model` | MiniCPM-V 4.6 (Q5_K_M) + mmproj-f16 | GPU (ROCm) |
 | Embeddings (RAG) | `elira-llama-embed` | `http://192.168.88.15:8001/v1` | `local-embed` | Qwen3-Embedding-0.6B GGUF, dim 1024 | CPU |
 | OCR | `elira-ocr` | `http://192.168.88.15:8002/ocr` | — | PaddleOCR | CPU |
@@ -46,7 +46,7 @@ LLAMA_SERVER_BASE_URL=http://192.168.88.15:8000/v1
 LLAMA_SERVER_MODEL=local-model
 LLAMA_SERVER_API_KEY=local
 LLAMA_SERVER_TIMEOUT_SECONDS=600
-LLAMA_SERVER_CONTEXT_WINDOW=65536
+LLAMA_SERVER_CONTEXT_WINDOW=131072
 
 LOCAL_EMBED_ENABLED=true
 LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
@@ -54,6 +54,11 @@ LOCAL_EMBED_MODEL=local-embed
 LOCAL_EMBED_API_KEY=local
 LOCAL_EMBED_TIMEOUT_SECONDS=30
 ```
+
+For chat, `LLAMA_SERVER_TIMEOUT_SECONDS` is the connection-establishment
+timeout. Once connected, Elira uses no HTTP read/generation deadline; explicit
+Workflow Stop closes the cancellable response. The live server properties remain
+the source of truth for the effective context window after a model swap.
 
 ## Access (SSH)
 

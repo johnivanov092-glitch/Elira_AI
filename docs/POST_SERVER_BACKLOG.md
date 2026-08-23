@@ -1,6 +1,6 @@
 # Post-Server Status
 
-Last cleaned: 2026-06-12.
+Last cleaned: 2026-08-24.
 
 The local inference migration is implemented at the Elira client layer. Elira
 uses OpenAI-compatible LLM and embedding endpoints exposed by the dedicated AI
@@ -29,7 +29,7 @@ LLAMA_SERVER_BASE_URL=http://192.168.88.15:8000/v1
 LLAMA_SERVER_MODEL=local-model
 LLAMA_SERVER_API_KEY=local
 LLAMA_SERVER_TIMEOUT_SECONDS=600
-LLAMA_SERVER_CONTEXT_WINDOW=65536
+LLAMA_SERVER_CONTEXT_WINDOW=131072
 
 LOCAL_EMBED_ENABLED=true
 LOCAL_EMBED_BASE_URL=http://192.168.88.15:8001/v1
@@ -37,6 +37,12 @@ LOCAL_EMBED_MODEL=local-embed
 LOCAL_EMBED_API_KEY=local
 LOCAL_EMBED_TIMEOUT_SECONDS=30
 ```
+
+`LLAMA_SERVER_TIMEOUT_SECONDS=600` задаёт конечный connect timeout. Chat HTTP
+использует `(connect_timeout, None)`, поэтому после установления соединения у
+генерации нет read/deadline timeout; её останавливает явный Workflow Stop либо
+объективная provider/transport error. Эффективный context дополнительно
+сверяется с live server properties и не может превышать доступное окно модели.
 
 Server summary: `docs/SERVER.md`. Live access and smoke tests are documented in
 the sibling repo at `../Elira_AI_Server/Server/ACCESS.md`.
@@ -56,11 +62,14 @@ Keep follow-up work narrow and evidence-based:
    true non-LAN exposure or multi-user mode.
 5. Keep cloud profiles disabled unless explicit user consent is recorded.
 
+The consolidated continuation list lives in `docs/BACKLOG.md` (sections 2–9).
+
 ## Regression Checks
 
 ```powershell
 cd D:\AIWork\Elira_AI
 backend\.venv\Scripts\python.exe -m pytest -q
 npm --prefix frontend run typecheck
+npm --prefix frontend run build
 git diff --check
 ```

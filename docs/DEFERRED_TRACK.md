@@ -1,63 +1,34 @@
-# Deferred Track
+# Deferred Track — итоговый статус
 
-Forward-looking capabilities that are intentionally **not yet implemented**.
-They are useful but not on the critical path. Start each only on real need,
-after its own spec and review. Keep stdio MCP as the default transport.
+Исторический deferred track закрыт. Активное продолжение работ ведётся в
+[`BACKLOG.md`](BACKLOG.md); runtime-инварианты — в
+[`ARCHITECTURE.md`](ARCHITECTURE.md).
 
-The runtime guardrails and quality bar that bound any new work live in
-[`ARCHITECTURE.md`](ARCHITECTURE.md) (→ Runtime Guardrails).
+## D1 — Remote MCP (streamable HTTP) — ✅ реализовано
 
-## D1 — Remote MCP (streamable HTTP) — ✅ done
+`McpHttpClient` поддерживает HTTP transport через тот же MCP runtime/provider
+contract, что и stdio. Конфигурация, lifecycle и secret references управляются
+через `runtime_control`; произвольные LAN/private endpoints разрешены текущим
+Workflow permission contract. URL всё равно обязан иметь корректный `http` или
+`https` scheme и host.
 
-Only when remote MCP servers are actually needed. Requires: SSRF guard; block
-private/metadata endpoints; HTTPS by default; separate secret storage;
-timeouts + bounded retry; health status; disabled by default.
+## D2 — LSP context provider — ✅ реализовано
 
-Implemented as a sibling `McpHttpClient` (`mcp_http_client.py`) with the same
-public API as the stdio `McpClient`; sanitizing helpers shared via
-`mcp_sanitize.py`. The HTTP transport is gated behind `ELIRA_REMOTE_MCP`
-(off by default) — a configured `http` server refuses to start until the
-operator opts in, and stdio remains the default transport, unaffected.
+Реализованы:
 
-## D2 — LSP context provider
+- opt-in конфигурация и lifecycle в `lsp_runtime.py`;
+- read-only `diagnostics`, `definition`, `references` через `lsp_provider.py`;
+- bounded results, provenance и явный shutdown;
+- очистка process tree на Windows;
+- mock LSP server и contract tests;
+- per-run активация через `runtime_control(lsp_list/lsp_start/lsp_stop)`.
 
-Separate stage after the core runtime is stable. Requires: disabled by default;
-read-only tools only (diagnostics, definition, references); result limits +
-provenance; explicit shutdown; child-process cleanup (correct process-tree
-termination on Windows); a mock LSP server in tests.
+## D3 — Structured action envelopes — superseded
 
-## D3 — Full structured action envelopes — ✅ done
+Промежуточный `action_envelopes.py` и `ELIRA_ACTION_ENVELOPES` были удалены при
+упрощении runtime. Production path использует native provider tool calls,
+ограниченное восстановление inline tool JSON и существующую schema validation
+без отдельного обязательного envelope-слоя. Решение зафиксировано в
+[`ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md`](ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md).
 
-Only if telemetry shows local-model action-structuring errors are the main
-limiter. Possible scope: Pydantic schemas for plan/action/tool-request/
-tool-result/final-result/blocker; at most one repair retry; deterministic
-fallback; a fast chat path with no mandatory JSON.
-
-Implemented as a leaf module `action_envelopes.py` (next to
-`inline_tool_calls.py`): Pydantic v2 schemas for all six envelope kinds
-(`extra="forbid"` so a malformed/hallucinated shape fails strict parse), a
-strict `parse_envelope`, an `extract_envelope` that recovers an embedded
-envelope from model prose, and `validate_tool_request` — the hot-path hook
-that checks each recovered tool call (known tool + dict args) before
-dispatch. The whole layer is gated behind `ELIRA_ACTION_ENVELOPES` (off by
-default — same pattern as D1/D2). When off, `envelopes_enabled()` is False
-and the agent-loop hot path is byte-for-byte unchanged: conversational
-turns never pay for JSON validation (this is the "fast chat path"). When
-on, a malformed tool-request triggers exactly one repair retry
-(`REPAIR_INSTRUCTION`), then falls back deterministically to the existing
-inline-recovery behaviour rather than looping.
-
-## Flag plumbing — env-first, UI-toggleable
-
-D1 and D3 share one resolution layer (`app.application.feature_flags`):
-`flag_enabled(name)` reads the matching `ELIRA_*` env var first (an explicit
-non-blank value, truthy *or* falsy, is an operator override that wins), else
-the persisted `data/feature_flags.json` value, else `False`. The Settings →
-**Экспериментальное** tab reads/writes that file via `GET`/`PUT
-/api/elira/feature-flags`, so both flags can be toggled at runtime (no
-restart: D3 re-reads each loop turn, D1 on next server start). An `ELIRA_*`
-env override still wins and is reflected in the reported state.
-
-D2 (LSP) is **not** an env flag — it has its own per-server `enabled` field in
-`lsp_servers.json` and a start endpoint, so it is enabled from Settings →
-Интеграции instead and has no toggle in Экспериментальное.
+В этом документе больше нет активных implementation items.
