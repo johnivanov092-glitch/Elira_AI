@@ -45,10 +45,11 @@ the sibling repo at `../Elira_AI_Server/Server/ACCESS.md`.
 
 Keep follow-up work narrow and evidence-based:
 
-1. Run real code-agent smoke tests against the server model after every model
-   swap.
-2. Record latency, TTFT, failure modes, and max safe context for the active
-   server model.
+1. Run `backend/tests/smokes/routing_eval.py` after every server-model swap; see
+   `docs/AGENT_EVALS.md` for cases and report locations.
+2. Use its per-case latency, TTFT, tool/MCP trace, token usage, and failure data
+   when comparing active models. Measure the maximum safe context separately
+   with a dedicated long-context case before changing limits.
 3. Tune model profile context limits only from measured server behavior.
 4. A bearer-token auth gate now protects non-loopback access (`app/core/auth.py`,
    `ELIRA_API_TOKEN`/`ELIRA_API_AUTH`); add a reverse proxy/TLS only before any

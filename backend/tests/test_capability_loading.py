@@ -176,6 +176,19 @@ def test_every_builtin_schema_is_reachable_from_core_or_one_group() -> None:
     assert schema_names == set(CORE_BUILTIN_TOOLS) | grouped_names
 
 
+def test_memory_tool_schemas_distinguish_project_rag_from_user_memory() -> None:
+    schemas = {
+        schema["function"]["name"]: schema["function"]
+        for schema in build_tool_schemas()
+    }
+
+    recall_description = schemas["recall"]["description"]
+    runtime_description = schemas["runtime_control"]["description"]
+    assert "not long-term user memory" in recall_description
+    assert "memory_search" in runtime_description
+    assert "memory_list" in runtime_description
+
+
 def test_unknown_capability_group_fails_without_changing_visibility() -> None:
     result = tool_capability_load(group="not-a-group")
 

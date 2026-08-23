@@ -52,7 +52,7 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "desktop": "local Windows desktop screenshots, mouse and keyboard control",
     "resources": "attachments, OCR/vision, generated DOCX/XLSX/PDF and downloads",
     "data": "sandboxed code, regex, CSV, conversion, SQLite, encryption and archives",
-    "memory": "semantic recall and durable user facts/corrections",
+    "memory": "project RAG recall and saving durable user facts/corrections",
     "operations": "inference-server facts and webhooks",
 }
 

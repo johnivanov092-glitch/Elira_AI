@@ -59,6 +59,7 @@ _INVENTORY_COMMANDS: tuple[tuple[str, list[str], bool], ...] = (
 )
 _INVENTORY_TOTAL_CAP = 12000    # shared budget across all commands' output (reply AND evidence)
 _INVENTORY_PER_CMD_CAP = 2000
+_NETWORK_OPEN_ENDPOINT_LIMIT = 200
 
 # Windows read-only inventory (adapter #2). Each command is a STATIC PowerShell
 # script run via powershell.exe -EncodedCommand (UTF-16LE Base64) — NOT -Command and
@@ -464,9 +465,18 @@ def tool_itops_network_inventory(
         ok, err = False, "evidence_persist_failed"
     else:
         ok, err = True, None
-    text = (f"Network inventory {cidr} ({result.vantage}): status={result.status}; "
-            f"{len(result.opens)} open / {result.attempted} of {result.planned} attempted; "
-            f"states={result.counts}")
+    visible_opens = [
+        f"{item['host']}:{item['port']}"
+        for item in result.opens[:_NETWORK_OPEN_ENDPOINT_LIMIT]
+    ]
+    open_endpoints = ",".join(visible_opens) or "none"
+    if len(result.opens) > len(visible_opens):
+        open_endpoints += f",...(+{len(result.opens) - len(visible_opens)} more)"
+    text = (
+        f"Network inventory {cidr} ({result.vantage}): status={result.status}; "
+        f"{len(result.opens)} open / {result.attempted} of {result.planned} attempted; "
+        f"states={result.counts}; open_endpoints={open_endpoints}"
+    )
     out: dict[str, Any] = {"ok": ok, "text": text, "cidr": cidr, "status": result.status,
                            "opens": result.opens, "summary_persisted": summary_ok}
     if err:

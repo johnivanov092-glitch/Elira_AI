@@ -17,6 +17,8 @@ been superseded; they stay only for the decisions/history they record.
   constraints (locked baseline - do not regress without sign-off).
 - `POST_SERVER_BACKLOG.md` - current server migration status and remaining
   follow-up work.
+- `AGENT_EVALS.md` - real Workflow-path evals for profile routing, tools, MCP,
+  answers, latency, and token usage.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
 - `agents/` - skill definitions (domain, issue-tracker, triage-labels).
 

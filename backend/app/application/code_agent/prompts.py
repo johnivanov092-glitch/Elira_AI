@@ -214,7 +214,7 @@ TOOL_PROMPT_LINES: dict[str, str] = {
         "и остановкой через Workflow Stop; для одного IP используй /32, а не "
         "последовательный Test-NetConnection через run_bash"
     ),
-    "recall":        "- recall(query) — семантический поиск в RAG-памяти проекта",
+    "recall":        "- recall(query) — только семантический поиск по индексированному проекту и прошлым прогонам; это не долговременная память пользователя",
     "remember":      "- remember(fact, correction=False) — сохранить долгоживущий факт/поправку пользователя как источник правды (correction=True — если ты ошибся и тебя поправили)",
     "todo_update":   "- todo_update(...) — чеклист текущего прогона: планируй шаги и отмечай выполненные",
     "delegate_task": "- delegate_task(role, task) — запустить дочернего агента с тем же workflow permission mode",
@@ -225,7 +225,9 @@ TOOL_PROMPT_LINES: dict[str, str] = {
         "mcp_start(server_id); не запускай все автоматически — только после этого "
         "инструменты выбранного MCP появятся на следующем ходе. LSP: lsp_list → "
         "lsp_start. SSH-инструменты раскрываются после ssh_hosts, IT Ops — после "
-        "itops_assets. Telegram и остальные runtime управляются здесь же; секреты "
+        "itops_assets. Долговременная память пользователя: memory_search, а при "
+        "пустом результате memory_list; не подменяй её проектным recall. Telegram "
+        "и остальные runtime управляются здесь же; секреты "
         "только как secret_ref"
     ),
     "web_search":    "- web_search(query, top_k=5) — поиск в интернете → список URL+snippet",

@@ -4,6 +4,8 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +14,9 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.it_ops import net_inventory as ni  # noqa: E402
+from app.application.tool_providers.itops_provider import (  # noqa: E402
+    tool_itops_network_inventory,
+)
 
 
 class CidrContractTest(unittest.TestCase):
@@ -131,6 +136,39 @@ class ScanSemanticsTest(unittest.TestCase):
         self.assertEqual(result.status, "complete")
         self.assertEqual(result.counts["unreachable"], 1)
         self.assertEqual(result.counts["local_error"], 1)
+
+
+class NetworkInventoryToolContractTest(unittest.TestCase):
+    def test_model_facing_text_names_each_confirmed_open_endpoint(self) -> None:
+        scan_result = SimpleNamespace(
+            opens=[{"host": "127.0.0.1", "port": 8000}],
+            vantage="elira-local",
+            source_ip="127.0.0.1",
+            planned=2,
+            attempted=2,
+            completed=2,
+            counts={
+                "open": 1,
+                "refused": 1,
+                "timeout": 0,
+                "unreachable": 0,
+                "local_error": 0,
+            },
+            stop_reason="complete",
+            status="complete",
+        )
+        with mock.patch.object(ni, "run_scan", return_value=scan_result), \
+             mock.patch("app.infrastructure.it_ops.store.init_db"), \
+             mock.patch("app.infrastructure.it_ops.store.record_evidence"):
+            result = tool_itops_network_inventory(
+                cidr="127.0.0.1/32",
+                ports=[8000, 65534],
+                connect_timeout=0.2,
+                concurrency=2,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("open_endpoints=127.0.0.1:8000", result["text"])
 
 
 if __name__ == "__main__":

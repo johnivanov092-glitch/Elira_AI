@@ -1,0 +1,113 @@
+{
+  "personal_memory": {
+    "task": "Поговори со мной и вспомни через свою долговременную память, какие предпочтения пользователя о стиле ответа уже сохранены. Не придумывай: если ничего нет, так и скажи.",
+    "expected_profile": "Личный",
+    "required_tools": ["runtime_control"],
+    "forbidden_tools": ["recall"],
+    "required_runtime_operations": ["memory_search", "memory_list"],
+    "expected_initial_activation": {
+      "itops": false,
+      "capability_groups": ["memory"]
+    },
+    "required_answer_contains": ["памят"],
+    "max_tool_calls": 4
+  },
+  "balanced_chat": {
+    "task": "Объясни в двух предложениях, почему утром бывает роса.",
+    "expected_profile": "Баланс",
+    "expected_initial_activation": {
+      "itops": false,
+      "capability_groups": []
+    },
+    "required_answer_contains": ["рос"],
+    "forbidden_runtime_operations": ["mcp_list", "mcp_start"],
+    "max_tool_calls": 1
+  },
+  "engineering_project": {
+    "task": "Проверь код проекта: прочитай README.md и назови точное значение маркера EVAL_SENTINEL. Не угадывай содержимое файла.",
+    "expected_profile": "Инженерный",
+    "required_tools": ["read_file"],
+    "expected_initial_activation": {
+      "itops": false,
+      "capability_groups": []
+    },
+    "files": {
+      "README.md": "# Eval fixture\n\nEVAL_SENTINEL=ELIRA_ROUTING_OK\n"
+    },
+    "required_answer_contains": ["ELIRA_ROUTING_OK"],
+    "max_tool_calls": 4
+  },
+  "business_document": {
+    "task": "Составь короткое коммерческое предложение на русском для внедрения локального AI-ассистента и создай готовый скачиваемый DOCX-документ.",
+    "expected_profile": "Деловой",
+    "required_tools": ["file_gen"],
+    "expected_initial_activation": {
+      "itops": false,
+      "capability_groups": ["data", "resources", "web"]
+    },
+    "required_answer_contains": ["DOCX"],
+    "max_tool_calls": 6
+  },
+  "infrastructure_tcp": {
+    "task": "Проверь TCP-порты 8000 и 65534 на локальном адресе 127.0.0.1 и сообщи, какие открыты. Используй безопасную параллельную сетевую инвентаризацию.",
+    "expected_profile": "Инфраструктура",
+    "required_tools": ["itops_network_inventory"],
+    "forbidden_tools": ["run_bash"],
+    "expected_initial_activation": {
+      "itops": true,
+      "capability_groups": []
+    },
+    "required_answer_contains": ["8000", "65534"],
+    "max_tool_calls": 4
+  },
+  "science_web": {
+    "task": "Найди в интернете одну актуальную научную публикацию о квантовой запутанности и дай ссылку на источник.",
+    "expected_profile": "Научный",
+    "required_tools": ["web_search"],
+    "expected_initial_activation": {
+      "itops": false,
+      "capability_groups": ["data", "web"]
+    },
+    "required_answer_contains": ["https://"],
+    "max_tool_calls": 8
+  },
+  "medical_web": {
+    "task": "Найди актуальную официальную рекомендацию ВОЗ о симптомах пневмонии, кратко перескажи её и дай ссылку. Не ставь диагноз.",
+    "expected_profile": "Медицина",
+    "required_tools": ["web_search"],
+    "expected_initial_activation": {
+      "itops": false,
+      "capability_groups": ["resources", "web"]
+    },
+    "required_answer_contains": ["ВОЗ", "https://"],
+    "max_tool_calls": 8
+  },
+  "mcp_context7": {
+    "task": "Используй именно MCP-сервер context7: сначала найди его через список MCP, запусти только context7, через его MCP tool найди актуальную документацию FastAPI о BackgroundTasks, затем обязательно останови context7. Не используй web_search или shell.",
+    "expected_profile": "Инженерный",
+    "required_tools": ["runtime_control"],
+    "required_tool_prefixes": ["context7__"],
+    "forbidden_tools": ["web_search", "run_bash"],
+    "required_runtime_operations": ["mcp_list", "mcp_start", "mcp_stop"],
+    "required_mcp_servers": ["context7"],
+    "expected_initial_activation": {
+      "itops": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "required_answer_contains": ["BackgroundTasks"],
+    "max_tool_calls": 10
+  },
+  "mcp_negative": {
+    "task": "Объясни простыми словами разницу между JSON и YAML. Внешние интеграции не требуются.",
+    "expected_profile": "Баланс",
+    "forbidden_runtime_operations": ["mcp_list", "mcp_start"],
+    "expected_initial_activation": {
+      "itops": false,
+      "mcp_server_ids": [],
+      "capability_groups": []
+    },
+    "required_answer_contains": ["JSON", "YAML"],
+    "max_tool_calls": 1
+  }
+}

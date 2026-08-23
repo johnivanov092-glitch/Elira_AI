@@ -129,7 +129,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "runtime_control",
                 "description": (
-                    "Manage integration runtimes hidden behind Workflow UI: portable vault "
+                    "Manage integration runtimes hidden behind Workflow UI. For long-term "
+                    "user memory, use memory_search first and memory_list when search has no "
+                    "matches; recall is project RAG, not user memory. Also manages: portable vault "
                     "status/backup/restore/lock, MCP and LSP config/lifecycle, Telegram "
                     "config/lifecycle/users, plugins, IT Ops assets/profiles, Workflow "
                     "templates/runs/triggers, memory, and library. Every call returns a "
@@ -452,7 +454,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "recall",
                 "description": (
-                    "Semantic search over the agent's RAG memory. Returns "
+                    "Semantic search over the current project's indexed RAG memory; this is "
+                    "not long-term user memory. Returns "
                     "relevant code chunks (if the project was indexed) and "
                     "summaries of prior agent runs. Use this before grep when "
                     "looking for 'where is X implemented' or 'what did I do "
