@@ -319,6 +319,70 @@ class OpenAICompatibleProviderTest(unittest.TestCase):
         self.assertIn("tools", post.call_args.kwargs["json"])
         self.assertTrue(response.closed)
 
+    def test_event_stream_preserves_server_cache_and_timing_metrics(self) -> None:
+        response = _Response(
+            {},
+            lines=[
+                'data: {"choices":[{"delta":{"content":"OK"}}]}',
+                (
+                    'data: {"choices":[],"usage":{"prompt_tokens":100,'
+                    '"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":80}},'
+                    '"timings":{"cache_n":80,"prompt_n":100,"prompt_ms":50.0,'
+                    '"prompt_per_second":400.0,"predicted_n":20,"predicted_ms":500.0,'
+                    '"predicted_per_second":40.0}}'
+                ),
+                "data: [DONE]",
+            ],
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ):
+            events = list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "metrics"}],
+            ))
+
+        result = events[-1]["response"]
+        self.assertEqual(result["cached_prompt_tokens"], 80)
+        self.assertAlmostEqual(result["prompt_cache_hit_ratio"], 0.8)
+        self.assertEqual(result["prompt_eval_duration"], 50_000_000)
+        self.assertEqual(result["eval_duration"], 500_000_000)
+        self.assertEqual(result["server_prompt_tokens_per_second"], 400.0)
+        self.assertEqual(result["server_tokens_per_second"], 40.0)
+        self.assertGreaterEqual(result["ttft_ms"], 0)
+
+    def test_event_stream_tolerates_malformed_server_usage_metrics(self) -> None:
+        response = _Response(
+            {},
+            lines=[
+                'data: {"choices":[{"delta":{"content":"OK"}}]}',
+                (
+                    'data: {"choices":[],"usage":{"prompt_tokens":100,'
+                    '"completion_tokens":"invalid","prompt_tokens_details":'
+                    '{"cached_tokens":"invalid"}},"timings":{"cache_n":80,'
+                    '"prompt_ms":"invalid","predicted_per_second":"invalid"}}'
+                ),
+                "data: [DONE]",
+            ],
+        )
+        with patch.dict(os.environ, _llama_env(), clear=False), patch(
+            "app.infrastructure.llm.openai_compatible.requests.post",
+            return_value=response,
+        ):
+            events = list(openai_compatible.chat_completion_event_stream(
+                model="local-model",
+                messages=[{"role": "user", "content": "metrics"}],
+            ))
+
+        result = events[-1]["response"]
+        self.assertEqual(result["prompt_eval_count"], 100)
+        self.assertEqual(result["eval_count"], 0)
+        self.assertEqual(result["cached_prompt_tokens"], 80)
+        self.assertAlmostEqual(result["prompt_cache_hit_ratio"], 0.8)
+        self.assertEqual(result["prompt_eval_duration"], 0)
+        self.assertEqual(result["server_tokens_per_second"], 0.0)
+
     def test_thinking_option_adds_chat_template_kwargs_and_surfaces_reasoning(self) -> None:
         """enable_thinking travels as chat_template_kwargs; reasoning streams on
         its own `reasoning` event and is kept out of the answer content."""

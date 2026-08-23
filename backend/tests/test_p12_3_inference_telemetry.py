@@ -14,23 +14,66 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.application.code_agent import agent_loop  # noqa: E402
-from app.application.monitoring.inference import extract_llm_usage  # noqa: E402
+from app.application.monitoring.inference import (  # noqa: E402
+    extract_llm_usage,
+    record_inference_telemetry,
+)
 
 
 class InferenceTelemetryHelperTest(unittest.TestCase):
     def test_extract_llm_usage_from_dict(self) -> None:
         usage = extract_llm_usage({
-            "prompt_eval_count": 3,
-            "eval_count": 7,
+            "prompt_eval_count": 100,
+            "cached_prompt_tokens": 80,
+            "prompt_cache_hit_ratio": 0.8,
+            "eval_count": 20,
             "total_duration": 1_000_000_000,
+            "prompt_eval_duration": 50_000_000,
             "eval_duration": 500_000_000,
+            "server_prompt_tokens_per_second": 400.0,
+            "server_tokens_per_second": 40.0,
+            "ttft_ms": 125,
         })
 
-        self.assertEqual(usage["prompt_tokens"], 3)
-        self.assertEqual(usage["completion_tokens"], 7)
-        self.assertEqual(usage["total_tokens"], 10)
+        self.assertEqual(usage["prompt_tokens"], 100)
+        self.assertEqual(usage["cached_prompt_tokens"], 80)
+        self.assertAlmostEqual(usage["prompt_cache_hit_ratio"], 0.8)
+        self.assertEqual(usage["completion_tokens"], 20)
+        self.assertEqual(usage["total_tokens"], 120)
         self.assertEqual(usage["latency_ms"], 1000)
-        self.assertAlmostEqual(usage["tokens_per_second"], 14.0)
+        self.assertEqual(usage["prompt_duration_ms"], 50)
+        self.assertEqual(usage["completion_duration_ms"], 500)
+        self.assertEqual(usage["prompt_tokens_per_second"], 400.0)
+        self.assertEqual(usage["tokens_per_second"], 40.0)
+        self.assertEqual(usage["ttft_ms"], 125)
+
+    def test_recorded_metric_keeps_cache_throughput_and_model_ttft(self) -> None:
+        with patch("app.application.monitoring.runtime.record_metric") as metric, \
+             patch("app.application.monitoring.runtime.record_resource_usage"):
+            record_inference_telemetry(
+                agent_id="code-agent",
+                run_id="metrics-run",
+                route="code",
+                model="local-model",
+                ok=True,
+                usage={
+                    "prompt_tokens": 100,
+                    "cached_prompt_tokens": 80,
+                    "prompt_cache_hit_ratio": 0.8,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "prompt_tokens_per_second": 400.0,
+                    "tokens_per_second": 40.0,
+                    "ttft_ms": 125,
+                },
+            )
+
+        details = metric.call_args.kwargs["details"]
+        self.assertEqual(details["cached_prompt_tokens"], 80)
+        self.assertEqual(details["prompt_cache_hit_ratio"], 0.8)
+        self.assertEqual(details["prompt_tokens_per_second"], 400.0)
+        self.assertEqual(details["tokens_per_second"], 40.0)
+        self.assertEqual(details["ttft_ms"], 125)
 
 
 class CodeAgentInferenceTelemetryTest(unittest.TestCase):
@@ -88,10 +131,15 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
         def fake_chat(**kwargs):
             return {
                 "message": {"content": "done", "tool_calls": []},
-                "prompt_eval_count": 2,
-                "eval_count": 3,
+                "prompt_eval_count": 10,
+                "cached_prompt_tokens": 8,
+                "prompt_cache_hit_ratio": 0.8,
+                "eval_count": 5,
                 "total_duration": 100_000_000,
                 "eval_duration": 500_000_000,
+                "server_prompt_tokens_per_second": 250.0,
+                "server_tokens_per_second": 50.0,
+                "ttft_ms": 40,
             }
 
         with tempfile.TemporaryDirectory() as tmp, \
@@ -108,10 +156,14 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
         usage_events = [e for e in events if e.get("type") == "usage"]
         self.assertTrue(usage_events, "expected at least one usage event in the stream")
         u = usage_events[0]
-        self.assertEqual(u["prompt_tokens"], 2)
-        self.assertEqual(u["completion_tokens"], 3)
-        self.assertEqual(u["total_tokens"], 5)
-        self.assertGreater(u["tokens_per_second"], 0)  # eval_duration set -> 3/0.5s = 6 tok/s
+        self.assertEqual(u["prompt_tokens"], 10)
+        self.assertEqual(u["cached_prompt_tokens"], 8)
+        self.assertAlmostEqual(u["cache_hit_ratio"], 0.8)
+        self.assertEqual(u["completion_tokens"], 5)
+        self.assertEqual(u["total_tokens"], 15)
+        self.assertEqual(u["prompt_tokens_per_second"], 250.0)
+        self.assertEqual(u["tokens_per_second"], 50.0)
+        self.assertEqual(u["ttft_ms"], 40)
 
 
 if __name__ == "__main__":

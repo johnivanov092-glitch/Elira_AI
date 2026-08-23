@@ -89,6 +89,25 @@ def summarize_events(
         for event in usage_events
         if float(event.get("tokens_per_second") or 0.0) > 0
     ]
+    prompt_token_rates = [
+        float(event.get("prompt_tokens_per_second") or 0.0)
+        for event in usage_events
+        if float(event.get("prompt_tokens_per_second") or 0.0) > 0
+    ]
+    prompt_tokens = sum(
+        int(event.get("prompt_tokens") or 0) for event in usage_events
+    )
+    cached_prompt_tokens = sum(
+        int(event.get("cached_prompt_tokens") or 0) for event in usage_events
+    )
+    model_ttft_ms = next(
+        (
+            int(event.get("ttft_ms") or 0)
+            for event in usage_events
+            if int(event.get("ttft_ms") or 0) > 0
+        ),
+        0,
+    )
     tool_trace: list[dict[str, Any]] = []
     runtime_calls: list[dict[str, Any]] = []
     tool_source_urls: dict[str, list[str]] = {}
@@ -150,11 +169,20 @@ def summarize_events(
         "network_inventories": network_inventories,
         "auto_verifier_calls": sum(1 for event in tool_calls if event.get("auto_verifier")),
         "steps": sum(1 for event in events if event.get("type") == "step_started"),
-        "prompt_tokens": sum(int(event.get("prompt_tokens") or 0) for event in usage_events),
+        "prompt_tokens": prompt_tokens,
+        "cached_prompt_tokens": cached_prompt_tokens,
+        "cache_hit_ratio": round(
+            cached_prompt_tokens / prompt_tokens if prompt_tokens else 0.0,
+            4,
+        ),
         "completion_tokens": sum(
             int(event.get("completion_tokens") or 0) for event in usage_events
         ),
+        "prompt_tokens_per_second": (
+            round(prompt_token_rates[-1], 1) if prompt_token_rates else 0.0
+        ),
         "tokens_per_second": round(token_rates[-1], 1) if token_rates else 0.0,
+        "model_ttft_ms": model_ttft_ms,
         "answer": answer,
         "answer_urls": _extract_urls(answer),
         "server_ports": _server_ports(events),

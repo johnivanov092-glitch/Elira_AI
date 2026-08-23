@@ -72,8 +72,12 @@ def test_sse_summary_reports_profile_tools_mcp_and_latency() -> None:
             "type": "usage",
             "step": 2,
             "prompt_tokens": 1200,
+            "cached_prompt_tokens": 900,
+            "cache_hit_ratio": 0.75,
             "completion_tokens": 80,
+            "prompt_tokens_per_second": 350.5,
             "tokens_per_second": 21.5,
+            "ttft_ms": 420,
         },
         {
             "type": "final_response",
@@ -127,8 +131,12 @@ def test_sse_summary_reports_profile_tools_mcp_and_latency() -> None:
     assert summary["first_action_s"] == 0.8
     assert summary["ttft_s"] == 0.8
     assert summary["prompt_tokens"] == 1200
+    assert summary["cached_prompt_tokens"] == 900
+    assert summary["cache_hit_ratio"] == 0.75
     assert summary["completion_tokens"] == 80
+    assert summary["prompt_tokens_per_second"] == 350.5
     assert summary["tokens_per_second"] == 21.5
+    assert summary["model_ttft_ms"] == 420
     assert "Порт 8000 открыт" in summary["answer"]
 
 
@@ -302,6 +310,10 @@ def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:
             "tool_calls": 1,
             "duration_s": 3.0,
             "ttft_s": 0.5,
+            "model_ttft_ms": 300,
+            "cache_hit_ratio": 0.8,
+            "prompt_tokens_per_second": 400.0,
+            "tokens_per_second": 40.0,
         },
         "code": {
             "stop_reason": "answer",
@@ -310,6 +322,10 @@ def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:
             "tool_calls": 0,
             "duration_s": 5.0,
             "ttft_s": 1.5,
+            "model_ttft_ms": 500,
+            "cache_hit_ratio": 0.2,
+            "prompt_tokens_per_second": 300.0,
+            "tokens_per_second": 30.0,
         },
     }
 
@@ -326,6 +342,10 @@ def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:
         "profile_accuracy": 0.5,
         "average_duration_s": 4.0,
         "average_ttft_s": 1.0,
+        "average_model_ttft_ms": 400.0,
+        "average_cache_hit_ratio": 0.5,
+        "average_prompt_tokens_per_second": 350.0,
+        "average_tokens_per_second": 35.0,
     }
     assert report["results"]["infra"]["status"] == "PASS"
     assert report["results"]["code"]["status"] == "FAIL"
@@ -334,4 +354,5 @@ def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:
     markdown = render_markdown(report)
     assert "# Elira agent routing eval — eval-fixed" in markdown
     assert "| infra | PASS | Инфраструктура |" in markdown
+    assert "cache: 50.0%" in markdown
     assert "missing tool: read_file" in markdown

@@ -355,11 +355,21 @@ function wire(
             contextState: withUsageState(s.contextState, e.context!),
           }));
         }
-        patch((a) => ({
-          ...a,
-          genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
-          tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
-        }));
+        patch((a) => {
+          const promptTokens = (a.promptTokens ?? 0) + (e.prompt_tokens || 0);
+          const cachedPromptTokens = (a.cachedPromptTokens ?? 0) + (e.cached_prompt_tokens || 0);
+          const ttftMs = e.ttft_ms ?? 0;
+          return {
+            ...a,
+            genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
+            promptTokens,
+            cachedPromptTokens,
+            cacheHitRatio: promptTokens > 0 ? cachedPromptTokens / promptTokens : 0,
+            promptTokensPerSecond: e.prompt_tokens_per_second || a.promptTokensPerSecond,
+            tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
+            ttftMs: a.ttftMs ?? (ttftMs > 0 ? ttftMs : undefined),
+          };
+        });
       } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, answerStatus: e.answer_status || a.answerStatus, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput, media: e.media ?? a.media }));
       else if (e.type === "delivery_continuing") {
         // Informational slice boundary: the run keeps going on the SAME run_id

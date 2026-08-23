@@ -56,8 +56,9 @@ in typed inventory output, and the maximum number of tool calls.
 The driver derives results only from the public Workflow SSE contract. It
 records the effective profile, initial/dynamic/final runtime activation,
 successful and failed tools, ordered MCP lifecycle operations, answer/source
-URLs, typed network observations, stop reason, TTFT, duration, token usage, and
-generation speed.
+URLs, typed network observations, stop reason, Workflow/model TTFT, duration,
+token usage, cached prompt tokens, cache hit ratio, and separate server
+prompt/output throughput.
 
 Every run writes ignored local artifacts under:
 

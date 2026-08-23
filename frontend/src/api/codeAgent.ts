@@ -154,9 +154,13 @@ export type CodeAgentStreamEvent =
       type: "usage";
       step: number;
       prompt_tokens: number;
+      cached_prompt_tokens?: number;
+      cache_hit_ratio?: number;
       completion_tokens: number;
       total_tokens: number;
+      prompt_tokens_per_second?: number;
       tokens_per_second: number;
+      ttft_ms?: number;
       context?: ContextUsage;
       profile?: ContextProfile;
     }

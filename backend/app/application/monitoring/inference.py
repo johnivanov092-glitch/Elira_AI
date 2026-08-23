@@ -33,19 +33,38 @@ def _duration_ns_to_ms(value: Any) -> int:
 def extract_llm_usage(response: Any) -> dict[str, Any]:
     """Extract token and latency usage fields from a local LLM response."""
     prompt_tokens = _as_int(_get_field(response, "prompt_eval_count"))
+    cached_prompt_tokens = (
+        min(
+            prompt_tokens,
+            max(0, _as_int(_get_field(response, "cached_prompt_tokens"))),
+        )
+        if prompt_tokens > 0
+        else 0
+    )
+    cache_hit_ratio = _as_float(_get_field(response, "prompt_cache_hit_ratio"))
+    if cache_hit_ratio <= 0 and prompt_tokens > 0 and cached_prompt_tokens > 0:
+        cache_hit_ratio = cached_prompt_tokens / prompt_tokens
+    cache_hit_ratio = min(1.0, max(0.0, cache_hit_ratio))
     completion_tokens = _as_int(_get_field(response, "eval_count"))
     total_tokens = prompt_tokens + completion_tokens
     total_duration_ms = _duration_ns_to_ms(_get_field(response, "total_duration"))
     prompt_duration_ms = _duration_ns_to_ms(_get_field(response, "prompt_eval_duration"))
     completion_duration_ms = _duration_ns_to_ms(_get_field(response, "eval_duration"))
 
-    # Prefer the model's generation-only timing (`eval_duration`) when present.
-    # The llama.cpp OpenAI-compatible provider does not report it — it only sets
-    # wall-clock `total_duration` — so fall back to that, otherwise tokens/sec
-    # would always read 0 for the local server.
-    tokens_per_second = 0.0
+    # Prefer llama.cpp's generation-only server rate. Older/local test providers
+    # may expose only eval_duration or wall-clock total_duration, so retain those
+    # compatibility fallbacks without mislabelling prompt time as generation time
+    # when real server timings are available.
+    prompt_tokens_per_second = max(
+        0.0,
+        _as_float(_get_field(response, "server_prompt_tokens_per_second")),
+    )
+    tokens_per_second = max(
+        0.0,
+        _as_float(_get_field(response, "server_tokens_per_second")),
+    )
     eval_duration_ns = _as_float(_get_field(response, "eval_duration"))
-    if completion_tokens > 0:
+    if tokens_per_second <= 0 and completion_tokens > 0:
         if eval_duration_ns > 0:
             tokens_per_second = completion_tokens / (eval_duration_ns / 1_000_000_000)
         else:
@@ -55,13 +74,17 @@ def extract_llm_usage(response: Any) -> dict[str, Any]:
 
     return {
         "prompt_tokens": prompt_tokens,
+        "cached_prompt_tokens": cached_prompt_tokens,
+        "prompt_cache_hit_ratio": cache_hit_ratio,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
         "latency_ms": total_duration_ms,
         "total_duration_ms": total_duration_ms,
         "prompt_duration_ms": prompt_duration_ms,
         "completion_duration_ms": completion_duration_ms,
+        "prompt_tokens_per_second": prompt_tokens_per_second,
         "tokens_per_second": tokens_per_second,
+        "ttft_ms": max(0, _as_int(_get_field(response, "ttft_ms"))),
     }
 
 
@@ -136,6 +159,14 @@ def record_inference_telemetry(
     safe_fallbacks = max(0, _as_int(fallback_count))
     safe_approval_wait_ms = max(0, _as_int(approval_wait_ms))
     tokens_per_second = _as_float(safe_usage.get("tokens_per_second"))
+    prompt_tokens_per_second = _as_float(safe_usage.get("prompt_tokens_per_second"))
+    cached_prompt_tokens = max(0, _as_int(safe_usage.get("cached_prompt_tokens")))
+    cache_hit_ratio = min(
+        1.0,
+        max(0.0, _as_float(safe_usage.get("prompt_cache_hit_ratio"))),
+    )
+    model_ttft_ms = max(0, _as_int(safe_usage.get("ttft_ms")))
+    effective_ttft_ms = safe_ttft_ms if safe_ttft_ms is not None else model_ttft_ms
 
     details = {
         "provider": str(provider or ""),
@@ -148,6 +179,8 @@ def record_inference_telemetry(
         "streaming": bool(streaming),
         "num_ctx": safe_num_ctx,
         "prompt_tokens": prompt_tokens,
+        "cached_prompt_tokens": cached_prompt_tokens,
+        "prompt_cache_hit_ratio": cache_hit_ratio,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
         "context_utilization": context_utilization,
@@ -157,7 +190,9 @@ def record_inference_telemetry(
         "compaction_count": safe_compactions,
         "fallback_count": safe_fallbacks,
         "approval_wait_ms": safe_approval_wait_ms,
-        "ttft_ms": safe_ttft_ms,
+        "ttft_ms": effective_ttft_ms,
+        "model_ttft_ms": model_ttft_ms,
+        "prompt_tokens_per_second": prompt_tokens_per_second,
         "tokens_per_second": tokens_per_second,
         "error_category": str(error_category or ""),
         "usage_available": bool(prompt_tokens or completion_tokens or total_tokens),

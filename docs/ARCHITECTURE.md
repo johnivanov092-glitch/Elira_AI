@@ -139,6 +139,9 @@ templates and inherit `ask`, `accept_edits`, or `bypass`.
   verified facts and previous tool output remain assistant-shaped runtime
   context because strict Qwen templates reject late system messages.
 - Every chat payload sets `cache_prompt: true`.
+- The final llama.cpp SSE usage/timings event is preserved as
+  `cached_prompt_tokens`, cache hit ratio, model TTFT, and separate prompt/output
+  tokens per second; Workflow usage events expose the same values to UI/evals.
 - Reasoning modes are `none`, `low`, `medium`, `xhigh`.
 - Qwen reads `enable_thinking` + `reasoning_effort`.
 - Muse reads `reasoning_strength`; public `none` maps to Muse `low`.

@@ -191,6 +191,10 @@ def run_suite(
     profile_matches = 0
     durations: list[float] = []
     ttfts: list[float] = []
+    model_ttfts: list[float] = []
+    cache_hit_ratios: list[float] = []
+    prompt_token_rates: list[float] = []
+    token_rates: list[float] = []
     for name, spec in cases.items():
         summary = execute_case(name, spec)
         failures = evaluate_case(spec, summary)
@@ -201,6 +205,14 @@ def run_suite(
             durations.append(float(summary["duration_s"]))
         if summary.get("ttft_s") is not None:
             ttfts.append(float(summary["ttft_s"]))
+        if float(summary.get("model_ttft_ms") or 0.0) > 0:
+            model_ttfts.append(float(summary["model_ttft_ms"]))
+        if "cache_hit_ratio" in summary:
+            cache_hit_ratios.append(float(summary.get("cache_hit_ratio") or 0.0))
+        if float(summary.get("prompt_tokens_per_second") or 0.0) > 0:
+            prompt_token_rates.append(float(summary["prompt_tokens_per_second"]))
+        if float(summary.get("tokens_per_second") or 0.0) > 0:
+            token_rates.append(float(summary["tokens_per_second"]))
         results[name] = {
             "status": "FAIL" if failures else "PASS",
             "failures": failures,
@@ -218,6 +230,18 @@ def run_suite(
             "profile_accuracy": round(profile_matches / total, 3) if total else 0.0,
             "average_duration_s": round(sum(durations) / len(durations), 3) if durations else 0.0,
             "average_ttft_s": round(sum(ttfts) / len(ttfts), 3) if ttfts else 0.0,
+            "average_model_ttft_ms": round(
+                sum(model_ttfts) / len(model_ttfts), 1
+            ) if model_ttfts else 0.0,
+            "average_cache_hit_ratio": round(
+                sum(cache_hit_ratios) / len(cache_hit_ratios), 4
+            ) if cache_hit_ratios else 0.0,
+            "average_prompt_tokens_per_second": round(
+                sum(prompt_token_rates) / len(prompt_token_rates), 1
+            ) if prompt_token_rates else 0.0,
+            "average_tokens_per_second": round(
+                sum(token_rates) / len(token_rates), 1
+            ) if token_rates else 0.0,
         },
         "results": results,
     }
@@ -236,12 +260,16 @@ def render_markdown(report: dict[str, Any]) -> str:
         (
             f"PASS: {aggregate.get('passed', 0)}/{aggregate.get('total', 0)} · "
             f"profile accuracy: {float(aggregate.get('profile_accuracy') or 0) * 100:.1f}% · "
+            f"cache: {float(aggregate.get('average_cache_hit_ratio') or 0) * 100:.1f}% · "
+            f"prompt/output: {aggregate.get('average_prompt_tokens_per_second', 0)}/"
+            f"{aggregate.get('average_tokens_per_second', 0)} tok/s · "
+            f"model TTFT: {aggregate.get('average_model_ttft_ms', 0)}ms · "
             f"avg TTFT: {aggregate.get('average_ttft_s', 0)}s · "
             f"avg duration: {aggregate.get('average_duration_s', 0)}s"
         ),
         "",
-        "| Case | Status | Profile | Tools | TTFT | Duration | Failures |",
-        "|---|---|---|---|---:|---:|---|",
+        "| Case | Status | Profile | Tools | Cache | Prompt t/s | Output t/s | Model TTFT | Workflow TTFT | Duration | Failures |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for name, result in (report.get("results") or {}).items():
         summary = result.get("summary") or {}
@@ -254,6 +282,10 @@ def render_markdown(report: dict[str, Any]) -> str:
                 result.get("status"),
                 summary.get("effective_profile"),
                 tools,
+                f"{float(summary.get('cache_hit_ratio') or 0) * 100:.1f}%",
+                summary.get("prompt_tokens_per_second"),
+                summary.get("tokens_per_second"),
+                summary.get("model_ttft_ms"),
                 summary.get("ttft_s"),
                 summary.get("duration_s"),
                 failures,
@@ -390,6 +422,10 @@ def main() -> int:
         print(
             f"{result['status']:4} {name}: profile={summary.get('effective_profile') or '—'} "
             f"tools={summary.get('tool_names') or []} "
+            f"cache={float(summary.get('cache_hit_ratio') or 0) * 100:.1f}% "
+            f"prompt/output={summary.get('prompt_tokens_per_second')}/"
+            f"{summary.get('tokens_per_second')} tok/s "
+            f"model_ttft={summary.get('model_ttft_ms')}ms "
             f"ttft={summary.get('ttft_s')}s duration={summary.get('duration_s')}s"
         )
         for failure in result["failures"]:

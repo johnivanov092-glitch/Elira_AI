@@ -36,6 +36,30 @@ describe("AgentTurn structured analysis status", () => {
     expect(html).not.toContain("факты не подтверждены");
   });
 
+  it("shows real server throughput, prompt cache, and TTFT", () => {
+    const turn: AgentTurnData = {
+      kind: "agent",
+      id: "agent-metrics",
+      toolCalls: [],
+      text: "Готово.",
+      running: false,
+      genTokens: 80,
+      tokensPerSecond: 40,
+      promptTokensPerSecond: 350.5,
+      cachedPromptTokens: 900,
+      promptTokens: 1200,
+      cacheHitRatio: 0.75,
+      ttftMs: 420,
+    };
+
+    const html = renderToStaticMarkup(<AgentTurnView turn={turn} />);
+
+    expect(html).toContain("40.0 т/с");
+    expect(html).toContain("prompt 350.5 т/с");
+    expect(html).toContain("cache 75.0%");
+    expect(html).toContain("TTFT 0.42 с");
+  });
+
   it("renders answer images as a sourced gallery", () => {
     const turn: AgentTurnData = {
       kind: "agent",

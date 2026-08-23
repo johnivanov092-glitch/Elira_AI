@@ -1319,7 +1319,7 @@ def _stream_code_agent_core(
                     num_ctx=safe_num_ctx,
                     ok=False,
                     duration_ms=llm_duration_ms,
-                    streaming=False,
+                    streaming=stream_chat is not None,
                     prompt_chars=llm_prompt_chars,
                     tool_round_trips=tool_round_trips,
                     compaction_count=compaction_count,
@@ -1370,7 +1370,7 @@ def _stream_code_agent_core(
                 num_ctx=safe_num_ctx,
                 ok=True,
                 duration_ms=llm_duration_ms,
-                streaming=False,
+                streaming=stream_chat is not None,
                 usage=step_usage,
                 prompt_chars=llm_prompt_chars,
                 completion_chars=len(content),
@@ -1384,9 +1384,17 @@ def _stream_code_agent_core(
                 "type": "usage",
                 "step": step,
                 "prompt_tokens": int(step_usage.get("prompt_tokens") or 0),
+                "cached_prompt_tokens": int(step_usage.get("cached_prompt_tokens") or 0),
+                "cache_hit_ratio": round(
+                    float(step_usage.get("prompt_cache_hit_ratio") or 0.0), 4
+                ),
                 "completion_tokens": int(step_usage.get("completion_tokens") or 0),
                 "total_tokens": int(step_usage.get("total_tokens") or 0),
+                "prompt_tokens_per_second": round(
+                    float(step_usage.get("prompt_tokens_per_second") or 0.0), 1
+                ),
                 "tokens_per_second": round(float(step_usage.get("tokens_per_second") or 0.0), 1),
+                "ttft_ms": int(step_usage.get("ttft_ms") or 0),
                 "context": context_usage,
                 "profile": context_profile,
             }

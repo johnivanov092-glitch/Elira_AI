@@ -70,10 +70,13 @@ Workflow Stop.
 
 ## 7. Сервер и производительность
 
-15. После model swap измерять реальный prompt-cache hit/miss и стабильность
-    prefix; `cache_prompt=true` уже отправляется каждым chat request.
-16. Провести отдельный long-context eval на 32K/64K/96K/128K с history, tool
-    schemas, Library/RAG и compaction. Менять profile limits только по результатам.
+15. **Завершено 2026-08-24:** Workflow telemetry/UI/eval сохраняют серверные
+    `cached_tokens`, cache hit ratio, prompt/output tok/s и model TTFT. На основной
+    Qwen3.8 cold/warm probe подтвердил `0% → 99,80%` cache hit и сокращение TTFT
+    `5,30 с → 0,27 с`; `cache_prompt=true` отправляется каждым chat request.
+16. **Закрыто решением 2026-08-24:** отдельный синтетический 128K agent-eval не
+    продолжается. Основная Qwen3.8 остаётся на проверенном профиле 131072/MTP3;
+    profile limits менять только при проблеме в реальной Workflow-нагрузке.
 17. Сравнить `none/low/medium/xhigh` по качеству, reasoning tokens, TTFT и общей
     длительности.
 18. Reverse proxy/TLS добавлять только перед выходом за доверенную LAN или

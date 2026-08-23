@@ -141,6 +141,13 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _non_negative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _chat_http_timeout(requested: float | None, configured: float) -> tuple[float, None]:
     """Keep a finite connect timeout but never impose a generation read deadline."""
     try:
@@ -388,13 +395,53 @@ def _normalize_messages_for_request(messages: list[dict[str, Any]]) -> list[dict
     return normalized
 
 
+def _openai_usage_metrics(
+    usage: dict[str, Any],
+    timings: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize llama.cpp's OpenAI usage/timing extension fields."""
+    prompt_tokens = _positive_int(usage.get("prompt_tokens")) or 0
+    prompt_details = (
+        usage.get("prompt_tokens_details")
+        if isinstance(usage.get("prompt_tokens_details"), dict)
+        else {}
+    )
+    cached_prompt_tokens = _positive_int(prompt_details.get("cached_tokens"))
+    if cached_prompt_tokens is None:
+        cached_prompt_tokens = _positive_int(timings.get("cache_n")) or 0
+    if prompt_tokens > 0:
+        cached_prompt_tokens = min(cached_prompt_tokens, prompt_tokens)
+    else:
+        cached_prompt_tokens = 0
+    cache_hit_ratio = (
+        cached_prompt_tokens / prompt_tokens if prompt_tokens > 0 else 0.0
+    )
+    return {
+        "cached_prompt_tokens": cached_prompt_tokens,
+        "prompt_cache_hit_ratio": cache_hit_ratio,
+        "prompt_eval_duration": int(
+            _non_negative_float(timings.get("prompt_ms")) * 1_000_000
+        ),
+        "eval_duration": int(
+            _non_negative_float(timings.get("predicted_ms")) * 1_000_000
+        ),
+        "server_prompt_tokens_per_second": _non_negative_float(
+            timings.get("prompt_per_second")
+        ),
+        "server_tokens_per_second": _non_negative_float(
+            timings.get("predicted_per_second")
+        ),
+    }
+
+
 def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, Any]:
     choices = data.get("choices") if isinstance(data.get("choices"), list) else []
     first = choices[0] if choices and isinstance(choices[0], dict) else {}
     message = first.get("message") if isinstance(first.get("message"), dict) else {}
     usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
-    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-    completion_tokens = int(usage.get("completion_tokens") or 0)
+    timings = data.get("timings") if isinstance(data.get("timings"), dict) else {}
+    prompt_tokens = _positive_int(usage.get("prompt_tokens")) or 0
+    completion_tokens = _positive_int(usage.get("completion_tokens")) or 0
     return {
         "model": str(data.get("model") or ""),
         "message": {
@@ -410,6 +457,8 @@ def _local_llm_response(data: dict[str, Any], *, elapsed_ns: int) -> dict[str, A
         "prompt_eval_count": prompt_tokens,
         "eval_count": completion_tokens,
         "total_duration": elapsed_ns,
+        **_openai_usage_metrics(usage, timings),
+        "ttft_ms": 0,
         "provider": local_llm_config().provider,
         "raw_openai": data,
     }
@@ -709,6 +758,8 @@ def chat_completion_event_stream(
     reasoning_parts: list[str] = []
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
+    timings: dict[str, Any] = {}
+    first_token_ns: int | None = None
     try:
         response = requests.post(
             f"{cfg.base_url}/chat/completions",
@@ -733,9 +784,15 @@ def chat_completion_event_stream(
                 continue
             if isinstance(data.get("usage"), dict):
                 usage = dict(data["usage"])
+            if isinstance(data.get("timings"), dict):
+                timings = dict(data["timings"])
             choices = data.get("choices") if isinstance(data.get("choices"), list) else []
             first = choices[0] if choices and isinstance(choices[0], dict) else {}
             delta = first.get("delta") if isinstance(first.get("delta"), dict) else {}
+            if first_token_ns is None and any(
+                delta.get(field) for field in ("reasoning_content", "content", "tool_calls")
+            ):
+                first_token_ns = time.monotonic_ns()
             # Thinking (--jinja) streams the chain-of-thought in its own
             # `reasoning_content` field, separate from the answer's `content`.
             # Route it to a distinct event so callers show it apart from (and
@@ -776,9 +833,15 @@ def chat_completion_event_stream(
     finally:
         _close_cancelable_response(response, cancel_handle)
 
-    prompt_tokens = int(usage.get("prompt_tokens") or 0)
-    completion_tokens = int(usage.get("completion_tokens") or 0)
+    prompt_tokens = _positive_int(usage.get("prompt_tokens")) or 0
+    completion_tokens = _positive_int(usage.get("completion_tokens")) or 0
     final_content = "".join(content_parts)
+    metrics = _openai_usage_metrics(usage, timings)
+    ttft_ms = (
+        max(0, int((first_token_ns - started) / 1_000_000))
+        if first_token_ns is not None
+        else 0
+    )
     yield {
         "type": "message",
         "response": {
@@ -795,6 +858,8 @@ def chat_completion_event_stream(
             "prompt_eval_count": prompt_tokens,
             "eval_count": completion_tokens,
             "total_duration": time.monotonic_ns() - started,
+            **metrics,
+            "ttft_ms": ttft_ms,
             "provider": cfg.provider,
         },
     }

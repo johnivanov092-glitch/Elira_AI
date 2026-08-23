@@ -123,12 +123,26 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { t
       )}
 
       {(turn.genTokens ?? 0) > 0 && (
-        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-mut">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-mut">
           {turn.running && <Loader2 size={11} className="animate-spin" />}
           <span className="font-mono tabular-nums">{turn.genTokens!.toLocaleString("ru-RU")}</span>
           <span>токенов</span>
           {turn.tokensPerSecond ? (
             <span className="text-[10.5px]">· {turn.tokensPerSecond.toFixed(1)} т/с</span>
+          ) : null}
+          {turn.promptTokensPerSecond ? (
+            <span className="text-[10.5px]">· prompt {turn.promptTokensPerSecond.toFixed(1)} т/с</span>
+          ) : null}
+          {turn.promptTokens && turn.cacheHitRatio !== undefined ? (
+            <span
+              className="text-[10.5px]"
+              title={`${(turn.cachedPromptTokens ?? 0).toLocaleString("ru-RU")} из ${turn.promptTokens.toLocaleString("ru-RU")} prompt-токенов взято из кэша`}
+            >
+              · cache {(turn.cacheHitRatio * 100).toFixed(1)}%
+            </span>
+          ) : null}
+          {turn.ttftMs ? (
+            <span className="text-[10.5px]">· TTFT {(turn.ttftMs / 1000).toFixed(2)} с</span>
           ) : null}
         </div>
       )}

@@ -43,6 +43,16 @@ export type AgentTurnData = {
   genTokens?: number;
   /** Most recent generation speed (tokens/sec) reported by the server. */
   tokensPerSecond?: number;
+  /** Logical prompt tokens summed across this turn's model steps. */
+  promptTokens?: number;
+  /** Prompt tokens reused from llama.cpp cache across this turn. */
+  cachedPromptTokens?: number;
+  /** cachedPromptTokens / promptTokens for this turn. */
+  cacheHitRatio?: number;
+  /** Most recent uncached prompt-evaluation speed reported by the server. */
+  promptTokensPerSecond?: number;
+  /** Time to the first streamed model token for the first step of this turn. */
+  ttftMs?: number;
 };
 
 export type FileEntry = {
