@@ -20,7 +20,7 @@ Rules:
   writes a BOM. Use the editor's write, or `python` (`open(...,encoding="utf-8")`),
   or PS7 `-Encoding utf8NoBOM`, or `[System.Text.UTF8Encoding]::new($false)`.
 - Keep priority Russian strings correct and written in proper Russian. The
-  highest-value ones: `backend/app/core/config.py` (`AGENT_PROFILES` prompts),
+  highest-value ones: `backend/app/core/persona_defaults.py` (persona prompts),
   `frontend/src/elira_ru_labels.ts`, and any UI labels / system prompts.
 - Never "fix" Russian by transliterating or escaping it away — keep it Cyrillic.
 - If you see mojibake, repair with `app.utils.text_encoding.repair_mojibake_text`

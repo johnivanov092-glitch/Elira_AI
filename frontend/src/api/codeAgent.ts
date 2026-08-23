@@ -103,7 +103,7 @@ export type CodeAgentRunArgs = {
   /** Session id retained for wire compatibility; durable resources are not
    *  authorized or scoped by a transient chat/run binding. */
   sessionId?: string;
-  /** Persona mode (Авто / Личный / Баланс / Инженерный / Деловой / Инфраструктура); "Авто" lets Elira pick
+  /** Persona mode returned by /api/profiles; "Авто" lets Elira pick
    *  per message, a concrete mode locks it. Mirrors chat's profile_name field. */
   profileName?: string;
   /** Approval policy for this run (composer permission selector). Omitted → the

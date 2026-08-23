@@ -48,10 +48,10 @@ rollback_persona = persona_evolution.rollback_persona
 
 
 def _short_profile_line(profile_key: str) -> str:
-    """One-line profile mode reduced from the multi-sentence overlay."""
+    """Packed first-sentence instruction for the selected persona mode."""
     overlay = PROFILE_MODE_OVERLAYS.get(profile_key, "")
-    # Original overlays are 2-3 sentences. Take only the first one ("Режим работы: X.")
-    # and the next clause if it fits in ~80 chars.
+    # Mode overlays deliberately keep the full load-bearing instruction before
+    # the first period; any explanatory tail stays out of the live prompt.
     first = overlay.split(".", 1)[0].strip()
     return first if first else "Режим работы: универсальный"
 
@@ -95,12 +95,11 @@ def build_persona_prompt(
     model_name: str = "",
     task_context: str = "",
 ) -> str:
-    """Compact persona prompt designed for small (2B-7B) local models.
+    """Bounded persona prompt for the current local model.
 
     Keeps persona_evolution intact: the active snapshot from `get_persona_version()`
     is still read, so traits accumulated via `observe_dialogue` are reflected here.
-    But the per-call output is short enough that small models can actually
-    attend to all of it (target: < 600 chars / ~150 tokens).
+    The per-call output stays below the tested 1300-character budget.
     """
     snapshot = get_persona_version()
     payload = deepcopy(snapshot.get("payload") or ELIRA_PERSONA_BASE_PAYLOAD)

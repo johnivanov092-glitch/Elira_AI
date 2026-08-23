@@ -27,7 +27,7 @@ import logging
 from typing import Any
 
 from app.infrastructure.encoding import decode_console
-from app.application.tool_providers.ssh_provider import run_registered_process
+from app.application.tool_providers.ssh_provider import _ssh_args, run_registered_process
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,6 @@ _HEALTH_COMMANDS: tuple[tuple[str, list[str]], ...] = (
     ("uptime", ["uptime"]),
 )
 _PER_CMD_CAP = 4000          # redacted stdout/stderr chars kept per command (evidence + reply)
-_SSH = "ssh"
 _SCANNER_VANTAGE = "elira-host:openssh"
 
 # Linux read-only inventory (adapter #1). (command_id, argv, required). Each is a
@@ -77,8 +76,7 @@ _WINDOWS_COMMANDS: tuple[tuple[str, str], ...] = (
 
 
 def _ssh_argv(alias: str, remote: list[str]) -> list[str]:
-    return [_SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=accept-new", alias, *remote]
+    return [*_ssh_args(alias, connect_timeout_seconds=10), *remote]
 
 
 class ItopsTargetError(ValueError):

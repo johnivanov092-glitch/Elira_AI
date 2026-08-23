@@ -59,7 +59,12 @@ def _truncate_for_llm(text: str, limit: int = _LLM_OUTPUT_LIMIT) -> str:
     return truncate_middle(text, limit)
 
 
-def _ssh_args(host: str, *, forward_stdin: bool = False) -> list[str]:
+def _ssh_args(
+    host: str,
+    *,
+    forward_stdin: bool = False,
+    connect_timeout_seconds: int | None = None,
+) -> list[str]:
     """Shared ssh flags every tool uses. Order matters here — flags
     before the destination."""
     # Saved aliases are only friendly discovery metadata; an arbitrary direct
@@ -71,6 +76,8 @@ def _ssh_args(host: str, *, forward_stdin: bool = False) -> list[str]:
         # DEVNULL on Windows: it closes the SSH channel's input, so a malformed
         # remote command that reads stdin cannot remain blocked in pipe_read.
         args.append("-n")
+    if connect_timeout_seconds is not None:
+        args.extend(["-o", f"ConnectTimeout={max(1, int(connect_timeout_seconds))}"])
     return [
         *args,
         "-o", "BatchMode=yes",
