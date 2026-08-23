@@ -9,6 +9,7 @@
 import React, { useState, useCallback, type ReactNode } from "react";
 import { buildApiUrl, request } from "../api/client";
 import { isLocalApiAssetUrl } from "../api/apiUtils";
+import { ExternalBrowserLink } from "./ExternalLink";
 
 type InlinePattern = {
   re: RegExp;
@@ -75,7 +76,7 @@ const INLINE_PATTERNS: InlinePattern[] = [
       return <img key={k} src={buildApiUrl(raw)} alt={m[1]} className="md-image" loading="lazy" />;
     }
     if (/^https?:\/\//i.test(raw)) {
-      return <a key={k} href={raw} target="_blank" rel="noopener noreferrer" className="md-link">🖼 {m[1] || prettyUrl(raw)}</a>;
+      return <ExternalBrowserLink key={k} href={raw} className="md-link">🖼 {m[1] || prettyUrl(raw)}</ExternalBrowserLink>;
     }
     return <span key={k} className="text-mut">[изображение недоступно]</span>;
   }},
@@ -85,12 +86,12 @@ const INLINE_PATTERNS: InlinePattern[] = [
       const displayName = isFilename(label) ? label : (extractFilename(url) || label);
       return <button key={k} className="md-link md-download-btn" onClick={() => doDownload(url, label)}>📥 {displayName}</button>;
     }
-    return <a key={k} href={url} target="_blank" rel="noopener noreferrer" className="md-link">{label}</a>;
+    return <ExternalBrowserLink key={k} href={url} className="md-link">{label}</ExternalBrowserLink>;
   }},
   // Bare URL (not already inside []() — the link pattern above matches earlier at
   // its "[" so it wins there). Trailing punctuation is left out of the link.
   { re: /(https?:\/\/[^\s<>()\]}"']*[^\s<>()\]}"'.,;:!?])/, render: (m, k) =>
-    <a key={k} href={m[1]} target="_blank" rel="noopener noreferrer" className="md-link" title={m[1]}>{prettyUrl(m[1])}</a> },
+    <ExternalBrowserLink key={k} href={m[1]} className="md-link" title={m[1]}>{prettyUrl(m[1])}</ExternalBrowserLink> },
 ];
 
 const OUTER_FENCE_RE = /^```(?:markdown|text|md|)\s*\n([\s\S]*?)\n?```\s*$/;

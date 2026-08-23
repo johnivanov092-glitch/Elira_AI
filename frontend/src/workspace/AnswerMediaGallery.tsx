@@ -1,6 +1,7 @@
 import { ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { fetchCodeAgentImage, type AnswerMediaItem } from "../api/codeAgent";
+import { ExternalBrowserLink } from "../components/ExternalLink";
 
 const EMPTY_PIXEL = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
 
@@ -57,11 +58,9 @@ export function AnswerMediaGallery({ media }: { media: AnswerMediaItem[] }) {
       aria-label="Изображения к ответу"
     >
       {visible.map((item) => (
-        <a
+        <ExternalBrowserLink
           key={`${item.url}|${item.source_url}`}
           href={item.source_url}
-          target="_blank"
-          rel="noreferrer noopener"
           title={`Открыть источник: ${item.title}`}
           className="group relative min-w-[165px] max-w-[250px] flex-1 basis-[30%] overflow-hidden rounded-xl border border-line bg-surface"
         >
@@ -75,7 +74,7 @@ export function AnswerMediaGallery({ media }: { media: AnswerMediaItem[] }) {
             <span className="min-w-0 flex-1 truncate">{item.source || item.title}</span>
             <ExternalLink size={11} className="shrink-0" aria-hidden="true" />
           </div>
-        </a>
+        </ExternalBrowserLink>
       ))}
     </div>
   );
