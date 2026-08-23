@@ -1,13 +1,17 @@
-# IT Operations — issues index
+# IT Operations — архивный issues index
 
-One file per phase / track. Core phases 0–9 are the implementation order; tracks
-10–20 are future domain tracks (planned, not now — captured for the capability
-matrix, dependencies, and ordering).
+Этот каталог сохраняет прежнюю декомпозицию IT Ops как историю. Она больше не
+является очередью реализации: отдельные REST/UI/approval контуры заменены
+Workflow + `runtime_control`. Новые возможности добавляются как runtime actions
+за единым агентным executor, а не как возврат фаз 0–20.
+
+Актуальные задачи: `../../universal-agent-workflow/`; актуальный контракт:
+`../../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md`.
 
 **Current architecture:** [docs/AGENT_ARCHITECTURE_GUIDE_RU.md](../../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md) ·
 **PRD:** [../PRD.md](../PRD.md) · **Foundation detail:** [../FOUNDATION_IMPL.md](../FOUNDATION_IMPL.md)
 
-## Core ops (implementation order)
+## Исторические core ops (не активный implementation order)
 | # | Issue | Depends on |
 |---|---|---|
 | 0 | [Foundation / contract](PHASE-0-foundation.md) | — |
@@ -21,7 +25,7 @@ matrix, dependencies, and ordering).
 | 8 | [Reporting, UI and Operations](PHASE-8-reporting-ui.md) | 7 |
 | 9 | [Verification and Release Discipline](PHASE-9-discipline.md) | 0..8 |
 
-## Future domain tracks (planned, not now)
+## Исторические domain tracks (не активный backlog)
 | Track | Issue | Layer | Depends on |
 |---|---|---|---|
 | 10 | [Identity and Access](TRACK-10-identity.md) | Platform | 0, 2 |

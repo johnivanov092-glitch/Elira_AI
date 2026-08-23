@@ -1,12 +1,13 @@
-# PHASE-0-foundation — Foundation / contract
+# PHASE-0-foundation — исторический Foundation / contract
 
-> **SUPERSEDED SECURITY DECISION (2026-08-11):** WinCred-only vault из этой
-> задачи заменён portable workflow-managed vault из
-> `../../universal-agent-workflow/issues/02-portable-workflow-vault.md`. Не
-> добавлять новые Windows Credential Manager/DPAPI dependencies.
+> **SUPERSEDED (2026-08-23):** вся задача заменена единым Workflow control plane,
+> `runtime_control` и portable vault из
+> `../../universal-agent-workflow/issues/02-portable-workflow-vault.md`.
+> Упомянутые ниже `/api/itops/*`, feature flag, operation scopes и отдельный
+> Assets UI удалены и не должны восстанавливаться.
 
 - **Layer:** Foundation
-- **Status:** planned
+- **Status:** superseded / closed
 - **Depends on:** —
 
 ## Scope

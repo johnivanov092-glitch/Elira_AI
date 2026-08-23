@@ -1,11 +1,13 @@
-# Phase 0 — Foundation: implementation plan (for approval)
+# Phase 0 — исторический implementation plan
 
-> **SUPERSEDED SECURITY DECISION (2026-08-11):** разделы WinCred/DPAPI ниже
-> описывают текущую историческую реализацию, но не целевую архитектуру. Новая
-> работа должна мигрировать secrets в portable application-owned encrypted vault
-> через workflow UI согласно `../universal-agent-workflow/PRD.md` и issue 02.
+> **SUPERSEDED (2026-08-23):** план ниже сохранён только как история решений.
+> Его отдельные `/api/itops/*`, feature flag, Settings UI, operation scopes и
+> WinCred-only vault больше не существуют в активной архитектуре. Реализация
+> заменена Workflow + `runtime_control` + portable AES-GCM vault; см.
+> `../universal-agent-workflow/PRD.md` и
+> `../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md`.
 
-**Gate:** ships and is reviewed BEFORE Connection Enrollment. Foundation builds
+**Historical gate (closed/superseded):** Foundation builds
 the **security spine + data model + leak-closing + contract tests** — no user
 enrollment flow yet, no ops-tools yet. Nothing here lets the model act on an
 asset; it makes it *safe to* in Phase 1.

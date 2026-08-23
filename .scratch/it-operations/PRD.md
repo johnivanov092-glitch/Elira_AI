@@ -1,12 +1,13 @@
-# Elira IT Operations — PRD
+# Elira IT Operations — исторический PRD
 
-> **SUPERSEDED SECURITY DECISION (2026-08-11):** Windows Credential Manager /
-> DPAPI binding больше не является целевой архитектурой. Portable vault,
-> workflow-managed backup/restore и миграция существующих WinCred secrets
-> определены в `../universal-agent-workflow/PRD.md` и issue 02. Не добавлять новые
-> WinCred-only зависимости по этому документу.
+> **SUPERSEDED (2026-08-23):** этот план не является действующим контрактом.
+> Отдельные `/api/itops/*`, operation scopes, feature flag, Assets Settings UI и
+> change-executor удалены. IT Ops теперь вызывается агентом через единый
+> `runtime_control`, подтверждения живут в Workflow UI, а секреты — в portable
+> AES-GCM vault. Текущий контракт: `../universal-agent-workflow/PRD.md` и
+> `../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md`.
 
-**Status:** draft for review · **Owner:** principal engineer · **Date:** 2026-07-10
+**Status:** superseded / historical reference · **Owner:** principal engineer · **Date:** 2026-07-10
 **Current architecture:** [docs/AGENT_ARCHITECTURE_GUIDE_RU.md](../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md)
 
 ## 1. Problem & goal
