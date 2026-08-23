@@ -37,6 +37,12 @@ def test_initial_registry_exposes_core_but_not_deferred_web_tools(tmp_path) -> N
     assert {"capability_load", "runtime_control", "read_file", "run_bash"} <= names
     assert {"web_search", "web_fetch", "browser", "computer"}.isdisjoint(names)
 
+    hidden_result = registry.dispatch_raw(
+        "regex",
+        {"pattern": "a+", "text": "caa"},
+    )
+    assert "unknown tool" not in str(hidden_result.get("text") or "").lower()
+
 
 def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
     seen_tool_names: list[set[str]] = []
@@ -115,6 +121,43 @@ def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
     names = _tool_names(registry)
     assert {"resource_process", "read_image", "file_gen"} <= names
     assert {"web_search", "computer", "sql", "remember"}.isdisjoint(names)
+
+
+def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path) -> None:
+    seen_tool_names: list[set[str]] = []
+    responses = iter([
+        {
+            "message": {
+                "content": (
+                    '{"name":"regex","arguments":'
+                    '{"pattern":"a+","text":"caa"}}'
+                ),
+                "tool_calls": [],
+            },
+        },
+        {"message": {"content": "Совпадение найдено.", "tool_calls": []}},
+    ])
+
+    def fake_chat(**kwargs):
+        seen_tool_names.append(_tool_names_from_schemas(kwargs.get("tools") or []))
+        return next(responses)
+
+    events = list(stream_code_agent(
+        user_message="Проверь регулярное выражение",
+        project_root=tmp_path,
+        run_id="capability-hidden-inline-call",
+        chat_fn=fake_chat,
+        auto_remember=False,
+        permission_mode="ask",
+    ))
+
+    assert "regex" not in seen_tool_names[0]
+    assert any(
+        event.get("type") == "tool_call"
+        and event.get("tool") == "regex"
+        and event.get("ok") is True
+        for event in events
+    )
 
 
 def test_every_builtin_schema_is_reachable_from_core_or_one_group() -> None:

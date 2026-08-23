@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Collection
 
 
-CORE_BUILTIN_TOOLS = frozenset({
+CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
     "capability_load",
     "runtime_control",
     "read_file",
@@ -22,7 +22,9 @@ CORE_BUILTIN_TOOLS = frozenset({
     "todo_update",
     "delegate_task",
     "run_bash",
-})
+)
+
+CORE_BUILTIN_TOOLS = frozenset(CORE_BUILTIN_TOOL_ORDER)
 
 
 CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
@@ -52,6 +54,12 @@ CAPABILITY_GROUP_DESCRIPTIONS: dict[str, str] = {
     "memory": "semantic recall and durable user facts/corrections",
     "operations": "long-lived dev servers, inference-server facts and webhooks",
 }
+
+
+ALL_BUILTIN_TOOLS = frozenset().union(
+    CORE_BUILTIN_TOOLS,
+    *CAPABILITY_GROUPS.values(),
+)
 
 
 def normalize_capability_groups(groups: Collection[str] | None) -> frozenset[str]:

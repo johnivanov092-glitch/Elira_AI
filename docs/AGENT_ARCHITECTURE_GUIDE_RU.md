@@ -156,9 +156,11 @@ LLM видит компактный каталог групп в схеме capa
 | `operations` | background server, server-facts reconciliation, webhooks |
 
 Это не permission и не guard. `capability_load` лишь уменьшает prompt: handler
-и ToolExecutor остаются теми же. Группа остаётся видимой до конца текущего
-`run_id`, переживает автоматическое продолжение и Resume. Новый run снова
-начинается с ядра; unload внутри run пока не нужен.
+и ToolExecutor остаются теми же. Если валидный native/inline call скрытого
+builtin всё же пришёл от модели, registry не отвечает `unknown tool`, а передаёт
+его каноническому handler. Группа остаётся видимой до конца текущего `run_id`,
+переживает автоматическое продолжение и Resume. Новый run снова начинается с
+ядра; unload внутри run пока не нужен.
 
 По текущему грубому счётчику `chars / 4` полный builtin-набор вместе с двумя
 loop-owned schemas занимает около `8 771` токена. Стартовое ядро — около `2 470`

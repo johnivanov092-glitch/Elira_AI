@@ -75,7 +75,9 @@ model-selected group, then the existing runtime registry is rebuilt for the
 next model turn. Loaded groups are journalled for Resume/automatic continuation;
 a new run starts with the compact core again. This is prompt composition, not
 authorization: the Workflow permission selector remains the only product-level
-permission decision.
+permission decision. A hidden built-in schema does not remove its canonical
+dispatch owner; if a valid native/inline call reaches the runtime, it still uses
+the same ToolExecutor and handler.
 
 MCP, LSP, SSH shortcuts, Telegram, IT Ops, plugins, Workflow scheduling,
 memory/library administration and vault operations are behind the agent's

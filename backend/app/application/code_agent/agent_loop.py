@@ -31,6 +31,7 @@ from app.application.tool_providers.mcp_provider import (
     creative_workflow_prompt,
 )
 from app.application.code_agent.capabilities import (
+    ALL_BUILTIN_TOOLS,
     builtin_tools_for_groups,
     normalize_capability_groups,
 )
@@ -1187,13 +1188,13 @@ def _stream_code_agent_core(
                 "context": context_usage,
             }
 
-            # Every activated tool is visible in every permission mode.
-            # Inline recovery must use exactly what the model was offered this
-            # step. ask_user is loop-owned and is not a provider registry entry.
-            _visible_tool_names = {
+            # Schemas remain compact, but visibility is not an execution gate.
+            # Inline recovery may recognize any implemented built-in the model
+            # already knows; integrations still require a live owning provider.
+            _inline_tool_names = {
                 name for schema in step_schemas
                 if (name := _schema_tool_name(schema))
-            }
+            } | set(ALL_BUILTIN_TOOLS)
             schema_chars = (
                 len(json.dumps(step_schemas, ensure_ascii=False, separators=(",", ":")))
                 if step_schemas
@@ -1371,7 +1372,7 @@ def _stream_code_agent_core(
             # loop still works.
             inline_calls: list[dict[str, Any]] = []
             if not tool_calls and content:
-                inline_calls = _extract_inline_tool_calls(content, _visible_tool_names)
+                inline_calls = _extract_inline_tool_calls(content, _inline_tool_names)
                 if inline_calls:
                     tool_calls = inline_calls
                     content = ""  # JSON was the tool call, not a text reply

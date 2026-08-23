@@ -88,7 +88,7 @@ class ToolRegistry:
         tool_meta["text"].
         """
         args = self._coerce_args(raw_args)
-        provider = self._owner.get(tool_name)
+        provider = self._resolve_provider(tool_name)
         if provider is None:
             return ToolDispatchResult(
                 tool_meta={"text": f"ERROR: unknown tool '{tool_name}'"},
@@ -115,7 +115,7 @@ class ToolRegistry:
         Used by the unified ToolExecutor so it can own arg coercion and audit
         without re-parsing args a second time inside dispatch().
         """
-        provider = self._owner.get(tool_name)
+        provider = self._resolve_provider(tool_name)
         if provider is None:
             return {"text": f"ERROR: unknown tool '{tool_name}'"}
         try:
@@ -129,6 +129,24 @@ class ToolRegistry:
         return result if isinstance(result, dict) else {"text": str(result)}
 
     # ── Helpers ─────────────────────────────────────────────────
+
+    def _resolve_provider(self, tool_name: str) -> ToolProvider | None:
+        """Find an execution owner independently from prompt visibility."""
+        visible_owner = self._owner.get(tool_name)
+        if visible_owner is not None:
+            return visible_owner
+        for provider in self._providers:
+            try:
+                if provider.is_enabled() and provider.owns(tool_name):
+                    return provider
+            except Exception:
+                logger.warning(
+                    "ToolRegistry: provider %r failed owns(%r)",
+                    getattr(provider, "name", repr(provider)),
+                    tool_name,
+                    exc_info=True,
+                )
+        return None
 
     @staticmethod
     def _coerce_args(raw_args: Any) -> dict[str, Any]:

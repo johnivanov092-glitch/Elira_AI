@@ -44,7 +44,10 @@ class BuiltinToolProvider:
             if selected is None
             or str((schema.get("function") or {}).get("name") or "") in selected
         ]
-        self._owned_names = {s["function"]["name"] for s in self._schemas}
+        # Visibility is prompt composition only. The canonical provider remains
+        # able to dispatch every implemented built-in even when its schema was
+        # not selected for this model turn.
+        self._owned_names = set(self._dispatch_table)
 
     def is_enabled(self) -> bool:
         # The greeting fast path omits this provider entirely.
