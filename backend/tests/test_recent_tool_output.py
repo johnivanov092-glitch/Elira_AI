@@ -1,9 +1,4 @@
-"""Verbatim recent-tool-output carry between turns.
-
-Complements the compact facts digest: the LAST turn's raw grounding-tool output
-is carried forward (bounded) and re-tagged to a system message, so a follow-up
-reads the real text, not a 400-char summary.
-"""
+"""Verbatim recent-tool-output carry between turns."""
 from __future__ import annotations
 
 import sys
@@ -44,15 +39,15 @@ class RecentToolOutputTest(unittest.TestCase):
     def test_empty_digest(self):
         self.assertEqual(_recent_tools_digest([]), "")
 
-    def test_coerce_retags_recent_block_to_system(self):
+    def test_coerce_frames_recent_block_as_assistant_runtime_context(self):
         out = _coerce_history([
             {"role": "user", "content": "что там в файле?"},
             {"role": "assistant", "content": f"{RECENT_TOOLS_PREFIX}\n### read_file(x)\nреальный текст файла 777"},
         ])
-        sys_msgs = [m for m in out if m["role"] == "system"]
-        self.assertTrue(any("реальный текст файла 777" in m["content"] for m in sys_msgs))
-        # never left as a raw assistant block
-        self.assertFalse(any(m["role"] == "assistant" and RECENT_TOOLS_PREFIX in m["content"] for m in out))
+        context_msgs = [m for m in out if m["role"] == "assistant"]
+        self.assertTrue(any("реальный текст файла 777" in m["content"] for m in context_msgs))
+        self.assertFalse(any(RECENT_TOOLS_PREFIX in m["content"] for m in out))
+        self.assertFalse(any(m["role"] == "system" for m in out))
 
 
 if __name__ == "__main__":

@@ -455,6 +455,11 @@ Muse: reasoning_strength
 verification calls. MTP у Qwen и DFlash у Muse независимы от reasoning chip: это
 ускорители генерации на стороне inference server, а не уровни интеллекта.
 
+В model payload всегда ровно один `system`, и он стоит первым. Сжатая история,
+проверенные факты и вывод tools прошлого хода передаются как явно помеченный
+assistant-shaped runtime context. Это сохраняет данные, но не нарушает строгий
+Qwen chat template с ошибкой `System message must be at the beginning`.
+
 ## 12. Prompt cache
 
 Каждый chat payload содержит:

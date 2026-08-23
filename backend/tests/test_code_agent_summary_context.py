@@ -1,9 +1,8 @@
 """Tests for the compressed-context / summarize_history pathway.
 
 Three behaviors pinned here:
-  1. `_coerce_history` re-tags assistant turns with the `[CONTEXT SUMMARY]`
-     prefix as `system` messages, so the LLM doesn't think it said
-     them itself.
+  1. `_coerce_history` frames assistant turns with the `[CONTEXT SUMMARY]`
+     prefix as runtime context without creating late system messages.
   2. `summarize_history` respects a total transcript cap and drops
      oldest turns first, with an explicit marker.
   3. `summarize_history` handles per-message + total caps together.
@@ -11,6 +10,7 @@ Three behaviors pinned here:
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -23,12 +23,59 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.code_agent.agent_loop import (  # noqa: E402
     _coerce_history,
+    stream_code_agent,
     summarize_history,
+)
+from app.application.code_agent.loop_helpers import (  # noqa: E402
+    FACTS_PREFIX,
+    RECENT_TOOLS_PREFIX,
 )
 
 
-class CoerceHistoryReTagsSummaryTest(unittest.TestCase):
-    def test_summary_assistant_message_becomes_system(self) -> None:
+class StrictSystemMessageOrderingTest(unittest.TestCase):
+    def test_runtime_context_history_never_creates_late_system_messages(self) -> None:
+        captured: list[dict[str, Any]] = []
+
+        def fake_chat(**kwargs):
+            captured.extend(kwargs.get("messages") or [])
+            return {"message": {"content": "done", "tool_calls": []}}
+
+        history = [
+            {"role": "user", "content": "connect over SSH"},
+            {"role": "assistant", "content": "connected"},
+            {"role": "assistant", "content": f"{FACTS_PREFIX}\n- host: ai-server"},
+            {
+                "role": "assistant",
+                "content": f"{RECENT_TOOLS_PREFIX}\n### ssh_run\nservice is active",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            list(stream_code_agent(
+                user_message="audit the server",
+                project_root=tmp,
+                conversation_history=history,
+                run_id="strict-system-message-ordering",
+                chat_fn=fake_chat,
+                auto_remember=False,
+                permission_mode="bypass",
+            ))
+
+        system_indices = [
+            index for index, message in enumerate(captured)
+            if message.get("role") == "system"
+        ]
+        self.assertEqual(system_indices, [0])
+        carried_context = "\n".join(
+            str(message.get("content") or "")
+            for message in captured
+            if message.get("role") == "assistant"
+        )
+        self.assertIn("host: ai-server", carried_context)
+        self.assertIn("service is active", carried_context)
+
+
+class CoerceHistoryRuntimeContextTest(unittest.TestCase):
+    def test_summary_assistant_message_stays_assistant_runtime_context(self) -> None:
         history = [
             {"role": "user", "content": "task A"},
             {"role": "assistant", "content": "answer A"},
@@ -37,8 +84,7 @@ class CoerceHistoryReTagsSummaryTest(unittest.TestCase):
         ]
         out = _coerce_history(history)
         roles = [m["role"] for m in out]
-        # The summary turn must have flipped to 'system'
-        self.assertEqual(roles, ["user", "assistant", "system", "user"])
+        self.assertEqual(roles, ["user", "assistant", "assistant", "user"])
 
     def test_summary_marker_is_stripped_and_context_added(self) -> None:
         history = [
@@ -46,8 +92,8 @@ class CoerceHistoryReTagsSummaryTest(unittest.TestCase):
         ]
         out = _coerce_history(history)
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["role"], "system")
-        # The literal marker must NOT remain in the system content
+        self.assertEqual(out[0]["role"], "assistant")
+        # The frontend marker is replaced by explicit runtime-context framing.
         self.assertNotIn("[CONTEXT SUMMARY]", out[0]["content"])
         # The actual summary body must be present
         self.assertIn("fact 1", out[0]["content"])
@@ -161,18 +207,15 @@ class SummarizeHistoryTranscriptCapTest(unittest.TestCase):
         self.assertIn("[...]", sent)
 
     def test_summary_re_tagged_turns_get_prior_summary_prefix(self) -> None:
-        """If an earlier compression already lives in the history as a
-        re-tagged system message, the summarizer must see it labelled
-        as PRIOR_SUMMARY so it knows it's not a regular user/agent turn.
-        """
+        """Runtime summary context remains labelled PRIOR_SUMMARY."""
         captured: dict[str, Any] = {}
 
         def fake_chat(**kwargs):
             captured["messages"] = kwargs.get("messages", [])
             return {"message": {"content": "ok", "tool_calls": []}}
 
-        # The frontend would send this as assistant+marker; _coerce_history
-        # converts it to system inside summarize_history.
+        # The frontend sends assistant+marker; _coerce_history keeps the role
+        # compatible with strict templates and adds explicit runtime framing.
         messages = [
             {"role": "assistant", "content": "[CONTEXT SUMMARY]\n- earlier did X"},
             {"role": "user", "content": "new task"},
