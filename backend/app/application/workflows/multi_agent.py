@@ -6,11 +6,13 @@ seeding, multi-agent run orchestration, and legacy compatibility API.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 from app.application.workflows.db_path import get_workflow_db_path
 from app.application.workflows.store import (
+    get_workflow_run as _app_get_workflow_run,
     get_workflow_template as _app_get_workflow_template,
     init_db as _app_init_db,
     now_utc as _app_now_utc,
@@ -450,10 +452,13 @@ def run_multi_agent_workflow(
     use_orchestrator: bool = False,
     project_root: str | None = None,
     num_ctx: int | None = None,
+    permission_mode: str = "bypass",
+    reasoning_effort: str = "none",
     progress_callback: Callable[[int, int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    run_created_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
-    from app.application.workflows.runtime import start_workflow_run
+    from app.application.workflows.runtime import cancel_workflow_run, start_workflow_run
     seed_builtin_workflows()
     workflow_id = _select_multi_agent_workflow_id(use_reflection=use_reflection, use_orchestrator=use_orchestrator)
     # The run context dict is threaded down to every agent step (see
@@ -465,6 +470,7 @@ def run_multi_agent_workflow(
         run_context["project_root"] = project_root
     if isinstance(num_ctx, int) and num_ctx > 0:
         run_context["num_ctx"] = num_ctx
+    run_context["reasoning_effort"] = reasoning_effort
     project_context = _build_project_context_from_root(project_root)
     file_context = _build_file_context_from_root(project_root, query)
     run = start_workflow_run(
@@ -474,7 +480,36 @@ def run_multi_agent_workflow(
         trigger_source="advanced.multi_agent",
         progress_callback=progress_callback,
         cancel_check=cancel_check,
+        run_created_callback=run_created_callback,
+        permission_mode=permission_mode,
     )
+
+    # A Workflow UI request pauses durable execution. Keep the original caller
+    # alive while the request tray resolves and resumes that same run; there is
+    # no product deadline. This also handles several sequential requests.
+    waiting_statuses = {
+        "running", "paused", "needs_input", "needs_secret",
+        "needs_elevation", "waiting_approval", "needs_reconciliation",
+    }
+    while str(run.get("status") or "") in waiting_statuses:
+        if cancel_check and cancel_check():
+            if str(run.get("status") or "") not in {"completed", "failed", "cancelled"}:
+                try:
+                    run = cancel_workflow_run(
+                        str(run.get("run_id") or ""),
+                        db_path=get_workflow_db_path(),
+                    )
+                except ValueError:
+                    pass
+            break
+        time.sleep(0.2)
+        current = _app_get_workflow_run(
+            db_path=get_workflow_db_path(),
+            run_id=str(run.get("run_id") or ""),
+        )
+        if current is None:
+            break
+        run = current
 
     if run.get("status") != "completed":
         return {

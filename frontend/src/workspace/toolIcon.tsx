@@ -6,7 +6,7 @@ export function toolIcon(tool: string): LucideIcon {
   if (tool === "sandbox_run") return Code2;
   if (tool === "run_bash") return TerminalSquare;
   if (tool === "read_file" || tool === "write_file" || tool === "edit_file") return FileText;
-  if (tool === "glob" || tool === "grep" || tool === "tool_search") return Search;
+  if (tool === "glob" || tool === "grep") return Search;
   if (tool === "recall") return Brain;
   if (tool === "todo_update") return ListChecks;
   if (tool === "delegate_task") return GitBranch;

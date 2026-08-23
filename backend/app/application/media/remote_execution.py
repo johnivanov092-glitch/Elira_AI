@@ -1,7 +1,7 @@
-"""Remote OCR orchestration (R5C) — bind → egress → verify → derived ResourceRef.
+"""Remote OCR orchestration (R5C) — egress → verify → durable ResourceRef.
 
-Ties the run-bound source resource to the remote OCR worker and turns the result
-into a NEW, run-bound resource that the existing ``resource_materialize`` /
+Sends a durable source resource to the remote OCR worker and turns the result
+into a NEW durable resource that the existing ``resource_materialize`` /
 ``resource_publish`` tools consume unchanged. It adds no executor, provider,
 registry, store or DB — only this orchestration and the transport client.
 
@@ -15,8 +15,7 @@ Order of operations (fail-closed at each step):
 5. read the bound bytes; re-assert their digest matches the record;
 6. exactly one ``POST /v1/jobs/ocr`` (retry=0);
 7. strictly validate the response and re-verify ``sha256(text) == text_sha256``;
-8. only then register the UTF-8 text as a new resource (owner inherited),
-   atomically ``add_bound`` it, and on a bind failure ``discard`` it;
+8. only then register the UTF-8 text as a new durable resource (owner inherited);
 9. return ONLY a bounded projection — never the OCR text, bytes, or any host/URL/
    token/path/server message.
 
@@ -32,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from app.application.media import remote_worker_client as rwc
-from app.application.media import resource_store, run_binding
+from app.application.media import resource_store
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +46,6 @@ _ERROR_TEXT = {
     "remote_worker_failed": "the remote OCR worker could not process the resource",
     "remote_invalid_response": "the remote worker returned an invalid response",
     "remote_verify_failed": "the remote result failed integrity verification",
-    "remote_bind_failed": "the remote result could not be attached to this run",
-    "resource_not_bound": "the resource is no longer attached to this run",
     "resource_blob_missing": "the resource bytes are no longer available",
 }
 
@@ -87,15 +84,11 @@ def _derived_name(original: str) -> str:
 
 def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
                    client: rwc.WorkerClient | None = None) -> dict[str, Any]:
-    """Process a run-bound resource on the remote OCR worker.
+    """Process a durable resource on the remote OCR worker.
 
     ``client`` is injectable for tests; in production it is built from env only
     after the local size gate, so an oversize never triggers config I/O either."""
-    binding_generation = run_binding.binding_generation(
-        run_id, required_resource_id=record.resource_id
-    )
-    if binding_generation is None:
-        return _refusal("resource_not_bound")
+    del run_id  # compatibility parameter; durable ids are not run-authorized
 
     # 1. Local cap FIRST — oversize is refused with zero read and zero HTTP.
     local_cap = rwc.max_input_bytes()
@@ -138,15 +131,7 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
     if record.size > effective_cap:
         return _input_too_large(effective_cap)
 
-    # Capabilities is network I/O. Re-pin the run immediately before reading and
-    # sending its bytes so a run cleared while that request was in flight cannot
-    # continue with data egress.
-    if run_binding.binding_generation(
-        run_id, required_resource_id=record.resource_id
-    ) != binding_generation:
-        return _refusal("resource_not_bound")
-
-    # 5. Read the bound bytes; re-assert the recorded digest of what we send.
+    # 5. Read the durable bytes; re-assert the recorded digest of what we send.
     try:
         data = resource_store.read_bytes(record)
     except resource_store.ResourceError as exc:
@@ -204,25 +189,6 @@ def run_remote_ocr(*, record: resource_store.ResourceRecord, run_id: str,
     except Exception as exc:  # noqa: BLE001 — never surface a raw path/exception
         logger.warning("remote result registration failed: %s", type(exc).__name__)
         return _refusal("remote_worker_failed")
-
-    # Atomic union into the run binding. If it fails, the just-registered resource
-    # is unreachable by any run, so discard its blob AND metadata.
-    bound = False
-    try:
-        try:
-            bound = run_binding.add_bound(
-                run_id, derived.resource_id,
-                required_resource_id=record.resource_id,
-                required_generation=binding_generation,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("remote result binding failed: %s", type(exc).__name__)
-            bound = False
-    finally:
-        if not bound:
-            resource_store.discard(derived)
-    if not bound:
-        return _refusal("remote_bind_failed")
 
     # 9. Bounded projection ONLY — exactly this key set. No OCR text, no bytes, no
     #    host/URL/token/path, no server message, no internal HTTP response.

@@ -143,16 +143,37 @@ def get_web_engine_status() -> dict:
     }
 
 
-def search_duckduckgo(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+def search_duckduckgo(
+    query: str,
+    max_results: int = 5,
+    *,
+    categories: str | None = None,
+) -> List[Dict[str, str]]:
     results: list[Dict[str, str]] = []
     with DDGS() as ddgs:
-        for item in ddgs.text(query, max_results=max_results):
+        raw_results = (
+            ddgs.images(query, max_results=max_results)
+            if categories == "images"
+            else ddgs.text(query, max_results=max_results)
+        )
+        for item in raw_results:
+            href = clean_url(item.get("url") or item.get("href", ""))
+            if not href.startswith("http"):
+                continue
             results.append(
                 {
-                    "title": item.get("title", ""),
-                    "href": clean_url(item.get("href", "")),
-                    "body": item.get("body", ""),
+                    "title": (item.get("title") or "").strip(),
+                    "href": href,
+                    "body": (item.get("body") or item.get("source") or "").strip(),
                     "engine": "duckduckgo",
+                    **(
+                        {
+                            "img_src": clean_url(item.get("image", "")),
+                            "thumbnail_src": clean_url(item.get("thumbnail", "")),
+                        }
+                        if categories == "images"
+                        else {}
+                    ),
                 }
             )
     return results
@@ -216,17 +237,114 @@ def search_searxng(
                 "href": href,
                 "body": truncate_text(str(body).strip(), 300),
                 "engine": "searxng",
+                **(
+                    {"img_src": clean_url(item.get("img_src", ""))}
+                    if item.get("img_src")
+                    else {}
+                ),
+                **(
+                    {"thumbnail_src": clean_url(item.get("thumbnail_src", ""))}
+                    if item.get("thumbnail_src")
+                    else {}
+                ),
             }
         )
     return results
 
 
-def search_wikipedia(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+def search_wikipedia(
+    query: str,
+    max_results: int = 5,
+    *,
+    categories: str | None = None,
+) -> List[Dict[str, str]]:
     results: list[Dict[str, str]] = []
+    if categories == "images":
+        try:
+            response = session().get(
+                "https://commons.wikimedia.org/w/api.php",
+                params={
+                    "action": "query",
+                    "generator": "search",
+                    "gsrsearch": query,
+                    "gsrnamespace": 6,
+                    "gsrlimit": min(max(max_results * 2, 3), 10),
+                    "prop": "imageinfo",
+                    "iiprop": "url",
+                    "iiurlwidth": 800,
+                    "format": "json",
+                    "utf8": 1,
+                },
+                timeout=15,
+            )
+            response.raise_for_status()
+            pages = response.json().get("query", {}).get("pages", {})
+            for item in pages.values():
+                image_info = (item.get("imageinfo") or [{}])[0]
+                image_url = str(image_info.get("url") or "").strip()
+                thumbnail = str(image_info.get("thumburl") or "").strip()
+                source_url = str(image_info.get("descriptionurl") or "").strip()
+                title = str(item.get("title") or "").removeprefix("File:").strip()
+                if not title or not image_url or not source_url:
+                    continue
+                results.append({
+                    "title": title,
+                    "href": source_url,
+                    "body": "Wikimedia Commons",
+                    "engine": "wikipedia",
+                    "img_src": clean_url(image_url),
+                    "thumbnail_src": clean_url(thumbnail or image_url),
+                })
+                if len(results) >= max_results:
+                    return results
+        except Exception:
+            pass
     for lang in ("ru", "en"):
         if len(results) >= max_results:
             break
         try:
+            if categories == "images":
+                response = session().get(
+                    f"https://{lang}.wikipedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "generator": "search",
+                        "gsrsearch": query,
+                        "gsrlimit": min(max_results, 5),
+                        "prop": "pageimages|info",
+                        "piprop": "thumbnail|original",
+                        "pithumbsize": 800,
+                        "inprop": "url",
+                        "format": "json",
+                        "utf8": 1,
+                    },
+                    timeout=15,
+                )
+                response.raise_for_status()
+                pages = response.json().get("query", {}).get("pages", {})
+                for item in pages.values():
+                    title = str(item.get("title") or "").strip()
+                    original = str((item.get("original") or {}).get("source") or "").strip()
+                    thumbnail = str((item.get("thumbnail") or {}).get("source") or "").strip()
+                    image_url = original or thumbnail
+                    if not title or not image_url:
+                        continue
+                    href = str(item.get("fullurl") or "").strip()
+                    if not href:
+                        href = f"https://{lang}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
+                    if any(existing["title"] == title for existing in results):
+                        continue
+                    results.append({
+                        "title": title,
+                        "href": href,
+                        "body": f"Wikipedia {lang.upper()}",
+                        "engine": "wikipedia",
+                        "img_src": clean_url(image_url),
+                        "thumbnail_src": clean_url(thumbnail or image_url),
+                    })
+                    if len(results) >= max_results:
+                        break
+                continue
             response = session().get(
                 f"https://{lang}.wikipedia.org/w/api.php",
                 params={

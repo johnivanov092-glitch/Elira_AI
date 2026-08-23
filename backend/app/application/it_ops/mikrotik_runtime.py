@@ -1,23 +1,19 @@
 """Phase 7B — MikroTik inventory adapter over the EXISTING MCP runtime.
 
 Wires the Phase 7A pure projector (``mikrotik_inventory``) to the ONE rostered
-``mikrotik`` MCP server as a single scoped read-only IT-Ops tool
+``mikrotik`` MCP server as a read-only IT-Ops tool
 (``itops_mikrotik_inventory``). The collector uses only the existing transport
 seam — ``mcp_runtime.get_live_client(SERVER_ID)`` + ``client.call_tool()`` —
 with a FIXED, server-owned call list and FIXED args; raw result envelopes are
 passed to the projector UNCHANGED (never flattened to text).
 
-Authorization is layered and fail-closed:
-- env allowlist ``ITOPS_MIKROTIK_ALLOWED_ROUTERS`` (comma-separated router ids,
-  each matching ``_ROUTER_ID_RE``); missing or malformed allowlist ⇒ deny ALL;
-- the route validates the router id + allowlist BEFORE binding a scope;
-- the executor gate re-checks the typed scope (no args, server_id, one shot);
-- this handler independently re-checks the allowlist AGAIN before any MCP call.
+Target selection is explicit: the model supplies a syntactically valid router id,
+and Workflow permission owns the execution decision.
 
 Explicitly NOT done here:
 - no RouterOS/SSH/HTTP client, no second MCP roster/runtime/provider;
 - no write/manage tools — the five calls below are the ONLY tools ever named;
-- no model arguments — the router comes ONLY from the bound operation scope;
+- no raw command arguments — the adapter owns the fixed read-only call plan;
 - no raw MCP envelope/text/error persisted or echoed: evidence stores a typed
   scalar summary + SHA-256 of the canonical projected JSON, and error paths
   return stable machine codes naming at most a tool/section, never payloads.
@@ -27,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 from typing import Any
 
@@ -39,7 +34,6 @@ from app.application.it_ops.mikrotik_inventory import (
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_ROUTERS_ENV = "ITOPS_MIKROTIK_ALLOWED_ROUTERS"
 SERVER_ID = "mikrotik"                      # the ONE rostered MCP server, never a parameter
 TOOL_NAME = "itops_mikrotik_inventory"
 OPERATION = "mikrotik_inventory"
@@ -84,31 +78,11 @@ class MikrotikAdapterError(ValueError):
         self.http_status = http_status
 
 
-# ── target authorization (env allowlist, default-deny) ───────────────────────
+# ── target parsing ───────────────────────────────────────────────────────────
 
 def router_id_valid(router_id: str) -> bool:
     """True iff *router_id* is a well-formed router token (server-side format gate)."""
     return bool(_ROUTER_ID_RE.match(str(router_id or "")))
-
-
-def allowed_routers() -> frozenset[str]:
-    """The explicit router allowlist from ITOPS_MIKROTIK_ALLOWED_ROUTERS
-    (comma-separated). Missing/empty ⇒ deny all. A single malformed entry makes
-    the WHOLE allowlist invalid ⇒ deny all (a typo must never silently authorize
-    a subset, mirroring the fail-closed posture of the network allowlist)."""
-    raw = os.environ.get(ALLOWED_ROUTERS_ENV, "")
-    entries = [part.strip() for part in raw.split(",") if part.strip()]
-    if not entries:
-        return frozenset()
-    if any(not _ROUTER_ID_RE.match(entry) for entry in entries):
-        return frozenset()
-    return frozenset(entries)
-
-
-def router_allowed(router_id: str) -> bool:
-    """Format-valid AND explicitly allowlisted (default-deny)."""
-    rid = str(router_id or "")
-    return router_id_valid(rid) and rid in allowed_routers()
 
 
 # ── collector over the EXISTING MCP runtime ───────────────────────────────────
@@ -313,35 +287,28 @@ def _failed_attempt(
 
 # ── the adapter tool handler ──────────────────────────────────────────────────
 
-def tool_itops_mikrotik_inventory(**_ignored: Any) -> dict[str, Any]:
-    """Scoped read-only MikroTik inventory. Takes NO arguments — the router comes
-    ONLY from the run's bound mikrotik_router scope (the gate already refused any
-    model arg and reserved the run's single operation). Re-checks the allowlist
-    (defense in depth, BEFORE any MCP traffic), collects the fixed call plan via
+def tool_itops_mikrotik_inventory(
+    router_id: str = "",
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Read-only MikroTik inventory for an explicit configured router id.
+
+    Validates the id shape, collects the fixed call plan via
     the existing MCP runtime, projects through the Phase 7A whitelist projector,
     writes ONE typed evidence summary row, and returns bounded deterministic text.
 
-    Failure contract (stable codes, no payload echo): no_mikrotik_scope /
-    router_not_allowed / mcp_unavailable / mcp_call_failed / projection_failed /
+    Failure contract (stable codes, no payload echo): invalid_router_id /
+    mcp_unavailable / mcp_call_failed / projection_failed /
     inventory_incomplete (projection ok but sections unavailable) /
     evidence_persist_failed. coverage="partial" (ip_addresses unsupported
     upstream) and truncated_sections are NOT failures — they are explicit."""
-    from app.application.agent_kernel import operation_scope
     from app.application.code_agent.tools import get_current_run_id
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    scope = operation_scope.get_active_scope(run_id)
-    if (scope is None or scope.target_kind != "mikrotik_router"
-            or scope.mikrotik is None or scope.mikrotik.server_id != SERVER_ID):
-        return {"ok": False, "text": "ERROR: no bound mikrotik scope", "error": "no_mikrotik_scope"}
-    router_id = scope.mikrotik.router_id
-    # Defense-in-depth: the route authorized the router before binding, but the
-    # handler re-verifies against the SAME allowlist and fails closed BEFORE any
-    # MCP traffic — a router must never be inventoried just because a scope
-    # appeared some other way.
-    if not router_allowed(router_id):
-        return {"ok": False, "text": "ERROR: router not allowlisted", "error": "router_not_allowed"}
+    router_id = str(router_id or "").strip()
+    if not router_id_valid(router_id):
+        return {"ok": False, "text": "ERROR: invalid_router_id", "error": "invalid_router_id"}
 
     try:
         raw = collect_raw_inventory(router_id)

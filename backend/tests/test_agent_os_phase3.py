@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.api.routes import event_bus_routes  # noqa: E402
 from app.api.routes.event_bus_routes import router as event_bus_router  # noqa: E402
 from app.application.event_bus import runtime as bus  # noqa: E402
 
@@ -156,6 +158,68 @@ class EventBusRoutesTest(EventBusDbMixin):
         )
         self.assertEqual(delete_response.status_code, 200)
         self.assertTrue(delete_response.json()["removed"])
+
+    def test_event_stream_replays_after_cursor_in_ascending_order(self) -> None:
+        first = bus.emit_event(
+            event_type="workflow/started",
+            payload={"run_id": "run-stream"},
+        )
+        second = bus.emit_event(
+            event_type="item/request",
+            payload={"run_id": "run-stream", "request_id": "req-stream"},
+        )
+        third = bus.emit_event(
+            event_type="workflow/completed",
+            payload={"run_id": "run-stream"},
+        )
+
+        response = self.client.get(
+            "/api/agent-os/events/stream",
+            params={"after_id": 0, "follow": False},
+            headers={
+                "Accept": "text/event-stream",
+                "Last-Event-ID": str(first["id"]),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.headers["content-type"].startswith("text/event-stream"))
+        self.assertIn("event: stream/ready", response.text)
+        self.assertIn(f"id: {second['id']}", response.text)
+        self.assertIn(f"id: {third['id']}", response.text)
+        self.assertIn("event: item/request", response.text)
+        self.assertLess(
+            response.text.index(f"id: {second['id']}"),
+            response.text.index(f"id: {third['id']}"),
+        )
+        self.assertIn('"request_id": "req-stream"', response.text)
+        self.assertNotIn("event: workflow/started", response.text)
+
+    def test_event_stream_emits_heartbeat_while_idle(self) -> None:
+        class ConnectedRequest:
+            async def is_disconnected(self) -> bool:
+                return False
+
+        async def read_frames() -> tuple[str, str]:
+            stream = event_bus_routes._stream_events(
+                ConnectedRequest(),  # type: ignore[arg-type]
+                initial_cursor=0,
+                replay_through=None,
+            )
+            ready = await anext(stream)
+            heartbeat = await anext(stream)
+            await stream.aclose()
+            return ready, heartbeat
+
+        original_interval = event_bus_routes._STREAM_HEARTBEAT_SECONDS
+        event_bus_routes._STREAM_HEARTBEAT_SECONDS = 0
+        try:
+            ready, heartbeat = asyncio.run(read_frames())
+        finally:
+            event_bus_routes._STREAM_HEARTBEAT_SECONDS = original_interval
+
+        self.assertIn("event: stream/ready", ready)
+        self.assertEqual(heartbeat, ": heartbeat\n\n")
 
 
 if __name__ == "__main__":

@@ -39,6 +39,14 @@ from pathlib import Path
 from typing import Any
 
 from app.application.code_agent.tools._run import _agent_child_env
+from app.application.code_agent.tools._shell import (
+    _CURRENT_RUN_ID,
+    _KILLED_RUN_IDS,
+    _LIVE_SHELL_LOCK,
+    _new_process_group_kwargs,
+    _register_shell_proc,
+    _unregister_shell_proc,
+)
 from app.application.projects.scope import project_scope_slug
 from app.core.data_files import DATA_DIR
 from app.infrastructure.encoding import decode_console
@@ -119,6 +127,7 @@ def run_in_sandbox(
         "install_log": str,   # output of pip install, if any
       }
     """
+    del timeout  # compatibility input; Workflow Stop owns termination
     root = Path(project_root).resolve()
     started = time.monotonic()
     sandbox = _ensure_sandbox(root)
@@ -126,48 +135,17 @@ def run_in_sandbox(
 
     install_log = ""
     if install:
-        # Filter junk: empty strings, '.', shell-injection candidates.
+        # Popen receives an argv list, so every non-empty string is passed to pip
+        # literally. Workflow permission, not a hidden package/option allowlist,
+        # authorizes the operation.
         clean = [p.strip() for p in install if isinstance(p, str) and p.strip()]
-        # Drop:
-        #   - shell metas (subprocess.run uses args list so this is
-        #     defense-in-depth, but cheap to do)
-        #   - option flags (-r requirements.txt, --extra-index-url=evil,
-        #     --index-url, etc.) — pip would happily honor them
-        #   - filesystem refs (./pkg, ../pkg, /absolute/path) that could
-        #     point at attacker-controlled files
-        def _is_pkg_spec(p: str) -> bool:
-            if any(c in p for c in (";", "|", "&", "$", "`", "\n", "\r", " ", "\t")):
-                return False
-            if p.startswith("-"):
-                return False
-            if p.startswith(".") or p.startswith("/") or "\\" in p:
-                return False
-            return True
-
-        safe = [p for p in clean if _is_pkg_spec(p)]
-        if safe:
-            try:
-                proc = subprocess.run(
-                    [str(_venv_pip(sandbox)), "install", "--disable-pip-version-check", "--quiet", *safe],
-                    capture_output=True,  # bytes → decode_console
-                    timeout=max(30, min(int(timeout) * 3, 600)),
-                    # Strip secret env so pip (and any build hooks it runs) can't
-                    # read Elira's GitHub/HF/API tokens (FIX-1).
-                    env=_agent_child_env(),
-                )
-                install_log = decode_console(proc.stdout) + decode_console(proc.stderr)
-                if proc.returncode != 0:
-                    return {
-                        "ok": False,
-                        "stdout": "",
-                        "stderr": "",
-                        "exit_code": -1,
-                        "took_seconds": round(time.monotonic() - started, 3),
-                        "sandbox_path": str(sandbox),
-                        "install_log": _truncate(install_log, _STDERR_LIMIT),
-                        "error": f"pip install failed (exit {proc.returncode})",
-                    }
-            except subprocess.TimeoutExpired:
+        if clean:
+            proc, stdout, stderr, cancelled = _run_cancellable(
+                [str(_venv_pip(sandbox)), "install", "--disable-pip-version-check", "--quiet", *clean],
+                env=_agent_child_env(),
+            )
+            install_log = decode_console(stdout) + decode_console(stderr)
+            if cancelled:
                 return {
                     "ok": False,
                     "stdout": "",
@@ -176,49 +154,86 @@ def run_in_sandbox(
                     "took_seconds": round(time.monotonic() - started, 3),
                     "sandbox_path": str(sandbox),
                     "install_log": "",
-                    "error": "pip install timed out",
+                    "error": "pip install stopped by user",
+                }
+            if proc.returncode != 0:
+                return {
+                    "ok": False,
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": -1,
+                    "took_seconds": round(time.monotonic() - started, 3),
+                    "sandbox_path": str(sandbox),
+                    "install_log": _truncate(install_log, _STDERR_LIMIT),
+                    "error": f"pip install failed (exit {proc.returncode})",
                 }
 
     script_path = sandbox / _SCRIPT_NAME
     script_path.write_text(code or "", encoding="utf-8")
 
-    # sandbox_run executes arbitrary model-written Python, so it is the MOST
-    # dangerous env-inheritance path (`import os; print(os.environ[...])`). Build
-    # the child env from the secret-stripped base (FIX-1) — NOT full os.environ —
-    # then layer the UTF-8 knobs that keep print()/repr predictable cross-platform.
+    # Use the same full current-token environment as run_bash, then layer the
+    # UTF-8 knobs that keep print()/repr predictable cross-platform.
     env = {**_agent_child_env(), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
 
-    try:
-        proc = subprocess.run(
-            [str(_venv_python(sandbox)), str(script_path)],
-            capture_output=True,  # bytes → decode_console (child forces PYTHONIOENCODING=utf-8)
-            timeout=int(timeout),
-            cwd=str(work),
-            env=env,
-        )
-    except subprocess.TimeoutExpired as exc:
-        partial_stdout = (exc.stdout or b"").decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        partial_stderr = (exc.stderr or b"").decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+    proc, stdout, stderr, cancelled = _run_cancellable(
+        [str(_venv_python(sandbox)), str(script_path)],
+        cwd=str(work),
+        env=env,
+    )
+    if cancelled:
         return {
             "ok": False,
-            "stdout": _truncate(partial_stdout, _STDOUT_LIMIT),
-            "stderr": _truncate(partial_stderr, _STDERR_LIMIT),
+            "stdout": _truncate(decode_console(stdout), _STDOUT_LIMIT),
+            "stderr": _truncate(decode_console(stderr), _STDERR_LIMIT),
             "exit_code": -1,
             "took_seconds": round(time.monotonic() - started, 3),
             "sandbox_path": str(sandbox),
             "install_log": _truncate(install_log, _STDERR_LIMIT),
-            "error": f"sandbox run timed out after {timeout}s",
+            "error": "sandbox run stopped by user",
         }
 
     return {
         "ok": proc.returncode == 0,
-        "stdout": _truncate(decode_console(proc.stdout), _STDOUT_LIMIT),
-        "stderr": _truncate(decode_console(proc.stderr), _STDERR_LIMIT),
+        "stdout": _truncate(decode_console(stdout), _STDOUT_LIMIT),
+        "stderr": _truncate(decode_console(stderr), _STDERR_LIMIT),
         "exit_code": int(proc.returncode),
         "took_seconds": round(time.monotonic() - started, 3),
         "sandbox_path": str(sandbox),
         "install_log": _truncate(install_log, _STDERR_LIMIT),
     }
+
+
+def _run_cancellable(
+    argv: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> tuple[subprocess.Popen, bytes, bytes, bool]:
+    """Run a sandbox child until natural exit or the Workflow Stop signal."""
+    run_id = _CURRENT_RUN_ID.get()
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        cwd=cwd,
+        env=env,
+        **_new_process_group_kwargs(),
+    )
+    _register_shell_proc(run_id, proc)
+    try:
+        stdout, stderr = proc.communicate()
+    finally:
+        _unregister_shell_proc(run_id, proc)
+    cancelled = False
+    if run_id:
+        with _LIVE_SHELL_LOCK:
+            if run_id in _KILLED_RUN_IDS:
+                _KILLED_RUN_IDS.discard(run_id)
+                cancelled = True
+    if not cancelled and proc.returncode is not None and proc.returncode < 0:
+        cancelled = True
+    return proc, stdout or b"", stderr or b"", cancelled
 
 
 def reset_sandbox(project_root: Path | str) -> dict[str, Any]:

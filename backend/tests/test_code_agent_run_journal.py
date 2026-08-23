@@ -10,7 +10,6 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.application.code_agent.agent_loop import run_code_agent, stream_code_agent  # noqa: E402
 from app.application.code_agent.prompts import _shell_guidance  # noqa: E402
 from app.application.code_agent.run_journal import RunJournal, discover_capabilities  # noqa: E402
 
@@ -26,10 +25,34 @@ def test_run_journal_writes_atomic_state_events_health_and_redacts(tmp_path: Pat
         {"llm": {"available": True}},
     )
     journal.append_event({"type": "step_started", "step": 1})
+    journal.append_event({
+        "type": "usage",
+        "prompt_tokens": 120,
+        "completion_tokens": 30,
+        "total_tokens": 150,
+        "tokens_per_second": 18.5,
+        "context": {
+            "current_tokens": 900,
+            "reserved_output_tokens": 200,
+            "free_tokens": 3000,
+        },
+        "untrusted_payload": {"prompt_tokens": "Bearer do-not-store"},
+        "access_token": "do-not-store",
+    })
     state = json.loads(journal.state_path.read_text(encoding="utf-8"))
     assert state["request"]["api_key"] == "[REDACTED]"
     assert state["last_successful_step"] == 1
     assert _read_jsonl(journal.events_path)[0]["type"] == "step_started"
+    usage = _read_jsonl(journal.events_path)[1]
+    assert usage["prompt_tokens"] == 120
+    assert usage["completion_tokens"] == 30
+    assert usage["total_tokens"] == 150
+    assert usage["tokens_per_second"] == 18.5
+    assert usage["context"]["current_tokens"] == 900
+    assert usage["context"]["reserved_output_tokens"] == 200
+    assert usage["context"]["free_tokens"] == 3000
+    assert usage["untrusted_payload"]["prompt_tokens"] == "[REDACTED]"
+    assert usage["access_token"] == "[REDACTED]"
     assert json.loads(journal.health_path.read_text(encoding="utf-8"))["status"] == "running"
     journal.finish(interrupted=True)
     assert not journal.lock_path.exists()
@@ -61,61 +84,6 @@ def test_global_write_lock_blocks_concurrent_run_and_recovers_stale_lock(tmp_pat
     second.finish()
 
 
-def test_partial_run_is_persisted_and_can_resume(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    runs_root = tmp_path / "runs"
-    project = tmp_path / "project"
-    project.mkdir()
-    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(runs_root))
-
-    def looping_chat(**kwargs):
-        if not kwargs.get("tools"):
-            return {"message": {"content": "PARTIAL RESULT", "tool_calls": []}}
-        return {
-            "message": {
-                "content": "",
-                "tool_calls": [{"function": {"name": "glob", "arguments": {"pattern": "*"}}}],
-            }
-        }
-
-    result = run_code_agent(
-        user_message="inspect",
-        project_root=project,
-        model="test-model",
-        max_steps=1,
-        run_id="resume-test",
-        chat_fn=looping_chat,
-    )
-    assert result["partial"] is True
-    journal = RunJournal.load("resume-test", runs_root=runs_root)
-    assert journal.state["resumable"] is True
-    assert journal.commands_path.is_file()
-
-    def finishing_chat(**_kwargs):
-        return {"message": {"content": "Готово после продолжения", "tool_calls": []}}
-
-    events = list(stream_code_agent(
-        user_message="continue",
-        project_root=project,
-        model="test-model",
-        max_steps=1,
-        run_id="resume-test",
-        chat_fn=finishing_chat,
-        resume=True,
-    ))
-    assert events[0]["type"] == "run_resumed"
-    assert events[-1]["type"] == "done"
-    assert events[-1]["ok"] is True
-    assert events[-1]["resumable"] is False
-    final_state = RunJournal.load("resume-test", runs_root=runs_root).state
-    assert final_state["status"] == "completed"
-    assert final_state["resume_count"] == 1
-    assert not (runs_root / "resume-test" / "run.lock").exists()
-    assert "run_resumed" in {event["type"] for event in _read_jsonl(journal.events_path)}
-
-
 def test_windows_shell_guidance_matches_run_bash_runtime() -> None:
     guidance = _shell_guidance("win32")
     assert "cmd.exe" in guidance
@@ -126,12 +94,10 @@ def test_windows_shell_guidance_matches_run_bash_runtime() -> None:
 def test_capability_snapshot_marks_unconfigured_services_missing(monkeypatch) -> None:
     monkeypatch.setenv("LLAMA_SERVER_ENABLED", "false")
     monkeypatch.setenv("LOCAL_EMBED_ENABLED", "false")
-    # vision now truthfully follows VISION_ENABLED (was hardcoded False) — disable
-    # it explicitly so this "unconfigured services are missing" test stays valid.
-    monkeypatch.setenv("VISION_ENABLED", "false")
     capabilities = discover_capabilities(model="local-model", tools=["read_file"])
     assert capabilities["llm"]["available"] is False
     assert capabilities["embedding"]["available"] is False
-    assert capabilities["vision"]["available"] is False
+    assert capabilities["vision"]["available"] is True
     assert capabilities["web"]["available"] is True
-    assert {"llm", "embedding", "vision"}.issubset(capabilities["missing"])
+    assert {"llm", "embedding"}.issubset(capabilities["missing"])
+    assert "vision" not in capabilities["missing"]

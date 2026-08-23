@@ -110,13 +110,20 @@ def delete_rag(item_id: int) -> dict:
 
 
 def rag_stats() -> dict:
-    return rag_runtime.rag_stats(conn_factory=_conn, embed_model=_effective_embed_model())
+    from app.infrastructure.llm.openai_compatible import local_embed_config
+
+    result = rag_runtime.rag_stats(
+        conn_factory=_conn,
+        embed_model=_effective_embed_model(),
+    )
+    result["embedding_enabled"] = local_embed_config().enabled
+    return result
 
 
 def prune_rag(
     max_age_days: int = 30,
-    max_importance: int = 3,
-    categories: tuple[str, ...] = ("agent_turn",),
+    max_importance: int = 4,
+    categories: tuple[str, ...] = ("agent_turn", "verified_turn"),
     dry_run: bool = False,
 ) -> dict:
     """Evict stale, never-recalled machine-made memories (decay). See

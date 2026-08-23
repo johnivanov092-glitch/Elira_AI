@@ -118,24 +118,6 @@ class _LspProviderTestBase(unittest.TestCase):
         return name
 
 
-class DisabledByDefaultTest(unittest.TestCase):
-    """No live server ⇒ provider is invisible to the agent."""
-
-    def setUp(self) -> None:
-        lsp_runtime.stop_all_servers()
-
-    def test_no_live_server_means_not_enabled(self) -> None:
-        provider = LspToolProvider()
-        self.assertFalse(provider.is_enabled())
-
-    def test_no_live_server_means_zero_schemas(self) -> None:
-        provider = LspToolProvider()
-        self.assertEqual(provider.get_schemas(), [])
-
-    def test_build_returns_empty_when_no_server(self) -> None:
-        self.assertEqual(build_lsp_providers(), [])
-
-
 class SchemaTest(_LspProviderTestBase):
     """The schema surface is static and exactly the three read-only tools."""
 
@@ -268,16 +250,6 @@ class DispatchNeverRaisesTest(_LspProviderTestBase):
         res = provider.dispatch("lsp_diagnostics", {})
         self.assertTrue(res["text"].startswith("ERROR"))
         self.assertIn("path", res["text"])
-
-    def test_path_outside_project_root_is_rejected(self) -> None:
-        """The sandbox must reject traversal out of the project root with an
-        ERROR, without ever opening the file or hitting the server."""
-        self._register_fake_server()
-        provider = LspToolProvider()
-        res = provider.dispatch(
-            "lsp_diagnostics", {"path": "../../../etc/passwd"}
-        )
-        self.assertTrue(res["text"].startswith("ERROR"))
 
     def test_nonexistent_file_is_clean_error(self) -> None:
         self._register_fake_server()

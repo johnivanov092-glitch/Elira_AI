@@ -378,9 +378,10 @@ def _build_project_brain_tools(map_service, brain_service) -> list[dict[str, Any
 def _build_native_code_agent_tools() -> list[dict[str, Any]]:
     """Metadata-only ToolSpec records for code_agent native tools.
 
-    These records provide permission/timeout/output metadata so the executor
-    can enforce policy. Handlers are noops — actual dispatch goes through
-    BuiltinToolProvider, not through tool_registry.execute_tool.
+    These records provide inventory/presentation metadata. Legacy permission,
+    scope and timeout columns remain schema-compatible but are not execution
+    gates. Handlers are noops — actual dispatch goes through BuiltinToolProvider,
+    not through tool_registry.execute_tool.
     """
     def _noop(a: dict) -> dict:
         return {"ok": False, "error": "native tool — execute via code-agent, not tool_registry"}
@@ -396,7 +397,6 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("web_search",  "Web Search",   "web",     "Search the web",                          30, 50000, True),
         ("web_fetch",   "Web Fetch",    "web",     "Fetch and parse a web page",              30, 50000, True),
         ("web_query",   "Web Query",    "web",     "Search the run's saved web-evidence corpus for relevant excerpts (web_fetch store)", 30, 20000, True),
-        ("web_claim_add","Web Claim Add","web",     "Record answer claims with verbatim web-corpus evidence into the citation ledger", 30, 10000, True),
         ("web_sitemap",  "Web Sitemap",  "web",     "Discover URLs from a site sitemap.xml (bounded, same-domain, robots-respected)", 30, 20000, True),
         ("browser",     "Browser",      "web",     "Open a URL in a real headless browser (renders JS) and return page text", 90, 50000, True),
         ("translator",  "Translator",   "text",    "Translate text with the local LLM",        60, 10000, True),
@@ -426,25 +426,27 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         ("resource_publish", "Publish Resource", "media", "Publish an already-produced project file to the user as a downloadable artifact (streaming, integrity-verified, no overwrite) via the existing download route", 60, 5000, True),
         ("resource_remote_process", "Remote OCR Process", "media", "Send a file attached to this run to the trusted remote OCR worker, verify the result, and attach the recognized text as a new resource (data egress; approval required)", 900, 5000, False),
         ("computer",       "Computer Control", "system", "Control the desktop: screenshot + mouse/keyboard", 60, 20000, False),
+        ("runtime_control", "Runtime Control", "system", "Manage integration runtimes through Workflow UI", 900, 50000, False),
     ]
     auto_side_effect_tools = [
         ("todo_update", "Todo Update", "task", "Read or update the durable run checklist", 15, 10000, False),
-        ("delegate_task", "Delegate Task", "task", "Run a bounded read-only subagent", 60, 50000, False),
+        ("delegate_task", "Delegate Task", "task", "Run a child agent until completion or Workflow Stop", 60, 50000, False),
         ("remember", "Remember", "memory", "Save a durable user fact / correction (source of truth)", 15, 5000, False),
     ]
 
-    # P9.2A2: declared scopes (from the fixed vocabulary) for native tools.
-    _native_scopes = {
+    # Legacy inventory labels retained only for DB compatibility/observability.
+    # ToolExecutor never interprets them as authorization scopes.
+    _legacy_scope_labels = {
         "read_file": ["fs.read"], "glob": ["fs.read"], "grep": ["fs.read"],
         "path_exists": ["fs.read"],
         "project_map": ["fs.read"], "recall": ["fs.read"],
         "web_search": ["net.outbound"], "web_fetch": ["net.outbound"], "browser": ["net.outbound"],
         "web_query": ["fs.read"],   # reads the local corpus, no network
-        "web_claim_add": ["fs.read", "fs.write"],  # verifies corpus, writes ledger; no network
         "web_sitemap": ["net.outbound"],  # fetches sitemap.xml/robots.txt (SSRF-guarded)
         "csv": ["fs.read"], "converter": ["fs.read", "fs.write"],
         "todo_update": ["task.write"],
         "delegate_task": ["task.write", "fs.read"],
+        "runtime_control": ["shell.exec", "net.outbound", "fs.read", "fs.write"],
         "remember": ["task.write"],
         "write_file": ["fs.write"], "edit_file": ["fs.write"],
         "run_bash": ["shell.exec"], "run_server": ["shell.exec"], "sandbox_run": ["shell.exec"], "sandbox_reset": ["fs.write"],
@@ -460,12 +462,9 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
         "resource_publish": ["fs.read", "fs.write"],
         # Reads the run-bound resource blob (fs.read), sends it to the remote OCR
         # worker (net.outbound), and registers the recognized text as a new
-        # durable resource — a blob + meta sidecar written under the data root,
-        # unlinked on a bind failure (fs.write). MANDATORY: a missing entry yields
-        # [] and the executor scope gate would then pass vacuously.
+        # durable resource — a blob + meta sidecar written under the data root.
         "resource_remote_process": ["fs.read", "fs.write", "net.outbound"],
-        # Desktop control is shell-level power: gated like run_bash, so the
-        # "accept_edits" mode never auto-approves it (only "bypass" / explicit ask).
+        # Desktop control is shell-level power and is classified by Workflow impact.
         "computer": ["shell.exec", "net.outbound"],
     }
 
@@ -476,7 +475,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
             "permission": "auto", "side_effect": False,
-            "scopes": _native_scopes.get(name, []),
+            "scopes": _legacy_scope_labels.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         })
@@ -486,7 +485,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
             "permission": "auto", "side_effect": True,
-            "scopes": _native_scopes.get(name, []),
+            "scopes": _legacy_scope_labels.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         })
@@ -496,7 +495,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             "display_name": display, "category": cat, "description": desc,
             "source": "code_agent",
             "permission": "require_approval", "side_effect": True,
-            "scopes": _native_scopes.get(name, []),
+            "scopes": _legacy_scope_labels.get(name, []),
             "idempotent": idempotent,
             "timeout_seconds": timeout, "max_output_chars": max_chars,
         }
@@ -514,10 +513,7 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
             }
         result.append(tool_def)
 
-    # Russian search synonyms so tool_search matches Cyrillic / `docx` queries —
-    # the base ToolSpec haystack is English-only (name/display/description), so a
-    # natural query like tool_search("документ" / "ворд" / "docx") misses. Additive:
-    # only the names listed here gain *_ru fields; every other spec is untouched.
+    # Russian descriptions keep provider metadata readable in diagnostics.
     _ru_search_terms = {
         "file_gen": (
             "Генерация файла Word/Excel/PDF",
@@ -568,17 +564,10 @@ def _build_native_code_agent_tools() -> list[dict[str, Any]]:
 def _build_ssh_tools() -> list[dict[str, Any]]:
     """Metadata-only ToolSpec records for the SSH provider's tools (P9.2-FIXUP).
 
-    These exist so the unified executor can enforce policy + scopes on SSH calls;
+    These exist so the unified executor can describe SSH calls;
     actual dispatch runs through SshToolProvider, not the registry handler (the
-    handler is a noop). The SSH provider is itself disabled until the user adds an
-    allowlisted host, so these specs are inert until SSH is in use. They seed as
-    classified + enabled (trusted built-in source), unlike plugins/MCP.
-
-    Scopes (fixed vocabulary):
-      ssh_list_hosts : net.outbound
-      ssh_read       : net.outbound + fs.read
-      ssh_run        : net.outbound + shell.exec
-      ssh_write      : net.outbound + fs.write
+    handler is a noop). Saved hosts are optional discovery shortcuts; explicit
+    SSH targets are accepted directly by the provider.
     """
     def _noop(a: dict) -> dict:
         return {"ok": False, "error": "ssh tool — execute via code-agent SSH provider, not tool_registry"}
@@ -587,7 +576,7 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
         {
             "name": "ssh_list_hosts", "handler": _noop,
             "display_name": "SSH List Hosts", "display_name_ru": "SSH хосты",
-            "category": "ssh", "description": "List allowlisted SSH hosts",
+            "category": "ssh", "description": "List saved SSH host shortcuts",
             "source": "ssh",
             "permission": "auto", "side_effect": False, "idempotent": True,
             "scopes": ["net.outbound"],
@@ -694,15 +683,7 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
 
 
 def _build_itops_tools() -> list[dict[str, Any]]:
-    """Metadata-only ToolSpec for the Scoped Read-Only SSH diagnostic (itops).
-
-    Dispatch runs through ItopsToolProvider (handler here is a noop). Seeded as a
-    trusted built-in (classified + enabled). Read-only (permission 'auto',
-    side_effect False) — the REAL authorization is the executor operation-scope
-    gate, which blocks it unless the run has a bound read-only scope pinned to the
-    requested profile_id. NOT in BASE_TOOLS (would flip the base-prompt compaction
-    canary); activatable via tool_search.
-    """
+    """Legacy metadata helper for the canonical IT Ops runtime provider."""
     def _noop(a: dict) -> dict:
         return {"ok": False, "error": "itops tool — execute via ItopsToolProvider"}
 
@@ -711,7 +692,7 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "name": "itops_ssh_healthcheck", "handler": _noop,
             "display_name": "IT-Ops SSH Health Check", "display_name_ru": "SSH диагностика",
             "category": "itops",
-            "description": "Read-only SSH diagnostic (hostname, uname -a, uptime) on a saved verified profile",
+            "description": "Read-only SSH diagnostic (hostname, uname -a, uptime) on an explicit target or saved shortcut",
             "source": "itops",
             "permission": "auto", "side_effect": False, "idempotent": True,
             "scopes": ["net.outbound"],
@@ -741,7 +722,7 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "name": "itops_network_inventory", "handler": _noop,
             "display_name": "IT-Ops Network Inventory", "display_name_ru": "Инвентарь сети",
             "category": "itops",
-            "description": "Read-only bounded TCP-connect network inventory of an authorized CIDR bound to the run (no args)",
+            "description": "Read-only TCP-connect inventory of an explicit IPv4 CIDR and port set",
             "source": "itops",
             "permission": "auto", "side_effect": False, "idempotent": True,
             "scopes": ["net.outbound"],
@@ -751,7 +732,7 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "name": "itops_systemd_service_inspect", "handler": _noop,
             "display_name": "IT-Ops systemd Inspect", "display_name_ru": "Инспекция systemd-службы",
             "category": "itops",
-            "description": "Read-only systemd service inspect (fixed systemctl show) for the unit bound to the run (no args)",
+            "description": "Read-only systemd service inspect for an explicit target and unit",
             "source": "itops",
             "permission": "auto", "side_effect": False, "idempotent": True,
             "scopes": ["net.outbound"],
@@ -778,20 +759,10 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "timeout_seconds": 30, "max_output_chars": 10000,
         },
         {
-            "name": "itops_change_apply", "handler": _noop,
-            "display_name": "IT-Ops Local Change", "display_name_ru": "Локальное IT-изменение",
-            "category": "itops",
-            "description": "Apply one reviewed executor target locally, or request its dedicated Telegram approval when invoked remotely",
-            "source": "itops",
-            "permission": "require_approval", "side_effect": True, "idempotent": False,
-            "scopes": ["net.outbound", "fs.write"],
-            "timeout_seconds": 180, "max_output_chars": 10000,
-        },
-        {
             "name": "itops_mikrotik_inventory", "handler": _noop,
             "display_name": "IT-Ops MikroTik Inventory", "display_name_ru": "Инвентарь MikroTik",
             "category": "itops",
-            "description": "Read-only MikroTik inventory (system/interfaces/routes/DNS/DHCP) via the rostered mikrotik MCP for the router bound to the run (no args)",
+            "description": "Read-only MikroTik inventory (system/interfaces/routes/DNS/DHCP) via the configured MCP runtime",
             "source": "itops",
             "permission": "auto", "side_effect": False, "idempotent": True,
             "scopes": ["net.outbound"],
@@ -801,42 +772,8 @@ def _build_itops_tools() -> list[dict[str, Any]]:
 
 
 def build_builtin_tools() -> list[dict[str, Any]]:
-    from app.application.git.runtime import git_commit as _git_commit_fn
-    from app.application.git.runtime import git_status as _git_status_fn
-    from app.application.library.runtime import build_library_context, list_library_files
-    from app.application.project_brain.loop_service import ProjectBrainLoopService
-    from app.application.project_brain.map_service import ProjectMapService
-    from app.application.project_patch.service import ProjectPatchService
-    from app.application.smart_memory import search_memory as smart_search_memory
-    from app.domain.runtime.python_runner import execute_python
-    from app.infrastructure.browser.agent import BrowserAgent
-    from app.infrastructure.search.multisearch import WebMultiSearchService
-    from app.infrastructure.search.web_search import research_web, search_web
-    from app.infrastructure.storage.project_files import (
-        list_project_tree,
-        read_project_file,
-        search_project,
-        write_project_file,
-    )
-
-    def search_memory_tool(profile: str, query: str, limit: int = 5) -> dict[str, Any]:
-        result = smart_search_memory(query=query, limit=max(1, int(limit)))
-        result["profile"] = str(profile or "default")
-        return result
-
-    patch_service = ProjectPatchService()
-    map_service = ProjectMapService()
-    brain_service = ProjectBrainLoopService()
-
+    """Seed metadata for tools owned by the canonical provider registry."""
     return [
-        *_build_memory_search_tools(search_memory_tool),
-        *_build_web_tools(search_web, research_web, BrowserAgent, WebMultiSearchService),
-        *_build_code_tools(execute_python),
-        *_build_project_file_tools(list_project_tree, read_project_file, write_project_file, search_project),
-        *_build_project_patch_tools(patch_service),
-        *_build_system_tools(_git_status_fn, _git_commit_fn),
-        *_build_library_tools(list_library_files, build_library_context),
-        *_build_project_brain_tools(map_service, brain_service),
         *_build_native_code_agent_tools(),
         *_build_ssh_tools(),
         *_build_itops_tools(),

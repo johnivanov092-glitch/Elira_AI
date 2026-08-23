@@ -166,6 +166,7 @@ def test_web_search_is_discovery_not_external_source_evidence() -> None:
 
     _record(evidence, "web_search", text="search snippets")
     assert not evidence.has_external_source
+    assert evidence.has_web_research
 
     _record(
         evidence,
@@ -181,6 +182,45 @@ def test_web_search_is_discovery_not_external_source_evidence() -> None:
     assert evidence.requires_external_source(
         "Проверь в интернете, кто основал компанию",
         "Компания основана Иваном.",
+    )
+
+
+def test_current_state_questions_require_external_source() -> None:
+    evidence = RunEvidence()
+
+    assert evidence.requires_external_source(
+        "Что сейчас с Афганистаном?",
+        "Талибы находятся у власти три года.",
+    )
+    assert evidence.requires_external_source(
+        "Как обстоят дела на данный момент?",
+        "Ситуация стабильна.",
+    )
+    assert evidence.requires_external_source(
+        "Search the web and verify who founded Poolside AI.",
+        "It was founded by two people.",
+    )
+    assert not evidence.requires_external_source(
+        "Что сейчас с сервером?",
+        "Load average равен 0.2 по результату ssh_run.",
+    )
+
+
+def test_niche_game_and_film_facts_require_external_source() -> None:
+    evidence = RunEvidence()
+
+    assert evidence.requires_external_source(
+        "В Паньгу Проклятие души скил, какую руну посоветуешь поставить в умение. "
+        "Игра Perfect World RU",
+        "Поставь зелёную руну: она даёт +30%.",
+    )
+    assert evidence.requires_external_source(
+        "Расскажи, что это за фильм и что за ситуация в «Четвёртом виде»",
+        "Архивные записи настоящие.",
+    )
+    assert evidence.requires_external_source(
+        "А настоящая доктор Эбигейл Тайлер существовала?",
+        "Да, это реальный человек.",
     )
 
 

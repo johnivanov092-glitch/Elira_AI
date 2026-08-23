@@ -8,9 +8,6 @@ const LEGACY_ACTIONS = new Set([
   "answer",
   "cancelled",
   "error",
-  "loop_guard",
-  "max_steps",
-  "no_progress",
   "timeout",
 ]);
 

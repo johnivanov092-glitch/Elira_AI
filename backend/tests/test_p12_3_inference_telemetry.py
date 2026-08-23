@@ -56,10 +56,8 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(agent_loop, "_resolve_code_route", return_value=("test-code", 8192, decision)), \
              patch.object(agent_loop, "_record_code_route_metric"), \
-             patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
+             patch.object(agent_loop, "build_runtime_tool_registry", return_value=agent_loop.ToolRegistry([])), \
              patch.object(agent_loop.ToolRegistry, "collect_schemas", return_value=[]), \
-             patch("app.application.agent_registry.sandbox.preflight_or_raise",
-                   return_value={"limit": {"max_execution_seconds": 600}}), \
              patch.object(agent_loop, "record_inference_telemetry") as telemetry:
             events = list(agent_loop.stream_code_agent(
                 user_message="answer",
@@ -99,10 +97,8 @@ class CodeAgentInferenceTelemetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(agent_loop, "_resolve_code_route", return_value=("test-code", 8192, decision)), \
              patch.object(agent_loop, "_record_code_route_metric"), \
-             patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
+             patch.object(agent_loop, "build_runtime_tool_registry", return_value=agent_loop.ToolRegistry([])), \
              patch.object(agent_loop.ToolRegistry, "collect_schemas", return_value=[]), \
-             patch("app.application.agent_registry.sandbox.preflight_or_raise",
-                   return_value={"limit": {"max_execution_seconds": 600}}), \
              patch.object(agent_loop, "record_inference_telemetry"):
             events = list(agent_loop.stream_code_agent(
                 user_message="answer", project_root=tmp, run_id="p12-usage-run",

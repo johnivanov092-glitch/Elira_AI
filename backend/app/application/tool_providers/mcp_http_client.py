@@ -8,30 +8,24 @@ speaks JSON-RPC over a child process's pipes, this one speaks JSON-RPC over
 HTTP POST and parses either a plain JSON body or an SSE stream of events
 (the two response shapes the "Streamable HTTP" MCP transport allows).
 
-This is the **remote** transport. It is disabled by default at the runtime
-layer (ELIRA_REMOTE_MCP) — this module never decides policy, it just
-implements the transport with the security properties D1 requires:
+This is the **remote** transport. Workflow runtime lifecycle controls when it
+is configured and started; there is no feature gate or destination allowlist.
 
-  * SSRF guard — the target host must resolve to a public address. Private,
-    loopback, link-local, and cloud-metadata ranges are refused. The guard
-    re-runs on every redirect hop (defends DNS-rebind / redirect-to-private).
-  * HTTPS by default — a plain-http URL is refused unless the server spec
-    opted in with allow_insecure_http=True.
+  * Local-network access — HTTP(S), loopback, private LAN and metadata targets
+    are available to the user-controlled local workflow.
   * Secrets isolation — auth headers live in a separate `secret_headers`
     field that is merged into the wire request but never logged and never
     placed in audit payloads.
-  * Bounded everything — connect/read timeouts and a small retry budget on
-    transient transport failures; sanitized + length-capped resource/prompt
+  * Transport failures — connect/read failures and a small retry budget on
+    transient network errors; sanitized + length-capped resource/prompt
     payloads (shared with the stdio client via mcp_sanitize).
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 import os
 import re
-import socket
 import threading
 from typing import Any, Optional
 from urllib.parse import urlsplit, urljoin
@@ -125,76 +119,16 @@ class McpSecurityError(McpError):
 # ── SSRF guard ───────────────────────────────────────────────────
 
 
-def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    """True if `ip` is in a range we must never let an MCP server reach.
-
-    Covers loopback, private (RFC1918 / ULA), link-local (incl. the
-    169.254.169.254 cloud-metadata endpoint), unspecified, multicast, and
-    reserved. IPv4-mapped IPv6 is unwrapped first so `::ffff:127.0.0.1`
-    can't sneak a loopback target past the v4 checks.
-    """
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_unspecified
-        or ip.is_multicast
-        or ip.is_reserved
-    )
-
-
 def _guard_url(url: str, *, allow_insecure_http: bool, allow_private_address: bool = False) -> None:
-    """Refuse a URL whose scheme or resolved address is unsafe.
-
-    Raises McpSecurityError on: a non-http(s) scheme; plain http without
-    explicit opt-in; a missing host; a host that fails to resolve; or ANY
-    resolved address landing in a blocked range. We check every address the
-    host resolves to (not just the first) so a multi-A-record host can't
-    smuggle one private answer past the guard.
-    """
+    """Validate the transport shape without restricting its destination."""
+    del allow_insecure_http, allow_private_address
     parts = urlsplit(url)
     scheme = (parts.scheme or "").lower()
     if scheme not in ("http", "https"):
         raise McpSecurityError(f"unsupported URL scheme {scheme!r} (only http/https)")
-    if scheme == "http" and not allow_insecure_http:
-        raise McpSecurityError(
-            "plain http is refused; use https or set allow_insecure_http on the server"
-        )
     host = parts.hostname
     if not host:
         raise McpSecurityError(f"URL has no host: {url!r}")
-
-    # A literal IP is checked directly; a name is resolved and every answer
-    # checked. getaddrinfo covers both A and AAAA.
-    try:
-        literal = ipaddress.ip_address(host)
-    except ValueError:
-        literal = None
-    if literal is not None:
-        if _is_blocked_ip(literal) and not allow_private_address:
-            raise McpSecurityError(f"blocked address {host} (private/loopback/metadata)")
-        return
-
-    try:
-        infos = socket.getaddrinfo(host, parts.port or (443 if scheme == "https" else 80),
-                                   proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        raise McpSecurityError(f"cannot resolve host {host!r}: {exc}")
-    if not infos:
-        raise McpSecurityError(f"host {host!r} resolved to no addresses")
-    for info in infos:
-        sockaddr = info[4]
-        addr = sockaddr[0]
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            continue
-        if _is_blocked_ip(ip) and not allow_private_address:
-            raise McpSecurityError(
-                f"host {host!r} resolves to blocked address {addr} (private/loopback/metadata)"
-            )
 
 
 class McpHttpClient:

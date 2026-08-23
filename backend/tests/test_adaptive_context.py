@@ -502,13 +502,11 @@ def _loop_env():
     with patch.object(agent_loop, "_resolve_code_route",
                       side_effect=lambda model, num_ctx, agent_id="code-agent": ("test-model", int(num_ctx or 0), None)), \
          patch.object(agent_loop, "_record_code_route_metric"), \
-         patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
+         patch.object(agent_loop, "build_runtime_tool_registry", return_value=ToolRegistry([])), \
          patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS)), \
          patch.object(agent_loop, "_server_url_alive", return_value=True), \
          patch.object(agent_loop, "_run_owned_servers", return_value=[]), \
-         patch.object(agent_loop, "_stop_run_servers", return_value=[]), \
-         patch("app.application.agent_registry.sandbox.preflight_or_raise",
-               return_value={"limit": {"max_execution_seconds": 600}}):
+         patch.object(agent_loop, "_stop_run_servers", return_value=[]):
         yield
 
 
@@ -526,8 +524,8 @@ class ObservabilityTest(unittest.TestCase):
             events = []
             for ev in stream_code_agent(
                 user_message="скажи привет", project_root=tmp, model="test-model",
-                max_steps=3, chat_fn=chat, run_id=rid, num_ctx=65536,
-                approval_wait_seconds=0, auto_remember=False, permission_mode="bypass",
+                chat_fn=chat, run_id=rid, num_ctx=65536,
+                auto_remember=False, permission_mode="bypass",
             ):
                 if ev.get("type") == "context_resolved":
                     order.append("context_resolved")

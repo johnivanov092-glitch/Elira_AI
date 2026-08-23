@@ -14,8 +14,9 @@ Two separate AI-server backends, addressed differently per the user's routing:
   The server contract is ``file`` (required) + ``language`` + ``pdf_fallback``.
 
 Both are env-driven frozen-dataclass configs mirroring
-``openai_compatible.local_llm_config`` / ``local_embed_config``. Off by default;
-callers must check ``enabled`` (or rely on the helpers returning ``None``).
+``openai_compatible.local_llm_config`` / ``local_embed_config``. An explicit
+tool call always attempts the configured service; reachability is a transport
+result, not a feature authorization flag.
 """
 from __future__ import annotations
 
@@ -81,7 +82,7 @@ _DEFAULT_VISION_PROMPT = (
 
 def vision_config() -> VisionConfig:
     return VisionConfig(
-        enabled=_env_bool("VISION_ENABLED"),
+        enabled=True,
         base_url=_env_value("VISION_BASE_URL", "http://192.168.88.15:8004/v1").rstrip("/"),
         model=_env_value("VISION_MODEL", "vision-model").strip() or "vision-model",
         api_key=_env_value("VISION_API_KEY", "local").strip() or "local",
@@ -92,7 +93,7 @@ def vision_config() -> VisionConfig:
 
 
 def is_vision_enabled() -> bool:
-    return vision_config().enabled
+    return True
 
 
 def _data_url(filename: str, contents: bytes) -> str:
@@ -105,11 +106,9 @@ def _data_url(filename: str, contents: bytes) -> str:
 
 def describe_image(filename: str, contents: bytes, *, prompt: str | None = None) -> str | None:
     """Describe an image via the vision model (:8004). Returns the text
-    description, or ``None`` if vision is disabled or the call fails. Callers
+    description, or ``None`` if the call fails. Callers
     decide what to do with ``None`` (e.g. leave preview empty)."""
     cfg = vision_config()
-    if not cfg.enabled:
-        return None
     if not contents:
         return None
     try:
@@ -167,7 +166,7 @@ class OcrConfig:
 
 def ocr_config() -> OcrConfig:
     return OcrConfig(
-        enabled=_env_bool("OCR_ENABLED"),
+        enabled=True,
         url=_env_value("OCR_URL", "http://192.168.88.15:8002/ocr").rstrip("/"),
         language=_env_value("OCR_LANGUAGE", "auto").strip() or "auto",
         pdf_fallback=_env_bool("OCR_PDF_FALLBACK", True),
@@ -176,7 +175,7 @@ def ocr_config() -> OcrConfig:
 
 
 def is_ocr_enabled() -> bool:
-    return ocr_config().enabled
+    return True
 
 
 def ocr_document(filename: str, contents: bytes, *, language: str | None = None) -> str | None:
@@ -184,12 +183,10 @@ def ocr_document(filename: str, contents: bytes, *, language: str | None = None)
 
     Multipart contract: ``file`` (required), ``language`` (auto|ru|en),
     ``pdf_fallback``. Returns the aggregate text, or ``None`` if OCR is
-    disabled, the server is unreachable, or no text was found — so callers can
+    server is unreachable, or no text was found — so callers can
     fall back to local pytesseract.
     """
     cfg = ocr_config()
-    if not cfg.enabled:
-        return None
     if not contents:
         return None
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"

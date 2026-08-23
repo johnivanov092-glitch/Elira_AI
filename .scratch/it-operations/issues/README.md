@@ -4,7 +4,7 @@ One file per phase / track. Core phases 0–9 are the implementation order; trac
 10–20 are future domain tracks (planned, not now — captured for the capability
 matrix, dependencies, and ordering).
 
-**Program plan:** [docs/IT_OPERATIONS_PLAN.md](../../../docs/IT_OPERATIONS_PLAN.md) ·
+**Current architecture:** [docs/AGENT_ARCHITECTURE_GUIDE_RU.md](../../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md) ·
 **PRD:** [../PRD.md](../PRD.md) · **Foundation detail:** [../FOUNDATION_IMPL.md](../FOUNDATION_IMPL.md)
 
 ## Core ops (implementation order)

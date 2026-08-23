@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { BookMarked, Brain, Cpu, FlaskConical, LayoutDashboard, MessageSquare, Network, Palette, Send, Server, Sparkles, UserCog, Volume2, X, type LucideIcon } from "lucide-react";
-import { getDashboardOverview } from "../api/dashboard";
+import { BookMarked, Brain, Cpu, MessageSquare, Palette, Sparkles, UserCog, Volume2, X, type LucideIcon } from "lucide-react";
 import { cn } from "../ui/cn";
 import { ModelSection } from "./settings/ModelSection";
 import { ProfilesSection } from "./settings/ProfilesSection";
@@ -8,17 +7,12 @@ import { PersonaSection } from "./settings/PersonaSection";
 import { MemorySection } from "./settings/MemorySection";
 import { LibrarySection } from "./settings/LibrarySection";
 import { ChatMemorySection } from "./settings/ChatMemorySection";
-import { Lazy } from "./settings/dashboard";
-import { TelegramSection } from "./settings/TelegramSection";
-import { SshMcpSection } from "./settings/IntegrationsSection";
-import { AssetsSection } from "./settings/AssetsSection";
-import { ExperimentalSection } from "./settings/ExperimentalSection";
 import { VoiceSection } from "./settings/VoiceSection";
 import { ThemeSection } from "./settings/ThemeSection";
 
 export type SettingsSection =
   | "model" | "profiles" | "persona" | "memory" | "library" | "chatmemory"
-  | "dashboard" | "telegram" | "sshmcp" | "assets" | "experimental" | "voice" | "theme";
+  | "voice" | "theme";
 
 const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
@@ -27,11 +21,6 @@ const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "memory", label: "Память", icon: Brain },
   { id: "library", label: "Библиотека", icon: BookMarked },
   { id: "chatmemory", label: "Память чата", icon: MessageSquare },
-  { id: "dashboard", label: "Дашборд", icon: LayoutDashboard },
-  { id: "telegram", label: "Telegram", icon: Send },
-  { id: "sshmcp", label: "Интеграции", icon: Server },
-  { id: "assets", label: "Активы", icon: Network },
-  { id: "experimental", label: "Экспериментальное", icon: FlaskConical },
   { id: "voice", label: "Голос", icon: Volume2 },
   { id: "theme", label: "Тема", icon: Palette },
 ];
@@ -69,11 +58,6 @@ export function Settings({ model, onModel, onClose, project, initialSection }: {
           {section === "memory" && <MemorySection project={project} />}
           {section === "library" && <LibrarySection />}
           {section === "chatmemory" && <ChatMemorySection />}
-          {section === "dashboard" && <Lazy load={getDashboardOverview} title="Дашборд" />}
-          {section === "telegram" && <TelegramSection />}
-          {section === "sshmcp" && <SshMcpSection />}
-          {section === "assets" && <AssetsSection project={project} />}
-          {section === "experimental" && <ExperimentalSection />}
           {section === "voice" && <VoiceSection />}
           {section === "theme" && <ThemeSection />}
         </div>

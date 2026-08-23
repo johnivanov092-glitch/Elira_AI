@@ -1,9 +1,8 @@
-"""Tests for pure helpers across four modules.
+"""Tests for pure helpers across three modules.
 
   application/workflows/multi_agent.py    — _builtin_workflow_templates
   application/web_query_planner/runtime.py — _build_search_query
   application/response_cache/runtime.py   — _normalize_query, _query_hash
-  application/monitoring/store.py         — all_known_tools, default_limit_payload
 
 All functions are pure (no DB writes exercised; module-level bootstrap is
 idempotent and creates local SQLite files only).
@@ -29,10 +28,6 @@ from app.application.web_query_planner.runtime import (  # noqa: E402
 from app.application.response_cache.runtime import (  # noqa: E402
     _normalize_query,
     _query_hash,
-)
-from app.application.monitoring.store import (  # noqa: E402
-    all_known_tools,
-    default_limit_payload,
 )
 
 
@@ -258,101 +253,6 @@ class QueryHashTest(unittest.TestCase):
     def test_empty_inputs_produces_hash(self) -> None:
         h = _query_hash("", "", "")
         self.assertEqual(len(h), 64)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# monitoring/store.py — all_known_tools, default_limit_payload
-# ─────────────────────────────────────────────────────────────────────────────
-
-class AllKnownToolsTest(unittest.TestCase):
-
-    def test_returns_list(self) -> None:
-        self.assertIsInstance(all_known_tools(), list)
-
-    def test_nonempty(self) -> None:
-        self.assertGreater(len(all_known_tools()), 0)
-
-    def test_all_items_are_strings(self) -> None:
-        for tool in all_known_tools():
-            self.assertIsInstance(tool, str)
-
-    def test_no_empty_strings(self) -> None:
-        for tool in all_known_tools():
-            self.assertGreater(len(tool.strip()), 0)
-
-    def test_no_duplicates(self) -> None:
-        tools = all_known_tools()
-        self.assertEqual(len(tools), len(set(tools)))
-
-    def test_deterministic(self) -> None:
-        self.assertEqual(all_known_tools(), all_known_tools())
-
-    def test_contains_web_search(self) -> None:
-        self.assertIn("web_search", all_known_tools())
-
-
-class DefaultLimitPayloadTest(unittest.TestCase):
-
-    def _payload(self, agent_id: str = "test-agent") -> dict:
-        return default_limit_payload(agent_id)
-
-    # ── return type ───────────────────────────────────────────────────────────
-
-    def test_returns_dict(self) -> None:
-        self.assertIsInstance(self._payload(), dict)
-
-    # ── required keys ─────────────────────────────────────────────────────────
-
-    def test_has_agent_id(self) -> None:
-        self.assertIn("agent_id", self._payload())
-
-    def test_has_max_runs_per_hour(self) -> None:
-        self.assertIn("max_runs_per_hour", self._payload())
-
-    def test_has_max_execution_seconds(self) -> None:
-        self.assertIn("max_execution_seconds", self._payload())
-
-    def test_has_max_context_tokens(self) -> None:
-        self.assertIn("max_context_tokens", self._payload())
-
-    def test_has_allowed_tools(self) -> None:
-        self.assertIn("allowed_tools", self._payload())
-
-    def test_has_created_at(self) -> None:
-        self.assertIn("created_at", self._payload())
-
-    # ── field types ───────────────────────────────────────────────────────────
-
-    def test_agent_id_preserved(self) -> None:
-        p = default_limit_payload("my-custom-agent")
-        self.assertEqual(p["agent_id"], "my-custom-agent")
-
-    def test_max_runs_per_hour_is_int(self) -> None:
-        self.assertIsInstance(self._payload()["max_runs_per_hour"], int)
-
-    def test_max_execution_seconds_is_int(self) -> None:
-        self.assertIsInstance(self._payload()["max_execution_seconds"], int)
-
-    def test_allowed_tools_is_list(self) -> None:
-        self.assertIsInstance(self._payload()["allowed_tools"], list)
-
-    def test_allowed_tools_default_unrestricted(self) -> None:
-        # P9.2-FIXUP: default allowed_tools is empty == unrestricted (mirrors
-        # allowed_scopes); a frozen tool snapshot would wrongly block tools
-        # registered after limit creation once the kernel enforces it per-call.
-        self.assertEqual(self._payload()["allowed_tools"], [])
-
-    def test_created_at_is_string(self) -> None:
-        self.assertIsInstance(self._payload()["created_at"], str)
-
-    def test_max_runs_per_hour_positive(self) -> None:
-        self.assertGreater(self._payload()["max_runs_per_hour"], 0)
-
-    def test_different_agent_ids_differ(self) -> None:
-        p1 = default_limit_payload("agent-alpha")
-        p2 = default_limit_payload("agent-beta")
-        self.assertNotEqual(p1["agent_id"], p2["agent_id"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,20 +1,51 @@
-import { Brain, ChevronDown, Loader2, MessageCircleQuestion, RotateCcw, Send, ShieldQuestion, Volume2 } from "lucide-react";
+import { Brain, ChevronDown, Loader2, RotateCcw, Volume2 } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import MarkdownRenderer from "../components/MarkdownRenderer";
+import { AnswerMediaGallery } from "./AnswerMediaGallery";
 import { ToolCallGroup } from "./ToolCallGroup";
-import type { CompletionStatus, CriterionState } from "../api/codeAgent";
-import type { AgentTurnData, PendingApproval, PendingQuestion } from "./types";
+import type { AnswerMediaItem, CompletionStatus, CriterionState } from "../api/codeAgent";
+import type { AgentTurnData } from "./types";
 import { getAutoSpeak, speak } from "./voice";
 import { cn } from "../ui/cn";
 
-type ApproveFn = (approvalId: string, decision: "approve" | "reject") => void;
-type AnswerFn = (questionId: string, text: string) => void;
+function splitAnswerIntro(text: string): [string, string] {
+  const blocks: string[] = [];
+  let current: string[] = [];
+  let fence = "";
+  for (const line of text.trim().split("\n")) {
+    const marker = line.trim().match(/^(```|~~~)/)?.[1] ?? "";
+    if (marker) fence = fence ? (marker === fence ? "" : fence) : marker;
+    if (!fence && !line.trim()) {
+      if (current.length) {
+        blocks.push(current.join("\n"));
+        current = [];
+      }
+      continue;
+    }
+    current.push(line);
+  }
+  if (current.length) blocks.push(current.join("\n"));
+  if (blocks.length < 2) return [text, ""];
+  const introBlocks = /^#{1,6}\s/.test(blocks[0]) && blocks.length > 2 ? 2 : 1;
+  return [blocks.slice(0, introBlocks).join("\n\n"), blocks.slice(introBlocks).join("\n\n")];
+}
+
+function AnswerWithMedia({ text, media }: { text: string; media: AnswerMediaItem[] }) {
+  const [intro, details] = splitAnswerIntro(text);
+  return (
+    <>
+      <MarkdownRenderer content={intro} />
+      <AnswerMediaGallery media={media} />
+      {details && <MarkdownRenderer content={details} />}
+    </>
+  );
+}
 
 // Memoized (FIX-23): a streaming delta rebuilds the turns array but keeps the
 // reference of every UNCHANGED turn, so memo skips re-rendering all the finished
 // turns on each token (callbacks from useAgentRun are stable useCallbacks).
-export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onApproveAll, onResume, onAnswer }: { turn: AgentTurnData; onApprove?: ApproveFn; onApproveAll?: () => void; onResume?: (turnId: string, runId: string) => void; onAnswer?: AnswerFn }) {
-  const idle = turn.running && !turn.text && !turn.reasoning && turn.toolCalls.length === 0 && !turn.activeTool && !turn.pendingApproval && !turn.pendingQuestion;
+export const AgentTurnView = memo(function AgentTurnView({ turn, onResume }: { turn: AgentTurnData; onResume?: (turnId: string, runId: string) => void }) {
+  const idle = turn.running && !turn.text && !turn.reasoning && !turn.brainPhase && turn.toolCalls.length === 0 && !turn.activeTool;
   const [speaking, setSpeaking] = useState(false);
 
   // Auto-speak: only when this turn transitions running -> done while mounted
@@ -41,11 +72,18 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
     <div className="my-2 mb-6">
       <ToolCallGroup calls={turn.toolCalls} activeTool={turn.running ? turn.activeTool : undefined} stopReason={turn.running ? undefined : turn.stopReason} />
 
+      {turn.running && turn.brainPhase && (
+        <div className="my-2 flex items-center gap-2 text-[12.5px] text-mut">
+          <Loader2 size={14} className="animate-spin" />
+          {turn.brainPhase === "planning"
+            ? "Строит план…"
+            : turn.brainPhase === "verification"
+              ? "Проверяет выводы…"
+              : "Выполняет задачу…"}
+        </div>
+      )}
+
       {turn.reasoning && <ReasoningBlock text={turn.reasoning} running={turn.running} />}
-
-      {turn.pendingApproval && <ApprovalPrompt approval={turn.pendingApproval} onApprove={onApprove} onApproveAll={onApproveAll} />}
-
-      {turn.pendingQuestion && <QuestionPrompt question={turn.pendingQuestion} onAnswer={onAnswer} />}
 
       {idle && (
         <div className="flex items-center gap-2 text-[12.5px] text-mut">
@@ -55,7 +93,19 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
 
       {turn.text && (
         <div className="text-[13.8px] leading-relaxed">
-          <MarkdownRenderer content={turn.text} />
+          {turn.media?.length
+            ? <AnswerWithMedia text={turn.text} media={turn.media} />
+            : <MarkdownRenderer content={turn.text} />}
+        </div>
+      )}
+
+      {!turn.text && turn.media && turn.media.length > 0 && <AnswerMediaGallery media={turn.media} />}
+
+      {!turn.running && turn.answerStatus && turn.answerStatus !== "complete" && (
+        <div className="mt-2 text-[11.5px] text-mut">
+          {turn.answerStatus === "needs_input"
+            ? "Статус: нужен ответ пользователя"
+            : "Статус: ответ с ограничениями из-за нехватки данных"}
         </div>
       )}
 
@@ -88,21 +138,9 @@ export const AgentTurnView = memo(function AgentTurnView({ turn, onApprove, onAp
       )}
 
       {turn.error && (
-        turn.stopReason === "loop_guard" || turn.stopReason === "no_progress" ? (
-          // Engineering status, not a first-person "I stopped myself" — the run
-          // ended incomplete; the deterministic report above says what's done.
-          <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-mut">
-            <span className="font-medium text-t2">Не завершено</span> · остановлено:{" "}
-            {turn.stopReason === "no_progress"
-              ? "нет прогресса — стратегия зашла в тупик"
-              : "повтор без прогресса"}
-            . Итог — выше; уточни путь и продолжи.
-          </div>
-        ) : (
-          <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-t2">
-            Ошибка: {turn.error}
-          </div>
-        )
+        <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-[12.5px] text-t2">
+          Ошибка: {turn.error}
+        </div>
       )}
 
       {!turn.running && !turn.text && !turn.error && turn.stopReason && turn.stopReason !== "answer" && (
@@ -161,16 +199,6 @@ function CriterionRow({ c, duplicate }: { c: CriterionState; duplicate?: boolean
         {c.auto_verified && (
           <span className="ml-1 text-[10.5px] text-mut" title="Критерий закрыт вызовом runtime (auto-verifier pass)">
             ⚙ runtime
-          </span>
-        )}
-        {/* R1 (catalog_assist): the coverage catalog has no verifier for this criterion —
-            honest "unverifiable", not a silent unconfirmed and not a failure. */}
-        {c.unsupported && c.status !== "confirmed" && (
-          <span
-            className="ml-1 text-[10.5px] text-mut"
-            title="По каталогу покрытий для этого критерия нет верификатора — он не может быть подтверждён автоматически"
-          >
-            — нет верификатора
           </span>
         )}
         {/* Same evidence shared across criteria (e.g. one rendered-DOM verdict covering
@@ -265,104 +293,6 @@ function ReasoningBlock({ text, running }: { text: string; running: boolean }) {
           <MarkdownRenderer content={text} />
         </div>
       )}
-    </div>
-  );
-}
-
-/** Elira asked a clarifying question mid-run (ask_user) — the run is paused,
- *  waiting for the answer. Option buttons answer instantly; the text field
- *  handles a free-form reply. The SSE stream stays alive during the wait. */
-function QuestionPrompt({ question, onAnswer }: { question: PendingQuestion; onAnswer?: AnswerFn }) {
-  const [text, setText] = useState("");
-  const busy = question.answering;
-  return (
-    <div className="my-2.5 rounded-xl border border-acl bg-acs p-3 text-[12.5px]">
-      <div className="mb-2 flex items-start gap-2 font-medium text-tx">
-        <MessageCircleQuestion size={15} className="mt-0.5 shrink-0 text-ac" />
-        <span className="min-w-0 whitespace-pre-wrap">{question.question || "Уточняющий вопрос"}</span>
-      </div>
-      {question.options.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {question.options.map((opt, i) => (
-            <button
-              key={`${opt}-${i}`}
-              type="button"
-              disabled={busy}
-              onClick={() => onAnswer?.(question.questionId, opt)}
-              className="rounded-lg border border-acl bg-card px-2.5 py-1.5 text-[12px] text-ac transition-colors hover:bg-hover disabled:opacity-50"
-            >
-              {opt}
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="flex items-center gap-2">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          disabled={busy}
-          placeholder="Свой ответ…"
-          onKeyDown={(e) => { if (e.key === "Enter" && text.trim()) { onAnswer?.(question.questionId, text.trim()); setText(""); } }}
-          className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-tx outline-none focus:border-acl disabled:opacity-60"
-        />
-        <button
-          type="button"
-          disabled={busy || !text.trim()}
-          onClick={() => { onAnswer?.(question.questionId, text.trim()); setText(""); }}
-          aria-label="Ответить"
-          className="grid h-[33px] w-[33px] shrink-0 place-items-center rounded-lg bg-ac text-[#14151b] transition-opacity hover:opacity-90 disabled:opacity-40"
-        >
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-        </button>
-      </div>
-      {question.waitedS ? <div className="mt-1.5 text-[11px] text-mut">ждём ответа · {question.waitedS}с</div> : null}
-    </div>
-  );
-}
-
-function ApprovalPrompt({ approval, onApprove, onApproveAll }: { approval: PendingApproval; onApprove?: ApproveFn; onApproveAll?: () => void }) {
-  return (
-    <div className="my-2.5 rounded-xl border border-acl bg-acs p-3 text-[12.5px]">
-      <div className="mb-2 flex items-center gap-2 font-medium text-tx">
-        <ShieldQuestion size={15} className="shrink-0 text-ac" />
-        Разрешить действие: <span className="font-mono text-ac">{approval.tool}</span>
-        {approval.waitedS ? <span className="text-mut">· ждём {approval.waitedS}с</span> : null}
-      </div>
-      <pre className="mb-2.5 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-[#121216] p-2 font-mono text-[11px] text-t2">
-        {JSON.stringify(approval.arguments, null, 2)}
-      </pre>
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          disabled={approval.resolving}
-          onClick={() => onApprove?.(approval.approvalId, "approve")}
-          className="rounded-lg bg-ac px-3 py-1.5 text-[12.5px] font-medium text-[#14151b] transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          Разрешить
-        </button>
-        <button
-          type="button"
-          disabled={approval.resolving}
-          onClick={() => onApproveAll?.()}
-          title="Не спрашивать до конца этого чата"
-          className="rounded-lg border border-acl px-3 py-1.5 text-[12.5px] font-medium text-ac transition-colors hover:bg-hover disabled:opacity-50"
-        >
-          Разрешить всё в сессии
-        </button>
-        <button
-          type="button"
-          disabled={approval.resolving}
-          onClick={() => onApprove?.(approval.approvalId, "reject")}
-          className="rounded-lg border border-line px-3 py-1.5 text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-50"
-        >
-          Отклонить
-        </button>
-        {approval.resolving && (
-          <span className="flex items-center gap-1.5 text-[11.5px] text-mut">
-            <Loader2 size={12} className="animate-spin" /> отправлено…
-          </span>
-        )}
-      </div>
     </div>
   );
 }

@@ -1,12 +1,7 @@
-"""run_server must report the URL it ACTUALLY bound, and the loopback verifier must
-allow that URL and only that URL.
+"""run_server reports the URL it actually bound and tracks process liveness.
 
-Live VaultDesk (d1511484): the agent asked for :5173, but Elira's own dev server
-owned it, so Vite auto-incremented to :5174. run_server reported "started on 5173",
-the loopback allowlist held 5173, and the agent verified against the WRONG app on
-5173 then got SSRF-blocked guessing 5174/LAN. These pin: the actual bound URL is
-parsed, the allowlist keys on the real port, and the requested-but-taken port is NOT
-allowed.
+Destination authorization no longer depends on a loopback allowlist; tracked
+ports remain observational data used to choose the correct verification URL.
 """
 from __future__ import annotations
 
@@ -20,6 +15,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 
 from app.application.code_agent.tools import _run  # noqa: E402
@@ -27,23 +23,30 @@ from app.application.code_agent.tools._run import _parse_server_url, active_serv
 from app.application.web.ssrf_guard import check_ssrf  # noqa: E402
 
 
-class DestructiveDeleteHonestyTest(unittest.TestCase):
-    """FIX #4: a recursive local delete (the `run_bash rmdir /s /q C:\\AgentLab…` from
-    the live run) is already BLOCKED by the shell-safety guard — but it was returning
-    a missing `ok`, so a refused command read as success. It must be ok=False, and for
-    a delete the refusal points at the ssh_* tools for remote cleanup."""
+class DestructiveActionWorkflowPermissionTest(unittest.TestCase):
+    """run_bash has no command blocklist after Workflow authorization."""
 
-    def test_blocked_delete_is_ok_false_with_ssh_hint(self):
-        with tempfile.TemporaryDirectory() as ws:
-            out = _run.tool_run_bash(Path(ws), command='rmdir /s /q "C:\\AgentLabGlobalCanary"')
-        self.assertFalse(out["ok"])              # refused ≠ success
-        self.assertIn("ssh_", out["text"])       # guided to the remote tools
-        self.assertIn("blocked", out["text"].lower())
-
-    def test_rm_rf_root_blocked_ok_false(self):
-        with tempfile.TemporaryDirectory() as ws:
-            out = _run.tool_run_bash(Path(ws), command="rm -rf /var/tmp/canary")
-        self.assertFalse(out["ok"])
+    def test_destructive_commands_are_forwarded_to_the_process_runner(self):
+        commands = (
+            'rmdir /s /q "C:\\AgentLabGlobalCanary"',
+            "rm -rf /var/tmp/canary",
+        )
+        for command in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as ws:
+                completed = mock.MagicMock()
+                completed.returncode = 0
+                completed.poll.return_value = 0
+                completed.stdout.read.return_value = b""
+                completed.stderr.read.return_value = b""
+                with mock.patch.object(
+                    _run.subprocess,
+                    "Popen",
+                    return_value=completed,
+                ) as runner:
+                    out = _run.tool_run_bash(Path(ws), command=command)
+                runner.assert_called_once()
+                self.assertEqual(out["exit_code"], 0)
+                self.assertNotIn("blocked", out["text"].lower())
 
     def test_empty_command_is_ok_false(self):
         with tempfile.TemporaryDirectory() as ws:
@@ -93,16 +96,15 @@ class LoopbackVerifierUsesActualPortTest(unittest.TestCase):
         with _run._SERVERS_LOCK:
             _run._LIVE_SERVERS[999001] = h
 
-    def test_autoincremented_actual_port_is_the_only_one_allowed(self):
+    def test_autoincremented_actual_port_is_tracked_without_blocking_others(self):
         # Vite bound 5174 after 5173 was taken → the handle carries 5174.
         self._register(actual_port=5174)
         ports = active_server_ports()
         self.assertEqual(ports, {5174})
-        # the agent's OWN server (actual URL) is reachable…
+        # The tracked URL is selected for honest verification.
         self.assertIsNone(check_ssrf("http://localhost:5174/", allow_loopback_ports=ports))
-        # …but the requested-but-taken 5173 (a DIFFERENT app) is NOT allowed —
-        # so the verifier can't confirm against the wrong server.
-        self.assertIsNotNone(check_ssrf("http://localhost:5173/", allow_loopback_ports=ports))
+        # Destination validation is shape-only, so another local port is not blocked.
+        self.assertIsNone(check_ssrf("http://localhost:5173/", allow_loopback_ports=ports))
 
     def test_dead_server_drops_from_allowlist(self):
         class _DeadProc:

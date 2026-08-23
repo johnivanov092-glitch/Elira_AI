@@ -142,18 +142,6 @@ class SandboxRuntimeTest(unittest.TestCase):
         self.assertTrue(r2["ok"])
         self.assertIn("first run", r2["stdout"])
 
-    # ── timeout ────────────────────────────────────────────────
-
-    def test_timeout_returns_error(self) -> None:
-        result = self.sandbox.run_in_sandbox(
-            self.project_root,
-            code="import time; time.sleep(5)",
-            timeout=1,
-        )
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["exit_code"], -1)
-        self.assertIn("timed out", result.get("error", "").lower())
-
     # ── reset ──────────────────────────────────────────────────
 
     def test_reset_after_run_wipes_state(self) -> None:
@@ -177,47 +165,6 @@ class SandboxRuntimeTest(unittest.TestCase):
             code="import os; print('exists' if os.path.exists('marker.txt') else 'gone')",
         )
         self.assertIn("gone", r["stdout"])
-
-    # ── install ────────────────────────────────────────────────
-
-    def test_install_blocks_shell_metas(self) -> None:
-        """A malicious package spec with shell metacharacters must be
-        silently dropped from the pip args."""
-        # Build a fake-but-syntactically-fine package list containing
-        # one safe entry and one shell-injection attempt. The runtime
-        # should drop the bad one but NOT abort the whole call.
-        result = self.sandbox.run_in_sandbox(
-            self.project_root,
-            code="print('ok')",
-            install=["; rm -rf /"],   # only the bad one — everything dropped
-        )
-        # Since the only "package" was malicious, nothing got installed
-        # but the script itself runs fine.
-        self.assertTrue(result["ok"])
-        self.assertIn("ok", result["stdout"])
-
-    def test_install_blocks_pip_option_flags(self) -> None:
-        """Option flags like --extra-index-url could point pip at an
-        attacker-controlled mirror. Must be dropped before pip sees them."""
-        result = self.sandbox.run_in_sandbox(
-            self.project_root,
-            code="print('ok')",
-            install=["--extra-index-url=http://evil.example/", "-r"],
-        )
-        # Both args start with "-" → filtered out → no pip invocation → no log
-        self.assertTrue(result["ok"])
-        self.assertEqual(result.get("install_log", ""), "")
-
-    def test_install_blocks_filesystem_paths(self) -> None:
-        """Local-file refs like ./pkg or /abs/path could install from
-        attacker-controlled files. Must be dropped."""
-        result = self.sandbox.run_in_sandbox(
-            self.project_root,
-            code="print('ok')",
-            install=["./malicious", "/etc/passwd", "..\\evil"],
-        )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result.get("install_log", ""), "")
 
     # ── output truncation ──────────────────────────────────────
 

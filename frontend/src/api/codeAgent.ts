@@ -1,5 +1,8 @@
 import { API_BASE, ApiError, buildApiUrl, request, withAuth } from "./client";
 import { toWireResource, type ResourceRef } from "./resources";
+import type { PermissionMode } from "./workflows";
+
+export type { PermissionMode } from "./workflows";
 
 export const DEFAULT_CODE_AGENT_MODEL = "auto";
 
@@ -8,7 +11,23 @@ export const DEFAULT_CODE_AGENT_MODEL = "auto";
 export function codeAgentFaviconUrl(url: string): string {
   return buildApiUrl(`/api/code-agent/favicon?url=${encodeURIComponent(url)}`);
 }
-export const DEFAULT_CODE_AGENT_MAX_STEPS = 200;
+
+/** Authenticated Runtime-owned proxy for a search-supplied answer image. */
+export function fetchCodeAgentImage(url: string, signal?: AbortSignal): Promise<Blob> {
+  return request<Blob>(`/api/code-agent/image?url=${encodeURIComponent(url)}`, {
+    responseType: "blob",
+    timeoutMs: 15_000,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+export type AnswerMediaItem = {
+  type: "image";
+  url: string;
+  source_url: string;
+  title: string;
+  source: string;
+};
 
 export type CodeAgentToolCall = {
   step: number;
@@ -48,9 +67,10 @@ export type CodeAgentToolCall = {
 export type CodeAgentResponse = {
   ok: boolean;
   response: string;
+  media?: AnswerMediaItem[];
   steps: number;
   tool_calls: CodeAgentToolCall[];
-  stop_reason: "answer" | "max_steps" | "timeout" | "context_limit" | "loop_guard" | "no_progress" | "error" | "cancelled";
+  stop_reason: "answer" | "context_limit" | "error" | "cancelled";
   error: string | null;
   partial: boolean;
 };
@@ -61,18 +81,16 @@ export type ConversationMessage = {
 };
 
 export type CodeAgentMode = "code" | "search";
+export type ReasoningEffort = "none" | "low" | "medium" | "xhigh";
 
 /** Approval policy for a run, picked in the composer's permission selector:
  *  - "ask"          — pause for the user on every gated tool (default);
  *  - "accept_edits" — auto-approve low-risk runtime-reversible work;
- *  - "bypass"       — auto-approve normal work; unprotected high-risk work still asks. */
-export type PermissionMode = "ask" | "accept_edits" | "bypass";
-
+ *  - "bypass"       — the local Workflow UI choice authorizes registered tool calls. */
 export type CodeAgentRunArgs = {
   message: string;
   projectRoot: string;
   model?: string;
-  maxSteps?: number;
   numCtx?: number;
   mode?: CodeAgentMode;
   autoRemember?: boolean;
@@ -82,8 +100,8 @@ export type CodeAgentRunArgs = {
    *  path stay client-/server-side. The model reads them via `resource_process`,
    *  never as auto-injected text. */
   resources?: ResourceRef[];
-  /** Session id that owns the attached resources; the backend binds them to this
-   *  run only when it matches the resource owner. */
+  /** Session id retained for wire compatibility; durable resources are not
+   *  authorized or scoped by a transient chat/run binding. */
   sessionId?: string;
   /** Persona mode (Авто / Личный / Баланс / Инженерный / Деловой / Инфраструктура); "Авто" lets Elira pick
    *  per message, a concrete mode locks it. Mirrors chat's profile_name field. */
@@ -91,49 +109,36 @@ export type CodeAgentRunArgs = {
   /** Approval policy for this run (composer permission selector). Omitted → the
    *  backend default "ask". See {@link PermissionMode}. */
   permissionMode?: PermissionMode;
-  /** Enable model reasoning for this run («Рассуждение» chip). When on, the
-   *  backend streams reasoning as separate `reasoning_delta` events. Omitted →
-   *  backend default (off). */
-  thinking?: boolean;
-  /** «Не спрашивать» chip. When on, ask_user never pauses the run for a human —
-   *  Elira answers its own question with a "decide for yourself" note and keeps
-   *  going. Omitted → backend default (off, questions pause as normal). */
-  noQuestions?: boolean;
+  /** Model-neutral reasoning depth for this run. Qwen can disable reasoning;
+   *  Muse maps none to its lowest native level. Omitted → none. */
+  reasoningEffort?: ReasoningEffort;
 };
 
-/** Single-shot (legacy). Resolves with the aggregated final dict. */
-export async function runCodeAgent({
-  message,
-  projectRoot,
-  model = DEFAULT_CODE_AGENT_MODEL,
-  maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
-  mode = "code",
-  autoRemember = true,
-  conversationHistory,
-  profileName,
-}: CodeAgentRunArgs): Promise<CodeAgentResponse> {
-  return request<CodeAgentResponse>("/api/code-agent/run", {
-    method: "POST",
-    body: {
-      message,
-      project_root: projectRoot,
-      model,
-      max_steps: maxSteps,
-      mode,
-      auto_remember: autoRemember,
-      conversation_history: conversationHistory,
-      ...(profileName ? { profile_name: profileName } : {}),
-    },
-  });
-}
-
 // ── Streaming protocol ───────────────────────────────────────────────────
+
+export type PlanArtifact = {
+  goal: string;
+  current_state: string;
+  ordered_steps: string[];
+  acceptance_checks: string[];
+  risks: string[];
+  current_step: number;
+};
 
 export type CodeAgentStreamEvent =
   | { type: "run_started"; run_id: string }
   | { type: "run_resumed"; run_id: string; from_step: number }
   | { type: "step_started"; step: number }
-  | { type: "heartbeat"; step: number }
+  | { type: "heartbeat"; step?: number; phase?: "planning" }
+  | { type: "planning_started"; run_id: string }
+  | { type: "plan_ready"; run_id: string; plan: PlanArtifact }
+  | { type: "planning_fallback"; run_id: string; reason: string }
+  | {
+      type: "phase_changed";
+      run_id: string;
+      phase: "execution" | "verification";
+      applied_thinking_mode: string;
+    }
   | { type: "delta"; step: number; text: string }
   | { type: "reasoning_delta"; step: number; text: string }
   | {
@@ -143,16 +148,6 @@ export type CodeAgentStreamEvent =
       arguments: Record<string, unknown>;
     }
   | ({ type: "tool_call" } & CodeAgentToolCall)
-  | {
-      type: "approval_pending";
-      step: number;
-      tool: string;
-      arguments: Record<string, unknown>;
-      approval_id: string;
-    }
-  | { type: "approval_wait"; step: number; approval_id: string; waited_s: number }
-  | { type: "question_pending"; step: number; question: string; options: string[]; question_id: string }
-  | { type: "question_wait"; step: number; question_id: string; waited_s: number }
   | { type: "context_compacted"; step: number; context?: ContextUsage; rolling_summary?: string | null }
   | {
       type: "usage";
@@ -164,7 +159,15 @@ export type CodeAgentStreamEvent =
       context?: ContextUsage;
       profile?: ContextProfile;
     }
-  | { type: "final_response"; step: number; text: string; established_facts?: string; recent_tool_output?: string }
+  | {
+      type: "final_response";
+      step: number;
+      text: string;
+      answer_status?: AnswerStatus;
+      established_facts?: string;
+      recent_tool_output?: string;
+      media?: AnswerMediaItem[];
+    }
   | ({
       type: "context_resolved";
       step: number;
@@ -172,14 +175,13 @@ export type CodeAgentStreamEvent =
     } & ContextResolution)
   | {
       // Delivery session: informational slice boundary — the run CONTINUES on the
-      // same run_id (auto-continuation after a budget stop with proven progress).
+      // same run_id after context-window rollover.
       // Never a terminal event; exactly one `done` still closes the stream.
       type: "delivery_continuing";
       run_id?: string;
       slice: number;
       next_slice: number;
       auto_continuation: number;
-      max_auto_continuations: number;
       stop_reason: string;
       progress?: {
         new_touched_paths?: number;
@@ -192,6 +194,7 @@ export type CodeAgentStreamEvent =
       ok: boolean;
       steps: number;
       stop_reason: CodeAgentResponse["stop_reason"];
+      answer_status?: AnswerStatus;
       error: string | null;
       partial?: boolean;
       resumable?: boolean;
@@ -211,6 +214,7 @@ export type CodeAgentStreamEvent =
     };
 
 export type CompletionStatus = "confirmed" | "partial" | "unverified" | "failed" | "none";
+export type AnswerStatus = "complete" | "degraded" | "needs_input";
 
 export type CriterionState = {
   text: string;
@@ -219,9 +223,6 @@ export type CriterionState = {
   evidence?: string | null;
   /** Closed by the runtime's own auto-verifier pass (not a model-made call). */
   auto_verified?: boolean;
-  /** R1 (flag catalog_assist): no verifier exists for this criterion per the
-   *  coverage catalog — it can never be auto-confirmed; unverifiable, not failing. */
-  unsupported?: boolean;
 };
 
 export type ContextUsage = {
@@ -264,21 +265,8 @@ export type ContextResolution = {
     { percent?: number; tokens?: number }
   >;
   thinking?: boolean;
+  reasoning_effort?: ReasoningEffort;
 };
-
-// ── Approvals (Agent OS) ─────────────────────────────────────────────────
-
-/** Resolve a pending tool-call approval. The paused agent run picks the
- *  decision up on its next poll tick. */
-export async function resolveApproval(
-  approvalId: string,
-  decision: "approve" | "reject",
-): Promise<void> {
-  await request(`/api/agent-os/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
-    method: "POST",
-    body: {},
-  });
-}
 
 export type StreamHandlers = {
   onEvent?: (event: CodeAgentStreamEvent) => void;
@@ -298,7 +286,6 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     message,
     projectRoot,
     model = DEFAULT_CODE_AGENT_MODEL,
-    maxSteps = DEFAULT_CODE_AGENT_MAX_STEPS,
     mode = "code",
     autoRemember = true,
     conversationHistory,
@@ -306,8 +293,7 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
     sessionId,
     profileName,
     permissionMode,
-    thinking,
-    noQuestions,
+    reasoningEffort,
     runId,
     signal,
     onEvent,
@@ -329,15 +315,13 @@ export async function streamCodeAgent(args: StreamCodeAgentArgs): Promise<void> 
         message,
         project_root: projectRoot,
         model,
-        max_steps: maxSteps,
         mode,
         auto_remember: autoRemember,
         conversation_history: conversationHistory,
         run_id: runId,
         ...(profileName ? { profile_name: profileName } : {}),
         ...(permissionMode ? { permission_mode: permissionMode } : {}),
-        ...(thinking ? { thinking: true } : {}),
-        ...(noQuestions ? { no_questions: true } : {}),
+        ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
         ...(sessionId ? { session_id: sessionId } : {}),
         ...(wireResources.length ? { resources: wireResources } : {}),
       }),
@@ -389,29 +373,6 @@ export async function resumeCodeAgent(
   await consumeCodeAgentStream(response, handlers);
 }
 
-// The backend heartbeats every ~10s, so no bytes for this long means it died or
-// the connection stalled. Without this the UI shows "Думает…" forever (FIX-13).
-const SSE_INACTIVITY_MS = 90_000;
-
-/** reader.read() that rejects if no chunk arrives within `ms`. The timer is
- *  cleared as soon as a chunk (or a real error) resolves, so it never leaks
- *  across the many reads of a long stream. */
-function readWithInactivityTimeout<T>(
-  reader: ReadableStreamDefaultReader<T>,
-  ms: number,
-): Promise<ReadableStreamReadResult<T>> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("Соединение с агентом прервалось — нет ответа. Попробуй ещё раз.")),
-      ms,
-    );
-    reader.read().then(
-      (result) => { clearTimeout(timer); resolve(result); },
-      (err) => { clearTimeout(timer); reject(err); },
-    );
-  });
-}
-
 export async function consumeCodeAgentStream(response: Response, handlers: StreamHandlers): Promise<void> {
   const { onEvent, onRunId, onError } = handlers;
   const headerRunId = response.headers.get("X-Run-Id");
@@ -439,7 +400,7 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
 
   try {
     for (;;) {
-      const { value, done } = await readWithInactivityTimeout(reader, SSE_INACTIVITY_MS);
+      const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let idx;
@@ -467,18 +428,10 @@ export async function consumeCodeAgentStream(response: Response, handlers: Strea
     }
   } catch (err) {
     if ((err as DOMException)?.name === "AbortError") return;
-    // Free the socket on an inactivity timeout / read error before surfacing it.
+    // Free the socket on a transport read error before surfacing it.
     try { await reader.cancel(); } catch { /* already closed */ }
     onError?.(err as Error);
   }
-}
-
-/** Deliver a human answer to a paused ask_user question; the run continues. */
-export async function answerQuestion(questionId: string, answer: string): Promise<void> {
-  await request(`/api/code-agent/questions/${encodeURIComponent(questionId)}/answer`, {
-    method: "POST",
-    body: { answer },
-  });
 }
 
 export async function cancelCodeAgent(runId: string): Promise<{ ok: boolean; found: boolean }> {
@@ -508,27 +461,6 @@ export async function setProjectPromptApi(projectRoot: string, content: string):
     method: "PUT",
     body: { project_root: projectRoot, content },
   });
-}
-
-// ── Project verify command (opt-in E2E gate, .elira/verify) ────────────────
-
-/** The project's verify command ("" if none) plus a `suggested` default guessed
- *  from the project's marker files (pytest/npm/cargo/…), returned only when
- *  nothing is configured yet. After the agent edits files it must run the
- *  command green before it can declare the task done. */
-export async function getVerifyCommand(projectRoot: string): Promise<{ command: string; suggested: string }> {
-  const qs = new URLSearchParams({ project_root: projectRoot }).toString();
-  const res = await request<{ ok: boolean; command: string; suggested?: string }>(`/api/code-agent/verify-command?${qs}`);
-  return { command: res.command || "", suggested: res.suggested || "" };
-}
-
-/** Set the verify command; an empty string clears it (removes .elira/verify). */
-export async function setVerifyCommand(projectRoot: string, command: string): Promise<string> {
-  const res = await request<{ ok: boolean; command: string }>("/api/code-agent/verify-command", {
-    method: "PUT",
-    body: { project_root: projectRoot, command },
-  });
-  return res.command || "";
 }
 
 // ── History summarization ────────────────────────────────────────────────
@@ -693,7 +625,7 @@ export async function indexProject({
   return request<IndexProjectResult>("/api/code-agent/index-project", {
     method: "POST",
     body: { project_root: projectRoot, patterns, replace },
-    timeoutMs: 600_000, // indexing a large repo can take minutes — don't abort early
+    timeoutMs: 0,
   });
 }
 
@@ -731,6 +663,7 @@ export type RagStats = {
   total: number;
   with_embeddings: number;
   model?: string;
+  embedding_enabled?: boolean;
   by_category?: Record<string, number>;
   error?: string;
 };
@@ -810,88 +743,6 @@ export async function stopProjectWatcher(
 export async function getProjectWatcherStatus(projectRoot: string): Promise<WatcherStatus> {
   const qs = new URLSearchParams({ project_root: projectRoot }).toString();
   return request<WatcherStatus>(`/api/code-agent/watcher/status?${qs}`);
-}
-
-// ── SSH allowlist (security gate for the SshToolProvider) ─────────────
-
-export type SshConfig = {
-  enabled: boolean;
-  allowed_hosts: string[];
-};
-
-export async function getSshConfig(): Promise<SshConfig> {
-  return request<SshConfig>("/api/code-agent/ssh/config");
-}
-
-export async function setSshConfig(allowedHosts: string[]): Promise<SshConfig> {
-  return request<SshConfig>("/api/code-agent/ssh/config", {
-    method: "POST",
-    body: { allowed_hosts: allowedHosts },
-  });
-}
-
-// ── MCP servers ─────────────────────────────────────────────────────
-
-export type McpServerSpec = {
-  id: string;
-  command: string;
-  args: string[];
-  env: Record<string, string>;
-  enabled: boolean;
-  status?: "stopped" | "running" | "crashed" | "error";
-  last_error?: string | null;
-};
-
-export type McpServersResponse = {
-  servers: McpServerSpec[];
-};
-
-export type McpActionResponse = {
-  ok: boolean;
-  already_running?: boolean;
-  was_running?: boolean;
-  server_id?: string;
-  server_info?: Record<string, unknown>;
-  error?: string;
-};
-
-export async function listMcpServers(): Promise<McpServersResponse> {
-  return request<McpServersResponse>("/api/code-agent/mcp/servers");
-}
-
-export async function saveMcpServers(
-  servers: Omit<McpServerSpec, "status" | "last_error">[],
-): Promise<{ ok: boolean; servers: McpServerSpec[] }> {
-  return request("/api/code-agent/mcp/servers", {
-    method: "POST",
-    body: { servers },
-  });
-}
-
-export async function startMcpServer(serverId: string): Promise<McpActionResponse> {
-  return request<McpActionResponse>("/api/code-agent/mcp/start", {
-    method: "POST",
-    body: { server_id: serverId },
-  });
-}
-
-export async function stopMcpServer(serverId: string): Promise<McpActionResponse> {
-  return request<McpActionResponse>("/api/code-agent/mcp/stop", {
-    method: "POST",
-    body: { server_id: serverId },
-  });
-}
-
-export async function restartMcpServer(serverId: string): Promise<McpActionResponse> {
-  return request<McpActionResponse>("/api/code-agent/mcp/restart", {
-    method: "POST",
-    body: { server_id: serverId },
-  });
-}
-
-export async function getMcpServerTools(serverId: string): Promise<{ server_id: string; tools: Array<{ name: string; description?: string }> }> {
-  const qs = new URLSearchParams({ server_id: serverId }).toString();
-  return request(`/api/code-agent/mcp/tools?${qs}`);
 }
 
 /** Empty-history context usage seeded with the live ctx_size — lets the

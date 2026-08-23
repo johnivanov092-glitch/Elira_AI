@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+import asyncio
+import json
+import time
+
+from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from app.schemas.event_bus import (
     AgentMessage,
@@ -18,6 +23,69 @@ from app.application.event_bus import runtime as bus
 
 
 router = APIRouter(prefix="/api/agent-os", tags=["agent-os"])
+
+_STREAM_POLL_SECONDS = 0.5
+_STREAM_HEARTBEAT_SECONDS = 10.0
+
+
+def _stream_frame(*, event: str, data: dict, event_id: int | None = None) -> str:
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {json.dumps(data, ensure_ascii=False)}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _stream_cursor(after_id: int | None, last_event_id: str | None) -> int:
+    if last_event_id is not None:
+        try:
+            cursor = int(last_event_id)
+        except ValueError as exc:
+            raise HTTPException(400, "Last-Event-ID must be a non-negative integer") from exc
+        if cursor < 0:
+            raise HTTPException(400, "Last-Event-ID must be a non-negative integer")
+        return cursor
+    if after_id is not None:
+        return after_id
+    return bus.latest_event_id()
+
+
+async def _stream_events(
+    request: Request,
+    *,
+    initial_cursor: int,
+    replay_through: int | None,
+):
+    cursor = initial_cursor
+    last_heartbeat = time.monotonic()
+    yield _stream_frame(
+        event="stream/ready",
+        event_id=cursor,
+        data={"type": "stream/ready", "cursor": cursor},
+    )
+    while True:
+        events = bus.list_events_after(
+            after_id=cursor,
+            through_id=replay_through,
+            limit=100,
+        )
+        for item in events:
+            cursor = int(item["id"])
+            yield _stream_frame(
+                event=str(item["event_type"]),
+                event_id=cursor,
+                data=item,
+            )
+        if replay_through is not None and (cursor >= replay_through or not events):
+            return
+        if await request.is_disconnected():
+            return
+        now = time.monotonic()
+        if now - last_heartbeat >= _STREAM_HEARTBEAT_SECONDS:
+            yield ": heartbeat\n\n"
+            last_heartbeat = now
+        await asyncio.sleep(_STREAM_POLL_SECONDS)
 
 
 @router.post("/events", response_model=Event, summary="Emit event")
@@ -47,6 +115,31 @@ def get_events(
         offset=offset,
     )
     return EventListResponse(events=events, total=total)
+
+
+@router.get("/events/stream", summary="Stream durable events")
+def stream_events(
+    request: Request,
+    after_id: int | None = Query(None, ge=0),
+    follow: bool = Query(True),
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+) -> StreamingResponse:
+    initial_cursor = _stream_cursor(after_id, last_event_id)
+    replay_through = None if follow else bus.latest_event_id()
+
+    return StreamingResponse(
+        _stream_events(
+            request,
+            initial_cursor=initial_cursor,
+            replay_through=replay_through,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/messages", response_model=AgentMessage, summary="Send message to agent")

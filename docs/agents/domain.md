@@ -9,7 +9,7 @@ This repo has no `CONTEXT.md` yet — its domain language and architecture live 
 
 - **`docs/ARCHITECTURE.md`** — backend/frontend/runtime architecture + contracts.
 - **`docs/PROJECT_MAP.md`** — repo structure, ownership, where to change things.
-- **`docs/AGENT_BOUNDARY_REVIEW.md`** — the Chat-Agent vs Code-Agent boundary.
+- **`docs/AGENT_ARCHITECTURE_GUIDE_RU.md`** — unified agent/runtime boundary.
 - **`docs/SERVER.md`** — the AI inference server (host, endpoints, models).
 - **`AGENTS.md`** (root) — working rules incl. the UTF-8/no-mojibake contract.
 
@@ -30,7 +30,7 @@ absence or suggest creating it upfront.
 │   ├── ARCHITECTURE.md                      ← architecture + runtime guardrails
 │   ├── DEFERRED_TRACK.md                    ← deferred track (D1-D3, not yet built)
 │   ├── PROJECT_MAP.md
-│   ├── AGENT_BOUNDARY_REVIEW.md
+│   ├── AGENT_ARCHITECTURE_GUIDE_RU.md
 │   ├── SERVER.md
 │   └── agents/                              ← this setup (issue-tracker/triage/domain)
 ├── backend/   (FastAPI + Python runtime)

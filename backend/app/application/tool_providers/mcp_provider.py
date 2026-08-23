@@ -29,30 +29,14 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-import os
 from typing import Any
 
-from app.change_executor.policy import (
-    creative_batch_contains_arbitrary_code,
-    tool_call_is_change,
-)
+from app.application.agent_kernel.impact_policy import tool_call_is_change
 from app.application.tool_providers.mcp_client import McpError
 from app.application.tool_providers.mcp_runtime import get_live_client, list_servers
 
 
 logger = logging.getLogger(__name__)
-
-
-def _mcp_auto_enable() -> bool:
-    """Whether MCP tools should be auto-classified + enabled on discovery.
-
-    MCP servers land in ``data/mcp_servers.json`` because the USER explicitly
-    added them, so their tools are trusted-by-configuration here: default ON.
-    Kill switch: ELIRA_MCP_AUTO_ENABLE=0 restores the fail-closed default
-    (each MCP tool stays blocked until classified via the Tool API). Read live
-    so the toggle takes effect on the next MCP sync without a code change.
-    """
-    return os.getenv("ELIRA_MCP_AUTO_ENABLE", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 # Tool-name prefix delimiter. Two underscores: rare enough in real
@@ -113,22 +97,6 @@ _CREATIVE_BATCH_TO_PROCEDURAL = {
 }
 
 
-def creative_batch_redirect(tool_name: str) -> str:
-    procedural = _CREATIVE_BATCH_TO_PROCEDURAL.get(str(tool_name or ""), "")
-    if not procedural:
-        return ""
-    return (
-        f"Последовательность мелких batch-вызовов исчерпана. Активируй и вызови "
-        f"{procedural} ОТДЕЛЬНО одним идемпотентным процедурным шагом; не вкладывай "
-        "произвольный код внутрь batch. Затем проверь screenshot и сделай максимум "
-        "одну коррекцию."
-    )
-
-
-def creative_procedural_companion(tool_name: str) -> str:
-    return _CREATIVE_BATCH_TO_PROCEDURAL.get(str(tool_name or ""), "")
-
-
 def creative_workflow_prompt(tool_names: set[str] | list[str] | tuple[str, ...]) -> str:
     names = {str(name) for name in tool_names}
     has_blender = any(name.startswith("blender__") for name in names)
@@ -139,11 +107,12 @@ def creative_workflow_prompt(tool_names: set[str] | list[str] | tuple[str, ...])
     return f"""
 ## Процедурная работа в {editors}
 - Работай через MCP открытого редактора, не через PowerShell и не через второй runtime.
-- Контур обязателен: inspect текущей сцены → изменение → screenshot с vision-проверкой → максимум одна коррекция → явное сохранение сцены/рендера.
-- Простую правку делай dedicated tool; несколько однотипных правок объединяй максимум в три последовательных batch-вызова.
+- Перед изменением runtime автоматически создаёт резервную копию текущей сцены.
+- Контур: inspect текущей сцены → изменение → screenshot с vision-проверкой → коррекция до готовности или Stop → явное сохранение сцены/рендера.
+- Простую правку делай dedicated tool; несколько однотипных правок можно объединять в batch-вызовы.
 - Если нужны циклы, процедурная расстановка, массовое выравнивание или сложная математика — сразу вызывай отдельный procedural tool (`blender__execute_blender_code` / `unity__execute_code`) вместо десятков batch.
-- Никогда не вкладывай execute_code/execute_blender_code внутрь batch: runtime это блокирует. Произвольный код должен быть отдельным видимым вызовом с одним approval; runtime перед ним делает резервную копию сцены и после него получает screenshot.
-- После vision-описания исправь только конкретный видимый дефект и проверь повторно; максимум одна коррекция, затем честно заверши или сообщи блокер.
+- Для сложного кода предпочитай отдельный procedural tool: так его вызов, результат и visual post-check лучше видны в Workflow. Вложенный код также выполняется и подчиняется тому же Workflow permission.
+- После vision-описания исправь конкретный видимый дефект и проверяй результат до готовности или Stop.
 """.strip()
 
 
@@ -151,14 +120,13 @@ def _augment_creative_description(server_id: str, tool_name: str, description: s
     qualified = _qualify(server_id, tool_name)
     if qualified in _CREATIVE_BATCH_TO_PROCEDURAL:
         return (
-            f"{description}\n\nELIRA WORKFLOW: use at most three consecutive batches. "
-            f"For loops/procedural placement switch to "
-            f"{_CREATIVE_BATCH_TO_PROCEDURAL[qualified]}. Never nest arbitrary code in a batch."
+            f"{description}\n\nELIRA WORKFLOW: for loops/procedural placement prefer "
+            f"{_CREATIVE_BATCH_TO_PROCEDURAL[qualified]} for clearer observability."
         ).strip()
     if qualified in _CREATIVE_BATCH_TO_PROCEDURAL.values():
         return (
-            f"{description}\n\nELIRA WORKFLOW: call this as a separate visible tool, never "
-            "inside a batch. The runtime creates a scene backup and requests a visual post-check."
+            f"{description}\n\nELIRA WORKFLOW: prefer a separate visible call. The runtime "
+            "attempts a scene backup and requests a visual post-check."
         ).strip()
     return description
 
@@ -314,22 +282,9 @@ class McpToolProvider:
                 "error": "mcp_tool_not_found",
                 "text": f"ERROR: tool '{tool_name}' not found on server '{self._server_id}'",
             }
-        if (
-            self._server_id == "unity"
-            and original_name == "batch_execute"
-            and creative_batch_contains_arbitrary_code(args)
-        ):
-            return {
-                "ok": False,
-                "error": "nested_execute_code_forbidden",
-                "text": (
-                    "ERROR: nested_execute_code_forbidden. Call unity__execute_code "
-                    "as a separate visible tool so backup and approval cannot be bypassed."
-                ),
-                "mcp_server": self._server_id,
-            }
         try:
             safe_args = dict(args or {})
+            backup_warning = ""
             needs_blender_backup = (
                 self._server_id == "blender" and original_name == "execute_blender_code"
             )
@@ -345,12 +300,7 @@ class McpToolProvider:
                     "return_screenshot": False,
                 })
                 if _raw_mcp_failed(backup_result):
-                    return {
-                        "ok": False,
-                        "error": "creative_scene_backup_failed",
-                        "text": "ERROR: creative_scene_backup_failed; procedural code was not executed.",
-                        "mcp_server": self._server_id,
-                    }
+                    backup_warning = "[warning: scene backup failed; execution continued]"
                 safe_args["return_screenshot"] = True
             elif needs_unity_backup:
                 backup_result = client.call_tool("execute_code", {
@@ -359,12 +309,7 @@ class McpToolProvider:
                     "safety_checks": True,
                 })
                 if _raw_mcp_failed(backup_result):
-                    return {
-                        "ok": False,
-                        "error": "creative_scene_backup_failed",
-                        "text": "ERROR: creative_scene_backup_failed; procedural code was not executed.",
-                        "mcp_server": self._server_id,
-                    }
+                    backup_warning = "[warning: scene backup failed; execution continued]"
 
             raw_result = client.call_tool(original_name, safe_args)
             if needs_unity_backup and not _raw_mcp_failed(raw_result):
@@ -381,6 +326,8 @@ class McpToolProvider:
             logger.exception("mcp dispatch %s failed", tool_name)
             return {"ok": False, "error": "mcp_call_failed", "text": f"ERROR: {exc}"}
         meta = _flatten_mcp_result(raw_result)
+        if backup_warning:
+            meta["text"] = f"{backup_warning}\n{meta.get('text', '')}".rstrip()
         meta["mcp_server"] = self._server_id
         if meta.get("ok") and tool_call_is_change(tool_name, safe_args):
             # Trusted provider-level mutation proof for non-filesystem editors.
@@ -453,18 +400,11 @@ def _mcp_noop_handler(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
-    """Mirror running MCP servers' tools into the Tool Registry, fail-closed.
+    """Mirror running MCP tools into the shared inventory.
 
-    Each MCP tool gets a DB ToolSpec. It is registered fail-closed (forbidden +
-    disabled + policy_classified=0), then — unless ELIRA_MCP_AUTO_ENABLE=0 — the
-    post-register sweep flips still-unclassified live rows to enabled +
-    policy_classified + permission='require_approval' (MCP servers are user-added,
-    so trusted-by-configuration; require_approval keeps the approval prompt in ask
-    mode, bypass runs straight through). Re-sync preserves admin policy: the sweep
-    only touches unclassified rows, so a MANUAL disable (which keeps
-    policy_classified=1) is never re-enabled. MCP-source specs whose tool is no
-    longer advertised by any running server are DISABLED (stale → off, never
-    deleted, so classification/audit survives a transient outage).
+    A running user-configured server makes its tools visible immediately.
+    Stopped servers remain as inactive inventory history; Workflow permission
+    controls calls while the provider is live.
 
     Defensive throughout: a registry or network hiccup must never break provider
     construction or the agent loop.
@@ -505,7 +445,6 @@ def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
             except Exception as exc:
                 logger.warning("mcp spec sync for %r failed: %s", qname, exc)
 
-    auto_enable = _mcp_auto_enable()
     try:
         for tool in _tr.list_tools_with_schemas(source="mcp", enabled_only=False):
             tname = tool.get("name")
@@ -518,17 +457,8 @@ def sync_mcp_tool_specs(providers: list["McpToolProvider"]) -> None:
                 if tool.get("enabled"):
                     _tr.update_tool(tname, {"enabled": False})
                 continue
-            # Live MCP tool still at the fail-closed default (unclassified) →
-            # auto-enable it: classify + enable + require_approval (still gated
-            # by the approval prompt in ask mode; runs straight through in
-            # bypass). We flip ONLY still-unclassified rows, so a later MANUAL
-            # disable (which keeps policy_classified=1) is never clobbered.
-            if auto_enable and not tool.get("policy_classified"):
-                _tr.update_tool(tname, {
-                    "enabled": True,
-                    "permission": "require_approval",
-                    "policy_classified": True,
-                })
+            if not tool.get("enabled", True):
+                _tr.update_tool(tname, {"enabled": True})
     except Exception as exc:
         logger.warning("mcp spec sweep failed: %s", exc)
 
@@ -544,8 +474,6 @@ def build_mcp_providers() -> list[McpToolProvider]:
         if spec.get("status") != "running":
             continue
         providers.append(McpToolProvider(spec["id"]))
-    # P9.2-FIXUP: mirror discovered MCP tools into the registry fail-closed so the
-    # unified kernel can enforce policy on them (forbidden/disabled/unclassified by
-    # default; admin classification required to run).
+    # Mirror discovered MCP tools into the shared inventory.
     sync_mcp_tool_specs(providers)
     return providers

@@ -74,7 +74,7 @@ def set_config_value(key: str, value: str) -> None:
 
 def update_telegram_config(data: dict[str, Any]) -> dict[str, Any]:
     allowed_keys = {
-        "bot_token",
+        "bot_token_ref",
         "model",
         "profile",
         "allowed_users",

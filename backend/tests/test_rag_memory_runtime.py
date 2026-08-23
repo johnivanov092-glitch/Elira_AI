@@ -440,6 +440,15 @@ class RagStatsTest(unittest.TestCase):
     def test_model_reflected(self) -> None:
         self.assertEqual(self._stats()["model"], "local-embed")
 
+    def test_category_counts_are_exposed(self) -> None:
+        add_to_rag(
+            conn_factory=self._conn_func,
+            get_embedding_func=lambda t: None,
+            text="verified project change",
+            category="verified_turn",
+        )
+        self.assertEqual(self._stats()["by_category"], {"verified_turn": 1})
+
     def test_total_increments_after_add(self) -> None:
         add_to_rag(
             conn_factory=self._conn_func,

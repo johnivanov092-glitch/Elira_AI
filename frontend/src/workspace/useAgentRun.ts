@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import { fetchContextProfile, type CodeAgentMode, type PermissionMode } from "../api/codeAgent";
+import { fetchContextProfile, type CodeAgentMode, type PermissionMode, type ReasoningEffort } from "../api/codeAgent";
 import type { ResourceAttachment } from "../api/resources";
 import { getActiveProfile } from "../api/profiles";
 import * as bg from "./backgroundRuns";
@@ -23,7 +23,7 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     useCallback((cb) => bg.subscribe(sessionId, cb), [sessionId]),
     useCallback(() => bg.getSnapshot(sessionId), [sessionId]),
   );
-  const { turns, running, taskLedger, contextUsage, autoApprove } = snapshot;
+  const { turns, running, taskLedger, contextUsage } = snapshot;
 
   // Active UI persona profile (the `agent_profile` global setting), held in a
   // ref so `send` can read it synchronously. Refreshed on mount and whenever the
@@ -54,16 +54,16 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     return () => { cancelled = true; };
   }, [model, sessionId]);
 
-  const send = useCallback((text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => {
+  const send = useCallback((text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => {
     const profileName = profileRef.current || undefined;
-    bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, thinking, noQuestions });
+    bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, reasoningEffort });
   }, [sessionId, projectRoot, model]);
 
   // Multi-agent run: streams per-step progress from the pipeline endpoint via
   // the background manager. Forwards the two run-mode flags. Independent of
   // `agent_profile`.
-  const sendMultiAgent = useCallback((text: string, useOrchestrator: boolean, useReflection: boolean) => {
-    bg.sendMultiAgent({ sessionId, text, useOrchestrator, useReflection, projectRoot });
+  const sendMultiAgent = useCallback((text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) => {
+    bg.sendMultiAgent({ sessionId, text, useOrchestrator, useReflection, projectRoot, permissionMode, reasoningEffort });
   }, [sessionId, projectRoot]);
 
   const resume = useCallback((agentId: string, runId: string) => {
@@ -85,17 +85,5 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
     });
   }, [sessionId, model]);
 
-  const approve = useCallback((approvalId: string, decision: "approve" | "reject") => {
-    bg.approve(sessionId, approvalId, decision);
-  }, [sessionId]);
-
-  const approveAll = useCallback(() => {
-    bg.approveAll(sessionId);
-  }, [sessionId]);
-
-  const answer = useCallback((questionId: string, text: string) => {
-    bg.answer(sessionId, questionId, text);
-  }, [sessionId]);
-
-  return { turns, running, send, sendMultiAgent, resume, stop, reset, approve, approveAll, answer, autoApprove, contextUsage, taskLedger };
+  return { turns, running, send, sendMultiAgent, resume, stop, reset, contextUsage, taskLedger };
 }

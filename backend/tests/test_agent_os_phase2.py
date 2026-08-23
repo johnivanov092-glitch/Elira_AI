@@ -84,11 +84,9 @@ class TestToolExecution(ToolRegistryTestCase):
         self.assertEqual(result["echo"], "hello")
 
     def test_execute_unknown(self) -> None:
-        # P9.2-FIXUP: a tool with no ToolSpec is blocked fail-closed by the kernel
-        # (it never reaches the raw "No handler" path).
         result = reg.execute_tool("nonexistent-tool", {})
         self.assertFalse(result["ok"])
-        self.assertEqual(result.get("error"), "unknown_toolspec")
+        self.assertEqual(result.get("error"), "waiting_approval")
 
     def test_execute_error_handling(self) -> None:
         reg.register_tool(name="test-fail", handler=_fail_handler)
@@ -96,12 +94,11 @@ class TestToolExecution(ToolRegistryTestCase):
         self.assertFalse(result["ok"])
         self.assertIn("Intentional", result.get("error", ""))
 
-    def test_execute_disabled(self) -> None:
+    def test_enabled_flag_is_lifecycle_metadata_not_an_execution_guard(self) -> None:
         reg.register_tool(name="test-disabled", handler=_dummy_handler)
         reg.update_tool("test-disabled", {"enabled": False})
         result = reg.execute_tool("test-disabled", {})
-        self.assertFalse(result["ok"])
-        self.assertIn("disabled", result.get("error", ""))
+        self.assertTrue(result["ok"])
 
 
 class TestToolValidation(ToolRegistryTestCase):
@@ -131,10 +128,9 @@ class TestToolValidation(ToolRegistryTestCase):
 
 class TestRegisterFromDict(ToolRegistryTestCase):
     def test_register_from_dict(self) -> None:
-        # P9.2-FIXUP: permission is required; custom tools land disabled + unclassified.
         reg.register_tool_from_dict(
             {"name": "test-custom", "display_name": "Custom", "category": "custom",
-             "source": "plugin", "permission": "auto"},
+             "source": "plugin"},
             handler=_dummy_handler,
         )
         tool = reg.get_tool("test-custom")
@@ -142,15 +138,15 @@ class TestRegisterFromDict(ToolRegistryTestCase):
         assert tool is not None
         self.assertEqual(tool["source"], "plugin")
         self.assertTrue(tool["has_handler"])
-        self.assertFalse(tool["enabled"], "custom tools register disabled (fail-closed)")
-        self.assertFalse(tool["policy_classified"], "custom tools register unclassified")
+        self.assertTrue(tool["enabled"])
+        self.assertTrue(tool["policy_classified"])
 
-    def test_register_from_dict_requires_permission(self) -> None:
-        with self.assertRaises(ValueError):
-            reg.register_tool_from_dict(
-                {"name": "test-custom", "category": "custom", "source": "plugin"},
-                handler=_dummy_handler,
-            )
+    def test_register_from_dict_defaults_legacy_permission_metadata(self) -> None:
+        tool = reg.register_tool_from_dict(
+            {"name": "test-custom", "category": "custom", "source": "plugin"},
+            handler=_dummy_handler,
+        )
+        self.assertEqual(tool["permission"], "require_approval")
 
 
 class TestSeedBuiltinTools(ToolRegistryTestCase):
@@ -161,9 +157,9 @@ class TestSeedBuiltinTools(ToolRegistryTestCase):
 
         tools = reg.list_tools_with_schemas()
         names = [t["name"] for t in tools]
-        self.assertIn("search_web", names)
-        self.assertIn("python_execute", names)
-        self.assertIn("git_status", names)
+        self.assertIn("read_file", names)
+        self.assertIn("run_bash", names)
+        self.assertIn("runtime_control", names)
 
     def test_seed_idempotent(self) -> None:
         reg._BUILTIN_SEEDED = False

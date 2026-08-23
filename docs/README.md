@@ -7,20 +7,18 @@ been superseded; they stay only for the decisions/history they record.
 ## Current Docs
 
 - `ARCHITECTURE.md` - current backend/frontend/runtime architecture.
-- `architecture-agent-flow.svg` - agent runtime request/SSE flow diagram
-  (referenced from `ARCHITECTURE.md`).
+- `AGENT_ARCHITECTURE_GUIDE_RU.md` - full Russian architecture guide with flows,
+  APIs, stores, permissions, Windows/UAC, reasoning and prompt cache.
+- `ARCHITECTURE_SIMPLIFICATION_AUDIT_RU.md` - shipped simplification audit.
 - `PROJECT_MAP.md` - repo structure, owners, and where to change things.
 - `SERVER.md` - AI inference server summary (host, endpoints, models, access).
   The agent runs as a client; the model runs on the separate `Elira_AI_Server`.
-- `AGENT_BOUNDARY_REVIEW.md` - the Chat-Agent vs Code-Agent runtime boundary.
 - `UI_BASELINE.md` - user-approved unified-workspace visual baseline and change
   constraints (locked baseline - do not regress without sign-off).
 - `POST_SERVER_BACKLOG.md` - current server migration status and remaining
   follow-up work.
 - `CLAUDE_TASK_TEMPLATE.md` - task template for external agent work.
 - `agents/` - skill definitions (domain, issue-tracker, triage-labels).
-- `DEFERRED_TRACK.md` - forward-looking deferred track (D1-D3, not yet
-  implemented). The runtime guardrails now live in `ARCHITECTURE.md`.
 
 ## Archive
 
@@ -60,7 +58,7 @@ operational docs are:
 
 ## Maintenance Rules
 
-- Use ASCII unless a file explicitly requires another encoding.
+- Use UTF-8 without BOM and LF. Keep Russian text readable Cyrillic.
 - Do not document removed runtimes as active options.
 - Do not store secrets, private keys, API keys, or local `.env` values here.
 - For runtime behavior, cite the current code path rather than a stale plan.

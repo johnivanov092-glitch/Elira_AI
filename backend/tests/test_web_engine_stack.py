@@ -105,6 +105,93 @@ class WebEngineStackTest(unittest.TestCase):
             self.assertNotIn("language", captured["params"])
             self.assertNotIn("time_range", captured["params"])
 
+    def test_searxng_preserves_image_result_urls(self) -> None:
+        from unittest.mock import MagicMock
+        import app.core.web_engines as we
+
+        response = MagicMock()
+        response.json.return_value = {
+            "results": [{
+                "title": "Pangu illustration",
+                "url": "https://example.com/pangu",
+                "content": "Ancient Chinese mythology",
+                "img_src": "https://cdn.example.com/pangu.jpg",
+                "thumbnail_src": "https://cdn.example.com/pangu-thumb.jpg",
+            }],
+        }
+        response.raise_for_status.return_value = None
+        fake_session = MagicMock()
+        fake_session.get.return_value = response
+
+        with patch.dict(os.environ, {"SEARXNG_URL": "http://searxng.local:8003"}, clear=False), \
+             patch.object(we, "session", return_value=fake_session):
+            results = we.search_searxng("Паньгу", categories="images")
+
+        self.assertEqual(results[0]["img_src"], "https://cdn.example.com/pangu.jpg")
+        self.assertEqual(results[0]["thumbnail_src"], "https://cdn.example.com/pangu-thumb.jpg")
+
+    def test_duckduckgo_image_mode_uses_existing_image_search(self) -> None:
+        import app.core.web_engines as we
+
+        class FakeDDGS:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def images(self, query, max_results=5):
+                return [{
+                    "title": "Pangu",
+                    "url": "https://example.com/pangu",
+                    "image": "https://cdn.example.com/pangu.jpg",
+                    "thumbnail": "https://cdn.example.com/pangu-thumb.jpg",
+                }]
+
+            def text(self, *_args, **_kwargs):
+                raise AssertionError("text search must not run for categories=images")
+
+        with patch.object(we, "DDGS", return_value=FakeDDGS()):
+            results = we.search_duckduckgo("Паньгу", categories="images")
+
+        self.assertEqual(results[0]["href"], "https://example.com/pangu")
+        self.assertEqual(results[0]["img_src"], "https://cdn.example.com/pangu.jpg")
+        self.assertEqual(results[0]["thumbnail_src"], "https://cdn.example.com/pangu-thumb.jpg")
+
+    def test_wikipedia_image_mode_uses_commons_imageinfo(self) -> None:
+        from unittest.mock import MagicMock
+        import app.core.web_engines as we
+
+        response = MagicMock()
+        response.json.return_value = {
+            "query": {
+                "pages": {
+                    "1": {
+                        "title": "File:Pangu.jpg",
+                        "imageinfo": [{
+                            "descriptionurl": "https://commons.wikimedia.org/wiki/File:Pangu.jpg",
+                            "url": "https://upload.wikimedia.org/pangu.jpg",
+                            "thumburl": "https://upload.wikimedia.org/pangu-thumb.jpg",
+                        }],
+                    },
+                },
+            },
+        }
+        response.raise_for_status.return_value = None
+        fake_session = MagicMock()
+        fake_session.get.return_value = response
+
+        with patch.object(we, "session", return_value=fake_session):
+            results = we.search_wikipedia("Pangu", max_results=1, categories="images")
+
+        params = fake_session.get.call_args.kwargs["params"]
+        self.assertEqual(params["generator"], "search")
+        self.assertEqual(params["prop"], "imageinfo")
+        self.assertEqual(params["gsrnamespace"], 6)
+        self.assertEqual(results[0]["href"], "https://commons.wikimedia.org/wiki/File:Pangu.jpg")
+        self.assertEqual(results[0]["img_src"], "https://upload.wikimedia.org/pangu.jpg")
+        self.assertEqual(results[0]["thumbnail_src"], "https://upload.wikimedia.org/pangu-thumb.jpg")
+
     def test_tool_web_search_threads_targeting_to_searxng(self) -> None:
         import app.core.web as core_web
         from app.application.code_agent.tools import tool_web_search
@@ -132,16 +219,6 @@ class WebEngineStackTest(unittest.TestCase):
             # Invalid values are dropped (no kwargs passed at all).
             tool_web_search(query="x", categories="bogus", time_range="decade")
             self.assertEqual(captured, {})
-
-    def test_web_engines_route_exposes_only_new_stack(self) -> None:
-        client = TestClient(app)
-        response = client.get("/api/web/engines")
-        self.assertEqual(response.status_code, 200)
-
-        payload = response.json()
-        engine_ids = tuple(item["id"] for item in payload["engines"])
-        self.assertEqual(engine_ids, EXPECTED)
-        self.assertEqual(tuple(payload["default"]), EXPECTED)
 
     def test_geo_news_rerank_boosts_local_kz_sources(self) -> None:
         results = [

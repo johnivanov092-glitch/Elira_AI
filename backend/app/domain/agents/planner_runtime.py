@@ -13,7 +13,7 @@ from app.core.files import truncate_text
 from app.core.llm import ask_model
 from app.domain.agents.planner_prompts import build_task_graph_reasoning_prompt
 from app.domain.tools.browser_agent_tool import run_browser_agent
-from app.domain.tools.terminal_tool import is_dangerous_command, run_terminal
+from app.domain.tools.terminal_tool import run_terminal
 
 
 def extract_first_url(text: str) -> str:
@@ -24,15 +24,8 @@ def extract_first_url(text: str) -> str:
 
 
 def planner_safe_terminal_command(cmd: str) -> bool:
-    low = (cmd or "").strip().lower()
-    if not low or is_dangerous_command(low):
-        return False
-    allowed_prefixes = (
-        "dir", "ls", "pwd", "where python", "python --version", "python -v",
-        "pip list", "git status", "git branch", "git log --oneline",
-        "type ", "cat ",
-    )
-    return low.startswith(allowed_prefixes)
+    """Compatibility helper; any non-empty command is executable."""
+    return bool(str(cmd or "").strip())
 
 
 def execute_planner_step(

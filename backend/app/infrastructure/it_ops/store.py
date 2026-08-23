@@ -17,7 +17,9 @@ Contract:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -63,19 +65,6 @@ CREATE TABLE IF NOT EXISTS connection_profiles (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS operation_scopes (
-    scope_id TEXT PRIMARY KEY,
-    run_id TEXT NOT NULL,
-    allowed_asset_ids TEXT NOT NULL DEFAULT '[]',
-    cidrs TEXT NOT NULL DEFAULT '[]',
-    local_roots TEXT NOT NULL DEFAULT '[]',
-    service_ids TEXT NOT NULL DEFAULT '[]',
-    config_roots TEXT NOT NULL DEFAULT '[]',
-    db_profiles TEXT NOT NULL DEFAULT '[]',
-    mode TEXT NOT NULL DEFAULT 'read_only',
-    approved_by TEXT DEFAULT '',
-    approved_at REAL
-);
 CREATE TABLE IF NOT EXISTS snapshots (
     snapshot_id TEXT PRIMARY KEY,
     change_run_id TEXT NOT NULL,
@@ -103,7 +92,6 @@ CREATE TABLE IF NOT EXISTS change_runs (
     run_id TEXT NOT NULL,
     asset_id TEXT NOT NULL,
     plan TEXT NOT NULL DEFAULT '{}',
-    approval_id TEXT,
     snapshot_id TEXT,
     rollback_kind TEXT NOT NULL DEFAULT 'none',
     change_run_status TEXT NOT NULL DEFAULT 'planned',
@@ -113,7 +101,7 @@ CREATE TABLE IF NOT EXISTS change_runs (
 );
 CREATE TABLE IF NOT EXISTS secret_refs (
     secret_ref TEXT PRIMARY KEY,
-    backend TEXT NOT NULL DEFAULT 'wincred',
+    backend TEXT NOT NULL DEFAULT 'portable_v1',
     kind TEXT NOT NULL,
     asset_id TEXT,
     lifecycle TEXT NOT NULL DEFAULT 'provisioning',
@@ -150,17 +138,6 @@ _EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
         "last_health": "last_health TEXT NOT NULL DEFAULT '{}'",
         "created_at": "created_at REAL", "updated_at": "updated_at REAL",
     },
-    "operation_scopes": {
-        "scope_id": "scope_id TEXT", "run_id": "run_id TEXT",
-        "allowed_asset_ids": "allowed_asset_ids TEXT NOT NULL DEFAULT '[]'",
-        "cidrs": "cidrs TEXT NOT NULL DEFAULT '[]'",
-        "local_roots": "local_roots TEXT NOT NULL DEFAULT '[]'",
-        "service_ids": "service_ids TEXT NOT NULL DEFAULT '[]'",
-        "config_roots": "config_roots TEXT NOT NULL DEFAULT '[]'",
-        "db_profiles": "db_profiles TEXT NOT NULL DEFAULT '[]'",
-        "mode": "mode TEXT NOT NULL DEFAULT 'read_only'",
-        "approved_by": "approved_by TEXT DEFAULT ''", "approved_at": "approved_at REAL",
-    },
     "snapshots": {
         "snapshot_id": "snapshot_id TEXT", "change_run_id": "change_run_id TEXT",
         "asset_id": "asset_id TEXT", "before_state": "before_state TEXT DEFAULT ''",
@@ -179,14 +156,14 @@ _EXPECTED_COLUMNS: dict[str, dict[str, str]] = {
     "change_runs": {
         "change_run_id": "change_run_id TEXT", "run_id": "run_id TEXT",
         "asset_id": "asset_id TEXT", "plan": "plan TEXT NOT NULL DEFAULT '{}'",
-        "approval_id": "approval_id TEXT", "snapshot_id": "snapshot_id TEXT",
+        "snapshot_id": "snapshot_id TEXT",
         "rollback_kind": "rollback_kind TEXT NOT NULL DEFAULT 'none'",
         "change_run_status": "change_run_status TEXT NOT NULL DEFAULT 'planned'",
         "completion_status": "completion_status TEXT",
         "created_at": "created_at REAL", "updated_at": "updated_at REAL",
     },
     "secret_refs": {
-        "secret_ref": "secret_ref TEXT", "backend": "backend TEXT NOT NULL DEFAULT 'wincred'",
+        "secret_ref": "secret_ref TEXT", "backend": "backend TEXT NOT NULL DEFAULT 'portable_v1'",
         "kind": "kind TEXT", "asset_id": "asset_id TEXT",
         "lifecycle": "lifecycle TEXT NOT NULL DEFAULT 'provisioning'",
         "origin": "origin TEXT NOT NULL DEFAULT 'secure_intake'",
@@ -219,6 +196,111 @@ def _connect() -> sqlite3.Connection:
         raise StoreUnavailable(f"it_ops store unavailable: {exc}") from exc
 
 
+def _validate_database_connection(conn: sqlite3.Connection) -> None:
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()
+    if not integrity or str(integrity[0]).lower() != "ok":
+        raise sqlite3.DatabaseError("it_ops backup failed integrity_check")
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if version != _SCHEMA_VERSION:
+        raise sqlite3.DatabaseError(
+            f"it_ops backup version {version} is not supported ({_SCHEMA_VERSION})"
+        )
+    _verify_contract(conn, _columns_for(_SCHEMA_VERSION), _notnull_for(_SCHEMA_VERSION))
+    backends = {
+        str(row[0])
+        for row in conn.execute("SELECT DISTINCT backend FROM secret_refs").fetchall()
+    }
+    unknown = backends - set(_dom.SECRET_BACKENDS)
+    if unknown:
+        raise sqlite3.DatabaseError(f"it_ops backup has unknown secret backends: {sorted(unknown)}")
+
+
+def export_database_bytes() -> bytes:
+    """Return a transactionally consistent SQLite backup for encrypted bundling."""
+    init_db()
+    db_path = Path(_db_path())
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=".it_ops.backup.",
+        suffix=".sqlite3",
+        dir=str(db_path.parent),
+    )
+    os.close(descriptor)
+    temp_path = Path(temp_name)
+    source: sqlite3.Connection | None = None
+    destination: sqlite3.Connection | None = None
+    try:
+        source = _connect()
+        destination = sqlite3.connect(str(temp_path))
+        source.backup(destination)
+        destination.commit()
+        _validate_database_connection(destination)
+        destination.close()
+        destination = None
+        return temp_path.read_bytes()
+    except (sqlite3.Error, OSError) as exc:
+        raise StoreUnavailable(f"it_ops backup failed: {exc}") from exc
+    finally:
+        if source is not None:
+            source.close()
+        if destination is not None:
+            destination.close()
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def restore_database_bytes(payload: bytes) -> None:
+    """Validate in staging, then replace the active metadata database."""
+    if not isinstance(payload, bytes) or not payload:
+        raise StoreUnavailable("it_ops restore payload is empty")
+    db_path = Path(_db_path())
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=".it_ops.restore.",
+        suffix=".sqlite3",
+        dir=str(db_path.parent),
+    )
+    os.close(descriptor)
+    staged = Path(temp_name)
+    previous_temp = db_path.with_name(f".{db_path.name}.{int(time.time_ns())}.prev.tmp")
+    previous = db_path.with_suffix(db_path.suffix + ".prev")
+    try:
+        with staged.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        conn = sqlite3.connect(str(staged))
+        try:
+            _validate_database_connection(conn)
+        finally:
+            conn.close()
+        if db_path.exists():
+            live = _connect()
+            previous_conn: sqlite3.Connection | None = None
+            try:
+                previous_conn = sqlite3.connect(str(previous_temp))
+                live.backup(previous_conn)
+                previous_conn.commit()
+            finally:
+                live.close()
+                if previous_conn is not None:
+                    previous_conn.close()
+            os.replace(previous_temp, previous)
+        for suffix in ("-wal", "-shm"):
+            Path(str(db_path) + suffix).unlink(missing_ok=True)
+        os.replace(staged, db_path)
+    except (sqlite3.Error, OSError) as exc:
+        raise StoreUnavailable(f"it_ops restore failed: {exc}") from exc
+    finally:
+        for candidate in (staged, previous_temp):
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 # ── enum validation (BEFORE any SQL) ────────────────────────────────────────
 
 def _check(value: Any, allowed: tuple, what: str) -> None:
@@ -234,7 +316,7 @@ def _check(value: Any, allowed: tuple, what: str) -> None:
 # missing FK is structurally incompatible and is rejected (StoreUnavailable).
 _EXPECTED_PK: dict[str, str] = {
     "assets": "asset_id", "connection_profiles": "profile_id",
-    "operation_scopes": "scope_id", "snapshots": "snapshot_id",
+    "snapshots": "snapshot_id",
     "evidence": "evidence_id", "change_runs": "change_run_id",
     "secret_refs": "secret_ref",
 }
@@ -246,8 +328,6 @@ _REQUIRED_NOTNULL: dict[str, set[str]] = {
                "created_at", "updated_at"},
     "connection_profiles": {"asset_id", "transport", "os_platform_meta", "last_health",
                             "created_at", "updated_at"},
-    "operation_scopes": {"run_id", "allowed_asset_ids", "cidrs", "local_roots",
-                         "service_ids", "config_roots", "db_profiles", "mode"},
     "snapshots": {"change_run_id", "asset_id", "content_hash", "captured_at"},
     "evidence": {"run_id", "target_identity", "scanner_vantage", "operation",
                  "result", "captured_at"},
@@ -468,6 +548,15 @@ def set_asset_lifecycle(asset_id: str, lifecycle_state: str) -> None:
     _wrap(op)
 
 
+def delete_asset(asset_id: str) -> bool:
+    """Delete one asset and its profiles through the declared FK cascade."""
+    def op(conn):
+        cur = conn.execute("DELETE FROM assets WHERE asset_id=?", (asset_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    return bool(_wrap(op))
+
+
 def _asset_row(r: sqlite3.Row) -> dict[str, Any]:
     return {
         "asset_id": r["asset_id"], "label": r["label"], "kind": r["kind"],
@@ -532,6 +621,16 @@ def set_profile_health(profile_id: str, health: dict) -> None:
                      (json.dumps(health or {}, ensure_ascii=False), _now(), profile_id))
         conn.commit()
     _wrap(op)
+
+
+def delete_connection_profile(profile_id: str) -> bool:
+    def op(conn):
+        cur = conn.execute(
+            "DELETE FROM connection_profiles WHERE profile_id=?", (profile_id,)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    return bool(_wrap(op))
 
 
 # ── evidence ────────────────────────────────────────────────────────────────
@@ -627,13 +726,13 @@ def _profile_row(r: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# ── secret_refs (STATE only; value is in Credential Manager) ─────────────────
+# ── secret_refs (STATE only; ciphertext is in the portable vault) ────────────
 
-def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "wincred",
+def put_secret_ref(*, secret_ref: str, kind: str, backend: str = "portable_v1",
                    asset_id: str | None = None, lifecycle: str = "provisioning",
                    origin: str = "secure_intake") -> None:
     _check(kind, _dom.SECRET_KINDS, "secret kind")
-    _check(backend, _dom.SECRET_BACKENDS, "secret backend")   # Phase 0: wincred only
+    _check(backend, _dom.SECRET_BACKENDS, "secret backend")
     _check(lifecycle, _dom.SECRET_LIFECYCLE, "secret lifecycle")
     # only the intake path may CREATE a record (secure_intake); legacy_unbound is
     # set solely by the v1→v2 migration, never by a caller.
@@ -679,6 +778,22 @@ def secret_ref_state(secret_ref: str) -> dict[str, Any] | None:
         r = conn.execute("SELECT * FROM secret_refs WHERE secret_ref=?", (secret_ref,)).fetchone()
         return _secret_row(r) if r else None
     return _wrap(op)
+
+
+def set_secret_backend(secret_ref: str, backend: str) -> None:
+    """Switch one existing ref after a verified in-place backend migration."""
+    _check(backend, _dom.SECRET_BACKENDS, "secret backend")
+
+    def op(conn):
+        cur = conn.execute(
+            "UPDATE secret_refs SET backend=? WHERE secret_ref=?",
+            (backend, secret_ref),
+        )
+        if cur.rowcount != 1:
+            raise ValueError(f"unknown secret_ref: {secret_ref}")
+        conn.commit()
+
+    _wrap(op)
 
 
 def delete_secret_ref(secret_ref: str) -> None:
@@ -781,25 +896,24 @@ def delete_claimed_recovery(secret_ref: str) -> bool:
 # ── change_runs (TWO axes — never merged) ───────────────────────────────────
 
 def create_change_run(*, change_run_id: str, run_id: str, asset_id: str,
-                       plan: dict | None = None, rollback_kind: str = "none",
-                       approval_id: str | None = None) -> None:
+                       plan: dict | None = None, rollback_kind: str = "none") -> None:
     _check(rollback_kind, _dom.ROLLBACK_KINDS, "rollback_kind")
 
     def op(conn):
         now = _now()
         conn.execute(
-            "INSERT INTO change_runs (change_run_id, run_id, asset_id, plan, approval_id,"
+            "INSERT INTO change_runs (change_run_id, run_id, asset_id, plan,"
             " snapshot_id, rollback_kind, change_run_status, completion_status, created_at, updated_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (change_run_id, run_id, asset_id, json.dumps(plan or {}, ensure_ascii=False),
-             approval_id, None, rollback_kind, "planned", None, now, now))
+             None, rollback_kind, "planned", None, now, now))
         conn.commit()
     _wrap(op)
 
 
 def update_change_run(change_run_id: str, *, change_run_status: str | None = None,
-                      completion_status: str | None = None, snapshot_id: str | None = None,
-                      approval_id: str | None = None) -> None:
+                      completion_status: str | None = None,
+                      snapshot_id: str | None = None) -> None:
     """Update either/both axes INDEPENDENTLY. Each value is validated against its
     OWN axis before SQL — the two are never coerced into one another."""
     if change_run_status is not None:
@@ -814,8 +928,6 @@ def update_change_run(change_run_id: str, *, change_run_status: str | None = Non
         sets.append("completion_status=?"); vals.append(completion_status)
     if snapshot_id is not None:
         sets.append("snapshot_id=?"); vals.append(snapshot_id)
-    if approval_id is not None:
-        sets.append("approval_id=?"); vals.append(approval_id)
     if not sets:
         return
     sets.append("updated_at=?"); vals.append(_now())
@@ -834,7 +946,7 @@ def get_change_run(change_run_id: str) -> dict[str, Any] | None:
             return None
         return {"change_run_id": r["change_run_id"], "run_id": r["run_id"],
                 "asset_id": r["asset_id"], "plan": _loads(r["plan"], {}),
-                "approval_id": r["approval_id"], "snapshot_id": r["snapshot_id"],
+                "snapshot_id": r["snapshot_id"],
                 "rollback_kind": r["rollback_kind"],
                 "change_run_status": r["change_run_status"],
                 "completion_status": r["completion_status"]}

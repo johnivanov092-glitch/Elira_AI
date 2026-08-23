@@ -42,7 +42,7 @@ def _mirror_into_project(project_root: Path, src_path: str, filename: str) -> st
 def _format_runtime_result(label: str, result: dict[str, Any]) -> dict[str, Any]:
     # An errored runtime call must report ok=False — otherwise the loop defaults a
     # missing `ok` to True and an "ERROR: …" text is read as success (the live bug
-    # where an SSRF-blocked http_api showed ok=True).
+    # where an invalid http_api URL showed ok=True).
     if not result.get("ok"):
         return {"text": f"ERROR: {result.get('error') or 'unknown error'}", "ok": False}
     return {"text": f"{label}:\n{json.dumps(result, ensure_ascii=False, indent=2)}"}

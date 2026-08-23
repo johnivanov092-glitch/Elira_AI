@@ -43,7 +43,11 @@ export function MemorySection({ project }: { project: string }) {
   return (
     <Wrap title={`Память (RAG)${stats ? ` · ${stats.total}` : ""}`}>
       <div className="mb-3 flex items-center gap-2 text-[12px] text-t2">
-        <span className="flex-1">{stats ? `${stats.with_embeddings}/${stats.total} с эмбеддингами${stats.model ? ` · ${stats.model}` : ""}` : "загрузка…"}</span>
+        <span className="flex-1">
+          {stats
+            ? `${stats.with_embeddings}/${stats.total} с эмбеддингами${stats.model ? ` · ${stats.model}` : ""}${stats.embedding_enabled === false ? " · embedding выключен" : ""}`
+            : "загрузка…"}
+        </span>
         <button
           type="button"
           onClick={indexNow}

@@ -1,8 +1,4 @@
-"""
-Phase 8 TODO fixes:
-  1. tool.executed event emitted by execute_tool()
-  2. context_builder uses app.application.advanced.runtime._project_path (not API layer)
-"""
+"""Tool registry execution events."""
 from __future__ import annotations
 
 import sys
@@ -101,37 +97,3 @@ def test_execute_tool_failed_call_emits_event_with_success_false(tmp_path, monke
         reg._conn = orig_conn
         eb._conn = orig_eb_conn
         reg._handlers.pop("test_boom_p8", None)
-
-
-# ─── Fix 2: context_builder import direction ───────────────────────────────
-
-def test_context_builder_does_not_import_from_api_routes():
-    """_build_project_context_from_open_project must not import from app.api.routes.*"""
-    import inspect
-    import app.application.chat.context_builder as cb
-
-    source = inspect.getsource(cb._build_project_context_from_open_project)
-    assert "app.api.routes" not in source, (
-        "_build_project_context_from_open_project still imports from app.api.routes — "
-        "this is a wrong-direction dependency (application -> api)."
-    )
-    assert "app.application.advanced.runtime" in source, (
-        "_project_path should now be imported from app.application.advanced.runtime"
-    )
-
-
-def test_context_builder_resolves_project_path(tmp_path):
-    """_build_project_context_from_open_project must read _project_path from runtime."""
-    import app.application.advanced.runtime as proj_rt
-    import app.application.chat.context_builder as cb
-
-    original = proj_rt._project_path
-    try:
-        proj_rt._project_path = str(tmp_path)
-        (tmp_path / "hello.txt").write_text("hi")
-
-        result = cb._build_project_context_from_open_project()
-        assert tmp_path.name in result
-        assert "hello.txt" in result
-    finally:
-        proj_rt._project_path = original

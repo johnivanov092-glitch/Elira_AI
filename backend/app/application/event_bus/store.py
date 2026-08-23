@@ -160,6 +160,39 @@ def list_events(
     return [event for event in events if event], total
 
 
+def latest_event_id(*, conn_factory: Callable[[], Any]) -> int:
+    with conn_factory() as con:
+        row = con.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM events").fetchone()
+    return int(row["max_id"] if row else 0)
+
+
+def list_events_after(
+    *,
+    conn_factory: Callable[[], Any],
+    row_to_event_func: Callable[[Any], dict[str, Any] | None],
+    after_id: int,
+    through_id: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    clauses = ["id > ?"]
+    params = [max(0, int(after_id))]
+    if through_id is not None:
+        clauses.append("id <= ?")
+        params.append(max(0, int(through_id)))
+    with conn_factory() as con:
+        rows = con.execute(
+            f"""
+            SELECT * FROM events
+            WHERE {' AND '.join(clauses)}
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            [*params, max(1, int(limit))],
+        ).fetchall()
+    events = [row_to_event_func(row) for row in rows]
+    return [event for event in events if event]
+
+
 def get_message(
     *,
     conn_factory: Callable[[], Any],

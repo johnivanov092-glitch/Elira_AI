@@ -24,29 +24,20 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from app.application.tool_providers import (
-    BuiltinToolProvider,
-    ItopsToolProvider,
-    SshToolProvider,
     ToolRegistry,
-    build_lsp_providers,
-    build_mcp_providers,
+    build_runtime_tool_registry,
 )
 from app.application.tool_providers.mcp_provider import (
-    creative_batch_redirect,
-    creative_procedural_companion,
     creative_workflow_prompt,
 )
-from app.application.code_agent.progress import ProgressEvaluator, TURN_TOOL_CALL_SOFT_NUDGE, strategy_family
+from app.application.code_agent.answer_media import merge_answer_media
 from app.application.code_agent.planning import (
     PlanArtifact,
     build_planning_messages,
-    error_fingerprint,
     parse_plan_from_text,
     plan_artifact_from_dict,
     plan_context_block,
     planner_limits,
-    recovery_hint,
-    recovery_next_step,
 )
 from app.application.code_agent.taskspec import (
     CriteriaTracker,
@@ -55,13 +46,18 @@ from app.application.code_agent.taskspec import (
     taskspec_context,
     taskspec_report,
 )
-from app.application.code_agent.run_evidence import RunEvidence
-from app.application.code_agent import criterion_closure
+from app.application.code_agent.run_evidence import (
+    EvidenceKind,
+    RunEvidence,
+)
 from app.application.projects.scope import project_scope_id
 from app.application.agent_kernel.executor import (
     ToolExecutionRequest,
     ToolExecutionResult,
     execute_tool as _kernel_exec,
+    permission_mode_auto_approves,
+    tool_args_sha256,
+    workflow_approval_matches,
 )
 from app.application.monitoring.inference import extract_llm_usage, record_inference_telemetry
 from app.infrastructure.llm.openai_compatible import (
@@ -90,22 +86,16 @@ from app.application.code_agent.inline_tool_calls import (
     _extract_inline_tool_calls,
     _strip_tool_call_markup,
 )
-# D3 — structured action envelopes (opt-in, gated behind ELIRA_ACTION_ENVELOPES).
-from app.application.code_agent.action_envelopes import (
-    REPAIR_INSTRUCTION,
-    envelopes_enabled,
-    validate_tool_request,
-)
 # System-prompt construction extracted to .prompts; re-exported so the loop and
 # tests keep importing these from agent_loop unchanged.
 from app.application.code_agent.prompts import (  # noqa: F401
     BASE_SYSTEM_PROMPT,
     _CODE_AGENT_BASE_TOOLS,
-    _CODE_AGENT_READONLY_TOOLS,
     _build_base_system_prompt,
     _build_system_prompt,
 )
-from app.application.persona.service import mode_temperature, mode_tool_posture
+from app.application.persona.service import mode_temperature
+from app.core.redaction import redact_secrets
 # History coercion + rolling summarization extracted to .history; it imports
 # nothing from agent_loop (a leaf), so re-exporting here keeps existing importers
 # (code_agent_routes, tests) and the loop's `summarize_fn=summarize_history`
@@ -121,36 +111,18 @@ from app.application.code_agent.history import (  # noqa: F401
     _resolve_code_route,
     summarize_history,
 )
-# Layer C (deterministic "no changes" cross-check) extracted to .layer_c; a leaf
-# importing nothing from agent_loop. Re-exported so the loop and tests keep
-# importing these from agent_loop unchanged.
-from app.application.code_agent.layer_c import (  # noqa: F401
-    _NO_CHANGE_CLAIM_MARKERS,
-    _claims_no_changes,
-    _layer_c_correction,
-)
 # Project-prompt CRUD extracted to .project_prompt; a leaf. Re-exported (with
 # PROJECT_PROMPT_FILENAME) so code_agent_routes and tests keep importing these
 # from agent_loop unchanged.
 from app.application.code_agent.project_prompt import (  # noqa: F401
     PROJECT_PROMPT_FILENAME,
     get_project_prompt,
-    get_verify_command,
     init_project_prompt,
     set_project_prompt,
-    set_verify_command,
-    suggest_verify_command,
 )
 
 logger = logging.getLogger(__name__)
 
-# A long-thinking local model must not be cut off mid-task. The hard ceiling is
-# a runaway-loop guard, not a "stop the agent" budget — real stopping is the
-# user's Stop button plus the execution-time deadline, and hitting the ceiling
-# yields a resumable partial ("Продолжить"), never an error.
-DEFAULT_MAX_STEPS = 200
-DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
-MAX_CODE_AGENT_STEPS = 200
 # Per-request DRY sampler params (llama.cpp accepts them in the request body —
 # verified against the live server). DRY penalises repeated token sequences at
 # sampling time, so the model can't lock into a degenerate "same paragraph
@@ -189,71 +161,50 @@ _ANTI_REPEAT_SAMPLING = {
         "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     ],
 }
-# How many reasoning-runaway generations (provider cut the chain-of-thought at
-# its per-generation ceiling) a single run tolerates before being force-
-# finalized — the cross-step budget missing from the per-generation guard.
-_REASONING_RUNAWAY_LIMIT = 2
-# Delivery (B): the FIRST runaway in a Thinking-run no longer burns half the
-# budget silently — the run flips its remaining model calls to thinking-OFF
-# (one-shot, run-local; the user's global toggle and the journalled request are
-# untouched) and gets this server-owned instruction instead of the truncated
-# generation. A repeat after the fallback still hits _REASONING_RUNAWAY_LIMIT.
-_REASONING_FALLBACK_NUDGE = (
-    "[internal correction] Рассуждение зациклилось и было прервано. Прекрати "
-    "рассуждать. Проверь текущее состояние задачи (файлы, чеклист) и выполни "
-    "следующий конкретный шаг вызовом инструмента."
-)
-# Malformed inline tool-trace recoveries are nudge-and-retry; bound them so a
-# model stuck emitting broken tool markup can't burn all 200 steps.
-_MALFORMED_TRACE_LIMIT = 3
-# Opt-in verify gate (#2б): max times the loop re-runs `.elira/verify` and feeds
-# a red result back before giving up and letting the run finalize.
-_VERIFY_GATE_MAX = 3
-_VERIFY_GATE_TIMEOUT_S = 300
-# ask_user: max clarifying questions per run, so a lazy model asks instead of
-# thinking only a bounded number of times.
-_ASK_USER_MAX = 3
-# ask_user owns its own termination (it is exempt from the generic loop-guard
-# below). Past the budget the model is told to decide for itself; if it keeps
-# asking anyway, finalize cleanly once it has exceeded the budget by this grace
-# margin, instead of spinning to max_steps. Aligned so the hard cut lands at the
-# same total (_ASK_USER_MAX + grace + 1 == _REPEATED_TOOL_CALL_LIMIT).
-_ASK_USER_OVER_CAP_GRACE = 2
+
+
+_REASONING_EFFORTS = frozenset({"none", "low", "medium", "xhigh"})
+
+
+def _normalize_reasoning_effort(value: Any, *, thinking: bool = False) -> str:
+    """Normalize the public effort selector while preserving the legacy bool."""
+    effort = str(value or "").strip().lower()
+    if effort in _REASONING_EFFORTS:
+        return effort
+    return "xhigh" if thinking else "none"
+
+
+def _thinking_template_kwargs(effort: str | bool) -> dict[str, bool | str]:
+    """Build one request contract for every supported local reasoning model.
+
+    Qwen consumes ``enable_thinking`` + ``reasoning_effort``; Muse consumes
+    ``reasoning_strength`` and cannot fully disable thinking. Unknown template
+    kwargs are ignored by the other family, so this keeps the UI chip
+    deterministic across profile switches without coupling the agent to the
+    server's current model path. Public ``none`` therefore means true off for
+    Qwen and the native minimum (``low``) for Muse.
+    """
+    normalized = _normalize_reasoning_effort(
+        None if isinstance(effort, bool) else effort,
+        thinking=bool(effort) if isinstance(effort, bool) else False,
+    )
+    if normalized != "none":
+        return {
+            "enable_thinking": True,
+            "reasoning_effort": normalized,
+            "reasoning_strength": normalized,
+        }
+    return {
+        "enable_thinking": False,
+        "reasoning_effort": "none",
+        "reasoning_strength": "low",
+    }
+
+
+# Completion is model-owned: evidence is recorded for observability, but the
+# runtime never forces extra turns, rewrites the answer, or auto-runs verification.
 _LLM_HEARTBEAT_EVERY = 10.0
 _LLM_CANCEL_POLL_SECONDS = 0.1
-_REPEATED_TOOL_CALL_LIMIT = 6
-# Repeats at or above this count (but below the hard limit) get a loud nudge
-# appended to the tool result — a chance to change course before the run is
-# stopped, instead of a silent hard cut at the first few repeats.
-_REPEATED_TOOL_CALL_NUDGE_AT = 2
-# Idempotent meta-tools whose repeats are harmless — re-sending them does not
-# advance the run but also does not corrupt state, so they must NOT trip the
-# loop-guard. `todo_update` in particular: local models routinely re-emit the
-# full checklist (now upserted by position, so no duplicate rows), and a benign
-# repeat used to kill the whole run. Read-only/idempotent by construction.
-# `ask_user` is exempt too: it has its OWN dedicated per-run budget + clean
-# terminal below (see _ASK_USER_MAX / _ASK_USER_OVER_CAP_GRACE), so the generic
-# fingerprint guard must not double-govern it and end the run with a confusing
-# loop_guard/error instead of a graceful finalize — especially in no_questions
-# mode, where the canned reply gives a weak model nothing new to diverge on.
-_LOOP_GUARD_EXEMPT_TOOLS = frozenset({"todo_update", "tool_search", "ask_user", "ssh_request_host"})
-# Progress control lives in progress.ProgressEvaluator (the strategy router): a
-# "doing" tool that moves no state burns its strategy_key's budget, exhaustion
-# redirects to another family, and only when families/budget are spent does the
-# run stop honestly. See docs/AGENT_RUNTIME_PLAN.md.
-# SSH provider tools promoted into a run's OFFERED set on SSH-shaped tasks, so the
-# model reaches ssh_run/ssh_write/ssh_run_ps directly instead of drowning in raw
-# `ssh host "…"` through run_bash. Activated by intent (task mentions ssh / an
-# allowlisted host) so non-SSH runs — and the prompt canaries — pay zero tokens.
-_SSH_ACTIVATABLE_TOOLS = (
-    "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps", "ssh_replace",
-    "ssh_assert_contains", "ssh_assert_not_contains", "ssh_port_check", "ssh_exists",
-    "ssh_not_exists", "ssh_list_hosts",
-)
-# Answers that count as approval for an ssh_request_host prompt (the "Одобрить"
-# button, plus common free-text yes-words). Anything else = deny.
-_SSH_APPROVE_WORDS = frozenset({"одобрить", "approve", "yes", "да", "allow", "ok", "разрешить"})
-
 # Role-based sampling for a single served model (one large LLM plays every
 # role — see resolve_model_for_route/route_to_role). The role does not switch
 # the model (single-GPU server, one text LLM loaded at a time); it only tunes
@@ -396,20 +347,6 @@ def _local_chat_stream(**kwargs: Any) -> Iterator[dict[str, Any]]:
 _CANCEL_REGISTRY: dict[str, threading.Event] = {}
 _REGISTRY_LOCK = threading.Lock()
 
-# Auto-verifier pass (runtime-owned closure): at most ONE pass per run, at most
-# this many verifier calls in it — a hard bound on runtime-initiated work.
-_AUTO_VERIFIER_MAX_CALLS = 5
-
-
-def _web_corpus_flag() -> bool:
-    """W3: the web_corpus feature flag (ledger render + nudge are gated on it)."""
-    try:
-        from app.application.feature_flags import flag_enabled
-        return flag_enabled("web_corpus")
-    except Exception:
-        return False
-
-
 def _server_url_alive(url: str) -> bool:
     """R2 liveness gate: the remembered dev-server URL is backed by a tracked
     process that is alive AND listening. Module-level so tests patch it."""
@@ -430,7 +367,7 @@ def _run_owned_servers(run_id: str) -> list[dict]:
 
 
 def _stop_run_servers(run_id: str) -> list[dict]:
-    """R2: stop every server this run started (module-level so tests patch it)."""
+    """Stop every server this run started after an explicit Workflow Stop."""
     try:
         from app.application.code_agent.tools._run import stop_run_servers
         return stop_run_servers(run_id)
@@ -440,13 +377,12 @@ def _stop_run_servers(run_id: str) -> list[dict]:
 
 def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
                               text_result: str, tool_ok: bool, auto: bool = False) -> bool:
-    """Feed one EXECUTED tool call into the per-criterion tracker — the single source
-    for both the model-called path and the runtime auto-verifier pass, so verdict
-    semantics can never drift between them. A verifier tool records its structured
-    evidence; run_bash records real stdout/stderr + exit_code (command_output /
-    command_check). `auto=True` = the runtime itself made the call (auto-verifier
-    pass) — stamped on the criterion for the report/UI. Returns True when a criterion
-    changed status."""
+    """Feed one executed tool call into the observational criterion tracker.
+
+    A verifier tool records structured evidence; ``run_bash`` records real
+    stdout/stderr and exit code. The tracker never forces another model turn.
+    ``auto`` remains only for compatibility with persisted historical reports.
+    """
     if not criteria.items:
         return False
     if tool_meta.get("verifier"):
@@ -459,12 +395,11 @@ def _record_criterion_verdict(criteria, name: str, args: dict, tool_meta: dict,
     return False
 
 
-def _exec_with_heartbeat(thunk, step):
+def _exec_with_heartbeat(thunk, step, cancel_event: threading.Event | None = None):
     """Run a blocking tool call (thunk) in a daemon thread, yielding `heartbeat`
-    events every _LLM_HEARTBEAT_EVERY seconds while it runs. A long tool (network
-    scan, build, long test) otherwise goes silent, and the client's 90s SSE
-    inactivity watchdog cuts the stream before the tool even returns
-    («Соединение с агентом прервалось — нет ответа»). The FINAL yielded item is
+    events every _LLM_HEARTBEAT_EVERY seconds while it runs. This keeps progress
+    observable during a long network scan, build or test without imposing a
+    product deadline. The FINAL yielded item is
     {'__result__': <ToolExecutionResult>}; the caller passes heartbeats through
     and unwraps the result."""
     box: dict[str, Any] = {}
@@ -484,6 +419,19 @@ def _exec_with_heartbeat(thunk, step):
     _poll = min(1.0, max(0.02, _LLM_HEARTBEAT_EVERY / 2.0))
     _last = time.monotonic()
     while not finished.wait(timeout=_poll):
+        if cancel_event is not None and cancel_event.is_set():
+            yield {
+                "__result__": ToolExecutionResult(
+                    status="error",
+                    output={
+                        "ok": False,
+                        "text": "Выполнение остановлено пользователем.",
+                        "error": "cancelled_by_user",
+                    },
+                    error="cancelled_by_user",
+                )
+            }
+            return
         _now = time.monotonic()
         if _now - _last >= _LLM_HEARTBEAT_EVERY:
             yield {"type": "heartbeat", "step": step}
@@ -492,21 +440,26 @@ def _exec_with_heartbeat(thunk, step):
         raise box["e"]
     yield {"__result__": box["r"]}
 
-# Pending ask_user questions: question_id -> answer (None = registered/awaiting,
-# str = answered). The HTTP answer route writes here; the paused loop polls it.
-# In-memory (like the cancel registry) — a restart drops the question and the
-# answer route 404s, which the UI handles by clearing the stale card.
-_QUESTION_ANSWERS: dict[str, str | None] = {}
-_QUESTION_LOCK = threading.Lock()
+# Live direct-stream Workflow requests. Durable request metadata lives in the
+# Workflow store; this in-memory rendezvous only wakes the currently running
+# code-agent generator after the UI resolves that durable request.
+_WORKFLOW_RESPONSES: dict[str, dict[str, Any] | None] = {}
+_WORKFLOW_RESPONSE_LOCK = threading.Lock()
 
 
-def submit_answer(question_id: str, answer: str) -> bool:
-    """Record a human answer to a paused ask_user question. Returns True if the
-    question was known/awaiting, False otherwise (stale/unknown id)."""
-    with _QUESTION_LOCK:
-        if question_id not in _QUESTION_ANSWERS:
+def submit_workflow_response(
+    response_id: str,
+    action: str,
+    values: dict[str, Any] | None = None,
+) -> bool:
+    """Deliver a Workflow UI resolution to a live direct code-agent request."""
+    with _WORKFLOW_RESPONSE_LOCK:
+        if response_id not in _WORKFLOW_RESPONSES:
             return False
-        _QUESTION_ANSWERS[question_id] = str(answer)
+        _WORKFLOW_RESPONSES[response_id] = {
+            "action": str(action or "accept"),
+            "values": dict(values) if isinstance(values, dict) else {},
+        }
     return True
 
 
@@ -527,6 +480,10 @@ def request_cancel(run_id: str) -> bool:
         kill_run_processes(run_id)
     except Exception:
         logger.warning("kill_run_processes failed for run %s", run_id, exc_info=True)
+    try:
+        _stop_run_servers(run_id)
+    except Exception:
+        logger.warning("stop_run_servers failed for run %s", run_id, exc_info=True)
     with _REGISTRY_LOCK:
         ev = _CANCEL_REGISTRY.get(run_id)
     if ev is None:
@@ -547,7 +504,7 @@ def _unregister_run(run_id: str) -> None:
         _CANCEL_REGISTRY.pop(run_id, None)
 
 
-# Text/format, approval, context-window, RAG, telemetry and tool-search helpers
+# Text/format, Workflow-request, context-window, RAG and telemetry helpers
 # were extracted to .loop_helpers (a leaf — imports nothing from agent_loop), and
 # re-exported here so existing importers (tests, file_watcher) and the core loop
 # below keep resolving these names from agent_loop unchanged. Because the core
@@ -556,59 +513,31 @@ def _unregister_run(run_id: str) -> None:
 from app.application.code_agent.loop_helpers import (  # noqa: F401
     ContextBudgetError,
     TOOL_RESULT_LLM_LIMIT,
-    WRAP_UP_PROMPT,
-    _APPROVAL_KEEPALIVE_EVERY,
-    _APPROVAL_POLL_INTERVAL,
-    _EXECUTION_INTENT,
+    _WORKFLOW_REQUEST_KEEPALIVE_EVERY,
+    _WORKFLOW_REQUEST_POLL_INTERVAL,
     _ASK_USER_SCHEMA,
-    _SSH_REQUEST_HOST_SCHEMA,
-    _TOOL_SEARCH_SCHEMA,
+    _WORKFLOW_REQUEST_SCHEMA,
     FACTS_PREFIX,
-    _EXTERNAL_EVIDENCE_NUDGE_MAX,
-    _GROUNDING_NUDGE_MAX,
-    _NEAR_DUP_LIMIT,
-    _NEAR_DUP_NUDGE_AT,
-    _approval_status,
-    _arg_tokens,
-    _deterministic_stop_summary,
     _fact_from_tool,
     _facts_digest,
-    gate_completion_claims,
     _recent_tool_snippet,
     _recent_tools_digest,
-    _answer_admits_missing_external_evidence,
-    _external_evidence_backstop,
-    _requires_external_evidence,
     RECENT_TOOLS_PREFIX,
     build_task_state_block,
     format_checklist_state,
-    resume_checklist_guard,
     session_cancel_requested,
     tool_state_changed,
     upsert_task_state_message,
-    _is_near_dup,
-    _DOCGEN_NUDGE_MAX,
     _flatten_for_summary,
-    _call_auto_approves,
-    _looks_like_intent_without_action,
-    _looks_like_repeat_request,
-    _looks_like_dev_server_command,
-    _mark_approval_approved,
-    _mark_approval_expired,
-    _maybe_inject_execution_reminder,
     _messages_char_count,
-    _norm_answer,
-    _normalized_fingerprint,
     _strip_think_blocks,
     _prepare_messages_for_llm,
     _record_code_route_metric,
     _schema_tool_name,
     _short_arg_hint,
-    _tool_started_requires_approval_delay,
     _truncate,
     _truncate_for_llm,
     _try_remember_turn,
-    _wrap_up_text,
 )
 
 
@@ -649,22 +578,21 @@ def _stream_code_agent_core(
     working_dir: Path | str | None = None,
     model: str = "auto",
     agent_id: str = "code-agent",
-    max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
-    execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
-    approval_wait_seconds: int = 300,
     compaction_audit_sink: Callable[[dict[str, Any]], None] | None = None,
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
     thinking: bool = False,
-    no_questions: bool = False,
+    reasoning_effort: str | None = None,
     resume: bool = False,
+    pause_for_workflow_request: bool = False,
+    workflow_approval: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream the agent loop as events.
 
@@ -675,15 +603,23 @@ def _stream_code_agent_core(
       - {"type": "tool_call", "step": N, "tool": str, "arguments": dict,
          "result": str, "touched_path"?: str,
          "old_content"?: str, "new_content"?: str, "diff_action"?: str}
-      - {"type": "final_response", "step": N, "text": str}
+      - {"type": "final_response", "step": N, "text": str,
+         "answer_status": "complete" | "degraded" | "needs_input"}
       - {"type": "done", "ok": bool, "steps": int, "stop_reason": str,
          "error": str | None}
     """
+    selected_reasoning_effort = _normalize_reasoning_effort(
+        reasoning_effort,
+        thinking=thinking,
+    )
+    thinking = selected_reasoning_effort != "none"
     root = Path(project_root).resolve()
     scope_id = project_scope_id(root)
     rid = run_id or uuid.uuid4().hex
     effective_agent_id = str(agent_id or "code-agent").strip() or "code-agent"
-    approval_channel = "remote" if effective_agent_id == "telegram" else "local"
+    pending_workflow_approval = (
+        dict(workflow_approval) if isinstance(workflow_approval, dict) else {}
+    )
     cancel_event = _register_run(rid)
     # Delivery: a session-level Stop may land while NO slice is registered
     # (between slices / during continuation build), where request_cancel finds
@@ -691,10 +627,6 @@ def _stream_code_agent_core(
     # loop's own cancel checks then terminate before any model or tool call.
     if session_cancel_requested(rid):
         cancel_event.set()
-    # R2: initialized BEFORE the try — every early return (invalid root, preflight
-    # block) reaches the finally, which consults this flag to stop run-owned servers.
-    _keep_servers_on_exit = False
-
     try:
         if not root.exists() or not root.is_dir():
             yield {"type": "run_started", "run_id": rid}
@@ -707,7 +639,6 @@ def _stream_code_agent_core(
             }
             return
 
-        safe_max_steps = max(1, min(int(max_steps), MAX_CODE_AGENT_STEPS))
         model, offline_ctx, _route_decision = _resolve_code_route(
             model,
             num_ctx,
@@ -738,46 +669,11 @@ def _stream_code_agent_core(
             return
         safe_num_ctx = int(context_profile["ctx_size"])
         _record_code_route_metric(rid, _route_decision, safe_num_ctx, agent_id=effective_agent_id)
-        try:
-            from app.application.agent_registry.sandbox import preflight_or_raise
-
-            preflight = preflight_or_raise(
-                agent_id=effective_agent_id,
-                num_ctx=safe_num_ctx,
-                run_id=rid,
-                route=effective_agent_id,
-                streaming=True,
-                enforce_context_limit=False,
-            )
-            execution_seconds = int(
-                (preflight.get("limit") or {}).get(
-                    "max_execution_seconds",
-                    DEFAULT_MAX_EXECUTION_SECONDS,
-                )
-                or DEFAULT_MAX_EXECUTION_SECONDS
-            )
-            if execution_timeout_seconds is not None:
-                execution_seconds = min(
-                    execution_seconds,
-                    max(1, int(execution_timeout_seconds)),
-                )
-        except Exception as exc:
-            yield {"type": "run_started", "run_id": rid}
-            yield {
-                "type": "done",
-                "ok": False,
-                "steps": 0,
-                "stop_reason": "error",
-                "error": f"code-agent preflight blocked run: {exc}",
-            }
-            return
-        deadline = time.monotonic() + max(1, execution_seconds)
-
         # Aggregate every tool source into one registry. The agent
         # loop only talks to the registry from here on.
         #   - BuiltinToolProvider is always on.
-        #   - SshToolProvider auto-disables when the allowlist is
-        #     empty, so adding it unconditionally costs nothing.
+        #   - SshToolProvider accepts arbitrary explicit targets; saved hosts
+        #     are discovery shortcuts only.
         #   - build_mcp_providers() returns one provider per RUNNING
         #     MCP server; servers that aren't started are skipped
         #     entirely (the user manages them through the MCP API
@@ -788,99 +684,14 @@ def _stream_code_agent_core(
         from app.application.tool_registry.runtime import seed_builtin_tools
 
         seed_builtin_tools()
-        registry = ToolRegistry([
-            BuiltinToolProvider(root),
-            SshToolProvider(),
-            ItopsToolProvider(),
-            *build_lsp_providers(),
-            *build_mcp_providers(),
-        ])
+        registry = build_runtime_tool_registry(root)
         all_schemas = registry.collect_schemas()
-        # P10.1: enable deferred tool mode for THIS code-agent run — only the
-        # base set is active initially; tool_search activates more (run-scoped).
-        from app.application.agent_kernel.deferred_tools import (
-            enable_deferred_tools,
-            get_active_tools,
-        )
-
-        initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
-        # Persona mode posture: Личный narrows the OFFERED tools to read-only
-        # (she does not reach for write/edit/run without being asked). This only
-        # restricts what the model is offered — the fail-closed kernel still
-        # gates every call independently, so a mode can never widen access.
-        if mode_tool_posture(profile_name) == "readonly":
-            narrowed = tuple(t for t in initial_tools if t in _CODE_AGENT_READONLY_TOOLS)
-            initial_tools = narrowed or _CODE_AGENT_READONLY_TOOLS
-        else:
-            # SSH-shaped conversation → offer ssh_run/ssh_read/ssh_write/ssh_run_ps
-            # from step one. Activations are run-scoped, while a chat follow-up is a
-            # new run, so current-message-only detection made "повтори" forget the
-            # SSH tools and fall back to raw run_bash. Include a bounded recent-chat
-            # window for visibility only; executor policy and the host allowlist
-            # remain authoritative.
-            try:
-                from app.application.tool_providers.ssh_acl import (
-                    get_allowed_hosts as _ssh_hosts,
-                    is_ssh_enabled as _ssh_on,
-                )
-
-                if _ssh_on():
-                    _ssh_context = [str(user_message or "")]
-                    for _turn in list(conversation_history or [])[-8:]:
-                        if not isinstance(_turn, dict):
-                            continue
-                        _content = _turn.get("content")
-                        if isinstance(_content, str) and _content:
-                            _ssh_context.append(_content[:4000])
-                    _low = "\n".join(_ssh_context).lower()
-                    _hosts = [h.lower() for h in _ssh_hosts()]
-                    if "ssh" in _low or any(h and h in _low for h in _hosts):
-                        initial_tools = tuple(dict.fromkeys((*initial_tools, *_SSH_ACTIVATABLE_TOOLS)))
-            except Exception:
-                pass
-            # Explicit document-generation request → offer file_gen from step one,
-            # mirroring the SSH intent-activation above. The model otherwise tends to
-            # improvise binary formats through write_file/run_bash or omit generation.
-            # Reading an existing document is deliberately NOT a generation intent.
-            # Visibility ONLY — the fail-closed kernel still gates every file_gen call
-            # (approval/policy unchanged), and a non-document run that guesses the name is
-            # still blocked by the deferred executor.
-            _doc_request = (user_message or "").lower()
-            _doc_format = re.search(
-                r"(?:\bpdf\b|\bпдф\b|\bword\b|\bворд\w*\b|\bdocx?\b|"
-                r"\bexcel\b|\bэксел\w*\b|\bxlsx?\b|\bдокумент\w*\b)",
-                _doc_request,
-            )
-            _doc_generate = re.search(
-                r"(?:\bсозда\w*\b|\bсдела\w*\b|\bсгенерир\w*\b|"
-                r"\bподготов\w*\b|\bоформ\w*\b|\bвыгруз\w*\b|"
-                r"\bнуж(?:ен|на|но|ны)\b|\bхочу\b|\bдай\b|"
-                r"\b(?:create|generate|make|prepare|export|need|want)\b)",
-                _doc_request,
-            )
-            if _doc_format and _doc_generate:
-                initial_tools = tuple(dict.fromkeys((*initial_tools, "file_gen")))
-            # Explicit desktop-control intent -> offer the real `computer` tool
-            # from step one. It is intentionally not a BASE_TOOL, but requiring
-            # the model to discover a tool the user named caused false claims
-            # that desktop control did not exist. Visibility only: the executor
-            # still applies the normal approval/bypass policy to every action.
-            _computer_context = [str(user_message or "")]
-            for _turn in list(conversation_history or [])[-8:]:
-                if not isinstance(_turn, dict):
-                    continue
-                _content = _turn.get("content")
-                if isinstance(_content, str) and _content:
-                    _computer_context.append(_content[:4000])
-            if re.search(
-                r"(?:\bcomputer(?:[\s_-]*use)?\b|"
-                r"(?:управл\w*|работ\w*).{0,40}(?:рабоч\w*\s+стол|мыш\w*|клавиатур\w*)|"
-                r"(?:сделай|сними|покажи).{0,30}скриншот.{0,20}(?:экрана|рабочего\s+стола))",
-                "\n".join(_computer_context),
-                re.IGNORECASE,
-            ):
-                initial_tools = tuple(dict.fromkeys((*initial_tools, "computer")))
-        enable_deferred_tools(rid, initial_tools)
+        # Every provider tool is visible from the first step. There is no
+        # activation/deferred-tools layer; Workflow permission is the only policy.
+        initial_tools = tuple(dict.fromkeys(
+            name for schema in all_schemas
+            if (name := _schema_tool_name(schema))
+        ))
         chat = chat_fn or _local_chat
         stream_chat = chat_stream_fn
         if chat_fn is None and stream_chat is None:
@@ -909,7 +720,7 @@ def _stream_code_agent_core(
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         messages.extend(_coerce_history(conversation_history))
         # Anti-refusal nudge: if user clearly asks to execute, remind the model.
-        effective_user_message = _maybe_inject_execution_reminder(user_message)
+        effective_user_message = user_message
         # TaskSpec (Phase 6): on a STRUCTURED task, derive goal + success criteria +
         # verifiers and keep them in focus. None for simple/conversational tasks —
         # so nothing is injected there (zero tokens, canaries untouched).
@@ -959,19 +770,13 @@ def _stream_code_agent_core(
             "safe_input_budget": context_profile.get("safe_input_budget"),
             "compaction_thresholds": context_profile.get("compaction_thresholds"),
             "thinking": bool(thinking),
+            "reasoning_effort": selected_reasoning_effort,
         }
 
         last_text = ""
         tool_round_trips = 0
         compaction_count = 0
         call_log: list[str] = []
-        repeated_tool_calls: dict[str, int] = {}
-        # Near-duplicate loop detection (see loop_helpers): catches a model
-        # spamming ONE tool with slightly-varying args (ping/recall churn) that
-        # the exact-fingerprint guard below misses. Streak = consecutive near-dups.
-        near_dup_recent: list[tuple[str, frozenset[str]]] = []
-        near_dup_streak = 0
-        creative_batch_streak = 0
         # Grounding across turns: compact facts the discovery tools revealed this
         # run, handed back next turn as an authoritative context block so the
         # model grounds instead of confabulating (see loop_helpers._fact_from_tool
@@ -984,122 +789,15 @@ def _stream_code_agent_core(
         # remote-observation and external-source truth. A mutation advances its
         # project epoch, making older verification receipts stale.
         run_evidence = RunEvidence()
-        verify_gate_fired = False
-        # Bounded recovery (planning batch, req 7): a normalized error fingerprint
-        # (tool|path|stable-error) counts repeated identical failures. On a repeat
-        # we inject ONE precise, diagnosis-driven nudge — never the generic
-        # "read the file" when the journal shows the file was already read.
-        error_streaks: dict[str, int] = {}
-        read_paths: set[str] = set()
-        recovery_nudges_fired: dict[str, int] = {}
         _last_failure: dict[str, str] = {}  # for the deterministic stop summary
 
-        def _next_step_after_failure() -> str:
-            if _last_failure:
-                target = _last_failure.get("path", "")
-                return recovery_next_step(
-                    tool=_last_failure.get("tool", "operation"),
-                    path=target,
-                    error_text=_last_failure.get("error", ""),
-                    already_read=target in read_paths,
-                )
-            return progress.next_step_hint()
         # TaskSpec per-criterion state (Ph7.4/7.5): DONE is decided by verifiers,
         # not the model's word. Each criterion is unconfirmed → confirmed (a matching
         # verifier passed) / failed (matching verifier red). completion_status is a
         # deterministic function of this — kept SEPARATE from runtime `ok`. We never
         # burn an extra LLM turn to nag; unconfirmed criteria are reported at finalize.
         criteria = CriteriaTracker.from_spec(task_spec)
-        # R1 (flag `catalog_assist`, default OFF): the verifier catalog assists the
-        # runtime — unsupported-labels in the report, catalog notes in closure hints,
-        # and a classification-DRIFT log (an intent the catalog doesn't know = the
-        # code and the contract diverged). Never a classifier; fail-open.
-        if criteria.items:
-            try:
-                from app.application.feature_flags import flag_enabled as _flag_enabled
-                if _flag_enabled("catalog_assist"):
-                    # import FIRST — the flag turns on only when the catalog module is
-                    # actually importable, so the downstream lazy imports can't blow up
-                    # mid-run after the flag committed (review F9).
-                    from app.application.code_agent import catalog as _catalog
-                    criteria.catalog_assist = True
-                    _drift = _catalog.drift_intents({it["intent"] for it in criteria.items})
-                    if _drift:
-                        logger.warning("catalog drift (run %s): intents %s are not in "
-                                       "verifier_catalog.yaml", rid, _drift)
-            except Exception:
-                criteria.catalog_assist = False
-                logger.warning("catalog assist unavailable — flag ignored for run %s", rid)
-        # Criterion Closure state-machine (Ph7.12): before a run with OPEN criteria
-        # finalizes, spend ONE bounded turn asking for the exact missing verifier calls
-        # (once per distinct missing-set, capped total); a Cleanup Barrier blocks a
-        # delete while criteria that live under that path are still open (once). Both
-        # are BOUNDED — no infinite guard loop; then the run finalizes honest-partial.
-        closure_fired_sets: set[str] = set()
-        closure_turns = 0
-        _CLOSURE_GATE_MAX = 2
-        auto_verifier_done = False   # runtime-owned verifier pass: at most ONCE per run
-        web_ledger_nudged = False    # W3: one bounded "record your citations" nudge
-        cleanup_barrier_fired = False
-        server_redirect_fired = 0
-        _SERVER_REDIRECT_MAX = 2
-        dev_server_redirects = 0            # run_bash dev-server → run_server (R2)
-        _last_ssh_host = ""      # for concrete closure/barrier call hints
-        _ssh_hosts_seen: set[str] = set()   # >1 host → auto-ssh probes disabled
         _last_server_url = ""
-        # Hard verify gate (#2б, opt-in): if the project set `.elira/verify`, the
-        # loop RUNS that command on finalize-after-edits and refuses to close
-        # until it exits 0 — no rubber-stamped "проверено". Bounded so a
-        # persistently-red command can't loop forever.
-        verify_cmd = get_verify_command(root)
-        verify_passed = False
-        verify_attempts = 0
-        # Anti-repeat gate: fires at most once if the model is about to echo its
-        # PREVIOUS turn's answer verbatim to a DIFFERENT question (local-model
-        # loop). prev_assistant_text = the last assistant reply from history.
-        repeat_gate_fired = False
-        # Anti-"narrate instead of act" gate: fires when the model ends its turn
-        # on a forward-looking intent ("давай посмотрим…", "сейчас прочитаю…")
-        # with no tool call and nothing edited yet — a plan-without-execute stop
-        # (amplified by thinking). Nudges it to actually call the tool. Bounded
-        # (a stubborn local model can repeat filler) — push again up to the cap,
-        # then let it finalize rather than loop forever.
-        intent_gate_fires = 0
-        _INTENT_GATE_MAX = 2
-        # Ungrounded-file nudge: fires when the finalizing answer names a project
-        # file that nothing in this run grounds (residual confabulation leak, e.g.
-        # inventing test_main.py/setup.py). Bounded; only on an actual unverified
-        # file claim, so normal answers never see it.
-        grounding_nudge_fires = 0
-        external_evidence_nudge_fires = 0
-        # Anti-confabulation for generated documents: fires when the finalizing
-        # answer presents a .docx/.xlsx as ready while no successful file_gen ran.
-        docgen_nudge_fires = 0
-        # Cross-step budget for degenerate generations: the provider's runaway
-        # guard is per-generation, so a model that loops its reasoning EVERY step
-        # could burn all 200 steps in cut-off generations. Two runaway events in
-        # one run → force-finalize (loop_guard-style). Malformed inline tool
-        # traces get the same bounding (the recovery nudge used to be unlimited).
-        reasoning_runaway_count = 0
-        # Delivery (B): one-shot thinking-OFF fallback after the first runaway in
-        # a Thinking-run. Run-local: the journalled request keeps the original
-        # thinking flag, so the user's toggle is never rewritten.
-        reasoning_fallback_fired = False
-        malformed_trace_count = 0
-        ask_user_count = 0
-        prev_assistant_text = next(
-            (str(m.get("content") or "") for m in reversed(messages)
-             if isinstance(m, dict) and m.get("role") == "assistant"),
-            "",
-        )
-        # D3 — at most ONE envelope repair-retry per run, then deterministic
-        # fallback to the existing inline-recovery behaviour. Only consulted
-        # when ELIRA_ACTION_ENVELOPES is on.
-        envelope_repair_fired = False
-        # Strategy router: classifies each "doing" call into a strategy_key
-        # (family+target), throttles a repeated method, redirects to another family
-        # on exhaustion, and stops honestly only when families/budget are spent.
-        progress = ProgressEvaluator()
         touched_files: list[str] = []  # every file the run mutated (for the report)
         durable_state: dict[str, Any] = {}
         try:
@@ -1115,14 +813,11 @@ def _stream_code_agent_core(
         durable_criteria_epoch = int(durable_state.get("criteria_epoch") or 0)
         if resume and durable_criteria_epoch == durable_project_epoch:
             criteria.restore_report(list(durable_state.get("criteria") or []))
-        volume_nudge_fired = False     # one "converge, you're deep into the turn" nudge
-        remote_fact_count = 0
-        remote_fact_nudge_fired = False
 
-        # ── Bounded planning stage (thinking=true + structural task) ──────────
-        # «Мозг» = ONE bounded planning stage, then every execution/verification
-        # model call runs thinking OFF (the local `thinking` flag is flipped once
-        # here; the per-step enable_thinking below then never re-enables it).
+        # ── Structured planning preflight ────────────────────────────────────
+        # On a structured task the selected reasoning mode is used for a planning
+        # call and then remains active for every execution/verification model call.
+        # Only the physical context/output window bounds the plan artifact.
         # The plan is durable in the RunJournal (state["plan"]): on Resume /
         # auto-continuation the existing plan is REUSED and the planner never
         # runs a second time. request.thinking (the user setting) is never
@@ -1132,11 +827,9 @@ def _stream_code_agent_core(
         _existing_plan, _planned_before = _load_planning_state(rid)
         if _existing_plan is not None:
             plan = _existing_plan
-            thinking = False  # plan already made → execution phase, thinking OFF
             applied_thinking_mode = "plan_reused"
         elif _planned_before:
             # Planner already ran once (fallback, no stored plan): do NOT re-plan.
-            thinking = False
             applied_thinking_mode = "planning_fallback"
         elif thinking and task_spec is not None:
             if cancel_event.is_set():
@@ -1167,7 +860,10 @@ def _stream_code_agent_core(
                         "num_ctx": safe_num_ctx,
                         "active_context_limit": safe_num_ctx,
                         "max_tokens": _planner_max_tokens,
-                        "chat_template_kwargs": {"enable_thinking": True},
+                        "reasoning_effort": selected_reasoning_effort,
+                        "chat_template_kwargs": _thinking_template_kwargs(
+                            selected_reasoning_effort
+                        ),
                     },
                 }
                 for _planner_event in _chat_events(
@@ -1191,8 +887,6 @@ def _stream_code_agent_core(
                     ((_planner_response.get("message") or {}).get("content") or "")
                 )
                 plan = parse_plan_from_text(_planner_content)
-            # One-shot: from here on execution & verification run thinking OFF.
-            thinking = False
             if cancel_event.is_set():
                 yield {
                     "type": "done", "ok": False, "steps": 0,
@@ -1210,9 +904,9 @@ def _stream_code_agent_core(
             else:
                 applied_thinking_mode = "planning_then_execution"
                 yield {"type": "plan_ready", "run_id": rid, "plan": plan.to_dict()}
-        # Structural event ONLY when planning actually engaged (planned this run,
-        # reused a plan, or is post-fallback). A plain thinking=false / simple run
-        # emits nothing new — existing event contracts stay byte-for-byte.
+
+        # Structural event ONLY when a planning preflight actually engaged. A
+        # direct/simple run emits nothing new and retains the one-call path.
         if applied_thinking_mode in (
             "planning_then_execution", "planning_fallback", "plan_reused",
         ):
@@ -1241,8 +935,10 @@ def _stream_code_agent_core(
             # text into the system role and does not create assistant→assistant
             # message ordering before the first execution call.
             messages.append({"role": "user", "content": plan_context_block(plan)})
-
-        for step in range(1, safe_max_steps + 1):
+        step = 0
+        refresh_task_state = True
+        while True:
+            step += 1
             if cancel_event.is_set():
                 yield {
                     "type": "done",
@@ -1250,26 +946,6 @@ def _stream_code_agent_core(
                     "steps": step - 1,
                     "stop_reason": "cancelled",
                     "error": "Cancelled by user",
-                    **_completion_fields(criteria, terminated_incomplete=True),
-                }
-                return
-
-            if time.monotonic() >= deadline:
-                final_text = _deterministic_stop_summary(
-                    f"timeout {execution_seconds}s",
-                    call_log,
-                    touched_files,
-                    established_facts,
-                    exhausted_strategies=progress.exhausted_summary(),
-                    next_step=_next_step_after_failure(),
-                )
-                yield {"type": "final_response", "step": step, "text": final_text}
-                yield {
-                    "type": "done",
-                    "ok": False,
-                    "steps": step - 1,
-                    "stop_reason": "timeout",
-                    "error": f"code-agent execution timed out after {execution_seconds}s",
                     **_completion_fields(criteria, terminated_incomplete=True),
                 }
                 return
@@ -1286,11 +962,11 @@ def _stream_code_agent_core(
                     )
             except Exception:
                 checklist_items = []
-            if task_spec is not None or checklist_items:
+            if (task_spec is not None or checklist_items) and refresh_task_state:
                 messages = upsert_task_state_message(
                     messages,
                     build_task_state_block(
-                        goal=str(getattr(task_spec, "goal", "") or ""),
+                        goal=str(getattr(task_spec, "goal", "")),
                         constraints=list(
                             getattr(task_spec, "constraints", None) or []
                         ),
@@ -1302,9 +978,10 @@ def _stream_code_agent_core(
                             *durable_failures,
                             *(call for call in call_log if call.endswith("error")),
                         ],
-                        next_step=str(progress.next_step_hint() or ""),
+                        next_step="",
                     ),
                 )
+                refresh_task_state = False
 
             try:
                 messages, _compacted, context_usage = _prepare_messages_for_llm(
@@ -1328,6 +1005,9 @@ def _stream_code_agent_core(
                 return
             if _compacted:
                 compaction_count += 1
+                # Compaction creates a new prompt prefix anyway. Refresh the
+                # task snapshot on the next step, then keep it stable again.
+                refresh_task_state = True
                 from app.application.context.compaction import extract_rolling_summary
 
                 rolling_summary = extract_rolling_summary(messages)
@@ -1338,17 +1018,12 @@ def _stream_code_agent_core(
                     "rolling_summary": rolling_summary or None,
                 }
 
-            # P10.1: expose only this run's active tools + tool_search. Tools
-            # activated by tool_search on a prior step become visible here.
-            _active = get_active_tools(rid)
-            step_schemas = [s for s in all_schemas if _schema_tool_name(s) in _active]
-            step_schemas.append(_TOOL_SEARCH_SCHEMA)
+            # Every available tool is visible in every permission mode.
+            step_schemas = list(all_schemas)
             step_schemas.append(_ASK_USER_SCHEMA)
-            step_schemas.append(_SSH_REQUEST_HOST_SCHEMA)
+            step_schemas.append(_WORKFLOW_REQUEST_SCHEMA)
             # Inline recovery must use exactly what the model was offered this
-            # step. ask_user/ssh_request_host are loop-owned schemas and are not
-            # provider registry entries, so registry.known_tools() incorrectly
-            # dropped their otherwise valid action envelopes as plain text.
+            # step. ask_user is loop-owned and is not a provider registry entry.
             _visible_tool_names = {
                 name for schema in step_schemas
                 if (name := _schema_tool_name(schema))
@@ -1370,11 +1045,14 @@ def _stream_code_agent_core(
                 # degenerated into a ×20-paragraph loop on a non-think run, so the
                 # protection can no longer be think-only.
                 llm_options["sampling"] = dict(_ANTI_REPEAT_SAMPLING)
-                # Thinking toggle (per-request, --jinja server): opt the run into
-                # model reasoning without a server restart. Reasoning streams on a
-                # separate channel below; the server default stays off when unset.
-                if thinking:
-                    llm_options["chat_template_kwargs"] = {"enable_thinking": True}
+                # Always send an explicit per-request mode. Reasoning-capable
+                # server profiles default to ON, so omitting kwargs when the chip
+                # is off would silently re-enable thinking after a profile switch.
+                active_reasoning_effort = selected_reasoning_effort
+                llm_options["reasoning_effort"] = active_reasoning_effort
+                llm_options["chat_template_kwargs"] = _thinking_template_kwargs(
+                    active_reasoning_effort
+                )
                 llm_kwargs = {
                     "model": model,
                     "messages": messages,
@@ -1471,44 +1149,6 @@ def _stream_code_agent_core(
             # the model keeps reasoning as content. Strip them client-side too.
             content = _strip_think_blocks(message.get("content") or "").strip()
             tool_calls = message.get("tool_calls") or []
-            # Cross-step runaway budget: the provider cut this generation's
-            # reasoning at its ceiling. One event is survivable; repeated events
-            # mean the model is stuck in a degenerate loop — force-finalize
-            # instead of burning the remaining steps on cut-off generations.
-            if (response or {}).get("reasoning_runaway"):
-                reasoning_runaway_count += 1
-                if thinking and not reasoning_fallback_fired:
-                    # Delivery (B): first runaway in a Thinking-run — do not
-                    # finalize and do not process the truncated generation (it
-                    # never reaches history). Flip the REMAINING model calls of
-                    # this run to thinking-OFF (llm_options is rebuilt each step
-                    # from the local `thinking`), tell the model to act, and
-                    # keep TaskSpec/checklist/progress state untouched. Strictly
-                    # one-shot: a repeat still counts toward the runaway limit.
-                    reasoning_fallback_fired = True
-                    thinking = False
-                    yield {
-                        "type": "reasoning_fallback",
-                        "step": step,
-                        "runaway_count": reasoning_runaway_count,
-                    }
-                    messages.append({"role": "user", "content": _REASONING_FALLBACK_NUDGE})
-                    continue
-                if reasoning_runaway_count >= _REASONING_RUNAWAY_LIMIT:
-                    final_text = _wrap_up_text(
-                        chat, model, safe_num_ctx, messages, call_log,
-                        "модель зацикливается в рассуждениях",
-                    )
-                    yield {"type": "final_response", "step": step, "text": final_text}
-                    yield {
-                        "type": "done",
-                        "ok": False,
-                        "steps": step,
-                        "stop_reason": "loop_guard",
-                        "error": "reasoning runaway repeated; run finalized early",
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
             step_usage = extract_llm_usage(response)
             record_inference_telemetry(
                 agent_id=effective_agent_id,
@@ -1554,45 +1194,7 @@ def _stream_code_agent_core(
                     tool_calls = inline_calls
                     content = ""  # JSON was the tool call, not a text reply
 
-            # D3 — opt-in strict tool-request validation on top of recovery.
-            # OFF by default: when the flag is unset this block is skipped
-            # entirely and the loop runs exactly as before. When on, every
-            # tool call (structured or recovered) must validate as a clean
-            # tool-request envelope (known tool + dict args). On the first
-            # malformed turn we ask the model to re-send once; after that we
-            # fall back to the existing behaviour rather than loop forever.
-            if tool_calls and envelopes_enabled():
-                known = _visible_tool_names
-                all_valid = all(
-                    validate_tool_request(c, known) is not None for c in tool_calls
-                )
-                if not all_valid and not envelope_repair_fired:
-                    envelope_repair_fired = True
-                    messages.append({"role": "user", "content": REPAIR_INSTRUCTION})
-                    call_log.append("envelope repair: malformed tool_request")
-                    continue
-                # If still malformed after the one retry, fall through with the
-                # recovered calls as-is (deterministic fallback to today's path).
-
             if not tool_calls and _contains_tool_trace(content):
-                malformed_trace_count += 1
-                if malformed_trace_count >= _MALFORMED_TRACE_LIMIT:
-                    # Bounded: a model stuck emitting broken tool markup used to
-                    # retry indefinitely (up to the step cap). Finalize instead.
-                    final_text = _wrap_up_text(
-                        chat, model, safe_num_ctx, messages, call_log,
-                        "модель повторяет некорректную разметку вызова инструмента",
-                    )
-                    yield {"type": "final_response", "step": step, "text": final_text}
-                    yield {
-                        "type": "done",
-                        "ok": False,
-                        "steps": step,
-                        "stop_reason": "loop_guard",
-                        "error": "malformed tool trace repeated; run finalized early",
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
                 messages.append({
                     "role": "user",
                     "content": (
@@ -1601,572 +1203,40 @@ def _stream_code_agent_core(
                         "structured tool call or answer plainly."
                     ),
                 })
-                call_log.append("blocked malformed internal tool trace")
+                call_log.append("repaired malformed internal tool trace")
                 continue
 
             if content:
                 last_text = content
 
             if not tool_calls:
-                # Hard verify gate (#2б, opt-in): a project with `.elira/verify`
-                # can't be closed after edits until that command exits 0. The
-                # LOOP runs it (not the model), so "готово" can't be rubber-
-                # stamped. Bounded by _VERIFY_GATE_MAX; after that we fall through
-                # and let the run finalize with the failure visible in history.
-                if (
-                    verify_cmd
-                    and run_evidence.has_mutations
-                    and not verify_passed
-                    and verify_attempts < _VERIFY_GATE_MAX
-                ):
-                    _phase_event = _enter_verification_phase()
-                    if _phase_event is not None:
-                        yield _phase_event
-                    verify_attempts += 1
-                    from app.application.code_agent.tools import tool_run_bash as _verify_run
-
-                    yield {
-                        "type": "tool_started", "step": step, "tool": "run_bash",
-                        "arguments": {"command": verify_cmd},
-                    }
-                    _vres = _verify_run(root, command=verify_cmd, timeout=_VERIFY_GATE_TIMEOUT_S)
-                    _vtext = str(_vres.get("text") or "")
-                    _passed = any(ln.strip() == "exit=0" for ln in _vtext.splitlines())
-                    run_evidence.record_tool_result(
-                        tool_name="run_bash",
-                        arguments={"command": verify_cmd},
-                        execution_status="ok",
-                        output=_vres,
-                        text_result=_vtext,
-                        state_changed=False,
-                    )
-                    yield {
-                        "type": "tool_call", "step": step, "tool": "run_bash",
-                        "arguments": {"command": verify_cmd},
-                        "result": _vtext, "ok": _passed,
-                    }
-                    if _passed:
-                        verify_passed = True  # fall through to finalize
-                    else:
-                        if content:
-                            messages.append({"role": "assistant", "content": content})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"Проверка проекта `{verify_cmd}` НЕ прошла — "
-                                f"исправь причину и не заявляй «готово», пока она "
-                                f"не станет зелёной. Вывод:\n\n{_truncate_for_llm(_vtext)}"
-                            ),
-                        })
-                        continue
-                # TaskSpec does not inject an extra "prove it" user turn here.
-                # If no verifier confirmed the criteria, finalization below will
-                # mark that deterministically instead of spending another model call.
-                # Soft verification gate (Variant 2): the model edited files this
-                # run but never ran tests/lint or started the app, and is now
-                # trying to close. Nudge it once to verify before finishing —
-                # reminder-injection, not a hard block, fires at most once, and
-                # never on a no-edit (conversational/read-only) run. Skipped when a
-                # TaskSpec with criteria is driving verification (handled above).
-                if (
-                    run_evidence.has_mutations
-                    and not run_evidence.has_current_verification
-                    and not verify_gate_fired
-                    and not (task_spec is not None and task_spec.success_criteria)
-                ):
-                    verify_gate_fired = True
-                    if content:
-                        messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Перед завершением: ты правил файлы, но ещё не проверил "
-                            "результат. Прогони тесты и линтер проекта через `run_bash`, "
-                            "а приложение по возможности подними через `run_server` и "
-                            "убедись, что стартует — затем дай финальный ответ. Если "
-                            "проверять реально нечего (тестов/линтера в проекте нет) — "
-                            "так и скажи и заканчивай. Не останавливайся на полпути; не "
-                            "заявляй «готово» только по факту записи файла."
-                        ),
-                    })
-                    continue
-                # Anti-repeat gate: the model is about to emit an answer identical
-                # (after whitespace-normalisation) to its PREVIOUS turn's reply,
-                # but the user asked something different — a local-model echo loop.
-                # Nudge it ONCE to answer the new question (or admit it has no new
-                # info/source), instead of serving the duplicate. Skipped when the
-                # user explicitly asked to repeat.
-                _answer = content or last_text
-                if (
-                    _answer
-                    and prev_assistant_text
-                    and not repeat_gate_fired
-                    and _norm_answer(_answer) == _norm_answer(prev_assistant_text)
-                    and not _looks_like_repeat_request(user_message)
-                ):
-                    repeat_gate_fired = True
-                    messages.append({"role": "assistant", "content": _answer})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Ты слово в слово повторил свой прошлый ответ, хотя "
-                            "вопрос другой. Ответь именно на НОВЫЙ вопрос. Если по "
-                            "нему у тебя нет новой информации или источника — честно "
-                            "так и скажи (например «источник не найден / не "
-                            "подтверждено»), но НЕ копируй прошлый ответ."
-                        ),
-                    })
-                    continue
-                # Anti-"narrate instead of act" gate: the model returned prose
-                # with NO tool call, but the prose is a forward-looking intent
-                # ("давай посмотрим…", "сейчас прочитаю…") and nothing was edited
-                # yet — i.e. it announced the next step and stopped instead of
-                # doing it (a plan-without-execute failure, amplified by
-                # thinking). Nudge it to emit the tool call and do the work.
-                # Bounded by _INTENT_GATE_MAX and only on a no-edit run, so a
-                # genuine short answer (or a summary after real edits) is never
-                # cut, and a stubborn model can't loop forever.
-                _answer_intent = content or last_text
-                if (
-                    _answer_intent
-                    and intent_gate_fires < _INTENT_GATE_MAX
-                    and not run_evidence.has_mutations
-                    and _looks_like_intent_without_action(_answer_intent)
-                ):
-                    intent_gate_fires += 1
-                    messages.append({"role": "assistant", "content": _answer_intent})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Не описывай, что собираешься сделать — СДЕЛАЙ это "
-                            "сейчас. Вызови нужный инструмент "
-                            "(read_file/edit_file/write_file/run_bash) в этом же "
-                            "ходу и доведи задачу до конца. Заканчивать ход одним "
-                            "намерением («сейчас прочитаю…», «начну с…») без "
-                            "вызова инструмента нельзя — это не выполненная "
-                            "работа. Дай итог только когда правки реально внесены "
-                            "и проверены."
-                        ),
-                    })
-                    continue
-                # External-fact evidence gate: prompts alone did not stop local
-                # models from inventing founders, dates, medical advice and
-                # official-source checks. Give the model one bounded chance to
-                # read a real source. If it still refuses, finalization below
-                # replaces the unsupported prose with an honest runtime backstop.
-                _answer_external = content or last_text
-                if (
-                    _answer_external
-                    and _requires_external_evidence(user_message, _answer_external)
-                    and not run_evidence.has_external_source
-                    and not _answer_admits_missing_external_evidence(_answer_external)
-                    and external_evidence_nudge_fires < _EXTERNAL_EVIDENCE_NUDGE_MAX
-                ):
-                    external_evidence_nudge_fires += 1
-                    try:
-                        from app.application.agent_kernel.deferred_tools import activate_tools
-
-                        activate_tools(rid, ["web_search", "web_fetch"])
-                    except Exception:
-                        pass
-                    messages.append({"role": "assistant", "content": _answer_external})
-                    messages.append({
-                        "role": "user",
-                        "content": (
-                            "Ты собираешься дать внешний фактический ответ без "
-                            "прочитанного источника. Не отвечай по памяти: выполни "
-                            "`web_search`, затем прочитай внешний источник через "
-                            "`web_fetch(store=true)` (для нескольких URL используй "
-                            "один пакетный вызов). Только после успешного чтения дай "
-                            "ответ со ссылкой. Если источник недоступен или факт не "
-                            "подтверждается — честно так и скажи без догадок."
-                        ),
-                    })
-                    continue
-                # Ungrounded-file nudge: the answer names project file(s) that
-                # nothing in this run grounds (no tool result / verified-facts /
-                # user message) — the residual confabulation leak. Nudge it to
-                # verify via a tool before stating them, ONCE-ish. Only fires on a
-                # real unverified file claim, so normal answers never see it.
-                _answer_ground = content or last_text
-                if _answer_ground and grounding_nudge_fires < _GROUNDING_NUDGE_MAX:
-                    _ungrounded = run_evidence.ungrounded_file_claims(
-                        _answer_ground,
-                        messages,
-                        established_facts,
-                    )
-                    if _ungrounded:
-                        grounding_nudge_fires += 1
-                        messages.append({"role": "assistant", "content": _answer_ground})
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "Ты назвал файлы, которые НЕ проверял в этом прогоне "
-                                "и которых нет в блоке «Проверенные факты»: "
-                                f"{', '.join(_ungrounded[:6])}. Не называй файлы по "
-                                "памяти — вызови `glob`/`project_map`/`read_file` и "
-                                "убедись, что они реально существуют. Затем ответь по "
-                                "факту; выдуманное убери."
-                            ),
-                        })
-                        continue
-                # Anti-confabulation for generated documents: the answer presents a
-                # .docx/.xlsx as ready but no successful file_gen artifact receipt
-                # backs that exact name. Nudge ONCE to really generate it (or drop
-                # the claim); the deterministic honest-note is the final backstop.
-                _answer_doc = content or last_text
-                if _answer_doc and docgen_nudge_fires < _DOCGEN_NUDGE_MAX:
-                    _unbacked_doc = run_evidence.unbacked_document_claims(_answer_doc)
-                    if _unbacked_doc:
-                        docgen_nudge_fires += 1
-                        messages.append({"role": "assistant", "content": _answer_doc})
-                        messages.append({"role": "user", "content": (
-                            "Ты заявил, что файл(ы) "
-                            f"{', '.join(_unbacked_doc[:4])} готов(ы), но успешного "
-                            "вызова `file_gen` в этом прогоне НЕ было — файл не создан. "
-                            "Либо сгенерируй его: `file_gen(format='word'|'excel'|'pdf', …)` "
-                            "(если инструмента нет в списке — активируй через "
-                            "`tool_search(\"file_gen\")`), либо убери утверждение о "
-                            "готовом файле. Не выдавай черновик текста за созданный файл."
-                        )})
-                        continue
-                # Criterion Closure Gate (Ph7.12): before finalizing a run with OPEN
-                # criteria, if there are concrete missing verifier calls, spend ONE
-                # bounded turn asking for exactly those — once per distinct missing-set,
-                # capped total. Then finalize honest-partial (never an infinite loop).
-                if (
-                    task_spec is not None and criteria.items
-                    and criteria.completion_status() != "confirmed"
-                    and closure_turns < _CLOSURE_GATE_MAX
-                ):
-                    _auto_ssh_ok = len(_ssh_hosts_seen) <= 1
-                    # R2: browser hints/auto-probes only against a server that is
-                    # REALLY alive — a stale URL (stopped/crashed server) degrades to
-                    # the placeholder, so the closure asks to start the server first.
-                    _gate_url = _last_server_url if (
-                        _last_server_url and _server_url_alive(_last_server_url)
-                    ) else ""
-                    _acts = criterion_closure.missing_verifier_actions(
-                        criteria, host=_last_ssh_host or "<host>",
-                        url=_gate_url or "<actual_url от run_server>",
-                        auto_ssh=_auto_ssh_ok, catalog_hints=criteria.catalog_assist,
-                    )
-                    # ── Auto-verifier pass (runtime-owned closure) ────────────────
-                    # missing_verifier_actions already KNOWS the exact calls — for the
-                    # safe, fully-concrete subset the runtime executes them ITSELF
-                    # instead of asking the model; the model then sees only the result
-                    # (green → criterion confirmed silently; red → short report below).
-                    # Bounded: once per run (consumed only when something actually
-                    # runs), ≤ _AUTO_VERIFIER_MAX_CALLS calls. Kernel policy fully
-                    # applies (same request path as model calls); a call that would
-                    # park on a human approval is skipped, not waited on.
-                    _auto_results: list[dict] = []
-                    if _acts and not auto_verifier_done:
-                        _autoable = [a for a in _acts if a.get("auto")
-                                     and a["auto"].get("tool") in criterion_closure._AUTO_SAFE_TOOLS]
-                        if _autoable:
-                            # consume the once-per-run pass only when there IS something
-                            # to run — a first finalize with no concrete calls (e.g. no
-                            # server url yet) must not burn it (review F11).
-                            auto_verifier_done = True
-                            _phase_event = _enter_verification_phase()
-                            if _phase_event is not None:
-                                yield _phase_event
-                        for _a in _autoable[:_AUTO_VERIFIER_MAX_CALLS]:
-                            if cancel_event.is_set():
-                                break
-                            _a_tool = str(_a["auto"]["tool"])
-                            _a_args = dict(_a["auto"].get("args") or {})
-                            if _a_tool == "run_bash":
-                                if _looks_like_dev_server_command(_a_args.get("command", "")):
-                                    continue   # a NAMED dev-server command would hang the
-                                    # finalize gate until the shell timeout (review #5) —
-                                    # the nudge steers it to run_server instead
-                                _cmd = criterion_closure.resolve_auto_command(
-                                    _a_args.get("command", ""), project_root, touched_files)
-                                if not _cmd:
-                                    continue   # target not locatable — model keeps the wheel
-                                if not _a["auto"].get("allow_cd") and _cmd != _a_args.get("command"):
-                                    continue   # command_check: no cwd inference — a wrong
-                                    # cwd would record a false hard-red (review F9)
-                                _a_args["command"] = _cmd
-                            try:
-                                from app.application.agent_kernel.deferred_tools import activate_tools
-                                activate_tools(rid, [_a_tool])
-                            except Exception:
-                                pass
-                            yield {"type": "tool_started", "step": step, "tool": _a_tool,
-                                   "arguments": _a_args, "auto_verifier": True}
-                            _a_request = ToolExecutionRequest(
-                                run_id=rid, agent_id=effective_agent_id,
-                                project_scope_id=scope_id, tool_name=_a_tool,
-                                args=_a_args, source="code_agent",
-                            )
-                            _a_result = None
-                            _a_approval = ""
-                            try:
-                                for _hb in _exec_with_heartbeat(
-                                    lambda: _kernel_exec(_a_request, dispatch_fn=registry.dispatch_raw), step):
-                                    if "__result__" in _hb:
-                                        _a_result = _hb["__result__"]
-                                    else:
-                                        yield _hb
-                                _a_approval = str((_a_result.output or {}).get("approval_id") or "")
-                                if (
-                                    _a_result.status == "waiting_approval"
-                                    and _a_approval
-                                    and _call_auto_approves(
-                                        permission_mode,
-                                        _a_tool,
-                                        _a_args,
-                                        channel=approval_channel,
-                                    )
-                                ):
-                                    _mark_approval_approved(_a_approval)
-                                    for _hb in _exec_with_heartbeat(
-                                        lambda: _kernel_exec(_a_request, dispatch_fn=registry.dispatch_raw), step):
-                                        if "__result__" in _hb:
-                                            _a_result = _hb["__result__"]
-                                        else:
-                                            yield _hb
-                            except Exception as _a_exc:  # noqa: BLE001 — runtime-initiated
-                                # work must NEVER crash a run that would otherwise finalize
-                                _a_result = None
-                                logger.warning("auto-verifier %s failed: %s", _a_tool, _a_exc)
-                            if _a_result is None:
-                                yield {"type": "tool_call", "step": step, "tool": _a_tool,
-                                       "arguments": _a_args, "ok": False, "auto_verifier": True,
-                                       "result": "auto-verifier: вызов не выполнился — оставлено модели"}
-                                continue
-                            if _a_result.status == "waiting_approval":
-                                # A runtime-initiated call must NEVER park the run on a
-                                # human prompt — this check stays with the model's turn.
-                                # Expire the abandoned approval row so no dead pending
-                                # card lingers in the approvals panel (review F5/F10).
-                                if _a_approval:
-                                    _mark_approval_expired(_a_approval)
-                                yield {"type": "tool_call", "step": step, "tool": _a_tool,
-                                       "arguments": _a_args, "ok": False, "auto_verifier": True,
-                                       "result": "auto-verifier: нужно подтверждение — оставлено модели"}
-                                continue
-                            _a_meta = _a_result.output or {}
-                            _a_text = str(_a_meta.get("text", ""))
-                            if _a_result.status != "ok":
-                                # blocked/error (rate-limit, scope, disabled tool): the
-                                # command NEVER RAN — recording it would fail a criterion
-                                # on a non-verdict (review F2). Report + leave to model.
-                                yield {"type": "tool_call", "step": step, "tool": _a_tool,
-                                       "arguments": _a_args, "ok": False, "auto_verifier": True,
-                                       "result": _truncate(_a_text) or f"auto-verifier: {_a_result.status}"}
-                                continue
-                            _a_ok = bool(_a_meta.get("ok", True))
-                            _a_event: dict[str, Any] = {
-                                "type": "tool_call", "step": step, "tool": _a_tool,
-                                "arguments": _a_args, "result": _truncate(_a_text),
-                                "ok": _a_ok, "auto_verifier": True,
-                            }
-                            for opt in ("exit_code", "verifier", "evidence"):
-                                if opt in _a_meta:
-                                    _a_event[opt] = _a_meta[opt]
-                            yield _a_event
-                            _a_hint = _short_arg_hint(_a_args)
-                            call_log.append(f"[auto] {_a_tool}({_a_hint}) {'ok' if _a_ok else 'error'}")
-                            # Classify by actual criterion TRANSITIONS, not the tool's ok
-                            # flag: run_bash deliberately has no `ok` (red exit ≠ ok=False),
-                            # and a probe's ok=False can itself CONFIRM a cleanup criterion
-                            # (review F6/F7/F8). green = closed something (and broke
-                            # nothing); red = failed something, or ran red without closing.
-                            _st_before = [it["status"] for it in criteria.items]
-                            _record_criterion_verdict(
-                                criteria, _a_tool, _a_args, _a_meta, _a_text, _a_ok, auto=True)
-                            _st_after = [it["status"] for it in criteria.items]
-                            _n_conf = sum(1 for b, a in zip(_st_before, _st_after)
-                                          if a == "confirmed" and b != "confirmed")
-                            _n_fail = sum(1 for b, a in zip(_st_before, _st_after)
-                                          if a == "failed" and b != "failed")
-                            _ec = _a_meta.get("exit_code")
-                            _ran_red = (isinstance(_ec, int) and _ec != 0) or (_a_meta.get("ok") is False)
-                            _auto_results.append({
-                                "label": f"{_a_tool}({_a_hint})",
-                                "green": _n_conf > 0 and _n_fail == 0,
-                                "red": _n_fail > 0 or (_n_conf == 0 and _ran_red),
-                                "evidence": str(_a_meta.get("evidence") or _a_text or ""),
-                            })
-                        # Recompute what's STILL missing after the pass — everything the
-                        # runtime closed drops out; all-green → no nudge, straight to final.
-                        _acts = criterion_closure.missing_verifier_actions(
-                            criteria, host=_last_ssh_host or "<host>",
-                            url=_gate_url or "<actual_url от run_server>",
-                            auto_ssh=_auto_ssh_ok, catalog_hints=criteria.catalog_assist,
-                        )
-                    _mkey = criterion_closure.missing_set_key(_acts)
-                    if _acts and _mkey not in closure_fired_sets:
-                        closure_fired_sets.add(_mkey)
-                        closure_turns += 1
-                        # Deterministically ACTIVATE the tools the closure asks for
-                        # (path_exists, browser, ssh_*, …) so the model can call them
-                        # directly this turn — tool_search activation was too weak (live:
-                        # path_exists was never searched, so local criteria never closed).
-                        try:
-                            from app.application.agent_kernel.deferred_tools import activate_tools
-                            activate_tools(rid, [a["tool"] for a in _acts if a.get("tool")])
-                        except Exception:
-                            pass
-                        if content:
-                            messages.append({"role": "assistant", "content": content})
-                        _nudge = criterion_closure.closure_nudge_text(_acts)
-                        _auto_note = criterion_closure.auto_close_summary(_auto_results)
-                        if _auto_note:
-                            _nudge = _auto_note + "\n\n" + _nudge
-                        messages.append({"role": "user", "content": _nudge})
-                        continue
-                # W3 ledger nudge (bounded, once per run): the run read the web into
-                # the corpus but recorded NO claims — ask it ONCE to back its
-                # load-bearing statements via web_claim_add before finalizing.
-                # Closure-style; never loops (single fire).
-                if (
-                    _web_corpus_flag() and not web_ledger_nudged
-                    and (content or last_text)
-                ):
-                    try:
-                        from app.infrastructure.web_corpus import store as _wc_store
-                        _needs_ledger = _wc_store.has_documents(rid) and not _wc_store.has_claims(rid)
-                    except Exception:
-                        _needs_ledger = False
-                    if _needs_ledger:
-                        web_ledger_nudged = True
-                        try:
-                            from app.application.agent_kernel.deferred_tools import activate_tools
-                            activate_tools(rid, ["web_claim_add", "web_query"])
-                        except Exception:
-                            pass
-                        if content:
-                            messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": (
-                            "Ты читал веб-страницы в корпус, но не зафиксировал ни одного "
-                            "утверждения с источником. Перед финальным ответом привяжи "
-                            "НЕСУЩИЕ утверждения к дословным цитатам через "
-                            "web_claim_add(claims=[{claim, evidence:[{doc_id, quote}]}]) "
-                            "(doc_id и цитаты бери из web_query). Не нумеруй цитаты в тексте "
-                            "— реестр добавит runtime. Затем дай финальный ответ.")})
-                        continue
                 final_text = _strip_tool_call_markup(content or last_text)
-                if (
-                    _requires_external_evidence(user_message, final_text)
-                    and not run_evidence.has_external_source
-                    and not _answer_admits_missing_external_evidence(final_text)
-                ):
-                    final_text = _external_evidence_backstop()
-                # Finalizing for real (closure gate is done): a conditional criterion
-                # still open is n/a (e.g. no `npm run typecheck` script) → mark skipped so
-                # it isn't reported as an unanswered failure.
+                answer_status = "complete"
+                # Evidence remains structured in the done event for observability,
+                # but it cannot block finalization or rewrite the model's answer.
                 criteria.finalize_conditionals()
-                # Deterministic Final Report (Ph7.12): the model may DESCRIBE what it
-                # did, but the completion STATUS is runtime-owned — never its word.
-                _completion = criteria.completion_status()
-                if criteria.items:
-                    # (1) neutralise universal completion claims AND success ✅/✓ marks
-                    # when not confirmed — a model checkmark row must not look done beside
-                    # the runtime "подтверждено N/M" block (the panel owns the verdict).
-                    if _completion != "confirmed":
-                        final_text = gate_completion_claims(final_text, _completion)
-                        final_text = criterion_closure.scrub_success_marks(final_text)
-                    # (2) strip the model's own status/unverified/failed sections and
-                    # (3) drop model-authored criteria/verifier COUNT claims (so its "17"
-                    # can't sit beside runtime "19/19"), then append the deterministic
-                    # status block built from criteria.report() (full per-criterion detail
-                    # + evidence also ships structured in the done event and renders in the
-                    # collapsible readiness panel). Steps 2-3 run even when confirmed.
-                    final_text = criterion_closure.strip_model_status_sections(final_text)
-                    final_text = criterion_closure.scrub_manual_criteria_counts(final_text)
-                    _report = criterion_closure.runtime_final_report(criteria)
-                    if _report:
-                        final_text = final_text.rstrip() + "\n\n" + _report
-                # Anti-confabulation (final, deterministic): if the answer still
-                # asserts a .docx/.xlsx that no tool in this run produced, append an
-                # honest runtime note — never rewrite the model's own text. Runs
-                # unconditionally (independent of a TaskSpec), which is exactly the
-                # gap where a bare "готово, вот файл.docx" used to pass untouched.
-                _unbacked_final = run_evidence.unbacked_document_claims(final_text)
-                if _unbacked_final:
-                    final_text = final_text.rstrip() + "\n\n" + (
-                        "⚠️ Файл(ы) " + ", ".join(_unbacked_final[:4]) + " не был(и) "
-                        "созданы в этом прогоне — успешного `file_gen` не было. Текст "
-                        "выше — черновик содержимого, а не готовый файл."
-                    )
-                # W3 citation ledger (flag web_corpus): the RUNTIME renders the
-                # citation appendix from structured web_claim_add records — the
-                # model never numbers citations in its prose. Provenance only
-                # (quote verbatim in the source), never a truth claim.
+                # Background servers are reported, never auto-stopped on a healthy
+                # final answer. Explicit run_server(stop) or Workflow Stop owns
+                # termination.
                 try:
-                    if _web_corpus_flag():
-                        from app.application.web_evidence.ledger import render_ledger
-                        _ledger = render_ledger(rid)
-                        if _ledger:
-                            final_text = final_text.rstrip() + "\n\n" + _ledger
-                except Exception:
-                    pass
-                # R2 Server Lifecycle: the runtime owns what it started — the model
-                # never owns PID lifecycle. With a TaskSpec the server was a
-                # verification VEHICLE (its evidence is already recorded) → stop it
-                # now, so a finished run leaves no processes and no listening ports.
-                # Without a TaskSpec the server IS the deliverable («подними
-                # dev-сервер») → keep it alive and REPORT it explicitly.
-                _keep_candidate = False
-                try:
-                    if task_spec is not None:
-                        _stopped = _stop_run_servers(rid)
-                        if _stopped:
-                            _srv = "; ".join(
-                                f"pid={s['pid']}" + (f" port={s['port']}" if s.get("port") else "")
-                                for s in _stopped)
-                            final_text = final_text.rstrip() + (
-                                f"\n\n[runtime остановил свои dev-серверы: {_srv}]")
-                            call_log.append(f"[auto] stop_run_servers({len(_stopped)})")
-                    else:
-                        _alive = _run_owned_servers(rid)
-                        if _alive:
-                            # Committed to _keep_servers_on_exit only AFTER the done
-                            # event is delivered (below): a client that disconnects at
-                            # the final yield never SAW the keep-report — that run is
-                            # abandoned and its servers must stop (review #20).
-                            _keep_candidate = True
-                            _srv = "; ".join(
-                                f"pid={s['pid']}" + (f" — {s['url']}" if s.get("url") else "")
-                                for s in _alive)
-                            final_text = final_text.rstrip() + (
-                                f"\n\n[Серверы оставлены работать: {_srv}. "
-                                "Остановить: run_server(action='stop', pid=…).]")
-                except Exception:
-                    pass
-                # Step C: proactivity (default OFF; opt-in master switch + per-
-                # trigger first-fire gate). At most one item, appended as text to
-                # Elira's reply. Fail-safe — never breaks the run.
-                try:
-                    from app.application.persona.proactive import consider_proactive
-
-                    _pro = consider_proactive({
-                        "edited": run_evidence.has_mutations,
-                        "verified": run_evidence.has_current_verification,
-                        "run_evidence": run_evidence.summary(),
-                        "run_id": rid,
-                        "project_scope_id": scope_id,
-                        "project_root": str(root),
-                    })
-                    _extras = list(_pro.get("suggestions") or [])
-                    for _ask in _pro.get("enable_asks") or []:
-                        _extras.append(
-                            f"Могу проявлять инициативу: «{_ask['title']}». "
-                            "Если хочешь — одобри запрос в панели подтверждений."
+                    _alive = _run_owned_servers(rid)
+                    if _alive:
+                        # Background runtimes are not auto-stopped at finalization.
+                        # They stop only through run_server(action='stop') or Workflow Stop.
+                        _srv = "; ".join(
+                            f"pid={s['pid']}" + (f" — {s['url']}" if s.get("url") else "")
+                            for s in _alive)
+                        final_text = final_text.rstrip() + (
+                            f"\n\n[Серверы оставлены работать: {_srv}. "
+                            "Остановить: run_server(action='stop', pid=…) или кнопкой Stop.]"
                         )
-                    if _extras:
-                        final_text = final_text + "\n\n" + "\n".join(f"💡 {e}" for e in _extras)
                 except Exception:
                     pass
                 _facts = _facts_digest(established_facts)
                 _recent_digest = _recent_tools_digest(recent_tool_outputs)
                 yield {
                     "type": "final_response", "step": step, "text": final_text,
+                    "answer_status": answer_status,
                     "established_facts": _facts,
                     "recent_tool_output": _recent_digest,
                 }
@@ -2183,21 +1253,29 @@ def _stream_code_agent_core(
                         user_message=user_message,
                         response_text=final_text,
                         project_root=root,
+                        verified=run_evidence.has_current_passing_verification,
+                        mutation_targets=(
+                            receipt.target
+                            for receipt in run_evidence.receipts_of_kind(EvidenceKind.MUTATION)
+                        ),
+                        verification_targets=(
+                            receipt.target
+                            for receipt in run_evidence.receipts_of_kind(EvidenceKind.VERIFICATION)
+                            if receipt.passed
+                            and receipt.project_epoch == run_evidence.project_epoch
+                        ),
                     )
                 yield {
                     "type": "done",
                     "ok": True,  # runtime health — NOT "task solved"; see completion_status
                     "steps": step,
                     "stop_reason": "answer",
+                    "answer_status": answer_status,
                     "error": None,
                     "established_facts": _facts,
                     "recent_tool_output": _recent_digest,
                     **_completion_fields(criteria),
                 }
-                # The done event LANDED — only now commit keeping the deliverable
-                # server (a disconnect at the yields above → keep stays False →
-                # the finally stops run-owned servers: abandoned = cleaned).
-                _keep_servers_on_exit = _keep_candidate
                 return
 
             messages.append({
@@ -2207,485 +1285,258 @@ def _stream_code_agent_core(
             })
 
             for call in tool_calls:
-                if time.monotonic() >= deadline:
-                    final_text = _deterministic_stop_summary(
-                        f"timeout {execution_seconds}s",
-                        call_log,
-                        touched_files,
-                        established_facts,
-                        exhausted_strategies=progress.exhausted_summary(),
-                        next_step=_next_step_after_failure(),
-                    )
-                    yield {"type": "final_response", "step": step, "text": final_text}
-                    yield {
-                        "type": "done",
-                        "ok": False,
-                        "steps": step,
-                        "stop_reason": "timeout",
-                        "error": f"code-agent execution timed out after {execution_seconds}s",
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
                 fn = call.get("function") or {}
                 name = fn.get("name") or ""
                 raw_args = fn.get("arguments") or {}
                 parsed_args = ToolRegistry._coerce_args(raw_args)
-                # Remember the host for concrete closure/barrier call hints. The full
-                # SET gates the auto-verifier pass: with >1 host in the run, a probe
-                # against the "last" one could hit the WRONG machine → no auto-ssh.
-                if name.startswith("ssh") and parsed_args.get("host"):
-                    _last_ssh_host = str(parsed_args.get("host"))
-                    _ssh_hosts_seen.add(_last_ssh_host)
-                # Cleanup Barrier (Ph7.12): a delete of a path with still-OPEN criteria
-                # living under it would make them permanently unverifiable — redirect
-                # ONCE to verify those first, then let deletes through (bounded, not an
-                # infinite guard). Skips execution and feeds the redirect back.
-                if criteria.items and not cleanup_barrier_fired:
-                    _barrier = criterion_closure.cleanup_barrier_violation(criteria, name, parsed_args)
-                    if _barrier is not None:
-                        cleanup_barrier_fired = True
-                        yield {
-                            "type": "tool_call", "step": step, "tool": name,
-                            "arguments": parsed_args, "result": _barrier, "ok": False,
-                        }
-                        messages.append({"role": "tool", "content": _barrier, "name": name})
-                        tool_round_trips += 1
-                        call_log.append(f"{name}(cleanup-barrier)")
-                        continue
-                # Browser-interaction redirect: the model tries to (re)start the dev
-                # server while one is already up and the only open work is browser
-                # interaction — restarting is the wrong step (live 10/13 spun into a
-                # run_server loop → loop_guard). Redirect (bounded) to the exact grouped
-                # browser(actions=…) call instead of running run_server. R2: only when
-                # the remembered server is REALLY alive (process + listening port) — a
-                # redirect at a dead URL would steer verification into a wall.
-                if (
-                    name == "run_server"
-                    and str(parsed_args.get("action") or "start").lower() == "start"
-                    and _last_server_url
-                    and criteria.items
-                    and server_redirect_fired < _SERVER_REDIRECT_MAX
-                    and _server_url_alive(_last_server_url)
-                ):
-                    _redir = criterion_closure.browser_interaction_redirect(criteria, _last_server_url)
-                    if _redir is not None:
-                        server_redirect_fired += 1
-                        yield {
-                            "type": "tool_call", "step": step, "tool": name,
-                            "arguments": parsed_args, "result": _redir, "ok": False,
-                        }
-                        messages.append({"role": "tool", "content": _redir, "name": name})
-                        tool_round_trips += 1
-                        call_log.append(f"{name}(→browser-interaction)")
-                        continue
-                # R2: a dev server started through run_bash BLOCKS the run until the
-                # shell timeout (the process never exits) and the runtime can't own
-                # its lifecycle. Redirect to run_server (bounded). Heuristic detection
-                # is fine HERE — this is a guard (worst case: one bad hint), not a
-                # verdict (map invariant №10).
-                if (
-                    name == "run_bash"
-                    and dev_server_redirects < _SERVER_REDIRECT_MAX
-                    and _looks_like_dev_server_command(str(parsed_args.get("command") or ""))
-                ):
-                    dev_server_redirects += 1
-                    _dev_msg = (
-                        "Эта команда поднимает долгоживущий dev-server — в run_bash она "
-                        "заблокирует ран до таймаута и останется без владельца. Запусти её "
-                        "через run_server(action='start', command=…): он вернёт pid и "
-                        "реальный URL, а runtime сам остановит сервер в конце прогона."
-                    )
-                    yield {
-                        "type": "tool_call", "step": step, "tool": name,
-                        "arguments": parsed_args, "result": _dev_msg, "ok": False,
-                    }
-                    messages.append({"role": "tool", "content": _dev_msg, "name": name})
-                    tool_round_trips += 1
-                    call_log.append(f"{name}(→run_server)")
-                    continue
-                # Whitespace-normalized fingerprint: a stray space/newline in a
-                # retried argument no longer evades the repeat counter.
-                fingerprint = _normalized_fingerprint(name, parsed_args)
-                repeated_tool_calls[fingerprint] = repeated_tool_calls.get(fingerprint, 0) + 1
-                if (
-                    name not in _LOOP_GUARD_EXEMPT_TOOLS
-                    and repeated_tool_calls[fingerprint] >= _REPEATED_TOOL_CALL_LIMIT
-                ):
-                    # Deterministic summary from the journal — NOT a wrap-up call to
-                    # the model that just looped (it has nothing new to say and would
-                    # only risk confabulating). Facts, not a retelling.
-                    final_text = _deterministic_stop_summary(
-                        f"повтор одного и того же вызова: {name}",
-                        call_log, touched_files, established_facts,
-                        exhausted_strategies=progress.exhausted_summary(),
-                        next_step=_next_step_after_failure(),
-                    )
-                    yield {"type": "final_response", "step": step, "text": final_text}
-                    yield {
-                        "type": "done",
-                        "ok": False,
-                        "steps": step,
-                        "stop_reason": "loop_guard",
-                        "error": f"repeated identical tool call: {name}",
-                        "established_facts": _facts_digest(established_facts),
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
-                # Near-duplicate CANDIDATE only. The stop decision is made after
-                # execution, when the progress router knows whether this call produced
-                # a fresh grounded fact. Similar read-only probes on one host are not
-                # a loop when each one discovers something new.
-                _nd_tokens = _arg_tokens(parsed_args)
-                _near_dup_candidate = (
-                    name not in _LOOP_GUARD_EXEMPT_TOOLS
-                    and _is_near_dup(name, _nd_tokens, near_dup_recent)
-                )
-                near_dup_recent.append((name, _nd_tokens))
-                if len(near_dup_recent) > 8:
-                    near_dup_recent = near_dup_recent[-8:]
-                # Scoped Read-Only SSH: in a bound read-only diagnostic run the ONLY
-                # allowed tools are tool_search (discovery) and the ONE bound adapter
-                # tool (kernel-gated). The meta-tools below (ask_user / ssh_request_host
-                # / todo_update) are handled INLINE here, BEFORE the kernel — so the
-                # executor scope gate (1g) cannot block them. Refuse everything except
-                # tool_search + the bound adapter tool here too, so the capability
-                # allowlist is airtight even for kernel-bypassing tools (e.g.
-                # ssh_request_host must not widen the ssh allowlist from inside a scope).
-                if name != "tool_search":
-                    try:
-                        from app.application.agent_kernel.operation_scope import locked_tool as _locked_tool_fn
-                        _lt = _locked_tool_fn(rid)
-                        _block_inline = _lt is not None and name != _lt
-                    except Exception:
-                        # Fail CLOSED for a diagnostic run: if the scope layer is broken
-                        # we cannot verify the allowed tool, so block inline meta-tools
-                        # for an itops-diag run. Normal runs are unaffected.
-                        _block_inline = str(rid or "").startswith("itops-diag-")
-                    if _block_inline:
-                        _msg = (f"Инструмент '{name}' недоступен в ограниченном read-only "
-                                "диагностическом запуске — разрешены только tool_search и "
-                                "выбранный диагностический инструмент.")
-                        yield {"type": "tool_call", "step": step, "tool": name,
-                               "arguments": parsed_args, "result": _msg, "ok": False}
-                        messages.append({"role": "tool", "content": _msg, "name": name})
-                        tool_round_trips += 1
-                        call_log.append(f"{name}(blocked:scoped)")
-                        continue
-                if name == "tool_search":
-                    # Tool-economy: browser is a run-scoped activation — once it's on,
-                    # re-searching "browser / playwright / evaluate" is a wasted round
-                    # trip (the Subnet run spent 4 tool_search calls hunting it). Redirect
-                    # to using browser (with actions) instead of searching again.
-                    _q = str(parsed_args.get("query", "")).lower()
-                    _browser_q = any(k in _q for k in (
-                        "browser", "playwright", "evaluate", "interact", "интеракц",
-                        "клик", "click", "fill", "заполн", "dom",
-                    ))
-                    _active_now = get_active_tools(rid)
-                    _browser_on = "browser" in _active_now or any(t.startswith("playwright") for t in _active_now)
-                    if _browser_q and _browser_on:
-                        _msg = (
-                            "`browser` уже активен — не ищи его повторно. Проверяй DOM и "
-                            "интеракции через `browser(url, actions=[{fill:…,value:…},{click:…}])` "
-                            "(он рендерит страницу и выполняет ввод/клик), НЕ через grep/node-скрипты."
-                        )
-                        yield {"type": "tool_call", "step": step, "tool": name,
-                               "arguments": parsed_args, "result": _msg, "ok": True}
-                        messages.append({"role": "tool", "content": _msg, "name": name})
-                        tool_round_trips += 1
-                        call_log.append("tool_search(browser: уже активен)")
-                        continue
-                    # P10.1 meta-tool: inject the current run_id (the model never
-                    # supplies it), search + activate eligible tools for this run.
-                    # Read-only; not routed through the provider/executor path.
-                    from app.application.code_agent.tools import tool_search as _tool_search
-
-                    yield {
-                        "type": "tool_started",
-                        "step": step,
-                        "tool": name,
-                        "arguments": parsed_args,
-                    }
-                    # permission_mode flows in so bypass lifts the activation gate
-                    # (not just the approval gate) — bypass = no friction on both.
-                    _ts = _tool_search(
-                        run_id=rid,
-                        query=str(parsed_args.get("query", "")),
-                        permission_mode=permission_mode,
-                    )
-                    _ts_text = str(_ts.get("text", ""))
-                    yield {
-                        "type": "tool_call",
-                        "step": step,
-                        "tool": name,
-                        "arguments": parsed_args,
-                        "result": _truncate(_ts_text),
-                    }
-                    messages.append({
-                        "role": "tool",
-                        "content": _truncate_for_llm(_ts_text),
-                        "name": name,
-                    })
-                    tool_round_trips += 1
-                    call_log.append(f"tool_search({_short_arg_hint(parsed_args)})")
-                    continue
                 if name == "ask_user":
-                    # ask_user is a special inline tool — the "result" comes from a
-                    # human, not the executor. It OWNS its own termination: it is
-                    # exempt from the generic loop-guard above, so this branch must
-                    # bound the questions itself. Keepalive events keep the SSE
-                    # stream alive so the client watchdog doesn't cut it while it
-                    # waits for the human.
-                    ask_user_count += 1
-                    if ask_user_count > _ASK_USER_MAX + _ASK_USER_OVER_CAP_GRACE:
-                        # The model kept asking past its budget (ignoring repeated
-                        # "decide for yourself" nudges). Finalize cleanly with a
-                        # real answer instead of spinning to max_steps or tripping
-                        # a loop_guard error.
-                        final_text = _wrap_up_text(
-                            chat, model, safe_num_ctx, messages, call_log,
-                            "the model kept asking clarifying questions past the per-run limit",
-                        )
-                        yield {"type": "final_response", "step": step, "text": final_text}
-                        yield {
-                            "type": "done", "ok": True, "steps": step,
-                            "stop_reason": "answer",
-                            **_completion_fields(criteria),
-                        }
-                        return
-                    _budget_spent = ask_user_count > _ASK_USER_MAX
-                    if no_questions or _budget_spent:
-                        # «Не спрашивать» mode, or the per-run question budget is
-                        # spent: never pause — tell the model to decide for itself
-                        # and continue the SAME run.
-                        if no_questions:
-                            _ans_text = (
-                                "Режим «не задавать вопросы» включён — не спрашивай "
-                                "пользователя. Прими наиболее разумное решение по "
-                                "умолчанию и продолжай; если что-то допустил — отметь "
-                                "это в финальном ответе."
-                            )
-                            _log = "ask_user(skipped:no_questions)"
-                        else:
-                            _ans_text = (
-                                "Лимит уточняющих вопросов на этот прогон исчерпан — "
-                                "действуй по имеющимся данным."
-                            )
-                            _log = "ask_user(limit)"
-                        yield {
-                            "type": "tool_call", "step": step, "tool": name,
-                            "arguments": parsed_args, "result": _ans_text, "ok": False,
-                        }
-                        messages.append({"role": "tool", "content": _ans_text, "name": name})
-                        tool_round_trips += 1
-                        call_log.append(_log)
-                        continue
                     _question = str(parsed_args.get("question") or "").strip()
                     _raw_opts = parsed_args.get("options")
                     _options = [str(o) for o in _raw_opts][:8] if isinstance(_raw_opts, list) else []
+                    _input_rule: dict[str, Any] = {
+                        "type": "string",
+                        "title": _question or "Ответ",
+                    }
+                    if _options:
+                        _input_rule["enum"] = _options
+                    _request = {
+                        "kind": "input",
+                        "message": _question,
+                        "schema": {
+                            "type": "object",
+                            "properties": {"answer": _input_rule},
+                            "required": ["answer"],
+                            "additionalProperties": False,
+                        },
+                        "sensitive": False,
+                    }
+                    if pause_for_workflow_request:
+                        yield {
+                            "type": "workflow_request",
+                            "step": step,
+                            "status": "needs_input",
+                            "request": _request,
+                        }
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "workflow_request",
+                            "status": "needs_input",
+                            "request": _request,
+                            "error": None,
+                            **_completion_fields(criteria, terminated_incomplete=True),
+                        }
+                        return
                     _qid = uuid.uuid4().hex
-                    with _QUESTION_LOCK:
-                        _QUESTION_ANSWERS[_qid] = None
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES[_qid] = None
                     yield {
-                        "type": "question_pending", "step": step,
-                        "question": _question, "options": _options, "question_id": _qid,
+                        "type": "workflow_request",
+                        "step": step,
+                        "status": "needs_input",
+                        "response_id": _qid,
+                        "request": _request,
                     }
                     _wait_started = time.monotonic()
                     _last_keepalive = _wait_started
-                    _answer: str | None = None
-                    _q_decision = "timeout"
-                    # No configured wait means "don't pause" (background/legacy) —
-                    # use a sane default so ask_user still works there.
-                    _q_budget = approval_wait_seconds if approval_wait_seconds > 0 else 300
-                    while time.monotonic() - _wait_started < _q_budget:
+                    _response: dict[str, Any] | None = None
+                    while True:
                         if cancel_event.is_set():
-                            _q_decision = "cancelled"
                             break
-                        with _QUESTION_LOCK:
-                            _stored = _QUESTION_ANSWERS.get(_qid)
+                        with _WORKFLOW_RESPONSE_LOCK:
+                            _stored = _WORKFLOW_RESPONSES.get(_qid)
                         if _stored is not None:
-                            _answer = _stored
-                            _q_decision = "answered"
+                            _response = dict(_stored)
                             break
                         _now = time.monotonic()
-                        if _now - _last_keepalive >= _APPROVAL_KEEPALIVE_EVERY:
+                        if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
                             yield {
-                                "type": "question_wait", "step": step,
-                                "question_id": _qid, "waited_s": int(_now - _wait_started),
+                                "type": "workflow_request_wait",
+                                "step": step,
+                                "response_id": _qid,
+                                "waited_s": int(_now - _wait_started),
                             }
                             _last_keepalive = _now
-                        time.sleep(_APPROVAL_POLL_INTERVAL)
-                    with _QUESTION_LOCK:
-                        _QUESTION_ANSWERS.pop(_qid, None)
-                    # Human deliberation must not consume the agent's own budget.
-                    deadline += time.monotonic() - _wait_started
-                    if _q_decision == "cancelled":
+                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES.pop(_qid, None)
+                    if cancel_event.is_set():
                         yield {
                             "type": "done", "ok": False, "steps": step,
                             "stop_reason": "cancelled", "error": "Cancelled by user",
                             **_completion_fields(criteria, terminated_incomplete=True),
                         }
                         return
-                    if _q_decision == "answered":
-                        _ans_text = f"Ответ пользователя: {_answer}"
-                    else:
-                        _ans_text = (
-                            "Пользователь не ответил на вопрос вовремя. Действуй по "
-                            "имеющимся данным или заверши, повторив вопрос в финале."
-                        )
+                    _ans_text = (
+                        "Workflow UI response: "
+                        + json.dumps(_response or {}, ensure_ascii=False)
+                    )
                     yield {
                         "type": "tool_call", "step": step, "tool": name,
-                        "arguments": parsed_args, "result": _ans_text,
-                        "ok": _q_decision == "answered",
+                        "arguments": redact_secrets(parsed_args), "result": _ans_text,
+                        "ok": str((_response or {}).get("action") or "") == "accept",
                     }
                     messages.append({"role": "tool", "content": _ans_text, "name": name})
                     tool_round_trips += 1
                     call_log.append(f"ask_user({(_question[:40] or '?')})")
                     continue
-                if name == "ssh_request_host":
-                    # The agent CANNOT edit the SSH allowlist itself (that IS the
-                    # security boundary). It calls this to ask the user to approve
-                    # ONE host; on approval the loop adds it and ssh_run works this
-                    # same run. Always pauses for the human — even under bypass /
-                    # «не спрашивать» — because opening the allowlist is the user's
-                    # call, not the model's.
-                    from app.application.tool_providers.ssh_acl import (
-                        get_allowed_hosts as _get_hosts,
-                        resolve_allowed_host as _resolve_ssh_host,
-                        set_allowed_hosts as _set_hosts,
-                    )
-
-                    def _ssh_req_return(text: str, ok: bool, log: str):
+                if name == "workflow_request":
+                    _kind = str(parsed_args.get("kind") or "").strip().lower()
+                    _message = str(parsed_args.get("message") or "").strip()
+                    if _kind not in {"input", "secret", "elevation"}:
+                        _request_error = "workflow_request kind must be input, secret or elevation"
                         yield {
-                            "type": "tool_call", "step": step, "tool": name,
-                            "arguments": parsed_args, "result": text, "ok": ok,
+                            "type": "tool_call",
+                            "step": step,
+                            "tool": name,
+                            "arguments": redact_secrets(parsed_args),
+                            "result": _request_error,
+                            "ok": False,
                         }
-                        messages.append({"role": "tool", "content": text, "name": name})
-
-                    _host = str(parsed_args.get("host") or "").strip()
-                    _reason = str(parsed_args.get("reason") or "").strip()
-                    if not _host:
-                        yield from _ssh_req_return(
-                            "ERROR: ssh_request_host требует непустой host (алиас из ~/.ssh/config).",
-                            False, "ssh_request_host(empty)")
+                        messages.append({
+                            "role": "tool",
+                            "content": _request_error,
+                            "name": name,
+                        })
                         tool_round_trips += 1
-                        call_log.append("ssh_request_host(empty)")
                         continue
-                    _allowed_alias = _resolve_ssh_host(_host)
-                    if _allowed_alias is not None:
-                        _host = _allowed_alias
-                        yield from _ssh_req_return(
-                            f"Хост '{_host}' уже в SSH-интеграции — используй этот точный alias в ssh_*.",
-                            True, "already")
-                        tool_round_trips += 1
-                        call_log.append(f"ssh_request_host({_host}:already)")
-                        continue
-                    _q = (
-                        f"Elira просит добавить хост «{_host}» в SSH-интеграцию, "
-                        "чтобы ходить туда своим инструментом ssh_run."
-                        + (f"\nПричина: {_reason}" if _reason else "")
-                    )
-                    _qid = uuid.uuid4().hex
-                    with _QUESTION_LOCK:
-                        _QUESTION_ANSWERS[_qid] = None
-                    yield {
-                        "type": "question_pending", "step": step,
-                        "question": _q, "options": ["Одобрить", "Отклонить"],
-                        "question_id": _qid,
-                    }
-                    _wait_started = time.monotonic()
-                    _last_keepalive = _wait_started
-                    _answer = None
-                    _q_decision = "timeout"
-                    _q_budget = approval_wait_seconds if approval_wait_seconds > 0 else 300
-                    while time.monotonic() - _wait_started < _q_budget:
-                        if cancel_event.is_set():
-                            _q_decision = "cancelled"
-                            break
-                        with _QUESTION_LOCK:
-                            _stored = _QUESTION_ANSWERS.get(_qid)
-                        if _stored is not None:
-                            _answer = _stored
-                            _q_decision = "answered"
-                            break
-                        _now = time.monotonic()
-                        if _now - _last_keepalive >= _APPROVAL_KEEPALIVE_EVERY:
+                    _request_schema = parsed_args.get("schema")
+                    if not isinstance(_request_schema, dict):
+                        _request_schema = {}
+                    if _kind == "elevation":
+                        _program = str(parsed_args.get("program") or "").strip()
+                        _raw_args = parsed_args.get("args")
+                        _elevation_args = (
+                            [str(value) for value in _raw_args]
+                            if isinstance(_raw_args, list)
+                            else []
+                        )
+                        if not _program:
+                            _request_error = "elevation request requires program"
                             yield {
-                                "type": "question_wait", "step": step,
-                                "question_id": _qid, "waited_s": int(_now - _wait_started),
+                                "type": "tool_call",
+                                "step": step,
+                                "tool": name,
+                                "arguments": redact_secrets(parsed_args),
+                                "result": _request_error,
+                                "ok": False,
                             }
-                            _last_keepalive = _now
-                        time.sleep(_APPROVAL_POLL_INTERVAL)
-                    with _QUESTION_LOCK:
-                        _QUESTION_ANSWERS.pop(_qid, None)
-                    deadline += time.monotonic() - _wait_started
-                    if _q_decision == "cancelled":
+                            messages.append({
+                                "role": "tool",
+                                "content": _request_error,
+                                "name": name,
+                            })
+                            tool_round_trips += 1
+                            continue
+                        _native_spec: dict[str, Any] = {
+                            "program": _program,
+                            "args": _elevation_args,
+                        }
+                        _cwd = str(parsed_args.get("cwd") or "").strip()
+                        if _cwd:
+                            _native_spec["cwd"] = _cwd
+                        _request_schema = {"x-elira-elevation": _native_spec}
+                    _request = {
+                        "kind": _kind,
+                        "message": _message,
+                        "schema": _request_schema,
+                        "sensitive": _kind == "secret",
+                    }
+                    _request_status = f"needs_{_kind}"
+                    if pause_for_workflow_request:
                         yield {
-                            "type": "done", "ok": False, "steps": step,
-                            "stop_reason": "cancelled", "error": "Cancelled by user",
+                            "type": "workflow_request",
+                            "step": step,
+                            "status": _request_status,
+                            "request": _request,
+                        }
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "workflow_request",
+                            "status": _request_status,
+                            "request": _request,
+                            "error": None,
                             **_completion_fields(criteria, terminated_incomplete=True),
                         }
                         return
-                    _approved = (
-                        _q_decision == "answered"
-                        and str(_answer or "").strip().lower() in _SSH_APPROVE_WORDS
+                    _response_id = uuid.uuid4().hex
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES[_response_id] = None
+                    yield {
+                        "type": "workflow_request",
+                        "step": step,
+                        "status": _request_status,
+                        "response_id": _response_id,
+                        "request": _request,
+                    }
+                    _wait_started = time.monotonic()
+                    _last_keepalive = _wait_started
+                    _response: dict[str, Any] | None = None
+                    while True:
+                        if cancel_event.is_set():
+                            break
+                        with _WORKFLOW_RESPONSE_LOCK:
+                            _stored = _WORKFLOW_RESPONSES.get(_response_id)
+                        if _stored is not None:
+                            _response = dict(_stored)
+                            break
+                        _now = time.monotonic()
+                        if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
+                            yield {
+                                "type": "workflow_request_wait",
+                                "step": step,
+                                "response_id": _response_id,
+                                "waited_s": int(_now - _wait_started),
+                            }
+                            _last_keepalive = _now
+                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES.pop(_response_id, None)
+                    if cancel_event.is_set():
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "cancelled",
+                            "error": "Cancelled by user",
+                            **_completion_fields(criteria, terminated_incomplete=True),
+                        }
+                        return
+                    _response_text = (
+                        "Workflow UI response: "
+                        + json.dumps(_response or {}, ensure_ascii=False)
                     )
-                    if _approved:
-                        try:
-                            _new_hosts = _set_hosts(list(_get_hosts()) + [_host])
-                            _added = _host in _new_hosts
-                        except Exception as _exc:
-                            _added = False
-                            logger.warning("ssh_request_host: add %s failed: %s", _host, _exc)
-                        _res = (
-                            f"✅ Пользователь одобрил — хост '{_host}' добавлен в SSH-интеграцию. "
-                            f"Теперь вызывай ssh_run(host='{_host}', command=...) — он работает."
-                            if _added else
-                            f"Пользователь одобрил, но записать '{_host}' в список не удалось. "
-                            "Сообщи пользователю добавить его вручную (Settings → SSH)."
-                        )
-                        _res_ok = _added
-                    elif _q_decision == "answered":
-                        _res = (
-                            f"Пользователь ОТКЛОНИЛ добавление '{_host}'. Хост НЕ в интеграции, "
-                            "ssh_run к нему работать не будет. Не пытайся обойти это другими средствами."
-                        )
-                        _res_ok = False
-                    else:
-                        _res = (
-                            f"Пользователь не ответил вовремя — '{_host}' НЕ добавлен. "
-                            "Заверши и попроси пользователя добавить его вручную (Settings → SSH)."
-                        )
-                        _res_ok = False
-                    yield from _ssh_req_return(
-                        _res, _res_ok,
-                        f"ssh_request_host({_host}:{'approved' if _approved else _q_decision})")
+                    yield {
+                        "type": "tool_call",
+                        "step": step,
+                        "tool": name,
+                        "arguments": redact_secrets(parsed_args),
+                        "result": _response_text,
+                        "ok": str((_response or {}).get("action") or "") == "accept",
+                    }
+                    messages.append({
+                        "role": "tool",
+                        "content": _response_text,
+                        "name": name,
+                    })
                     tool_round_trips += 1
-                    call_log.append(f"ssh_request_host({_host}:{'approved' if _approved else _q_decision})")
+                    call_log.append(f"workflow_request({_kind})")
                     continue
                 if name == "todo_update":
                     # P12.1: checklist mutations are bound to the current run.
                     # The model never chooses the run_id; executor policy/audit
                     # still applies below because todo_update is a normal tool.
                     parsed_args["run_id"] = rid
-                    # Delivery (C): on a resumed slice the existing checklist may
-                    # not be replaced by a different plan — redirect with the
-                    # REAL state (updates / extension / same-plan re-send pass).
-                    if resume:
-                        _cl_guard = resume_checklist_guard(rid, parsed_args)
-                        if _cl_guard is not None:
-                            yield {
-                                "type": "tool_call", "step": step, "tool": name,
-                                "arguments": parsed_args, "result": _cl_guard, "ok": False,
-                            }
-                            messages.append({"role": "tool", "content": _cl_guard, "name": name})
-                            tool_round_trips += 1
-                            call_log.append("todo_update(resume-plan-guard)")
-                            continue
+                    # Resumed runs may replace or reshape their checklist freely.
                 if name == "delegate_task":
                     # P12.2: subagents are children of the current run. The
-                    # model chooses role/task, not parent_run_id.
+                    # model chooses role/task, not parent_run_id. The workflow
+                    # permission is inherited so bypass stays bypass end-to-end.
                     parsed_args["run_id"] = rid
+                    parsed_args["permission_mode"] = permission_mode
                 # Phase is presentation-only. Evidence is recorded only after
                 # successful executor return below, never from model intent.
                 if RunEvidence.is_verification_tool(name, arguments=parsed_args):
@@ -2699,117 +1550,110 @@ def _stream_code_agent_core(
                     tool_name=name,
                     args=parsed_args,
                     source="code_agent",
+                    permission_mode=permission_mode,
+                    workflow_approved=workflow_approval_matches(
+                        pending_workflow_approval,
+                        name,
+                        parsed_args,
+                    ),
                 )
-                _delay_tool_started = _tool_started_requires_approval_delay(name, parsed_args)
+                if _request.workflow_approved:
+                    pending_workflow_approval = {}
+                _delay_tool_started = not (
+                    _request.workflow_approved
+                    or permission_mode_auto_approves(_request)
+                )
                 if not _delay_tool_started:
                     yield {
                         "type": "tool_started",
                         "step": step,
                         "tool": name,
-                        "arguments": parsed_args,
+                        "arguments": redact_secrets(parsed_args),
                     }
                 _exec_result = None
                 for _hb in _exec_with_heartbeat(
-                    lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw), step):
+                    lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw),
+                    step,
+                    cancel_event,
+                ):
                     if "__result__" in _hb:
                         _exec_result = _hb["__result__"]
                     else:
                         yield _hb
-                # F1: pause the loop while a human decides, instead of telling
-                # the model "waiting approval" and burning steps. The approval
-                # is consumed in the SAME run (binding incl. run_id intact).
-                _approval_id = str((_exec_result.output or {}).get("approval_id") or "")
-                # Permission selector: «Контроль риска»/«Без ограничений» may grant
-                # the just-created approval and re-execute in the same run instead
-                # of pausing for the user (binding incl. run_id stays intact).
-                # High-impact calls need authoritative recovery/post-check evidence;
-                # without it they still pause even in bypass.
-                # W1 intent-binding (contract §3): a side-effect call whose args carry
-                # VERBATIM web-corpus content the user never wrote is escalated the
-                # same way — bypass must not let a malicious page trigger an action
-                # without a human. Deterministic taint check, fail-open only when the
-                # corpus store is down (then no corpus text reached the model either).
-                _taint_frag = None
-                if (
-                    _exec_result.status == "waiting_approval"
-                    and _approval_id
-                    and _call_auto_approves(
-                        permission_mode, name, parsed_args, channel=approval_channel
-                    )
-                ):
-                    try:
-                        from app.application.web_evidence.taint import corpus_tainted
-                        _taint_frag = corpus_tainted(rid, name, parsed_args, user_message)
-                    except Exception:
-                        _taint_frag = None
-                if (
-                    _exec_result.status == "waiting_approval"
-                    and _approval_id
-                    and _call_auto_approves(
-                        permission_mode, name, parsed_args, channel=approval_channel
-                    )
-                    and not _taint_frag
-                ):
-                    _mark_approval_approved(_approval_id)
-                    if _delay_tool_started:
-                        yield {
-                            "type": "tool_started",
-                            "step": step,
-                            "tool": name,
-                            "arguments": parsed_args,
+                if _exec_result.status == "waiting_approval":
+                    raw_request = (_exec_result.output or {}).get("request")
+                    _display_args = redact_secrets(parsed_args)
+                    _workflow_request = (
+                        dict(raw_request) if isinstance(raw_request, dict) else {
+                            "kind": "approval",
+                            "message": (
+                                f"Подтвердить действие {name} с аргументами: "
+                                f"{json.dumps(_display_args, ensure_ascii=False)}"
+                            ),
+                            "schema": {
+                                "x-elira-tool": {
+                                    "name": name,
+                                    "arguments": _display_args,
+                                    "args_sha256": tool_args_sha256(parsed_args),
+                                },
+                            },
+                            "sensitive": False,
                         }
-                        _delay_tool_started = False
-                    for _hb in _exec_with_heartbeat(
-                        lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw), step):
-                        if "__result__" in _hb:
-                            _exec_result = _hb["__result__"]
-                        else:
-                            yield _hb
-                if (
-                    _exec_result.status == "waiting_approval"
-                    and approval_wait_seconds > 0
-                    and _approval_id
-                ):
-                    _approval_event: dict[str, Any] = {
-                        "type": "approval_pending",
+                    )
+                    _response_id = uuid.uuid4().hex
+                    if pause_for_workflow_request:
+                        yield {
+                            "type": "workflow_request",
+                            "step": step,
+                            "status": "waiting_approval",
+                            "response_id": _response_id,
+                            "request": _workflow_request,
+                        }
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "workflow_request",
+                            "status": "waiting_approval",
+                            "response_id": _response_id,
+                            "request": _workflow_request,
+                            "error": None,
+                            **_completion_fields(criteria, terminated_incomplete=True),
+                        }
+                        return
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES[_response_id] = None
+                    yield {
+                        "type": "workflow_request",
                         "step": step,
-                        "tool": name,
-                        "arguments": parsed_args,
-                        "approval_id": _approval_id,
+                        "status": "waiting_approval",
+                        "response_id": _response_id,
+                        "request": _workflow_request,
                     }
-                    if _taint_frag:
-                        _approval_event["reason"] = (
-                            "аргументы дословно содержат текст из ВЕБ-СТРАНИЦЫ, которого "
-                            "нет в вашей задаче — возможная инъекция; подтвердите явно. "
-                            f"Фрагмент: «{_taint_frag[:80]}»")
-                    yield _approval_event
                     _wait_started = time.monotonic()
                     _last_keepalive = _wait_started
-                    _decision = "timeout"
-                    while time.monotonic() - _wait_started < approval_wait_seconds:
+                    _response: dict[str, Any] | None = None
+                    while True:
                         if cancel_event.is_set():
-                            _decision = "cancelled"
                             break
-                        _status = _approval_status(_approval_id)
-                        if _status == "approved":
-                            _decision = "approved"
-                            break
-                        if _status in {"rejected", "expired"}:
-                            _decision = _status
+                        with _WORKFLOW_RESPONSE_LOCK:
+                            stored_response = _WORKFLOW_RESPONSES.get(_response_id)
+                        if stored_response is not None:
+                            _response = dict(stored_response)
                             break
                         _now = time.monotonic()
-                        if _now - _last_keepalive >= _APPROVAL_KEEPALIVE_EVERY:
+                        if _now - _last_keepalive >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY:
                             yield {
-                                "type": "approval_wait",
+                                "type": "workflow_request_wait",
                                 "step": step,
-                                "approval_id": _approval_id,
+                                "response_id": _response_id,
                                 "waited_s": int(_now - _wait_started),
                             }
                             _last_keepalive = _now
-                        time.sleep(_APPROVAL_POLL_INTERVAL)
-                    # Human deliberation must not consume the agent's budget.
-                    deadline += time.monotonic() - _wait_started
-                    if _decision == "cancelled":
+                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES.pop(_response_id, None)
+                    if cancel_event.is_set():
                         yield {
                             "type": "done",
                             "ok": False,
@@ -2819,49 +1663,182 @@ def _stream_code_agent_core(
                             **_completion_fields(criteria, terminated_incomplete=True),
                         }
                         return
-                    if _decision == "approved":
-                        # Re-execute the same request: the executor finds the
-                        # approved record, marks it used and dispatches.
+                    if str((_response or {}).get("action") or "") == "accept":
+                        # The accepted Workflow request authorizes this exact
+                        # tool+arguments pair once; no internal approval store.
+                        _request.workflow_approved = True
                         if _delay_tool_started:
                             yield {
                                 "type": "tool_started",
                                 "step": step,
                                 "tool": name,
-                                "arguments": parsed_args,
+                                "arguments": redact_secrets(parsed_args),
                             }
                         for _hb in _exec_with_heartbeat(
-                            lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw), step):
+                            lambda: _kernel_exec(_request, dispatch_fn=registry.dispatch_raw),
+                            step,
+                            cancel_event,
+                        ):
                             if "__result__" in _hb:
                                 _exec_result = _hb["__result__"]
                             else:
                                 yield _hb
-                    elif _decision == "rejected":
+                    else:
                         _exec_result = ToolExecutionResult(
-                            status="blocked",
+                            status="rejected",
                             output={
                                 "ok": False,
                                 "text": (
                                     "Пользователь отклонил это действие. Не повторяй "
                                     "вызов; скорректируй подход или заверши ход."
                                 ),
-                                "error": "approval_rejected",
+                                "error": "workflow_request_declined",
                             },
-                            error="approval_rejected",
-                        )
-                    else:  # timeout / expired
-                        _exec_result = ToolExecutionResult(
-                            status="blocked",
-                            output={
-                                "ok": False,
-                                "text": (
-                                    "Подтверждение не получено вовремя. Не повторяй "
-                                    "вызов; сообщи пользователю и заверши ход."
-                                ),
-                                "error": "approval_timeout",
-                            },
-                            error="approval_timeout",
+                            error="workflow_request_declined",
                         )
                 tool_meta = _exec_result.output
+                _runtime_request_status = str(
+                    tool_meta.get("status") or ""
+                ).strip()
+                if (
+                    name == "runtime_control"
+                    and _runtime_request_status
+                    in {
+                        "needs_input",
+                        "needs_secret",
+                        "needs_elevation",
+                        "waiting_approval",
+                    }
+                ):
+                    _raw_runtime_request = tool_meta.get("request")
+                    _runtime_request = (
+                        dict(_raw_runtime_request)
+                        if isinstance(_raw_runtime_request, dict)
+                        else {}
+                    )
+                    _runtime_kind = str(
+                        _runtime_request.get("kind")
+                        or {
+                            "needs_input": "input",
+                            "needs_secret": "secret",
+                            "needs_elevation": "elevation",
+                            "waiting_approval": "approval",
+                        }[_runtime_request_status]
+                    ).strip()
+                    _runtime_request.update({
+                        "kind": _runtime_kind,
+                        "message": str(
+                            _runtime_request.get("message")
+                            or "Runtime требует данные для продолжения."
+                        ),
+                        "schema": (
+                            dict(_runtime_request.get("schema"))
+                            if isinstance(_runtime_request.get("schema"), dict)
+                            else {}
+                        ),
+                        "sensitive": _runtime_kind == "secret"
+                        or bool(_runtime_request.get("sensitive", False)),
+                    })
+                    _runtime_response_id = uuid.uuid4().hex
+                    yield {
+                        "type": "tool_call",
+                        "step": step,
+                        "tool": name,
+                        "arguments": redact_secrets(parsed_args),
+                        "result": _truncate(str(tool_meta.get("text") or "")),
+                        "ok": False,
+                        "state_changed": False,
+                    }
+                    if pause_for_workflow_request:
+                        yield {
+                            "type": "workflow_request",
+                            "step": step,
+                            "status": _runtime_request_status,
+                            "response_id": _runtime_response_id,
+                            "request": _runtime_request,
+                        }
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "workflow_request",
+                            "status": _runtime_request_status,
+                            "response_id": _runtime_response_id,
+                            "request": _runtime_request,
+                            "error": None,
+                            **_completion_fields(criteria, terminated_incomplete=True),
+                        }
+                        return
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES[_runtime_response_id] = None
+                    yield {
+                        "type": "workflow_request",
+                        "step": step,
+                        "status": _runtime_request_status,
+                        "response_id": _runtime_response_id,
+                        "request": _runtime_request,
+                    }
+                    _runtime_wait_started = time.monotonic()
+                    _runtime_last_keepalive = _runtime_wait_started
+                    _runtime_response: dict[str, Any] | None = None
+                    while True:
+                        if cancel_event.is_set():
+                            break
+                        with _WORKFLOW_RESPONSE_LOCK:
+                            _stored_runtime_response = _WORKFLOW_RESPONSES.get(
+                                _runtime_response_id
+                            )
+                        if _stored_runtime_response is not None:
+                            _runtime_response = dict(_stored_runtime_response)
+                            break
+                        _now = time.monotonic()
+                        if (
+                            _now - _runtime_last_keepalive
+                            >= _WORKFLOW_REQUEST_KEEPALIVE_EVERY
+                        ):
+                            yield {
+                                "type": "workflow_request_wait",
+                                "step": step,
+                                "response_id": _runtime_response_id,
+                                "waited_s": int(_now - _runtime_wait_started),
+                            }
+                            _runtime_last_keepalive = _now
+                        time.sleep(_WORKFLOW_REQUEST_POLL_INTERVAL)
+                    with _WORKFLOW_RESPONSE_LOCK:
+                        _WORKFLOW_RESPONSES.pop(_runtime_response_id, None)
+                    if cancel_event.is_set():
+                        yield {
+                            "type": "done",
+                            "ok": False,
+                            "steps": step,
+                            "stop_reason": "cancelled",
+                            "error": "Cancelled by user",
+                            **_completion_fields(criteria, terminated_incomplete=True),
+                        }
+                        return
+                    _runtime_response_text = (
+                        "Workflow UI response for runtime_control: "
+                        + json.dumps(_runtime_response or {}, ensure_ascii=False)
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "content": _runtime_response_text,
+                        "name": name,
+                    })
+                    tool_round_trips += 1
+                    call_log.append(f"runtime_control({_runtime_request_status})")
+                    continue
+                if (
+                    name == "runtime_control"
+                    and _exec_result.status == "ok"
+                    and bool(tool_meta.get("ok", True))
+                ):
+                    # MCP schemas are discovered only after a server starts. Rebuild
+                    # the same canonical registry after any successful runtime
+                    # lifecycle operation so the next model turn immediately sees
+                    # newly available MCP/LSP tools without restarting the run.
+                    registry = build_runtime_tool_registry(root)
+                    all_schemas = registry.collect_schemas()
                 if name == "run_server":
                     _rs_act = str(parsed_args.get("action") or "start").lower()
                     if tool_meta.get("actual_url"):
@@ -2890,7 +1867,7 @@ def _stream_code_agent_core(
                     "type": "tool_call",
                     "step": step,
                     "tool": name,
-                    "arguments": parsed_args,
+                    "arguments": redact_secrets(parsed_args),
                     "result": _truncate(text_result),
                     "ok": bool(tool_meta.get("ok", _exec_result.status == "ok")),
                     # Server-owned mutation flag (ToolSpec.side_effect + real
@@ -2923,7 +1900,7 @@ def _stream_code_agent_core(
                     "exit_code", "verifier", "evidence", "download_url",
                     "download_name", "project_path", "size", "sha256",
                     "actual_url", "local_url", "actual_port", "port", "pid",
-                    "server_started",
+                    "server_started", "media",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
@@ -2949,35 +1926,11 @@ def _stream_code_agent_core(
                 call_log.append(
                     f"{name}({_hint}) {'ok' if tool_meta.get('ok', True) else 'error'}"
                 )
-                _recovery_message = ""
-                # Bounded recovery: track successful reads (so a recovery hint
-                # never tells the model to read a file it already read), and on a
-                # REPEATED identical failure inject one precise, diagnosis-driven
-                # nudge instead of letting the model spin the same broken edit.
-                if name == "read_file" and bool(tool_meta.get("ok", True)):
-                    _rp = str(parsed_args.get("path") or "").strip()
-                    if _rp:
-                        read_paths.add(_rp)
-                _fp = error_fingerprint(name, parsed_args, tool_meta)
-                if _fp:
-                    error_streaks[_fp] = error_streaks.get(_fp, 0) + 1
+                _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
+                if _failed_call:
                     _path = str(parsed_args.get("path") or parsed_args.get("command") or "").strip()
                     _err = str(tool_meta.get("error") or text_result.split("\n", 1)[0])[:180]
                     _last_failure = {"tool": name, "path": _path, "error": _err}
-                    # Fire once per fingerprint, from the 2nd identical failure.
-                    if error_streaks[_fp] >= 2 and recovery_nudges_fired.get(_fp, 0) == 0:
-                        recovery_nudges_fired[_fp] = 1
-                        _open_crit = next(
-                            (str(c.get("text") or "") for c in criteria.report()
-                             if c.get("status") != "confirmed"),
-                            "",
-                        )
-                        _recovery_message = recovery_hint(
-                            tool=name, path=_path, error_text=_err,
-                            times=error_streaks[_fp],
-                            already_read=_path in read_paths,
-                            open_criterion=_open_crit,
-                        )
                 elif _exec_result.status == "ok" and bool(tool_meta.get("ok", True)):
                     # A later successful operation makes an unrelated old failure a
                     # bad deterministic continuation hint. Keep historical failure
@@ -3002,129 +1955,28 @@ def _stream_code_agent_core(
                             mutated_files.append(mutated)
                 if task_state_verification:
                     verification_log.append(task_state_verification)
-                # ── Strategy router ──────────────────────────────────────────
-                # Did the world move? A "doing" tool that changed nothing burns its
-                # strategy_key's attempt budget; exhaustion → redirect to another
-                # FAMILY (not a stop); families/budget spent → honest stop. Catches
-                # the different-looking-but-going-nowhere spiral (raw-ssh escaping)
-                # that the repetition guards miss.
                 # Per-criterion state (Ph7.4): feed verifier verdicts BEFORE the
-                # router evaluates, so a criterion flip counts as progress this step.
+                # next model turn, so the completion report remains honest.
                 # A verifier tool (verifier=True) confirms/fails a matching criterion;
                 # a coding test/verify that went GREEN (exit 0) is a passing check too.
-                _family = strategy_family(name, parsed_args)
                 # A verifier tool records structured evidence; run_bash records real
-                # stdout/stderr + exit_code (command_output / command_check) — shared
-                # with the auto-verifier pass via _record_criterion_verdict. ONLY a
-                # call that actually RAN (kernel status ok) is a verdict: a blocked /
-                # rejected / timed-out call never executed, and its {ok:False} output
-                # must not hard-fail a criterion (R3 — parity with the auto pass; a
+                # stdout/stderr + exit_code (command_output / command_check). ONLY a
+                # call that actually RAN (kernel status ok) is a verdict: a rejected
+                # call never executed, and its {ok:False} output
+                # must not hard-fail a criterion (a
                 # tool's own red result, e.g. assert-miss or exit!=0, still ships with
                 # status ok and records honestly).
-                criterion_progress = False
                 if _exec_result.status == "ok":
-                    criterion_progress = _record_criterion_verdict(
+                    _record_criterion_verdict(
                         criteria, name, parsed_args, tool_meta, text_result, _tool_ok)
-                # Strategy router — a criterion flip (criterion_progress) is the
-                # strongest progress signal and re-arms the run.
-                verdict = progress.evaluate(
-                    name=name, args=parsed_args, tool_meta=tool_meta, fact=_fact,
-                    criterion_progress=criterion_progress,
-                )
-                _creative_companion = creative_procedural_companion(name)
-                if _creative_companion:
-                    creative_batch_streak += 1
-                    # Make the correct procedural escape hatch visible before the
-                    # model needs it. This grants visibility only; the kernel still
-                    # applies the explicit arbitrary-code approval gate.
-                    try:
-                        from app.application.agent_kernel.deferred_tools import activate_tools
-
-                        activate_tools(rid, [_creative_companion])
-                    except Exception:
-                        logger.warning(
-                            "failed to activate creative companion %s",
-                            _creative_companion,
-                            exc_info=True,
-                        )
-                elif name.startswith(("blender__", "unity__")):
-                    creative_batch_streak = 0
-                # Similarity alone is not a loop. Count only consecutive similar
-                # calls that failed to move state OR reveal a fresh grounded fact.
-                if verdict.status == "progress":
-                    near_dup_streak = 0
-                elif _near_dup_candidate:
-                    near_dup_streak += 1
-                else:
-                    near_dup_streak = 0
-                _near_dup_should_stop = near_dup_streak >= _NEAR_DUP_LIMIT
-                if (
-                    verdict.status == "progress"
-                    and _fact
-                    and name in {"ssh_run", "ssh_run_ps", "ssh_read"}
-                ):
-                    remote_fact_count += 1
-                    if remote_fact_count >= 10 and not remote_fact_nudge_fired:
-                        remote_fact_nudge_fired = True
-                        _tool_content += (
-                            "\n\n[investigation-budget] Уже собрано 10 новых "
-                            "подтверждённых фактов с удалённого хоста. Сформируй "
-                            "итоговый ответ сейчас. Вызывай ещё один инструмент только "
-                            "если можешь назвать конкретный отсутствующий факт, без "
-                            "которого нельзя ответить пользователю."
-                        )
-                # Repetition nudges (exact / near-dup) — orthogonal to the router.
-                _rc = repeated_tool_calls.get(fingerprint, 0)
-                if name not in _LOOP_GUARD_EXEMPT_TOOLS and _REPEATED_TOOL_CALL_NUDGE_AT <= _rc < _REPEATED_TOOL_CALL_LIMIT:
-                    _left = _REPEATED_TOOL_CALL_LIMIT - _rc
-                    _tool_content += (
-                        f"\n\n[loop-guard] Ты вызвал {name} с теми же аргументами уже {_rc} раз — "
-                        f"результат не изменится. Смени подход или дай финальный ответ. "
-                        f"Ещё {_left} повтор(а/ов) до принудительной остановки."
-                    )
-                elif name not in _LOOP_GUARD_EXEMPT_TOOLS and _NEAR_DUP_NUDGE_AT <= near_dup_streak < _NEAR_DUP_LIMIT:
-                    _left = _NEAR_DUP_LIMIT - near_dup_streak
-                    _creative_redirect = creative_batch_redirect(name)
-                    _tool_content += (
-                        f"\n\n[loop-guard] Ты повторяешь похожие вызовы {name} с чуть разными "
-                        f"аргументами — это не двигает задачу. "
-                        + (
-                            _creative_redirect
-                            if _creative_redirect
-                            else "Смени ПОДХОД: другой инструмент/данные, прочитай реальные файлы или спроси пользователя."
-                        )
-                        + f" Ещё {_left} до остановки."
-                    )
-                if creative_batch_streak >= 3 and _creative_companion:
-                    _tool_content += (
-                        "\n\n[creative-workflow] "
-                        + creative_batch_redirect(name)
-                    )
-                # Strategy redirect (SOFT — not a stop): this method is exhausted,
-                # switch families. Injected once per exhaustion; movement re-arms it.
-                if verdict.redirect and not verdict.should_stop:
-                    _tool_content += f"\n\n[strategy] {verdict.redirect}"
-                # Turn-volume nudge (SOFT, once): deep into the turn — converge.
-                if not volume_nudge_fired and tool_round_trips >= TURN_TOOL_CALL_SOFT_NUDGE:
-                    volume_nudge_fired = True
-                    _tool_content += (
-                        f"\n\n[budget] Уже {tool_round_trips} вызовов инструментов за ход. "
-                        "Если близко к цели — заканчивай и дай финальный ответ; если нет — "
-                        "смени подход, не накручивай вызовы."
-                    )
                 messages.append({
                     "role": "tool",
                     "content": _tool_content,
                     "name": name,
                 })
-                if _recovery_message:
-                    # OpenAI/Qwen tool protocol requires the tool response to
-                    # immediately follow the assistant tool-call. The recovery
-                    # instruction is a new user turn AFTER that response.
-                    messages.append({"role": "user", "content": _recovery_message})
                 if _fact:
                     established_facts.append(_fact)
-                elif _fp:
+                elif _failed_call:
                     # No grounding fact from a failure, but the deterministic stop
                     # summary must still name the concrete file/command + error.
                     established_facts.append(
@@ -3134,96 +1986,8 @@ def _stream_code_agent_core(
                 _recent = _recent_tool_snippet(name, _hint, text_result)
                 if _recent:
                     recent_tool_outputs.append(_recent)
-                if _near_dup_should_stop:
-                    final_text = _deterministic_stop_summary(
-                        f"петля почти одинаковых вызовов {name} (меняются аргументы, прогресса нет)",
-                        call_log, touched_files, established_facts,
-                        exhausted_strategies=progress.exhausted_summary(),
-                        next_step=_next_step_after_failure(),
-                    )
-                    yield {"type": "final_response", "step": step, "text": final_text}
-                    yield {
-                        "type": "done",
-                        "ok": False,
-                        "steps": step,
-                        "stop_reason": "loop_guard",
-                        "error": f"near-duplicate tool loop: {name}",
-                        "established_facts": _facts_digest(established_facts),
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
-                # Honest stop: the families/budget for this target are spent.
-                # Deterministic report from the journal (never a retelling by the
-                # stuck model), with the exhausted strategies named.
-                if verdict.should_stop:
-                    _det = _deterministic_stop_summary(
-                        f"нет прогресса — {verdict.stop_detail}",
-                        call_log, touched_files, established_facts,
-                        exhausted_strategies=progress.exhausted_summary(),
-                        next_step=_next_step_after_failure(),
-                    )
-                    yield {"type": "final_response", "step": step, "text": _det}
-                    yield {
-                        "type": "done",
-                        "ok": False,  # runtime failure — separate from completion_status
-                        "steps": step,
-                        "stop_reason": "no_progress",
-                        "error": f"no verified progress: {verdict.stop_detail}",
-                        "established_facts": _facts_digest(established_facts),
-                        "progress_events": progress.progress_events,
-                        "no_progress_attempts": progress.no_progress_total,
-                        "exhausted_strategies": progress.exhausted_summary(),
-                        **_completion_fields(criteria, terminated_incomplete=True),
-                    }
-                    return
 
-        # FIX-5: max_steps is a runtime budget exhaustion (like timeout) — a
-        # DETERMINISTIC report from the journal, no extra LLM wrap-up call, and
-        # ok=False (the runtime did not reach an answer). completion_status carries
-        # the task result separately.
-        final_text = _deterministic_stop_summary(
-            f"достигнут max_steps={safe_max_steps}",
-            call_log, touched_files, established_facts,
-            exhausted_strategies=progress.exhausted_summary(),
-            next_step=_next_step_after_failure(),
-        )
-        yield {"type": "final_response", "step": safe_max_steps, "text": final_text}
-        yield {
-            "type": "done",
-            "ok": False,
-            "steps": safe_max_steps,
-            "stop_reason": "max_steps",
-            "error": None,
-            **_completion_fields(criteria, terminated_incomplete=True),
-        }
     finally:
-        # R2 Server Lifecycle FIRST and guarded (review #4): an ABANDONED run
-        # (cancel / timeout / no_progress / loop_guard / error / client disconnect)
-        # must not leave its servers running even if the other cleanups fail. The
-        # answer path either already stopped them (TaskSpec) or explicitly opted to
-        # keep the deliverable (_keep_servers_on_exit, committed after done landed).
-        if not _keep_servers_on_exit:
-            try:
-                _stopped_at_exit = _stop_run_servers(rid)
-                if _stopped_at_exit:
-                    logger.info("run %s terminal: stopped %d run-owned server(s)",
-                                rid, len(_stopped_at_exit))
-            except Exception:
-                pass
-        # P10.1: drop the run's deferred allowlist on EVERY terminal exit
-        # (success, max_steps, timeout, cancel, error).
-        try:
-            from app.application.agent_kernel.deferred_tools import clear_run
-            clear_run(rid)
-        except Exception:
-            pass
-        # Scoped Read-Only SSH v1: drop any bound operation scope on EVERY terminal
-        # exit (finally/cancel/error). Expiry also drops it lazily via TTL.
-        try:
-            from app.application.agent_kernel.operation_scope import clear_scope
-            clear_scope(rid)
-        except Exception:
-            pass
         try:
             _unregister_run(rid)
         except Exception:
@@ -3237,22 +2001,20 @@ def stream_code_agent(
     working_dir: Path | str | None = None,
     model: str = "auto",
     agent_id: str = "code-agent",
-    max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
-    execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
-    approval_wait_seconds: int = 300,
     resume: bool = False,
-    access_mode: str = "project-workspace",
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
     thinking: bool = False,
-    no_questions: bool = False,
+    reasoning_effort: str | None = None,
+    pause_for_workflow_request: bool = False,
+    workflow_approval: dict[str, Any] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Journalled public stream around the existing model/tool runtime."""
     from app.application.code_agent.run_journal import RunJournal, discover_capabilities
@@ -3260,25 +2022,31 @@ def stream_code_agent(
     rid = run_id or uuid.uuid4().hex
     initial_tools = tuple(base_tools) if base_tools is not None else _CODE_AGENT_BASE_TOOLS
     journal = RunJournal.load(rid) if resume else RunJournal(rid)
+    selected_reasoning_effort = _normalize_reasoning_effort(
+        reasoning_effort,
+        thinking=thinking,
+    )
     request = {
         "user_message": user_message,
         "project_root": str(project_root),
         "working_dir": str(working_dir) if working_dir is not None else None,
         "model": model,
         "agent_id": agent_id,
-        "max_steps": int(max_steps),
         "conversation_history": conversation_history or [],
         "num_ctx": int(num_ctx) if num_ctx else None,
         "base_tools": list(initial_tools),
-        "execution_timeout_seconds": execution_timeout_seconds,
         "auto_remember": bool(auto_remember),
-        "access_mode": access_mode,
         "profile_name": profile_name,
         "permission_mode": permission_mode,
-        "thinking": bool(thinking),
-        "no_questions": bool(no_questions),
+        "thinking": selected_reasoning_effort != "none",
+        "reasoning_effort": selected_reasoning_effort,
+        "pause_for_workflow_request": bool(pause_for_workflow_request),
     }
     terminal = False
+    answer_media = merge_answer_media(
+        [],
+        journal.state.get("answer_media") if resume else [],
+    )
     try:
         if resume:
             journal.resume()
@@ -3307,22 +2075,21 @@ def stream_code_agent(
             working_dir=working_dir,
             model=model,
             agent_id=agent_id,
-            max_steps=max_steps,
             conversation_history=conversation_history,
             run_id=rid,
             num_ctx=num_ctx,
             base_tools=base_tools,
-            execution_timeout_seconds=execution_timeout_seconds,
             auto_remember=auto_remember,
             chat_fn=chat_fn,
             chat_stream_fn=chat_stream_fn,
-            approval_wait_seconds=approval_wait_seconds,
             compaction_audit_sink=audit_sink,
             profile_name=profile_name,
             permission_mode=permission_mode,
             thinking=thinking,
-            no_questions=no_questions,
+            reasoning_effort=selected_reasoning_effort,
             resume=resume,
+            pause_for_workflow_request=pause_for_workflow_request,
+            workflow_approval=workflow_approval,
         ):
             event = dict(raw_event)
             event.setdefault("run_id", rid)
@@ -3331,22 +2098,14 @@ def stream_code_agent(
             if event.get("type") == "done":
                 event["resumable"] = bool(
                     event.get("partial")
-                    or event.get("stop_reason") in {"timeout", "error", "context_limit"}
+                    or event.get("stop_reason")
+                    in {"error", "context_limit", "workflow_request"}
                 )
                 terminal = True
-            if event.get("type") == "final_response":
-                # Layer C: every preceding tool_call has already updated the
-                # journal's changed_files (append_event runs before this yield),
-                # so the list is authoritative at this point. Correct a false
-                # "nothing changed" claim before it reaches the user or the
-                # journalled last_response.
-                correction = _layer_c_correction(
-                    str(event.get("text") or ""),
-                    list(journal.state.get("changed_files") or []),
-                )
-                if correction:
-                    event["text"] = str(event.get("text") or "") + correction
-                    event["consistency_corrected"] = True
+            if event.get("type") == "tool_call" and event.get("media"):
+                answer_media = merge_answer_media(answer_media, event.get("media"))
+            if event.get("type") == "final_response" and answer_media:
+                event["media"] = list(answer_media)
             if event.get("type") == "tool_started":
                 journal.append_event({
                     "type": "tool_decision",
@@ -3440,25 +2199,28 @@ def run_code_agent(
     working_dir: Path | str | None = None,
     model: str = "auto",
     agent_id: str = "code-agent",
-    max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
-    execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
-    approval_wait_seconds: int = 0,
-    access_mode: str = "project-workspace",
     profile_name: str = "Инженерный",
+    permission_mode: str = "ask",
+    thinking: bool = False,
+    reasoning_effort: str | None = None,
+    pause_for_workflow_request: bool = False,
+    resume: bool = False,
+    workflow_approval: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Synchronous single-shot wrapper around stream_code_agent. Drains
     the generator and aggregates the result into the legacy dict shape.
-    Legacy default: no approval pause (approval_wait_seconds=0).
+    Workflow input waits until a UI decision or Stop.
     """
     tool_calls_log: list[dict[str, Any]] = []
     response_text = ""
+    response_media: list[dict[str, str]] = []
     ok = False
     stop_reason = "error"
     error: str | None = None
@@ -3470,6 +2232,9 @@ def run_code_agent(
     criteria: list[dict[str, Any]] = []
     criteria_confirmed = False
     task_spec: dict[str, Any] | None = None
+    request_status = ""
+    request: dict[str, Any] | None = None
+    response_id = ""
 
     for event in stream_code_agent(
         user_message=user_message,
@@ -3477,18 +2242,20 @@ def run_code_agent(
         working_dir=working_dir,
         model=model,
         agent_id=agent_id,
-        max_steps=max_steps,
         conversation_history=conversation_history,
         run_id=run_id,
         num_ctx=num_ctx,
         base_tools=base_tools,
-        execution_timeout_seconds=execution_timeout_seconds,
         auto_remember=auto_remember,
         chat_fn=chat_fn,
         chat_stream_fn=chat_stream_fn,
-        approval_wait_seconds=approval_wait_seconds,
-        access_mode=access_mode,
         profile_name=profile_name,
+        permission_mode=permission_mode,
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+        pause_for_workflow_request=pause_for_workflow_request,
+        resume=resume,
+        workflow_approval=workflow_approval,
     ):
         et = event.get("type")
         if et == "tool_call":
@@ -3502,11 +2269,17 @@ def run_code_agent(
                     "touched_path", "old_content", "new_content", "diff_action",
                     "download_url", "download_name", "project_path", "size", "sha256",
                     "actual_url", "local_url", "actual_port", "port", "pid",
-                    "server_started",
+                    "server_started", "media",
                 ) if k in event},
             })
         elif et == "final_response":
             response_text = event.get("text", "")
+            response_media = list(event.get("media") or [])
+        elif et == "workflow_request":
+            request_status = str(event.get("status") or "")
+            raw_request = event.get("request")
+            request = dict(raw_request) if isinstance(raw_request, dict) else None
+            response_id = str(event.get("response_id") or "")
         elif et == "done":
             ok = bool(event.get("ok"))
             partial = bool(event.get("partial"))
@@ -3517,10 +2290,16 @@ def run_code_agent(
             criteria = list(event.get("criteria") or [])
             criteria_confirmed = bool(event.get("criteria_confirmed"))
             task_spec = event.get("task_spec")
+            request_status = str(event.get("status") or request_status)
+            raw_request = event.get("request")
+            if isinstance(raw_request, dict):
+                request = dict(raw_request)
+            response_id = str(event.get("response_id") or response_id)
 
     return {
         "ok": ok,
         "response": response_text,
+        "media": response_media,
         "steps": steps,
         "tool_calls": tool_calls_log,
         "stop_reason": stop_reason,
@@ -3532,4 +2311,7 @@ def run_code_agent(
         "criteria": criteria,
         "criteria_confirmed": criteria_confirmed,
         "task_spec": task_spec,
+        "status": request_status,
+        "request": request,
+        "response_id": response_id,
     }

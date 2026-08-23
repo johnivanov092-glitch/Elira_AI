@@ -1,5 +1,10 @@
 # PHASE-0-foundation — Foundation / contract
 
+> **SUPERSEDED SECURITY DECISION (2026-08-11):** WinCred-only vault из этой
+> задачи заменён portable workflow-managed vault из
+> `../../universal-agent-workflow/issues/02-portable-workflow-vault.md`. Не
+> добавлять новые Windows Credential Manager/DPAPI dependencies.
+
 - **Layer:** Foundation
 - **Status:** planned
 - **Depends on:** —

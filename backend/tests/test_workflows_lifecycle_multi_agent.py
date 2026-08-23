@@ -137,9 +137,13 @@ class FailMissingStepTest(unittest.TestCase):
         _, events = self._call()
         self.assertIn("workflow.run.completed", events)
 
-    def test_two_events_emitted(self) -> None:
+    def test_emits_control_plane_completed_event(self) -> None:
         _, events = self._call()
-        self.assertEqual(len(events), 2)
+        self.assertIn("workflow/completed", events)
+
+    def test_three_events_emitted(self) -> None:
+        _, events = self._call()
+        self.assertEqual(len(events), 3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

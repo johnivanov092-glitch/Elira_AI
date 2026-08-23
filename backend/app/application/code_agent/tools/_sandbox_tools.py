@@ -21,11 +21,11 @@ def tool_sandbox_run(
         return {"text": "ERROR: code is empty"}
     from app.application.code_agent.sandbox import run_in_sandbox
 
+    del timeout  # compatibility input; Workflow Stop owns termination
     result = run_in_sandbox(
         project_root,
         code=code,
         install=install,
-        timeout=int(timeout),
     )
 
     parts: list[str] = []

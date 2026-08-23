@@ -1,6 +1,6 @@
 import { Check } from "lucide-react";
 import { useEffect, useState } from "react";
-import { listLocalModels } from "../../api/chat";
+import { listLocalModels } from "../../api/models";
 import { cn } from "../../ui/cn";
 import { Note, Wrap } from "./_shared";
 import { modelName } from "./util";

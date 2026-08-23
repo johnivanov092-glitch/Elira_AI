@@ -272,12 +272,6 @@ class BuiltinToolProviderTest(unittest.TestCase):
         result = self.provider.dispatch("read_file", {})
         self.assertIn("ERROR", result["text"])
 
-    def test_sandbox_violation_handled(self) -> None:
-        # Path-traversal via ../ — provider catches SandboxError.
-        result = self.provider.dispatch("read_file", {"path": "../../../etc/passwd"})
-        self.assertIn("ERROR", result["text"])
-        self.assertIn("sandbox", result["text"].lower())
-
     def test_registry_with_builtin_exposes_same_tool_set(self) -> None:
         reg = ToolRegistry([self.provider])
         names = {s["function"]["name"] for s in reg.collect_schemas()}

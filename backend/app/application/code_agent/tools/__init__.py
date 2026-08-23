@@ -21,11 +21,12 @@ from app.application.code_agent.tools._shell import (  # noqa: F401
     _kill_proc_tree,
     _new_process_group_kwargs,
     get_current_run_id,
-    is_shell_critical,
-    is_shell_safe,
     kill_run_processes,
+    register_run_process,
+    run_was_stopped,
     reset_current_run_id,
     set_current_run_id,
+    unregister_run_process,
 )
 from app.application.code_agent.tools._files import (  # noqa: F401
     tool_edit_file,
@@ -42,7 +43,6 @@ from app.application.code_agent.tools._search import (  # noqa: F401
 from app.application.code_agent.tools._web import (  # noqa: F401
     tool_browser,
     tool_web_fetch,
-    tool_web_claim_add,
     tool_web_query,
     tool_web_sitemap,
     tool_web_search,
@@ -57,10 +57,7 @@ from app.application.code_agent.tools._run import (  # noqa: F401
     tool_run_server,
 )
 from app.application.code_agent.tools._meta import (  # noqa: F401
-    TOOL_SEARCH_ACTIVATION_CAP,
-    TOOL_SEARCH_RESULT_LIMIT,
     tool_delegate_task,
-    tool_search,
     tool_todo_update,
 )
 from app.application.code_agent.tools._content import (  # noqa: F401
@@ -81,17 +78,19 @@ from app.application.code_agent.tools._vision import (  # noqa: F401
     tool_read_image,
 )
 from app.application.code_agent.tools._dispatch import build_tool_dispatch  # noqa: F401
+from app.application.code_agent.tools._runtime_control import tool_runtime_control  # noqa: F401
 
 __all__ = [
     "build_tool_schemas",
     "build_tool_dispatch",
     "SandboxError",
-    "is_shell_safe",
-    "is_shell_critical",
     "set_current_run_id",
     "get_current_run_id",
     "reset_current_run_id",
     "kill_run_processes",
+    "register_run_process",
+    "run_was_stopped",
+    "unregister_run_process",
     "stop_all_servers",
     "tool_read_file",
     "tool_write_file",
@@ -103,12 +102,12 @@ __all__ = [
     "tool_remember",
     "tool_todo_update",
     "tool_delegate_task",
+    "tool_runtime_control",
     "tool_run_bash",
     "tool_run_server",
     "tool_web_search",
     "tool_web_fetch",
     "tool_web_query",
-    "tool_web_claim_add",
     "tool_web_sitemap",
     "tool_browser",
     "tool_sandbox_run",
@@ -126,7 +125,4 @@ __all__ = [
     "tool_file_gen",
     "tool_read_image",
     "tool_ocr_file",
-    "tool_search",
-    "TOOL_SEARCH_RESULT_LIMIT",
-    "TOOL_SEARCH_ACTIVATION_CAP",
 ]

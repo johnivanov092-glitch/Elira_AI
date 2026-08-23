@@ -20,9 +20,9 @@ ASSET_KINDS = (
 ASSET_LIFECYCLE = ("draft", "enabled", "disabled", "revoked")
 TRANSPORTS = ("ssh", "winrm", "mcp", "local")
 SECRET_KINDS = ("password", "private_key", "token", "connection_string")
-# Phase 0 vault backend is strictly Windows Credential Manager. A second backend
-# would be a future ADR — the store rejects any other value.
-SECRET_BACKENDS = ("wincred",)
+# New writes use the application-owned portable vault. ``wincred`` remains only
+# so existing metadata can be discovered and explicitly migrated in place.
+SECRET_BACKENDS = ("portable_v1", "wincred")
 # Lifecycle includes the internal saga states: `provisioning` (recovery record
 # written BEFORE the credential), `cleanup_pending` (credential may exist but
 # provisioning did not complete), and `recovering` (a recovery pass has atomically
@@ -45,7 +45,6 @@ SECRET_INTAKE_ORIGINS = ("secure_intake",)
 SECRET_REQUESTABLE_LIFECYCLE = ("temporary", "persistent")
 # Lifecycles whose value may be resolved (a complete, live secret).
 SECRET_RESOLVABLE_LIFECYCLE = ("temporary", "persistent", "rotated")
-SCOPE_MODES = ("read_only", "change")
 ROLLBACK_KINDS = ("automatic", "manual", "none")
 
 # lifecycle axis — the ChangeRun's own state machine (NOT the task axis)
@@ -83,23 +82,6 @@ class ConnectionProfile:
 
 
 @dataclass
-class OperationScope:
-    """Per-run scope; the LIVE copy is in-memory (agent_kernel/operation_scope),
-    this is the durable audit record. `mode` gates read_only vs change."""
-    scope_id: str
-    run_id: str
-    allowed_asset_ids: list[str] = field(default_factory=list)
-    cidrs: list[str] = field(default_factory=list)
-    local_roots: list[str] = field(default_factory=list)
-    service_ids: list[str] = field(default_factory=list)
-    config_roots: list[str] = field(default_factory=list)
-    db_profiles: list[str] = field(default_factory=list)
-    mode: str = "read_only"
-    approved_by: str = ""
-    approved_at: float | None = None
-
-
-@dataclass
 class Snapshot:
     snapshot_id: str
     change_run_id: str
@@ -131,7 +113,6 @@ class ChangeRun:
     run_id: str
     asset_id: str
     plan: dict[str, Any] = field(default_factory=dict)
-    approval_id: str | None = None          # → agent_monitor.db approvals
     snapshot_id: str | None = None
     rollback_kind: str = "none"             # automatic|manual|none (adapter-declared)
     change_run_status: str = "planned"      # LIFECYCLE axis
@@ -140,10 +121,9 @@ class ChangeRun:
 
 @dataclass
 class SecretRef:
-    """STATE + metadata only. The value lives ONLY in Windows Credential Manager —
-    this record never holds ciphertext, a DPAPI blob, or the value."""
+    """STATE + metadata only; secret ciphertext belongs to the portable vault."""
     secret_ref: str
     kind: str
-    backend: str = "wincred"
+    backend: str = "portable_v1"
     asset_id: str | None = None
     lifecycle: str = "temporary"

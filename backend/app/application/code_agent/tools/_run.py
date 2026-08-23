@@ -18,8 +18,6 @@ from app.application.code_agent.tools._shell import (
     _LIVE_SHELL_PROCS,
     _SHELL_STDERR_LIMIT,
     _SHELL_STDOUT_LIMIT,
-    _SHELL_TIMEOUT_MAX,
-    _blocked_shell_fragment,
     _kill_proc_tree,
     _new_process_group_kwargs,
     _register_shell_proc,
@@ -47,32 +45,14 @@ _INLINE_SCRIPT_INTERPRETERS = frozenset(
 )
 
 
-# Secret-bearing env keys that agent-spawned child processes must NOT inherit.
-# The backend loads tokens into its own environment (GitHub PAT + HF for the MCP
-# servers, the Elira API token, the llama-server key); without this filter every
-# run_bash / run_server child the model launches would inherit them via the default
-# `env=None` (full os.environ) and could exfiltrate them. We strip by explicit name
-# plus a conservative secret pattern, but keep PATH and the rest of the environment
-# so normal toolchain commands still work (a strict allow-list would break language
-# toolchains on the user's own machine).
-_SECRET_ENV_EXPLICIT = frozenset({
-    "GITHUB_PERSONAL_ACCESS_TOKEN", "HUGGINGFACE_TOKEN", "HF_TOKEN",
-    "ELIRA_API_TOKEN", "VITE_ELIRA_API_TOKEN",
-    "LLAMA_SERVER_API_KEY", "LOCAL_EMBED_API_KEY",
-})
-_SECRET_ENV_RE = re.compile(
-    r"(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE_KEY|_API_KEY|APIKEY)",
-    re.IGNORECASE,
-)
-
-
 def _agent_child_env() -> dict[str, str]:
-    """Parent environment minus secret-bearing keys, for agent-spawned children."""
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if key not in _SECRET_ENV_EXPLICIT and not _SECRET_ENV_RE.search(key)
-    }
+    """Full environment of Elira's current OS token for spawned tools.
+
+    Product authorization is owned exclusively by the Workflow permission mode.
+    The runtime does not silently remove credentials or Windows/toolchain state
+    after the UI has authorized execution.
+    """
+    return dict(os.environ)
 _INLINE_SCRIPT_FLAGS = frozenset({"-c", "-e", "--eval"})
 
 
@@ -102,32 +82,15 @@ def _inline_script_argv(command: str) -> list[str] | None:
     return None
 
 
-# Recursive-delete fragments (already blocked by _blocked_shell_fragment) whose
-# refusal message should also point at the ssh_* tools — a remote-task cleanup must
-# not be attempted through the LOCAL shell.
-_DELETE_FRAGMENTS = ("rmdir", "rd /s", "del /s", "rm -rf", "rm -fr", "remove-item")
-
-
 def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dict[str, Any]:
+    del timeout  # compatibility input; Workflow Stop owns termination
     cleaned_command = (command or "").strip()
     if not cleaned_command:
         return {"text": "ERROR: command is empty", "ok": False}
-    blocked = _blocked_shell_fragment(cleaned_command)
-    if blocked:
-        # A refused command is NOT ok — otherwise the loop reads a missing `ok` as
-        # True and a blocked destructive delete looks like it succeeded. For a remote
-        # cleanup, guide to the ssh_* tools instead of the local shell (FIX #4).
-        hint = ""
-        if any(f in blocked for f in _DELETE_FRAGMENTS):
-            hint = (" Если это очистка на удалённом хосте — используй "
-                    "ssh_run_ps / ssh_not_exists на нужном host, не локальный shell.")
-        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}.{hint}", "ok": False}
     # Raw SSH is allowed under the same approval policy as every other run_bash
     # command. Keep specialized-tool guidance only as a fallback after a real
     # non-zero exit; blocking it here produced artificial failures and loops.
     raw_ssh_hint = raw_ssh_redirect(cleaned_command)
-    safe_timeout = max(1, min(int(timeout), _SHELL_TIMEOUT_MAX))
-
     run_id = _CURRENT_RUN_ID.get()
     # Multi-line inline scripts (python -c "<…>", node -e …) are mangled by
     # cmd.exe /c, so run them via argv with no shell; everything else keeps the
@@ -135,8 +98,7 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     _argv = _inline_script_argv(cleaned_command)
     try:
         # Popen (not subprocess.run) so the live process is registered and can
-        # be killed mid-flight by the Stop button. We drive the wait ourselves
-        # via communicate() with a deadline, killing on timeout OR cancel.
+        # be killed mid-flight by the Stop button.
         proc = subprocess.Popen(
             _argv if _argv is not None else cleaned_command,
             shell=_argv is None,
@@ -146,14 +108,13 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
             # codepage, and text=True would decode with the wrong ANSI default
             # (mojibake). Decoded via _decode_console below.
             cwd=str(project_root.resolve()),
-            # Strip secret-bearing env keys so the model's shell child can't read
-            # Elira's GitHub/HF/API tokens (FIX-1).
+            # Inherit the complete environment available to Elira's current
+            # Windows token. Workflow permission is the authorization boundary.
             env=_agent_child_env(),
             # Close stdin: a shell tool must never block on input. Interactive
-            # prompts (ssh host-key/password, apt, etc.) get EOF and fail fast
-            # instead of hanging until the timeout. For real SSH use the ssh tool.
+            # prompts (ssh host-key/password, apt, etc.) get EOF and fail fast.
             stdin=subprocess.DEVNULL,
-            # Own process group so Stop/timeout can kill the whole tree, not just
+            # Own process group so Stop can kill the whole tree, not just
             # the cmd.exe wrapper (which would orphan the real child on Windows).
             **_new_process_group_kwargs(),
         )
@@ -162,10 +123,9 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
 
     _register_shell_proc(run_id, proc)
     cancelled = False
-    timed_out = False
     # Drain stdout/stderr in background threads so a chatty command can't fill
     # the OS pipe buffer and deadlock (child blocks on write → never exits →
-    # poll() never completes). The main loop then only watches poll()/deadline,
+    # poll() never completes). The main loop then only watches poll(),
     # which keeps the process killable mid-flight by the Stop button.
     out_buf: list[bytes] = []
     err_buf: list[bytes] = []
@@ -184,15 +144,10 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
     t_out.start()
     t_err.start()
     try:
-        deadline = time.monotonic() + safe_timeout
         # Poll so a Stop press (which proc.kill()s us from another thread) is
-        # observed within ~0.1s instead of waiting out the whole timeout.
+        # observed within ~0.1s.
         while True:
             if proc.poll() is not None:
-                break
-            if time.monotonic() >= deadline:
-                _kill_proc_tree(proc)
-                timed_out = True
                 break
             time.sleep(0.1)
     except Exception as exc:
@@ -215,23 +170,17 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
         _unregister_shell_proc(run_id, proc)
         # Stop is detected via the explicit kill registry (taskkill on Windows
         # yields a *positive* exit code, so the returncode alone can't tell a
-        # Stop from a normal failure). A timeout also kills the proc, but that
-        # is a tool error, not a Stop. Fall back to a negative code for the
+        # Stop from a normal failure). Fall back to a negative code for the
         # POSIX direct-kill case where no run_id was bound.
-        if not timed_out:
-            if run_id:
-                with _LIVE_SHELL_LOCK:
-                    if run_id in _KILLED_RUN_IDS:
-                        _KILLED_RUN_IDS.discard(run_id)
-                        cancelled = True
-            if not cancelled and proc.returncode is not None and proc.returncode < 0:
-                cancelled = True
+        if run_id:
+            with _LIVE_SHELL_LOCK:
+                if run_id in _KILLED_RUN_IDS:
+                    _KILLED_RUN_IDS.discard(run_id)
+                    cancelled = True
+        if not cancelled and proc.returncode is not None and proc.returncode < 0:
+            cancelled = True
 
     out, err = _decode_console(b"".join(out_buf)), _decode_console(b"".join(err_buf))
-
-    if timed_out:
-        tail = f"\n{_truncate_middle(err.rstrip(), _SHELL_STDERR_LIMIT)}" if err else ""
-        return {"text": f"ERROR: command timed out after {safe_timeout}s{tail}"}
 
     if cancelled:
         return {"text": f"$ {cleaned_command}\nПрервано пользователем (Стоп)."}
@@ -253,16 +202,14 @@ def tool_run_bash(project_root: Path, *, command: str, timeout: int = 60) -> dic
 
 
 # ─── run_server: background process launcher ────────────────────────────────
-# Unlike run_bash (which blocks until the command exits or times out), run_server
+# Unlike run_bash (which waits until the command exits or Workflow Stop), run_server
 # starts a long-lived process via Popen and returns IMMEDIATELY. The process is
 # tracked in a module-level registry keyed by pid (tagged with the OWNING run_id)
-# so it can be listed and stopped explicitly. R2 Server Lifecycle: the RUNTIME owns
-# what it started — servers survive across turns WITHIN the run, and at the run's
-# end the runtime stops its own servers (answer+TaskSpec: verification vehicle;
-# cancel/timeout/error/disconnect: always) unless the run had no TaskSpec and the
-# server IS the deliverable («подними dev-сервер») — then it stays alive with an
-# explicit report. They are not in _LIVE_SHELL_PROCS (the mid-run Stop path kills
-# shell procs; servers are stopped by the run-terminal hook instead). Output is
+# so it can be listed and stopped explicitly. Servers survive across turns and
+# after a natural model answer. They stop only through run_server(action='stop')
+# or an explicit Workflow Stop, which kills every process owned by that run.
+# They are not in _LIVE_SHELL_PROCS; their own registry handles lifecycle.
+# Output is
 # captured to log files under the project's .elira/servers/ so the model can
 # inspect startup without blocking.
 
@@ -336,8 +283,8 @@ class _ServerHandle:
         self.port = port
         self.url = url
         self.started_at = time.time()
-        # R2 Server Lifecycle: the run that STARTED this server owns it — the runtime
-        # (not the model) knows what it launched and cleans it up at the run's end.
+        # The run that started this server owns it, so explicit Workflow Stop can
+        # terminate the correct process tree without affecting unrelated servers.
         self.run_id = run_id
 
 
@@ -354,9 +301,7 @@ def _reap_dead_servers() -> None:
 
 
 def active_server_ports() -> set[int]:
-    """Loopback ports of dev servers THIS agent started and are still alive. The
-    SSRF guard uses this to let http_api/browser verify the agent's OWN dev server
-    on localhost — and nothing else (arbitrary internal infra stays blocked)."""
+    """Ports of dev servers this agent started and that are still alive."""
     _reap_dead_servers()
     with _SERVERS_LOCK:
         return {int(h.port) for h in _LIVE_SERVERS.values() if h.port}
@@ -416,8 +361,7 @@ def run_owned_servers(run_id: str) -> list[dict[str, Any]]:
 
 def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
     """Stop every server owned by `run_id` (kill the whole tree) and drop the
-    handles. Returns what was stopped. Called by the runtime at run terminals —
-    an abandoned run must not leave processes behind."""
+    handles. Returns what was stopped. Called by explicit Workflow Stop."""
     if not run_id:
         return []
     with _SERVERS_LOCK:
@@ -437,7 +381,7 @@ def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
             pass
         if h.proc.poll() is None:
             # The kill FAILED — keep the handle: an unkillable process must stay
-            # tracked (list/stop_all/SSRF allowlist), not silently leak (review #11).
+            # tracked (list/stop_all), not silently leak.
             continue
         if was_alive:
             stopped.append({"pid": pid, "port": h.port, "url": h.url, "command": h.command})
@@ -580,7 +524,7 @@ def stop_all_servers() -> int:
     """Kill every tracked background server. Returns the count actually stopped.
     Intended for process/app shutdown, not the per-run Stop button. A handle whose
     kill FAILED stays in the registry — an unkillable process must remain tracked
-    (list/stop/SSRF allowlist), never silently leak (John's P1a review: the old code
+    (list/stop), never silently leak (the old code
     cleared the registry unconditionally, reporting 'Stopped' for a live process)."""
     with _SERVERS_LOCK:
         handles = list(_LIVE_SERVERS.items())
@@ -714,10 +658,6 @@ def tool_run_server(
     cleaned_command = (command or "").strip()
     if not cleaned_command:
         return {"text": "ERROR: action 'start' requires a command.", "ok": False}
-    blocked = _blocked_shell_fragment(cleaned_command)
-    if blocked:
-        return {"text": f"ERROR: blocked dangerous shell command fragment: {blocked}", "ok": False}
-
     log_dir = (project_root.resolve() / _SERVER_LOG_DIRNAME)
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -788,8 +728,8 @@ def tool_run_server(
         ), "ok": False}
 
     # Learn the URL the server ACTUALLY bound (Vite may have auto-incremented off a
-    # taken port). This becomes the canonical URL: the loopback allowlist keys on the
-    # REAL port, so the verifier reaches THIS server — not a guessed port or a
+    # taken port). This becomes the canonical URL, so the verifier reaches THIS
+    # server — not a guessed port or a
     # different app already on the requested one. Only wait when a web URL is expected
     # (a port was requested or the command is a known dev server) so a plain
     # background process doesn't pay the poll.
@@ -833,9 +773,7 @@ def tool_run_server(
         f"  $ {cleaned_command}\n"
         f"Use run_server(action='logs', pid={proc.pid}) to read output, "
         f"run_server(action='stop', pid={proc.pid}) to stop it. "
-        f"It keeps running across turns within this run; the runtime stops its own "
-        f"servers at the run's end (kept alive only when the server itself is the "
-        f"deliverable — then the final message says so)."
+        f"It keeps running until run_server(action='stop') or explicit Workflow Stop."
     )
 
     # Auto GUI verification: capture what just launched and feed it back so the

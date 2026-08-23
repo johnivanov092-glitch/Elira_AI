@@ -583,17 +583,17 @@ def prune_rag(
     *,
     conn_factory: Callable[[], Any],
     max_age_days: int = 30,
-    max_importance: int = 3,
-    categories: tuple[str, ...] = ("agent_turn",),
+    max_importance: int = 4,
+    categories: tuple[str, ...] = ("agent_turn", "verified_turn"),
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Decay / forgetting for RAG: evict stale, never-recalled machine-made
     memories so the store doesn't grow without bound.
 
     A row is a prune candidate only when ALL hold:
-      - its category is in ``categories`` (default just ``agent_turn`` — the
-        auto-generated turn summaries). User-authored facts / preferences /
-        instructions are **never** touched.
+      - its category is in ``categories`` (default ``agent_turn`` and
+        ``verified_turn`` — machine-generated turn summaries). User-authored
+        facts / preferences / instructions are **never** touched.
       - ``importance <= max_importance`` — dedup never bumped it, so it stayed
         low-value (a repeated/important turn would have climbed above this).
       - ``access_count == 0`` — a recall never once surfaced it.
@@ -665,7 +665,15 @@ def rag_stats(*, conn_factory: Callable[[], Any], embed_model: str) -> dict[str,
             WHERE embedding_blob IS NOT NULL OR COALESCE(embedding, '') != ''
             """
         ).fetchone()[0]
+        categories = conn.execute(
+            "SELECT category, COUNT(*) FROM rag_items GROUP BY category"
+        ).fetchall()
     finally:
         conn.close()
-    return {"ok": True, "total": total, "with_embeddings": with_embeddings, "model": embed_model}
-
+    return {
+        "ok": True,
+        "total": total,
+        "with_embeddings": with_embeddings,
+        "model": embed_model,
+        "by_category": {row[0]: row[1] for row in categories},
+    }

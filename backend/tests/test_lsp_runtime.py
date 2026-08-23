@@ -100,15 +100,15 @@ class StartGuardsTest(unittest.TestCase):
             finally:
                 os.environ.pop("ELIRA_DATA_DIR", None)
 
-    def test_start_disabled_server_returns_not_ok(self) -> None:
+    def test_disabled_config_does_not_block_explicit_start(self) -> None:
         with tempfile.TemporaryDirectory() as data:
             rt = _fresh_runtime(data)
             try:
                 rt.save_servers([_spec("pyright", enabled=False)])
                 res = rt.start_server("pyright")
                 self.assertFalse(res["ok"])
-                self.assertIn("disabled", res["error"])
-                # A refused start must not register a live client.
+                self.assertNotIn("disabled", res["error"])
+                # Spawn failure must not register a live client.
                 self.assertEqual(rt.live_clients(), {})
             finally:
                 os.environ.pop("ELIRA_DATA_DIR", None)
@@ -195,16 +195,6 @@ class StopRestartTest(unittest.TestCase):
                 res = rt.stop_server("ghost")
                 self.assertTrue(res["ok"])
                 self.assertFalse(res["was_running"])
-            finally:
-                os.environ.pop("ELIRA_DATA_DIR", None)
-
-    def test_restart_disabled_returns_not_ok(self) -> None:
-        with tempfile.TemporaryDirectory() as data:
-            rt = _fresh_runtime(data)
-            try:
-                rt.save_servers([_spec("pyright", enabled=False)])
-                res = rt.restart_server("pyright")
-                self.assertFalse(res["ok"])  # stop ok, but start refuses disabled
             finally:
                 os.environ.pop("ELIRA_DATA_DIR", None)
 

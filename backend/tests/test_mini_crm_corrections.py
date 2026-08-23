@@ -52,6 +52,7 @@ def _exec_builtin(root: Path, tool: str, args: dict, run_id: str = "crm-fix-run"
     req = ToolExecutionRequest(
         run_id=run_id, agent_id="code-agent", project_scope_id="",
         tool_name=tool, args=args, source="code_agent",
+        permission_mode="bypass",
     )
     with patch("app.application.tool_registry.runtime.get_tool", return_value=dict(_AUTO_SPEC)):
         return execute_tool(req, provider.dispatch)
@@ -368,14 +369,12 @@ def _loop_env():
     _CLOCK.offset = 0.0
     with patch.object(agent_loop, "_resolve_code_route", return_value=("test-model", 32768, None)), \
          patch.object(agent_loop, "_record_code_route_metric"), \
-         patch.object(agent_loop, "build_mcp_providers", return_value=[]), \
+         patch.object(agent_loop, "build_runtime_tool_registry", return_value=ToolRegistry([])), \
          patch.object(ToolRegistry, "collect_schemas", return_value=list(_FAKE_SCHEMAS)), \
          patch.object(agent_loop, "_server_url_alive", return_value=True), \
          patch.object(agent_loop, "_run_owned_servers", return_value=[]), \
          patch.object(agent_loop, "_stop_run_servers", return_value=[]), \
-         patch.object(agent_loop.time, "monotonic", _CLOCK), \
-         patch("app.application.agent_registry.sandbox.preflight_or_raise",
-               return_value={"limit": {"max_execution_seconds": 600}}):
+         patch.object(agent_loop.time, "monotonic", _CLOCK):
         yield
 
 
@@ -411,8 +410,7 @@ _STRUCTURED_TASK = (
 def _run(chat, tmp, rid):
     return list(stream_delivery_session(
         user_message=_STRUCTURED_TASK, project_root=tmp, model="test-model",
-        max_steps=30, chat_fn=chat, run_id=rid,
-        execution_timeout_seconds=60, approval_wait_seconds=0,
+        chat_fn=chat, run_id=rid,
         auto_remember=False, permission_mode="bypass",
     ))
 
@@ -423,113 +421,6 @@ def _dones(events):
 
 def _continuings(events):
     return [e for e in events if e.get("type") == "delivery_continuing"]
-
-
-class AnswerContinuationTest(unittest.TestCase):
-    def test_answer_unverified_with_progress_and_open_checklist_continues(self):
-        """The REAL Mini CRM shape: slice made mutations, checklist still open,
-        model answered with 0/N confirmed — the session must continue toward
-        verification and end with ONE confirmed terminal."""
-        rid = "crm-ans-1"
-        chat = _ScriptChat([
-            _call("todo_update", items=[
-                {"id": "m1", "text": "каркас", "status": "pending", "position": 0},
-                {"id": "m2", "text": "проверка результата", "status": "pending", "position": 1},
-            ]),
-            _call("write_file", path="other.txt", content="A"),      # real progress
-            _call("todo_update", updates=[{"id": "m1", "status": "completed"}]),
-            _final("готово (не проверено)"),                          # closure nudge → next
-            _final("готово (не проверено)"),                          # slice 1 ends: answer/unverified
-            _call("write_file", path="out.txt", content="done"),      # slice 2: criterion file
-            _final("out.txt создан"),
-        ])
-        with tempfile.TemporaryDirectory() as tmp, _loop_env():
-            events = _run(chat, tmp, rid)
-            self.assertTrue((Path(tmp) / "out.txt").is_file())
-        conts = _continuings(events)
-        dones = _dones(events)
-        self.assertEqual(len(conts), 1,
-                         "answer/unverified with progress + open checklist must continue")
-        self.assertEqual(conts[0]["stop_reason"], "answer")
-        self.assertEqual(len(dones), 1, "exactly one terminal done")
-        self.assertEqual(dones[0].get("completion_status"), "confirmed")
-
-    def test_answer_unverified_without_progress_does_not_continue(self):
-        rid = "crm-ans-2"
-        chat = _ScriptChat([
-            _call("todo_update", items=[
-                {"id": "m1", "text": "проверка", "status": "pending", "position": 0},
-            ]),
-            _final("ничего не сделал"),
-            _final("ничего не сделал"),
-        ])
-        with tempfile.TemporaryDirectory() as tmp, _loop_env():
-            events = _run(chat, tmp, rid)
-        self.assertEqual(_continuings(events), [])
-        self.assertEqual(len(_dones(events)), 1)
-
-    def test_answer_unverified_with_empty_checklist_does_not_continue(self):
-        rid = "crm-ans-3"
-        chat = _ScriptChat([
-            _call("write_file", path="other.txt", content="A"),  # progress, but no plan
-            _final(), _final(),
-        ])
-        with tempfile.TemporaryDirectory() as tmp, _loop_env():
-            events = _run(chat, tmp, rid)
-        self.assertEqual(_continuings(events), [],
-                         "no open durable checklist → no answer-continuation")
-        self.assertEqual(len(_dones(events)), 1)
-
-    def test_answer_continuation_respects_hard_cap(self):
-        """Endless 'progress + still unverified' must stop at the same
-        max-auto-continuations cap — never a loop."""
-        rid = "crm-ans-4"
-
-        class _EndlessChat(_ScriptChat):
-            """Every slice: one FRESH mutation, then finals — 'progress + still
-            unverified' forever. A new slice is recognized by the server-owned
-            continuation message at the tail of the rebuilt history."""
-
-            def __init__(self):
-                super().__init__([])
-                self.writes = 0
-                self.slice_wrote = False
-
-            def __call__(self, **kw):
-                if not kw.get("tools"):
-                    return _final("сводка")
-                self.tool_calls += 1
-                msgs = kw.get("messages") or []
-                # first call of a slice ⇔ no assistant/tool turns after the last
-                # user message yet (the slice transcript is still empty)
-                tail_roles = []
-                for m in reversed(msgs):
-                    if m.get("role") == "user":
-                        break
-                    tail_roles.append(m.get("role"))
-                if not any(r in ("assistant", "tool") for r in tail_roles):
-                    last_user = next((str(m.get("content") or "") for m in reversed(msgs)
-                                      if m.get("role") == "user"), "")
-                    if "Продолжи незавершённую" in last_user:
-                        self.slice_wrote = False   # a continuation slice just began
-                if self.tool_calls == 1:
-                    return _call("todo_update", items=[
-                        {"id": "m1", "text": "проверка", "status": "pending", "position": 0},
-                    ])
-                if not self.slice_wrote:
-                    self.slice_wrote = True
-                    self.writes += 1
-                    return _call("write_file", path=f"f{self.writes}.txt", content="x")
-                return _final(f"не проверено {self.tool_calls}")
-
-        chat = _EndlessChat()
-        with tempfile.TemporaryDirectory() as tmp, _loop_env():
-            events = _run(chat, tmp, rid)
-        dones = _dones(events)
-        self.assertLessEqual(len(_continuings(events)), 3, "hard cap must hold")
-        self.assertEqual(len(dones), 1)
-        self.assertEqual(dones[0].get("auto_continuations"), 3)
-        self.assertTrue(dones[0].get("resumable"))
 
 
 # ── D4: todo_update names the missing id ─────────────────────────────────────

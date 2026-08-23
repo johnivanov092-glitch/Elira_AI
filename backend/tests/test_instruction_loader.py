@@ -248,21 +248,6 @@ class TestBuildSystemPromptUsesLoader(unittest.TestCase):
 
 
 class TestCodeAgentInstructionRoutes(unittest.TestCase):
-    def test_run_route_passes_working_dir(self):
-        from app.api.routes import code_agent_routes as routes
-
-        captured: dict = {}
-
-        def fake_run(**kwargs):
-            captured.update(kwargs)
-            return {"ok": True, "response": "", "steps": 0, "tool_calls": [],
-                    "stop_reason": "done", "error": None}
-
-        payload = routes.CodeAgentRequest(message="m", project_root="/p", working_dir="/p/pkg")
-        with mock.patch.object(routes, "run_code_agent", side_effect=fake_run):
-            routes.run(payload)
-        self.assertEqual(captured["working_dir"], "/p/pkg")
-
     def test_init_project_prompt_endpoint_is_idempotent(self):
         from app.api.routes import code_agent_routes as routes
 

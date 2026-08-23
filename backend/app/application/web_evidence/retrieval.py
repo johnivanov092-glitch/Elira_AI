@@ -3,8 +3,8 @@
 BM25 is the base (always works); the local embed service (:8001) is an OPTIONAL
 re-rank that fails open — its absence must never break retrieval (contract §5).
 
-Also the quote→offset→hash verification primitive (contract §11.3) the W3 ledger
-builds on. John's W1 review contract, all three fixed here:
+Also provides a quote→offset→hash verification primitive for exact excerpts.
+The retrieval contract guarantees:
   * the `quote` field is VERBATIM canonical_text (no ellipses — display dressing
     never contaminates the evidence field);
   * `offset` is the ABSOLUTE offset of the quote in canonical_text (chunk offset
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any
 
 from app.infrastructure.web_corpus import store as _store
@@ -25,6 +26,49 @@ logger = logging.getLogger(__name__)
 
 _TOP_K_CAP = 8
 _QUOTE_MAX = 500
+
+
+def _quote_pattern(quote: str) -> re.Pattern[str]:
+    """Match exact non-whitespace codepoints with flexible whitespace runs."""
+    parts = re.split(r"(\s+)", quote)
+    return re.compile("".join(
+        r"\s+" if part.isspace() else re.escape(part)
+        for part in parts
+        if part
+    ))
+
+
+def _unique_quote_span(text: str, quote: str) -> tuple[int, int] | None:
+    """Return the canonical span only when the normalized match is unique."""
+    matches = _quote_pattern(quote).finditer(text)
+    first = next(matches, None)
+    if first is None or next(matches, None) is not None:
+        return None
+    return first.start(), first.end()
+
+
+def _quote_span_at_offset(
+    text: str,
+    quote: str,
+    start: int,
+) -> tuple[int, int] | None:
+    """Verify exact non-whitespace codepoints at a server-provided offset."""
+    if start < 0 or start >= len(text):
+        return None
+    text_pos = start
+    quote_pos = 0
+    while quote_pos < len(quote):
+        while quote_pos < len(quote) and quote[quote_pos].isspace():
+            quote_pos += 1
+        while text_pos < len(text) and text[text_pos].isspace():
+            text_pos += 1
+        if quote_pos >= len(quote):
+            break
+        if text_pos >= len(text) or text[text_pos] != quote[quote_pos]:
+            return None
+        text_pos += 1
+        quote_pos += 1
+    return start, text_pos
 
 
 def _snippet(chunk_text: str, chunk_offset: int, query: str,
@@ -134,8 +178,8 @@ def verify_quote(run_id: str, doc_id: str, quote: str,
 
     * integrity — the stored canonical_text re-hashes to the recorded
       content_hash (a tampered corpus can NOT certify a quote);
-    * quote_verified — the quote appears VERBATIM (exact codepoints) in
-      canonical_text; with `offset` given, exactly there;
+    * quote_verified — non-whitespace codepoints match exactly while whitespace
+      runs may differ; without `offset`, the matching span must be unique;
     * source_verified — the document was really fetched by this run.
     """
     try:
@@ -159,11 +203,14 @@ def verify_quote(run_id: str, doc_id: str, quote: str,
             start = int(offset)
         except (TypeError, ValueError):
             start = -1
-        ok = start >= 0 and text[start:start + len(q)] == q
+        span = _quote_span_at_offset(text, q, start)
+        ok = span is not None
         return {"quote_verified": bool(ok), "source_verified": True,
                 "offset": start if ok else None,
+                "canonical_quote": text[span[0]:span[1]] if span else None,
                 "reason": None if ok else "цитата не найдена по заявленному offset"}
-    idx = text.find(q)
-    return {"quote_verified": idx >= 0, "source_verified": True,
-            "offset": idx if idx >= 0 else None,
-            "reason": None if idx >= 0 else "цитата не найдена в источнике дословно"}
+    span = _unique_quote_span(text, q)
+    return {"quote_verified": span is not None, "source_verified": True,
+            "offset": span[0] if span else None,
+            "canonical_quote": text[span[0]:span[1]] if span else None,
+            "reason": None if span is not None else "цитата не найдена в источнике дословно"}

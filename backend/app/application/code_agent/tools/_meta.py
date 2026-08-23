@@ -3,162 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.tool_policy import SEARCH_ACTIVATABLE_SIDE_EFFECT
-
-
-# ─── P10.1: deferred tool search meta-tool (foundation) ─────────────────────
-
-TOOL_SEARCH_RESULT_LIMIT = 20
-TOOL_SEARCH_ACTIVATION_CAP = 5
-# Side-effect tools tool_search may activate in the default "ask" mode (the model
-# should not silently gain side-effecting powers from a fuzzy search). Curated in
-# tool_policy (single source of truth). In "bypass" the restriction lifts —
-# tool_search activates ANY side-effect tool (see tool_search()) — so bypass means
-# "no friction" for BOTH gates (activation + approval). Activation grants
-# VISIBILITY only; the executor still enforces require_approval at dispatch.
-_SEARCH_ACTIVATABLE_SIDE_EFFECT = SEARCH_ACTIVATABLE_SIDE_EFFECT
-DELEGATE_TASK_MAX_STEPS = 6
-DELEGATE_TASK_MAX_CTX = 8192
-DELEGATE_TASK_TIMEOUT_SECONDS = 60
-DELEGATE_TASK_READONLY_TOOLS = ("read_file", "glob", "grep", "recall")
 DELEGATE_TASK_ROLES = {"explore", "plan", "verify", "review"}
-
-
-def _clamp_to_max(value: Any, maximum: int) -> int:
-    """Coerce a caller-controlled int and clamp to [0, maximum]; non-int / bad
-    values fall back to `maximum`. Guarantees the model can never exceed the cap."""
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        n = maximum
-    return min(max(0, n), maximum)
-
-
-def _record_tool_search_metrics(
-    run_id: str, query: str, match_count: int, activated: list[str], agent_id: str
-) -> None:
-    """Best-effort run metrics for tool.search / tool.activated (no schema change)."""
-    try:
-        from app.application.monitoring.runtime import record_metric
-
-        record_metric(
-            metric_type="tool.search",
-            agent_id=agent_id,
-            run_id=run_id,
-            ok=True,
-            details={
-                "query": str(query),
-                "match_count": int(match_count),
-                "activated_count": len(activated),
-            },
-        )
-        if activated:
-            record_metric(
-                metric_type="tool.activated",
-                agent_id=agent_id,
-                run_id=run_id,
-                ok=True,
-                details={"tools": list(activated), "query": str(query)},
-            )
-    except Exception:
-        pass
-
-
-def tool_search(
-    *,
-    run_id: str,
-    query: str,
-    agent_id: str = "code-agent",
-    limit: int = TOOL_SEARCH_RESULT_LIMIT,
-    activation_cap: int = TOOL_SEARCH_ACTIVATION_CAP,
-    permission_mode: str = "ask",
-) -> dict[str, Any]:
-    """Read-only meta-tool (P10.1 foundation): search the ToolSpec registry and
-    activate eligible, non-side-effect tools for THIS run only.
-
-    - Requires a run_id (activation is run-scoped).
-    - Activation grants VISIBILITY only — the unified executor still enforces
-      policy / scope / approval at dispatch. This function executes nothing.
-    - Disabled / unclassified / forbidden tools are surfaced but never activated.
-    - Side-effect tools are surfaced but NOT auto-activated, except the curated
-      ``_SEARCH_ACTIVATABLE_SIDE_EFFECT`` set — UNLESS ``permission_mode`` is
-      ``"bypass"``, in which case every side-effect tool is activatable (bypass
-      removes both the activation and the approval gate). Activation is
-      visibility-only; the executor still enforces approval at dispatch otherwise.
-    - Activates at most ``activation_cap`` tools per call.
-    - Uses the existing run-scoped deferred_tools store; ``activate_tools`` is a
-      no-op unless the run already opted into deferred mode, so a non-deferred
-      run is unchanged. No hidden global state.
-    """
-    rid = str(run_id or "").strip()
-    if not rid:
-        return {
-            "ok": False,
-            "text": "tool_search requires a run_id.",
-            "error": "run_id_required",
-            "matches": [],
-            "activated": [],
-        }
-
-    from app.application.tool_registry.runtime import search_tool_specs
-    from app.application.agent_kernel.deferred_tools import activate_tools
-
-    safe_limit = _clamp_to_max(limit, TOOL_SEARCH_RESULT_LIMIT)
-    matches = search_tool_specs(query, limit=safe_limit)
-    # W1 flag-off surface parity: web_query must be invisible when web_corpus is
-    # off — otherwise tool_search output differs from pre-W1 (review P1-4).
-    _W1_TOOLS = {"web_query", "web_claim_add", "web_sitemap"}
-    try:
-        from app.application.feature_flags import flag_enabled
-        if not flag_enabled("web_corpus"):
-            matches = [m for m in matches if m.get("name") not in _W1_TOOLS]
-        if not flag_enabled("itops"):
-            # Visibility only: hide EVERY itops adapter (by source) when the flag is
-            # off, so a new adapter is never forgotten in a name list. This does NOT
-            # affect the executor's exact per-run allowlist (scope.allowed_tool).
-            matches = [m for m in matches if m.get("source") != "itops"]
-    except Exception:
-        matches = [m for m in matches
-                   if m.get("name") not in _W1_TOOLS and m.get("source") != "itops"]
-
-    cap = _clamp_to_max(activation_cap, TOOL_SEARCH_ACTIVATION_CAP)
-    eligible: list[str] = []
-    for match in matches:
-        if len(eligible) >= cap:
-            break
-        if match["activatable"] and (
-            not match["side_effect"]
-            or match["name"] in _SEARCH_ACTIVATABLE_SIDE_EFFECT
-            or match.get("source") == "mcp"  # user-added MCP servers are activatable
-            or permission_mode == "bypass"
-        ):
-            eligible.append(match["name"])
-
-    activated: list[str] = []
-    if eligible:
-        active_set = activate_tools(rid, eligible)  # no-op unless run is deferred
-        activated = [name for name in eligible if name in active_set]
-
-    _record_tool_search_metrics(rid, query, len(matches), activated, agent_id)
-
-    lines = [f"tool_search({query!r}): {len(matches)} match(es), {len(activated)} activated."]
-    for match in matches:
-        if match["name"] in activated:
-            mark = "[activated]"
-        elif not match["activatable"]:
-            mark = f"[blocked: {match['reason']}]"
-        elif match["side_effect"]:
-            mark = "[side_effect: not auto-activated]"
-        else:
-            mark = "[eligible]"
-        lines.append(f"  {match['name']} ({match['category']}/{match['source']}) {mark}")
-
-    return {
-        "ok": True,
-        "text": "\n".join(lines),
-        "matches": matches,
-        "activated": activated,
-    }
 
 
 # ─── tool registry exposed to the local LLM provider ───────────────────────
@@ -240,10 +85,8 @@ def _delegate_prompt(role: str, task: str) -> str:
     }
     guidance = role_guidance.get(role, role_guidance["explore"])
     return (
-        f"You are a bounded read-only {role} subagent.\n"
+        f"You are a {role} subagent.\n"
         f"{guidance}\n"
-        "Hard limits: do not write files, do not run shell, do not delegate further. "
-        "Use only read_file/glob/grep/recall and non-side-effect tools activated by tool_search. "
         "Return concise findings with file paths when relevant.\n\n"
         f"Task:\n{task}"
     )
@@ -277,10 +120,10 @@ def tool_delegate_task(
     run_id: str,
     role: str = "explore",
     task: str,
-    max_steps: int = DELEGATE_TASK_MAX_STEPS,
-    num_ctx: int = DELEGATE_TASK_MAX_CTX,
+    num_ctx: int = 0,
+    permission_mode: str = "ask",
 ) -> dict[str, Any]:
-    """Delegate a bounded read-only subtask to a child code-agent run."""
+    """Delegate a subtask to a child code-agent run."""
     parent_run_id = str(run_id or "").strip()
     if not parent_run_id:
         return {"ok": False, "text": "ERROR: delegate_task requires a run_id.", "error": "run_id_required"}
@@ -291,8 +134,8 @@ def tool_delegate_task(
     if not cleaned_task:
         return {"ok": False, "text": "ERROR: delegate_task requires a task.", "error": "task_required"}
 
-    safe_steps = max(1, min(_safe_int(max_steps, DELEGATE_TASK_MAX_STEPS), DELEGATE_TASK_MAX_STEPS))
-    safe_ctx = max(1024, min(_safe_int(num_ctx, DELEGATE_TASK_MAX_CTX), DELEGATE_TASK_MAX_CTX))
+    safe_ctx = max(0, _safe_int(num_ctx, 0))
+    child_tools = None
 
     try:
         from app.application.task_planner import service as task_service
@@ -302,9 +145,7 @@ def tool_delegate_task(
             role=normalized_role,
             task=cleaned_task,
             depth=1,
-            max_steps=safe_steps,
             max_context_tokens=safe_ctx,
-            tool_allowlist=list(DELEGATE_TASK_READONLY_TOOLS),
         )
     except Exception as exc:
         return {"ok": False, "text": f"ERROR: failed to create subagent run: {exc}", "error": str(exc)}
@@ -328,12 +169,11 @@ def tool_delegate_task(
             project_root=project_root,
             model="auto",
             agent_id=f"subagent-{normalized_role}",
-            max_steps=safe_steps,
             run_id=subagent_run_id,
-            num_ctx=safe_ctx,
-            base_tools=DELEGATE_TASK_READONLY_TOOLS,
-            execution_timeout_seconds=DELEGATE_TASK_TIMEOUT_SECONDS,
+            num_ctx=safe_ctx or None,
+            base_tools=child_tools,
             auto_remember=False,
+            permission_mode=permission_mode,
         )
         ok = bool(sub_result.get("ok"))
         result_text = str(sub_result.get("response") or "")

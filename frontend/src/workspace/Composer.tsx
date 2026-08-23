@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, MessageCircleOff, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
-import type { CodeAgentMode, ContextUsage, PermissionMode } from "../api/codeAgent";
+import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import type { CodeAgentMode, ContextUsage, PermissionMode, ReasoningEffort } from "../api/codeAgent";
 import { uploadResource, type ResourceAttachment } from "../api/resources";
 import { getActiveProfile, listProfiles, setActiveProfile, type ProfileInfo } from "../api/profiles";
 import { Chip } from "../ui/Chip";
@@ -13,13 +13,8 @@ type Mode = CodeAgentMode; // "code" | "search" — UI mode maps 1:1 to the agen
 // chip survives a new chat and app restart instead of resetting to "ask" each mount.
 const PERMISSION_MODE_KEY = "elira.permissionMode";
 
-// Persisted «Рассуждение» toggle: when on, the run asks the model to reason first
-// (per-request enable_thinking). Survives new chats / restart like the other chips.
+// Persisted reasoning depth. Legacy "0"/"1" values are migrated on read.
 const THINKING_KEY = "elira.thinking";
-
-// Persisted «Не спрашивать» toggle: when on, ask_user never pauses the run for a
-// human — Elira decides for itself. Mirror of the thinking chip's persistence.
-const NO_QUESTIONS_KEY = "elira.noQuestions";
 
 export type ComposerAttachControls = {
   openFilePicker: () => void;
@@ -42,10 +37,10 @@ export function Composer({
   sessionId: string;
   onPlus: () => void;
   onPlugins: () => void;
-  onSend: (text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) => void;
+  onSend: (text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => void;
   /** Multi-agent run (separate pipeline endpoint, not a stream). The two flags
    *  pick one of the 4 backend workflow templates. */
-  onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean) => void;
+  onSendMultiAgent: (text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) => void;
   running: boolean;
   onStop: () => void;
   contextUsage?: ContextUsage | null;
@@ -64,14 +59,14 @@ export function Composer({
   // Approval policy for the run (Спрашивать / Контроль риска / Без ограничений).
   // Local run-mode like multiAgent — passed per-send into the code-agent stream;
   // the backend approval gate enforces it. Persisted across chats/restarts (the
-  // chip used to reset to "ask" every mount); first run with no stored value
-  // still defaults to the safest "ask". Validated on read.
+  // chip used to reset to "ask" every mount). New local installs default to
+  // bypass; an explicit stored choice is preserved.
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => {
     try {
       const v = localStorage.getItem(PERMISSION_MODE_KEY);
-      return v === "accept_edits" || v === "bypass" ? v : "ask";
+      return v === "ask" || v === "accept_edits" ? v : "bypass";
     } catch {
-      return "ask";
+      return "bypass";
     }
   });
   useEffect(() => {
@@ -81,36 +76,23 @@ export function Composer({
       /* quota / private mode — non-fatal */
     }
   }, [permissionMode]);
-  // «Рассуждение» toggle — reason before answering (per-request enable_thinking).
-  const [thinking, setThinking] = useState<boolean>(() => {
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>(() => {
     try {
-      return localStorage.getItem(THINKING_KEY) === "1";
+      const value = localStorage.getItem(THINKING_KEY);
+      if (value === "1") return "xhigh";
+      if (value === "low" || value === "medium" || value === "xhigh") return value;
+      return "none";
     } catch {
-      return false;
+      return "none";
     }
   });
   useEffect(() => {
     try {
-      localStorage.setItem(THINKING_KEY, thinking ? "1" : "0");
+      localStorage.setItem(THINKING_KEY, reasoningEffort);
     } catch {
       /* quota / private mode — non-fatal */
     }
-  }, [thinking]);
-  // «Не спрашивать» toggle — suppress ask_user pauses (Elira decides for itself).
-  const [noQuestions, setNoQuestions] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(NO_QUESTIONS_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-  useEffect(() => {
-    try {
-      localStorage.setItem(NO_QUESTIONS_KEY, noQuestions ? "1" : "0");
-    } catch {
-      /* quota / private mode — non-fatal */
-    }
-  }, [noQuestions]);
+  }, [reasoningEffort]);
   // Attached resources: the file is UPLOADED (registered) on pick — NOT processed.
   // Its content is read later, on demand, by the agent's resource_process tool.
   // Kept across both modes; cleared after each send.
@@ -160,7 +142,7 @@ export function Composer({
     // Multi-agent runs through a separate pipeline endpoint that takes only the
     // query (no chat attachments). Route there and keep any staged files intact.
     if (multiAgent) {
-      onSendMultiAgent(text, useOrchestrator, useReflection);
+      onSendMultiAgent(text, useOrchestrator, useReflection, permissionMode, reasoningEffort);
       onChange("");
       return;
     }
@@ -174,7 +156,7 @@ export function Composer({
     // Only successfully-uploaded resources ride along; failed chips are dropped.
     const ready = attachments.filter((a) => a.status === "ready");
     const staged = ready.length ? ready : undefined;
-    onSend(text, mode, staged, permissionMode, thinking, noQuestions);
+    onSend(text, mode, staged, permissionMode, reasoningEffort);
     onChange("");
     setAttachments([]);
   }
@@ -240,24 +222,9 @@ export function Composer({
       <div className="mx-auto max-w-[760px]">
         <div className="mb-2 flex items-center gap-1.5">
           <Chip active={mode === "code"} icon={<Code size={13} />} onClick={() => setMode("code")}>Чат\Код</Chip>
-          <Chip
-            active={thinking}
-            icon={<Brain size={13} />}
-            onClick={() => setThinking((v) => !v)}
-            title={thinking
-              ? "Рассуждение включено — Elira подумает перед ответом (видно в отдельном блоке)"
-              : "Включить рассуждение — модель думает перед ответом (медленнее, больше токенов)"}
-          >
-            Мозг
-          </Chip>
-          <Chip
-            active={noQuestions}
-            icon={<MessageCircleOff size={13} />}
-            onClick={() => setNoQuestions((v) => !v)}
-            aria-label="Не задавать вопросы"
-            title={noQuestions
-              ? "«Не спрашивать» включено — Elira не задаёт уточняющих вопросов, решает сама и продолжает"
-              : "Не задавать вопросы — Elira не будет спрашивать посреди прогона, а примет решение сама (по умолчанию — спрашивает)"}
+          <ReasoningEffortChip
+            effort={reasoningEffort}
+            onChange={setReasoningEffort}
           />
           <ProfilePicker />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
@@ -369,6 +336,107 @@ export function Composer({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+const REASONING_EFFORTS: {
+  value: ReasoningEffort;
+  label: string;
+  shortLabel: string;
+  hint: string;
+}[] = [
+  {
+    value: "none",
+    label: "Выкл / минимум",
+    shortLabel: "Выкл",
+    hint: "Qwen: без мышления; Muse: минимальный уровень low",
+  },
+  {
+    value: "low",
+    label: "Короткое",
+    shortLabel: "Коротко",
+    hint: "Небольшое рассуждение для простых задач",
+  },
+  {
+    value: "medium",
+    label: "Среднее",
+    shortLabel: "Средне",
+    hint: "Баланс глубины, скорости и расхода контекста",
+  },
+  {
+    value: "xhigh",
+    label: "Максимальное",
+    shortLabel: "Макс",
+    hint: "Самое глубокое рассуждение; заметно медленнее",
+  },
+];
+
+/** Compact model-neutral selector; the backend maps it to Qwen or Muse kwargs. */
+function ReasoningEffortChip({
+  effort,
+  onChange,
+}: {
+  effort: ReasoningEffort;
+  onChange: (value: ReasoningEffort) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const current = REASONING_EFFORTS.find((item) => item.value === effort)
+    ?? REASONING_EFFORTS[0];
+
+  return (
+    <div ref={ref} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        title={`Мышление: ${current.label}`}
+        aria-label={`Мышление: ${current.label}`}
+        className={cn(
+          "flex h-7 shrink-0 items-center gap-1 rounded-full border pl-2 pr-1.5 text-[11.5px] transition-colors",
+          effort === "none"
+            ? "border-line text-t2 hover:bg-hover hover:text-tx"
+            : "border-acl bg-acs text-ac",
+        )}
+      >
+        <Brain size={13} />
+        <span>Мозг: {current.shortLabel}</span>
+        <ChevronDown size={12} className="shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-[260px] rounded-lg border border-line bg-card p-1 shadow-lg">
+          {REASONING_EFFORTS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              onClick={() => { onChange(item.value); setOpen(false); }}
+              className={cn(
+                "flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors",
+                item.value === effort ? "bg-acs" : "hover:bg-hover",
+              )}
+            >
+              <Brain size={13} className="mt-0.5 shrink-0 text-t2" />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-1.5 text-[12.5px] text-tx">
+                  <span>{item.label}</span>
+                  {item.value === effort && <Check size={12} className="text-ac" />}
+                </span>
+                <span className="block text-[11px] text-mut">{item.hint}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -494,13 +562,13 @@ const PERMISSION_MODES: { value: PermissionMode; label: string; hint: string; ic
   {
     value: "accept_edits",
     label: "Контроль риска",
-    hint: "Обычные обратимые действия — автоматически; значимые изменения — после подтверждения",
+    hint: "Обычные изменения — автоматически; опасные или неизвестные — после подтверждения",
     icon: <ShieldCheck size={13} />,
   },
   {
     value: "bypass",
     label: "Без ограничений",
-    hint: "Обычные изменения — автоматически; опасные без доказанного отката требуют подтверждения",
+    hint: "Все tool, path, asset, LAN/SSH и command действия — без внутренних подтверждений",
     icon: <ShieldAlert size={13} />,
   },
 ];

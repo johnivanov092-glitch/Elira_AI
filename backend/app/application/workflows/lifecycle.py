@@ -52,6 +52,12 @@ def fail_missing_step(
         run_id,
         payload={"ok": False, "status": "failed"},
     )
+    emit_workflow_event(
+        "workflow/completed",
+        workflow_id,
+        run_id,
+        payload={"ok": False, "status": "failed"},
+    )
     return failed_run
 
 
@@ -120,6 +126,12 @@ def fail_step_and_finish(
         run_id,
         payload={"ok": False, "status": "failed", "step_id": current_step_id},
     )
+    emit_workflow_event(
+        "workflow/completed",
+        workflow_id,
+        run_id,
+        payload={"ok": False, "status": "failed", "step_id": current_step_id},
+    )
     return failed_run
 
 
@@ -150,6 +162,12 @@ def complete_after_step(
     )
     emit_workflow_event(
         "workflow.run.completed",
+        workflow_id,
+        run_id,
+        payload={"ok": True, "status": "completed"},
+    )
+    emit_workflow_event(
+        "workflow/completed",
         workflow_id,
         run_id,
         payload={"ok": True, "status": "completed"},
@@ -196,6 +214,12 @@ def cancel_run(
     )
     emit_workflow_event(
         "workflow.run.cancelled",
+        str(run.get("workflow_id", "")),
+        run_id,
+        payload={"status": "cancelled"},
+    )
+    emit_workflow_event(
+        "workflow/cancelled",
         str(run.get("workflow_id", "")),
         run_id,
         payload={"status": "cancelled"},

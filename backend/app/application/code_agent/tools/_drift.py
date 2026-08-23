@@ -2,7 +2,7 @@
 
 Read-only. Probes the live llama-server (/props) and reports the current active
 model + context window plus any drift from the last recorded values. Not in the
-base tool set — tool_search surfaces it only when the conversation is about the
+base tool set — the runtime exposes it when the capability is installed and
 server / active model / context window, so it never spams unrelated chats.
 """
 from __future__ import annotations

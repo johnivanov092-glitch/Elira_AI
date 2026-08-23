@@ -302,11 +302,12 @@ def tool_remember(
     fact: str,
     correction: bool = False,
 ) -> dict[str, Any]:
-    """Persist a durable USER fact / correction into curated memory (the source of
-    truth). Use when the user states a lasting fact to remember or CORRECTS you
-    ("на самом деле…", "это неверно, правильно…", "запомни, что…"). correction=True
-    marks it as a user correction (highest trust). Such facts are auto-injected
-    into future prompts and must be trusted ABOVE web/model memory."""
+    """Persist a user fact/correction into curated memory.
+
+    The server classifies live operational state as volatile: it remains
+    searchable, but is never injected as durable source truth without a fresh
+    check.
+    """
     from app.application import memory as mem
 
     text = (fact or "").strip()
@@ -319,6 +320,15 @@ def tool_remember(
         return {"ok": False, "text": f"Не удалось сохранить факт: {exc}"}
     if not res.get("ok"):
         return {"ok": False, "text": f"Не удалось сохранить факт: {res.get('error', 'ошибка памяти')}"}
+    if res.get("category") == "volatile_fact":
+        return {
+            "ok": True,
+            "text": (
+                "Запомнил как временное состояние. Перед использованием "
+                "потребуется live-проверка: "
+                + text
+            ),
+        }
     label = "поправка сохранена" if correction else "факт сохранён"
     return {"ok": True, "text": f"Запомнил ({label}, источник правды): {text}"}
 
@@ -350,12 +360,17 @@ def tool_recall(
     except Exception:
         fact_items = []
     if fact_items:
+        from app.application.memory.policy import is_volatile_fact
+
         flines = [f"Known facts ({len(fact_items)}):"]
         for item in fact_items:
             text = (item.get("text") or "").strip()
             if len(text) > 300:
                 text = text[:300] + " [...]"
-            flines.append(f"- [{item.get('category', 'fact')}] {text}")
+            category = str(item.get("category") or "fact")
+            volatile = category == "volatile_fact" or is_volatile_fact(text)
+            suffix = "; требуется live-проверка" if volatile else ""
+            flines.append(f"- [{category}{suffix}] {text}")
         sections.append("\n".join(flines))
 
     # 2) Semantic / episodic (vector, rag_memory) — project-scoped + global.

@@ -491,11 +491,6 @@ class ContractInvariantsTest(unittest.TestCase):
     def test_server_timeout_still_3600(self):
         self.assertEqual(ex._STT_TIMEOUT_SECONDS, 3600)
 
-    def test_tool_timeout_at_least_3630(self):
-        from app.application.tool_registry.builtins import build_builtin_tools
-        spec = next(s for s in build_builtin_tools() if s["name"] == "resource_process")
-        self.assertGreaterEqual(spec["timeout_seconds"], 3630)
-
     def test_media_import_does_not_eager_import_faster_whisper(self):
         # importing the media package / runtime must not pull the heavy STT deps
         import importlib

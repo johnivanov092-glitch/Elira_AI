@@ -131,7 +131,7 @@ class StreamFeedsTruncatedToolOutputToLlmTest(unittest.TestCase):
             user_message="read huge.txt",
             project_root=self.root,
             chat_fn=fake_chat,
-            approval_wait_seconds=0,
+            permission_mode="bypass",
         ))
 
         # Find the tool result in the messages list that went into the
@@ -182,7 +182,7 @@ class StreamFeedsTruncatedToolOutputToLlmTest(unittest.TestCase):
             user_message="create tiny.py",
             project_root=self.root,
             chat_fn=fake_chat,
-            approval_wait_seconds=0,
+            permission_mode="bypass",
         ))
         second_call = seen_messages[1]
         tool_msgs = [m for m in second_call if m.get("role") == "tool"]

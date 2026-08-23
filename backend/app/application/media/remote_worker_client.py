@@ -8,12 +8,11 @@ TLS gateway, which injects its own internal credential; the client sends only th
 bearer.
 
 Security posture:
-- empty URL/token or any misconfiguration → :class:`RemoteUnavailable` BEFORE any
+- empty URL or malformed configuration → :class:`RemoteUnavailable` BEFORE any
   file is read or any request is sent;
-- HTTPS REQUIRES an explicitly configured, existing pinned CA file (``verify`` is
-  that path — never ``False``);
-- plain HTTP is refused unless ``ELIRA_REMOTE_WORKER_ALLOW_INSECURE=1`` (a lab
-  escape hatch), and in that mode the Authorization header is NOT sent;
+- HTTPS uses an explicitly configured CA file when supplied, otherwise the
+  operating-system trust store;
+- plain HTTP and arbitrary LAN destinations are accepted;
 - exactly one request per call — no retries;
 - the response is size-bounded WHILE streaming, before any JSON parsing;
 - the worker's returned fields are strictly type/shape/bounds validated; a raw
@@ -96,7 +95,7 @@ def _timeout_seconds() -> float:
 @dataclasses.dataclass(frozen=True)
 class WorkerConfig:
     base_url: str
-    verify: str            # CA bundle path for https; "" for http (unused)
+    verify: str | bool     # optional CA bundle path, otherwise system trust
     token: str
     send_auth: bool        # False in the insecure-http lab mode
     timeout: float
@@ -142,8 +141,6 @@ def resolve_config() -> WorkerConfig:
         raise RemoteUnavailable("url_invalid")
 
     token = _env("ELIRA_REMOTE_WORKER_TOKEN")
-    if not token:
-        raise RemoteUnavailable("token_not_configured")
 
     # Rebuild the base URL from scheme/host/port/path ONLY — dropping any userinfo
     # (and query/fragment). httpx turns ``http://user:pass@host`` into an
@@ -155,19 +152,13 @@ def resolve_config() -> WorkerConfig:
     base_url = urlunsplit((scheme, netloc, parts.path, "", "")).rstrip("/")
     if scheme == "https":
         ca = _env("ELIRA_REMOTE_WORKER_CA")
-        # HTTPS demands an explicit, existing pinned CA. We never fall back to the
-        # system trust store and never disable verification.
-        if not ca or not os.path.isfile(ca):
+        if ca and not os.path.isfile(ca):
             raise RemoteUnavailable("tls_ca_missing")
-        return WorkerConfig(base_url=base_url, verify=ca, token=token,
-                            send_auth=True, timeout=_timeout_seconds())
+        return WorkerConfig(base_url=base_url, verify=ca or True, token=token,
+                            send_auth=bool(token), timeout=_timeout_seconds())
 
-    # Plain HTTP: lab-only, and gated behind an explicit opt-in.
-    if _env("ELIRA_REMOTE_WORKER_ALLOW_INSECURE") != "1":
-        raise RemoteUnavailable("insecure_http_forbidden")
-    # In the insecure lab mode the bearer is deliberately NOT put on the wire.
-    return WorkerConfig(base_url=base_url, verify="", token=token,
-                        send_auth=False, timeout=_timeout_seconds())
+    return WorkerConfig(base_url=base_url, verify=True, token=token,
+                        send_auth=bool(token), timeout=_timeout_seconds())
 
 
 class WorkerClient:
@@ -213,7 +204,7 @@ class WorkerClient:
         else:
             # A pinned CA path for https; True (never False) for http where TLS is
             # not in play anyway.
-            kwargs["verify"] = self._config.verify or True
+            kwargs["verify"] = self._config.verify
         return httpx.AsyncClient(**kwargs)
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:

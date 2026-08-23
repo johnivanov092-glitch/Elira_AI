@@ -1,12 +1,4 @@
-"""http_api / browser must report HONEST ok + verifier evidence.
-
-The VaultDesk live run (b51697e7) showed the core false-success: `http_api` and
-`browser` were SSRF-blocked on localhost yet the tool result had no `ok` key, so
-the loop defaulted ok→True and the model believed it had verified the page. These
-pin: an errored/blocked runtime call is ok=False (no verifier verdict); a real
-HTTP 2xx / browser render is a verifier verdict with evidence; and the scoped
-loopback allowance lets the agent reach a dev server IT started.
-"""
+"""http_api / browser report honest ok and verifier evidence."""
 from __future__ import annotations
 
 import sys
@@ -71,14 +63,6 @@ class HttpApiVerifierTest(unittest.TestCase):
 
 
 class BrowserHonestyTest(unittest.TestCase):
-    def test_ssrf_blocked_render_is_ok_false_no_verifier(self):
-        # A blocked URL returns before Playwright runs — assert ok=False, no verdict.
-        with mock.patch("app.application.code_agent.tools._run.active_server_ports", return_value=set()):
-            out = _web.tool_browser(url="http://localhost:3001")
-        self.assertFalse(out["ok"])
-        self.assertIsNone(out.get("verifier"))
-        self.assertIn("SSRF blocked", out["text"])
-
     def test_empty_url_is_ok_false(self):
         out = _web.tool_browser(url="")
         self.assertFalse(out["ok"])

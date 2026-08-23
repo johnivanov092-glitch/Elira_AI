@@ -8,13 +8,10 @@ costs zero new dependencies. paramiko would re-implement half of
 ssh in Python and would NOT pick up the user's config without
 extra glue.
 
-Security model:
-  * Provider is DISABLED unless the user has explicitly added at
-    least one host to `data/ssh_acl.json` (managed via API or by
-    hand). See ssh_acl.py.
-  * Every tool call validates `host` against the allowlist BEFORE
-    invoking ssh. Even if the agent hallucinates a hostname, the
-    provider returns an error meta instead of executing.
+Runtime model:
+  * Provider is always available to the local workflow; saved hosts are
+    discovery shortcuts, not an allowlist.
+  * Every non-empty host token is passed as its own argv item to ssh.
   * `ssh -o BatchMode=yes` — never prompt for a password. The
     user must have key-based auth set up for the host.
   * `ssh -o StrictHostKeyChecking=accept-new` — first-time hosts
@@ -37,15 +34,17 @@ from app.application.tool_providers.ssh_acl import (
 )
 from app.infrastructure.encoding import decode_console
 from app.infrastructure.text import truncate_middle
+from app.application.code_agent.tools._shell import (
+    _new_process_group_kwargs,
+    register_run_process,
+    unregister_run_process,
+)
 
 
 logger = logging.getLogger(__name__)
 
 
-# Reasonable upper bounds so a hallucinating LLM can't try to
-# `ssh_read` a 10GB log file or write a runaway content blob.
-_MAX_READ_BYTES = 100_000
-_MAX_WRITE_BYTES = 100_000
+_DEFAULT_READ_BYTES = 100_000
 # Tool output back to the LLM is also capped (separate from the
 # read cap, which limits what we fetch over the wire).
 _LLM_OUTPUT_LIMIT = 16_000
@@ -60,34 +59,45 @@ def _truncate_for_llm(text: str, limit: int = _LLM_OUTPUT_LIMIT) -> str:
 def _ssh_args(host: str) -> list[str]:
     """Shared ssh flags every tool uses. Order matters here — flags
     before the destination."""
-    # Public tools validate first. Re-resolve here so a human-facing spelling is
-    # never passed to ssh; if the ACL changes in the tiny gap, let ssh fail on the
-    # already-validated argv token instead of raising outside helper try-blocks.
+    # Saved aliases are only friendly discovery metadata; an arbitrary direct
+    # hostname/IP is preserved and passed as one argv item.
     canonical = resolve_allowed_host(host) or host.strip()
     return [
         "ssh",
         "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=10",
         "-o", "StrictHostKeyChecking=accept-new",
         canonical,
     ]
 
 
 def _validate_host(host: str) -> str | None:
-    """Return None if host is allowed, else an error message."""
+    """Validate only argv/protocol integrity; this is not an authorization gate."""
     if not isinstance(host, str) or not host.strip():
         return "host is empty"
-    h = host.strip()
-    # Block obvious metacharacters that could confuse argv parsing
-    # elsewhere or be a sign the agent is trying something weird.
-    if any(c in h for c in ("\t", "\n", "\r", ";", "|", "&", "$", "`", "<", ">")):
-        return f"host contains invalid characters: {host!r}"
-    if resolve_allowed_host(h) is None:
-        return (
-            f"host '{h}' is not in the SSH allowlist. "
-            f"Add it via Settings → SSH or the /api/code-agent/ssh/config endpoint."
-        )
+    if host.lstrip().startswith("-") or "\x00" in host or "\r" in host or "\n" in host:
+        return "host is not a valid ssh destination token"
     return None
+
+
+def run_registered_process(
+    argv: list[str],
+    *,
+    input: bytes | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a child until natural exit or Workflow Stop, with no product timeout."""
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **_new_process_group_kwargs(),
+    )
+    run_id = register_run_process(proc)
+    try:
+        stdout, stderr = proc.communicate(input=input)
+    finally:
+        unregister_run_process(run_id, proc)
+    return subprocess.CompletedProcess(argv, int(proc.returncode), stdout or b"", stderr or b"")
 
 
 # ── Tool implementations ────────────────────────────────────────
@@ -103,15 +113,9 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
     if not isinstance(command, str) or not command.strip():
         return {"text": "ERROR: command is empty", "ok": False}
 
-    safe_timeout = max(5, min(int(timeout) if timeout else 60, 600))
+    del timeout  # compatibility input; Workflow Stop owns termination
     try:
-        proc = subprocess.run(
-            [*_ssh_args(host), command],
-            capture_output=True,  # bytes → decode_console (remote may emit non-ANSI)
-            timeout=safe_timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} command timed out after {safe_timeout}s", "ok": False}
+        proc = run_registered_process([*_ssh_args(host), command])
     except FileNotFoundError:
         return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     except Exception as exc:
@@ -143,17 +147,22 @@ def _looks_like_windows_no_cmd(stderr: Any) -> bool:
     return "is not recognized" in low or "не является внутренн" in low
 
 
-def _windows_read_encoded(path: str, limit: int) -> str:
+def _windows_read_encoded(path: str, limit: int | None) -> str:
     """`powershell -EncodedCommand …` that reads `path` as bytes, bounded to
     `limit`, and writes them raw to stdout. base64 (UTF-16LE) so cmd.exe on the
     remote never mangles quotes/pipes — the same trap a raw PowerShell-over-ssh
     command hits. This is what makes ssh_read work on Windows hosts."""
     lit = path.replace("'", "''")  # PowerShell single-quoted literal
+    length = (
+        f"$n=[Math]::Min($b.Length,{int(limit)});"
+        if limit is not None
+        else "$n=$b.Length;"
+    )
     ps = (
         "$ErrorActionPreference='Stop';"
         f"$b=[System.IO.File]::ReadAllBytes('{lit}');"
-        f"$n=[Math]::Min($b.Length,{int(limit)});"
-        "$o=[Console]::OpenStandardOutput();$o.Write($b,0,$n);$o.Flush()"
+        + length
+        + "$o=[Console]::OpenStandardOutput();$o.Write($b,0,$n);$o.Flush()"
     )
     b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
     return f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
@@ -164,25 +173,23 @@ def _windows_read_encoded(path: str, limit: int) -> str:
 # stdin-write (no body escaping) live in ONE place, not copied per tool.
 
 
-def _read_remote_bytes(host: str, path: str, limit: int) -> tuple[bytes | None, str | None]:
-    """Fetch up to `limit` bytes of a remote file. Returns (bytes, None) or
+def _read_remote_bytes(host: str, path: str, limit: int | None) -> tuple[bytes | None, str | None]:
+    """Fetch a remote file, optionally limiting bytes. Returns (bytes, None) or
     (None, error). Auto-falls back to a base64 PowerShell byte-read on Windows
     remotes (cmd.exe has no `head`)."""
-    remote_cmd = f"head -c {limit} -- {_shell_quote(path)}"
+    remote_cmd = (
+        f"head -c {int(limit)} -- {_shell_quote(path)}"
+        if limit is not None
+        else f"cat -- {_shell_quote(path)}"
+    )
     try:
-        proc = subprocess.run([*_ssh_args(host), remote_cmd], capture_output=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        return None, f"ssh {host} read timed out"
+        proc = run_registered_process([*_ssh_args(host), remote_cmd])
     except FileNotFoundError:
         return None, "`ssh` binary not found on this machine"
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
-        try:
-            proc = subprocess.run(
-                [*_ssh_args(host), _windows_read_encoded(path, limit)],
-                capture_output=True, timeout=30,
-            )
-        except subprocess.TimeoutExpired:
-            return None, f"ssh {host} read timed out"
+        proc = run_registered_process(
+            [*_ssh_args(host), _windows_read_encoded(path, limit)]
+        )
     if proc.returncode != 0:
         return None, f"remote read failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"
     return proc.stdout or b"", None
@@ -234,12 +241,10 @@ def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = Fal
     real target). Returns None on success or an error string."""
     if _is_windows_path(path):
         try:
-            proc = subprocess.run(
+            proc = run_registered_process(
                 [*_ssh_args(host), _windows_write_encoded(path, append=append)],
-                input=data, capture_output=True, timeout=60,
+                input=data,
             )
-        except subprocess.TimeoutExpired:
-            return f"ssh {host} write timed out"
         except FileNotFoundError:
             return "`ssh` binary not found on this machine"
         if proc.returncode != 0:
@@ -249,21 +254,14 @@ def _write_remote_bytes(host: str, path: str, data: bytes, *, append: bool = Fal
     op = ">>" if append else ">"
     remote_cmd = f"cat {op} {_shell_quote(path)}"
     try:
-        proc = subprocess.run(
-            [*_ssh_args(host), remote_cmd], input=data, capture_output=True, timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        return f"ssh {host} write timed out"
+        proc = run_registered_process([*_ssh_args(host), remote_cmd], input=data)
     except FileNotFoundError:
         return "`ssh` binary not found on this machine"
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
-        try:
-            proc = subprocess.run(
-                [*_ssh_args(host), _windows_write_encoded(path, append=append)],
-                input=data, capture_output=True, timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            return f"ssh {host} write timed out"
+        proc = run_registered_process(
+            [*_ssh_args(host), _windows_write_encoded(path, append=append)],
+            input=data,
+        )
     if proc.returncode != 0:
         return f"remote write failed (exit {proc.returncode}): {decode_console(proc.stderr).rstrip()}"
     return None
@@ -279,7 +277,7 @@ def tool_ssh_read(*, host: str, path: str, max_chars: int | None = None) -> dict
     if not isinstance(path, str) or not path.strip():
         return {"text": "ERROR: path is empty", "ok": False}
 
-    cap = max(100, min(int(max_chars) if max_chars else _MAX_READ_BYTES, _MAX_READ_BYTES))
+    cap = max(1, int(max_chars) if max_chars else _DEFAULT_READ_BYTES)
     raw, rerr = _read_remote_bytes(host, path, cap + 1)  # +1 to detect truncation
     if rerr is not None:
         # Couldn't read (missing / permission) → ok=False, NO verifier: not a verdict,
@@ -313,9 +311,6 @@ def tool_ssh_write(*, host: str, path: str, content: str, append: bool = False) 
         return {"text": "ERROR: path is empty"}
     if not isinstance(content, str):
         return {"text": "ERROR: content must be a string"}
-    if len(content) > _MAX_WRITE_BYTES:
-        return {"text": f"ERROR: content exceeds {_MAX_WRITE_BYTES} bytes (got {len(content)})"}
-
     werr = _write_remote_bytes(host, path, content.encode("utf-8"), append=append)
     if werr is not None:
         return {"text": f"ERROR: {werr}"}
@@ -343,11 +338,9 @@ def tool_ssh_replace(*, host: str, path: str, old: str, new: str) -> dict[str, A
     if not isinstance(new, str):
         return {"text": "ERROR: `new` must be a string"}
 
-    raw, rerr = _read_remote_bytes(host, path, _MAX_READ_BYTES + 1)
+    raw, rerr = _read_remote_bytes(host, path, None)
     if rerr is not None:
         return {"text": f"ERROR: {rerr}"}
-    if len(raw) > _MAX_READ_BYTES:
-        return {"text": f"ERROR: file too large to edit safely (> {_MAX_READ_BYTES} bytes) — narrow it first"}
     # surrogateescape round-trips arbitrary bytes losslessly, so untouched content
     # keeps its exact encoding; only `old`→`new` is applied as UTF-8.
     text = raw.decode("utf-8", errors="surrogateescape")
@@ -378,7 +371,7 @@ def _ssh_assert(host: str, path: str, pattern: str, *, want: bool) -> dict[str, 
         return {"text": "ERROR: path is empty", "ok": False}
     if not isinstance(pattern, str) or pattern == "":
         return {"text": "ERROR: `pattern` must be a non-empty string", "ok": False}
-    raw, rerr = _read_remote_bytes(host, path, _MAX_READ_BYTES + 1)
+    raw, rerr = _read_remote_bytes(host, path, None)
     if rerr is not None:
         return {"text": f"ERROR: {rerr}", "ok": False}
     present = pattern in decode_console(raw)
@@ -432,19 +425,14 @@ def tool_ssh_port_check(*, host: str, port: int) -> dict[str, Any]:
     b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
     win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
     try:
-        proc = subprocess.run([*_ssh_args(host), win_cmd], capture_output=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} port check timed out", "ok": False}
+        proc = run_registered_process([*_ssh_args(host), win_cmd])
     except FileNotFoundError:
         return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     out = decode_console(proc.stdout)
     # PowerShell missing (POSIX remote) → fall back to ss/netstat.
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
         posix = f"ss -ltn 2>/dev/null | grep -w ':{p}' || netstat -ltn 2>/dev/null | grep -w ':{p}'"
-        try:
-            proc = subprocess.run([*_ssh_args(host), posix], capture_output=True, timeout=30)
-        except subprocess.TimeoutExpired:
-            return {"text": f"ERROR: ssh {host} port check timed out", "ok": False}
+        proc = run_registered_process([*_ssh_args(host), posix])
         out = decode_console(proc.stdout)
         listening = bool(out.strip())
     else:
@@ -481,9 +469,7 @@ def _ssh_probe_exists(host: str, path: str) -> tuple[bool | None, str, dict[str,
     b64 = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
     win_cmd = f"powershell -NoProfile -NonInteractive -EncodedCommand {b64}"
     try:
-        proc = subprocess.run([*_ssh_args(host), win_cmd], capture_output=True, timeout=30)
-    except subprocess.TimeoutExpired:
-        return None, "", {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
+        proc = run_registered_process([*_ssh_args(host), win_cmd])
     except FileNotFoundError:
         return None, "", {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     out = decode_console(proc.stdout)
@@ -491,10 +477,7 @@ def _ssh_probe_exists(host: str, path: str) -> tuple[bool | None, str, dict[str,
     if proc.returncode != 0 and _looks_like_windows_no_cmd(proc.stderr):
         q = _shell_quote(path)
         posix = f"if [ -d {q} ]; then echo 'EXISTS DIR'; elif [ -e {q} ]; then echo 'EXISTS FILE'; else echo 'MISSING'; fi"
-        try:
-            proc = subprocess.run([*_ssh_args(host), posix], capture_output=True, timeout=30)
-        except subprocess.TimeoutExpired:
-            return None, "", {"text": f"ERROR: ssh {host} exists check timed out", "ok": False}
+        proc = run_registered_process([*_ssh_args(host), posix])
         out = decode_console(proc.stdout)
     exists = "EXISTS" in out
     kind = "директория" if "EXISTS DIR" in out else ("файл" if "EXISTS FILE" in out else "нет")
@@ -553,20 +536,14 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
     if not isinstance(script, str) or not script.strip():
         return {"text": "ERROR: script is empty", "ok": False}
 
-    safe_timeout = max(5, min(int(timeout) if timeout else 120, 600))
+    del timeout  # compatibility input; Workflow Stop owns termination
     b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     remote_cmd = (
         "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
         f"-EncodedCommand {b64}"
     )
     try:
-        proc = subprocess.run(
-            [*_ssh_args(host), remote_cmd],
-            capture_output=True,  # bytes → decode_console (remote may emit non-ANSI)
-            timeout=safe_timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return {"text": f"ERROR: ssh {host} PowerShell timed out after {safe_timeout}s", "ok": False}
+        proc = run_registered_process([*_ssh_args(host), remote_cmd])
     except FileNotFoundError:
         return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     except Exception as exc:
@@ -591,15 +568,15 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
 
 
 def tool_ssh_list_hosts() -> dict[str, Any]:
-    """List the currently allowed SSH hosts. Useful for the agent
+    """List the currently saved SSH hosts. Useful for the agent
     when the user says 'check the production server' and there's
-    only one match in the allowlist."""
+    only one matching favorite."""
     hosts = get_allowed_hosts()
     if not hosts:
         return {
-            "ok": False,
+            "ok": True,
             "hosts": [],
-            "text": "SSH is disabled — no hosts in the allowlist. The user must add hosts in Settings → SSH first.",
+            "text": "Сохранённых SSH-хостов нет; можно передать любой alias, hostname или IP напрямую.",
         }
 
     asset_by_id: dict[str, dict[str, Any]] = {}
@@ -617,7 +594,7 @@ def tool_ssh_list_hosts() -> dict[str, Any]:
             if str(profile.get("ssh_alias") or "") in hosts
         }
     except Exception as exc:
-        # Asset metadata is enrichment only.  The SSH allowlist remains usable
+        # Asset metadata is enrichment only. Saved SSH favorites remain usable
         # if the IT-Ops store is disabled or temporarily unavailable.
         logger.warning("ssh_list_hosts: asset enrichment unavailable: %s", type(exc).__name__)
 
@@ -627,7 +604,7 @@ def tool_ssh_list_hosts() -> dict[str, Any]:
         _resolve_alias = None
 
     items: list[dict[str, Any]] = []
-    lines = ["Allowed SSH targets (pass the alias field to ssh_* tools):"]
+    lines = ["Saved SSH targets (or pass any alias, hostname or IP directly):"]
     for alias in hosts:
         profile = profile_by_alias.get(alias) or {}
         asset = asset_by_id.get(str(profile.get("asset_id") or "")) or {}
@@ -685,15 +662,15 @@ def _schemas() -> list[dict[str, Any]]:
                 "name": "ssh_run",
                 "description": (
                     "Run a shell command on a remote machine via SSH. "
-                    "The host must be in the user's SSH allowlist (see "
-                    "ssh_list_hosts). Returns stdout + stderr + exit code."
+                    "The host may be any SSH alias, hostname or IP address. "
+                    "Returns stdout + stderr + exit code."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "host": {"type": "string", "description": "Host alias or address (must be in allowlist)."},
+                        "host": {"type": "string", "description": "SSH alias, hostname or IP address."},
                         "command": {"type": "string"},
-                        "timeout": {"type": "integer", "description": "Seconds; clamped to [5, 600]. Default 60."},
+                        "timeout": {"type": "integer", "description": "Compatibility field; execution continues until exit or Workflow Stop."},
                     },
                     "required": ["host", "command"],
                 },
@@ -704,16 +681,15 @@ def _schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "ssh_read",
                 "description": (
-                    "Read a file from a remote host via SSH. Capped at "
-                    "100 KB; for larger files, run `head`/`tail`/`grep` "
-                    "via ssh_run instead."
+                    "Read a file from a remote host via SSH. max_chars controls "
+                    "how much is fetched; it is not an authorization limit."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "host": {"type": "string"},
                         "path": {"type": "string", "description": "Absolute or remote-relative path."},
-                        "max_chars": {"type": "integer", "description": "Cap (default & max 100000)."},
+                        "max_chars": {"type": "integer", "description": "Bytes to fetch; default 100000."},
                     },
                     "required": ["host", "path"],
                 },
@@ -725,7 +701,7 @@ def _schemas() -> list[dict[str, Any]]:
                 "name": "ssh_write",
                 "description": (
                     "Write content to a remote file via SSH. Default is "
-                    "overwrite; set append=true to append. Capped at 100 KB. "
+                    "overwrite; set append=true to append. "
                     "Content is sent via stdin so embedded quotes/newlines "
                     "are safe."
                 ),
@@ -761,7 +737,7 @@ def _schemas() -> list[dict[str, Any]]:
                             "type": "string",
                             "description": "Raw PowerShell source — no escaping needed.",
                         },
-                        "timeout": {"type": "integer", "description": "Seconds; clamped to [5, 600]. Default 120."},
+                        "timeout": {"type": "integer", "description": "Compatibility field; execution continues until exit or Workflow Stop."},
                     },
                     "required": ["host", "script"],
                 },
@@ -896,9 +872,8 @@ def _schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "ssh_list_hosts",
                 "description": (
-                    "Return the list of hosts the user has whitelisted for "
-                    "SSH. Call this first when you're unsure what host to "
-                    "use."
+                    "Return saved SSH host shortcuts. Arbitrary explicit hosts "
+                    "remain valid; call this only when you need a known shortcut."
                 ),
                 "parameters": {"type": "object", "properties": {}},
             },
@@ -925,8 +900,7 @@ _DISPATCH = {
 
 
 class SshToolProvider:
-    """Implements the ToolProvider Protocol. Auto-disabled when the
-    allowlist is empty — the registry will then skip it entirely."""
+    """Implements the always-available local SSH ToolProvider."""
 
     name = "ssh"
 

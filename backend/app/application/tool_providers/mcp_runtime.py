@@ -30,24 +30,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from app.application.feature_flags import flag_enabled
 from app.application.tool_providers.mcp_client import McpClient, McpError
 from app.core.data_files import data_file
 
 
 logger = logging.getLogger(__name__)
-
-
-# Remote (HTTP) MCP transport is gated and OFF by default. A configured http
-# server refuses to start until the operator opts in; stdio remains the
-# default and is never affected by this flag. The flag is resolved through
-# the shared feature-flags layer: an explicit ``ELIRA_REMOTE_MCP`` env
-# override still wins, otherwise the persisted (UI-toggleable)
-# ``data/feature_flags.json`` value is used.
-
-
-def _remote_mcp_enabled() -> bool:
-    return flag_enabled("remote_mcp")
 
 
 CONFIG_PATH: Path = data_file("mcp_servers.json")
@@ -99,9 +86,10 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
         strict here because these specs end up running whatever the user gave.
       * "http" — connects to a remote MCP server at `url`. Carries optional
         non-secret `headers`, secret `secret_headers` (kept separate so they
-        never get logged/audited), and `allow_insecure_http` to permit plain
-        http. The actual SSRF/scheme enforcement lives in McpHttpClient; here
-        we only validate shape.
+        never get logged/audited). Legacy `allow_insecure_http` and
+        `allow_private_address` fields are accepted but do not restrict
+        HTTP. URL-shape validation lives in McpHttpClient; here we normalize
+        configuration only.
     """
     if not isinstance(spec, dict):
         return None
@@ -119,7 +107,8 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
             return None
         headers = _str_str_map(spec.get("headers", {}))
         secret_headers = _str_str_map(spec.get("secret_headers", {}))
-        if headers is None or secret_headers is None:
+        secret_header_refs = _str_str_map(spec.get("secret_header_refs", {}))
+        if headers is None or secret_headers is None or secret_header_refs is None:
             return None
         return {
             "id": sid.strip(),
@@ -127,6 +116,7 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
             "url": url.strip(),
             "headers": headers,
             "secret_headers": secret_headers,
+            "secret_header_refs": secret_header_refs,
             "allow_insecure_http": bool(spec.get("allow_insecure_http", False)),
             "allow_private_address": bool(spec.get("allow_private_address", False)),
             "enabled": enabled,
@@ -140,7 +130,8 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
     if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
         return None
     env = _str_str_map(spec.get("env", {}))
-    if env is None:
+    env_secret_refs = _str_str_map(spec.get("env_secret_refs", {}))
+    if env is None or env_secret_refs is None:
         return None
     return {
         "id": sid.strip(),
@@ -148,6 +139,7 @@ def _validate_server(spec: Any) -> dict[str, Any] | None:
         "command": command.strip(),
         "args": [a for a in args],
         "env": env,
+        "env_secret_refs": env_secret_refs,
         "enabled": enabled,
     }
 
@@ -183,7 +175,7 @@ def list_servers() -> list[dict[str, Any]]:
     return out
 
 
-_SECRET_SERVER_FIELDS = ("env", "secret_headers")
+_SECRET_SERVER_FIELDS = ("env", "secret_headers", "env_secret_refs", "secret_header_refs")
 
 
 def public_server_view(servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -256,9 +248,10 @@ def _spec_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
     keys = (
         "transport", "enabled",
         # stdio
-        "command", "args", "env",
+        "command", "args", "env", "env_secret_refs",
         # http
-        "url", "headers", "secret_headers", "allow_insecure_http", "allow_private_address",
+        "url", "headers", "secret_headers", "secret_header_refs",
+        "allow_insecure_http", "allow_private_address",
     )
     for key in keys:
         if old_n.get(key) != new.get(key):
@@ -269,6 +262,14 @@ def _spec_changed(old: dict[str, Any] | None, new: dict[str, Any]) -> bool:
 # ── Lifecycle ───────────────────────────────────────────────────
 
 
+def _resolve_secret_refs(refs: dict[str, str]) -> dict[str, str]:
+    if not refs:
+        return {}
+    from app.infrastructure.secrets import vault
+
+    return {name: vault.resolve(secret_ref) for name, secret_ref in refs.items()}
+
+
 def start_server(server_id: str) -> dict[str, Any]:
     """Bring up the configured server with this id. Idempotent if the
     server is already running."""
@@ -276,9 +277,6 @@ def start_server(server_id: str) -> dict[str, Any]:
         spec = _find_spec_locked(server_id)
         if spec is None:
             return {"ok": False, "error": f"server '{server_id}' not configured"}
-        if not spec.get("enabled", True):
-            return {"ok": False, "error": f"server '{server_id}' is marked disabled"}
-
         existing = _LIVE_CLIENTS.get(server_id)
         if existing is not None and existing.is_alive():
             return {"ok": True, "already_running": True, "server_id": server_id}
@@ -288,11 +286,10 @@ def start_server(server_id: str) -> dict[str, Any]:
 
         transport = spec.get("transport", "stdio")
         if transport == "http":
-            if not _remote_mcp_enabled():
-                msg = (
-                    "remote MCP disabled: set ELIRA_REMOTE_MCP=1 to enable the "
-                    "HTTP transport for server '" + server_id + "'"
-                )
+            try:
+                resolved_headers = _resolve_secret_refs(spec.get("secret_header_refs") or {})
+            except Exception as exc:
+                msg = f"MCP secret resolution failed: {exc}"
                 _LAST_ERROR[server_id] = msg
                 return {"ok": False, "error": msg}
             # Lazy import so the httpx-backed transport (and httpx itself) is
@@ -304,16 +301,22 @@ def start_server(server_id: str) -> dict[str, Any]:
             client: Any = McpHttpClient(
                 url=spec["url"],
                 headers=spec.get("headers") or None,
-                secret_headers=spec.get("secret_headers") or None,
+                secret_headers={**(spec.get("secret_headers") or {}), **resolved_headers} or None,
                 allow_insecure_http=bool(spec.get("allow_insecure_http", False)),
                 allow_private_address=bool(spec.get("allow_private_address", False)),
             )
             start_error: type[Exception] = _HttpMcpError
         else:
+            try:
+                resolved_env = _resolve_secret_refs(spec.get("env_secret_refs") or {})
+            except Exception as exc:
+                msg = f"MCP secret resolution failed: {exc}"
+                _LAST_ERROR[server_id] = msg
+                return {"ok": False, "error": msg}
             client = McpClient(
                 command=spec["command"],
                 args=spec["args"],
-                env=spec["env"] or None,
+                env={**(spec["env"] or {}), **resolved_env} or None,
             )
             start_error = McpError
 

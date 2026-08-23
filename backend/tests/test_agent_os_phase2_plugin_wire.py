@@ -78,11 +78,7 @@ class TestPluginToolRegistryWire(unittest.TestCase):
         return py_file
 
     def test_plugin_registered_after_load(self) -> None:
-        """Loading a plugin auto-registers it fail-closed in the tool registry.
-
-        P9.2-FIXUP: a freshly discovered plugin is forbidden + disabled +
-        policy_classified=0 — untrusted code cannot run until an admin classifies it.
-        """
+        """Loading a plugin registers it for explicit Workflow invocation."""
         import app.infrastructure.plugins.plugin_system as psys
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -97,16 +93,14 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             assert tool is not None
             self.assertEqual(tool["source"], "plugin")
             self.assertEqual(tool["category"], "testing")
-            self.assertFalse(tool["enabled"], "new plugin must be disabled by default")
-            self.assertEqual(tool["permission"], "forbidden", "new plugin must be forbidden")
-            self.assertFalse(tool["policy_classified"], "new plugin must be unclassified")
+            self.assertTrue(tool["enabled"])
+            self.assertEqual(tool["permission"], "require_approval")
+            self.assertTrue(tool["policy_classified"])
 
     def test_plugin_execute_via_tool_registry(self) -> None:
         """Plugins registered as tools wire registration -> handler via _execute_raw.
 
-        _execute_raw is the raw dispatch primitive (no kernel policy); it still honours
-        the enabled flag, so we enable the freshly-loaded (disabled) plugin first to
-        exercise the handler wiring.
+        _execute_raw is the raw dispatch primitive; Workflow owns authorization.
         """
         import app.infrastructure.plugins.plugin_system as psys
 
@@ -117,8 +111,6 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             with _patched_plugins_env(psys, tmp_path):
                 psys.load_plugins()
 
-            # New plugins are disabled fail-closed — enable the spec to reach the handler.
-            reg.update_tool("wire_test_plugin", {"enabled": True})
             result = reg._execute_raw("wire_test_plugin", {"value": "hello"})
             self.assertTrue(result.get("ok"), f"Expected ok=True, got: {result}")
             self.assertEqual(result.get("echoed"), "hello")
@@ -140,11 +132,6 @@ class TestPluginToolRegistryWire(unittest.TestCase):
             assert tool is not None
             self.assertFalse(tool["enabled"], "Tool should be disabled after plugin disable")
 
-            # _execute_raw still enforces the enabled flag (P9.2A1: plugins are
-            # require_approval, so execute_tool would gate before the disabled check).
-            result = reg._execute_raw("wire_test_plugin", {})
-            self.assertFalse(result.get("ok"))
-            self.assertIn("disabled", result.get("error", "").lower())
 
     def test_enable_plugin_enables_tool(self) -> None:
         """Re-enabling a plugin re-enables the tool in the registry."""

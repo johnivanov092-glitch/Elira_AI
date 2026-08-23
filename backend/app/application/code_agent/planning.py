@@ -1,19 +1,18 @@
-"""Bounded planning stage for «Мозг» (thinking=true) structural runs.
+"""Structured planning stage for reasoning-enabled structural runs.
 
 Contract (see the batch spec):
-  - thinking=true on a STRUCTURED task becomes ONE bounded planning stage, then
-    every execution/verification model call runs thinking OFF. Raw
-    enable_thinking is never re-enabled per step.
-  - The planner reads the task + TaskSpec + a BOUNDED read-only project context
+  - The selected reasoning mode is sent to planning and to every following
+    execution/verification model call.
+  - The planner reads the task + TaskSpec + a context-window-sized project excerpt
     and returns a validated PlanArtifact — no free chain-of-thought, no
     side-effect tools, no second checklist/runtime.
-  - Invalid / empty / timeout planner output → durable planning_fallback; the
-    run then executes normally with thinking OFF. It never hangs on planning.
+  - Invalid / empty planner output → durable planning_fallback; execution then
+    continues normally with the same selected reasoning mode.
 
 This is a LEAF module: it defines the PlanArtifact schema + a single bounded
-planner call and pure helpers. It owns no runtime, no executor, no registry —
-the caller (agent_loop) feeds it the already-built chat_fn and a read-only
-recon closure, and persists the result through the existing RunJournal.
+planner contract and pure helpers. It owns no runtime, executor, registry or
+tools — the caller (agent_loop) uses the already-built model/provider and
+persists validated artifacts through the existing RunJournal.
 """
 from __future__ import annotations
 
@@ -52,7 +51,6 @@ PLANNING_SYSTEM_PROMPT = (
     "первого шага. Верни только JSON."
 )
 
-_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 _PLAN_FIELDS = frozenset({
     "goal", "current_state", "ordered_steps", "acceptance_checks", "risks", "current_step",
 })
@@ -154,14 +152,34 @@ def parse_plan_from_text(text: str) -> PlanArtifact | None:
     a sentence); still rejects a reply with no parseable JSON object."""
     if not text:
         return None
-    match = _JSON_OBJECT_RE.search(text)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return None
-    return plan_artifact_from_dict(data)
+    valid: PlanArtifact | None = None
+    for data in _json_objects_from_text(text):
+        candidate = plan_artifact_from_dict(data)
+        if candidate is not None:
+            valid = candidate
+    return valid
+
+
+def _json_objects_from_text(text: str):
+    """Yield independently decodable JSON objects from noisy local-model text.
+
+    Qwen-family responses can leak a ``<think>`` preamble containing braces
+    before the requested artifact. A greedy ``{.*}`` then swallowed both and
+    rejected an otherwise valid final JSON object. Raw-decode from every opening
+    brace isolates candidates; the schema validators still decide what crosses
+    the runtime boundary. Callers keep the last valid artifact, which is the
+    model's final answer rather than an earlier scratch candidate.
+    """
+    if not text:
+        return
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            value, _end = decoder.raw_decode(text[match.start():])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(value, dict):
+            yield value
 
 
 def build_planning_messages(

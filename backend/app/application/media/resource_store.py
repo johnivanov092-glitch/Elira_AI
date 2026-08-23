@@ -39,7 +39,7 @@ from app.core.data_files import data_subdir
 
 _RESOURCE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _CONTENT_TYPE_RE = re.compile(r"^[a-z0-9!#$&^_.+\-]+/[a-z0-9!#$&^_.+\-]+$")
-_DEFAULT_MAX_RESOURCE_BYTES = 512 * 1024 * 1024   # 512 MiB durable-raw cap
+_DEFAULT_MAX_RESOURCE_BYTES = 0  # unlimited; disk/OS errors are the physical limit
 _MAX_NAME_CHARS = 255
 # Intake/meta temp files (and meta-less blobs) older than this are crash debris.
 _TEMP_SWEEP_AGE_SECONDS = 3600
@@ -190,7 +190,7 @@ class _Intake:
         if not chunk:
             return
         self._size += len(chunk)
-        if self._size > self._cap:
+        if self._cap > 0 and self._size > self._cap:
             raise ResourceTooLarge()
         self._hash.update(chunk)
         view = memoryview(chunk)
@@ -410,8 +410,8 @@ def _write_meta(record: ResourceRecord) -> None:
 def get_record(resource_id: str) -> ResourceRecord | None:
     """Resolve a resource by opaque id. Returns None for a malformed id (this is
     what rejects a path passed in place of an id), a missing sidecar, or a missing
-    blob. This is a bare lookup — callers that expose processing MUST first check
-    the run binding (``run_binding.is_bound``); never trust an id alone."""
+    blob. Durable ids may be resolved by any Workflow run; the Workflow permission
+    chip is the product authorization boundary."""
     rid = str(resource_id or "").strip().lower()
     if not _RESOURCE_ID_RE.match(rid):
         return None
@@ -553,7 +553,9 @@ def _copy_to_new_file(
                 if not chunk:
                     break
                 size += len(chunk)
-                if size > cap or (expected_size is not None and size > expected_size):
+                if (cap > 0 and size > cap) or (
+                    expected_size is not None and size > expected_size
+                ):
                     raise ResourceTooLarge()
                 write_hasher.update(chunk)
                 view = memoryview(chunk)

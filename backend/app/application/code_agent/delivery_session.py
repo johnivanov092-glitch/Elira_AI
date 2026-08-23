@@ -1,32 +1,20 @@
-"""Bounded delivery session — orchestration OVER the journalled agent stream.
+"""Delivery session — orchestration over the journalled agent stream.
 
-One user submission may become up to ``MAX_SLICES`` internal bounded slices of
+One user submission may become multiple internal context slices of
 the SAME run (same run_id / project_root / permission_mode / TaskSpec / durable
 checklist). This is deliberately NOT a second runtime: every slice is a plain
 ``stream_code_agent`` invocation (slice 2+ with ``resume=True``), so the journal,
-guards, budgets, approval policy and TaskSpec verifier gates all apply per slice
-exactly as they do today.
+the journal and the single Workflow permission mode remain the same per slice.
 
-Auto-continuation fires ONLY when all of the following hold:
-  - the slice stopped on a runtime budget: ``timeout`` / ``context_limit`` /
-    ``max_steps`` (never after no_progress, loop_guard, error, cancelled,
-    rejected approvals or a clean answer);
-  - the task is still not verifier-confirmed (partial/unverified);
-  - the slice produced PROVEN structural progress — a new ``touched_path`` from
-    an executed tool call, a criterion flipped to confirmed by a verifier, or a
-    durable checklist item flipped to ``completed`` — signals the model's text
-    cannot forge;
-  - the automatic-continuation budget is not exhausted
-    (``MAX_AUTO_CONTINUATIONS`` after the first slice);
-  - the user has not cancelled the session.
+Auto-continuation is only context-window rollover. It is unlimited and does not
+depend on a product progress/verification budget. A natural model answer,
+provider/OS failure, or explicit Stop remains terminal.
 
 The client sees exactly ONE terminal ``done``. Slice boundaries surface as the
 informational ``delivery_continuing`` event (unknown event types are silently
 ignored by the frontend stream consumer, so this is compatible by construction).
 
-Simple tasks (no structured TaskSpec) and one-shot IT-Ops diagnostic runs
-(``itops-diag-`` prefix) bypass the session entirely: one ordinary run, exactly
-as before this module existed.
+Simple tasks (no structured TaskSpec) use one ordinary run.
 """
 from __future__ import annotations
 
@@ -36,7 +24,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from app.application.code_agent.agent_loop import (
-    DEFAULT_MAX_STEPS,
     _CODE_AGENT_BASE_TOOLS,
     stream_code_agent,
 )
@@ -54,13 +41,9 @@ from app.application.code_agent.taskspec import derive_task_spec
 
 logger = logging.getLogger(__name__)
 
-# One user submission = at most 1 + MAX_AUTO_CONTINUATIONS bounded slices.
-MAX_AUTO_CONTINUATIONS = 3
-MAX_SLICES = 1 + MAX_AUTO_CONTINUATIONS
-# The ONLY stop reasons that may auto-continue: runtime budget exhaustion. Every
-# behavioural stop (no_progress, loop_guard), error, cancel and clean answer is
-# terminal for the session — the existing guards already said "stop".
-AUTO_CONTINUE_STOP_REASONS = frozenset({"timeout", "context_limit", "max_steps"})
+# Context exhaustion starts another slice of the same run. Product time/step and
+# behavioural stop reasons no longer exist.
+AUTO_CONTINUE_STOP_REASONS = frozenset({"context_limit"})
 
 # Server-owned delivery contract for structural tasks. PREPENDED to the USER
 # message (never the system prompt — the base prompt is at token capacity, and
@@ -108,15 +91,6 @@ def _duplicate_session_done(run_id: str) -> dict[str, Any]:
         "error": "delivery_session_already_active",
         "resumable": False,
     }
-
-
-def _is_diag_run(run_id: str) -> bool:
-    try:
-        from app.application.agent_kernel.operation_scope import DIAG_RUN_PREFIX
-
-        return run_id.startswith(DIAG_RUN_PREFIX)
-    except Exception:
-        return run_id.startswith("itops-diag-")
 
 
 def _delivery_shaped(user_message: str, project_root: Any) -> bool:
@@ -208,7 +182,6 @@ def _resume_facts_block(run_id: str, state: dict) -> str:
 def build_continuation_kwargs(
     run_id: str,
     *,
-    approval_wait_seconds: int = 300,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
     thinking_override: bool | None = None,
@@ -238,35 +211,37 @@ def build_continuation_kwargs(
         user_message += f" Следующий пункт чеклиста: «{open_item.get('text')}»."
 
     thinking = bool(req.get("thinking", False))
+    reasoning_effort = str(
+        req.get("reasoning_effort") or ("xhigh" if thinking else "none")
+    )
     if thinking_override is not None:
         thinking = thinking_override
+        if not thinking_override:
+            reasoning_effort = "none"
     if state.get("thinking_fallback_applied"):
         # Durable one-shot: once this run fell back to thinking-OFF, no later
         # slice — automatic OR manual Resume — re-enables it. The journalled
         # request and the user's global toggle stay untouched.
         thinking = False
+        reasoning_effort = "none"
     return {
         "user_message": user_message,
         "project_root": str(req.get("project_root") or ""),
         "working_dir": req.get("working_dir"),
         "model": str(req.get("model") or "auto"),
         "agent_id": str(req.get("agent_id") or "code-agent"),
-        "max_steps": int(req.get("max_steps") or DEFAULT_MAX_STEPS),
         "conversation_history": history,
         "run_id": run_id,
         "num_ctx": req.get("num_ctx") or None,
         "base_tools": tuple(req.get("base_tools") or _CODE_AGENT_BASE_TOOLS),
-        "execution_timeout_seconds": req.get("execution_timeout_seconds"),
         "auto_remember": bool(req.get("auto_remember", True)),
         "chat_fn": chat_fn,
         "chat_stream_fn": chat_stream_fn,
-        "approval_wait_seconds": approval_wait_seconds,
         "resume": True,
-        "access_mode": str(req.get("access_mode") or "project-workspace"),
         "profile_name": str(req.get("profile_name") or "Инженерный"),
         "permission_mode": str(req.get("permission_mode") or "ask"),
         "thinking": thinking,
-        "no_questions": bool(req.get("no_questions", False)),
+        "reasoning_effort": reasoning_effort,
     }
 
 
@@ -277,22 +252,17 @@ def stream_delivery_session(
     working_dir: Path | str | None = None,
     model: str = "auto",
     agent_id: str = "code-agent",
-    max_steps: int = DEFAULT_MAX_STEPS,
     conversation_history: list[dict[str, Any]] | None = None,
     run_id: str | None = None,
     num_ctx: int | None = None,
     base_tools: tuple[str, ...] | list[str] | None = None,
-    execution_timeout_seconds: int | None = None,
     auto_remember: bool = True,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
-    approval_wait_seconds: int = 300,
-    access_mode: str = "project-workspace",
     profile_name: str = "Инженерный",
     permission_mode: str = "ask",
     thinking: bool = False,
-    no_questions: bool = False,
-    max_auto_continuations: int = MAX_AUTO_CONTINUATIONS,
+    reasoning_effort: str | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Public stream for a NEW user submission (`POST /api/code-agent/stream`)."""
     rid = run_id or uuid.uuid4().hex
@@ -308,23 +278,19 @@ def stream_delivery_session(
         "working_dir": working_dir,
         "model": model,
         "agent_id": agent_id,
-        "max_steps": max_steps,
         "conversation_history": conversation_history,
         "run_id": rid,
         "num_ctx": num_ctx,
         "base_tools": base_tools,
-        "execution_timeout_seconds": execution_timeout_seconds,
         "auto_remember": auto_remember,
         "chat_fn": chat_fn,
         "chat_stream_fn": chat_stream_fn,
-        "approval_wait_seconds": approval_wait_seconds,
-        "access_mode": access_mode,
         "profile_name": profile_name,
         "permission_mode": permission_mode,
         "thinking": thinking,
-        "no_questions": no_questions,
+        "reasoning_effort": reasoning_effort,
     }
-    shaped = not _is_diag_run(rid) and _delivery_shaped(user_message, project_root)
+    shaped = _delivery_shaped(user_message, project_root)
     if not shaped:
         # Simple task / diagnostic one-shot: one ordinary run, byte-for-byte
         # today's behaviour (no session registry, no extra events).
@@ -334,10 +300,8 @@ def stream_delivery_session(
     yield from _run_session(
         rid,
         first_kwargs,
-        approval_wait_seconds=approval_wait_seconds,
         chat_fn=chat_fn,
         chat_stream_fn=chat_stream_fn,
-        max_auto_continuations=max_auto_continuations,
         seen_touched=set(),
         prev_confirmed=0,
     )
@@ -346,10 +310,8 @@ def stream_delivery_session(
 def stream_resume_session(
     run_id: str,
     *,
-    approval_wait_seconds: int = 300,
     chat_fn: Callable[..., dict[str, Any]] | None = None,
     chat_stream_fn: Callable[..., Any] | None = None,
-    max_auto_continuations: int = MAX_AUTO_CONTINUATIONS,
 ) -> Iterator[dict[str, Any]]:
     """Public stream for the manual Resume button — one user action, so it gets
     the same enriched continuation context and the same bounded session."""
@@ -358,13 +320,12 @@ def stream_resume_session(
         return
     kwargs = build_continuation_kwargs(
         run_id,
-        approval_wait_seconds=approval_wait_seconds,
         chat_fn=chat_fn,
         chat_stream_fn=chat_stream_fn,
     )
     state = RunJournal.load(run_id).state
     req = state.get("request") or {}
-    shaped = not _is_diag_run(run_id) and _delivery_shaped(
+    shaped = _delivery_shaped(
         str(req.get("user_message") or ""), str(req.get("project_root") or "")
     )
     if not shaped:
@@ -373,10 +334,8 @@ def stream_resume_session(
     yield from _run_session(
         run_id,
         kwargs,
-        approval_wait_seconds=approval_wait_seconds,
         chat_fn=chat_fn,
         chat_stream_fn=chat_stream_fn,
-        max_auto_continuations=max_auto_continuations,
         seen_touched={str(p) for p in (state.get("changed_files") or []) if str(p).strip()},
         prev_confirmed=_confirmed_count(state.get("criteria")),
     )
@@ -386,10 +345,8 @@ def _run_session(
     rid: str,
     first_kwargs: dict[str, Any],
     *,
-    approval_wait_seconds: int,
     chat_fn: Callable[..., dict[str, Any]] | None,
     chat_stream_fn: Callable[..., Any] | None,
-    max_auto_continuations: int,
     seen_touched: set[str],
     prev_confirmed: int,
 ) -> Iterator[dict[str, Any]]:
@@ -472,31 +429,9 @@ def _run_session(
                 # telemetry only — novel paths are NOT a continuation licence
                 "new_touched_paths": len(slice_new_touched),
             }
-            proven_progress = (
-                progress["state_changes"] > 0
-                or progress["criteria_confirmed_delta"] > 0
-                or progress["checklist_completed_delta"] > 0
-            )
             stop = str(done_event.get("stop_reason") or "")
-            not_confirmed = str(done_event.get("completion_status") or "none") != "confirmed"
-            # An `answer` terminal is runtime-healthy but NOT solved when the
-            # criteria are unverified (done.ok stays runtime health — untouched).
-            # The real Mini CRM run ended exactly here: real mutations, an open
-            # durable checklist, 0/18 confirmed — and the session stopped. Such
-            # a slice earns the SAME bounded continuation toward verification;
-            # without progress or without an open checklist it still stops
-            # honestly (no answer→answer loop; the hard cap is shared).
-            answer_eligible = (
-                stop == "answer"
-                and bool(done_event.get("resumable"))
-                and _first_open_checklist_item(_checklist_items(rid)) is not None
-            )
             should_continue = (
-                (stop in AUTO_CONTINUE_STOP_REASONS or answer_eligible)
-                and not_confirmed
-                and bool(done_event.get("partial"))
-                and proven_progress
-                and auto_used < max_auto_continuations
+                stop in AUTO_CONTINUE_STOP_REASONS
                 and not cancel_ev.is_set()
             )
             if not should_continue:
@@ -520,7 +455,6 @@ def _run_session(
                 "slice": slice_no,
                 "next_slice": slice_no + 1,
                 "auto_continuation": auto_used,
-                "max_auto_continuations": max_auto_continuations,
                 "stop_reason": done_event.get("stop_reason"),
                 "progress": progress,
             }
@@ -566,7 +500,6 @@ def _run_session(
             try:
                 current_kwargs = build_continuation_kwargs(
                     rid,
-                    approval_wait_seconds=approval_wait_seconds,
                     chat_fn=chat_fn,
                     chat_stream_fn=chat_stream_fn,
                     thinking_override=thinking_override,

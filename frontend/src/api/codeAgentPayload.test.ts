@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { streamCodeAgent } from "./codeAgent";
+import type { ReasoningEffort } from "./codeAgent";
 import type { ResourceRef } from "./resources";
 
 // An empty SSE response so streamCodeAgent's reader completes immediately; we
@@ -12,7 +13,11 @@ function emptyStreamResponse(): Response {
 describe("streamCodeAgent request body — resource boundary", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  async function capture(resources: ResourceRef[], sessionId: string) {
+  async function capture(
+    resources: ResourceRef[],
+    sessionId: string,
+    reasoningEffort?: ReasoningEffort,
+  ) {
     let captured: Record<string, unknown> = {};
     vi.spyOn(globalThis, "fetch").mockImplementation(
       async (_url: RequestInfo | URL, init?: RequestInit) => {
@@ -22,6 +27,7 @@ describe("streamCodeAgent request body — resource boundary", () => {
     );
     await streamCodeAgent({
       message: "расшифруй запись", projectRoot: "/proj", resources, sessionId,
+      reasoningEffort,
       onEvent: () => {}, onError: () => {},
     });
     return captured;
@@ -49,5 +55,11 @@ describe("streamCodeAgent request body — resource boundary", () => {
     const body = await capture([], "");
     expect(body.resources).toBeUndefined();
     expect(body.session_id).toBeUndefined();
+  });
+
+  it("sends the selected reasoning effort without the legacy boolean", async () => {
+    const body = await capture([], "", "medium");
+    expect(body.reasoning_effort).toBe("medium");
+    expect(body.thinking).toBeUndefined();
   });
 });

@@ -18,16 +18,15 @@ from __future__ import annotations
 # intent-injection is that this (otherwise base-prompt-breaking) block only loads
 # on SSH-shaped runs.
 _SSH_RULE = (
-    "НАСТРОЙКА SSH-ДОСТУПА. Провайдер `ssh_run` работает только для хостов из "
-    "allowlist (`data/ssh_acl.json`, Settings→SSH); матч ТОЧНЫЙ по токену, которым "
-    "ты зовёшь `ssh_run(host=...)` — алиасы `~/.ssh/config` в самом ACL НЕ "
-    "резолвятся, конвенция — читаемые алиасы. Когда просят создать/найти/напомнить "
+    "НАСТРОЙКА SSH-ДОСТУПА. Провайдер `ssh_run` принимает любой непустой host или "
+    "алиас OpenSSH; `data/ssh_acl.json` хранит только подсказки/избранное и ничего "
+    "не разрешает. Когда просят создать/найти/напомнить "
     "SSH-доступ, отдай пользователю СВЯЗНУЮ пару: (1) блок `Host <алиас>` для "
-    "`~/.ssh/config` (HostName/User/IdentityFile) и (2) тот же `<алиас>` для "
-    "`allowed_hosts` — оба совпадают с тем, чем будешь звать `ssh_run`. Публичный "
+    "`~/.ssh/config` (HostName/User/IdentityFile) и (2) тот же `<алиас>` как "
+    "удобное имя для `ssh_run`. Публичный "
     "ключ (`.pub`) — пользователю для установки на таргет; приватный ключ в чат "
     "НИКОГДА (в конфиге он по пути). Инвентарь бери из `~/.ssh` (ключи, `config`, "
-    "`known_hosts`) + `ssh_acl.json`. PowerShell ЧЕРЕЗ ssh шли как "
+    "`known_hosts`) + сохранённые SSH favorites. PowerShell ЧЕРЕЗ ssh шли как "
     "`powershell -EncodedCommand <base64>` — иначе cmd.exe клиента рвёт `|`/кавычки "
     "до отправки."
 )

@@ -27,7 +27,6 @@ from app.application.code_agent.tools._run import (
 from app.application.code_agent.tools._web import (
     tool_browser,
     tool_web_fetch,
-    tool_web_claim_add,
     tool_web_query,
     tool_web_sitemap,
     tool_web_search,
@@ -65,6 +64,7 @@ from app.application.code_agent.tools._resources import (
 from app.application.code_agent.tools._drift import (
     tool_reconcile_server_facts,
 )
+from app.application.code_agent.tools._runtime_control import tool_runtime_control
 
 
 def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str, Any]]]:
@@ -83,10 +83,10 @@ def build_tool_dispatch(project_root: Path) -> dict[str, Callable[..., dict[str,
         "run_bash": lambda **kw: tool_run_bash(project_root, **kw),
         "run_server": lambda **kw: tool_run_server(project_root, **kw),
         "reconcile_server_facts": lambda **kw: tool_reconcile_server_facts(**kw),
+        "runtime_control": lambda **kw: tool_runtime_control(project_root, **kw),
         "web_search": lambda **kw: tool_web_search(**kw),
         "web_fetch": lambda **kw: tool_web_fetch(**kw),
         "web_query": lambda **kw: tool_web_query(**kw),
-        "web_claim_add": lambda **kw: tool_web_claim_add(**kw),
         "web_sitemap": lambda **kw: tool_web_sitemap(**kw),
         "browser": lambda **kw: tool_browser(**kw),
         "sandbox_run": lambda **kw: tool_sandbox_run(project_root, **kw),

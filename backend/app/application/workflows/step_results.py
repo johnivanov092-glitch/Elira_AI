@@ -3,9 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.application.agent_registry.sandbox import SandboxPolicyError
-
-
 @dataclass(slots=True)
 class WorkflowStepOutcome:
     save_key: str
@@ -13,15 +10,58 @@ class WorkflowStepOutcome:
     next_step_id: str | None
 
 
+@dataclass(slots=True)
+class WorkflowRequestSpec:
+    kind: str
+    message: str
+    schema: dict[str, Any]
+    sensitive: bool
+    provider_ref: str = ""
+
+
+def extract_workflow_request(
+    step_result: dict[str, Any],
+) -> WorkflowRequestSpec | None:
+    raw = step_result.get("raw", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    request = step_result.get("request") or raw.get("request") or {}
+    if not isinstance(request, dict):
+        request = {}
+
+    provider_ref = str(
+        step_result.get("response_id")
+        or raw.get("response_id")
+        or ""
+    ).strip()
+    status = str(step_result.get("status") or raw.get("status") or "").strip()
+    status_to_kind = {
+        "needs_input": "input",
+        "needs_secret": "secret",
+        "needs_elevation": "elevation",
+        "waiting_approval": "approval",
+    }
+    kind = str(request.get("kind") or status_to_kind.get(status, "")).strip()
+
+    if kind not in {"input", "secret", "elevation", "approval"}:
+        return None
+
+    schema = request.get("schema", {})
+    if not isinstance(schema, dict):
+        schema = {}
+    message = str(request.get("message", "")).strip()
+    if kind == "secret" and not message:
+        message = "Secret value required"
+    return WorkflowRequestSpec(
+        kind=kind,
+        message=message,
+        schema=schema,
+        sensitive=kind == "secret" or bool(request.get("sensitive", False)),
+        provider_ref=provider_ref,
+    )
+
+
 def build_step_result_from_exception(exc: Exception) -> dict[str, Any]:
-    if isinstance(exc, SandboxPolicyError):
-        return {
-            "ok": False,
-            "error": str(exc),
-            "sandbox_reason": exc.reason,
-            "sandbox_details": exc.details,
-            "raw": {"ok": False, "error": str(exc)},
-        }
     return {
         "ok": False,
         "error": str(exc),

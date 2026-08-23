@@ -21,6 +21,11 @@ _MAX_REDIRECTS = 5
 _CHUNK_TARGET = 1400          # chars per chunk (contract §1)
 _ZERO_WIDTH = re.compile(r"[​-‏‪-‮⁠﻿]")
 _CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_CHARSET_RE = re.compile(r"(?:^|;)\s*charset\s*=\s*[\"']?([^;\"']+)", re.IGNORECASE)
+_META_CHARSET_RE = re.compile(
+    br"<meta\b[^>]*charset\s*=\s*[\"']?\s*([a-z0-9._-]+)",
+    re.IGNORECASE,
+)
 
 
 def _clean_text(text: str) -> str:
@@ -30,6 +35,44 @@ def _clean_text(text: str) -> str:
     text = _ZERO_WIDTH.sub("", text or "")
     text = _CTRL.sub(" ", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _decode_text_content(content: bytes, declared_charset: str = "") -> tuple[str, str]:
+    """Decode web text without losing bytes to an early replacement decode."""
+    candidates: list[str] = []
+    if content.startswith(b"\xef\xbb\xbf"):
+        candidates.append("utf-8-sig")
+    declared = str(declared_charset or "").strip().lower()[:40]
+    if declared:
+        candidates.append(declared)
+    meta = _META_CHARSET_RE.search(content[:8192])
+    if meta:
+        try:
+            candidates.append(meta.group(1).decode("ascii").lower())
+        except UnicodeDecodeError:
+            pass
+    candidates.append("utf-8")
+
+    tried: set[str] = set()
+    for encoding in candidates:
+        if not encoding or encoding in tried:
+            continue
+        tried.add(encoding)
+        try:
+            return content.decode(encoding, errors="strict"), encoding
+        except (LookupError, UnicodeDecodeError):
+            continue
+
+    try:
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(content).best()
+        if best is not None and best.encoding:
+            detected = str(best.encoding).lower()
+            return content.decode(detected, errors="strict"), detected
+    except Exception:
+        pass
+    return content.decode("utf-8", errors="replace"), "utf-8-replace"
 
 
 # file_extract swallows extractor failures and returns the ERROR as text with
@@ -135,7 +178,7 @@ def _fetch_raw(url: str) -> dict[str, Any]:
     for _hop in range(_MAX_REDIRECTS + 1):
         reason = check_ssrf(current, allow_loopback_ports=active_server_ports())
         if reason:
-            return {"ok": False, "error": f"SSRF blocked — {reason}"}
+            return {"ok": False, "error": f"Invalid URL — {reason}"}
         politeness_wait(current)   # W6: per-domain politeness budget
         try:
             resp = requests.get(current, timeout=15, allow_redirects=False, stream=True,
@@ -150,7 +193,10 @@ def _fetch_raw(url: str) -> dict[str, Any]:
                 return {"ok": False, "error": "redirect without Location"}
             current = requests.compat.urljoin(current, loc)
             continue
-        mime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        content_type = resp.headers.get("Content-Type") or ""
+        mime = content_type.split(";", 1)[0].strip().lower()
+        charset_match = _CHARSET_RE.search(content_type)
+        charset = charset_match.group(1).strip().lower()[:40] if charset_match else ""
         if resp.status_code != 200:
             resp.close()
             return {"ok": False, "error": f"HTTP {resp.status_code}"}
@@ -163,14 +209,14 @@ def _fetch_raw(url: str) -> dict[str, Any]:
         if len(body) > _MAX_RESPONSE_BYTES:
             return {"ok": False, "error": f"response exceeds {_MAX_RESPONSE_BYTES // (1024*1024)}MB cap"}
         return {"ok": True, "final_url": resp.url or current, "mime": mime or "text/html",
-                "content": body, "last_modified": last_modified}
+                "charset": charset, "content": body, "last_modified": last_modified}
     return {"ok": False, "error": "too many redirects"}
 
 
 def ingest(url: str, run_id: str) -> dict[str, Any]:
     """Fetch → canonicalize → chunk → store one URL for `run_id`. Returns a
-    passport {ok, doc_id, title, url, final_url, mime, nbytes, n_chunks, outline,
-    deduped} or {ok:False, error}. Handles HTML/plain text and (W2) PDF/DOCX
+    passport {ok, doc_id, title, url, final_url, mime, encoding, nbytes,
+    n_chunks, outline, deduped} or {ok:False, error}. Handles HTML/plain text and (W2) PDF/DOCX
     documents through the existing file_extract pipeline (OCR fallback for scanned
     PDFs). Everything converges on the same chunk+store path — a web PDF becomes a
     corpus document exactly like an HTML page (untrusted, dedup/quota/TTL apply)."""
@@ -180,9 +226,13 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
     mime = raw["mime"]
     outline: list[str] = []
     decoded = ""
+    encoding = ""
     if "html" in mime or "text/plain" in mime:
         try:
-            decoded = raw["content"].decode("utf-8", errors="replace")
+            decoded, encoding = _decode_text_content(
+                raw["content"],
+                str(raw.get("charset") or ""),
+            )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": f"decode failed: {exc}"}
         canonical, title, outline = _canonicalize(decoded, mime)
@@ -225,7 +275,7 @@ def ingest(url: str, run_id: str) -> dict[str, Any]:
         return {"ok": False, "error": str(exc), "store_unavailable": True}
     return {"ok": True, "doc_id": res["doc_id"], "deduped": res["deduped"], "title": title,
             "url": url, "final_url": final_url, "mime": mime, "nbytes": doc["nbytes"],
-            "n_chunks": len(chunks), "outline": outline[:12]}
+            "encoding": encoding or None, "n_chunks": len(chunks), "outline": outline[:12]}
 
 
 def envelope(text: str, *, source: str) -> str:

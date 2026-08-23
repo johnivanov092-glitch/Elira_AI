@@ -31,14 +31,9 @@ function errPlural(n: number): string {
   return "ошибок";
 }
 
-// A terminal stop that is NOT a clean answer — the run burned calls without
-// finishing. The header shows THIS instead of a green "N ok", so a loop_guard /
-// no_progress stop never masquerades as success.
+// Runtime/physical terminal conditions shown instead of a green success count.
 const FAILED_STOP_LABELS: Record<string, string> = {
-  loop_guard: "зациклилась",
-  no_progress: "нет прогресса",
   timeout: "таймаут",
-  max_steps: "лимит шагов",
   context_limit: "переполнен контекст",
   error: "ошибка",
   cancelled: "остановлено",

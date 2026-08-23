@@ -42,7 +42,7 @@ class ToolProvider(Protocol):
 
     def is_enabled(self) -> bool:
         """Provider can be turned off without removing it from the
-        registry (e.g. SSH disabled because no allowlist configured,
+        registry (e.g. a runtime dependency is unavailable,
         or MCP server not yet started). Disabled providers contribute
         no schemas and are never asked to dispatch."""
         ...

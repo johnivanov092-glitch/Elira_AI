@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.agent_loop import DEFAULT_MAX_STEPS, run_code_agent
+from app.application.code_agent.agent_loop import run_code_agent
 from app.application.library.runtime import build_library_context
 from app.core.data_files import data_subdir
 
@@ -104,15 +104,21 @@ def run_agent(
     history: list[Any] | None = None,
     num_ctx: int | None = None,
     project_root: str | Path | None = None,
-    max_steps: int = DEFAULT_MAX_STEPS,
+    permission_mode: str = "ask",
+    thinking: bool = False,
+    reasoning_effort: str | None = None,
+    code_agent_run_id: str | None = None,
+    pause_for_workflow_request: bool = False,
+    resume: bool = False,
+    workflow_approval: dict[str, Any] | None = None,
     **_ignored_legacy_options: Any,
 ) -> dict[str, Any]:
     """Run the universal code-agent core and return the historical dict shape.
 
     ``session_id``, ``profile_name`` and legacy tool-selection booleans are kept
     as accepted inputs for older internal callers, but routing/tool selection is
-    now entirely handled by the code-agent prompt, tool registry and deferred
-    tool search.
+    now entirely handled by the code-agent prompt and the canonical runtime tool
+    registry. All registered schemas are visible; there is no activation gate.
     """
     root = str(project_root or _default_project_root())
     message = _with_library_context(str(user_input or ""), bool(use_library))
@@ -121,11 +127,16 @@ def run_agent(
         project_root=root,
         model=str(model_name or "auto"),
         agent_id=str(agent_id or "code-agent"),
-        max_steps=max_steps,
         conversation_history=_normalise_history(history),
         num_ctx=num_ctx or None,
         auto_remember=bool(use_memory),
-        approval_wait_seconds=0,
+        permission_mode=permission_mode,
+        thinking=thinking,
+        reasoning_effort=reasoning_effort,
+        run_id=code_agent_run_id,
+        pause_for_workflow_request=pause_for_workflow_request,
+        resume=resume,
+        workflow_approval=workflow_approval,
     )
     answer = str(result.get("response") or "")
     error = str(result.get("error") or "")
@@ -141,7 +152,7 @@ def run_agent(
     }
     if error:
         meta["error"] = error
-    return {
+    payload = {
         "ok": bool(result.get("ok")),
         "answer": answer,
         "content": answer,
@@ -149,3 +160,13 @@ def run_agent(
         "tool_results": _tool_results_from_code_agent(result),
         "meta": meta,
     }
+    status = str(result.get("status") or "")
+    request = result.get("request")
+    response_id = str(result.get("response_id") or "")
+    if status:
+        payload["status"] = status
+    if isinstance(request, dict):
+        payload["request"] = request
+    if response_id:
+        payload["response_id"] = response_id
+    return payload

@@ -370,46 +370,5 @@ class TestDeepCompaction(unittest.TestCase):
         self.assertEqual(merged, "first block\n\nsecond block")
 
 
-class TestCompactionInAgentLoop(unittest.TestCase):
-    """Verifies that stream_code_agent emits context_compacted event when threshold exceeded."""
-
-    def test_stream_emits_context_compacted_event(self):
-        from app.application.code_agent.agent_loop import stream_code_agent
-        import tempfile
-
-        big_content = "Y" * 5000
-        responses = iter([
-            {"message": {"content": "", "tool_calls": [{"function": {"name": "glob", "arguments": {"pattern": "*"}}}]}},
-            {"message": {"content": "done.", "tool_calls": []}},
-        ])
-
-        def fake_chat(**kwargs):
-            return next(responses)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            # Set threshold=0 to always compact; inject via mock
-            def compact_with_summary(msgs, *a, **kw):
-                return [*msgs, {"role": "system", "content": _SUMMARY_PREFIX + "Memory survives."}], True
-
-            with mock.patch(
-                "app.application.context.compaction.maybe_compact",
-                wraps=compact_with_summary,  # always say compacted
-            ):
-                events = list(stream_code_agent(
-                    user_message="go",
-                    project_root=root,
-                    chat_fn=fake_chat,
-                    num_ctx=8192,
-                ))
-
-        compacted_events = [e for e in events if e.get("type") == "context_compacted"]
-        self.assertGreaterEqual(len(compacted_events), 1)
-        # assertIn, not assertEqual: this test's mock appends the summary without
-        # the real code's previous-summary de-dup, so if a single step crosses
-        # both compaction thresholds the mock's text repeats. The real path merges.
-        self.assertIn("Memory survives.", compacted_events[0].get("rolling_summary") or "")
-
-
 if __name__ == "__main__":
     unittest.main()

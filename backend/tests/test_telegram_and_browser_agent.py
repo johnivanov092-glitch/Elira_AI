@@ -152,7 +152,7 @@ class TelegramRuntimeConfigTest(unittest.TestCase):
         result = tg_rt.get_telegram_config()
         self.assertTrue(result["has_token"])
         self.assertNotIn("ABCDefGHIJKL", result["bot_token"])
-        self.assertIn("...", result["bot_token"])
+        self.assertIn("***", result["bot_token"])
 
     def test_running_is_bool(self) -> None:
         result = tg_rt.get_telegram_config()
@@ -195,33 +195,6 @@ class BrowserAgentTest(unittest.TestCase):
         result = self._agent.screenshot()
         self.assertFalse(result["ok"])
         self.assertIn("error", result)
-
-    # ----- SSRF guard: private / loopback targets are blocked before launch ---
-
-    def test_run_blocks_loopback_url(self) -> None:
-        result = self._agent.run("http://127.0.0.1:8000/admin")
-        self.assertFalse(result["ok"])
-        self.assertIn("SSRF", result["error"])
-
-    def test_run_blocks_private_host(self) -> None:
-        result = self._agent.run("http://192.168.0.1/")
-        self.assertFalse(result["ok"])
-        self.assertIn("SSRF", result["error"])
-
-    def test_screenshot_blocks_loopback_url(self) -> None:
-        result = self._agent.screenshot("http://localhost/secret")
-        self.assertFalse(result["ok"])
-        self.assertIn("SSRF", result["error"])
-
-    # ----- step-count guard ---------------------------------------------------
-
-    def test_run_rejects_too_many_steps(self) -> None:
-        result = self._agent.run(
-            "https://example.com",
-            steps=[{"action": "wait", "ms": 1}] * 100,
-        )
-        self.assertFalse(result["ok"])
-        self.assertIn("too many steps", result["error"])
 
     # ----- contract: every method returns a dict carrying an "ok" key --------
 

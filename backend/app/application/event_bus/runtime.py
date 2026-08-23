@@ -15,10 +15,7 @@ DB_PATH: Path = sqlite_data_file("event_bus.db")
 SUPPORTED_EVENT_TYPES = (
     "agent.run.started",
     "agent.run.completed",
-    "agent.limit.updated",
-    "sandbox.policy.blocked",
     "tool.executed",
-    "tool.approval_pending",
     "workflow.run.started",
     "workflow.run.paused",
     "workflow.run.resumed",
@@ -27,8 +24,16 @@ SUPPORTED_EVENT_TYPES = (
     "workflow.step.started",
     "workflow.step.completed",
     "workflow.step.failed",
+    "item/started",
+    "item/request",
+    "serverRequest/resolved",
+    "item/completed",
+    "workflow/started",
+    "workflow/resumed",
+    "workflow/waiting",
+    "workflow/completed",
+    "workflow/cancelled",
     "task.recovery.rescheduled",
-    "task.recovery.blocked",
     "task.recovery.dead_letter",
     "task.checklist.updated",
     "task.subagent.started",
@@ -162,17 +167,27 @@ def list_events(
     )
 
 
-# Operationally-important event types for the observability summary. These are
-# emitted by the unified tool executor (agent_kernel) but are NOT in the
-# agent_metrics dashboard — surfacing them gives a "what went wrong" view
-# (timeouts, fail-closed blocks, policy blocks, pending approvals).
-_OBSERVABILITY_EVENT_TYPES = (
-    "tool.executed",
-    "tool.timeout",
-    "tool.invalid_spec",
-    "sandbox.policy.blocked",
-    "tool.approval_pending",
-)
+def latest_event_id() -> int:
+    return event_bus_store.latest_event_id(conn_factory=_conn)
+
+
+def list_events_after(
+    *,
+    after_id: int,
+    through_id: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    return event_bus_store.list_events_after(
+        conn_factory=_conn,
+        row_to_event_func=_row_to_event,
+        after_id=after_id,
+        through_id=through_id,
+        limit=limit,
+    )
+
+
+# Operational event types for the active Workflow-owned runtime.
+_OBSERVABILITY_EVENT_TYPES = ("tool.executed",)
 
 
 def summarize_events(*, recent_limit: int = 20) -> dict[str, Any]:

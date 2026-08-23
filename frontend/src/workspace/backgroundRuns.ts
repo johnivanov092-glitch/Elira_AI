@@ -1,7 +1,5 @@
 import {
-  answerQuestion,
   cancelCodeAgent,
-  resolveApproval,
   resumeCodeAgent,
   streamCodeAgent,
   type CodeAgentMode,
@@ -10,6 +8,7 @@ import {
   type ContextUsage,
   type ConversationMessage,
   type PermissionMode,
+  type ReasoningEffort,
   type StreamHandlers,
   type TaskLedgerEntry,
 } from "../api/codeAgent";
@@ -46,10 +45,6 @@ export type RunSnapshot = {
   taskLedger: TaskLedgerEntry[];
   contextUsage: ContextUsage | null;
   contextState: ContextState | null;
-  /** Per-session auto-approve. In the snapshot so the banner re-renders when it
-   *  flips; `entry.autoApprove` mirrors it for synchronous reads inside the
-   *  reader (which runs outside React). */
-  autoApprove: boolean;
   /** True once a live usage/compaction event set the real meter, so a seed
    *  never clobbers it. */
   usageSeeded: boolean;
@@ -65,7 +60,6 @@ type RunEntry = {
   snapshot: RunSnapshot;
   abort: AbortController | null;
   runId: string | null;
-  autoApprove: boolean;
   /** Agent turn id currently being streamed into. */
   activeAgentId: string | null;
   listeners: Set<Listener>;
@@ -87,10 +81,23 @@ export function doneLedgerEntries(
   action: string = e.stop_reason,
 ): TaskLedgerEntry[] {
   const cs = e.completion_status;
-  const solved = cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer");
+  const answerComplete = !e.answer_status || e.answer_status === "complete";
+  const solved = answerComplete && (
+    cs === "confirmed" || ((!cs || cs === "none") && e.ok && e.stop_reason === "answer")
+  );
   const ledgerType = solved ? "final" : !e.ok || cs === "failed" ? "error" : "partial";
   const ledgerResult =
-    e.error || (solved ? "completed" : cs && cs !== "none" ? `задача: ${cs} (не solved)` : e.stop_reason);
+    e.error || (
+      e.answer_status === "needs_input"
+        ? "нужно уточнение пользователя"
+        : e.answer_status === "degraded"
+          ? "ответ с ограничениями"
+          : solved
+            ? "completed"
+            : cs && cs !== "none"
+              ? `задача: ${cs} (не solved)`
+              : e.stop_reason
+    );
   const entries: TaskLedgerEntry[] = [
     { timestamp: Date.now(), type: ledgerType, action, result: ledgerResult },
   ];
@@ -154,7 +161,6 @@ function emptySnapshot(state: ContextState | null = null): RunSnapshot {
     taskLedger: [],
     contextUsage,
     contextState: state,
-    autoApprove: false,
     usageSeeded: contextUsage != null,
   };
 }
@@ -167,7 +173,6 @@ function ensureEntry(sessionId: string): RunEntry {
       abort: null,
       runId: null,
       lastMode: null,
-      autoApprove: false,
       activeAgentId: null,
       listeners: new Set(),
       persist: null,
@@ -241,7 +246,6 @@ export function seed(
 ): void {
   const entry = ensureEntry(sessionId);
   if (entry.snapshot.running) return; // background run owns the snapshot
-  entry.autoApprove = false;
   const contextUsage = contextUsageFromState(state);
   entry.snapshot = {
     turns,
@@ -249,7 +253,6 @@ export function seed(
     taskLedger: ledger,
     contextUsage,
     contextState: state,
-    autoApprove: false,
     usageSeeded: contextUsage != null,
   };
   entry.runId = null;
@@ -291,7 +294,12 @@ function wire(
         entry.runId = e.run_id;
         patch((a) => ({ ...a, runId: e.run_id }));
       }
-      if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool, pendingApproval: undefined, pendingQuestion: undefined }));
+      if (e.type === "planning_started") patch((a) => ({ ...a, brainPhase: "planning" }));
+      else if (e.type === "phase_changed") patch((a) => ({ ...a, brainPhase: e.phase }));
+      else if (e.type === "planning_fallback") {
+        patch((a) => ({ ...a, brainPhase: "execution" }));
+      }
+      else if (e.type === "tool_started") patch((a) => ({ ...a, activeTool: e.tool }));
       else if (e.type === "step_started") {
         // Show only the CURRENT step's stream. Deltas used to concatenate across
         // all steps into one blob; final_response normally replaced it, but on
@@ -303,7 +311,7 @@ function wire(
       else if (e.type === "delta") patch((a) => ({ ...a, text: a.text + e.text }));
       else if (e.type === "reasoning_delta") patch((a) => ({ ...a, reasoning: (a.reasoning ?? "") + e.text }));
       else if (e.type === "tool_call") {
-        patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined, pendingApproval: undefined, pendingQuestion: undefined }));
+        patch((a) => ({ ...a, toolCalls: [...a.toolCalls, e], activeTool: undefined }));
         const result = e.result.trim();
         pushLedger({
           timestamp: Date.now(),
@@ -314,15 +322,7 @@ function wire(
           // so an `exit=1` no longer reads as a success in the ledger.
           result: e.ok === false || /^error\b/i.test(result) || /\bexit=(?!0\b)\d+/.test(result) ? result.slice(0, 500) : `completed (${result.length} chars)`,
         });
-      } else if (e.type === "approval_pending") {
-        if (entry.autoApprove) {
-          void resolveApproval(e.approval_id, "approve").catch(() => {});
-          patch((a) => ({ ...a, pendingApproval: undefined }));
-        } else patch((a) => ({ ...a, pendingApproval: { approvalId: e.approval_id, tool: e.tool, arguments: e.arguments } }));
-      } else if (e.type === "approval_wait") patch((a) => (a.pendingApproval ? { ...a, pendingApproval: { ...a.pendingApproval, waitedS: e.waited_s } } : a));
-      else if (e.type === "question_pending") patch((a) => ({ ...a, pendingQuestion: { questionId: e.question_id, question: e.question, options: e.options || [] } }));
-      else if (e.type === "question_wait") patch((a) => (a.pendingQuestion ? { ...a, pendingQuestion: { ...a.pendingQuestion, waitedS: e.waited_s } } : a));
-      else if (e.type === "context_compacted") {
+      } else if (e.type === "context_compacted") {
         update(entry, (s) => {
           const contextState = e.context ? withUsageState(s.contextState, e.context) : { ...(s.contextState || {}) };
           const summary = (e.rolling_summary || "").trim();
@@ -353,16 +353,16 @@ function wire(
           genTokens: (a.genTokens ?? 0) + (e.completion_tokens || 0),
           tokensPerSecond: e.tokens_per_second || a.tokensPerSecond,
         }));
-      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput }));
+      } else if (e.type === "final_response") patch((a) => ({ ...a, text: e.text, answerStatus: e.answer_status || a.answerStatus, establishedFacts: e.established_facts || a.establishedFacts, recentToolOutput: e.recent_tool_output || a.recentToolOutput, media: e.media ?? a.media }));
       else if (e.type === "delivery_continuing") {
         // Informational slice boundary: the run keeps going on the SAME run_id
-        // (auto-continuation after a budget stop with proven progress). The turn
+        // after context-window rollover. The turn
         // stays `running`; only the ledger surfaces the transition honestly.
         pushLedger({
           timestamp: Date.now(),
           type: "partial",
           action: `delivery ${e.slice}→${e.next_slice}`,
-          result: `продолжаю тот же прогон (${e.auto_continuation}/${e.max_auto_continuations} автопродолжений, стоп: ${e.stop_reason})`,
+          result: `продолжаю тот же прогон (автопродолжение ${e.auto_continuation}, без лимита; причина: ${e.stop_reason})`,
         });
       }
       else if (e.type === "done") {
@@ -379,8 +379,9 @@ function wire(
           ...a,
           running: false,
           activeTool: undefined,
-          pendingApproval: undefined,
+          brainPhase: undefined,
           stopReason: e.stop_reason,
+          answerStatus: e.answer_status || a.answerStatus,
           error: e.error,
           completionStatus: e.completion_status,
           criteria: e.criteria,
@@ -398,7 +399,7 @@ function wire(
       }
     },
     onError: (err) => {
-      patch((a) => ({ ...a, running: false, activeTool: undefined, error: err.message }));
+      patch((a) => ({ ...a, running: false, activeTool: undefined, brainPhase: undefined, error: err.message }));
       update(entry, (s) => ({ ...s, running: false }));
       entry.abort = null;
     },
@@ -422,17 +423,15 @@ export type SendArgs = {
   /** Approval policy picked in the composer's permission selector; undefined →
    *  backend default "ask". */
   permissionMode?: PermissionMode;
-  /** Enable model reasoning for this run («Рассуждение» chip). */
-  thinking?: boolean;
-  /** «Не спрашивать» chip — ask_user never pauses the run for a human. */
-  noQuestions?: boolean;
+  /** Qwen reasoning depth selected in the composer. */
+  reasoningEffort?: ReasoningEffort;
 };
 
 /** Start a run for a session. Appends the user + agent turns to that session's
  *  snapshot and begins streaming into it (in the background, regardless of
  *  which session is currently displayed). */
 export function send(args: SendArgs): void {
-  const { sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, thinking, noQuestions } = args;
+  const { sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, reasoningEffort } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -496,7 +495,7 @@ export function send(args: SendArgs): void {
   // session id lets the backend bind only resources this session owns.
   const readyResources = (resources ?? []).filter((r) => r.status === "ready" && r.resource_id);
   wire(entry, agentId, (handlers) =>
-    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, thinking, noQuestions, ...handlers }));
+    streamCodeAgent({ message: msg, projectRoot, model, mode, conversationHistory: history, resources: readyResources, sessionId, profileName, permissionMode, reasoningEffort, ...handlers }));
 }
 
 /** Start a MULTI-AGENT run for a session. `/api/advanced/multi-agent/stream`
@@ -508,9 +507,9 @@ export function send(args: SendArgs): void {
  *  message. Stop aborts the SSE fetch (entry.abort); the backend then cancels
  *  the pipeline between steps. Late events after a stop are ignored. */
 export function sendMultiAgent(
-  args: { sessionId: string; text: string; useOrchestrator: boolean; useReflection: boolean; projectRoot?: string },
+  args: { sessionId: string; text: string; useOrchestrator: boolean; useReflection: boolean; projectRoot?: string; permissionMode?: PermissionMode; reasoningEffort?: ReasoningEffort },
 ): void {
-  const { sessionId, text, useOrchestrator, useReflection, projectRoot } = args;
+  const { sessionId, text, useOrchestrator, useReflection, projectRoot, permissionMode, reasoningEffort } = args;
   const msg = text.trim();
   const entry = ensureEntry(sessionId);
   if (!msg || entry.snapshot.running) return;
@@ -543,6 +542,8 @@ export function sendMultiAgent(
       query: msg,
       use_orchestrator: useOrchestrator,
       use_reflection: useReflection,
+      permission_mode: permissionMode ?? "bypass",
+      reasoning_effort: reasoningEffort ?? "none",
       ...(projectRoot ? { project_root: projectRoot } : {}),
     },
     {
@@ -620,79 +621,6 @@ export function stop(sessionId: string): void {
     ...s,
     running: false,
     turns: s.turns.map((t) => (t.kind === "agent" && t.running ? { ...t, running: false } : t)),
-  }));
-}
-
-export function setAutoApprove(sessionId: string, on: boolean): void {
-  const entry = ensureEntry(sessionId);
-  entry.autoApprove = on;
-  update(entry, (s) => ({ ...s, autoApprove: on }));
-}
-
-export function isAutoApprove(sessionId: string): boolean {
-  return _runs.get(sessionId)?.autoApprove ?? false;
-}
-
-/** Re-activate an approval's buttons if resolving it failed (network error etc.),
- *  so the chip isn't stuck on "отправлено…" forever (FIX-15). */
-function revertResolving(entry: RunEntry, approvalId: string): void {
-  update(entry, (s) => ({
-    ...s,
-    turns: s.turns.map((t) => (t.kind === "agent" && t.pendingApproval?.approvalId === approvalId
-      ? { ...t, pendingApproval: { ...t.pendingApproval, resolving: false } }
-      : t)),
-  }));
-}
-
-/** Resolve a pending approval and mark it resolving in the snapshot. */
-export function approve(sessionId: string, approvalId: string, decision: "approve" | "reject"): void {
-  const entry = _runs.get(sessionId);
-  if (entry) {
-    update(entry, (s) => ({
-      ...s,
-      turns: s.turns.map((t) => (t.kind === "agent" && t.pendingApproval?.approvalId === approvalId
-        ? { ...t, pendingApproval: { ...t.pendingApproval, resolving: true } }
-        : t)),
-    }));
-    void resolveApproval(approvalId, decision).catch(() => revertResolving(entry, approvalId));
-  }
-}
-
-/** Deliver a human answer to a paused ask_user question. Marks it "answering"
- *  optimistically; reverts on error so the input re-activates (like FIX-15). */
-export function answer(sessionId: string, questionId: string, text: string): void {
-  const entry = _runs.get(sessionId);
-  if (!entry) return;
-  update(entry, (s) => ({
-    ...s,
-    turns: s.turns.map((t) => (t.kind === "agent" && t.pendingQuestion?.questionId === questionId
-      ? { ...t, pendingQuestion: { ...t.pendingQuestion, answering: true } }
-      : t)),
-  }));
-  void answerQuestion(questionId, text).catch(() => {
-    update(entry, (s) => ({
-      ...s,
-      turns: s.turns.map((t) => (t.kind === "agent" && t.pendingQuestion?.questionId === questionId
-        ? { ...t, pendingQuestion: { ...t.pendingQuestion, answering: false } }
-        : t)),
-    }));
-  });
-}
-
-export function approveAll(sessionId: string): void {
-  const entry = ensureEntry(sessionId);
-  entry.autoApprove = true;
-  update(entry, (s) => ({
-    ...s,
-    autoApprove: true,
-    turns: s.turns.map((t) => {
-      if (t.kind === "agent" && t.pendingApproval && !t.pendingApproval.resolving) {
-        const id = t.pendingApproval.approvalId;
-        void resolveApproval(id, "approve").catch(() => revertResolving(entry, id));
-        return { ...t, pendingApproval: { ...t.pendingApproval, resolving: true } };
-      }
-      return t;
-    }),
   }));
 }
 

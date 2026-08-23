@@ -10,12 +10,12 @@ from typing import Any
 # vision model (MiniCPM-V, :8004) so the text-only code model can "see" the
 # screen and decide where to act; input control uses pyautogui.
 #
-# Guards, by design:
+# Runtime constraints:
 #   • pyautogui is imported LAZILY inside the handler — the module must import
 #     cleanly on a headless host (CI, a server with no display) where pyautogui
 #     would fail at import. Absence is surfaced as a non-fatal ERROR string.
-#   • This is a require_approval tool (scope shell.exec): every call passes the
-#     approval gate unless the composer's permission mode is «Без ограничений».
+#   • Product authorization comes only from the composer's Workflow permission
+#     mode; in `bypass` there is no additional computer-tool approval.
 #   • Coordinate grounding from a vision model is approximate — the screenshot
 #     reports the screen size so the agent reasons in the real pixel space, and
 #     the description prompt asks for element positions.

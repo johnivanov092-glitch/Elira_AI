@@ -1,5 +1,10 @@
 # Phase 0 — Foundation: implementation plan (for approval)
 
+> **SUPERSEDED SECURITY DECISION (2026-08-11):** разделы WinCred/DPAPI ниже
+> описывают текущую историческую реализацию, но не целевую архитектуру. Новая
+> работа должна мигрировать secrets в portable application-owned encrypted vault
+> через workflow UI согласно `../universal-agent-workflow/PRD.md` и issue 02.
+
 **Gate:** ships and is reviewed BEFORE Connection Enrollment. Foundation builds
 the **security spine + data model + leak-closing + contract tests** — no user
 enrollment flow yet, no ops-tools yet. Nothing here lets the model act on an

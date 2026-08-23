@@ -21,7 +21,13 @@ def _make_stream(captured: list[dict], *, reasoning: str = "", answer: str = "AN
     return stream_fn
 
 
-def _drive(*, thinking: bool, reasoning: str, run_id: str) -> tuple[list[dict], list[dict]]:
+def _drive(
+    *,
+    thinking: bool,
+    reasoning: str,
+    run_id: str,
+    reasoning_effort: str | None = None,
+) -> tuple[list[dict], list[dict]]:
     captured: list[dict] = []
     stream_fn = _make_stream(captured, reasoning=reasoning)
     with tempfile.TemporaryDirectory() as tmp:
@@ -29,24 +35,47 @@ def _drive(*, thinking: bool, reasoning: str, run_id: str) -> tuple[list[dict], 
             user_message="вопрос",
             project_root=tmp,
             model="test-model",
-            max_steps=3,
             chat_fn=lambda **_: {},          # never used (streaming path), but keeps
             chat_stream_fn=stream_fn,        # the provider off the network
             run_id=run_id,
-            approval_wait_seconds=0,
             auto_remember=False,
             thinking=thinking,
+            reasoning_effort=reasoning_effort,
         ))
     return captured, events
 
 
 class CodeAgentThinkingTest(unittest.TestCase):
+    def test_explicit_effort_levels_reach_provider(self):
+        for effort in ("low", "medium", "xhigh"):
+            with self.subTest(effort=effort):
+                captured, _ = _drive(
+                    thinking=False,
+                    reasoning="",
+                    run_id=f"think-{effort}",
+                    reasoning_effort=effort,
+                )
+                options = captured[0]["options"]
+                self.assertEqual(options.get("reasoning_effort"), effort)
+                self.assertEqual(
+                    options.get("chat_template_kwargs"),
+                    {
+                        "enable_thinking": True,
+                        "reasoning_effort": effort,
+                        "reasoning_strength": effort,
+                    },
+                )
+
     def test_thinking_on_passes_flag_and_streams_reasoning_apart(self):
         captured, events = _drive(thinking=True, reasoning="Шаг рассуждения.", run_id="think-on")
         # The per-request enable_thinking flag reached the provider options.
         self.assertEqual(
             captured[0]["options"].get("chat_template_kwargs"),
-            {"enable_thinking": True},
+            {
+                "enable_thinking": True,
+                "reasoning_effort": "xhigh",
+                "reasoning_strength": "xhigh",
+            },
         )
         # DRY anti-repetition rides along on every run (see below for non-think).
         self.assertEqual(captured[0]["options"].get("sampling", {}).get("dry_multiplier"), 0.8)
@@ -59,9 +88,16 @@ class CodeAgentThinkingTest(unittest.TestCase):
         self.assertEqual(finals[-1]["text"], "ANSWER")
         self.assertNotIn("Шаг рассуждения.", finals[-1]["text"])
 
-    def test_thinking_off_omits_flag_and_emits_no_reasoning(self):
+    def test_none_disables_qwen_and_sets_muse_to_native_low(self):
         captured, events = _drive(thinking=False, reasoning="", run_id="think-off")
-        self.assertNotIn("chat_template_kwargs", captured[0]["options"])
+        self.assertEqual(
+            captured[0]["options"].get("chat_template_kwargs"),
+            {
+                "enable_thinking": False,
+                "reasoning_effort": "none",
+                "reasoning_strength": "low",
+            },
+        )
         # DRY anti-repetition now applies to EVERY run — a live non-think run
         # degenerated into a ×20-repeated paragraph in the answer channel.
         self.assertEqual(captured[0]["options"].get("sampling", {}).get("dry_multiplier"), 0.8)

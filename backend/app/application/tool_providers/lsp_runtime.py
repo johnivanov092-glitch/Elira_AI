@@ -210,9 +210,6 @@ def start_server(server_id: str, root_path: str | None = None) -> dict[str, Any]
         spec = _find_spec_locked(server_id)
         if spec is None:
             return {"ok": False, "error": f"server '{server_id}' not configured"}
-        if not spec.get("enabled", False):
-            return {"ok": False, "error": f"server '{server_id}' is marked disabled"}
-
         existing = _LIVE_CLIENTS.get(server_id)
         if existing is not None and existing.is_alive():
             return {"ok": True, "already_running": True, "server_id": server_id}

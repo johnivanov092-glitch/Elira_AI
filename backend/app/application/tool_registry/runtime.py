@@ -1,4 +1,8 @@
-"""Tool Registry — dynamic registry for Agent OS Phase 2."""
+"""Shared runtime inventory and handler registry.
+
+Legacy policy columns remain in SQLite for in-place upgrades but are not an
+authorization layer. Workflow permission is enforced by the unified executor.
+"""
 from __future__ import annotations
 
 import sqlite3
@@ -136,12 +140,7 @@ def register_dynamic_tool(
     max_output_chars: int = 50000,
     idempotent: bool = False,
 ) -> dict:
-    """Fail-closed registration for untrusted dynamic tools (plugins / MCP).
-
-    New tools land forbidden + disabled + unclassified; re-registration only
-    refreshes metadata and never resets admin policy. See
-    ``registry_store.register_dynamic_tool``.
-    """
+    """Register a dynamic tool; Workflow permission owns authorization."""
     return registry_store.register_dynamic_tool(
         conn_factory=_conn,
         handlers=_handlers,
@@ -186,78 +185,6 @@ def list_tools_with_schemas(
         source=source,
         enabled_only=enabled_only,
     )
-
-
-# ── P10.1: read-only ToolSpec search (Deferred Tool Search) ──────────────────
-_SEARCH_FIELDS = (
-    "name", "display_name", "display_name_ru",
-    "description", "description_ru", "category", "source",
-)
-
-
-def _spec_search_haystack(spec: dict) -> str:
-    parts = [str(spec.get(field, "") or "") for field in _SEARCH_FIELDS]
-    parts.extend(str(s) for s in (spec.get("scopes") or []))
-    return " ".join(parts).lower()
-
-
-def _spec_activatability(spec: dict) -> tuple[bool, str | None]:
-    """Registry-level eligibility. Disabled / unclassified / forbidden tools are
-    never activatable and are returned with a reason so a caller cannot activate
-    them. (Side-effect is a separate flag the caller may further restrict on.)"""
-    if not spec.get("enabled", True):
-        return False, "disabled"
-    if not spec.get("policy_classified"):
-        return False, "unclassified"
-    if spec.get("permission") == "forbidden":
-        return False, "forbidden"
-    # Fail-closed: a corrupted / forward-dated spec with an invalid permission
-    # tier or an unknown scope must never be activatable (mirrors the executor's
-    # fail-closed gates). Reuses the registry's canonical vocabularies.
-    if spec.get("permission") not in registry_store.VALID_PERMISSIONS:
-        return False, "invalid_permission"
-    if any(s not in registry_store.VALID_SCOPES for s in (spec.get("scopes") or [])):
-        return False, "unknown_scope"
-    return True, None
-
-
-def search_tool_specs(query: str, *, limit: int = 20) -> list[dict]:
-    """Read-only search over the existing ToolSpec registry — no provider
-    dispatch, no second registry, no DB change. Case-insensitive substring match
-    against name / display / description / category / source / scopes. Every
-    result reports ``activatable`` + ``reason``; disabled, unclassified, and
-    forbidden tools are returned as non-activatable so they cannot be activated.
-    Results are deterministically ordered by name.
-    """
-    q = str(query or "").strip().lower()
-    # Token (OR) matching: a spec matches if ANY whitespace-separated word of the
-    # query is a substring of its haystack. A multi-word query like
-    # "computer screenshot desktop" thus matches a tool whose description mentions
-    # any of those words, instead of requiring the whole phrase verbatim. An empty
-    # query keeps matching everything (unchanged).
-    tokens = [t for t in q.split() if t]
-    results: list[dict] = []
-    for spec in list_tools_with_schemas(enabled_only=False):
-        if tokens:
-            haystack = _spec_search_haystack(spec)
-            if not any(tok in haystack for tok in tokens):
-                continue
-        activatable, reason = _spec_activatability(spec)
-        results.append({
-            "name": str(spec.get("name", "")),
-            "description": str(spec.get("description", "") or ""),
-            "category": str(spec.get("category", "") or ""),
-            "source": str(spec.get("source", "") or ""),
-            "scopes": list(spec.get("scopes") or []),
-            "permission": str(spec.get("permission", "") or ""),
-            "side_effect": bool(spec.get("side_effect", False)),
-            "activatable": activatable,
-            "reason": reason,
-        })
-    results.sort(key=lambda r: r["name"])
-    if limit and int(limit) > 0:
-        results = results[: int(limit)]
-    return results
 
 
 def update_tool(name: str, updates: dict) -> dict:

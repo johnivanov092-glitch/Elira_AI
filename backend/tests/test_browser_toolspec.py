@@ -1,10 +1,9 @@
 """Regression: the code-agent `browser` tool must have a ToolSpec.
 
 `browser` is advertised to the model (tool_schemas) and dispatched
-(tools/_dispatch.py), so it MUST be a classified native ToolSpec — otherwise
-the fail-closed kernel blocks every call as `unknown_toolspec`. tool_browser
-already enforces SSRF + http(s) scheme, so it matches web_fetch's profile
-(auto / net.outbound).
+(tools/_dispatch.py), so inventory metadata must remain available for
+presentation and audit. Destination authorization belongs to the selected
+Workflow permission mode; the browser validates only the HTTP(S) protocol.
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ class BrowserToolSpecTest(unittest.TestCase):
         self.specs = {s["name"]: s for s in _build_native_code_agent_tools()}
 
     def test_browser_spec_exists(self) -> None:
-        self.assertIn("browser", self.specs, "browser native ToolSpec is missing → kernel blocks it")
+        self.assertIn("browser", self.specs)
 
     def test_browser_profile_matches_web_fetch(self) -> None:
         browser = self.specs["browser"]
@@ -37,7 +36,7 @@ class BrowserToolSpecTest(unittest.TestCase):
         self.assertEqual(browser["source"], "code_agent")
 
     def test_dispatched_web_tools_all_have_specs(self) -> None:
-        # Every dispatched web tool the model can name must be classified.
+        # Every dispatched web tool the model can name remains visible in inventory.
         for name in ("web_search", "web_fetch", "browser"):
             self.assertIn(name, self.specs)
 

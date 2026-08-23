@@ -70,8 +70,14 @@ const INLINE_PATTERNS: InlinePattern[] = [
   { re: /~~(.+?)~~/, render: (m, k) => <del key={k} className="md-del">{m[1]}</del> },
   { re: /\*(.+?)\*/, render: (m, k) => <em key={k}>{m[1]}</em> },
   { re: /!\[([^\]]*)\]\(([^)]+)\)/, render: (m, k) => {
-    const src = buildApiUrl(m[2]);
-    return <img key={k} src={src} alt={m[1]} className="md-image" loading="lazy" />;
+    const raw = m[2].trim();
+    if (raw.startsWith("/") && !raw.startsWith("//") && isLocalApiAssetUrl(raw)) {
+      return <img key={k} src={buildApiUrl(raw)} alt={m[1]} className="md-image" loading="lazy" />;
+    }
+    if (/^https?:\/\//i.test(raw)) {
+      return <a key={k} href={raw} target="_blank" rel="noopener noreferrer" className="md-link">🖼 {m[1] || prettyUrl(raw)}</a>;
+    }
+    return <span key={k} className="text-mut">[изображение недоступно]</span>;
   }},
   { re: /\[([^\]]+)\]\(([^)]+)\)/, render: (m, k) => {
     const url = m[2]; const label = m[1];

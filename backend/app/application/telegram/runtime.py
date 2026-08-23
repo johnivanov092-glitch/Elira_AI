@@ -28,12 +28,27 @@ _running = False
 _last_update_id = 0
 
 
+def _telegram_token() -> str:
+    """Resolve the bot token only inside runtime; config stores an opaque ref."""
+    secret_ref = get_config_value("bot_token_ref", "").strip()
+    if secret_ref:
+        from app.infrastructure.secrets import vault
+
+        return vault.resolve(secret_ref)
+    # Read-only compatibility for installations not migrated yet. No new API/UI
+    # writes this key; runtime_control can migrate it into the portable vault.
+    return get_config_value("bot_token", "")
+
+
 def get_telegram_config() -> dict[str, Any]:
-    token = get_config_value("bot_token", "")
+    secret_ref = get_config_value("bot_token_ref", "").strip()
+    legacy_token = get_config_value("bot_token", "")
     return {
         "ok": True,
-        "bot_token": token[:8] + "..." + token[-4:] if len(token) > 12 else ("***" if token else ""),
-        "has_token": bool(token),
+        "bot_token": "vault:" + secret_ref[-8:] if secret_ref else ("legacy:***" if legacy_token else ""),
+        "bot_token_ref": secret_ref,
+        "has_token": bool(secret_ref or legacy_token),
+        "legacy_token_present": bool(legacy_token),
         "model": get_config_value("model", ""),
         "profile": get_config_value("profile", DEFAULT_PROFILE),
         "allowed_users": get_config_value("allowed_users", "all"),
@@ -102,7 +117,10 @@ def send_typing(token: str, chat_id: int) -> None:
 
 
 def test_telegram_connection() -> dict[str, Any]:
-    token = get_config_value("bot_token", "")
+    try:
+        token = _telegram_token()
+    except Exception as exc:
+        return {"ok": False, "error": f"Не удалось разрешить bot_token_ref: {exc}"}
     if not token:
         return {"ok": False, "error": "Токен бота не задан"}
 
@@ -251,7 +269,12 @@ def handle_command(token: str, chat_id: int, text: str) -> None:
 def poll_loop() -> None:
     global _running, _last_update_id
 
-    token = get_config_value("bot_token", "")
+    try:
+        token = _telegram_token()
+    except Exception as exc:
+        logger.error("Telegram bot token unavailable: %s", exc)
+        _running = False
+        return
     if not token:
         logger.error("Telegram bot: нет токена")
         _running = False
@@ -302,11 +325,14 @@ def start_telegram_bot() -> dict[str, Any]:
     if _running:
         return {"ok": True, "status": "already_running"}
 
-    token = get_config_value("bot_token", "")
+    try:
+        token = _telegram_token()
+    except Exception as exc:
+        return {"ok": False, "error": f"Не удалось разрешить bot_token_ref: {exc}"}
     if not token:
         return {
             "ok": False,
-            "error": "Токен бота не задан. Укажите bot_token в настройках.",
+            "error": "Токен бота не задан. Передайте secret_ref через Workflow UI.",
         }
 
     test = test_telegram_connection()
@@ -347,63 +373,3 @@ def telegram_bot_status() -> dict[str, Any]:
         "has_token": config.get("has_token", False),
         "bot_token_preview": config.get("bot_token", ""),
     }
-
-
-# ── Approval inbox ────────────────────────────────────────────────────────────
-
-def send_approval_notification(approval: dict[str, Any]) -> bool:
-    """Send a Telegram notification for a pending tool-call approval.
-
-    Best-effort: returns True if the message was sent, False otherwise.
-    A missing bot token or any send error is logged and silently swallowed
-    so it never blocks the agent loop.
-
-    The notification is sent to the configured admin chat_id (stored as
-    "admin_chat_id" in telegram_config).  The recipient can then call
-    POST /api/telegram/approval_callback or POST /api/agent-os/approvals/{id}/approve.
-    """
-    try:
-        token = get_config_value("bot_token", "")
-        admin_chat_id = get_config_value("admin_chat_id", "")
-        if not token or not admin_chat_id:
-            return False
-
-        tool_name = approval.get("tool_name", "?")
-        approval_id = approval.get("id", "?")
-        agent_id = approval.get("agent_id", "?")
-        args_preview = str(approval.get("args", {}))
-        if len(args_preview) > 200:
-            args_preview = args_preview[:200] + "…"
-
-        text = (
-            f"🔐 *Требуется подтверждение*\n\n"
-            f"Инструмент: `{tool_name}`\n"
-            f"Агент: `{agent_id}`\n"
-            f"Аргументы: `{args_preview}`\n\n"
-            f"ID: `{approval_id}`\n\n"
-            f"✅ `/approve {approval_id}`\n"
-            f"❌ `/reject {approval_id}`"
-        )
-        result = tg_request(
-            "sendMessage",
-            token,
-            {"chat_id": int(admin_chat_id), "text": text, "parse_mode": "Markdown"},
-        )
-        return bool(result.get("ok"))
-    except Exception as exc:
-        logger.warning("send_approval_notification failed: %s", exc)
-        return False
-
-
-def handle_approval_command(text: str, chat_id: int) -> dict[str, Any] | None:
-    """Parse /approve <id> or /reject <id> from a Telegram message.
-
-    Returns {"action": "approve"|"reject", "approval_id": str} or None.
-    """
-    text = (text or "").strip().lower()
-    for action in ("approve", "reject"):
-        if text.startswith(f"/{action} "):
-            parts = text.split(None, 1)
-            if len(parts) == 2 and parts[1]:
-                return {"action": action, "approval_id": parts[1].strip(), "chat_id": chat_id}
-    return None

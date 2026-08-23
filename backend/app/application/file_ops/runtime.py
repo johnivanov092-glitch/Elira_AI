@@ -9,7 +9,8 @@ file_ops.py — файловые операции для патчинга из �
   POST /api/file-ops/mkdir     — создать директорию
   DELETE /api/file-ops/delete   — удалить файл
 
-Workspace = data/workspace/ (безопасная песочница)
+Относительные пути разрешаются от data/workspace; абсолютные пути доступны
+на всей машине в пределах прав текущего процесса.
 """
 from __future__ import annotations
 
@@ -19,28 +20,21 @@ from pathlib import Path
 
 from app.core.config import DATA_DIR
 
-# Workspace — безопасная папка для пользовательских файлов
+# База только для относительных путей; это не граница доступа.
 WORKSPACE = DATA_DIR / "workspace"
 WORKSPACE.mkdir(parents=True, exist_ok=True)
-
-BLOCKED = {".git", "node_modules", ".venv", "__pycache__", "dist", "build"}
-MAX_FILE_SIZE = 500_000  # 500KB
-
 
 def _runtime_error(kind: str, detail: str) -> dict[str, str]:
     return {"kind": kind, "detail": detail}
 
 
 def safe_path(rel_path: str) -> tuple[Path | None, dict[str, str] | None]:
-    """Нормализует путь и проверяет что он внутри workspace."""
-    rel = rel_path.strip().strip("/\\")
-    if not rel:
+    """Разрешает абсолютный путь либо относительный путь от WORKSPACE."""
+    raw = str(rel_path or "").strip()
+    if not raw:
         return None, _runtime_error("empty_path", "Пустой путь")
-    if any(part in BLOCKED for part in Path(rel).parts):
-        return None, _runtime_error("blocked_path", f"Заблокированный путь: {rel}")
-    full = (WORKSPACE / rel).resolve()
-    if not str(full).startswith(str(WORKSPACE.resolve())):
-        return None, _runtime_error("outside_workspace", "Выход за пределы workspace")
+    requested = Path(raw).expanduser()
+    full = requested.resolve() if requested.is_absolute() else (WORKSPACE / requested).resolve()
     return full, None
 
 
@@ -50,9 +44,6 @@ def write_file(rel_path: str, content: str, create_dirs: bool = True):
     if error:
         return None, error
     content = content or ""
-
-    if len(content) > MAX_FILE_SIZE:
-        return None, _runtime_error("too_large", f"Файл слишком большой: {len(content)} > {MAX_FILE_SIZE}")
 
     if create_dirs:
         full.parent.mkdir(parents=True, exist_ok=True)
@@ -115,8 +106,6 @@ def file_tree(max_depth: int = 3, max_items: int = 200):
             return
 
         for entry in entries:
-            if entry.name.startswith(".") or entry.name in BLOCKED:
-                continue
             rel = str(entry.relative_to(WORKSPACE)).replace("\\", "/")
             if entry.is_dir():
                 items.append({"path": rel, "type": "dir", "name": entry.name})

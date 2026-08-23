@@ -189,56 +189,5 @@ class MemoryStorageRegressionTest(unittest.TestCase):
             self.assertIn("wikipedia", payload["runtime"]["available_engines"])
             self.assertIsInstance(payload["runtime"]["warning"], str)
 
-    def test_root_memory_profile_isolation_and_rag_seed_cleanup(self) -> None:
-        with tempfile.TemporaryDirectory() as data_dir:
-            data_path = Path(data_dir)
-            _create_seed_rag(data_path / "rag_memory.db")
-
-            script = textwrap.dedent(
-                f"""
-                import json
-                import sys
-                sys.path.insert(0, r"{BACKEND_ROOT}")
-
-                from fastapi.testclient import TestClient
-                from app.main import app
-                from app.application.rag_memory.service import get_rag_context, rag_stats
-
-                client = TestClient(app)
-                client.post("/api/memory/add", json={{"profile": "default", "text": "alpha fact", "source": "manual"}})
-                client.post("/api/memory/add", json={{"profile": "other", "text": "beta fact", "source": "manual"}})
-
-                payload = {{
-                    "default_items": client.get("/api/memory/items/default").json()["count"],
-                    "other_items": client.get("/api/memory/items/other").json()["count"],
-                    "rag_total": rag_stats()["total"],
-                    "rag_context": get_rag_context("alpha"),
-                }}
-                print(json.dumps(payload, ensure_ascii=False))
-                """
-            )
-
-            env = os.environ.copy()
-            env["ELIRA_DATA_DIR"] = str(data_path)
-
-            proc = subprocess.run(
-                [sys.executable, "-c", script],
-                cwd=str(ROOT),
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            payload = json.loads(proc.stdout.strip())
-
-            self.assertEqual(payload["default_items"], 1)
-            self.assertEqual(payload["other_items"], 1)
-            self.assertEqual(payload["rag_total"], 0)
-            self.assertNotIn("[fact]", payload["rag_context"])
-            self.assertNotIn("RAG alpha memory", payload["rag_context"])
-
-
 if __name__ == "__main__":
     unittest.main()

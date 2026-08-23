@@ -80,41 +80,45 @@ for router in ALL_ROUTERS:
 init_db()
 init_runtime_state()
 
-# Seed встроенных агентов в Agent Registry при старте
-from app.application.agent_registry.runtime import seed_builtin_agents
-from app.application.monitoring.runtime import seed_default_limits
 from app.application.workflow_engine.runtime import seed_builtin_workflows
-seed_builtin_agents()
 seed_builtin_workflows()
-seed_default_limits()
+
+try:
+    from app.application.workflows.db_path import get_workflow_db_path
+    from app.application.workflows.request_lifecycle import (
+        recover_incomplete_requests,
+    )
+
+    recovered_workflow_requests = recover_incomplete_requests(
+        db_path=get_workflow_db_path()
+    )
+    if recovered_workflow_requests:
+        logger.warning(
+            "recovered %s incomplete workflow request(s)",
+            recovered_workflow_requests,
+        )
+except Exception as exc:
+    logger.warning("workflow request startup recovery failed: %s", exc)
+
+# Workflow-owned interval triggers replace the old separate Pipelines control
+# plane. Tests never start daemon schedulers; production starts it with the
+# backend and manages it through runtime_control.
+try:
+    import sys as _sys
+
+    if "pytest" not in _sys.modules:
+        from app.application.workflows.triggers import start_scheduler
+
+        start_scheduler()
+except Exception as exc:
+    logger.warning("workflow trigger scheduler startup failed: %s", exc)
 
 from app.application.tool_registry.runtime import seed_builtin_tools
 seed_builtin_tools()
 
-try:
-    from app.application.task_planner.service import (
-        recover_stale_tasks,
-        start_task_recovery_scheduler,
-    )
-    recover_stale_tasks()
-    # Self-heal stale tasks on a long-lived server without waiting for a restart.
-    start_task_recovery_scheduler()
-except Exception as exc:
-    logger.warning("task planner startup recovery failed: %s", exc)
-
-# Living Persona step C — scheduled-proactivity daemon. No-op unless the master
-# switch (feature flag `proactive`) is on AND the scheduled trigger is approved;
-# fully fail-safe. Evaluates a once-per-day check-in at the configured time.
-try:
-    from app.application.persona.proactive import start_proactive_scheduler
-
-    start_proactive_scheduler()
-except Exception as exc:
-    logger.warning("proactive scheduler startup failed: %s", exc)
-
-# IT Operations (Phase 0) — flag-gated startup: migrate the it_ops store then
-# recover incomplete secrets BEFORE accepting intake. No-op when `itops` is OFF
-# (schema/vault/recovery untouched). Not model-callable. Fail-safe.
+# IT Operations metadata starts with the runtime. The portable vault stays locked;
+# create/unlock/recovery are explicit workflow UI operations and never depend on
+# Windows Credential Manager or the Windows account token.
 try:
     from app.application.it_ops.startup import itops_startup
 
@@ -137,17 +141,11 @@ except Exception as exc:
 # restart until the user clicked ▷ by hand — their tools never reached the agent.
 # Run it in a daemon thread so a slow server (e.g. serena's LSP init) never blocks
 # backend startup; start_server is idempotent and failures are per-server + logged.
-# Kill switch: ELIRA_MCP_AUTOSTART=0.
 try:
-    import os as _os
     import sys as _sys
 
-    _mcp_autostart_on = (
-        _os.getenv("ELIRA_MCP_AUTOSTART", "1").strip().lower() not in {"0", "false", "no", "off"}
-        # Never spawn real MCP subprocesses (npx / serena) during the test suite,
-        # which imports app.main. pytest is imported before any test module.
-        and "pytest" not in _sys.modules
-    )
+    # Tests import app.main and must not spawn real npx/serena subprocesses.
+    _mcp_autostart_on = "pytest" not in _sys.modules
     if _mcp_autostart_on:
         import threading as _threading
 

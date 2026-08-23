@@ -191,17 +191,13 @@ def generate_pdf(title: str, content: str, filename: str = "") -> dict:
 # 2. SQL ЗАПРОСЫ
 # ═══════════════════════════════════════════════════════════════
 
-ALLOWED_DB_DIRS = [DATA_DIR.resolve()]
-
 def _safe_db(db_path: str) -> Path:
-    p = Path(db_path).resolve()
-    for d in ALLOWED_DB_DIRS:
-        try:
-            p.relative_to(d)
-            return p
-        except ValueError:
-            continue
-    raise ValueError(f"Запрещено: {db_path}. Только data/")
+    """Resolve a database path without imposing a product filesystem scope."""
+    raw_text = str(db_path or "").strip()
+    if not raw_text:
+        raise ValueError("Путь к базе данных не указан")
+    raw = Path(raw_text).expanduser()
+    return (raw if raw.is_absolute() else DATA_DIR / raw).resolve()
 
 
 def run_sql(db_path: str, query: str, params: list = None, max_rows: int = 100) -> dict:
@@ -213,8 +209,6 @@ def run_sql(db_path: str, query: str, params: list = None, max_rows: int = 100) 
         return {"ok": False, "error": f"Не найдена: {db_path}"}
 
     q_up = query.strip().upper()
-    if any(q_up.startswith(c) for c in ["DROP ", "DELETE ", "TRUNCATE ", "ALTER "]):
-        return {"ok": False, "error": f"Заблокировано: {q_up.split()[0]}"}
 
     try:
         conn = connect_sqlite(safe, row_factory=sqlite3.Row, journal_mode=None)
@@ -238,7 +232,7 @@ def run_sql(db_path: str, query: str, params: list = None, max_rows: int = 100) 
 
 def list_databases() -> dict:
     dbs = []
-    for d in ALLOWED_DB_DIRS:
+    for d in [DATA_DIR.resolve()]:
         if d.exists():
             for f in d.rglob("*.db"):
                 dbs.append({"path": str(f), "name": f.name, "size": f.stat().st_size})
@@ -269,27 +263,9 @@ def describe_db(db_path: str) -> dict:
 # 3. HTTP / API
 # ═══════════════════════════════════════════════════════════════
 
-BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254"}
-# Loopback hosts that `allow_loopback_ports` may re-open (never 0.0.0.0 / metadata).
-_LOOPBACK_HOSTS = {"localhost", "127.0.0.1"}
-
 def http_request(url: str, method: str = "GET", headers: dict = None, body: Any = None,
                  timeout: int = 15, allow_loopback_ports: set = None) -> dict:
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if host in BLOCKED_HOSTS:
-        # Scoped exception: a loopback host on a port the agent started (so it can
-        # verify its OWN dev server). 0.0.0.0 / metadata stay blocked.
-        try:
-            port = parsed.port
-        except ValueError:
-            port = None
-        loopback_ok = bool(
-            host in _LOOPBACK_HOSTS and allow_loopback_ports and port in allow_loopback_ports
-        )
-        if not loopback_ok:
-            return {"ok": False, "error": f"Заблокирован: {host}"}
+    del allow_loopback_ports
 
     try:
         kw = {"url": url, "headers": headers or {}, "timeout": timeout}

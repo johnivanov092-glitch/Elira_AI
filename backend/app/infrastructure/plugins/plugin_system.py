@@ -31,9 +31,7 @@ PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
 
 _RUNNER_SCRIPT = Path(__file__).parent / "_subprocess_runner.py"
 _BACKEND_ROOT = str(Path(__file__).parents[3])  # .../backend
-PLUGIN_DEFAULT_TIMEOUT: int = 30    # seconds
-PLUGIN_MIN_TIMEOUT_SECONDS: int = 1
-PLUGIN_MAX_TIMEOUT_SECONDS: int = 120
+PLUGIN_DEFAULT_TIMEOUT: int = 0     # compatibility manifest field; no runtime deadline
 PLUGIN_MAX_OUTPUT_CHARS: int = 50_000
 
 # Only these lifecycle hook names may be invoked via fire_hook or the runner.
@@ -44,58 +42,17 @@ _ALLOWED_HOOKS: frozenset[str] = frozenset({"on_start", "on_message", "on_respon
 _STDOUT_MAX_BYTES: int = PLUGIN_MAX_OUTPUT_CHARS * 3   # 3 bytes/char (UTF-8 headroom)
 _STDERR_MAX_BYTES: int = 2_000
 
-# Allowlist of env vars passed to plugin subprocesses.
-# Application secrets (DB URLs, API keys) use custom names and are excluded.
-_SUBPROCESS_ENV_PASSTHROUGH = frozenset({
-    # Windows essentials
-    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
-    # Executable resolution
-    "PATH", "PATHEXT",
-    # Temp dirs
-    "TEMP", "TMP",
-    # Python runtime
-    "PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME",
-    # User profile (needed by Python on Windows for site-packages)
-    "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "APPDATA",
-    # Unix/macOS equivalents
-    "HOME", "USER", "LANG", "LC_ALL",
-})
-
-
 def _make_subprocess_env() -> dict[str, str]:
-    """Build a minimal environment for plugin subprocesses."""
-    env = {k: v for k, v in os.environ.items() if k.upper() in _SUBPROCESS_ENV_PASSTHROUGH}
+    """Pass through the current process environment unchanged."""
+    env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     return env
 
 
 def _normalize_timeout(raw: Any, plugin_name: str) -> int:
-    """Validate and clamp a timeout value from a plugin manifest.
-
-    Invalid type → PLUGIN_DEFAULT_TIMEOUT + warning.
-    Out of [PLUGIN_MIN_TIMEOUT_SECONDS, PLUGIN_MAX_TIMEOUT_SECONDS] → clamped + warning.
-    """
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        logger.warning(
-            "Plugin '%s': invalid timeout %r — using default %ds",
-            plugin_name, raw, PLUGIN_DEFAULT_TIMEOUT,
-        )
-        return PLUGIN_DEFAULT_TIMEOUT
-    if value < PLUGIN_MIN_TIMEOUT_SECONDS:
-        logger.warning(
-            "Plugin '%s': timeout %ds below minimum %ds — clamping",
-            plugin_name, value, PLUGIN_MIN_TIMEOUT_SECONDS,
-        )
-        return PLUGIN_MIN_TIMEOUT_SECONDS
-    if value > PLUGIN_MAX_TIMEOUT_SECONDS:
-        logger.warning(
-            "Plugin '%s': timeout %ds exceeds maximum %ds — clamping",
-            plugin_name, value, PLUGIN_MAX_TIMEOUT_SECONDS,
-        )
-        return PLUGIN_MAX_TIMEOUT_SECONDS
-    return value
+    """Compatibility parser; plugin execution has no product deadline."""
+    del raw, plugin_name
+    return 0
 
 
 # ── Manifest loading ──────────────────────────────────────────────────────────
@@ -122,23 +79,26 @@ def _run_plugin_subprocess(
     payload: dict,
     timeout: int = PLUGIN_DEFAULT_TIMEOUT,
 ) -> dict:
-    """Execute a plugin action out-of-process with bounded incremental reads.
+    """Execute a plugin action out-of-process until completion or Workflow Stop.
 
     stdout and stderr are drained in threads so that:
       - The subprocess cannot deadlock by filling the OS pipe buffer.
-      - Each stream has a hard byte cap; exceeding it kills the process
-        immediately and returns a controlled error (no memory accumulation).
-      - The direct runner process is reaped on timeout and overflow;
-        child processes spawned inside the plugin are not tracked
-        (plugins remain disabled by default — no OS-level sandbox here).
+      - Output retained for the model is bounded, while excess bytes are drained.
+      - The process tree is registered with the shared Workflow Stop registry.
 
     payload schema:
       {"action": "run",  "args": {...}}
       {"action": "hook", "hook_name": "<name>", "data": <any>}
       {"action": "inspect"}
     """
+    del timeout  # compatibility metadata; Workflow Stop owns termination
     env = _make_subprocess_env() or None
     input_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    from app.application.code_agent.tools import (
+        _new_process_group_kwargs,
+        register_run_process,
+        unregister_run_process,
+    )
 
     try:
         proc = subprocess.Popen(
@@ -148,11 +108,13 @@ def _run_plugin_subprocess(
             stderr=subprocess.PIPE,
             cwd=str(PLUGINS_DIR),
             env=env,
+            **_new_process_group_kwargs(),
         )
     except Exception as exc:
         logger.warning("Plugin subprocess start failed (%s): %s", py_file, exc)
         return {"ok": False, "error": "Plugin execution error"}
 
+    run_id = register_run_process(proc)
     stdout_buf: list[bytes] = []
     stderr_buf: list[bytes] = []
     _flags: dict[str, bool] = {"stdout_overflow": False, "stderr_overflow": False}
@@ -174,11 +136,7 @@ def _run_plugin_subprocess(
                 total += len(chunk)
                 if total > _STDOUT_MAX_BYTES:
                     _flags["stdout_overflow"] = True
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    return
+                    continue
                 stdout_buf.append(chunk)
         except Exception:
             pass
@@ -193,11 +151,7 @@ def _run_plugin_subprocess(
                 total += len(chunk)
                 if total > _STDERR_MAX_BYTES:
                     _flags["stderr_overflow"] = True
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    return
+                    continue
                 stderr_buf.append(chunk)
         except Exception:
             pass
@@ -209,38 +163,25 @@ def _run_plugin_subprocess(
     t_out.start()
     t_err.start()
 
-    timed_out = False
     try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            proc.kill()
-            proc.wait()
-        except Exception:
-            pass
-        timed_out = True
+        proc.wait()
+    finally:
+        unregister_run_process(run_id, proc)
 
     t_in.join(timeout=1.0)
     t_out.join(timeout=2.0)
     t_err.join(timeout=2.0)
 
-    if timed_out:
-        return {"ok": False, "error": f"Plugin timed out after {timeout}s"}
-
-    if _flags["stdout_overflow"]:
-        return {"ok": False, "error": f"Plugin stdout exceeded {PLUGIN_MAX_OUTPUT_CHARS} char limit"}
-
     if _flags["stderr_overflow"]:
         snippet = b"".join(stderr_buf).decode("utf-8", errors="replace")[:200]
         logger.warning("Plugin stderr overflow (%s): %.200s…", py_file, snippet)
-        return {"ok": False, "error": f"Plugin stderr exceeded {_STDERR_MAX_BYTES} byte limit"}
 
     stdout = b"".join(stdout_buf).decode("utf-8", errors="replace").strip()
     stderr = b"".join(stderr_buf).decode("utf-8", errors="replace").strip()
 
-    # Byte cap allows UTF-8 headroom; enforce the exact char limit after decode.
-    if len(stdout) > PLUGIN_MAX_OUTPUT_CHARS:
-        return {"ok": False, "error": f"Plugin output exceeded {PLUGIN_MAX_OUTPUT_CHARS} char limit"}
+    # Output retention is a context-size boundary, not an execution block.
+    if _flags["stdout_overflow"] or len(stdout) > PLUGIN_MAX_OUTPUT_CHARS:
+        stdout = stdout[:PLUGIN_MAX_OUTPUT_CHARS]
 
     if not stdout:
         if proc.returncode != 0:
@@ -323,11 +264,9 @@ def _build_plugin_record(name: str, py_file: Path, config: dict, manifest: dict)
 def _register_plugin_in_tool_registry(name: str, info: dict) -> None:
     """Register/refresh a plugin's ToolSpec in the Tool Registry (source='plugin').
 
-    P9.2-FIXUP: a newly discovered plugin lands forbidden + disabled +
-    policy_classified=0. Plugin code is untrusted subprocess code, so it cannot run
-    until an admin explicitly classifies it via the Tool API (PATCH permission +
-    enabled + policy_classified). A reload only refreshes metadata — it never resets
-    the admin's policy on an already-registered plugin (register_dynamic_tool).
+    Discovery registers the plugin for on-demand runtime execution. The manifest
+    ``enabled`` value controls automatic hooks only; Workflow permission owns an
+    explicit agent invocation.
     """
     try:
         import app.application.tool_registry.runtime as _tr
@@ -388,10 +327,8 @@ def load_plugins() -> dict:
             loaded.append(name)
             _register_plugin_in_tool_registry(name, _plugins[name])
 
-            # P9.2-FIXUP: on_start auto-execution at load is DISABLED. Running plugin
-            # subprocess code as a side effect of discovery bypasses the kernel policy
-            # + approval gate. Plugin execution now happens only through the unified
-            # kernel (e.g. POST /api/extra/plugins/run) after admin classification.
+            # Discovery never executes plugin code. On-demand calls go through the
+            # canonical runtime; automatic hooks still respect manifest lifecycle.
 
         except Exception as e:
             errors.append({"name": name, "error": str(e)})
@@ -503,8 +440,6 @@ def run_plugin(name: str, args: dict = None) -> dict:
     if name not in _plugins:
         return {"ok": False, "error": f"Плагин не найден: {name}. Доступные: {list(_plugins.keys())}"}
     info = _plugins[name]
-    if not info["enabled"]:
-        return {"ok": False, "error": f"Плагин {name} выключен"}
     full_args = {**info["user_settings"], **(args or {})}
     timeout = int(info.get("timeout", PLUGIN_DEFAULT_TIMEOUT))
     return _run_plugin_subprocess(info["path"], {"action": "run", "args": full_args}, timeout=timeout)
@@ -635,7 +570,7 @@ def _default_manifest(stem: str, category: str = "", description: str = "") -> d
     return {
         "name": stem,
         "version": "1.0",
-        "enabled": False,  # forbidden + disabled until admin classification
+        "enabled": False,  # automatic hooks stay off until explicitly enabled
         "timeout": PLUGIN_DEFAULT_TIMEOUT,
         "capabilities": [],
         "category": category or "utility",
@@ -668,8 +603,8 @@ def _write_plugin_files(stem: str, py_text: str, manifest: dict) -> Path:
 def create_plugin(name: str, category: str = "", description: str = "") -> dict:
     """Generate a skeleton plugin (<name>.py + manifest, disabled) then reload.
 
-    The .py is never imported here — discovery only reads the manifest, and the
-    plugin lands forbidden + disabled until an admin classifies it.
+    The .py is never imported here — discovery only reads the manifest. Automatic
+    hooks start disabled; an explicit Workflow ``plugin_run`` remains available.
     """
     try:
         stem = _sanitize_plugin_stem(name)
@@ -701,10 +636,9 @@ def upload_plugin(
 ) -> dict:
     """Save an uploaded plugin .py (+ optional manifest) then reload.
 
-    Untrusted .py text is written to disk but never imported into the backend;
-    it can only run out-of-process after admin classification. If no manifest is
-    supplied, a safe disabled default is generated. The manifest's `enabled` flag
-    is always forced to False on upload.
+    Plugin text is written to disk but never imported into the backend; execution
+    is always out-of-process. If no manifest is supplied, a disabled-hook default
+    is generated. The manifest's `enabled` flag is forced to False on upload.
     """
     try:
         stem = _sanitize_plugin_stem(filename)
@@ -734,7 +668,7 @@ def upload_plugin(
     else:
         manifest = _default_manifest(stem)
 
-    # Never trust the uploaded manifest's enable flag — admin must classify first.
+    # Uploaded plugins never activate lifecycle hooks implicitly.
     manifest["enabled"] = False
     manifest.setdefault("name", stem)
 

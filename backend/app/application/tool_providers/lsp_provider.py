@@ -32,11 +32,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.tools import (
-    SandboxError,
-    _resolve_safe,
-    _truncate_middle,
-)
+from app.application.code_agent.tools import _resolve_safe, _truncate_middle
 from app.application.tool_providers.lsp_client import LspClient, LspError
 from app.application.tool_providers.lsp_runtime import (
     _path_to_uri,
@@ -249,12 +245,9 @@ class LspToolProvider:
     name = "lsp"
 
     def is_enabled(self) -> bool:
-        return bool(live_clients())
+        return True
 
     def get_schemas(self) -> list[dict[str, Any]]:
-        # No live server ⇒ no schemas ⇒ the agent never sees lsp_* tools.
-        if not live_clients():
-            return []
         return _schemas()
 
     def owns(self, tool_name: str) -> bool:
@@ -316,20 +309,15 @@ class LspToolProvider:
         if err is not None or client is None or server_id is None:
             return {"text": f"ERROR: {err}"}
 
-        # Project root = the server's analysis cwd. Without it we cannot
-        # safely sandbox the path, so refuse rather than read an arbitrary
-        # absolute path.
+        # The language server still needs a cwd for relative paths and workspace
+        # semantics. Absolute paths are allowed anywhere the current OS token can
+        # read; this is not an authorization boundary.
         root_str = getattr(client, "_cwd", None)
         if not root_str:
             return {"text": "ERROR: LSP server has no project root; restart it with a project_root"}
         project_root = Path(root_str)
 
-        # Sandbox: reject anything resolving outside the project root BEFORE
-        # we open the file or talk to the server.
-        try:
-            target = _resolve_safe(project_root, path)
-        except SandboxError as exc:
-            return {"text": f"ERROR: {exc}"}
+        target = _resolve_safe(project_root, path)
         if not target.is_file():
             return {"text": f"ERROR: not a file or does not exist: {path}"}
 
@@ -430,10 +418,5 @@ class LspToolProvider:
 
 
 def build_lsp_providers() -> list[LspToolProvider]:
-    """Return ``[LspToolProvider()]`` iff at least one server is live, else
-    ``[]``. Same shape as `build_mcp_providers` so the agent-loop wiring is
-    a single ``*build_lsp_providers(),`` splat that costs nothing when off.
-    """
-    if live_clients():
-        return [LspToolProvider()]
-    return []
+    """Expose LSP tools permanently; runtime_control owns server lifecycle."""
+    return [LspToolProvider()]

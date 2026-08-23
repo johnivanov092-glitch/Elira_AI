@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,11 +45,58 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     started_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     finished_at TEXT,
-    trigger_source TEXT NOT NULL DEFAULT 'api'
+    trigger_source TEXT NOT NULL DEFAULT 'api',
+    permission_mode TEXT NOT NULL DEFAULT 'ask'
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_started ON workflow_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS workflow_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NOT NULL UNIQUE,
+    workflow_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    message TEXT NOT NULL DEFAULT '',
+    schema_json TEXT NOT NULL DEFAULT '{}',
+    sensitive INTEGER NOT NULL DEFAULT 0,
+    provider_ref TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    resolution_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_requests_run ON workflow_requests(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_workflow_requests_status ON workflow_requests(status, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_requests_active_step
+    ON workflow_requests(run_id, step_id)
+    WHERE status IN ('pending', 'resolving', 'needs_reconciliation');
+
+CREATE TABLE IF NOT EXISTS workflow_triggers (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    interval_minutes INTEGER NOT NULL DEFAULT 60,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    permission_mode TEXT NOT NULL DEFAULT 'ask',
+    input_json TEXT NOT NULL DEFAULT '{}',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    last_run_id TEXT NOT NULL DEFAULT '',
+    last_run_at TEXT,
+    next_run_at TEXT NOT NULL,
+    last_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_triggers_due
+    ON workflow_triggers(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_workflow_triggers_workflow
+    ON workflow_triggers(workflow_id);
 """
 
 
@@ -56,13 +104,49 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _connect(db_path: str | Path) -> sqlite3.Connection:
-    return connect_sqlite(db_path)
+def _normalize_utc_iso(value: str) -> str:
+    raw = str(value or "").strip()
+    if raw.endswith("Z"):
+        raw = f"{raw[:-1]}+00:00"
+    parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+@contextmanager
+def _connect(db_path: str | Path):
+    connection = connect_sqlite(db_path)
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def init_db(*, db_path: str | Path) -> None:
     with _connect(db_path) as connection:
         connection.executescript(CREATE_SQL)
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(workflow_runs)").fetchall()
+        }
+        if "permission_mode" not in columns:
+            connection.execute(
+                "ALTER TABLE workflow_runs "
+                "ADD COLUMN permission_mode TEXT NOT NULL DEFAULT 'ask'"
+            )
+        connection.execute("DROP INDEX IF EXISTS idx_workflow_requests_active_step")
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX idx_workflow_requests_active_step
+            ON workflow_requests(run_id, step_id)
+            WHERE status IN ('pending', 'resolving', 'needs_reconciliation')
+            """
+        )
 
 
 def _dumps(value: Any) -> str:
@@ -103,6 +187,28 @@ def _row_to_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
     data["pending_steps"] = _loads(data.pop("pending_steps_json", "[]"), [])
     data["error"] = _loads(data.pop("error_json", "{}"), {})
     data["requested_pause"] = _as_bool(data.get("requested_pause"))
+    data["permission_mode"] = str(data.get("permission_mode") or "ask")
+    return data
+
+
+def _row_to_request(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    data = dict(row)
+    data["type"] = "item/request"
+    data["schema"] = _loads(data.pop("schema_json", "{}"), {})
+    data["resolution"] = _loads(data.pop("resolution_json", "{}"), {})
+    data["sensitive"] = _as_bool(data.get("sensitive"))
+    return data
+
+
+def _row_to_trigger(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    data = dict(row)
+    data["input"] = _loads(data.pop("input_json", "{}"), {})
+    data["context"] = _loads(data.pop("context_json", "{}"), {})
+    data["enabled"] = _as_bool(data.get("enabled"))
     return data
 
 
@@ -122,12 +228,25 @@ def normalize_graph(graph: dict[str, Any]) -> dict[str, Any]:
         if step_id in ids:
             raise ValueError(f"duplicate workflow step id: {step_id}")
         step_type = str(raw_step.get("type", "")).strip()
-        if step_type not in {"agent", "tool"}:
+        if step_type not in {"agent", "tool", "request"}:
             raise ValueError(f"unsupported workflow step type: {step_type}")
         if step_type == "agent" and not str(raw_step.get("agent_id", "")).strip():
             raise ValueError(f"agent step '{step_id}' requires agent_id")
         if step_type == "tool" and not str(raw_step.get("tool_name", "")).strip():
             raise ValueError(f"tool step '{step_id}' requires tool_name")
+        if step_type == "request":
+            config = raw_step.get("config", {})
+            if not isinstance(config, dict):
+                raise ValueError(f"workflow request step '{step_id}' requires config")
+            request_kind = str(config.get("kind", "")).strip()
+            if request_kind not in {"input", "secret", "elevation", "approval"}:
+                raise ValueError(
+                    f"workflow request step '{step_id}' has invalid request kind"
+                )
+            if not isinstance(config.get("schema", {}), dict):
+                raise ValueError(
+                    f"workflow request step '{step_id}' has invalid schema"
+                )
 
         next_value = raw_step.get("next")
         if next_value is not None and not isinstance(next_value, (str, list)):
@@ -275,6 +394,194 @@ def delete_workflow_template(*, db_path: str | Path, workflow_id: str) -> dict[s
     return {"workflow_id": workflow_id, "removed": cursor.rowcount > 0}
 
 
+def upsert_workflow_trigger(
+    *,
+    db_path: str | Path,
+    trigger: dict[str, Any],
+    now_func=now_utc,
+) -> dict[str, Any]:
+    trigger_id = str(trigger.get("id") or f"trigger-{uuid.uuid4().hex[:10]}").strip()
+    workflow_id = str(trigger.get("workflow_id") or "").strip()
+    if not workflow_id:
+        raise ValueError("workflow trigger requires workflow_id")
+    if not get_workflow_template(db_path=db_path, workflow_id=workflow_id):
+        raise ValueError(f"Workflow '{workflow_id}' not found")
+    interval_minutes = int(trigger.get("interval_minutes") or 60)
+    if interval_minutes < 1:
+        raise ValueError("workflow trigger interval_minutes must be at least 1")
+    permission_mode = str(trigger.get("permission_mode") or "ask").strip().lower()
+    if permission_mode not in {"ask", "accept_edits", "bypass"}:
+        raise ValueError(f"Unsupported workflow permission mode: {permission_mode}")
+    workflow_input = trigger.get("input", {})
+    context = trigger.get("context", {})
+    if not isinstance(workflow_input, dict) or not isinstance(context, dict):
+        raise ValueError("workflow trigger input and context must be objects")
+
+    now = now_func()
+    existing = get_workflow_trigger(db_path=db_path, trigger_id=trigger_id)
+    created_at = str((existing or {}).get("created_at") or now)
+    requested_next_run = str(trigger.get("next_run_at") or "").strip()
+    if requested_next_run:
+        next_run_at = _normalize_utc_iso(requested_next_run)
+    else:
+        next_run_at = (
+            datetime.fromisoformat(_normalize_utc_iso(now))
+            + timedelta(minutes=interval_minutes)
+        ).isoformat()
+
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO workflow_triggers
+                (id, workflow_id, name, interval_minutes, enabled,
+                 permission_mode, input_json, context_json, last_run_id,
+                 last_run_at, next_run_at, last_status, last_error,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                workflow_id = excluded.workflow_id,
+                name = excluded.name,
+                interval_minutes = excluded.interval_minutes,
+                enabled = excluded.enabled,
+                permission_mode = excluded.permission_mode,
+                input_json = excluded.input_json,
+                context_json = excluded.context_json,
+                next_run_at = excluded.next_run_at,
+                updated_at = excluded.updated_at
+            """,
+            (
+                trigger_id,
+                workflow_id,
+                str(trigger.get("name") or trigger_id),
+                interval_minutes,
+                1 if trigger.get("enabled", True) else 0,
+                permission_mode,
+                _dumps(workflow_input),
+                _dumps(context),
+                str((existing or {}).get("last_run_id") or ""),
+                (existing or {}).get("last_run_at"),
+                next_run_at,
+                str((existing or {}).get("last_status") or ""),
+                str((existing or {}).get("last_error") or ""),
+                created_at,
+                now,
+            ),
+        )
+    return get_workflow_trigger(db_path=db_path, trigger_id=trigger_id) or {}
+
+
+def get_workflow_trigger(
+    *, db_path: str | Path, trigger_id: str
+) -> dict[str, Any] | None:
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM workflow_triggers WHERE id = ?",
+            (trigger_id,),
+        ).fetchone()
+    return _row_to_trigger(row)
+
+
+def list_workflow_triggers(
+    *, db_path: str | Path, enabled: bool | None = None
+) -> tuple[list[dict[str, Any]], int]:
+    where = ""
+    params: list[Any] = []
+    if enabled is not None:
+        where = "WHERE enabled = ?"
+        params.append(1 if enabled else 0)
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            f"SELECT * FROM workflow_triggers {where} ORDER BY next_run_at, id",
+            params,
+        ).fetchall()
+    items = [_row_to_trigger(row) for row in rows]
+    triggers = [item for item in items if item]
+    return triggers, len(triggers)
+
+
+def list_due_workflow_triggers(
+    *, db_path: str | Path, due_at: str
+) -> list[dict[str, Any]]:
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM workflow_triggers
+            WHERE enabled = 1 AND next_run_at <= ?
+            ORDER BY next_run_at, id
+            """,
+            (due_at,),
+        ).fetchall()
+    items = [_row_to_trigger(row) for row in rows]
+    return [item for item in items if item]
+
+
+def claim_workflow_trigger(
+    *,
+    db_path: str | Path,
+    trigger_id: str,
+    due_at: str,
+    now_func=now_utc,
+) -> tuple[dict[str, Any] | None, bool]:
+    now = now_func()
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT interval_minutes FROM workflow_triggers WHERE id = ?",
+            (trigger_id,),
+        ).fetchone()
+        if not row:
+            return None, False
+        next_run_at = (
+            datetime.fromisoformat(_normalize_utc_iso(now))
+            + timedelta(minutes=max(1, int(row["interval_minutes"])))
+        ).isoformat()
+        cursor = connection.execute(
+            """
+            UPDATE workflow_triggers
+            SET last_run_at = ?, next_run_at = ?, last_status = 'running',
+                last_error = '', updated_at = ?
+            WHERE id = ? AND enabled = 1 AND next_run_at <= ?
+            """,
+            (now, next_run_at, now, trigger_id, due_at),
+        )
+        current = connection.execute(
+            "SELECT * FROM workflow_triggers WHERE id = ?",
+            (trigger_id,),
+        ).fetchone()
+    return _row_to_trigger(current), cursor.rowcount == 1
+
+
+def finish_workflow_trigger_run(
+    *,
+    db_path: str | Path,
+    trigger_id: str,
+    run_id: str,
+    status: str,
+    error: str = "",
+    now_func=now_utc,
+) -> dict[str, Any]:
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE workflow_triggers
+            SET last_run_id = ?, last_status = ?, last_error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (run_id, status, error, now_func(), trigger_id),
+        )
+    return get_workflow_trigger(db_path=db_path, trigger_id=trigger_id) or {}
+
+
+def delete_workflow_trigger(
+    *, db_path: str | Path, trigger_id: str
+) -> dict[str, Any]:
+    with _connect(db_path) as connection:
+        cursor = connection.execute(
+            "DELETE FROM workflow_triggers WHERE id = ?",
+            (trigger_id,),
+        )
+    return {"trigger_id": trigger_id, "removed": cursor.rowcount > 0}
+
+
 def get_workflow_run(*, db_path: str | Path, run_id: str) -> dict[str, Any] | None:
     with _connect(db_path) as connection:
         row = connection.execute(
@@ -335,6 +642,7 @@ def update_workflow_run(*, db_path: str | Path, run_id: str, now_func=now_utc, *
         "updated_at": "updated_at",
         "finished_at": "finished_at",
         "trigger_source": "trigger_source",
+        "permission_mode": "permission_mode",
     }
 
     for key, column in mapping.items():
@@ -369,6 +677,7 @@ def create_workflow_run_record(
     workflow_input: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     trigger_source: str = "api",
+    permission_mode: str = "ask",
     now_func=now_utc,
 ) -> dict[str, Any]:
     template = get_workflow_template(db_path=db_path, workflow_id=workflow_id)
@@ -390,8 +699,8 @@ def create_workflow_run_record(
             INSERT INTO workflow_runs
                 (run_id, workflow_id, status, current_step_id, input_json, context_json,
                  step_results_json, pending_steps_json, error_json, requested_pause,
-                 started_at, updated_at, finished_at, trigger_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 started_at, updated_at, finished_at, trigger_source, permission_mode)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run_id,
@@ -408,7 +717,279 @@ def create_workflow_run_record(
                 now,
                 None,
                 trigger_source,
+                permission_mode,
             ),
         )
 
     return get_workflow_run(db_path=db_path, run_id=run_id) or {}
+
+
+def create_runtime_workflow_run_record(
+    *,
+    db_path: str | Path,
+    run_id: str,
+    workflow_id: str,
+    context: dict[str, Any] | None = None,
+    trigger_source: str,
+    permission_mode: str,
+    now_func=now_utc,
+) -> dict[str, Any]:
+    """Create or reactivate a Workflow control record for an existing runtime.
+
+    Composer streaming already owns execution through ``stream_code_agent``. This
+    record gives that same run durable Workflow events/requests without creating a
+    second executor or requiring a separately stored Workflow template.
+    """
+    now = now_func()
+    existing = get_workflow_run(db_path=db_path, run_id=run_id)
+    if existing:
+        return update_workflow_run(
+            db_path=db_path,
+            run_id=run_id,
+            status="running",
+            current_step_id="agent",
+            context=context or existing.get("context", {}),
+            pending_steps=["agent"],
+            error={},
+            finished_at=None,
+            trigger_source=trigger_source,
+            permission_mode=permission_mode,
+        )
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO workflow_runs
+                (run_id, workflow_id, status, current_step_id, input_json, context_json,
+                 step_results_json, pending_steps_json, error_json, requested_pause,
+                 started_at, updated_at, finished_at, trigger_source, permission_mode)
+            VALUES (?, ?, 'running', 'agent', '{}', ?, '{}', ?, '{}', 0,
+                    ?, ?, NULL, ?, ?)
+            """,
+            (
+                run_id,
+                workflow_id,
+                _dumps(context or {}),
+                _dumps(["agent"]),
+                now,
+                now,
+                trigger_source,
+                permission_mode,
+            ),
+        )
+    return get_workflow_run(db_path=db_path, run_id=run_id) or {}
+
+
+def create_workflow_request_record(
+    *,
+    db_path: str | Path,
+    workflow_id: str,
+    run_id: str,
+    step_id: str,
+    kind: str,
+    message: str,
+    schema: dict[str, Any] | None = None,
+    sensitive: bool = False,
+    provider_ref: str = "",
+    now_func=now_utc,
+) -> dict[str, Any]:
+    now = now_func()
+    with _connect(db_path) as connection:
+        existing = connection.execute(
+            """
+            SELECT * FROM workflow_requests
+            WHERE run_id = ? AND step_id = ? AND status IN ('pending', 'resolving')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (run_id, step_id),
+        ).fetchone()
+        if existing:
+            if str(existing["status"]) == "pending":
+                return _row_to_request(existing) or {}
+            connection.execute(
+                """
+                UPDATE workflow_requests
+                SET status = 'resolved', action = 'accept', updated_at = ?,
+                    resolved_at = ?
+                WHERE request_id = ? AND status = 'resolving'
+                """,
+                (now, now, str(existing["request_id"])),
+            )
+
+        request_id = f"req-{uuid.uuid4().hex}"
+        connection.execute(
+            """
+            INSERT INTO workflow_requests
+                (request_id, workflow_id, run_id, step_id, kind, status, message,
+                 schema_json, sensitive, provider_ref, action, resolution_json,
+                 created_at, updated_at, resolved_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '', '{}', ?, ?, NULL)
+            """,
+            (
+                request_id,
+                workflow_id,
+                run_id,
+                step_id,
+                kind,
+                message,
+                _dumps(schema or {}),
+                1 if sensitive else 0,
+                provider_ref,
+                now,
+                now,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    return _row_to_request(row) or {}
+
+
+def get_workflow_request(
+    *,
+    db_path: str | Path,
+    request_id: str,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT * FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    return _row_to_request(row)
+
+
+def list_workflow_requests(
+    *,
+    db_path: str | Path,
+    run_id: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    if run_id:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    if status == "actionable":
+        clauses.append("status IN ('pending', 'needs_reconciliation')")
+    elif status:
+        clauses.append("status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with _connect(db_path) as connection:
+        total_row = connection.execute(
+            f"SELECT COUNT(*) AS cnt FROM workflow_requests {where}",
+            params,
+        ).fetchone()
+        rows = connection.execute(
+            f"""
+            SELECT * FROM workflow_requests {where}
+            ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?
+            """,
+            [*params, max(1, int(limit)), max(0, int(offset))],
+        ).fetchall()
+    total = int(total_row["cnt"]) if total_row else 0
+    requests = [_row_to_request(row) for row in rows]
+    return [request for request in requests if request], total
+
+
+def claim_workflow_request(
+    *,
+    db_path: str | Path,
+    request_id: str,
+    now_func=now_utc,
+) -> tuple[dict[str, Any] | None, bool]:
+    with _connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE workflow_requests SET status = 'resolving', updated_at = ?
+            WHERE request_id = ? AND status IN ('pending', 'needs_reconciliation')
+            """,
+            (now_func(), request_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    return _row_to_request(row), cursor.rowcount == 1
+
+
+def finalize_workflow_request(
+    *,
+    db_path: str | Path,
+    request_id: str,
+    status: str,
+    action: str,
+    resolution: dict[str, Any] | None = None,
+    now_func=now_utc,
+) -> dict[str, Any] | None:
+    now = now_func()
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE workflow_requests
+            SET status = ?, action = ?, resolution_json = ?, updated_at = ?, resolved_at = ?
+            WHERE request_id = ?
+            """,
+            (status, action, _dumps(resolution or {}), now, now, request_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    return _row_to_request(row)
+
+
+def release_workflow_request_claim(
+    *,
+    db_path: str | Path,
+    request_id: str,
+    now_func=now_utc,
+) -> dict[str, Any] | None:
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE workflow_requests SET status = 'pending', updated_at = ?
+            WHERE request_id = ? AND status = 'resolving'
+            """,
+            (now_func(), request_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    return _row_to_request(row)
+
+
+def mark_workflow_request_reconciliation(
+    *,
+    db_path: str | Path,
+    request_id: str,
+    now_func=now_utc,
+) -> dict[str, Any] | None:
+    warning = (
+        "Предыдущий запуск прервался в неопределённой точке. Проверьте внешний "
+        "результат перед явным повтором: действие могло уже выполниться."
+    )
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            "SELECT message FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+        message = str(row["message"] or "") if row else ""
+        if not message.startswith(warning):
+            message = f"{warning}\n\n{message}".strip()
+        connection.execute(
+            """
+            UPDATE workflow_requests
+            SET status = 'needs_reconciliation', message = ?, updated_at = ?
+            WHERE request_id = ? AND status = 'resolving'
+            """,
+            (message, now_func(), request_id),
+        )
+        updated = connection.execute(
+            "SELECT * FROM workflow_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+    return _row_to_request(updated)

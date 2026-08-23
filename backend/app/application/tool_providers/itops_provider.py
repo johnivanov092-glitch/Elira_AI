@@ -1,37 +1,33 @@
-"""IT-Ops tool provider: scoped read-only diagnostics plus reviewed local changes.
+"""IT-Ops tool provider: workflow diagnostics and local changes.
 
 Exposes read-only diagnostic adapters that run a FIXED command set over OS OpenSSH
-against the alias STORED on a saved, verified connection profile:
-  * ``itops_ssh_healthcheck(profile_id)`` — hostname; uname -a; uptime.
-  * ``itops_linux_inventory(profile_id)`` — a curated Linux inventory set.
-  * ``itops_windows_inventory(profile_id)`` — a curated Windows inventory set, run as
+against an explicit target or an optional saved connection shortcut:
+  * ``itops_ssh_healthcheck(target)`` — hostname; uname -a; uptime.
+  * ``itops_linux_inventory(target)`` — a curated Linux inventory set.
+  * ``itops_windows_inventory(target)`` — a curated Windows inventory set, run as
     STATIC PowerShell via -EncodedCommand (no quoting through cmd/sshd).
   * ``itops_config_inspect()`` — one named config target from a typed scope, projected
     through a strict parser without returning raw content.
   * ``itops_database_inspect()`` — one local named SQLite target, opened read-only and
     projected to schema metadata, migration/backup state and fixed aggregate counts.
-  * ``itops_change_apply(target_id)`` — one executor-registered typed change through
-    local Tauri policy or the dedicated remote Telegram approval channel.
-For SSH adapters the model supplies only a profile_id, never a host/alias. The
-database adapter takes no arguments. In both cases the operation-scope gate pins
-one server-owned target and exactly one tool to the run before dispatch.
+SSH targets are not required to be registered as assets or profiles. A saved
+``profile_id`` remains a discovery shortcut only. The Workflow permission is the
+only product authorization boundary.
 
-Hard properties:
-- No raw shell, no model-supplied host, no ssh_acl allowlist, no generic SSH
+Runtime properties:
+- No second SSH client: adapters reuse saved OpenSSH profiles.
   provider. Each command is a fixed argv (no shell), so nothing is injectable.
 - Every command's output is redacted + capped INDIVIDUALLY, then persisted as
   evidence ({profile/asset, command id, exit, timestamp}).
-- The provider is hidden entirely when the ``itops`` flag is off (zero schemas,
-  never dispatches), mirroring SshToolProvider's flag-gating.
 """
 from __future__ import annotations
 
 import base64
 import logging
-import subprocess
 from typing import Any
 
 from app.infrastructure.encoding import decode_console
+from app.application.tool_providers.ssh_provider import run_registered_process
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +60,6 @@ _INVENTORY_COMMANDS: tuple[tuple[str, list[str], bool], ...] = (
 )
 _INVENTORY_TOTAL_CAP = 12000    # shared budget across all commands' output (reply AND evidence)
 _INVENTORY_PER_CMD_CAP = 2000
-_INVENTORY_CMD_TIMEOUT = 10     # ≤10s per command
 
 # Windows read-only inventory (adapter #2). Each command is a STATIC PowerShell
 # script run via powershell.exe -EncodedCommand (UTF-16LE Base64) — NOT -Command and
@@ -79,12 +74,43 @@ _WINDOWS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("services", "Get-Service | Where-Object { $_.Status -eq 'Running' } | ForEach-Object { $_.Name + '  ' + $_.DisplayName }"),
     ("ipconfig", "Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object { $_.IPEnabled } | ForEach-Object { $_.Description + '  ' + ($_.IPAddress -join ', ') }"),
 )
-_WINDOWS_CMD_TIMEOUT = 15       # ≤15s per command (Windows cmdlet startup + CIM is slower)
 
 
 def _ssh_argv(alias: str, remote: list[str]) -> list[str]:
     return [_SSH, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=yes", alias, *remote]
+            "-o", "StrictHostKeyChecking=accept-new", alias, *remote]
+
+
+class ItopsTargetError(ValueError):
+    """Malformed or missing SSH target metadata."""
+
+
+def _resolve_ssh_target(*, target: str = "", profile_id: str = "") -> tuple[str, str, str]:
+    """Resolve an explicit SSH target or an optional saved profile shortcut.
+
+    Assets and profiles are metadata, never authorization. An explicit target wins
+    and is passed as one argv item. Only option/NUL injection is rejected; OpenSSH
+    owns hostname, alias, ``user@host`` and address interpretation.
+    """
+    direct = str(target or "").strip()
+    pid = str(profile_id or "").strip()
+    if direct:
+        if direct.startswith("-") or "\x00" in direct:
+            raise ItopsTargetError("invalid_ssh_target")
+        return direct, pid, f"ssh/{direct}"
+    if not pid:
+        raise ItopsTargetError("ssh_target_required")
+
+    from app.infrastructure.it_ops import store
+
+    store.init_db()
+    prof = store.get_connection_profile(pid)
+    if not prof or prof.get("transport") != "ssh":
+        raise ItopsTargetError("unknown_profile")
+    alias = str(prof.get("ssh_alias") or "").strip()
+    if not alias or alias.startswith("-") or "\x00" in alias:
+        raise ItopsTargetError("invalid_ssh_target")
+    return alias, pid, f"profile/{pid}"
 
 
 def _ps_encode(script: str) -> str:
@@ -135,54 +161,36 @@ def _clean(raw: bytes, cap: int) -> str:
     return text[:cap - len(_TRUNC)] + _TRUNC
 
 
-def tool_itops_ssh_healthcheck(profile_id: str = "", **_ignored: Any) -> dict[str, Any]:
-    """Run the fixed read-only health check on the profile's stored alias.
+def tool_itops_ssh_healthcheck(
+    target: str = "", profile_id: str = "", **_ignored: Any,
+) -> dict[str, Any]:
+    """Run the fixed read-only health check on any SSH target.
 
-    profile_id is the value the executor scope gate re-pinned to the run's bound
-    scope. run_id is taken from the RUNTIME CONTEXT (the executor bound it from
-    ToolExecutionRequest.run_id) — NEVER from model-supplied args, which are ignored.
+    profile_id optionally selects saved connection metadata. It is not an
+    authorization scope; Workflow permission owns the execution decision. run_id
+    comes from runtime context and is used only to correlate evidence.
     Returns {ok, text, results:[...]} and writes one evidence row per command.
     """
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import ssh_enroll
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()   # authoritative — from runtime context, not args
-    pid = str(profile_id or "").strip()
-    if not pid:
-        return {"ok": False, "text": "ERROR: no profile_id", "error": "no_profile_id"}
     try:
-        store.init_db()
-        prof = store.get_connection_profile(pid)
-        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
-    if not prof or prof.get("transport") != "ssh":
-        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
-    # Defense in depth: the route + gate already require an ENABLED asset, but the handler
-    # holds the same line so a scope bound another way can never run against a draft/unknown
-    # asset (fail-closed BEFORE any SSH).
-    if not asset or asset.get("lifecycle_state") != "enabled":
-        return {"ok": False, "text": "ERROR: health check requires a verified/enabled asset",
-                "error": "profile_not_enabled"}
-    alias = str(prof.get("ssh_alias") or "").strip()
-    if not ssh_enroll.alias_ok(alias):
-        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
-    asset_id = str(prof.get("asset_id") or "")
-    target_identity = f"{asset_id}/{pid}"
+        error = str(exc) or "ssh_target_unavailable"
+        return {"ok": False, "text": f"ERROR: {error}", "error": error}
 
     results: list[dict[str, Any]] = []
-    lines: list[str] = [f"Read-only health check — {alias} (profile {pid}):"]
+    lines: list[str] = [f"Read-only health check — {alias}:"]
     evidence_ok = True
     for cmd_id, remote in _HEALTH_COMMANDS:
         try:
-            proc = subprocess.run(_ssh_argv(alias, remote), capture_output=True, timeout=15)
+            proc = run_registered_process(_ssh_argv(alias, remote))
             code = proc.returncode
             out = _clean(proc.stdout, _PER_CMD_CAP)
             err = _clean(proc.stderr, _PER_CMD_CAP)
-        except subprocess.TimeoutExpired:
-            code, out, err = None, "", "connection timed out"
-        except (OSError, subprocess.SubprocessError) as exc:
+        except OSError as exc:
             code, out, err = None, "", f"ssh could not run: {exc}"
         entry = {"command_id": cmd_id, "command": " ".join(remote), "exit": code, "stdout": out}
         if err:
@@ -217,56 +225,36 @@ def tool_itops_ssh_healthcheck(profile_id: str = "", **_ignored: Any) -> dict[st
     return out_dict
 
 
-def tool_itops_linux_inventory(profile_id: str = "", **_ignored: Any) -> dict[str, Any]:
-    """Linux read-only inventory on the profile's stored alias (adapter #1).
+def tool_itops_linux_inventory(
+    target: str = "", profile_id: str = "", **_ignored: Any,
+) -> dict[str, Any]:
+    """Linux read-only inventory on any SSH target (adapter #1).
 
     Runs a fixed set of read-only commands (≤10s each). The 12K TOTAL cap is a shared
     budget across all commands, applied to BOTH the reply AND the persisted evidence.
-    Requires a `linux` asset (defense-in-depth; the route also checks). Any command
-    failure (non-zero that is NOT the exact systemd-absent signal) makes the whole
-    inventory ok=false; a failed evidence write does too. run_id/profile_id are
-    authoritative (context / scope-repinned), never model-trusted.
+    Any command failure (non-zero that is NOT the exact systemd-absent signal)
+    makes the whole inventory ok=false; a failed evidence write does too.
     """
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import ssh_enroll
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    pid = str(profile_id or "").strip()
-    if not pid:
-        return {"ok": False, "text": "ERROR: no profile_id", "error": "no_profile_id"}
     try:
-        store.init_db()
-        prof = store.get_connection_profile(pid)
-        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
-    if not prof or prof.get("transport") != "ssh":
-        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
-    if not asset or asset.get("kind") != "linux":
-        return {"ok": False, "text": "ERROR: linux inventory requires a linux asset",
-                "error": "not_linux_asset"}
-    if asset.get("lifecycle_state") != "enabled":     # defense in depth (route/gate also require it)
-        return {"ok": False, "text": "ERROR: linux inventory requires a verified/enabled asset",
-                "error": "profile_not_enabled"}
-    alias = str(prof.get("ssh_alias") or "").strip()
-    if not ssh_enroll.alias_ok(alias):
-        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
-    target_identity = f"{asset.get('asset_id')}/{pid}"
+        error = str(exc) or "ssh_target_unavailable"
+        return {"ok": False, "text": f"ERROR: {error}", "error": error}
 
     budget = _INVENTORY_TOTAL_CAP     # shared across commands: bounds reply AND evidence
     results: list[dict[str, Any]] = []
-    lines: list[str] = [f"Linux inventory — {alias} (profile {pid}):"]
+    lines: list[str] = [f"Linux inventory — {alias}:"]
     cmds_ok = True
     evidence_ok = True
     for cmd_id, remote, required in _INVENTORY_COMMANDS:
         try:
-            proc = subprocess.run(_ssh_argv(alias, remote), capture_output=True,
-                                  timeout=_INVENTORY_CMD_TIMEOUT)
+            proc = run_registered_process(_ssh_argv(alias, remote))
             code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired:
-            code, raw_out, raw_err = None, b"", b"connection timed out"
-        except (OSError, subprocess.SubprocessError) as exc:
+        except OSError as exc:
             code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
         # Cap to the shared remaining budget (applies to BOTH evidence and reply).
         out = _clean(raw_out, max(0, min(_INVENTORY_PER_CMD_CAP, budget)))
@@ -314,56 +302,36 @@ def tool_itops_linux_inventory(profile_id: str = "", **_ignored: Any) -> dict[st
     return out_dict
 
 
-def tool_itops_windows_inventory(profile_id: str = "", **_ignored: Any) -> dict[str, Any]:
-    """Windows read-only inventory on the profile's stored alias (adapter #2).
+def tool_itops_windows_inventory(
+    target: str = "", profile_id: str = "", **_ignored: Any,
+) -> dict[str, Any]:
+    """Windows read-only inventory on any SSH target (adapter #2).
 
     Runs a fixed set of STATIC PowerShell scripts via -EncodedCommand (≤15s each).
-    Requires a `windows` asset (defense-in-depth; the route also checks). The 12K
-    TOTAL cap is a shared budget across all commands, applied to BOTH the reply AND
-    the persisted evidence (which records the readable script, never the base64). Any
-    command failure or a failed evidence write makes the whole inventory ok=false.
-    run_id/profile_id are authoritative (context / scope-repinned), never model-trusted.
+    The 12K TOTAL cap is a shared context budget across all commands, applied to
+    both the reply and persisted evidence. Any command failure or a failed evidence
+    write makes the whole inventory ok=false.
     """
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import ssh_enroll
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    pid = str(profile_id or "").strip()
-    if not pid:
-        return {"ok": False, "text": "ERROR: no profile_id", "error": "no_profile_id"}
     try:
-        store.init_db()
-        prof = store.get_connection_profile(pid)
-        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
-    if not prof or prof.get("transport") != "ssh":
-        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
-    if not asset or asset.get("kind") != "windows":
-        return {"ok": False, "text": "ERROR: windows inventory requires a windows asset",
-                "error": "not_windows_asset"}
-    if asset.get("lifecycle_state") != "enabled":     # defense in depth (route/gate also require it)
-        return {"ok": False, "text": "ERROR: windows inventory requires a verified/enabled asset",
-                "error": "profile_not_enabled"}
-    alias = str(prof.get("ssh_alias") or "").strip()
-    if not ssh_enroll.alias_ok(alias):
-        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
-    target_identity = f"{asset.get('asset_id')}/{pid}"
+        error = str(exc) or "ssh_target_unavailable"
+        return {"ok": False, "text": f"ERROR: {error}", "error": error}
 
     budget = _INVENTORY_TOTAL_CAP     # shared across commands: bounds reply AND evidence
     results: list[dict[str, Any]] = []
-    lines: list[str] = [f"Windows inventory — {alias} (profile {pid}):"]
+    lines: list[str] = [f"Windows inventory — {alias}:"]
     cmds_ok = True
     evidence_ok = True
     for cmd_id, script in _WINDOWS_COMMANDS:
         try:
-            proc = subprocess.run(_ps_argv(alias, script), capture_output=True,
-                                  timeout=_WINDOWS_CMD_TIMEOUT)
+            proc = run_registered_process(_ps_argv(alias, script))
             code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
-        except subprocess.TimeoutExpired:
-            code, raw_out, raw_err = None, b"", b"connection timed out"
-        except (OSError, subprocess.SubprocessError) as exc:
+        except OSError as exc:
             code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
         out = _clean(raw_out, max(0, min(_INVENTORY_PER_CMD_CAP, budget)))
         err = _clean(raw_err, max(0, min(_INVENTORY_PER_CMD_CAP, budget - len(out))))
@@ -404,42 +372,38 @@ def tool_itops_windows_inventory(profile_id: str = "", **_ignored: Any) -> dict[
     return out_dict
 
 
-def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
-    """Read-only network inventory (Phase 3). Takes NO arguments — the CIDR and the
-    server-owned port profile come ONLY from the run's bound network scope (the gate
-    already refused any model arg). Does a bounded TCP-connect scan within hard caps,
+def tool_itops_network_inventory(
+    cidr: str = "",
+    ports: list[int] | None = None,
+    connect_timeout: float = 1.0,
+    concurrency: int = 64,
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Read-only network inventory (Phase 3) for an explicit IPv4 CIDR.
+
+    Scans until completion or Workflow Stop, with caller-selected ports,
+    per-connect transport timeout and concurrency,
     writes one evidence row per CONFIRMED OPEN host:port, and ALWAYS writes a
-    server-owned summary in a finally (planned/attempted/completed/state counts, caps,
-    stop_reason, status). complete → ok=true; partial/timed_out → ok=false
+    server-owned summary in a finally (planned/attempted/completed/state counts,
+    stop_reason, status). complete → ok=true; stopped/partial → ok=false
     scan_incomplete; a failed summary write OR a failed per-open write → ok=false
     evidence_persist_failed (no open may be reported without its own proof row). A
     killed process cannot write the summary — absence of a terminal summary is
     'unknown', never 'nothing found'.
     """
-    from app.application.agent_kernel import operation_scope
-    from app.application.code_agent.tools import get_current_run_id
+    from app.application.code_agent.tools import get_current_run_id, run_was_stopped
     from app.application.it_ops import net_inventory as ni
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    scope = operation_scope.get_active_scope(run_id)
-    if scope is None or scope.target_kind != "network" or scope.network is None:
-        return {"ok": False, "text": "ERROR: no bound network scope", "error": "no_network_scope"}
-    cidr = scope.network.cidr
-    if scope.network.port_profile != ni.PROFILE_COMMON_V1.name:
-        return {"ok": False, "text": "ERROR: unknown port profile", "error": "unknown_profile"}
-    profile = ni.PROFILE_COMMON_V1
+    cidr = str(cidr or "").strip()
     try:
-        hosts = ni.parse_cidr_v1(cidr)
-    except ni.CidrError as exc:
-        return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
-    # Defence-in-depth: the route authorizes the CIDR before binding the scope, but the
-    # handler re-verifies against the SAME controls and fails closed — an unauthorized or
-    # over-budget target must never scan just because a scope was created some other way.
-    if not ni.cidr_authorized(cidr):
-        return {"ok": False, "text": "ERROR: cidr not authorized", "error": "cidr_not_authorized"}
-    try:
-        ni.validate_profile(profile, len(hosts))
+        network = ni.parse_cidr_v1(cidr)
+        profile = ni.build_profile(
+            ports,
+            per_connect_timeout=connect_timeout,
+            in_flight=concurrency,
+        )
     except ni.CidrError as exc:
         return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
 
@@ -449,7 +413,13 @@ def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
     opens_evidence_ok = True     # every open MUST leave its own durable proof row
     try:
         store.init_db()
-        result = ni.run_scan(cidr, hosts, profile)
+        result = ni.run_scan(
+            cidr,
+            (str(host) for host in network.hosts()),
+            profile,
+            host_count=ni.usable_host_count(network),
+            should_stop=lambda: run_was_stopped(run_id),
+        )
         for o in result.opens:
             try:
                 store.record_evidence(
@@ -475,9 +445,10 @@ def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
                             "completed": result.completed, "open_count": len(result.opens),
                             "counts": result.counts, "stop_reason": result.stop_reason,
                             "status": result.status,
-                            "caps": {"rate_limit": profile.rate_limit, "total_timeout": profile.total_timeout,
-                                     "per_connect_timeout": profile.per_connect_timeout,
-                                     "in_flight": profile.in_flight, "max_hosts": profile.max_hosts}},
+                            "runtime": {
+                                "per_connect_timeout": profile.per_connect_timeout,
+                                "in_flight": profile.in_flight,
+                            }},
                     exit_status="0" if result.status == "complete" else "1")
                 summary_ok = True
             except Exception:  # noqa: BLE001
@@ -485,7 +456,9 @@ def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
 
     if result is None:
         return {"ok": False, "text": "ERROR: scan did not run", "error": "scan_failed"}
-    if result.status != "complete":
+    if result.stop_reason == "stopped":
+        ok, err = False, "cancelled_by_user"
+    elif result.status != "complete":
         ok, err = False, "scan_incomplete"
     elif not summary_ok or not opens_evidence_ok:
         # Mirror the SSH/inventory adapters: a run can never claim success while any
@@ -503,58 +476,38 @@ def tool_itops_network_inventory(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
-def tool_itops_systemd_service_inspect(**_ignored: Any) -> dict[str, Any]:
-    """Read-only systemd SERVICE inspect (Phase 4a). Takes NO arguments — the enabled
-    Linux profile (principal) and the ONE selected unit come ONLY from the run's bound
-    systemd_service scope (the gate already refused any model arg). Runs a SINGLE fixed
+def tool_itops_systemd_service_inspect(
+    target: str = "",
+    profile_id: str = "",
+    unit: str = "",
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Read-only systemd SERVICE inspect for any SSH target and unit.
+
+    Runs a SINGLE fixed
     `systemctl show` for a fixed property set, projects the output to TYPED fields (never
     raw stdout), and writes exactly ONE evidence row; a failed evidence write → ok=false.
     NO systemctl status / journalctl / unit-file content, and NO start/stop/restart.
     """
-    from app.application.agent_kernel import operation_scope
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.it_ops import ssh_enroll
     from app.application.it_ops import systemd_inspect as si
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    scope = operation_scope.get_active_scope(run_id)
-    if scope is None or scope.target_kind != "systemd_service" or scope.systemd is None:
-        return {"ok": False, "text": "ERROR: no bound systemd scope", "error": "no_systemd_scope"}
-    pid = str(scope.profile_id or "").strip()
-    unit = str(scope.systemd.unit or "").strip()
-    if not si.unit_name_ok(unit):     # defense in depth: the route validated this too
+    unit = str(unit or "").strip()
+    if not si.unit_name_ok(unit):
         return {"ok": False, "text": "ERROR: invalid unit name", "error": "bad_unit"}
     try:
-        store.init_db()
-        prof = store.get_connection_profile(pid)
-        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
-    if not prof or prof.get("transport") != "ssh":
-        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
-    if not asset or asset.get("kind") != "linux":
-        return {"ok": False, "text": "ERROR: systemd inspect requires a linux asset",
-                "error": "not_linux_asset"}
-    if asset.get("lifecycle_state") != "enabled":
-        # Defense in depth: the route + gate already require an ENABLED asset, but the
-        # handler holds the same line so a scope bound another way can never inspect a
-        # draft/unverified asset (fail-closed BEFORE any SSH).
-        return {"ok": False, "text": "ERROR: systemd inspect requires a verified/enabled asset",
-                "error": "profile_not_enabled"}
-    alias = str(prof.get("ssh_alias") or "").strip()
-    if not ssh_enroll.alias_ok(alias):
-        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
-    target_identity = f"{asset.get('asset_id')}/{pid}"
+        error = str(exc) or "ssh_target_unavailable"
+        return {"ok": False, "text": f"ERROR: {error}", "error": error}
 
     # ONE fixed, read-only `systemctl show` (no shell; the unit is strictly validated).
     try:
-        proc = subprocess.run(_ssh_argv(alias, si.show_remote_command(unit)),
-                              capture_output=True, timeout=si.INSPECT_TIMEOUT)
+        proc = run_registered_process(_ssh_argv(alias, si.show_remote_command(unit)))
         code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired:
-        code, raw_out, raw_err = None, b"", b"connection timed out"
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
         code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
 
     if code == 0:
@@ -593,52 +546,36 @@ def tool_itops_systemd_service_inspect(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
-def tool_itops_config_inspect(**_ignored: Any) -> dict[str, Any]:
-    """Read one server-owned config target and persist only its typed safe projection."""
-    from app.application.agent_kernel import operation_scope
+def tool_itops_config_inspect(
+    target: str = "",
+    profile_id: str = "",
+    config_id: str = "",
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Read one named config target on any SSH target and persist its projection."""
     from app.application.code_agent.tools import get_current_run_id
     from app.application.it_ops import config_inspect as ci
-    from app.application.it_ops import ssh_enroll
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    scope = operation_scope.get_active_scope(run_id)
-    if scope is None or scope.target_kind != "config_file" or scope.config is None:
-        return {"ok": False, "text": "ERROR: no bound config scope", "error": "no_config_scope"}
-    pid = str(scope.profile_id or "").strip()
     try:
-        spec = ci.resolve_config(scope.config.config_id)
+        spec = ci.resolve_config(str(config_id or "").strip())
     except ci.ConfigInspectError as exc:
         return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
 
     try:
-        store.init_db()
-        prof = store.get_connection_profile(pid)
-        asset = store.get_asset(str((prof or {}).get("asset_id") or "")) if prof else None
+        alias, pid, target_identity = _resolve_ssh_target(target=target, profile_id=profile_id)
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "text": f"ERROR: store unavailable: {exc}", "error": "store_unavailable"}
-    if not prof or prof.get("transport") != "ssh":
-        return {"ok": False, "text": "ERROR: unknown ssh profile", "error": "unknown_profile"}
-    if not asset or asset.get("kind") != "linux":
-        return {"ok": False, "text": "ERROR: config inspect requires a linux asset",
-                "error": "not_linux_asset"}
-    if asset.get("lifecycle_state") != "enabled":
-        return {"ok": False, "text": "ERROR: config inspect requires a verified/enabled asset",
-                "error": "profile_not_enabled"}
-    alias = str(prof.get("ssh_alias") or "").strip()
-    if not ssh_enroll.alias_ok(alias):
-        return {"ok": False, "text": "ERROR: stored alias is not a valid token", "error": "bad_alias"}
+        error = str(exc) or "ssh_target_unavailable"
+        return {"ok": False, "text": f"ERROR: {error}", "error": error}
 
     code: int | None
     raw_out: bytes
     raw_err: bytes
     try:
-        proc = subprocess.run(_ssh_argv(alias, ci.read_remote_command(spec)),
-                              capture_output=True, timeout=ci.INSPECT_TIMEOUT)
+        proc = run_registered_process(_ssh_argv(alias, ci.read_remote_command(spec)))
         code, raw_out, raw_err = proc.returncode, proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired:
-        code, raw_out, raw_err = None, b"", b"connection timed out"
-    except (OSError, subprocess.SubprocessError) as exc:
+    except OSError as exc:
         code, raw_out, raw_err = None, b"", f"ssh could not run: {exc}".encode()
 
     projection: dict[str, Any] = {
@@ -658,7 +595,6 @@ def tool_itops_config_inspect(**_ignored: Any) -> dict[str, Any]:
         ok, err = False, "inspect_failed"
         projection["error"] = err
 
-    target_identity = f"{asset.get('asset_id')}/{pid}"
     evidence_ok = True
     try:
         store.record_evidence(
@@ -686,25 +622,23 @@ def tool_itops_config_inspect(**_ignored: Any) -> dict[str, Any]:
     return out
 
 
-def tool_itops_database_inspect(**_ignored: Any) -> dict[str, Any]:
-    """Inspect one server-owned SQLite database with no model/client arguments.
+def tool_itops_database_inspect(
+    database_id: str = "",
+    **_ignored: Any,
+) -> dict[str, Any]:
+    """Inspect one registered SQLite database selected by id.
 
-    The typed scope carries only ``database_id``. The inspector owns the path, URI,
+    The inspector owns the path, URI,
     schemas, limits and fixed aggregate query. Evidence is a flat safe projection:
     no path/DSN/SQL, schema details or row contents are persisted.
     """
-    from app.application.agent_kernel import operation_scope
     from app.application.code_agent.tools import get_current_run_id
     from app.application.it_ops import database_inspect as di
     from app.infrastructure.it_ops import store
 
     run_id = get_current_run_id()
-    scope = operation_scope.get_active_scope(run_id)
-    if scope is None or scope.target_kind != "database" or scope.database is None:
-        return {"ok": False, "text": "ERROR: no bound database scope",
-                "error": "no_database_scope"}
     try:
-        spec = di.resolve_database(scope.database.database_id)
+        spec = di.resolve_database(str(database_id or "").strip())
     except di.DatabaseInspectError as exc:
         return {"ok": False, "text": f"ERROR: {exc.reason}", "error": exc.reason}
 
@@ -786,63 +720,13 @@ def tool_itops_database_inspect(**_ignored: Any) -> dict[str, Any]:
             "evidence_persisted": True}
 
 
-def tool_itops_change_apply(
-    target_id: str = "",
-    **_ignored: Any,
-) -> dict[str, Any]:
-    """Apply locally or request a remote Telegram plan for one reviewed target.
-
-    The model supplies only an opaque target id from the schema enum. The main backend
-    performs a second exact allowlist check; the isolated executor resolves every
-    operational detail and owns snapshot, capability consume, apply and post-check.
-    """
-    from app.application.agent_kernel.execution_context import get_execution_channel
-    from app.application.it_ops import change_client
-
-    normalized = str(target_id or "").strip()
-    if normalized not in change_client.LOCAL_CHANGE_TARGETS:
-        return {"ok": False, "text": "Local change target is not allowed",
-                "error": "target_not_allowed"}
-    channel = get_execution_channel()
-    try:
-        result = (
-            change_client.request_plan(normalized)
-            if channel == "remote"
-            else change_client.apply_local(normalized)
-        )
-    except change_client.ChangeExecutorUnavailable as exc:
-        return {"ok": False, "text": f"Change executor unavailable: {exc}",
-                "error": "change_executor_unavailable"}
-
-    change_run_id = str(result.get("change_run_id") or "")
-    status = str(result.get("status") or result.get("error") or "unknown")
-    details: dict[str, Any] | None = None
-    if change_run_id:
-        try:
-            details = change_client.get_status(change_run_id)
-        except change_client.ChangeExecutorUnavailable:
-            details = None
-    return {
-        "ok": bool(result.get("ok")),
-        "text": (
-            f"Remote IT change plan {normalized}: {status}"
-            if channel == "remote"
-            else f"Local IT change {normalized}: {status}"
-        ),
-        "change_run_id": change_run_id,
-        "status": status,
-        "evidence": (details or {}).get("evidence", []),
-        **({"error": str(result.get("error"))} if result.get("error") else {}),
-    }
-
-
-def _tool_itops_mikrotik_inventory(**_ignored: Any) -> dict[str, Any]:
-    """Thin dispatch shim: the full adapter (scope re-check, allowlist, fixed MCP
+def _tool_itops_mikrotik_inventory(**kwargs: Any) -> dict[str, Any]:
+    """Thin dispatch shim: the full adapter (format check, fixed MCP
     call plan, projection, evidence, bounded text) lives in
     app.application.it_ops.mikrotik_runtime. Imported lazily so the provider
     module never grows a transport dependency."""
     from app.application.it_ops.mikrotik_runtime import tool_itops_mikrotik_inventory
-    return tool_itops_mikrotik_inventory(**_ignored)
+    return tool_itops_mikrotik_inventory(**kwargs)
 
 
 _DISPATCH = {
@@ -853,24 +737,17 @@ _DISPATCH = {
     "itops_systemd_service_inspect": tool_itops_systemd_service_inspect,
     "itops_config_inspect": tool_itops_config_inspect,
     "itops_database_inspect": tool_itops_database_inspect,
-    "itops_change_apply": tool_itops_change_apply,
     "itops_mikrotik_inventory": _tool_itops_mikrotik_inventory,
 }
 
 
 class ItopsToolProvider:
-    """ToolProvider for the scoped read-only SSH diagnostic. Hidden (zero schemas,
-    never dispatches) when the itops flag is off — the executor scope gate is the
-    real authorization, this only controls visibility."""
+    """ToolProvider for Workflow-controlled IT Ops runtimes."""
 
     name = "itops"
 
     def is_enabled(self) -> bool:
-        try:
-            from app.application.feature_flags import flag_enabled
-            return flag_enabled("itops")
-        except Exception:  # noqa: BLE001
-            return False
+        return True
 
     def get_schemas(self) -> list[dict[str, Any]]:
         return [
@@ -879,20 +756,22 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_ssh_healthcheck",
                     "description": (
-                        "Read-only SSH diagnostic on a SAVED, verified connection profile: runs a "
+                        "Read-only SSH diagnostic on any target: runs a "
                         "fixed set of harmless commands (hostname, uname -a, uptime) and returns "
-                        "their output. Takes a profile_id (NOT a host/alias). Only runnable inside "
-                        "a bound read-only diagnostic run; one call per run."
+                        "their output. Pass target directly; profile_id is an optional saved shortcut."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "profile_id": {
                                 "type": "string",
-                                "description": "The saved connection profile id to diagnose.",
+                                "description": "Optional saved connection shortcut.",
+                            },
+                            "target": {
+                                "type": "string",
+                                "description": "SSH alias, hostname, IP address, or user@host.",
                             },
                         },
-                        "required": ["profile_id"],
                     },
                 },
             },
@@ -901,21 +780,23 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_linux_inventory",
                     "description": (
-                        "Read-only Linux inventory on a SAVED, verified LINUX profile: runs a fixed "
+                        "Read-only Linux inventory on any SSH target: runs a fixed "
                         "set of harmless commands (hostname, uname, /etc/os-release, lscpu, free, df, "
                         "ip addr, uptime, lsblk, failed systemd units) and returns their output. "
-                        "Takes a profile_id (NOT a host/alias). Only runnable inside a bound read-only "
-                        "diagnostic run for a linux asset; one call per run."
+                        "Pass target directly; profile_id is an optional saved shortcut."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "profile_id": {
                                 "type": "string",
-                                "description": "The saved linux connection profile id to inventory.",
+                                "description": "Optional saved connection shortcut.",
+                            },
+                            "target": {
+                                "type": "string",
+                                "description": "SSH alias, hostname, IP address, or user@host.",
                             },
                         },
-                        "required": ["profile_id"],
                     },
                 },
             },
@@ -924,21 +805,23 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_windows_inventory",
                     "description": (
-                        "Read-only Windows inventory on a SAVED, verified WINDOWS profile: runs a "
+                        "Read-only Windows inventory on any SSH target: runs a "
                         "fixed set of harmless PowerShell queries (OS/version, hostname, uptime, "
                         "logical disks, running services, IP config) and returns their output. "
-                        "Takes a profile_id (NOT a host/alias). Only runnable inside a bound "
-                        "read-only diagnostic run for a windows asset; one call per run."
+                        "Pass target directly; profile_id is an optional saved shortcut."
                     ),
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "profile_id": {
                                 "type": "string",
-                                "description": "The saved windows connection profile id to inventory.",
+                                "description": "Optional saved connection shortcut.",
+                            },
+                            "target": {
+                                "type": "string",
+                                "description": "SSH alias, hostname, IP address, or user@host.",
                             },
                         },
-                        "required": ["profile_id"],
                     },
                 },
             },
@@ -947,13 +830,32 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_network_inventory",
                     "description": (
-                        "Read-only network inventory: a bounded TCP-connect scan of the authorized "
-                        "CIDR bound to this diagnostic run, on a fixed server-owned port set. Takes "
-                        "NO arguments — the target and caps come only from the bound scope. Returns "
-                        "the open host:port list and a summary. Only runnable inside a bound network "
-                        "diagnostic run; one call per run."
+                        "Read-only TCP-connect inventory of any canonical IPv4 CIDR. "
+                        "Ports and concurrency are caller-controlled; there is no product host cap "
+                        "or whole-scan timeout. The scan runs until complete or Workflow Stop."
                     ),
-                    "parameters": {"type": "object", "properties": {}},   # NO args
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "cidr": {"type": "string", "description": "Canonical IPv4 CIDR."},
+                            "ports": {
+                                "type": "array",
+                                "items": {"type": "integer", "minimum": 1, "maximum": 65535},
+                                "description": "TCP ports; defaults to common services.",
+                            },
+                            "connect_timeout": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "description": "Per-connection transport timeout in seconds.",
+                            },
+                            "concurrency": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Concurrent connection attempts.",
+                            },
+                        },
+                        "required": ["cidr"],
+                    },
                 },
             },
             {
@@ -961,14 +863,20 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_systemd_service_inspect",
                     "description": (
-                        "Read-only systemd service inspect: runs one fixed `systemctl show` for the "
-                        "unit bound to this diagnostic run on the bound Linux profile, and returns its "
+                        "Read-only systemd service inspect: runs one fixed `systemctl show` for a "
+                        "unit on any SSH target, and returns its "
                         "state (active/sub state, main pid, last exit status, restart count, unit-file "
-                        "state and path). Takes NO arguments — the profile and unit come only from the "
-                        "bound scope. No status text, journal, unit-file content, or changes. Only "
-                        "runnable inside a bound systemd diagnostic run; one call per run."
+                        "state and path). No status text, journal, unit-file content, or changes."
                     ),
-                    "parameters": {"type": "object", "properties": {}},   # NO args
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string", "description": "SSH alias, hostname, IP, or user@host."},
+                            "profile_id": {"type": "string"},
+                            "unit": {"type": "string"},
+                        },
+                        "required": ["unit"],
+                    },
                 },
             },
             {
@@ -976,12 +884,20 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_config_inspect",
                     "description": (
-                        "Read-only typed configuration inspect for the named config target bound "
-                        "to this run. Takes NO arguments: profile, path, format and safe projected "
-                        "keys are server-owned. Returns hash/size and whitelisted typed settings; "
+                        "Read-only typed configuration inspect for a named config on any SSH target. "
+                        "The runtime resolves path, format and projected keys. Returns "
+                        "hash/size and typed settings; "
                         "never raw config text or unknown values. One call per run."
                     ),
-                    "parameters": {"type": "object", "properties": {}},
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string", "description": "SSH alias, hostname, IP, or user@host."},
+                            "profile_id": {"type": "string"},
+                            "config_id": {"type": "string"},
+                        },
+                        "required": ["config_id"],
+                    },
                 },
             },
             {
@@ -989,40 +905,16 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_database_inspect",
                     "description": (
-                        "Read-only inspection of the local database target bound to this run. "
-                        "Takes NO arguments: path, engine, allowed schemas and the safe aggregate "
-                        "query are server-owned. Returns bounded schema metadata, migration and "
+                        "Read-only inspection of a registered local database target. The runtime "
+                        "resolves path, engine and query profile by database_id. Returns bounded "
+                        "schema metadata, migration and "
                         "backup state, and aggregate counts; never row contents, SQL or a "
                         "connection string. One call per run."
                     ),
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "itops_change_apply",
-                    "description": (
-                        "Apply one reviewed IT change. Local runs use the Tauri permission mode; "
-                        "remote Telegram runs create a dedicated approve/reject plan. The target_id selects a server-registered typed "
-                        "operation; host, unit, path, argv, snapshot and verification are "
-                        "executor-owned. Never accepts a raw command."
-                    ),
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "target_id": {
-                                "type": "string",
-                                "enum": [
-                                    "ai-server-netdata",
-                                    "ai-server-netdata-config",
-                                    "phase6-sqlite-canary",
-                                ],
-                                "description": "Reviewed executor-registry target id.",
-                            },
-                        },
-                        "required": ["target_id"],
-                        "additionalProperties": False,
+                        "properties": {"database_id": {"type": "string"}},
+                        "required": ["database_id"],
                     },
                 },
             },
@@ -1031,14 +923,16 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_mikrotik_inventory",
                     "description": (
-                        "Read-only MikroTik inventory via the rostered mikrotik MCP server: system "
+                        "Read-only MikroTik inventory via the mikrotik MCP runtime: system "
                         "(resource/identity/license/routerboard/clock), interfaces, routes, DNS and "
-                        "DHCP servers, whitelist-projected and bounded. Takes NO arguments — the "
-                        "router comes only from the bound scope. IP addresses are NOT covered "
-                        "(no read-only upstream tool); coverage is reported as partial. Only "
-                        "runnable inside a bound mikrotik diagnostic run; one call per run."
+                        "DHCP servers, projected and bounded. Takes an explicit configured router_id. "
+                        "IP addresses are not covered when the upstream runtime lacks that tool."
                     ),
-                    "parameters": {"type": "object", "properties": {}},   # NO args
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"router_id": {"type": "string"}},
+                        "required": ["router_id"],
+                    },
                 },
             },
         ]

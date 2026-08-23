@@ -11,8 +11,9 @@ class InfraModeTest(unittest.TestCase):
         mode = PERSONA_MODES.get("Инфраструктура")
         self.assertIsNotNone(mode)
         self.assertIn("ПО ФАКТАМ", mode["overlay"])        # diagnose from facts, not memory
-        self.assertIn("ask_user", mode["overlay"])          # destructive → confirm (cautious)
-        self.assertIn("SSH-allowlist", mode["overlay"])
+        self.assertIn("режимом Workflow", mode["overlay"])
+        self.assertNotIn("ask_user", mode["overlay"])
+        self.assertNotIn("allowlist", mode["overlay"])
         self.assertEqual(mode["temperature"], 0.2)          # precise/deterministic
         self.assertEqual(mode["tools"], "full")             # ssh/run_bash/configs/web
 
@@ -45,7 +46,7 @@ class InfraModeTest(unittest.TestCase):
         prompt = build_persona_prompt("Инфраструктура")
         self.assertIn("Режим работы: инфраструктура", prompt)
         self.assertIn("ПО ФАКТАМ", prompt)
-        self.assertIn("ask_user", prompt)
+        self.assertIn("режимом Workflow", prompt)
 
 
 if __name__ == "__main__":

@@ -57,6 +57,9 @@ REPUTABLE_DOMAINS = (
 
 # How recent a dated source must be (days) to count as "fresh".
 FRESH_WINDOW_DAYS = 45
+SEARCH_ENGINE_DIVERSITY_SCORE_WINDOW = 20
+
+_SEARCH_TOKEN_RE = re.compile(r"[0-9a-zа-яё]{2,}", re.IGNORECASE)
 
 CONFIDENCE_LABELS: Dict[str, str] = {
     "verified": "✅ проверено/актуально",
@@ -133,6 +136,7 @@ def classify_confidence(
 def result_score(
     item: Dict[str, str],
     *,
+    query: str = "",
     intent_kind: str = "",
     geo_scope: str = "",
     local_first: bool = False,
@@ -146,6 +150,20 @@ def result_score(
     engine = (item.get("engine", "") or "").strip()
     haystack = f"{title} {body}".strip()
     score = 0
+
+    query_tokens = set(_SEARCH_TOKEN_RE.findall((query or "").casefold()))
+    if query_tokens:
+        title_tokens = set(_SEARCH_TOKEN_RE.findall(title))
+        body_tokens = set(_SEARCH_TOKEN_RE.findall(body))
+        matched = query_tokens & (title_tokens | body_tokens)
+        title_matched = query_tokens & title_tokens
+        coverage = len(matched) / len(query_tokens)
+        score += round(coverage * 80)
+        score += len(title_matched) * 8
+        score += len((query_tokens & body_tokens) - title_matched) * 2
+        normalized_query = " ".join(_SEARCH_TOKEN_RE.findall((query or "").casefold()))
+        if normalized_query and normalized_query in " ".join(_SEARCH_TOKEN_RE.findall(haystack)):
+            score += 40
 
     if preferred and domain_matches(domain, preferred):
         score += 120
@@ -185,6 +203,7 @@ def result_score(
 def rerank_results(
     results: Iterable[Dict[str, str]],
     *,
+    query: str = "",
     intent_kind: str = "",
     geo_scope: str = "",
     local_first: bool = False,
@@ -195,6 +214,7 @@ def rerank_results(
         key=lambda item: (
             -result_score(
                 item,
+                query=query,
                 intent_kind=intent_kind,
                 geo_scope=geo_scope,
                 local_first=local_first,
@@ -204,6 +224,55 @@ def rerank_results(
             str(item.get("title", "")).strip().lower(),
         ),
     )
+
+
+def _select_diverse_results(
+    results: List[Dict[str, str]],
+    *,
+    max_results: int,
+    query: str = "",
+    intent_kind: str = "",
+    geo_scope: str = "",
+    local_first: bool = False,
+    preferred_domains: Iterable[str] | None = None,
+) -> List[Dict[str, str]]:
+    """Keep competitive fallback engines represented without promoting junk."""
+    if max_results <= 1 or len(results) <= 1:
+        return results[:max_results]
+
+    def _score(item: Dict[str, str]) -> int:
+        return result_score(
+            item,
+            query=query,
+            intent_kind=intent_kind,
+            geo_scope=geo_scope,
+            local_first=local_first,
+            preferred_domains=preferred_domains,
+        )
+
+    best_score = _score(results[0])
+    competitive_floor = best_score - SEARCH_ENGINE_DIVERSITY_SCORE_WINDOW
+    selected: list[Dict[str, str]] = []
+    selected_ids: set[int] = set()
+    engines_seen: set[str] = set()
+
+    for item in results:
+        engine = str(item.get("engine") or "").strip()
+        if engine in engines_seen or _score(item) < competitive_floor:
+            continue
+        selected.append(item)
+        selected_ids.add(id(item))
+        engines_seen.add(engine)
+        if len(selected) >= max_results:
+            return selected
+
+    for item in results:
+        if id(item) in selected_ids:
+            continue
+        selected.append(item)
+        if len(selected) >= max_results:
+            break
+    return selected
 
 
 def count_preferred_domain_hits(
@@ -237,6 +306,11 @@ def dedupe_results(
                 "href": href,
                 "body": body,
                 "engine": engine,
+                **{
+                    key: str(item.get(key) or "").strip()
+                    for key in ("img_src", "thumbnail_src")
+                    if item.get(key)
+                },
             }
         )
         if max_results is not None and len(unique) >= max_results:
@@ -319,6 +393,8 @@ def search_web_runtime(
         try:
             if engine == "searxng" and searxng_extra:
                 combined.extend(search_fn(query, max_results=per_engine, **searxng_extra))
+            elif engine in {"duckduckgo", "wikipedia"} and categories == "images":
+                combined.extend(search_fn(query, max_results=per_engine, categories="images"))
             else:
                 combined.extend(search_fn(query, max_results=per_engine))
         except Exception as exc:
@@ -333,12 +409,21 @@ def search_web_runtime(
     merged = dedupe_results(combined, max_results=dedupe_limit)
     reranked = rerank_results(
         merged,
+        query=query,
         intent_kind=intent_kind,
         geo_scope=geo_scope,
         local_first=local_first,
         preferred_domains=preferred_domains,
     )
-    return reranked[:max_results]
+    return _select_diverse_results(
+        reranked,
+        max_results=max_results,
+        query=query,
+        intent_kind=intent_kind,
+        geo_scope=geo_scope,
+        local_first=local_first,
+        preferred_domains=preferred_domains,
+    )
 
 
 def format_search_results(results: List[Dict[str, str]]) -> str:
@@ -356,7 +441,7 @@ def fetch_page_text(url: str) -> str:
     from app.application.web.ssrf_guard import check_ssrf
     ssrf_reason = check_ssrf(url)
     if ssrf_reason:
-        return f"Ошибка чтения страницы: SSRF blocked — {ssrf_reason}"
+        return f"Ошибка чтения страницы: некорректный URL — {ssrf_reason}"
 
     try:
         response = session().get(url, timeout=20)

@@ -104,17 +104,8 @@ _CODEC_ALIASES = {
 
 
 def _reject_duplicate_project_root(project_root: Path, path: str) -> None:
-    """Reject ``ProjectName/file`` when paths are already project-relative."""
-    raw = (path or "").strip().replace("\\", "/")
-    first = raw.split("/", 1)[0].strip()
-    root_name = project_root.resolve().name
-    if first and first.casefold() == root_name.casefold():
-        rest = raw.split("/", 1)[1] if "/" in raw else ""
-        hint = rest or "<path>"
-        raise SandboxError(
-            f"path is already relative to the project root; use '{hint}', "
-            f"not '{raw}'"
-        )
+    """Compatibility hook; path spelling is handled by the filesystem."""
+    del project_root, path
 
 # Ordered fallback when charset-normalizer is unavailable: try the strictest
 # (no replacement) decoders first, ending at cp1252 which decodes nearly any

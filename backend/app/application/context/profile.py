@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from app.application.context.timeouts import TIMEOUT_POLICY_SECONDS
-
 # Offline fallback for injected/scripted runtimes. Live model runs use /props.
 DEFAULT_CONTEXT_WINDOW = 131_072
 
@@ -132,15 +130,6 @@ def resolve_context_window(
             effective - reserved_output - reserved_system - safety_margin,
         ),
         "compaction_thresholds": thresholds,
-        "timeout_policy": {
-            "chat": TIMEOUT_POLICY_SECONDS["chat"],
-            "code": TIMEOUT_POLICY_SECONDS["code"],
-            "long_context": (
-                TIMEOUT_POLICY_SECONDS["long_context_256k"]
-                if effective >= 196_608
-                else TIMEOUT_POLICY_SECONDS["long_context_128k"]
-            ),
-        },
         "source": source,
         "thinking": bool(thinking),
         "requested_context_mode": "server" if live else "offline",

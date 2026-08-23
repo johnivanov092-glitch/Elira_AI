@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -22,10 +25,12 @@ from app.application.workflows.lifecycle import (
     merge_resumed_context,
     pause_after_step,
 )
+from app.application.workflows.request_lifecycle import execute_request_step
 from app.application.workflows.step_results import (
     build_step_completion_event,
     build_step_result_from_exception,
     capture_step_outcome,
+    extract_workflow_request,
     should_pause_after_step,
 )
 from app.application.workflows.store import (
@@ -41,6 +46,9 @@ from app.domain.workflows.step_executor import (
     _resolve_next_step,
     _step_label,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_db_path(db_path: str | Path | None = None) -> str | Path:
@@ -101,9 +109,11 @@ def execute_workflow_run(
 
     if resume_event:
         emit_workflow_event("workflow.run.resumed", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
+        emit_workflow_event("workflow/resumed", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
         record_workflow_run_state(run_state, status="resumed", details={"current_step_id": current_step_id})
     else:
         emit_workflow_event("workflow.run.started", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
+        emit_workflow_event("workflow/started", run["workflow_id"], run_id, payload={"current_step_id": current_step_id})
         record_workflow_run_state(
             run_state,
             status="started",
@@ -150,6 +160,18 @@ def execute_workflow_run(
             run_id,
             payload={"step_id": current_step_id, "index": step_index},
         )
+        emit_workflow_event(
+            "item/started",
+            run["workflow_id"],
+            run_id,
+            payload={
+                "item_id": current_step_id,
+                "step_id": current_step_id,
+                "item_type": str(step.get("type", "")),
+                "index": step_index,
+                "label": step_label,
+            },
+        )
         step_started = time.monotonic()
         try:
             step_result = _execute_step(
@@ -159,10 +181,39 @@ def execute_workflow_run(
                 context=context,
                 step_results=step_results,
                 run_id=run_id,
+                permission_mode=str(run.get("permission_mode") or "ask"),
+                request_executor=execute_request_step,
             )
         except Exception as exc:
             step_result = build_step_result_from_exception(exc)
         step_duration_ms = int((time.monotonic() - step_started) * 1000)
+
+        # Stop may arrive while the model or a tool is running. Re-check before
+        # recording that step as failed/completed so cancellation remains the
+        # authoritative terminal state.
+        if cancel_check and cancel_check():
+            run = _get_workflow_run(run_id) or run
+            return cancel_run(
+                run_id=run_id,
+                run=run,
+                update_workflow_run=lambda current_run_id, **fields: _update_run(current_run_id, **fields),
+                record_workflow_run_state=record_workflow_run_state,
+                emit_workflow_event=emit_workflow_event,
+                now_func=now_utc,
+            )
+
+        request_spec = extract_workflow_request(step_result)
+        if request_spec is not None:
+            from app.application.workflows.request_lifecycle import (
+                pause_workflow_for_request,
+            )
+
+            return pause_workflow_for_request(
+                db_path=resolved_db_path,
+                run=run,
+                step_id=current_step_id,
+                request_spec=request_spec,
+            )
 
         step_outcome = capture_step_outcome(
             step,
@@ -174,6 +225,13 @@ def execute_workflow_run(
                 success=bool(step_result.get("ok")),
             ),
         )
+        if step_outcome.success:
+            resolutions = context.get("_workflow_request_resolutions", {})
+            if isinstance(resolutions, dict) and current_step_id in resolutions:
+                remaining_resolutions = dict(resolutions)
+                remaining_resolutions.pop(current_step_id, None)
+                context["_workflow_request_resolutions"] = remaining_resolutions
+                _update_run(run_id, context=context)
         record_workflow_step_state(
             step,
             workflow_id=run["workflow_id"],
@@ -192,6 +250,19 @@ def execute_workflow_run(
             step_result=step_result,
         )
         emit_workflow_event(completion_event_type, run["workflow_id"], run_id, payload=completion_payload)
+        emit_workflow_event(
+            "item/completed",
+            run["workflow_id"],
+            run_id,
+            payload={
+                "item_id": current_step_id,
+                "step_id": current_step_id,
+                "item_type": str(step.get("type", "")),
+                "status": "completed" if step_outcome.success else "failed",
+                "ok": step_outcome.success,
+                "next_step_id": step_outcome.next_step_id or None,
+            },
+        )
 
         if should_pause_after_step(step, step_result) and step_outcome.success and step_outcome.next_step_id:
             return pause_after_step(
@@ -256,10 +327,14 @@ def start_workflow_run(
     workflow_input: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     trigger_source: str = "api",
+    permission_mode: str = "ask",
     progress_callback: Callable[[int, int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    run_created_callback: Callable[[str], None] | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    if permission_mode not in {"ask", "accept_edits", "bypass"}:
+        raise ValueError(f"Unsupported workflow permission mode: {permission_mode}")
     resolved_db_path = _resolve_db_path(db_path)
     init_db(db_path=resolved_db_path)
     run = create_workflow_run_record(
@@ -268,14 +343,63 @@ def start_workflow_run(
         workflow_input=workflow_input,
         context=context,
         trigger_source=trigger_source,
+        permission_mode=permission_mode,
         now_func=now_utc,
     )
+    if run_created_callback:
+        run_created_callback(str(run["run_id"]))
     return execute_workflow_run(
         run_id=run["run_id"],
         db_path=resolved_db_path,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
     )
+
+
+def start_workflow_run_background(
+    *,
+    workflow_id: str,
+    workflow_input: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+    trigger_source: str = "runtime_control",
+    permission_mode: str = "ask",
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Create a durable run and execute it without holding the caller open."""
+    if permission_mode not in {"ask", "accept_edits", "bypass"}:
+        raise ValueError(f"Unsupported workflow permission mode: {permission_mode}")
+    resolved_db_path = _resolve_db_path(db_path)
+    init_db(db_path=resolved_db_path)
+    run = create_workflow_run_record(
+        db_path=resolved_db_path,
+        workflow_id=workflow_id,
+        workflow_input=workflow_input,
+        context=context,
+        trigger_source=trigger_source,
+        permission_mode=permission_mode,
+        now_func=now_utc,
+    )
+    run_id = str(run["run_id"])
+
+    def _execute() -> None:
+        try:
+            execute_workflow_run(run_id=run_id, db_path=resolved_db_path)
+        except Exception as exc:
+            logger.exception("background workflow run %s failed", run_id)
+            _update_workflow_run_for_db(
+                resolved_db_path,
+                run_id,
+                status="failed",
+                error={"message": str(exc)},
+                finished_at=now_utc(),
+            )
+
+    threading.Thread(
+        target=_execute,
+        name=f"workflow-run-{run_id}",
+        daemon=True,
+    ).start()
+    return run
 
 
 def resume_workflow_run(
@@ -320,8 +444,22 @@ def cancel_workflow_run(
     run = get_workflow_run(db_path=resolved_db_path, run_id=run_id)
     if not run:
         raise ValueError(f"Workflow run '{run_id}' not found")
-    if run["status"] in {"completed", "failed", "cancelled"}:
+    if run["status"] in {"completed", "partial", "failed", "cancelled"}:
         raise ValueError("Terminal workflow runs cannot be cancelled")
+
+    # Agent steps use a deterministic child run id. Signal that child first so
+    # Stop closes the provider stream and terminates registered OS processes,
+    # instead of waiting for the step to return on its own.
+    current_step_id = str(run.get("current_step_id") or "").strip()
+    if current_step_id:
+        stable_run_key = f"{run_id}:{current_step_id}".encode("utf-8")
+        code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
+        try:
+            from app.application.code_agent.agent_loop import request_cancel
+
+            request_cancel(code_agent_run_id)
+        except Exception:
+            pass
 
     return cancel_run(
         run_id=run_id,

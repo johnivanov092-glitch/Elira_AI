@@ -43,8 +43,7 @@ _UGC_DOMAINS = frozenset({
     "blogspot.com", "wordpress.com", "livejournal.com",
 })
 # NO structural host rules (docs.*/wiki.* etc.): anyone controls their own
-# subdomain names, so docs.evil.example would classify official and the ledger
-# would then say a single official source "may suffice" — a trust escalation
+# subdomain names, so docs.evil.example would classify as official — a trust escalation
 # from an attacker-controllable pattern (John's W6 review). Official comes ONLY
 # from the curated registrable-domain list and government TLD suffixes.
 _GOV_SUFFIXES = (".gov", ".mil", ".gov.uk", ".gov.au", ".gov.ru", ".gc.ca", ".europa.eu")
@@ -74,7 +73,7 @@ def classify_tier(url: str) -> str:
 
 
 def tier_note(tier: str) -> str:
-    """Short RU annotation used in search output and the ledger render."""
+    """Short RU annotation used in search output."""
     return {
         "official": "official — вендор/стандарт/гос",
         "primary": "primary — реестр/первоисточник",

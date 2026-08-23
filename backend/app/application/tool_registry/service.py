@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 
@@ -28,10 +29,24 @@ def run_tool(
     source: str = "chat",
     workflow_id: str = "",
     step_id: str = "",
+    permission_mode: str = "ask",
+    workflow_approved: bool = False,
+    project_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Thin wrapper over the unified ToolExecutor for chat and workflow callers."""
+    """Run a tool through the same providers used by the code-agent."""
     from app.application.agent_kernel.executor import ToolExecutionRequest, execute_tool
     from app.application.tool_providers.chat_builtin import chat_builtin_dispatch_fn
+    from app.application.tool_providers import build_runtime_tool_registry
+    from app.core.config import DATA_DIR
+
+    root = Path(project_root).expanduser().resolve() if project_root else (DATA_DIR / "workspace").resolve()
+    registry = build_runtime_tool_registry(root)
+
+    def _dispatch(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if name in registry.known_tools():
+            return registry.dispatch_raw(name, payload)
+        # Dynamic/plugin handlers still live in the existing database registry.
+        return chat_builtin_dispatch_fn(name, payload)
 
     result = execute_tool(
         ToolExecutionRequest(
@@ -43,7 +58,9 @@ def run_tool(
             source=source,
             workflow_id=workflow_id,
             step_id=step_id,
+            permission_mode=permission_mode,
+            workflow_approved=workflow_approved,
         ),
-        dispatch_fn=chat_builtin_dispatch_fn,
+        dispatch_fn=_dispatch,
     )
     return result.output

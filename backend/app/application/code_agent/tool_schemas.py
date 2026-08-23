@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 
-# W1 (flag web_corpus): schema additions that must NOT exist with the flag off —
-# the agent's tool surface stays bit-identical (John's W1 review, P1-4).
+# Web-corpus schema additions are always available; runtime availability is the
+# only execution constraint.
 _WEB_FETCH_STORE_PROP = {
     "type": "boolean",
     "description": (
@@ -39,47 +39,6 @@ _WEB_QUERY_SCHEMA = {
                 "top_k": {"type": "integer", "description": "Max excerpts to return (default 6, max 8)."},
             },
             "required": ["query"],
-        },
-    },
-}
-
-
-def _web_corpus_enabled() -> bool:
-    try:
-        from app.application.feature_flags import flag_enabled
-        return flag_enabled("web_corpus")
-    except Exception:
-        return False
-
-
-_WEB_CLAIM_ADD_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "web_claim_add",
-        "description": (
-            "Record the load-bearing claims of your answer into the citation "
-            "ledger, each backed by an exact quote from the web corpus (doc_id "
-            "from web_query). The runtime deterministically checks each quote "
-            "against the stored source and RENDERS the citation appendix itself — "
-            "so DO NOT number citations in your prose. Provenance (quote found in "
-            "the source) is NOT proof the claim is true. Batched, bounded: ≤10 "
-            "claims/call, ≤4 evidence/claim, quote ≤500 chars."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "claims": {
-                    "type": "array",
-                    "description": (
-                        "Each: {\"claim\": \"<statement>\", \"evidence\": [{\"doc_id\": "
-                        "\"<from web_query>\", \"quote\": \"<verbatim excerpt>\"}], "
-                        "\"support\": \"<optional: why the quote backs the claim — advisory>\", "
-                        "\"conflicted\": <optional bool>}."
-                    ),
-                    "items": {"type": "object"},
-                },
-            },
-            "required": ["claims"],
         },
     },
 }
@@ -120,24 +79,101 @@ _WEB_SEARCH_PAGE_PROP = {
 
 def build_tool_schemas() -> list[dict[str, Any]]:
     """OpenAI-compatible function-calling tool schemas."""
+    import copy
+
     schemas = _base_tool_schemas()
-    if _web_corpus_enabled():
-        import copy
-        schemas = copy.deepcopy(schemas)
-        for s in schemas:
-            name = (s.get("function") or {}).get("name")
-            if name == "web_fetch":
-                s["function"]["parameters"]["properties"]["store"] = dict(_WEB_FETCH_STORE_PROP)
-            elif name == "web_search":
-                s["function"]["parameters"]["properties"]["page"] = dict(_WEB_SEARCH_PAGE_PROP)
-        schemas.append(copy.deepcopy(_WEB_QUERY_SCHEMA))
-        schemas.append(copy.deepcopy(_WEB_CLAIM_ADD_SCHEMA))
-        schemas.append(copy.deepcopy(_WEB_SITEMAP_SCHEMA))
+    schemas = copy.deepcopy(schemas)
+    for schema in schemas:
+        name = (schema.get("function") or {}).get("name")
+        if name == "web_fetch":
+            schema["function"]["parameters"]["properties"]["store"] = dict(_WEB_FETCH_STORE_PROP)
+        elif name == "web_search":
+            schema["function"]["parameters"]["properties"]["page"] = dict(_WEB_SEARCH_PAGE_PROP)
+    schemas.append(copy.deepcopy(_WEB_QUERY_SCHEMA))
+    schemas.append(copy.deepcopy(_WEB_SITEMAP_SCHEMA))
     return schemas
 
 
 def _base_tool_schemas() -> list[dict[str, Any]]:
     return [
+        {
+            "type": "function",
+            "function": {
+                "name": "runtime_control",
+                "description": (
+                    "Manage integration runtimes hidden behind Workflow UI: portable vault "
+                    "status/backup/restore/lock, MCP and LSP config/lifecycle, Telegram "
+                    "config/lifecycle/users, plugins, IT Ops assets/profiles, Workflow "
+                    "templates/runs/triggers, memory, and library. Every call returns a "
+                    "structured completed/failed/needs_* result. Secret values are never "
+                    "arguments; use only an opaque secret_ref created by a needs_secret card."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "string",
+                            "enum": [
+                                "status",
+                                "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart",
+                                "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
+                                "ssh_hosts", "ssh_set_hosts",
+                                "telegram_status", "telegram_configure", "telegram_migrate_legacy_token",
+                                "telegram_start", "telegram_stop", "telegram_test", "telegram_users",
+                                "telegram_toggle_user", "itops_assets", "itops_asset_upsert",
+                                "itops_asset_remove", "itops_profile_upsert", "itops_profile_remove",
+                                "plugin_list", "plugin_info", "plugin_enable", "plugin_disable",
+                                "plugin_reload", "plugin_configure", "plugin_run",
+                                "workflow_list", "workflow_upsert", "workflow_remove",
+                                "workflow_run", "workflow_runs", "workflow_resume",
+                                "workflow_cancel", "workflow_trigger_list",
+                                "workflow_trigger_upsert", "workflow_trigger_remove",
+                                "workflow_scheduler_status", "workflow_scheduler_start",
+                                "workflow_scheduler_stop",
+                                "memory_stats", "memory_profiles", "memory_list",
+                                "memory_search", "memory_recall", "memory_add",
+                                "memory_delete", "memory_prune",
+                                "library_list", "library_search", "library_context",
+                                "library_add", "library_toggle", "library_delete",
+                                "vault_status", "vault_lock",
+                                "vault_backup", "vault_restore",
+                            ],
+                        },
+                        "server_id": {"type": "string"},
+                        "workflow_id": {"type": "string"},
+                        "run_id": {"type": "string"},
+                        "trigger_id": {"type": "string"},
+                        "asset_id": {"type": "string"},
+                        "profile_id": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "memory_id": {
+                            "oneOf": [{"type": "integer"}, {"type": "string"}],
+                        },
+                        "filename": {"type": "string"},
+                        "name": {"type": "string"},
+                        "query": {"type": "string"},
+                        "root_path": {"type": "string"},
+                        "secret_ref": {
+                            "type": "string",
+                            "description": "Opaque sref_ value; never put a plaintext secret here.",
+                        },
+                        "config": {
+                            "type": "object",
+                            "description": (
+                                "Runtime config. MCP secrets use env_secret_refs or "
+                                "secret_header_refs maps whose values are sref_ references. "
+                                "Workflow runs/triggers always inherit the current UI permission "
+                                "mode; config cannot elevate it."
+                            ),
+                        },
+                        "chat_id": {"type": "integer"},
+                        "allowed": {"type": "boolean"},
+                        "path": {"type": "string"},
+                    },
+                    "required": ["operation"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -161,7 +197,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Path relative to project root, or absolute inside it."},
+                        "path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
                         "offset": {"type": "integer", "description": "Starting line (0-based). Default 0."},
                         "limit": {"type": "integer", "description": "Max lines to read. Default 2000."},
                     },
@@ -256,7 +292,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["inspect", "extract_text", "transcribe"], "description": "What to do with the resource."},
                         "execution_target": {"type": "string", "enum": ["auto", "local_gpu", "local_cpu", "server_gpu"], "description": "Where to run compute. Default 'auto'. Use 'local_gpu' only when the user explicitly asks to run locally / on the GPU."},
                     },
@@ -285,7 +321,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque durable resource id (never a filesystem path)."},
                         "operation": {"type": "string", "enum": ["ocr"], "description": "What to do remotely. Only 'ocr' (recognize text from a scanned PDF/image)."},
                     },
                     "required": ["resource_id", "operation"],
@@ -311,7 +347,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "resource_id": {"type": "string", "description": "Opaque id of a resource attached to this run (never a filesystem path)."},
+                        "resource_id": {"type": "string", "description": "Opaque durable resource id (never a filesystem path)."},
                         "destination_name": {"type": "string", "description": "Optional relative filename inside the project workspace (no absolute path, no '..'). Default: the resource's safe basename."},
                     },
                     "required": ["resource_id"],
@@ -434,7 +470,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "Read or update the durable checklist for this run. "
                     "Use items to create checklist entries and updates to "
                     "change status/blocker. Valid statuses: pending, "
-                    "in_progress, completed, blocked."
+                    "in_progress, completed."
                 ),
                 "parameters": {
                     "type": "object",
@@ -458,10 +494,9 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "function": {
                 "name": "delegate_task",
                 "description": (
-                    "Delegate a bounded read-only subtask to a child agent. "
+                    "Delegate a subtask to a child agent. "
                     "Roles: explore, plan, verify, review. The child gets its own "
-                    "run_id, max steps/context/time, cannot write files, "
-                    "and cannot delegate again."
+                    "run_id, context, and inherits the workflow permission mode."
                 ),
                 "parameters": {
                     "type": "object",
@@ -472,15 +507,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         },
                         "task": {
                             "type": "string",
-                            "description": "Concrete read-only subtask to perform.",
-                        },
-                        "max_steps": {
-                            "type": "integer",
-                            "description": "Optional child step cap. Max 6.",
+                            "description": "Concrete subtask to perform.",
                         },
                         "num_ctx": {
                             "type": "integer",
-                            "description": "Optional child context cap. Max 8192.",
+                            "description": "Optional child context request; 0 uses the server default.",
                         },
                     },
                     "required": ["task"],
@@ -495,15 +526,14 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "Run a platform-native shell command inside the project root. "
                     "On Windows this is cmd.exe (use dir/type/where or explicitly invoke "
                     "powershell.exe); on POSIX it is /bin/sh. Returns stdout, stderr, and exit code. "
-                    "BLOCKS until the command finishes (max 120s). For a long-lived process that "
+                    "Runs until the command exits or the user presses Stop. For a long-lived process that "
                     "never returns on its own — a dev server, watcher, `npm run dev`, `uvicorn`, "
-                    "`flask run` — use run_server instead, or run_bash will hang and time out."
+                    "`flask run` — use run_server so the runtime can track it."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "command": {"type": "string"},
-                        "timeout": {"type": "integer", "description": "Seconds. Default 60."},
                     },
                     "required": ["command"],
                 },
@@ -520,7 +550,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "can tail. Use this for `npm run dev`, `uvicorn`, `flask run`, `vite`, etc. "
                     "Actions: 'start' (launch `command`, optional `port`), 'list' (show running "
                     "servers), 'logs' (tail output of `pid`), 'stop' (terminate `pid`), 'stop_all'. "
-                    "The runtime stops run-owned servers at the run's end; stop early with 'stop'."
+                    "The process runs until run_server(action='stop') or explicit Workflow Stop."
                 ),
                 "parameters": {
                     "type": "object",
@@ -547,10 +577,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "list of {title, url, snippet}. Use this BEFORE answering "
                     "any question that depends on facts you don't already "
                     "know — current events, library versions, niche docs. "
-                    "For academic / peer-reviewed papers (specific studies, "
-                    "abstracts, citations) prefer tool_search -> paper_search "
-                    "(arXiv, PubMed, bioRxiv, medRxiv, Semantic Scholar and more); "
-                    "fall back to web_search only when paper_search is thin/empty. "
+                    "For academic / peer-reviewed papers use a connected paper-search "
+                    "provider when its schema is available; otherwise use web_search. "
                     "Pass `queries` (a list) to run SEVERAL searches in PARALLEL "
                     "in one call (faster than one-by-one; merged + de-duped); "
                     "otherwise pass a single `query`. "
@@ -558,6 +586,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "github/stackoverflow/pypi, 'science' for arxiv/pubmed, "
                     "'news') and/or `time_range` for recency. "
                     "Call `web_fetch` after on URLs that look relevant. "
+                    "Use `categories='images'` when relevant visuals materially help; "
+                    "the runtime attaches sourced cards automatically. "
                     "Present each source in your answer as a [Title](url) markdown "
                     "link, never a bare URL on its own line."
                 ),
@@ -574,7 +604,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "categories": {
                             "type": "string",
                             "enum": ["general", "news", "it", "science", "images", "videos", "map", "music", "files"],
-                            "description": "Focus engines: 'it'=github/stackoverflow/pypi/mdn, 'science'=arxiv/pubmed/scholar, 'news', 'map', etc. Omit for general web.",
+                            "description": "Focus engines: 'it'=github/stackoverflow/pypi/mdn, 'science'=arxiv/pubmed/scholar, 'news', 'images' (also attaches a sourced answer gallery), 'map', etc. Omit for general web.",
                         },
                         "time_range": {
                             "type": "string",
@@ -684,7 +714,6 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "items": {"type": "string"},
                             "description": "Optional list of pip package specs to install before running (e.g. ['requests', 'rich>=13']).",
                         },
-                        "timeout": {"type": "integer", "description": "Seconds. Default 60."},
                     },
                     "required": ["code"],
                 },
@@ -739,11 +768,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "csv",
-                "description": "Analyze a CSV file inside the project and return shape, columns, sample rows, nulls and stats.",
+                "description": "Analyze a local CSV file and return shape, columns, sample rows, nulls and stats.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "file_path": {"type": "string", "description": "CSV path relative to the project root, or absolute inside it."},
+                        "file_path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
                         "query": {"type": "string", "description": "Optional analysis question."},
                     },
                     "required": ["file_path"],
@@ -754,11 +783,11 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "converter",
-                "description": "Convert a project file using built-in converters: CSV to XLSX, JSON to CSV, MD to DOCX, XLSX to CSV.",
+                "description": "Convert a local file using built-in converters: CSV to XLSX, JSON to CSV, MD to DOCX, XLSX to CSV.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "source_path": {"type": "string", "description": "Source path relative to the project root, or absolute inside it."},
+                        "source_path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
                         "target_format": {"type": "string", "description": "Target extension: xlsx, csv, or docx."},
                     },
                     "required": ["source_path", "target_format"],
@@ -787,7 +816,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "sql",
-                "description": "List, describe, or query allowed local SQLite databases.",
+                "description": "List known SQLite databases or describe/query any local SQLite database by path.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -821,14 +850,14 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "archiver",
-                "description": "Create or extract ZIP archives for files inside the project.",
+                "description": "Create or extract ZIP archives from local filesystem paths.",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "description": "create or extract."},
                         "source_path": {"type": "string", "description": "File or directory path for action=create."},
                         "zip_path": {"type": "string", "description": "ZIP path for action=extract."},
-                        "dest": {"type": "string", "description": "Optional destination directory inside the project for extraction."},
+                        "dest": {"type": "string", "description": "Optional extraction destination; relative paths start at project root and absolute paths are accepted."},
                         "output_name": {"type": "string", "description": "Optional output ZIP filename for action=create."},
                     },
                     "required": ["action"],
@@ -921,8 +950,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
-                        "path": {"type": "string", "description": "Path to the image, relative to project root or absolute inside it."},
-                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque id of an image attached to this run. Use this instead of path for chat attachments."},
+                        "path": {"type": "string", "description": "Relative paths start at project root; any absolute filesystem path is accepted."},
+                        "resource_id": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Opaque durable image id. Use this instead of path for chat attachments."},
                         "prompt": {"type": "string", "description": "Optional instruction for what to focus on. Defaults to a full description."},
                     },
                     "required": [],
@@ -943,7 +972,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "Path to the document/image, relative to project root or absolute inside it."},
+                        "path": {"type": "string", "description": "Path to the document/image; relative paths start at project root, absolute paths are accepted."},
                         "language": {"type": "string", "description": "Optional OCR language hint (e.g. 'ru', 'en'). Defaults to auto-detect."},
                     },
                     "required": ["path"],
@@ -967,7 +996,7 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "'right_click'/'double_click'/'middle_click' (need x,y), 'move' (x,y), "
                     "'type' (text), 'key' (keys, e.g. [\"ctrl\",\"c\"] or [\"enter\"]), 'scroll' "
                     "(amount + direction, optional x,y). Requires the vision service for "
-                    "screenshots; needs a desktop session for input. Gated by the approval policy."
+                    "screenshots; needs a desktop session for input. Uses the selected Workflow permission mode."
                 ),
                 "parameters": {
                     "type": "object",

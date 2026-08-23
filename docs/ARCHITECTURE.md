@@ -1,250 +1,142 @@
 # Architecture
 
-Elira runs as a local desktop/workspace application. The main PC owns UI,
-backend state, tools, memory, approvals, and project files. The dedicated AI
-server is an inference backend reached through OpenAI-compatible HTTP APIs.
+Elira is a local Tauri + React + FastAPI agent. The desktop owns UI, durable
+state, project files and tools; a LAN llama.cpp server owns inference only.
 
-## Topology
+The detailed Russian guide is
+[`AGENT_ARCHITECTURE_GUIDE_RU.md`](AGENT_ARCHITECTURE_GUIDE_RU.md).
+
+## Canonical flow
 
 ```text
-Tauri desktop
-  -> React frontend
-  -> FastAPI backend on 127.0.0.1:8000
-  -> local SQLite/runtime data in D:\AIWork\Elira_AI\data
-  -> OpenAI-compatible LLM endpoint on the AI server
-  -> OpenAI-compatible embedding endpoint on the AI server
+Composer
+  -> POST /api/code-agent/stream
+  -> delivery_session
+  -> agent_loop
+  -> agent_kernel.executor
+  -> runtime_registry
+  -> Builtin | SSH | IT Ops | MCP | LSP provider
+  -> OS / LAN / files / subprocesses
+
+Workflow request
+  <- input | secret | elevation | approval
+  <- workflow_engine.db + /api/agent-os/events/stream
 ```
 
-Stage 1 does not move the Elira backend to the server. The server is
-inference-only.
+Multi-agent uses `application/workflows` as a coordinator but every agent step
+returns to the same `run_code_agent`, executor and provider registry.
 
-## Runtime Layers
+## Runtime invariants
 
-- `backend/app/api` - HTTP route surface.
-- `backend/app/application` - use cases, chat, code-agent, agent kernel,
-  model routing, memory, task planning, media, project brain, tool providers.
-- `backend/app/domain` - domain objects and tool definitions.
-- `backend/app/infrastructure` - SQLite, search, LLM clients, local provider
-  adapters, external IO.
-- `frontend/src` - React UI and API clients.
-- `src-tauri` - desktop shell and native capabilities.
+- One agent core: `application/code_agent/agent_loop.py`.
+- One tool executor: `application/agent_kernel/executor.py`.
+- One provider aggregation path: `application/tool_providers/runtime_registry.py`.
+- One durable human control plane: `application/workflows` +
+  `workflow_engine.db`.
+- Every connected provider schema is visible from the first model turn.
+- No deferred activation, tool/path/asset/LAN scope, internal ApprovalStore,
+  feature dispatch gate, max steps, run deadline or no-progress self-stop.
+- Healthy runs end through a natural answer or Workflow Stop. Provider, OS,
+  protocol and physical context-window failures remain real errors.
+- Legacy ToolSpec policy columns are inventory compatibility only.
 
-## API Access (auth)
+## Permission selector
 
-The FastAPI surface is gated by `backend/app/core/auth.py`. Loopback callers
-(the Tauri shell and the dev browser on `127.0.0.1`, plus the in-process test
-client) are trusted without a token; any
-non-local caller (LAN/mobile) must present a bearer token. This closes
-unauthenticated command execution when the backend is bound to `0.0.0.0`.
+The Workflow run owns one mode:
 
-- Token: `ELIRA_API_TOKEN`, else auto-generated to `data/elira_api_token`.
-- Enforcement toggle: `ELIRA_API_AUTH` (default on).
-- Middleware is registered before CORS in `main.py` so CORS stays the outermost
-  layer; `/health` and `OPTIONS` are open. Frontend sends the token via
-  `withAuth()` when `VITE_ELIRA_API_TOKEN` is set.
+- `ask`: read-only calls run; mutations ask in Workflow UI.
+- `accept_edits`: ordinary local mutations run; high/unknown-impact calls ask.
+- `bypass`: no product-level approval request.
 
-## Local Model Contract
+`impact_policy.py` classifies calls only for this UI decision. It never blocks a
+call independently. `bypass` does not create a Windows administrator token.
 
-The local model path is OpenAI-compatible, not runtime-specific.
+## Workflow requests
 
-Canonical client:
+Public kinds are `input`, `secret`, `elevation`, and `approval`. Requests are
+durable and resume the same workflow run and step. Plaintext secrets are never a
+valid resolution; the payload contains only an opaque `secret_ref`.
 
-- `backend/app/infrastructure/llm/openai_compatible.py`
+Windows elevation is executed by the Tauri native bridge in
+`src-tauri/src/main.rs`, which opens UAC and binds the result to the Workflow
+request. The backend does not require permanent administrator rights.
 
-Important environment variables:
+## Integration boundary
 
-- `LLAMA_SERVER_ENABLED`
-- `LLAMA_SERVER_BASE_URL`
-- `LLAMA_SERVER_MODEL`
-- `LLAMA_SERVER_API_KEY`
-- `LLAMA_SERVER_TIMEOUT_SECONDS`
-- `LLAMA_SERVER_MAX_TOKENS`
-- `LLAMA_SERVER_CONTEXT_WINDOW`
-- `LOCAL_EMBED_ENABLED`
-- `LOCAL_EMBED_BASE_URL`
-- `LOCAL_EMBED_MODEL`
-- `LOCAL_EMBED_API_KEY`
-- `LOCAL_EMBED_TIMEOUT_SECONDS`
+MCP, LSP, SSH shortcuts, Telegram, IT Ops, plugins, Workflow scheduling,
+memory/library administration and vault operations are behind the agent's
+`runtime_control` tool. It returns a single structured capability envelope:
+`completed`, `failed`, `needs_input`, `needs_secret`, `needs_elevation`,
+`waiting_approval`, or `cancelled`. Existing domain runtimes remain owners;
+`runtime_control` is an adapter, not a second executor or registry.
 
-Default endpoints are:
+The former Pipelines control plane is not mounted. Interval schedules are
+`workflow_triggers` in `workflow_engine.db`; they start existing Workflow
+templates and inherit `ask`, `accept_edits`, or `bypass`.
 
-- LLM: `http://192.168.88.15:8000/v1`
-- Embeddings: `http://192.168.88.15:8001/v1`
+## Inference contract
 
-Provider names used in app state and metrics:
+`infrastructure/llm/openai_compatible.py` sends OpenAI-compatible requests.
 
-- `llama_server`
-- `local_embed_server`
+- Chat generation has a finite connect timeout and no read/generation deadline.
+- Every chat payload sets `cache_prompt: true`.
+- Reasoning modes are `none`, `low`, `medium`, `xhigh`.
+- Qwen reads `enable_thinking` + `reasoning_effort`.
+- Muse reads `reasoning_strength`; public `none` maps to Muse `low`.
+- MTP/DFlash are server-side acceleration mechanisms independent of reasoning.
 
-## Model Routing
+## Mounted HTTP surface
 
-Model profiles live in `agent_monitor.db` table `model_profiles` and are seeded
-from `backend/app/application/monitoring/store.py`.
+`api/routes/registry.py` is the sole router list. Active families:
 
-Default local profiles:
+- `/api/code-agent`
+- `/api/agent-os`
+- `/api/advanced`
+- `/api/media`
+- `/api/lib`
+- `/api/chat-agent`
+- `/api/models`, `/api/profiles`, `/api/persona`
+- `/api/skills`, `/api/voice`, `/api/elira`, `/api/drift`
 
-- `00-local-llama-fast`
-- `00-local-llama-code`
-- `00-local-llama-strong`
-- `local-embedding`
+Direct public execution/administration routers for Telegram, IT Ops, Terminal,
+Tool Registry, Task Planner, pipelines and the old change executor are not
+mounted.
 
-Cloud profiles are disabled by default and require explicit consent before use.
+## Data ownership
 
-## Chat And Code-Agent
+The default root is `data/`, overridden by `ELIRA_DATA_DIR`.
 
-Chat entrypoints:
+- `workflow_engine.db`: workflow templates/runs/steps/requests/triggers.
+- `tool_registry.db`: tool inventory metadata.
+- `task_planner.db`: run checklist/subagent records.
+- `code_agent_sessions.db`: workspace sessions and task ledger.
+- `agent_monitor.db`: metrics/model profiles.
+- `event_bus.db`: durable events/messages/subscriptions.
+- `it_ops.sqlite3`: IT Ops assets/profiles/evidence.
+- `integrations.db`: Telegram configuration/users/log.
+- `smart_memory.db` + `rag_memory.db`: facts and semantic memory.
+- `library.db`, `projects.db`, `web_corpus.sqlite3`, `elira_state.db`,
+  `drift_facts.db`: domain-specific persistence.
+- `.agent/runs/<run_id>`: code-agent journal.
+- `data/resources`: durable raw resources.
+- `data/portable_vault.json`: AES-256-GCM portable vault.
 
-- `backend/app/application/chat/entrypoint_sync.py`
-- `backend/app/application/chat/entrypoint_stream.py`
-- `backend/app/application/chat/service.py`
-- `backend/app/application/chat/local_chat.py`
+These stores are separate because their transaction, retention and trust
+boundaries differ. Do not merge them to reduce file count.
 
-The request/SSE flow through the unified core is drawn in
-[`architecture-agent-flow.svg`](architecture-agent-flow.svg): UI -> code-agent
-routes -> `stream_code_agent` (a multi-module package) -> `agent_kernel.executor`
-(hard-timeout) -> `ToolRegistry` over the Builtin/SSH/LSP/MCP providers ->
-`tools.py`, with an indexing/RAG branch and run-scoped `deferred_tools` /
-`tool_search`; `delta`/`tool_call`/`final`/`done` events stream back to the UI.
+## Security versus product blockers
 
-Code-agent runtime (`backend/app/application/code_agent/`):
+API bearer auth for non-loopback callers, schema validation, secret redaction,
+UAC result binding, transport/protocol validation, output truncation and context
+compaction remain. They protect interfaces or physical limits; they are not
+additional user approvals.
 
-- `agent_loop.py` - the streaming run loop and orchestration.
-- `tools.py` - sandboxed file/shell/web tool implementations.
-- `tool_schemas.py` - static OpenAI function-calling schemas.
-- `prompts.py` - system-prompt construction.
-- `indexing.py` - project code indexing/RAG.
-- `inline_tool_calls.py` - recovery of tool calls emitted as plain text/JSON.
+## Verification gate
 
-The code-agent uses explicit tool registries and policy checks. Do not add a
-second executor or parallel provider stack.
-
-## Agent Kernel And Tools
-
-Canonical owners:
-
-- executor: `backend/app/application/agent_kernel/executor.py`
-- deferred tool activation:
-  `backend/app/application/agent_kernel/deferred_tools.py`
-- tool registry: `backend/app/application/tool_registry/`
-- tool providers: `backend/app/application/tool_providers/`
-- policy preflight: `backend/app/application/agent_registry/sandbox.py`
-- approvals/limits/metrics: `backend/app/application/monitoring/`
-- audit events: `backend/app/application/event_bus/`
-- MCP stdio runtime:
-  `backend/app/application/tool_providers/mcp_client.py`,
-  `mcp_provider.py`, `mcp_runtime.py`
-
-Tool execution is fail-closed: unknown, unclassified, unactivated, forbidden, or
-out-of-scope tools do not reach provider dispatch.
-
-## Memory And Data
-
-Active runtime root is root-level `data/`.
-
-### Long-term memory (LTM)
-
-Two engines behind one facade — `app.application.memory` (`recall`, `add_fact`,
-`search_facts`, `add_semantic`, `search_semantic`, `reflect_chat`, `prune`):
-
-- **Facts** — `smart_memory.db` (lexical TF-IDF, profile-scoped). Curated facts
-  the agent knows about the user; backs the "Память чата" settings UI
-  (`/api/chat-agent/memory`) and the agent's `recall` / `search_memory` tools.
-  Never auto-evicted.
-- **Semantic / episodic** — `rag_memory.db` (1024-dim vectors via the local
-  embed endpoint, with keyword fallback). Indexed code/turn summaries and chat
-  reflection episodes (`category=episode`, written by `reflect_chat`). Decays
-  via `prune_rag` (stale, never-recalled `agent_turn` rows) + periodic `VACUUM`.
-
-The code-agent `recall(query)` tool returns both (facts + semantic) through the
-facade. Recall is pull-based (tool-driven), not auto-injected per turn.
-
-Not LTM: `elira_state.db` (chats, messages, persona — conversation log) and
-`agent_monitor.db` (`model_profiles` routing + monitoring). Retired in the
-memory cleanup: `chat_agent.db` and `memory.db` (the latter held only a stale
-`model_profiles` copy; the live table lives in `agent_monitor.db`).
-
-Gitignored runtime data:
-
-- `data/*.db`
-- `data/generated/`
-- `data/uploads/`
-- `data/system/`
-- `data/run_history.json`
-- `data/elira_secret.key` (Fernet key — auto-generated, must stay untracked)
-- `data/elira_api_token` (per-machine API token — auto-generated)
-- logs and caches
-
-Intentionally tracked local bootstrap data:
-
-- `data/plugins/`
-- `data/plugins_config.json`
-
-Secrets and machine-local config stay in `.env.local` files only.
-
-## Frontend
-
-Frontend source lives in `frontend/src`.
-
-Key areas:
-
-- `components/EliraChatShell.tsx` - primary chat shell.
-- `components/CodeWorkspaceShell.tsx` and related components - code workspace.
-- `components/ProjectPanel.tsx` - project selection.
-- `api/` - typed API clients by domain.
-- `streamRegistry.ts` - stream survival across UI switches.
-- `pickFolder.ts` - shared Tauri folder picker.
-
-The desktop app serves `frontend/dist` in packaged mode. Frontend changes need:
-
-```powershell
-npm --prefix frontend run build
-```
-
-Type changes need:
+After a complete refactor run:
 
 ```powershell
 npm --prefix frontend run typecheck
+npm --prefix frontend run build
+backend\.venv\Scripts\python.exe -m pytest -q
 ```
-
-## Verification Policy
-
-- Backend behavior: focused pytest first, full `pytest -q` for broad changes.
-- Frontend behavior: `npm --prefix frontend run typecheck`; build when bundle
-  output matters.
-- Tauri/config changes: rebuild or run Tauri dev.
-- Docs-only changes: `git diff --check` plus targeted grep for stale terms is
-  enough.
-
-## Runtime Guardrails
-
-Binding invariants for the agent runtime. New work must hold all of these; the
-condensed statements elsewhere in this doc (no second executor/provider stack;
-fail-closed tool dispatch) are specific instances of these rules.
-
-- No second executor, kernel DB, or general tool registry.
-- No full OS access by default; no plugin code imported into the backend
-  process.
-- A Python thread timeout is not a real cancellation of a side effect.
-- No infinite retries.
-- No cloud profile without explicit consent.
-- No recursive subagents.
-- Durable state is not enough without startup recovery.
-- Untrusted content must never change policy, scopes, approvals, or tool
-  activation.
-- Model prose and tool intent are not evidence. Only executed tool results may
-  create run evidence receipts.
-- Verification is bound to the current project epoch. Every confirmed mutation
-  advances that epoch and makes earlier verification stale.
-- Do not add remote MCP transport / LSP child processes to the main path before
-  the relevant stage; do not overload the local model's prompt with dozens of
-  schemas. (Both are tracked in [`DEFERRED_TRACK.md`](DEFERRED_TRACK.md).)
-
-### Quality Bar (every new capability)
-
-1. The model sees the minimum necessary context.
-2. An unknown or unactivated tool is blocked before dispatch.
-3. Every side effect passes policy and approval.
-4. Untrusted content cannot escalate privileges.
-5. Errors are bounded and observable.
-6. A durable run can be safely recovered after restart.
-7. A weak model gets a deterministic fallback.

@@ -16,6 +16,24 @@ function doneEvent(overrides: Partial<DoneEvent>): DoneEvent {
 }
 
 describe("doneLedgerEntries — delivery next_milestone surfacing", () => {
+  it("does not mark a degraded or needs-input answer as completed", () => {
+    const degraded = doneLedgerEntries(doneEvent({
+      ok: true,
+      stop_reason: "answer",
+      answer_status: "degraded",
+    }));
+    const needsInput = doneLedgerEntries(doneEvent({
+      ok: true,
+      stop_reason: "answer",
+      answer_status: "needs_input",
+    }));
+
+    expect(degraded[0].type).toBe("partial");
+    expect(degraded[0].result).toBe("ответ с ограничениями");
+    expect(needsInput[0].type).toBe("partial");
+    expect(needsInput[0].result).toBe("нужно уточнение пользователя");
+  });
+
   it("adds an explicit «Следующий шаг» line on an honest-partial terminal", () => {
     // ok=false timeout keeps its pre-existing "error" ledger type — the fix
     // only ADDS the milestone line, it must not reshape the first entry.

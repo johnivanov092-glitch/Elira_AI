@@ -1,7 +1,13 @@
 # Elira IT Operations — PRD
 
+> **SUPERSEDED SECURITY DECISION (2026-08-11):** Windows Credential Manager /
+> DPAPI binding больше не является целевой архитектурой. Portable vault,
+> workflow-managed backup/restore и миграция существующих WinCred secrets
+> определены в `../universal-agent-workflow/PRD.md` и issue 02. Не добавлять новые
+> WinCred-only зависимости по этому документу.
+
 **Status:** draft for review · **Owner:** principal engineer · **Date:** 2026-07-10
-**Companion:** [docs/IT_OPERATIONS_PLAN.md](../../docs/IT_OPERATIONS_PLAN.md) (engineering plan)
+**Current architecture:** [docs/AGENT_ARCHITECTURE_GUIDE_RU.md](../../docs/AGENT_ARCHITECTURE_GUIDE_RU.md)
 
 ## 1. Problem & goal
 

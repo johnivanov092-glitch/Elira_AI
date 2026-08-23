@@ -44,15 +44,14 @@ class RememberToolTest(unittest.TestCase):
 
 
 class UserFactsInjectionTest(unittest.TestCase):
-    """User facts are auto-injected into the system prompt as the source of truth."""
+    """Relevant durable user facts are injected into the system prompt."""
 
     def test_user_facts_injected(self):
-        fake = {"items": [
+        fake = [
             {"text": "Столица QA — Тестбург", "source": "user_correction"},
             {"text": "Проект называется Elira", "source": "user"},
-            {"text": "auto summary noise", "source": "auto"},  # non-user → excluded
-        ]}
-        with patch("app.application.memory.list_facts", return_value=fake), \
+        ]
+        with patch("app.application.memory.authoritative_facts", return_value=fake), \
              tempfile.TemporaryDirectory() as tmp:
             prompt = _build_system_prompt(Path(tmp))
         # The injected SECTION header (rule 8а also mentions the phrase, so match
@@ -61,10 +60,9 @@ class UserFactsInjectionTest(unittest.TestCase):
         self.assertIn("Столица QA — Тестбург", prompt)
         self.assertIn("[поправка]", prompt)              # correction is marked
         self.assertIn("Проект называется Elira", prompt)
-        self.assertNotIn("auto summary noise", prompt)   # auto-source excluded
 
     def test_no_section_when_no_user_facts(self):
-        with patch("app.application.memory.list_facts", return_value={"items": []}), \
+        with patch("app.application.memory.authoritative_facts", return_value=[]), \
              tempfile.TemporaryDirectory() as tmp:
             prompt = _build_system_prompt(Path(tmp))
         self.assertNotIn("--- Факты от пользователя", prompt)

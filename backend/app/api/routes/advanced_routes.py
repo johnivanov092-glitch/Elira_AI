@@ -10,6 +10,7 @@ import json
 import logging
 import queue
 import threading
+from typing import Literal
 
 from app.application.advanced import runtime as project_runtime
 
@@ -30,6 +31,8 @@ class MultiAgentRequest(BaseModel):
     use_orchestrator: bool = False
     project_root: str | None = None
     num_ctx: int | None = None
+    permission_mode: Literal["ask", "accept_edits", "bypass"] = "bypass"
+    reasoning_effort: Literal["none", "low", "medium", "xhigh"] = "none"
 
 
 @router.post("/multi-agent")
@@ -46,6 +49,8 @@ def run_multi(payload: MultiAgentRequest):
             use_orchestrator=payload.use_orchestrator,
             project_root=payload.project_root,
             num_ctx=payload.num_ctx,
+            permission_mode=payload.permission_mode,
+            reasoning_effort=payload.reasoning_effort,
         )
         if not isinstance(result, dict):
             return JSONResponse(status_code=502, content={"ok": False, "error": "Multi-agent вернул некорректный результат."})
@@ -75,9 +80,13 @@ def run_multi_stream(payload: MultiAgentRequest):
     # call, so cancellation is cooperative: run_multi_agent_workflow checks this
     # flag between steps and records the run as cancelled.
     cancel_event = threading.Event()
+    run_id_box: dict[str, str] = {}
 
     def _on_progress(index: int, total: int, label: str) -> None:
         events.put({"type": "step", "index": index, "total": total, "label": label})
+
+    def _on_run_created(run_id: str) -> None:
+        run_id_box["run_id"] = run_id
 
     def _worker() -> None:
         try:
@@ -90,8 +99,11 @@ def run_multi_stream(payload: MultiAgentRequest):
                 use_orchestrator=payload.use_orchestrator,
                 project_root=payload.project_root,
                 num_ctx=payload.num_ctx,
+                permission_mode=payload.permission_mode,
+                reasoning_effort=payload.reasoning_effort,
                 progress_callback=_on_progress,
                 cancel_check=cancel_event.is_set,
+                run_created_callback=_on_run_created,
             )
             if not isinstance(result, dict):
                 events.put({"type": "error", "error": "Multi-agent вернул некорректный результат."})
@@ -109,7 +121,13 @@ def run_multi_stream(payload: MultiAgentRequest):
         worker.start()
         try:
             while True:
-                event = events.get()
+                try:
+                    event = events.get(timeout=1.0)
+                except queue.Empty:
+                    # Keep the connection observable so a client-side Stop is
+                    # delivered even while an LLM step or UI request is waiting.
+                    yield ": keepalive\n\n"
+                    continue
                 if event is _SENTINEL:
                     break
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
@@ -118,6 +136,14 @@ def run_multi_stream(payload: MultiAgentRequest):
             # steps; it owns the same SQLite lifecycle and will mark the run
             # cancelled. Re-raise so the StreamingResponse closes cleanly.
             cancel_event.set()
+            run_id = run_id_box.get("run_id", "")
+            if run_id:
+                try:
+                    from app.application.workflows.runtime import cancel_workflow_run
+
+                    cancel_workflow_run(run_id)
+                except (RuntimeError, ValueError):
+                    pass
             raise
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
@@ -162,19 +188,12 @@ def rag_list(limit: int = 50):
 # /rag/clear is captured by /rag/{item_id} (item_id="clear" → 422) and the
 # clear endpoint is unreachable (pre-existing shadowing bug).
 @router.delete("/rag/clear")
-def rag_clear_category(category: str | None = None, confirm: bool = False):
-    """Bulk delete. If category is provided, deletes only items in that
-    category; otherwise nukes everything in rag_items. Returns the
-    number of rows removed.
+def rag_clear_category(category: str | None = None):
+    """Delete one RAG category or the complete store.
 
-    Wiping ALL memory (no category) is destructive and requires confirm=true
-    (FIX-14) so a stray call can't silently erase the whole store.
+    Product confirmation belongs to the Workflow permission mode. This route
+    performs the requested operation directly and has no second approval flag.
     """
-    if not category and not confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Clearing ALL memory is destructive — pass confirm=true to proceed.",
-        )
     from app.application.rag_memory.service import _conn  # type: ignore[attr-defined]
 
     conn = _conn()

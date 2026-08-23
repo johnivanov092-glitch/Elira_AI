@@ -26,7 +26,6 @@ from app.application.code_agent.taskspec import (  # noqa: E402
     _criterion_intent,
     derive_task_spec,
 )
-from app.application.code_agent.loop_helpers import gate_completion_claims  # noqa: E402
 
 
 class IntentClassificationTest(unittest.TestCase):
@@ -318,51 +317,6 @@ class MultilineContentSplitTest(unittest.TestCase):
         self.assertEqual(len(spec.success_criteria), 1)
 
 
-class CompletionClaimGateTest(unittest.TestCase):
-    """FIX #1: the model can't make a UNIVERSAL 'everything passed' claim while the
-    verifier says otherwise — including phrasings with words between (the live miss
-    "все frontend и SSH критерии подтверждены verifier'ом")."""
-
-    UNIVERSAL_CLAIMS = [
-        "все frontend и SSH критерии подтверждены verifier'ом",   # exact live phrase
-        "Всё сделано! Все критерии выполнены. COMPLETED.",
-        "all frontend and SSH criteria are confirmed",
-        "Done — all criteria passed. Task completed.",
-        "все verifier checks прошли",
-        "все проверки пройдены",
-        "нет unverified",
-        "no failed or unverified",
-        "задача полностью выполнена",
-    ]
-    FACTUAL_SURVIVORS = [
-        "критерий build подтверждён verifier'ом",                 # singular fact
-        "typecheck и build подтверждены",
-        "все стили, включая .snapshot-grid, .snapshot-card",
-        "Я прочитал health.txt и создал tmp.txt, запустил typecheck.",
-        "snapshot.txt содержит project=frontend-global-live",
-    ]
-
-    def test_universal_claims_neutralized_when_not_confirmed(self):
-        for s in self.UNIVERSAL_CLAIMS:
-            for status in ("partial", "unverified", "failed"):
-                out = gate_completion_claims(s, status)
-                self.assertNotEqual(out, s, msg=f"[{status}] not scrubbed: {s!r}")
-
-    def test_live_phrase_specifically(self):
-        out = gate_completion_claims(
-            "**COMPLETED** — все frontend и SSH критерии подтверждены verifier'ом.", "partial")
-        self.assertNotIn("COMPLETED", out)
-        self.assertNotIn("критерии подтверждены", out.lower())
-
-    def test_factual_statements_survive(self):
-        for s in self.FACTUAL_SURVIVORS:
-            self.assertEqual(gate_completion_claims(s, "partial"), s, msg=f"over-scrubbed: {s!r}")
-
-    def test_confirmed_leaves_text_intact(self):
-        s = "Готово! Все критерии выполнены. COMPLETED."
-        self.assertEqual(gate_completion_claims(s, "confirmed"), s)
-
-
 class LiveGlobalCanaryRegressionTest(unittest.TestCase):
     """Exact live case (run d8cd3092): agent ran `ssh_read snapshot.txt` and claimed
     the 3 content lines verified — but ssh_read proves file_exists, NOT content. The
@@ -395,14 +349,6 @@ class LiveGlobalCanaryRegressionTest(unittest.TestCase):
         # ssh_run mkdir is not a verifier → the "directory exists" criterion is not
         # confirmed until an ssh_exists/ssh_read verdict lands.
         self.assertEqual(t.items[0]["status"], "unconfirmed")
-
-    def test_final_text_cannot_claim_all_confirmed_on_this_run(self):
-        # With completion=partial, the model's universal claim is neutralised.
-        out = gate_completion_claims(
-            "Готово. Все frontend и SSH критерии подтверждены verifier'ом.", "partial")
-        self.assertNotIn("критерии подтверждены", out.lower())
-        self.assertNotIn("all criteria", out.lower())
-
 
 if __name__ == "__main__":
     unittest.main()

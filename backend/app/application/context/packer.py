@@ -120,7 +120,9 @@ def pack_context(
     if result["dropped_blocks"]:
         result["warnings"].append("Lower-priority context blocks were omitted; artifact references remain authoritative.")
     if result["overflow"]:
-        result["warnings"].append("Protected context exceeds the safe input budget; generation must be blocked or confirmed.")
+        result["warnings"].append(
+            "Protected context exceeds the model input budget; the provider may reject this request."
+        )
     logger.debug(
         "Context packed tokens=%s budget=%s compressed=%s dropped=%s artifacts=%s overflow=%s",
         result["tokens"], result["budget"], result["compressed_blocks"],

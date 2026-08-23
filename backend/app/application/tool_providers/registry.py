@@ -9,8 +9,8 @@ Design notes:
   * First-registered-wins on name collisions, with a logged
     warning. This lets users override an MCP server's `web_search`
     by listing `BuiltinToolProvider` first.
-  * Disabled providers contribute zero schemas and never receive
-    dispatch calls — they're invisible to the model until enabled.
+  * Providers report schemas for their live runtime state. Lifecycle operations
+    such as starting MCP stay explicit tools, not authorization gates.
   * `dispatch()` never raises. JSON-parsing a malformed args blob
     yields {} (and the underlying tool then reports a missing-arg
     error in its standard way). Unknown tool names → an error

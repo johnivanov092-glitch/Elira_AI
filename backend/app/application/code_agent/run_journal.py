@@ -17,6 +17,15 @@ from typing import Any
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _SECRET_KEYS = re.compile(r"(?:api[_-]?key|authorization|password|secret|token|cookie)", re.I)
+_TOKEN_METRIC_KEYS = re.compile(
+    r"^(?:(?:prompt|completion|total|input|output|cached|reasoning|audio|"
+    r"current|free|available[_-]input|reserved[_-]output|reserved[_-]system|"
+    r"safety[_-]margin|max|max[_-]context|max[_-]output|compacted|history|"
+    r"user|budget|doc|left|right|accepted[_-]prediction|rejected[_-]prediction|"
+    r"cache[_-]read[_-]input|cache[_-]creation[_-]input)[_-]tokens|"
+    r"tokens[_-](?:per[_-]second|before|after)|token[_-]budget)$",
+    re.I,
+)
 _MAX_STRING = 40_000
 
 
@@ -33,7 +42,11 @@ def _runtime_root() -> Path:
 
 def _clean(value: Any, *, key: str = "") -> Any:
     """Bound event payloads and redact obvious structured secrets."""
-    if _SECRET_KEYS.search(key):
+    numeric_token_metric = (
+        _TOKEN_METRIC_KEYS.fullmatch(key) is not None
+        and type(value) in (int, float)
+    )
+    if _SECRET_KEYS.search(key) and not numeric_token_metric:
         return "[REDACTED]"
     if isinstance(value, dict):
         return {str(k): _clean(v, key=str(k)) for k, v in value.items()}
@@ -162,7 +175,7 @@ class RunJournal:
             "run_id": self.run_id,
             "status": "running",
             "task": str(request.get("user_message") or ""),
-            "mode": str(request.get("access_mode") or "project-workspace"),
+            "mode": "full-machine",
             "current_phase": "startup",
             "step": 0,
             "created_at": now,
@@ -194,7 +207,6 @@ class RunJournal:
             "active_skills": [],
             "tool_decisions": [],
             "web_sources": [],
-            "verified_sources": [],
             "unavailable_tools": [],
             "unavailable_capabilities": list(capabilities.get("missing") or []),
             "last_response": "",
@@ -229,6 +241,13 @@ class RunJournal:
             )
         if event_type == "final_response":
             self._state["last_response"] = str(event.get("text") or "")
+        if event_type == "tool_call" and event.get("media"):
+            from app.application.code_agent.answer_media import merge_answer_media
+
+            self._state["answer_media"] = merge_answer_media(
+                self._state.get("answer_media") or [],
+                event.get("media") or [],
+            )
         if event_type == "context_resolved":
             self._state["context_resolution"] = _clean(event)
         if event_type == "reasoning_fallback":
@@ -249,9 +268,8 @@ class RunJournal:
             if isinstance(plan, dict):
                 self._state["plan"] = _clean(plan)
         if event_type == "phase_changed":
-            # The ACTUALLY-applied thinking mode (planning_then_execution /
-            # planning_fallback / plan_reused / off / raw) — separate from the
-            # user's request.thinking, which is never rewritten.
+            # The ACTUALLY-applied brain mode (planning/off/raw) —
+            # separate from request.thinking, which is never rewritten.
             mode = event.get("applied_thinking_mode")
             if mode:
                 self._state["applied_thinking_mode"] = str(mode)

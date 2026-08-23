@@ -42,10 +42,11 @@ def add_fact(
     profile: str | None = None,
 ) -> dict[str, Any]:
     from app.application import smart_memory
+    from app.application.memory.policy import normalize_fact_category
 
     return smart_memory.add_memory(
         text,
-        category=category,
+        category=normalize_fact_category(text, category),
         source=source,
         importance=importance,
         profile_name=_profile(profile),
@@ -81,11 +82,46 @@ def fact_stats(*, profile: str | None = None) -> dict[str, Any]:
 
 
 def fact_context(query: str, *, max_items: int = 5, profile: str | None = None) -> str:
-    from app.application import smart_memory
-
-    return smart_memory.get_relevant_context(
-        query, max_items=max_items, profile_name=_profile(profile)
+    items = authoritative_facts(query, limit=max_items, profile=profile)
+    if not items:
+        return ""
+    lines: list[str] = []
+    total = 0
+    for item in items:
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        line = f"- {text}"
+        if total + len(line) > 1500:
+            break
+        lines.append(line)
+        total += len(line)
+    if not lines:
+        return ""
+    return (
+        "Заметки о пользователе (используй ТОЛЬКО если они прямо относятся к вопросу; "
+        "временные состояния сервера здесь намеренно исключены):\n"
+        + "\n".join(lines)
     )
+
+
+def authoritative_facts(
+    query: str,
+    *,
+    limit: int = 8,
+    profile: str | None = None,
+) -> list[dict[str, Any]]:
+    """Relevant durable facts only; never a dump of the whole memory store."""
+    from app.application.memory.policy import is_authoritative_fact
+
+    safe_limit = max(1, int(limit))
+    result = search_facts(
+        query,
+        limit=max(safe_limit * 3, safe_limit),
+        profile=profile,
+    )
+    items = result.get("items", []) or []
+    return [item for item in items if is_authoritative_fact(item)][:safe_limit]
 
 
 def list_profiles() -> dict[str, Any]:

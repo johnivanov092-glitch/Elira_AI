@@ -1,28 +1,8 @@
-"""W5 freshness + source-independence, layered on the ledger.
-
-Two DETERMINISTIC signals over the corpus/ledger, plus one advisory:
-
-  * corroboration — how many INDEPENDENT sources back a claim, approximated by
-    distinct registrable domains (eTLD+1) across its VERIFIED evidence (invariant
-    №9). Single-source claims are flagged honestly; ≥2 independent domains =
-    corroborated. Deterministic.
-  * freshness — the source's own date (published/modified meta, or the
-    Last-Modified header) captured at ingest; a source older than STALE_YEARS is
-    flagged as possibly outdated. The DATE is deterministic; "stale" is a
-    threshold heuristic and shown as a caution, not a verdict.
-  * conflict — ADVISORY: the model marks a claim `conflicted` via web_claim_add
-    (invariant №8, NLI-class is never a runtime verdict). Surfaced in a dedicated
-    section.
-
-No network, no new provider — pure functions over stored metadata.
-"""
+"""Pure helpers for source domains and dates captured at web ingest."""
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from urllib.parse import urlparse
-
-STALE_YEARS = 3
 
 # Multi-part public suffixes we resolve without the full PSL (bounded heuristic —
 # invariant №9 says the domain check is an APPROXIMATION of independence).
@@ -91,40 +71,3 @@ def extract_dates(html: str, last_modified_header: str | None) -> dict:
         except (TypeError, ValueError):
             pass
     return out
-
-
-def _source_date(dates: dict) -> str | None:
-    return (dates or {}).get("modified") or (dates or {}).get("published")
-
-
-def is_stale(dates: dict, *, now: datetime | None = None) -> bool:
-    """True when the source's newest known date is older than STALE_YEARS. Unknown
-    date → NOT stale (we don't punish missing metadata; we just say 'дата неизвестна')."""
-    d = _source_date(dates)
-    if not d:
-        return False
-    try:
-        when = datetime.fromisoformat(d).replace(tzinfo=timezone.utc)
-    except ValueError:
-        return False
-    ref = now or datetime.now(timezone.utc)
-    return (ref - when).days > STALE_YEARS * 365
-
-
-def freshness_note(dates: dict, *, now: datetime | None = None) -> str:
-    """Human freshness annotation for a source line."""
-    d = _source_date(dates)
-    if not d:
-        return "дата неизвестна"
-    return (f"⚠ возможно устарел, {d}" if is_stale(dates, now=now) else f"дата {d}")
-
-
-def corroboration(verified_domains: set[str]) -> tuple[str, str]:
-    """(level, note) from the set of INDEPENDENT domains backing a claim's VERIFIED
-    evidence. level ∈ {none, single, multi}."""
-    n = len(verified_domains)
-    if n == 0:
-        return "none", "нет подтверждённого источника"
-    if n == 1:
-        return "single", f"один источник ({next(iter(verified_domains))}) — не перекрёстно подтверждено"
-    return "multi", f"перекрёстно: {n} независимых домена ({', '.join(sorted(verified_domains))})"

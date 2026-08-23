@@ -1,18 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from app.infrastructure.db.connection import connect_sqlite
 
 
-DEFAULT_MAX_RUNS_PER_HOUR = 120
-DEFAULT_MAX_EXECUTION_SECONDS = 600  # 10 min — big tasks on a slow local model
-DEFAULT_MAX_CONTEXT_TOKENS = 0
 DEFAULT_WORKFLOW_ENGINE_AGENT_ID = "workflow-engine"
 
 CREATE_SQL = """
@@ -32,17 +28,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_metrics_type ON agent_metrics(metric_type);
 CREATE INDEX IF NOT EXISTS idx_agent_metrics_agent ON agent_metrics(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_metrics_created ON agent_metrics(created_at);
 
-CREATE TABLE IF NOT EXISTS agent_limits (
-    agent_id TEXT PRIMARY KEY,
-    max_runs_per_hour INTEGER NOT NULL,
-    max_execution_seconds INTEGER NOT NULL,
-    max_context_tokens INTEGER NOT NULL,
-    allowed_tools_json TEXT NOT NULL DEFAULT '[]',
-    allowed_scopes_json TEXT NOT NULL DEFAULT '[]',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS resource_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     agent_id TEXT NOT NULL DEFAULT '',
@@ -58,28 +43,6 @@ CREATE TABLE IF NOT EXISTS resource_usage (
 CREATE INDEX IF NOT EXISTS idx_resource_usage_agent ON resource_usage(agent_id);
 CREATE INDEX IF NOT EXISTS idx_resource_usage_resource ON resource_usage(resource);
 CREATE INDEX IF NOT EXISTS idx_resource_usage_created ON resource_usage(created_at);
-"""
-
-_APPROVALS_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS approvals (
-    id TEXT PRIMARY KEY,
-    tool_name TEXT NOT NULL,
-    agent_id TEXT NOT NULL DEFAULT '',
-    source TEXT NOT NULL DEFAULT '',
-    run_id TEXT NOT NULL DEFAULT '',
-    project_scope_id TEXT NOT NULL DEFAULT '',
-    args_json TEXT NOT NULL DEFAULT '{}',
-    args_sha256 TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    ttl_seconds INTEGER NOT NULL DEFAULT 300,
-    expires_at TEXT NOT NULL,
-    decided_at TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
-CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id);
-CREATE INDEX IF NOT EXISTS idx_approvals_tool ON approvals(tool_name);
 """
 
 _MODEL_PROFILES_TABLE_SQL = """
@@ -193,7 +156,6 @@ def prune_old_metrics(db_path: str | Path, *, cutoff_iso: str, vacuum: bool = Tr
 def init_db(db_path: str | Path) -> None:
     with get_connection(db_path) as con:
         con.executescript(CREATE_SQL)
-    migrate_approvals_table(db_path)
 
 
 def migrate_model_profiles_table(db_path: str | Path) -> None:
@@ -232,67 +194,6 @@ def migrate_model_profiles_table(db_path: str | Path) -> None:
         )
 
 
-# Built-in rows whose historical execution timeout is migrated below. Context
-# limits are deliberately left untouched: interactive live runtimes bypass this
-# administrative policy explicitly, while workflows and offline callers still
-# enforce any configured value.
-_BUILTIN_RUNTIME_AGENT_IDS = (
-    "chat",
-    "code-agent",
-    "api-direct",
-    "workflow-engine",
-    "builtin-orchestrator",
-    "builtin-reviewer",
-    "builtin-researcher",
-    "builtin-programmer",
-    "builtin-analyst",
-    "builtin-universal",
-    "builtin-socrat",
-)
-
-
-def migrate_default_runtime_limits(db_path: str | Path) -> None:
-    """Migrate historical execution timeouts without rewriting context policy."""
-    with get_connection(db_path) as con:
-        con.execute(
-            f"""UPDATE agent_limits
-                SET max_execution_seconds = ?, updated_at = ?
-                WHERE agent_id IN ({",".join("?" for _ in _BUILTIN_RUNTIME_AGENT_IDS)})
-                  AND max_execution_seconds = 180""",
-            (DEFAULT_MAX_EXECUTION_SECONDS, now_utc(), *_BUILTIN_RUNTIME_AGENT_IDS),
-        )
-
-
-def canonical_args_digest(args: dict[str, Any] | None) -> str:
-    """SHA-256 of canonically serialised args.
-
-    Uses sort_keys=True and stable separators so identical args produce
-    identical digests regardless of insertion order or Python version.
-    Both create_approval and find_approved_approval call this function;
-    they MUST both use it to guarantee the digests match.
-    """
-    payload = json.dumps(args or {}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def migrate_approvals_table(db_path: str | Path) -> None:
-    """Additive migration: create approvals table if not present."""
-    with get_connection(db_path) as con:
-        con.executescript(_APPROVALS_TABLE_SQL)
-
-
-def migrate_approval_args_sha256(db_path: str | Path) -> None:
-    """Additive idempotent migration: add args_sha256 column to approvals.
-
-    Safe to run on databases created before this column existed.
-    New databases already have the column from _APPROVALS_TABLE_SQL.
-    """
-    with get_connection(db_path) as con:
-        existing = {row[1] for row in con.execute("PRAGMA table_info(approvals)").fetchall()}
-        if "args_sha256" not in existing:
-            con.execute("ALTER TABLE approvals ADD COLUMN args_sha256 TEXT NOT NULL DEFAULT ''")
-
-
 def dumps_json(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False)
 
@@ -304,15 +205,6 @@ def loads_json(raw: Any, default: Any) -> Any:
         return json.loads(raw)
     except (json.JSONDecodeError, TypeError):
         return default
-
-
-def row_to_limit(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if not row:
-        return None
-    data = dict(row)
-    data["allowed_tools"] = loads_json(data.pop("allowed_tools_json", "[]"), [])
-    data["allowed_scopes"] = loads_json(data.pop("allowed_scopes_json", "[]"), [])
-    return data
 
 
 def row_to_metric(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -331,177 +223,6 @@ def row_to_usage(row: sqlite3.Row | None) -> dict[str, Any] | None:
     data = dict(row)
     data["details"] = loads_json(data.pop("details_json", "{}"), {})
     return data
-
-
-def planner_tool_aliases() -> list[str]:
-    return [
-        "web_search",
-        "memory_search",
-        "library_context",
-        "project_mode",
-        "project_context",
-        "python_executor",
-        "project_patch",
-    ]
-
-
-def all_known_tools() -> list[str]:
-    tool_names: list[str] = []
-    try:
-        from app.application.tool_registry.service import list_tools
-
-        payload = list_tools()
-        for item in payload.get("tools", []):
-            name = str((item or {}).get("name", "")).strip()
-            if name:
-                tool_names.append(name)
-    except Exception:
-        pass
-
-    tool_names.extend(planner_tool_aliases())
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for name in tool_names:
-        key = name.strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        deduped.append(key)
-    return deduped
-
-
-def migrate_agent_limits_columns(db_path: str | Path) -> None:
-    """Additive migration: add the allowed_scopes column to agent_limits."""
-    with get_connection(db_path) as con:
-        existing = {row[1] for row in con.execute("PRAGMA table_info(agent_limits)").fetchall()}
-        if "allowed_scopes_json" not in existing:
-            con.execute(
-                "ALTER TABLE agent_limits ADD COLUMN allowed_scopes_json TEXT NOT NULL DEFAULT '[]'"
-            )
-
-
-def migrate_normalize_full_tool_allowlists(db_path: str | Path) -> None:
-    """P9.2-FIXUP: collapse legacy "allow every tool" snapshots to [] (unrestricted).
-
-    The old default allowed_tools was an all_known_tools() snapshot, which ALWAYS
-    contained the full planner_tool_aliases() set. With the kernel now enforcing
-    allowed_tools per tool-call (selected_tools=[name]), that frozen snapshot would
-    wrongly block any tool registered after the limit row was created. A row that
-    allows the entire planner-alias set was a legacy default snapshot — collapse it
-    to [] (semantically lossless: "allow all" == unrestricted). Narrow admin
-    restrictions (a strict subset that does not cover every alias) are preserved.
-    Idempotent: an already-empty list is skipped.
-    """
-    alias_set = set(planner_tool_aliases())
-    if not alias_set:
-        return
-    with get_connection(db_path) as con:
-        rows = con.execute("SELECT agent_id, allowed_tools_json FROM agent_limits").fetchall()
-        for agent_id, allowed_json in rows:
-            allowed = set(loads_json(allowed_json, []))
-            if allowed and alias_set.issubset(allowed):
-                con.execute(
-                    "UPDATE agent_limits SET allowed_tools_json = '[]' WHERE agent_id = ?",
-                    (agent_id,),
-                )
-
-
-def default_limit_payload(agent_id: str) -> dict[str, Any]:
-    timestamp = now_utc()
-    return {
-        "agent_id": agent_id,
-        "max_runs_per_hour": DEFAULT_MAX_RUNS_PER_HOUR,
-        "max_execution_seconds": DEFAULT_MAX_EXECUTION_SECONDS,
-        "max_context_tokens": DEFAULT_MAX_CONTEXT_TOKENS,
-        # P9.2-FIXUP: empty allowed_tools == UNRESTRICTED (mirrors allowed_scopes).
-        # The kernel now enforces allowed_tools per tool-call (selected_tools=[name]),
-        # so a frozen all_known_tools() snapshot would wrongly block any tool
-        # registered after the limit was created (new builtins, classified plugins,
-        # MCP). A tool restriction is an explicit admin opt-in, never the default.
-        "allowed_tools": [],
-        "allowed_scopes": [],
-        "created_at": timestamp,
-        "updated_at": timestamp,
-    }
-
-
-def list_agent_limits(db_path: str | Path) -> list[dict[str, Any]]:
-    with get_connection(db_path) as con:
-        rows = con.execute("SELECT * FROM agent_limits ORDER BY agent_id").fetchall()
-    items = [row_to_limit(row) for row in rows]
-    return [item for item in items if item]
-
-
-def delete_unknown_builtin_limits(
-    db_path: str | Path,
-    valid_agent_ids: set[str],
-) -> int:
-    valid_ids = {str(agent_id).strip() for agent_id in valid_agent_ids if str(agent_id).strip()}
-    if not valid_ids:
-        return 0
-
-    with get_connection(db_path) as con:
-        rows = con.execute(
-            "SELECT agent_id FROM agent_limits WHERE agent_id LIKE 'builtin-%'"
-        ).fetchall()
-        stale_ids = [
-            str(row["agent_id"])
-            for row in rows
-            if str(row["agent_id"]) not in valid_ids
-        ]
-        if not stale_ids:
-            return 0
-        con.executemany(
-            "DELETE FROM agent_limits WHERE agent_id = ?",
-            [(agent_id,) for agent_id in stale_ids],
-        )
-    return len(stale_ids)
-
-
-def get_agent_limit(db_path: str | Path, agent_id: str) -> dict[str, Any] | None:
-    with get_connection(db_path) as con:
-        row = con.execute(
-            "SELECT * FROM agent_limits WHERE agent_id = ?",
-            (agent_id,),
-        ).fetchone()
-    return row_to_limit(row)
-
-
-def upsert_limit(db_path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
-    agent_id = str(payload.get("agent_id", "")).strip()
-    if not agent_id:
-        raise ValueError("agent_id is required")
-
-    timestamp = now_utc()
-    existing = get_agent_limit(db_path, agent_id)
-    created_at = existing["created_at"] if existing else payload.get("created_at", timestamp)
-    with get_connection(db_path) as con:
-        con.execute(
-            """
-            INSERT INTO agent_limits
-                (agent_id, max_runs_per_hour, max_execution_seconds, max_context_tokens,
-                 allowed_tools_json, allowed_scopes_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(agent_id) DO UPDATE SET
-                max_runs_per_hour = excluded.max_runs_per_hour,
-                max_execution_seconds = excluded.max_execution_seconds,
-                max_context_tokens = excluded.max_context_tokens,
-                allowed_tools_json = excluded.allowed_tools_json,
-                allowed_scopes_json = excluded.allowed_scopes_json,
-                updated_at = excluded.updated_at
-            """,
-            (
-                agent_id,
-                int(payload.get("max_runs_per_hour", DEFAULT_MAX_RUNS_PER_HOUR)),
-                int(payload.get("max_execution_seconds", DEFAULT_MAX_EXECUTION_SECONDS)),
-                int(payload.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)),
-                dumps_json(payload.get("allowed_tools", [])),
-                dumps_json(payload.get("allowed_scopes", [])),
-                str(created_at),
-                timestamp,
-            ),
-        )
-    return get_agent_limit(db_path, agent_id) or {}
 
 
 def record_metric(
@@ -678,190 +399,6 @@ def record_workflow_step_metric(
         duration_ms=duration_ms,
         details={"step_type": step_type, **(details or {})},
     )
-
-
-def count_agent_runs_last_hour(db_path: str | Path, agent_id: str) -> int:
-    since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    with get_connection(db_path) as con:
-        row = con.execute(
-            """
-            SELECT COUNT(*) AS cnt
-            FROM agent_metrics
-            WHERE metric_type = 'agent.run' AND agent_id = ? AND created_at >= ?
-            """,
-            (agent_id, since),
-        ).fetchone()
-    return int(row["cnt"]) if row else 0
-
-
-def get_recent_blocked_runs(
-    db_path: str | Path,
-    hours: int = 24,
-    limit: int = 10,
-) -> list[dict[str, Any]]:
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    with get_connection(db_path) as con:
-        rows = con.execute(
-            """
-            SELECT * FROM agent_metrics
-            WHERE metric_type = 'sandbox.blocked' AND created_at >= ?
-            ORDER BY created_at DESC, id DESC
-            LIMIT ?
-            """,
-            (since, max(1, int(limit))),
-        ).fetchall()
-    items = [row_to_metric(row) for row in rows]
-    return [item for item in items if item]
-
-
-# ── Approvals ────────────────────────────────────────────────────────────────
-
-def row_to_approval(row: sqlite3.Row | None) -> dict[str, Any] | None:
-    if not row:
-        return None
-    data = dict(row)
-    data["args"] = loads_json(data.pop("args_json", "{}"), {})
-    return data
-
-
-def create_approval(
-    db_path: str | Path,
-    *,
-    id: str,
-    tool_name: str,
-    agent_id: str = "",
-    source: str = "",
-    run_id: str = "",
-    project_scope_id: str = "",
-    args: dict[str, Any] | None = None,
-    ttl_seconds: int = 300,
-) -> dict[str, Any]:
-    from app.core.redaction import redact_secrets
-
-    now = now_utc()
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=max(1, ttl_seconds))).isoformat()
-    # Digest is computed from the RAW args (approval matching on retry depends on
-    # it); only the displayed/persisted args_json is redacted, so secrets never
-    # land in the store/UI/Telegram while matching stays intact.
-    args_digest = canonical_args_digest(args)
-    redacted_args = redact_secrets(args or {})
-    with get_connection(db_path) as con:
-        con.execute(
-            """INSERT INTO approvals
-               (id, tool_name, agent_id, source, run_id, project_scope_id,
-                args_json, args_sha256, status, ttl_seconds, expires_at, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)""",
-            (id, tool_name, agent_id, source, run_id, project_scope_id,
-             dumps_json(redacted_args), args_digest, ttl_seconds, expires_at, now, now),
-        )
-    return get_approval(db_path, id) or {}
-
-
-def get_approval(db_path: str | Path, approval_id: str) -> dict[str, Any] | None:
-    with get_connection(db_path) as con:
-        row = con.execute(
-            "SELECT * FROM approvals WHERE id = ?", (approval_id,)
-        ).fetchone()
-    return row_to_approval(row)
-
-
-def list_approvals(
-    db_path: str | Path,
-    *,
-    status: str | None = None,
-    agent_id: str | None = None,
-    tool_name: str | None = None,
-    run_id: str | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    clauses: list[str] = []
-    params: list[Any] = []
-    if status:
-        clauses.append("status = ?")
-        params.append(status)
-    if agent_id:
-        clauses.append("agent_id = ?")
-        params.append(agent_id)
-    if tool_name:
-        clauses.append("tool_name = ?")
-        params.append(tool_name)
-    if run_id:
-        clauses.append("run_id = ?")
-        params.append(run_id)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(max(1, int(limit)))
-    with get_connection(db_path) as con:
-        rows = con.execute(
-            f"SELECT * FROM approvals {where} ORDER BY created_at DESC LIMIT ?",
-            params,
-        ).fetchall()
-    return [a for a in (row_to_approval(r) for r in rows) if a]
-
-
-def update_approval_status(
-    db_path: str | Path,
-    approval_id: str,
-    *,
-    status: str,
-) -> dict[str, Any] | None:
-    now = now_utc()
-    decided_at = now if status in ("approved", "rejected", "expired", "used") else None
-    with get_connection(db_path) as con:
-        con.execute(
-            "UPDATE approvals SET status = ?, decided_at = ?, updated_at = ? WHERE id = ?",
-            (status, decided_at, now, approval_id),
-        )
-    return get_approval(db_path, approval_id)
-
-
-def find_approved_approval(
-    db_path: str | Path,
-    *,
-    tool_name: str,
-    agent_id: str,
-    source: str,
-    run_id: str,
-    project_scope_id: str,
-    args: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    """Return the first approved, non-expired approval matching all 6 binding fields.
-
-    Binding fields: tool_name, agent_id, source, run_id, project_scope_id, args_sha256.
-    Legacy approvals with an empty digest (args_sha256 = '') are never accepted;
-    an empty run_id never matches any stored approval.
-    """
-    if not run_id:
-        return None
-    digest = canonical_args_digest(args)
-    now = now_utc()
-    with get_connection(db_path) as con:
-        row = con.execute(
-            """SELECT * FROM approvals
-               WHERE tool_name        = ?
-                 AND agent_id         = ?
-                 AND source           = ?
-                 AND run_id           = ?
-                 AND project_scope_id = ?
-                 AND args_sha256      = ?
-                 AND args_sha256     != ''
-                 AND status           = 'approved'
-                 AND expires_at       > ?
-               ORDER BY created_at DESC LIMIT 1""",
-            (tool_name, agent_id, source, run_id, project_scope_id, digest, now),
-        ).fetchone()
-    return row_to_approval(row)
-
-
-def expire_old_approvals(db_path: str | Path) -> int:
-    """Mark expired pending/approved approvals as 'expired'. Returns count updated."""
-    now = now_utc()
-    with get_connection(db_path) as con:
-        cursor = con.execute(
-            "UPDATE approvals SET status = 'expired', updated_at = ? WHERE status IN ('pending', 'approved') AND expires_at <= ?",
-            (now, now),
-        )
-    return cursor.rowcount if cursor else 0
-
 
 # ── MemoryCandidate ──────────────────────────────────────────────────────────
 

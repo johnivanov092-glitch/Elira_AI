@@ -2,6 +2,7 @@
 
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
 struct BackendState {
@@ -160,6 +161,152 @@ fn backend_status(state: tauri::State<BackendState>) -> Result<serde_json::Value
     }))
 }
 
+#[cfg(target_os = "windows")]
+fn powershell_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[tauri::command]
+#[cfg(target_os = "windows")]
+fn run_elevated_command(
+    request_id: String,
+    program: String,
+    args: Vec<String>,
+    cwd: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let program = program.trim().to_string();
+    if program.is_empty() {
+        return Err("Elevation request has no program".to_string());
+    }
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "elira-elevation-{}-{}",
+        std::process::id(),
+        nonce
+    ));
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create elevation workspace: {e}"))?;
+    let input_path = temp_dir.join("request.json");
+    let helper_path = temp_dir.join("elevated-helper.ps1");
+    let launcher_path = temp_dir.join("uac-launcher.ps1");
+    let result_path = temp_dir.join("result.json");
+
+    let request = serde_json::json!({
+        "program": program,
+        "args": args,
+        "cwd": cwd,
+    });
+    std::fs::write(
+        &input_path,
+        serde_json::to_vec(&request).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("Failed to write elevation request: {e}"))?;
+
+    const ELEVATED_HELPER: &str = r#"param(
+    [Parameter(Mandatory=$true)][string]$RequestPath,
+    [Parameter(Mandatory=$true)][string]$ResultPath
+)
+$ErrorActionPreference = 'Stop'
+try {
+    $request = Get-Content -LiteralPath $RequestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $program = [string]$request.program
+    if ([string]::IsNullOrWhiteSpace($program)) { throw 'program is empty' }
+    if ($request.cwd) { Set-Location -LiteralPath ([string]$request.cwd) }
+    $arguments = @($request.args | ForEach-Object { [string]$_ })
+    $commandOutput = (& $program @arguments 2>&1 | Out-String)
+    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { [int]$LASTEXITCODE }
+    if ($commandOutput.Length -gt 60000) {
+        $commandOutput = $commandOutput.Substring(0, 60000) + "`n[output truncated]"
+    }
+    $result = @{
+        elevated = $true
+        ok = ($exitCode -eq 0)
+        exit_code = $exitCode
+        output = $commandOutput
+    }
+} catch {
+    $result = @{
+        elevated = $true
+        ok = $false
+        exit_code = -1
+        output = [string]$_.Exception.Message
+    }
+}
+$json = $result | ConvertTo-Json -Compress -Depth 8
+[System.IO.File]::WriteAllText($ResultPath, $json, [System.Text.UTF8Encoding]::new($false))
+exit ([int]$result.exit_code)
+"#;
+    std::fs::write(&helper_path, ELEVATED_HELPER.as_bytes())
+        .map_err(|e| format!("Failed to write elevation helper: {e}"))?;
+
+    let quoted = |path: &std::path::Path| {
+        powershell_literal(&format!("\"{}\"", path.display()))
+    };
+    let launcher = format!(
+        "$ErrorActionPreference='Stop'\n$child=Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',{},{},{}) -Wait -PassThru\nexit $child.ExitCode\n",
+        quoted(&helper_path),
+        quoted(&input_path),
+        quoted(&result_path),
+    );
+    std::fs::write(&launcher_path, launcher.as_bytes())
+        .map_err(|e| format!("Failed to write UAC launcher: {e}"))?;
+
+    let status = Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&launcher_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("Failed to start UAC: {e}"))?;
+
+    let result = (|| -> Result<serde_json::Value, String> {
+        if !result_path.is_file() {
+            return Err(format!(
+                "UAC was cancelled or the elevated helper did not return a result (exit {:?})",
+                status.code()
+            ));
+        }
+        let mut value: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&result_path)
+                .map_err(|e| format!("Failed to read elevation result: {e}"))?,
+        )
+        .map_err(|e| format!("Invalid elevation result: {e}"))?;
+        let object = value
+            .as_object_mut()
+            .ok_or_else(|| "Invalid elevation result object".to_string())?;
+        object.insert(
+            "native_bridge".to_string(),
+            serde_json::Value::String("tauri-v1".to_string()),
+        );
+        object.insert(
+            "request_id".to_string(),
+            serde_json::Value::String(request_id),
+        );
+        Ok(value)
+    })();
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    result
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "windows"))]
+fn run_elevated_command(
+    _request_id: String,
+    _program: String,
+    _args: Vec<String>,
+    _cwd: Option<String>,
+) -> Result<serde_json::Value, String> {
+    Err("Native elevation is available only on Windows".to_string())
+}
+
 fn main() {
     configure_webview_data_dir();
     tauri::Builder::default()
@@ -171,7 +318,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_backend,
             stop_backend,
-            backend_status
+            backend_status,
+            run_elevated_command
         ])
         .setup(|app| {
             // When ELIRA_EXTERNAL_BACKEND=1 the launcher script (run_tauri_dev.bat or

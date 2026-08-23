@@ -18,7 +18,7 @@ def _proc(returncode: int, stdout: bytes = b"", stderr: bytes = b"") -> MagicMoc
 class SshReadWindowsFallbackTest(unittest.TestCase):
     def _read(self, side_effects):
         with patch.object(ssh_provider, "_validate_host", return_value=None), patch.object(
-            ssh_provider.subprocess, "run", side_effect=side_effects
+            ssh_provider, "run_registered_process", side_effect=side_effects
         ) as run:
             res = ssh_provider.tool_ssh_read(host="home-srv01", path="C:\\AgentLab\\agent-lab.ps1")
         return res, run

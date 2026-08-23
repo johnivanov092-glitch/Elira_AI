@@ -301,7 +301,7 @@ def taskspec_context(spec: TaskSpec) -> str:
     if _intents & {"file_exists", "file_not_exists"}:
         parts.append(
             "Существование локальных файлов/папок доказывай инструментом `path_exists` "
-            "(read-only; если его нет в списке — активируй через tool_search), а не grep/read."
+            "если его схема доступна, а не grep/read."
         )
     # Tool-economy route — only on a browser-observable (frontend/page) task, so it
     # never nudges ssh/backend runs. browser proves page_open AND the visible text in
@@ -1388,10 +1388,6 @@ class CriteriaTracker:
     confirms a semantic/visibility claim."""
 
     items: list[dict] = field(default_factory=list)
-    # R1 (flag `catalog_assist`): when True, report() consults the verifier catalog to
-    # label criteria that have NO verifier — set by the loop, never on by default.
-    catalog_assist: bool = False
-
     @classmethod
     def from_spec(cls, spec: TaskSpec | None) -> "CriteriaTracker":
         crits = spec.success_criteria if spec else []
@@ -1429,9 +1425,9 @@ class CriteriaTracker:
         """Feed a verifier verdict (classified by tool + args + structured evidence).
         Confirms/refutes a criterion only on matching intent + target; unrelated
         criteria are untouched. `evidence` carries the rendered DOM text for a browser
-        verdict; `meta` carries structured fields (actual_port/viewport). `auto` marks
-        a verdict the RUNTIME executed itself (auto-verifier pass) — surfaced in the
-        report/UI so it's visible who closed the criterion.
+        verdict; `meta` carries structured fields (actual_port/viewport). `auto` is
+        retained only when restoring historical reports produced by the old runtime
+        auto-verifier.
 
         Returns True if a criterion changed status (unconfirmed→confirmed/failed) —
         the strongest goal-level progress signal there is, which the strategy router
@@ -1493,17 +1489,6 @@ class CriteriaTracker:
                 it["status"] = "skipped"
 
     def report(self) -> list[dict]:
-        rows = [{"text": it["text"], "status": it["status"], "verifier": it["verifier"],
+        return [{"text": it["text"], "status": it["status"], "verifier": it["verifier"],
                  "evidence": it["evidence"], "auto_verified": bool(it.get("auto_verified"))}
                 for it in self.items]
-        if self.catalog_assist:
-            # R1: honest «нет верификатора» label from the catalog — the key is ONLY
-            # present with the flag on, so the default payload stays bit-identical.
-            # Fail-open: a broken catalog must never break the report (review F9).
-            try:
-                from app.application.code_agent import catalog as _catalog
-                for row, it in zip(rows, self.items):
-                    row["unsupported"] = _catalog.unsupported_intent(it["intent"])
-            except Exception:
-                pass
-        return rows

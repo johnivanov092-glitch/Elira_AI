@@ -363,18 +363,6 @@ AGENT_PROFILE_UI = {
     "Сократ": {"icon": "◌", "short": "Обучение через вопросы.", "tags": ["обучение", "вопросы", "мышление"]},
 }
 
-# Single source of truth for blocked terminal commands. Used by both the
-# /api/terminal/exec runtime and domain/tools/terminal_tool.py. This is a
-# best-effort guard against *accidental* destructive commands by the local
-# user — it is NOT the security boundary (substring matching is bypassable).
-# The real boundary is app.core.auth: non-local callers need a token.
-TERMINAL_BLOCKED = [
-    "rm -rf /", "rm -rf /*", "mkfs", "dd if=", ":(){:|:&};:",
-    "shutdown", "reboot", "format c:", "deltree", ":(){ :|:& };:",
-    "remove-item -recurse", "del /s", "rd /s", "rmdir /s",
-    "git reset --hard", "git clean -fd", "git checkout --",
-]
-
 SESSION_DEFAULTS: dict = {
     "messages": [], "file_context": "", "uploaded_files": [],
     "last_uploaded_signature": "", "web_context": "", "last_answer": "",

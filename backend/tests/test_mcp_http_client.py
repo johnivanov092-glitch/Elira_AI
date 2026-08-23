@@ -8,19 +8,14 @@ Two halves:
     guard patched to a no-op so a fake "https://fake-mcp/..." target is
     reachable. The guard itself is tested separately below.
 
-  * **Security guard** — the SSRF / scheme rules exercised through the REAL
-    `_guard_url` + `start()`: blocked literal IPs, metadata endpoint,
-    localhost, IPv4-mapped IPv6, bad scheme, plain-http opt-in, and a
-    redirect that lands on a private address. Plus the runtime flag-off
-    refusal (`ELIRA_REMOTE_MCP` unset → http server won't start).
+  * **URL validation** — the real `_guard_url` accepts all HTTP(S)
+    destinations and rejects only unusable transport shapes.
 """
 from __future__ import annotations
 
-import importlib
 import json
 import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -338,13 +333,13 @@ class RetryTest(_TransportTestBase):
         self.assertIn("transport failed", str(ctx.exception))
 
 
-# ── SSRF / scheme guard (real guard, no mocking) ─────────────────
+# ── URL shape validation (real guard, no mocking) ────────────────
 
 
 class GuardUrlTest(unittest.TestCase):
     """Exercises the real _guard_url — no transport involved."""
 
-    BLOCKED = [
+    DESTINATIONS = [
         "http://127.0.0.1/mcp",
         "https://127.0.0.1/mcp",
         "https://localhost/mcp",
@@ -357,11 +352,10 @@ class GuardUrlTest(unittest.TestCase):
         "http://0.0.0.0/mcp",
     ]
 
-    def test_blocked_addresses_raise_security_error(self) -> None:
-        for url in self.BLOCKED:
+    def test_all_http_destinations_are_allowed(self) -> None:
+        for url in self.DESTINATIONS:
             with self.subTest(url=url):
-                with self.assertRaises(McpSecurityError):
-                    hc._guard_url(url, allow_insecure_http=True)
+                hc._guard_url(url, allow_insecure_http=False)
 
     def test_non_http_scheme_refused(self) -> None:
         for url in ("ftp://example.com/x", "file:///etc/passwd", "ws://example.com/x"):
@@ -369,10 +363,8 @@ class GuardUrlTest(unittest.TestCase):
                 with self.assertRaises(McpSecurityError):
                     hc._guard_url(url, allow_insecure_http=True)
 
-    def test_plain_http_refused_without_optin(self) -> None:
-        with self.assertRaises(McpSecurityError) as ctx:
-            hc._guard_url("http://example.com/mcp", allow_insecure_http=False)
-        self.assertIn("plain http", str(ctx.exception))
+    def test_plain_http_needs_no_opt_in(self) -> None:
+        hc._guard_url("http://example.com/mcp", allow_insecure_http=False)
 
     def test_missing_host_refused(self) -> None:
         with self.assertRaises(McpSecurityError):
@@ -381,100 +373,6 @@ class GuardUrlTest(unittest.TestCase):
     def test_public_host_passes(self) -> None:
         # A literal public IP needs no DNS and is deterministic offline.
         hc._guard_url("https://93.184.216.34/mcp", allow_insecure_http=False)
-
-    def test_start_against_blocked_literal_raises(self) -> None:
-        client = McpHttpClient(url="https://127.0.0.1/mcp")
-        with self.assertRaises(McpSecurityError):
-            client.start()
-        self.assertFalse(client.is_alive())
-
-
-class RedirectGuardTest(unittest.TestCase):
-    """A redirect that points at a private address must be refused on the
-    hop, even though the initial URL was clean. Uses the real guard with a
-    MockTransport that 302s to the metadata endpoint."""
-
-    def test_redirect_to_private_is_blocked(self) -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
-
-        transport = httpx.MockTransport(handler)
-
-        class _PatchedClient(httpx.Client):
-            def __init__(self, *args, **kwargs):
-                kwargs["transport"] = transport
-                kwargs.pop("follow_redirects", None)
-                super().__init__(*args, follow_redirects=False, **kwargs)
-
-        # Allow the FIRST guard pass (clean public literal) but the redirect
-        # target is private → McpSecurityError on the hop.
-        with patch.object(hc.httpx, "Client", _PatchedClient):
-            client = McpHttpClient(url="https://93.184.216.34/mcp", allow_insecure_http=True)
-            with self.assertRaises(McpSecurityError):
-                client.start()
-
-
-# ── Runtime flag-off refusal ─────────────────────────────────────
-
-
-class RemoteFlagGatingTest(unittest.TestCase):
-    """With ELIRA_REMOTE_MCP unset, a configured http server must refuse to
-    start (stdio is unaffected — covered by test_mcp_provider.py)."""
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        os.environ["ELIRA_DATA_DIR"] = self._tmp.name
-        self._prev_flag = os.environ.pop("ELIRA_REMOTE_MCP", None)
-        from app.core import data_files
-        importlib.reload(data_files)
-        from app.application.tool_providers import mcp_runtime
-        importlib.reload(mcp_runtime)
-        self.runtime = mcp_runtime
-
-    def tearDown(self) -> None:
-        try:
-            self.runtime.stop_all_servers()
-        except Exception:
-            pass
-        os.environ.pop("ELIRA_DATA_DIR", None)
-        if self._prev_flag is not None:
-            os.environ["ELIRA_REMOTE_MCP"] = self._prev_flag
-        from app.core import data_files
-        importlib.reload(data_files)
-        importlib.reload(self.runtime)
-        self._tmp.cleanup()
-
-    def _http_spec(self) -> dict:
-        return {
-            "id": "remote",
-            "transport": "http",
-            "url": "https://example.com/mcp",
-            "enabled": True,
-        }
-
-    def test_http_server_validates_and_persists(self) -> None:
-        saved = self.runtime.save_servers([self._http_spec()])
-        self.assertEqual(saved[0]["transport"], "http")
-        self.assertEqual(saved[0]["url"], "https://example.com/mcp")
-
-    def test_http_start_refused_when_flag_off(self) -> None:
-        os.environ.pop("ELIRA_REMOTE_MCP", None)
-        self.runtime.save_servers([self._http_spec()])
-        result = self.runtime.start_server("remote")
-        self.assertFalse(result["ok"])
-        self.assertIn("remote MCP disabled", result["error"])
-        # And the refusal is recorded as last_error for the UI.
-        servers = {s["id"]: s for s in self.runtime.list_servers()}
-        self.assertIn("remote MCP disabled", servers["remote"]["last_error"])
-
-    def test_flag_truthy_values_enable(self) -> None:
-        for val in ("1", "on", "true", "YES"):
-            with self.subTest(val=val):
-                os.environ["ELIRA_REMOTE_MCP"] = val
-                self.assertTrue(self.runtime._remote_mcp_enabled())
-        os.environ.pop("ELIRA_REMOTE_MCP", None)
-        self.assertFalse(self.runtime._remote_mcp_enabled())
-
 
 class EnvRefHeaderTest(unittest.TestCase):
     """secret_headers / headers expand ${ENV_VAR} from the process env, so the

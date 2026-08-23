@@ -47,7 +47,6 @@ def main() -> int:
         user_message="Run the deterministic runtime smoke.",
         project_root=Path(args.project_root).resolve(),
         model="smoke-model",
-        max_steps=3,
         run_id=args.run_id,
         chat_fn=deterministic_chat,
         auto_remember=False,

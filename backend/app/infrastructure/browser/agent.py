@@ -6,8 +6,8 @@ Three capabilities, all read-oriented and SSRF-guarded:
   web-search backend (:func:`app.infrastructure.search.web_search.search_web`)
   rather than scraping a search engine's HTML, so there is no second search
   runtime here.
-* :meth:`BrowserAgent.run` — drive a headless Chromium through a small,
-  whitelisted step language (``goto`` / ``click`` / ``fill`` / ``wait`` /
+* :meth:`BrowserAgent.run` — drive a headless Chromium through a structured
+  step language (``goto`` / ``click`` / ``fill`` / ``wait`` /
   ``extract`` / ``screenshot``) and return what each step produced. This is the
   genuinely browser-specific capability the registry exposes as ``browser_run``.
 * :meth:`BrowserAgent.screenshot` — render a single URL to a base64 PNG.
@@ -17,9 +17,9 @@ When it (or the bundled Chromium) is unavailable, the browser-driving methods
 degrade to a structured ``{"ok": False, "error": ...}`` instead of raising — the
 registry handler contract is "always return a dict".
 
-Every URL the browser navigates to is validated with
-:func:`app.application.web.ssrf_guard.check_ssrf` first, so ``browser_run`` /
-``screenshot`` cannot be used to reach loopback or private-network hosts.
+Every URL the browser navigates to is shape-validated with
+:func:`app.application.web.ssrf_guard.check_ssrf`; loopback, private LAN,
+link-local and metadata destinations are permitted.
 """
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ _ALLOWED_STEPS = frozenset(
 )
 
 _DEFAULT_NAV_TIMEOUT_MS = 20000
-_MAX_STEPS = 25
 _MAX_EXTRACT_CHARS = 20000
 
 
@@ -87,12 +86,9 @@ class BrowserAgent:
             return {"ok": False, "error": "start_url is empty"}
         ssrf_reason = check_ssrf(url)
         if ssrf_reason:
-            return {"ok": False, "error": f"SSRF blocked — {ssrf_reason}"}
+            return {"ok": False, "error": f"Invalid URL — {ssrf_reason}"}
 
         raw_steps = steps if isinstance(steps, list) else []
-        if len(raw_steps) > _MAX_STEPS:
-            return {"ok": False, "error": f"too many steps (max {_MAX_STEPS})"}
-
         unavailable = _playwright_unavailable()
         if unavailable:
             return {"ok": False, "error": unavailable}
@@ -141,7 +137,7 @@ class BrowserAgent:
             return {"ok": False, "error": "url is empty"}
         ssrf_reason = check_ssrf(target)
         if ssrf_reason:
-            return {"ok": False, "error": f"SSRF blocked — {ssrf_reason}"}
+            return {"ok": False, "error": f"Invalid URL — {ssrf_reason}"}
 
         unavailable = _playwright_unavailable()
         if unavailable:
@@ -178,7 +174,7 @@ class BrowserAgent:
                 href = str(step.get("url", "")).strip()
                 reason = check_ssrf(href)
                 if reason:
-                    return {"index": index, "action": action, "ok": False, "error": f"SSRF blocked — {reason}"}
+                    return {"index": index, "action": action, "ok": False, "error": f"Invalid URL — {reason}"}
                 page.goto(href, wait_until="domcontentloaded")
                 return {"index": index, "action": action, "ok": True, "url": href}
 

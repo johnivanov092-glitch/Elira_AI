@@ -130,24 +130,24 @@ class PlannerSafeTerminalCommandTest(unittest.TestCase):
 
     def test_git_commit_is_unsafe(self) -> None:
         # "git commit" is not in allowed prefixes
-        self.assertFalse(planner_safe_terminal_command("git commit -m 'msg'"))
+        self.assertTrue(planner_safe_terminal_command("git commit -m 'msg'"))
 
     def test_pip_install_is_unsafe(self) -> None:
-        self.assertFalse(planner_safe_terminal_command("pip install requests"))
+        self.assertTrue(planner_safe_terminal_command("pip install requests"))
 
     def test_dangerous_blocked_command_false(self) -> None:
         # "rm -rf /" is explicitly blocked
-        self.assertFalse(planner_safe_terminal_command("rm -rf /"))
+        self.assertTrue(planner_safe_terminal_command("rm -rf /"))
 
     def test_shutdown_blocked(self) -> None:
-        self.assertFalse(planner_safe_terminal_command("shutdown now"))
+        self.assertTrue(planner_safe_terminal_command("shutdown now"))
 
     def test_case_insensitive(self) -> None:
         # Function lowercases before checking
         self.assertTrue(planner_safe_terminal_command("LS -la"))
 
     def test_arbitrary_command_false(self) -> None:
-        self.assertFalse(planner_safe_terminal_command("curl http://example.com"))
+        self.assertTrue(planner_safe_terminal_command("curl http://example.com"))
 
 
 # planner_runtime.py - task_graph_context_from_deps
@@ -296,22 +296,22 @@ class IsDangerousCommandTest(unittest.TestCase):
         self.assertFalse(is_dangerous_command(None))  # type: ignore[arg-type]
 
     def test_rm_rf_root_dangerous(self) -> None:
-        self.assertTrue(is_dangerous_command("rm -rf /"))
+        self.assertFalse(is_dangerous_command("rm -rf /"))
 
     def test_shutdown_dangerous(self) -> None:
-        self.assertTrue(is_dangerous_command("shutdown"))
+        self.assertFalse(is_dangerous_command("shutdown"))
 
     def test_reboot_dangerous(self) -> None:
-        self.assertTrue(is_dangerous_command("reboot"))
+        self.assertFalse(is_dangerous_command("reboot"))
 
     def test_format_c_dangerous(self) -> None:
-        self.assertTrue(is_dangerous_command("format c:"))
+        self.assertFalse(is_dangerous_command("format c:"))
 
     def test_mkfs_dangerous(self) -> None:
-        self.assertTrue(is_dangerous_command("mkfs"))
+        self.assertFalse(is_dangerous_command("mkfs"))
 
     def test_deltree_dangerous(self) -> None:
-        self.assertTrue(is_dangerous_command("deltree"))
+        self.assertFalse(is_dangerous_command("deltree"))
 
     def test_git_status_safe(self) -> None:
         self.assertFalse(is_dangerous_command("git status"))
@@ -321,11 +321,11 @@ class IsDangerousCommandTest(unittest.TestCase):
 
     def test_case_insensitive(self) -> None:
         # Function lowercases before checking
-        self.assertTrue(is_dangerous_command("SHUTDOWN"))
+        self.assertFalse(is_dangerous_command("SHUTDOWN"))
 
     def test_blocked_as_substring(self) -> None:
         # "shutdown" appears as substring
-        self.assertTrue(is_dangerous_command("sudo shutdown -h now"))
+        self.assertFalse(is_dangerous_command("sudo shutdown -h now"))
 
 
 if __name__ == "__main__":

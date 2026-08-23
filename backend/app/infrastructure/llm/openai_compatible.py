@@ -74,6 +74,15 @@ def _positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _chat_http_timeout(requested: float | None, configured: float) -> tuple[float, None]:
+    """Keep a finite connect timeout but never impose a generation read deadline."""
+    try:
+        connect_timeout = float(requested if requested is not None else configured)
+    except (TypeError, ValueError):
+        connect_timeout = 30.0
+    return max(0.1, connect_timeout), None
+
+
 def local_llm_config() -> OpenAICompatibleConfig:
     return OpenAICompatibleConfig(
         enabled=_env_bool("LLAMA_SERVER_ENABLED"),
@@ -361,28 +370,23 @@ def _guard_context_request(
     max_tokens: Any,
     requested_ctx: Any,
 ) -> None:
-    context_limit = _positive_int(requested_ctx)
-    if context_limit is None:
-        return
-    prompt_tokens = _estimate_tokens(json.dumps(messages, ensure_ascii=False))
-    output_tokens = _positive_int(max_tokens) or _DEFAULT_OUTPUT_RESERVE_TOKENS
-    safety_margin = max(128, context_limit // 64)
-    required = prompt_tokens + output_tokens + safety_margin
-    if required > context_limit:
-        raise RuntimeError(
-            "Context request blocked before send: estimated prompt and output "
-            f"require {required} tokens, but the active limit is {context_limit}."
-        )
+    """Compatibility hook; the live server is authoritative for context fit."""
+    del messages, max_tokens, requested_ctx
 
 
 def _apply_thinking_option(payload: dict[str, Any], opts: dict[str, Any]) -> None:
-    """Pass a per-request ``chat_template_kwargs`` (e.g. ``{"enable_thinking": true}``)
-    through to a ``--jinja`` llama-server. This lets a single run toggle model
-    reasoning without a server restart or config edit; when the caller doesn't set
-    it the key is omitted and the server keeps its own default (reasoning off)."""
+    """Pass model-specific reasoning kwargs through to ``--jinja`` llama-server.
+
+    Qwen reads ``enable_thinking``/``reasoning_effort`` and Muse reads
+    ``reasoning_strength``. The agent sends the compatible union explicitly so
+    profile switches do not inherit a model's server-side default.
+    """
     ctk = opts.get("chat_template_kwargs")
     if isinstance(ctk, dict) and ctk:
         payload["chat_template_kwargs"] = ctk
+    effort = str(opts.get("reasoning_effort") or "").strip().lower()
+    if effort in {"none", "low", "medium", "xhigh"}:
+        payload["reasoning_effort"] = effort
 
 
 # Extra sampler params llama.cpp accepts in the request body (verified against the
@@ -405,45 +409,6 @@ def _apply_sampling_extra(payload: dict[str, Any], opts: dict[str, Any]) -> None
         for key, value in extra.items():
             if key in _SAMPLING_EXTRA_KEYS and value is not None:
                 payload[key] = value
-
-
-# Safety ceiling for a single generation's reasoning stream (chars). Far above any
-# real chain-of-thought (a normal thinking answer is a few thousand chars); a
-# runaway repetition loop is cut here so it can't generate into the whole context
-# window or burn the execution deadline. Only reached when thinking is on.
-_MAX_REASONING_CHARS = 24000
-
-# Content-channel analogue (the answer had NO runaway protection: a live run
-# produced one paragraph ×20). Hard cap plus a paragraph-repeat detector: if the
-# latest paragraph (>40 chars) already occurs many times in the accumulated
-# answer, the generation is degenerate — cut it. Checked on paragraph boundaries
-# only, so the per-token cost is negligible.
-_MAX_CONTENT_CHARS = 60000
-_CONTENT_REPEAT_PARA_LIMIT = 6
-
-
-def _content_looks_degenerate(text: str) -> bool:
-    """True when the tail paragraph of *text* repeats _CONTENT_REPEAT_PARA_LIMIT+
-    times — the signature of a sampling attractor, not a legitimate answer."""
-    paras = [p.strip() for p in text.split("\n") if len(p.strip()) > 40]
-    if len(paras) < _CONTENT_REPEAT_PARA_LIMIT:
-        return False
-    tail = paras[-1]
-    return paras.count(tail) >= _CONTENT_REPEAT_PARA_LIMIT
-
-
-def _collapse_repeated_paragraphs(text: str) -> str:
-    """Collapse consecutive duplicate paragraphs (used after a degenerate cut so
-    the surviving answer reads once, not ×N)."""
-    out: list[str] = []
-    prev = None
-    for para in text.split("\n"):
-        key = para.strip()
-        if key and key == prev:
-            continue
-        out.append(para)
-        prev = key if key else prev
-    return "\n".join(out)
 
 
 def _request_context_limit(options: dict[str, Any], *, configured_context: Any) -> int | None:
@@ -489,6 +454,7 @@ def chat_completion(
     payload: dict[str, Any] = {
         "model": model or cfg.model,
         "messages": normalized_messages,
+        "cache_prompt": True,
     }
     if tools:
         payload["tools"] = tools
@@ -517,7 +483,7 @@ def chat_completion(
                 f"{cfg.base_url}/chat/completions",
                 headers=_headers(cfg),
                 json=payload,
-                timeout=timeout or cfg.timeout_seconds,
+                timeout=_chat_http_timeout(timeout, cfg.timeout_seconds),
             )
             response.raise_for_status()
             data = response.json()
@@ -560,6 +526,7 @@ def chat_completion_stream(
         "model": model or cfg.model,
         "messages": normalized_messages,
         "stream": True,
+        "cache_prompt": True,
     }
     opts = options or {}
     _apply_max_tokens_limit(payload, opts, configured_max=cfg.max_tokens)
@@ -579,7 +546,7 @@ def chat_completion_stream(
             f"{cfg.base_url}/chat/completions",
             headers=_headers(cfg),
             json=payload,
-            timeout=timeout or cfg.timeout_seconds,
+            timeout=_chat_http_timeout(timeout, cfg.timeout_seconds),
             stream=True,
         )
         response.raise_for_status()
@@ -629,6 +596,7 @@ def chat_completion_event_stream(
         "messages": normalized_messages,
         "stream": True,
         "stream_options": {"include_usage": True},
+        "cache_prompt": True,
     }
     if tools:
         payload["tools"] = tools
@@ -648,11 +616,6 @@ def chat_completion_event_stream(
     started = time.monotonic_ns()
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
-    reasoning_chars = 0
-    reasoning_runaway = False
-    content_chars = 0
-    content_runaway = False
-    content_check_at = 2000  # next accumulated-size checkpoint for the detector
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
     try:
@@ -660,7 +623,7 @@ def chat_completion_event_stream(
             f"{cfg.base_url}/chat/completions",
             headers=_headers(cfg),
             json=payload,
-            timeout=timeout or cfg.timeout_seconds,
+            timeout=_chat_http_timeout(timeout, cfg.timeout_seconds),
             stream=True,
         )
         response.raise_for_status()
@@ -688,30 +651,11 @@ def chat_completion_event_stream(
             rtoken = str(delta.get("reasoning_content") or "")
             if rtoken:
                 reasoning_parts.append(rtoken)
-                reasoning_chars += len(rtoken)
                 yield {"type": "reasoning", "content": rtoken}
-                # Runaway-reasoning guard (safety net beside per-request DRY): a
-                # degenerate "same sentence forever" loop is cut here before it
-                # fills the context window. Stop reading → `finally` closes the
-                # upstream connection and frees the server.
-                if reasoning_chars > _MAX_REASONING_CHARS:
-                    reasoning_runaway = True
-                    break
             token = str(delta.get("content") or "")
             if token:
                 content_parts.append(token)
-                content_chars += len(token)
                 yield {"type": "delta", "content": token}
-                # Content runaway guard: hard cap + paragraph-repeat detector,
-                # evaluated at coarse checkpoints so it costs ~nothing per token.
-                if content_chars > _MAX_CONTENT_CHARS:
-                    content_runaway = True
-                    break
-                if content_chars >= content_check_at:
-                    content_check_at = content_chars + 2000
-                    if _content_looks_degenerate("".join(content_parts)):
-                        content_runaway = True
-                        break
             for fragment in delta.get("tool_calls") or []:
                 if not isinstance(fragment, dict):
                     continue
@@ -744,18 +688,6 @@ def chat_completion_event_stream(
     prompt_tokens = int(usage.get("prompt_tokens") or 0)
     completion_tokens = int(usage.get("completion_tokens") or 0)
     final_content = "".join(content_parts)
-    # If reasoning ran away and produced no actual answer, surface a clear note
-    # instead of an empty turn, so the loop finalizes usefully rather than looping.
-    if reasoning_runaway and not final_content.strip() and not calls:
-        final_content = (
-            "Рассуждение зациклилось и было прервано. Переформулируй вопрос "
-            "или отключи «Мозг» для этой задачи."
-        )
-    # A degenerate answer was cut mid-loop: collapse the accumulated repeats so
-    # the surviving text reads once, and note the cut.
-    if content_runaway:
-        final_content = _collapse_repeated_paragraphs(final_content).rstrip()
-        final_content += "\n\n[генерация прервана: ответ начал зацикливаться]"
     yield {
         "type": "message",
         "response": {
@@ -767,8 +699,8 @@ def chat_completion_event_stream(
                 "tool_calls": [calls[index] for index in sorted(calls)],
             },
             "done": True,
-            "reasoning_runaway": reasoning_runaway,
-            "content_runaway": content_runaway,
+            "reasoning_runaway": False,
+            "content_runaway": False,
             "prompt_eval_count": prompt_tokens,
             "eval_count": completion_tokens,
             "total_duration": time.monotonic_ns() - started,

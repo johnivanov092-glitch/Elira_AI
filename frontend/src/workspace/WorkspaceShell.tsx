@@ -1,32 +1,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Code, FileSearch, FolderOpen, Globe, ListChecks, Sparkles, UploadCloud, Wand2, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, CircleDashed, Code, FileSearch, FolderOpen, Globe, ListChecks, Sparkles, UploadCloud, Wand2 } from "lucide-react";
 import { waitForBackend } from "../api/client";
 import type { ResourceAttachment } from "../api/resources";
 import {
   type CodeAgentMode,
   type CodeSessionMeta,
   type PermissionMode,
+  type ReasoningEffort,
   createCodeSession,
   deleteCodeSession,
   getCodeSession,
-  getVerifyCommand,
   listCodeSessions,
   patchCodeSession,
-  setVerifyCommand,
+  startProjectWatcher,
+  stopProjectWatcher,
 } from "../api/codeAgent";
 import type { Turn } from "./types";
 import { pickFolder } from "../pickFolder";
 import { cn } from "../ui/cn";
 import { deriveArtifacts, fileArtifactKey, downloadArtifactKey, serverArtifactKey } from "./artifacts";
 import { Sidebar } from "./Sidebar";
-import { Topbar, type MainTab } from "./Topbar";
+import { Topbar } from "./Topbar";
 import { Composer, type ComposerAttachControls } from "./Composer";
 import { Transcript } from "./Transcript";
 import { PreviewPanel } from "./PreviewPanel";
 import { CommandPalette, type PaletteAction } from "./CommandPalette";
 import { Settings, type SettingsSection } from "./Settings";
-import { PipelinesShell } from "./PipelinesShell";
-import { TerminalDock } from "./TerminalDock";
+import { WorkflowRequestTray } from "./WorkflowRequestCard";
 import { useAgentRun } from "./useAgentRun";
 import * as bg from "./backgroundRuns";
 import { bindingFromSession, persistProjectSelection } from "./sessionBinding";
@@ -39,14 +39,12 @@ const newDraftKey = () => `draft-${Date.now()}-${++_draftSeq}`;
  *  stream. Settings/preview/palette content + token streaming land in later
  *  phases; old shells are deleted in Phase 5. */
 export default function WorkspaceShell() {
-  const [tab, setTab] = useState<MainTab>("chat");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Which Settings section to open at — set by the command palette (FIX-19),
   // undefined = default ("Модель") when opened from the topbar.
   const [settingsSection, setSettingsSection] = useState<SettingsSection | undefined>(undefined);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [verifyOpen, setVerifyOpen] = useState(false);
   // Trigger for the Composer's hidden file input, registered via onAttachReady.
   // Lets the "+" menu's "Прикрепить файл" open the picker that lives in Composer.
   const attachControls = useRef<ComposerAttachControls | null>(null);
@@ -54,7 +52,6 @@ export default function WorkspaceShell() {
   const [connected, setConnected] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
   const [input, setInput] = useState("");
   const [model, setModel] = useState("auto");
   const [sessions, setSessions] = useState<CodeSessionMeta[]>([]);
@@ -150,6 +147,14 @@ export default function WorkspaceShell() {
   }, []);
 
   useEffect(() => {
+    if (!connected || !project) return;
+    void startProjectWatcher(project).catch(() => { /* RAG remains manually indexable */ });
+    return () => {
+      void stopProjectWatcher(project).catch(() => { /* backend may already be offline */ });
+    };
+  }, [connected, project]);
+
+  useEffect(() => {
     // Auto-open the preview when a new file OR download artifact appears — a
     // generated .docx (file_gen) has no text preview but still deserves the panel.
     const key = serverArtifactKey(artifacts) || fileArtifactKey(artifacts) || downloadArtifactKey(artifacts);
@@ -182,7 +187,6 @@ export default function WorkspaceShell() {
 
   function onPaletteAction(a: PaletteAction) {
     if (a.kind === "settings") { setSettingsSection(a.section); setSettingsOpen(true); }
-    else if (a.kind === "pipelines") setTab("pipe");
     else if (a.kind === "preview") setPreviewOpen(true);
     else if (a.kind === "prefill") setInput((v) => (v.trim() ? v.trimEnd() + " " : "") + a.text);
   }
@@ -206,7 +210,7 @@ export default function WorkspaceShell() {
     }
   }
 
-  function onSend(text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, thinking?: boolean, noQuestions?: boolean) {
+  function onSend(text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) {
     // No project required: the backend defaults to a scratch workspace, so chat
     // works out of the box. Picking a folder targets a specific project.
     const msg = text.trim();
@@ -221,7 +225,7 @@ export default function WorkspaceShell() {
     // itself when it finishes — even if you've switched to another chat by then
     // (background completion). The closure captures the run's own project/model.
     bg.setPersist(activeKey, makePersist(activeKey, project, model));
-    run.send(text, mode, resources, permissionMode, thinking, noQuestions);
+    run.send(text, mode, resources, permissionMode, reasoningEffort);
     // Create the session eagerly so it appears in the sidebar as soon as you
     // send — not only when the run finishes. ensureServerId dedupes against the
     // persist closure's own lazy create, so the run is saved exactly once.
@@ -231,14 +235,14 @@ export default function WorkspaceShell() {
     }
   }
 
-  function onSendMultiAgent(text: string, useOrchestrator: boolean, useReflection: boolean) {
+  function onSendMultiAgent(text: string, useOrchestrator: boolean, useReflection: boolean, permissionMode: PermissionMode, reasoningEffort: ReasoningEffort) {
     // Multi-agent runs through a separate pipeline endpoint (not the streaming
     // code-agent), but is persisted and surfaced in the sidebar exactly like a
     // normal run — so mirror onSend's persist binding + eager session create.
     const msg = text.trim();
     if (!msg) return;
     bg.setPersist(activeKey, makePersist(activeKey, project, model));
-    run.sendMultiAgent(text, useOrchestrator, useReflection);
+    run.sendMultiAgent(text, useOrchestrator, useReflection, permissionMode, reasoningEffort);
     if (!sessionId && !keyToServerId.current.has(activeKey)) {
       void ensureServerId(activeKey, msg.slice(0, 48) || "Новый чат", project, model)
         .catch(() => { /* offline; the persist closure retries the create */ });
@@ -257,11 +261,9 @@ export default function WorkspaceShell() {
     // chat's folder. selectSession() restores both from a saved session.
     setProject("");
     setModel("auto");
-    setTab("chat");
   }
 
   async function selectSession(id: string) {
-    setTab("chat");
     setSessionId(id);
     keyToServerId.current.set(id, id);
     // Switch the displayed run to this session's key. If it already has a live
@@ -319,7 +321,7 @@ export default function WorkspaceShell() {
     refreshSessions();
   }
 
-  const showPreview = previewOpen && tab === "chat";
+  const showPreview = previewOpen;
 
   return (
     <div
@@ -342,14 +344,10 @@ export default function WorkspaceShell() {
       <section className="relative flex min-h-0 min-w-0 flex-col">
         <Topbar
           project={project}
-          tab={tab}
-          onTab={setTab}
           onPickProject={pick}
           onSettings={() => { setSettingsSection(undefined); setSettingsOpen(true); }}
           previewOpen={previewOpen}
           onTogglePreview={() => setPreviewOpen((v) => !v)}
-          terminalOpen={terminalOpen}
-          onToggleTerminal={() => setTerminalOpen((v) => !v)}
         />
 
         <div
@@ -364,11 +362,9 @@ export default function WorkspaceShell() {
             if (files.length) attachControls.current?.attachFiles(files);
           }}
         >
-          {tab === "pipe" ? (
-            <PipelinesShell />
-          ) : run.turns.length > 0 ? (
+          {run.turns.length > 0 ? (
             <>
-              <Transcript turns={run.turns} onApprove={run.approve} onApproveAll={run.approveAll} onResume={run.resume} onAnswer={run.answer} />
+              <Transcript turns={run.turns} onResume={run.resume} />
               <TaskHistory ledger={run.taskLedger} turns={run.turns} />
             </>
           ) : (
@@ -381,14 +377,6 @@ export default function WorkspaceShell() {
           )}
         </div>
 
-        {terminalOpen && <TerminalDock onClose={() => setTerminalOpen(false)} />}
-
-        {run.autoApprove && (
-          <div className="border-t border-acl bg-acs px-4 py-1.5 text-center text-[11.5px] text-ac">
-            Авто-одобрение включено для этой сессии — агент действует без запроса (сбросится в новом чате)
-          </div>
-        )}
-
         {loadError && (
           <div className="flex items-center justify-between gap-2 border-t border-red-500/40 bg-red-500/10 px-4 py-1.5 text-[11.5px] text-red-300">
             <span>{loadError}</span>
@@ -396,10 +384,11 @@ export default function WorkspaceShell() {
           </div>
         )}
 
+        <WorkflowRequestTray connected={connected} />
+
         <Composer key={activeKey} value={input} onChange={setInput} sessionId={activeKey} onPlus={() => setMenuOpen((v) => !v)} onPlugins={() => setPaletteOpen(true)} onSend={onSend} onSendMultiAgent={onSendMultiAgent} running={run.running} onStop={run.stop} contextUsage={run.contextUsage} onAttachReady={(controls) => { attachControls.current = controls; }} />
 
-        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => attachControls.current?.openFilePicker()} onEditVerify={() => setVerifyOpen(true)} hasProject={!!project} />}
-        {verifyOpen && <VerifyCommandModal projectRoot={project} onClose={() => setVerifyOpen(false)} />}
+        {menuOpen && <PlusMenu onClose={() => setMenuOpen(false)} onPickProject={pick} onPickFile={() => attachControls.current?.openFilePicker()} />}
       </section>
 
       {showPreview && <PreviewPanel artifacts={artifacts} project={project} onClose={() => setPreviewOpen(false)} />}
@@ -491,7 +480,7 @@ function ChatEmptyState({ hasProject, onPick, onSuggest }: { hasProject: boolean
   );
 }
 
-function PlusMenu({ onClose, onPickProject, onPickFile, onEditVerify, hasProject }: { onClose: () => void; onPickProject: () => void; onPickFile: () => void; onEditVerify: () => void; hasProject: boolean }) {
+function PlusMenu({ onClose, onPickProject, onPickFile }: { onClose: () => void; onPickProject: () => void; onPickFile: () => void }) {
   return (
     <>
       <div className="fixed inset-0 z-10" onClick={onClose} />
@@ -502,89 +491,8 @@ function PlusMenu({ onClose, onPickProject, onPickFile, onEditVerify, hasProject
         <button type="button" onClick={() => { onClose(); onPickFile(); }} className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">
           Прикрепить файл
         </button>
-        <button
-          type="button"
-          disabled={!hasProject}
-          onClick={() => { onClose(); onEditVerify(); }}
-          title={hasProject ? "Команда проверки — агент не закроет задачу, пока она не зелёная" : "Сначала выбери папку проекта"}
-          className="flex w-full items-center rounded-lg px-2.5 py-2 text-left text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:cursor-not-allowed disabled:opacity-45"
-        >
-          Проверка проекта…
-        </button>
       </div>
     </>
-  );
-}
-
-/** Edit the project's opt-in verify command (.elira/verify). When set, the agent
- *  must run it green after edits before it can declare a task done. */
-function VerifyCommandModal({ projectRoot, onClose }: { projectRoot: string; onClose: () => void }) {
-  const [command, setCommand] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  // True while the input holds Elira's auto-suggested command (nothing saved yet)
-  // and the user hasn't edited it — drives the "предложено по проекту" hint.
-  const [isSuggested, setIsSuggested] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    getVerifyCommand(projectRoot)
-      .then(({ command: cmd, suggested }) => {
-        if (!alive) return;
-        if (cmd) { setCommand(cmd); setIsSuggested(false); }
-        else if (suggested) { setCommand(suggested); setIsSuggested(true); }
-      })
-      .catch(() => { if (alive) setErr("Не удалось загрузить"); })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [projectRoot]);
-
-  async function save() {
-    setSaving(true);
-    setErr(null);
-    try {
-      const saved = await setVerifyCommand(projectRoot, command.trim());
-      setCommand(saved);
-      onClose();
-    } catch {
-      setErr("Не удалось сохранить");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onClose}>
-      <div className="w-[min(520px,92vw)] rounded-xl border border-line bg-card p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="mb-1 flex items-center justify-between">
-          <div className="text-[13.5px] font-medium text-tx">Команда проверки проекта</div>
-          <button type="button" onClick={onClose} aria-label="Закрыть" className="grid h-6 w-6 place-items-center rounded-md border border-line text-t2 hover:bg-hover hover:text-tx"><X size={14} /></button>
-        </div>
-        <p className="mb-3 text-[11.5px] leading-relaxed text-mut">
-          После правок агент не закроет задачу, пока эта команда не вернёт успех (exit 0).
-          Пусто = отключить. Хранится в <span className="font-mono">.elira/verify</span> проекта.
-        </p>
-        <input
-          value={loading ? "" : command}
-          onChange={(e) => { setCommand(e.target.value); setIsSuggested(false); }}
-          disabled={loading || saving}
-          placeholder={loading ? "Загрузка…" : "напр. pytest -q  /  npm test"}
-          onKeyDown={(e) => { if (e.key === "Enter") void save(); }}
-          className="mb-1 w-full rounded-lg border border-line bg-surface px-3 py-2 font-mono text-[12.5px] text-tx outline-none focus:border-acl disabled:opacity-60"
-        />
-        {isSuggested && !err && (
-          <div className="mb-1 text-[11px] text-ac">Предложено по проекту — сохрани или поправь.</div>
-        )}
-        {err && <div className="mb-1 text-[11.5px] text-red-400">{err}</div>}
-        <div className="mt-3 flex items-center justify-end gap-2">
-          <button type="button" onClick={onClose} className="rounded-lg border border-line px-3 py-1.5 text-[12.5px] text-t2 transition-colors hover:bg-hover hover:text-tx">Отмена</button>
-          <button type="button" onClick={() => void save()} disabled={loading || saving} className="rounded-lg bg-ac px-3 py-1.5 text-[12.5px] font-medium text-[#14151b] transition-opacity hover:opacity-90 disabled:opacity-50">
-            {saving ? "Сохраняю…" : "Сохранить"}
-          </button>
-        </div>
-      </div>
-    </div>
   );
 }
 

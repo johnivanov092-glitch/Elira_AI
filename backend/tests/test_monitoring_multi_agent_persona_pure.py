@@ -1,7 +1,6 @@
 """Tests for pure helpers across three modules.
 
-  application/monitoring/store.py   - dumps_json, loads_json,
-                                       planner_tool_aliases
+  application/monitoring/store.py   - dumps_json, loads_json
   application/workflows/multi_agent.py - _select_multi_agent_workflow_id,
                                           _step_answer,
                                           _build_multi_agent_timeline
@@ -24,7 +23,6 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.application.monitoring.store import (  # noqa: E402
     dumps_json as mon_dumps_json,
     loads_json as mon_loads_json,
-    planner_tool_aliases,
 )
 from app.application.workflows.multi_agent import (  # noqa: E402
     _select_multi_agent_workflow_id,
@@ -118,33 +116,6 @@ class MonLoadsJsonTest(unittest.TestCase):
         # "0" is valid JSON for the number 0
         result = mon_loads_json("0", 99)
         self.assertEqual(result, 0)
-
-
-# application/monitoring/store.py - planner_tool_aliases
-
-class PlannerToolAliasesTest(unittest.TestCase):
-
-    def test_returns_list(self) -> None:
-        self.assertIsInstance(planner_tool_aliases(), list)
-
-    def test_list_nonempty(self) -> None:
-        self.assertGreater(len(planner_tool_aliases()), 0)
-
-    def test_all_strings(self) -> None:
-        for item in planner_tool_aliases():
-            self.assertIsInstance(item, str)
-
-    def test_contains_web_search(self) -> None:
-        self.assertIn("web_search", planner_tool_aliases())
-
-    def test_contains_memory_search(self) -> None:
-        self.assertIn("memory_search", planner_tool_aliases())
-
-    def test_contains_python_executor(self) -> None:
-        self.assertIn("python_executor", planner_tool_aliases())
-
-    def test_deterministic(self) -> None:
-        self.assertEqual(planner_tool_aliases(), planner_tool_aliases())
 
 
 # application/workflows/multi_agent.py - _select_multi_agent_workflow_id

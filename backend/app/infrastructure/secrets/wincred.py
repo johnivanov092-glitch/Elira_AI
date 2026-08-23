@@ -1,12 +1,9 @@
-"""Windows Credential Manager wrapper (ctypes / advapi32).
+"""Read/delete adapter for explicit legacy WinCred migration.
 
-CredWrite / CredRead / CredDelete only — the Phase-0 vault backend. Credential
-Manager protects the value with DPAPI under the hood (OS-internal); this module
-never invokes DPAPI directly and never stores a ciphertext blob in the app.
-
-Import-guarded: on a non-Windows platform (or if advapi32 is unavailable) the
-module raises ``WinCredUnavailable`` on first use, so the IT-Ops vault fails
-closed off-Windows rather than silently persisting secrets elsewhere.
+The active vault never calls Credential Manager or DPAPI. This module can read an
+old ``Elira:itops:`` value immediately before encrypting it into the portable
+vault, and delete the legacy copy only after a verified round-trip. It has no
+write API and is not imported by ordinary vault lifecycle or secret resolution.
 """
 from __future__ import annotations
 
@@ -16,7 +13,6 @@ from ctypes import wintypes
 
 _PREFIX = "Elira:itops:"          # Credential Manager target namespace
 CRED_TYPE_GENERIC = 0x1
-CRED_PERSIST_LOCAL_MACHINE = 0x2  # per-user, this machine, survives logoff
 ERROR_NOT_FOUND = 1168            # winerror.h — the ref simply does not exist
 
 
@@ -56,25 +52,6 @@ class _CREDENTIAL(ctypes.Structure):
 
 def _target(secret_ref: str) -> str:
     return f"{_PREFIX}{secret_ref}"
-
-
-def write_secret(secret_ref: str, value: str) -> None:
-    """Store *value* under the opaque secret_ref (CRED_TYPE_GENERIC, per-user)."""
-    lib = _advapi32()
-    blob = value.encode("utf-8")
-    cred = _CREDENTIAL()
-    cred.Flags = 0
-    cred.Type = CRED_TYPE_GENERIC
-    cred.TargetName = _target(secret_ref)
-    cred.CredentialBlobSize = len(blob)
-    cred.CredentialBlob = ctypes.cast(ctypes.create_string_buffer(blob, len(blob)),
-                                      ctypes.POINTER(ctypes.c_char))
-    cred.Persist = CRED_PERSIST_LOCAL_MACHINE
-    cred.UserName = _target(secret_ref)
-    lib.CredWriteW.argtypes = [ctypes.POINTER(_CREDENTIAL), wintypes.DWORD]
-    lib.CredWriteW.restype = wintypes.BOOL
-    if not lib.CredWriteW(ctypes.byref(cred), 0):
-        raise WinCredUnavailable(f"CredWrite failed (err={ctypes.get_last_error()})")
 
 
 def read_secret(secret_ref: str) -> str | None:

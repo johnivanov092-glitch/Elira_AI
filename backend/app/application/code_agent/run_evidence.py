@@ -57,9 +57,14 @@ _EXTERNAL_SOURCE_TOOLS = frozenset({
     "browser",
     "http_api",
     "paper_search",
-    "web_claim_add",
     "web_fetch",
     "web_query",
+})
+_WEB_RESEARCH_TOOLS = frozenset({
+    "web_fetch",
+    "web_query",
+    "web_search",
+    "web_sitemap",
 })
 _GROUNDING_FRAGMENT_LIMIT = 64
 _GROUNDING_FRAGMENT_CHARS = 16_000
@@ -71,7 +76,11 @@ _EXTERNAL_FACT_INTENT_RE = re.compile(
     r"\b(?:проверь|проверить|перепроверь|перепроверить|найди|найти|узнай|узнать|"
     r"поищи|поискать)\b.{0,80}\b(?:информац\w*|данн\w*|факт\w*|источник\w*|"
     r"сайт\w*|интернет\w*|веб\w*|новост\w*|цен\w*|курс\w*)\b|"
-    r"\b(?:актуальн\w*|последн\w*|текущ\w*|сегодняшн\w*)\b.{0,40}"
+    r"\b(?:что|как|где)\s+(?:сейчас|на\s+данный\s+момент)\b|"
+    r"\bна\s+данный\s+момент\b|"
+    r"\bчто\s+стал[оаи]\s+с\b|"
+    r"\b(?:актуальн\w*|последн\w*|текущ\w*|сегодняшн\w*|сейчас|"
+    r"на\s+данн(?:ый|ом)\s+момент)\b.{0,40}"
     r"\b(?:верси\w*|новост\w*|цен\w*|стоимост\w*|курс\w*|закон\w*|событи\w*)\b|"
     r"\b(?:курс\s+валют\w*|цена\s+(?:акци\w*|товар\w*|нефт\w*)|котировк\w*)\b|"
     r"(?:кто|кем).{0,40}(?:сдела\w*|созда\w*|основа\w*|разработа\w*|"
@@ -84,8 +93,24 @@ _EXTERNAL_FACT_INTENT_RE = re.compile(
     r"закон\w*|налог\w*|инвестиц\w*|кредит\w*|страхов\w*|"
     r"недвижимост\w*|наводнен\w*|затаплива\w*)\b|"
     r"\b(?:fact[- ]?check|web\s+search|latest\s+(?:version|news|price)|"
-    r"current\s+(?:price|rate|law)|official\s+source|"
+    r"(?:search|check|verify|look\s+up).{0,40}(?:the\s+)?(?:web|internet|"
+    r"online|source)|"
+    r"who.{0,60}(?:made|created|founded|developed|owns?|runs?)|"
+    r"(?:founded|co-founded|created|developed)\s+by|"
+    r"current\s+(?:price|rate|law)|what\s+is\b.{0,50}\b(?:now|currently)|"
+    r"official\s+source|"
     r"founder|owner|director|price|medical|legal)\b"
+    r")",
+    re.IGNORECASE | re.UNICODE,
+)
+_NICHE_FACT_INTENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:расскажи|объясни|посоветуй|рекомендуй|что\s+за|что\s+это|какую|какой|кто)\b"
+    r".{0,120}\b(?:фильм\w*|игр\w*|умени\w*|навык\w*|скилл?\w*|рун\w*|персонаж\w*)\b|"
+    r"\b(?:фильм\w*|игр\w*|умени\w*|навык\w*|скилл?\w*|рун\w*|персонаж\w*)\b"
+    r".{0,120}\b(?:расскажи|объясни|посоветуй|рекомендуй|какую|какой|кто|что\s+за|что\s+это)\b|"
+    r"\b(?:настоящ\w*|реальн\w*|существу\w*)\b.{0,60}"
+    r"\b(?:доктор\w*|человек\w*|персон\w*|акт[её]р\w*)\b"
     r")",
     re.IGNORECASE | re.UNICODE,
 )
@@ -96,11 +121,45 @@ _EXTERNAL_AUTHORITY_CLAIM_RE = re.compile(
     re.IGNORECASE | re.UNICODE,
 )
 _EXTERNAL_UNCERTAINTY_RE = re.compile(
-    r"(?:не\s+(?:подтвердил\w*|подтвержден\w*|наш[её]л\w*|знаю|удалось\s+"
+    r"(?:не\s+(?:подтвердил\w*|подтвержда\w*|подтвержден\w*|наш[её]л\w*|знаю|удалось\s+"
     r"(?:найти|проверить|подтвердить))|источник\s+не\s+найден|"
+    r"источник.{0,80}\bне\s+найден|"
+    r"(?:нет\s+(?:ни\s+одного\s+)?подтвержд\w+|подтвержд\w+.{0,80}\bнет)|"
     r"не\s+могу\s+(?:достоверно\s+)?подтвердить|requires?\s+verification|"
     r"not\s+(?:verified|confirmed))",
     re.IGNORECASE | re.UNICODE,
+)
+_DEGRADED_SENTENCE_SPLIT_RE = re.compile(
+    r"(?<=[.!?])\s+|\n+|[;:]\s*|(?:,\s*|\s+)(?=(?:но|однако|зато|but)\b)",
+    re.IGNORECASE | re.UNICODE,
+)
+_DEGRADED_SAFE_UNCERTAINTY_RE = re.compile(
+    r"^(?:(?:поэтому\s+)?(?:над[её]жн\w+\s+)?источник(?:\s+по\s+.+?)?\s+"
+    r"не\s+найден\w*|(?:поэтому\s+)?подтвержд\w+\s+.+?\s+нет|"
+    r"(?:поэтому\s+)?(?:точн\w+\s+)?(?:бонус\w*|данн\w*|факт\w*|"
+    r"цифр\w*|детал\w*|рекомендац\w*)\s+(?:я\s+)?не\s+"
+    r"(?:подтвержда\w*|называ\w*|утвержда\w*|уверен\w*)|"
+    r"не\s+(?:подтвержда\w*|могу\s+подтвердить)|"
+    r"нет\s+(?:ни\s+одного\s+)?подтвержд\w+|"
+    r"(?:the\s+requested\s+)?(?:current\s+)?fact\s+is\s+not\s+"
+    r"(?:confirmed|verified)(?:\s+by\s+(?:the\s+)?available\s+sources?)?|"
+    r"(?:the\s+)?source(?:\s+for\s+.+?)?\s+(?:was\s+)?not\s+found|"
+    r"not\s+(?:confirmed|verified))\.?$",
+    re.IGNORECASE | re.UNICODE,
+)
+_DEGRADED_SAFE_GUIDANCE_RE = re.compile(
+    r"^(?:как\s+(?:общее\s+)?(?:предполож\w*|гипотез\w*).+|"
+    r"(?:но\s+)?(?:перед\s+[^,;:]{1,40}\s+)?"
+    r"(?:проверь\w*|сравн\w*|уточн\w*|пришли\w*).+|"
+    r"(?:можно|возможно|вероятно|если)\b.+|"
+    r"(?:as\s+(?:a\s+)?(?:general\s+)?(?:hypothesis|assumption)|"
+    r"check|compare|verify|you\s+can|if)\b.+)$",
+    re.IGNORECASE | re.UNICODE,
+)
+_DEGRADED_NUMBER_RE = re.compile(r"(?<!\w)[+−-]?\d+(?:[.,]\d+)?\s*%?", re.UNICODE)
+_DEGRADED_NAMED_ENTITY_RE = re.compile(
+    r"(?:,\s*|\s+)(?:[А-ЯЁ][А-Яа-яЁё-]{2,}|[A-Z][A-Za-z-]{2,})\b",
+    re.UNICODE,
 )
 _LOCAL_FACT_CONTEXT_RE = re.compile(
     r"\b(?:файл\w*|код\w*|класс\w*|функци\w*|компонент\w*|коммит\w*|"
@@ -165,12 +224,36 @@ def requires_external_source(user_message: str, answer: str = "") -> bool:
         return bool(_EXTERNAL_AUTHORITY_CLAIM_RE.search(answer or ""))
     return bool(
         _EXTERNAL_FACT_INTENT_RE.search(request)
+        or _NICHE_FACT_INTENT_RE.search(request)
         or _EXTERNAL_AUTHORITY_CLAIM_RE.search(answer or "")
     )
 
 
 def answer_admits_missing_external_source(answer: str) -> bool:
     return bool(_EXTERNAL_UNCERTAINTY_RE.search(answer or ""))
+
+
+def degraded_answer_has_unsupported_specifics(answer: str) -> bool:
+    """Reject assertive specifics hidden beside an uncertainty disclaimer."""
+    for sentence in _DEGRADED_SENTENCE_SPLIT_RE.split(answer or ""):
+        text = sentence.strip()
+        if not text:
+            continue
+        # Concrete numbers remain unsupported even when the same clause contains
+        # "возможно" or "проверь": a disclaimer must not leak +30%.
+        if _DEGRADED_NUMBER_RE.search(text):
+            return True
+        if _DEGRADED_SAFE_UNCERTAINTY_RE.fullmatch(text):
+            continue
+        if (
+            _DEGRADED_SAFE_GUIDANCE_RE.fullmatch(text)
+            and not _DEGRADED_NAMED_ENTITY_RE.search(text)
+        ):
+            continue
+        # Fail closed: after removing explicit uncertainty and next-step clauses,
+        # any remaining prose is an unsupported factual assertion.
+        return True
+    return False
 
 
 def tool_provides_external_source(tool_name: str, text_result: str) -> bool:
@@ -187,10 +270,9 @@ def tool_provides_external_source(tool_name: str, text_result: str) -> bool:
 
 def external_source_backstop() -> str:
     return (
-        "Не могу подтвердить фактический ответ: в этом прогоне не был успешно "
-        "прочитан внешний источник. Я не буду выдавать сведения по памяти за "
-        "проверенные. Нужен успешный `web_search` → `web_fetch` либо честный ответ "
-        "«источник не найден / не подтверждено»."
+        "Не удалось прочитать надёжный внешний источник, поэтому я не могу "
+        "подтвердить фактический ответ. Можно повторить поиск другим запросом "
+        "или проверить данные в первичном источнике."
     )
 
 
@@ -238,6 +320,7 @@ class RunEvidence:
         self._generated_documents: set[str] = set()
         self._remote_hosts: set[str] = set()
         self._grounding_fragments: list[str] = []
+        self._web_research_started = False
 
     @property
     def project_epoch(self) -> int:
@@ -267,6 +350,10 @@ class RunEvidence:
     @property
     def has_external_source(self) -> bool:
         return bool(self.receipts_of_kind(EvidenceKind.EXTERNAL_SOURCE))
+
+    @property
+    def has_web_research(self) -> bool:
+        return self._web_research_started
 
     @property
     def remote_hosts(self) -> tuple[str, ...]:
@@ -336,6 +423,9 @@ class RunEvidence:
         provider_ok = output.get("ok") is not False
         target = self._target(arguments, output)
         passed = self._passed(output)
+
+        if provider_ok and tool in _WEB_RESEARCH_TOOLS:
+            self._web_research_started = True
 
         if provider_ok and state_changed:
             self._project_epoch += 1

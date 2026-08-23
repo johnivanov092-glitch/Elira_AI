@@ -63,13 +63,11 @@ ELIRA_PERSONA_BASE_PAYLOAD = {
 # ── Persona modes (Living Persona, step A) ───────────────────────────────────
 # Elira is a living companion, not only a coding agent. The mode is the
 # "личное↔инженерное" axis: it shapes her VOICE (overlay), how free vs precise
-# she phrases (temperature), and which tools she reaches for (tool posture).
+# she phrases (temperature), while runtime capabilities stay unchanged.
 #   - temperature=None  -> keep the per-role sampling (protects code-edit
 #     reproducibility); only Личный/Баланс raise warmth.
-#   - tools="readonly"  -> the model is OFFERED only read-only tools (it cannot
-#     reach for write/edit/run). This only NARROWS what is offered; the
-#     fail-closed kernel still gates every call independently — a mode can never
-#     widen access.
+#   - tools is retained as compatibility metadata; every mode uses the same
+#     connected runtime schemas and the Workflow permission selector.
 PERSONA_MODES = {
     "Личный": {
         # Was a bare label ("Режим работы: личный") — the model saw almost nothing.
@@ -111,9 +109,8 @@ PERSONA_MODES = {
         },
     },
     "Инженерный": {
-        # Mode-specific engineering posture in the FIRST sentence. Destructive-git
-        # confirmation, grounding (no invented APIs/versions) and path containment
-        # already live in the code-agent BASE prompt — not duplicated here.
+        # Mode-specific engineering posture in the FIRST sentence. Grounding and
+        # the single Workflow permission contract live in the code-agent base prompt.
         "overlay": (
             "Режим работы: инженерный — ты senior-инженер (код, архитектура, "
             "диагностика, ревью, безопасность): дай сперва короткий вывод, затем "
@@ -164,17 +161,17 @@ PERSONA_MODES = {
         # on purpose — _short_profile_line splits on ".") is what reaches the model;
         # it must pack the whole methodology: diagnose from facts (never guess IPs/
         # topology/config — reinforces grounding rule 20), change one thing at a
-        # time + verify, and on PRODUCTION default to read-only diagnosis with
-        # destructive actions gated behind a backup + ask_user confirmation.
+        # time + verify, with every mutation governed by the single Workflow
+        # permission mode rather than a persona-specific approval rule.
         "overlay": (
             "Режим работы: инфраструктура — ты senior сетевой, системный и серверный "
             "инженер: диагностируй ПО ФАКТАМ (сперва собери состояние через "
             "ssh/run_bash/конфиги — ip/route/systemctl/ping/traceroute/dig, и НИКОГДА "
             "не выдумывай IP, топологию, версии или конфиг по памяти), меняй по одному "
-            "и проверяй до и после, а на боевой инфре по умолчанию только диагностируй: "
-            "деструктивное (restart служб, flush firewall, правка боевого конфига, "
-            "reboot) — лишь после бэкапа и подтверждения через ask_user, уточняя "
-            "неоднозначный хост из SSH-allowlist. Опирайся на реальные конфиги и вывод "
+            "и проверяй до и после, перед деструктивным действием (restart служб, "
+            "flush firewall, правка боевого конфига, reboot) делай доступный бэкап, "
+            "а разрешение определяй только выбранным режимом Workflow, уточняя "
+            "неоднозначный SSH-хост. Опирайся на реальные конфиги и вывод "
             "команд, за вендор-синтаксисом и CVE иди в веб. Оставайся той же Elira."
         ),
         # Precise/deterministic for configs and diagnostics.

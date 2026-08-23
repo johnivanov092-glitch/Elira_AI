@@ -10,88 +10,24 @@ import threading
 from typing import Any
 
 
-# Per-run_bash hard cap. Raised 120→300 once the tool-execution heartbeat
-# (agent_loop._exec_with_heartbeat) began keeping the SSE alive during a long tool,
-# so a legitimately-medium command (build, full test suite, medium download) can
-# finish instead of being cut at 120s. Genuinely long / background work (big
-# downloads, watchers, dev servers) still belongs in run_server, not a blocking
-# run_bash — see the prompt guidance.
-_SHELL_TIMEOUT_MAX = 300
 _SHELL_STDOUT_LIMIT = 16000
 _SHELL_STDERR_LIMIT = 6000
-# Catastrophic / irreversible — BLOCKED entirely, never run (even with approval
-# or bypass). System-wipe, mass recursive delete, host shutdown, fork bomb.
-_BLOCKED_SHELL_FRAGMENTS = (
-    "rm -rf /",
-    "rm -rf /*",
-    "mkfs",
-    "dd if=",
-    "format c:",
-    "shutdown",
-    "reboot",
-    ":(){:|:&};:",
-    "deltree",
-    "remove-item -recurse",
-    "del /s",
-    "rd /s",
-    "rmdir /s",
-)
 
 # Read-only command prefixes that auto-execute without user approval.
 # A command is safe if it starts with one of these prefixes (case-insensitive).
-# Anything not in this list and not in _BLOCKED_SHELL_FRAGMENTS requires approval.
-_SHELL_READONLY_PREFIXES: tuple[str, ...] = (
-    # VCS read-only
-    "git status", "git log", "git diff", "git show", "git branch",
-    "git remote", "git stash list", "git tag", "git fetch --dry-run",
-    "git ls-files", "git describe", "git rev-parse",
-    "git config --get ", "git config --list", "git cat-file ",
-    "git blame ", "git shortlog", "git reflog",
-    # File listing / reading
-    "ls", "dir", "find ", "tree",
-    "cat ", "head ", "tail ", "less ", "more ", "type ",
-    "wc ", "file ", "stat ", "realpath ", "readlink ",
-    "basename ", "dirname ",
-    # Search
-    "grep ", "egrep ", "fgrep ", "rg ", "ag ",
-    # System info / status
-    "echo ", "pwd", "whoami", "id", "hostname",
-    "which ", "where ", "command -v",
-    "env", "printenv", "set",
-    "ps ", "ps aux", "top -bn1",
-    "df ", "du -sh", "free ",
-    # Python / package status
-    "python --version", "python3 --version", "python -V", "python3 -V",
-    "pip list", "pip show ", "pip freeze", "pip check",
-    "uv list", "poetry show",
-    # Testing — collect only
-    "pytest --collect-only", "pytest -v --collect-only",
-    "jest --listTests", "cargo test -- --list",
-    # Node / npm status
-    "node --version", "npm list", "yarn list", "pnpm list",
-    "npm outdated", "npm audit",
-    # Docker status
-    "docker ps", "docker images", "docker stats", "docker info",
-    "docker compose ps", "docker-compose ps",
-    # Rust / Go / etc.
-    "cargo --version", "rustc --version", "go version",
-    # Network / DNS read-only
-    "nslookup ", "dig ", "host ", "ping ",
-)
-
-
+# Commands outside this list follow the selected Workflow permission mode.
 # ─── Cancellable shell processes ────────────────────────────────────────────
 #
 # The Stop button used to do nothing while a shell tool was running: the
 # executor runs each tool in a daemon worker thread and blocks on it, so a
 # `threading.Event` cancel flag set by the HTTP /cancel route is never *read*
-# until the blocking subprocess returns (up to the shell timeout). A Python
+# until the blocking subprocess returns. A Python
 # event cannot interrupt a foreign synchronous call.
 #
 # Fix: tool_run_bash launches the shell via Popen (not subprocess.run) and
 # registers the live process against the current run_id. request_cancel can
 # then reach in and proc.kill() the actual OS process, so Stop aborts a hung
-# command in a fraction of a second instead of waiting out the timeout.
+# command in a fraction of a second.
 #
 # The run_id reaches the tool via a ContextVar set by the executor's worker
 # thread (same thread that calls the tool synchronously — no cross-thread
@@ -199,6 +135,18 @@ def _unregister_shell_proc(run_id: str | None, proc: subprocess.Popen) -> None:
                 _LIVE_SHELL_PROCS.pop(run_id, None)
 
 
+def register_run_process(proc: subprocess.Popen) -> str:
+    """Register any tool-owned subprocess so Workflow Stop can kill its tree."""
+    run_id = get_current_run_id()
+    _register_shell_proc(run_id, proc)
+    return run_id
+
+
+def unregister_run_process(run_id: str, proc: subprocess.Popen) -> None:
+    """Remove a process previously registered with register_run_process."""
+    _unregister_shell_proc(run_id, proc)
+
+
 def kill_run_processes(run_id: str) -> int:
     """Kill every live shell process spawned by `run_id`. Called by the agent
     loop's cancel path so Stop aborts a hung command immediately. Returns the
@@ -218,54 +166,13 @@ def kill_run_processes(run_id: str) -> int:
     return killed
 
 
-def is_shell_safe(command: str) -> bool:
-    """Return True if *command* is in the read-only shell allowlist.
-
-    Commands in this set auto-execute without user approval. Matching is
-    prefix-based and case-insensitive so ``git status --short`` passes as
-    a ``git status`` prefix.
-
-    Prefixes that end with a space (e.g. ``"cat "``) match any command that
-    starts with that string (``cat README.md``). Prefixes without a trailing
-    space (e.g. ``"git status"``) are matched as exact or word-boundary
-    (``git status``, ``git status --short``).
-    """
-    cmd = (command or "").strip().lower()
-    if not cmd:
+def run_was_stopped(run_id: str | None = None) -> bool:
+    """Whether Workflow Stop was signalled for this tool run."""
+    effective_run_id = str(run_id or get_current_run_id() or "")
+    if not effective_run_id:
         return False
-    # Reject any command containing shell composition or redirection metacharacters.
-    # These could chain an unsafe subcommand past the prefix check.
-    _UNSAFE_METACHAR = ("&&", "||", ";;", "|", ";", ">", "<", "`", "$(", "\n", "\r")
-    if any(meta in cmd for meta in _UNSAFE_METACHAR):
-        return False
-    # Windows cmd.exe expands %VAR% to environment-variable values at exec time
-    # (e.g. ``echo %TOKEN%`` / ``find %USERPROFILE%``), which would leak env
-    # values or inject expanded arguments past the approval gate. On POSIX "%"
-    # is harmless (``git log --format=%H``, ``printf %s``), so only guard it on
-    # Windows.
-    if sys.platform == "win32" and "%" in cmd:
-        return False
-    for prefix in _SHELL_READONLY_PREFIXES:
-        p = prefix.lower()
-        if p.endswith(" "):
-            if cmd.startswith(p) or cmd == p.rstrip():
-                return True
-        else:
-            if cmd == p or cmd.startswith(p + " ") or cmd.startswith(p + "\t"):
-                return True
-    return False
-
-
-def _blocked_shell_fragment(command: str) -> str | None:
-    lowered = (command or "").strip().lower()
-    return next((fragment for fragment in _BLOCKED_SHELL_FRAGMENTS if fragment in lowered), None)
-
-
-def is_shell_critical(command: str) -> bool:
-    """True when the shared approval policy classifies the command as high-impact."""
-    from app.change_executor.policy import shell_command_is_high_impact
-
-    return shell_command_is_high_impact(command)
+    with _LIVE_SHELL_LOCK:
+        return effective_run_id in _KILLED_RUN_IDS
 
 
 # ─── Raw-SSH-via-run_bash failure guidance ──────────────────────────────────

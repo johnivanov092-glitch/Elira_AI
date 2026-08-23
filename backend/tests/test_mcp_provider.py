@@ -122,11 +122,10 @@ class LifecycleTest(McpProviderTestBase):
         self.assertFalse(result["ok"])
         self.assertIn("not configured", result["error"])
 
-    def test_start_disabled_server_fails(self) -> None:
+    def test_disabled_config_does_not_block_explicit_start(self) -> None:
         self.runtime.save_servers([self._fake_spec("disabled", enabled=False)])
         result = self.runtime.start_server("disabled")
-        self.assertFalse(result["ok"])
-        self.assertIn("disabled", result["error"])
+        self.assertTrue(result["ok"])
 
     def test_start_then_stop_lifecycle(self) -> None:
         self.runtime.save_servers([self._fake_spec("x")])
@@ -298,20 +297,6 @@ class CreativeEditorMcpTest(McpProviderTestBase):
         provider._qualified_to_original = {qualified: original_name}
         return provider, qualified
 
-    def test_unity_batch_rejects_nested_execute_code_before_mcp(self) -> None:
-        provider, qualified = self._provider(self.provider_mod, "unity", "batch_execute")
-        client = mock.Mock()
-        with mock.patch.object(self.provider_mod, "get_live_client", return_value=client):
-            result = provider.dispatch(qualified, {
-                "commands": [{
-                    "tool": "execute_code",
-                    "params": {"action": "execute", "code": "return 1;"},
-                }],
-            })
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "nested_execute_code_forbidden")
-        client.call_tool.assert_not_called()
-
     def test_blender_code_gets_backup_and_inline_screenshot(self) -> None:
         provider, qualified = self._provider(
             self.provider_mod, "blender", "execute_blender_code"
@@ -357,7 +342,7 @@ class CreativeEditorMcpTest(McpProviderTestBase):
         self.assertEqual(screenshot_args["action"], "screenshot")
         self.assertTrue(screenshot_args["include_image"])
 
-    def test_creative_workflow_prompt_is_scoped_and_bounded(self) -> None:
+    def test_creative_workflow_prompt_has_no_iteration_cap(self) -> None:
         absent = self.provider_mod.creative_workflow_prompt({"github__search"})
         self.assertEqual(absent, "")
         prompt = self.provider_mod.creative_workflow_prompt({
@@ -367,20 +352,8 @@ class CreativeEditorMcpTest(McpProviderTestBase):
             "unity__execute_code",
         })
         self.assertIn("inspect", prompt)
-        self.assertIn("максимум одна коррекция", prompt)
-        self.assertIn("не вкладывай execute_code", prompt)
+        self.assertNotIn("максимум", prompt)
         self.assertIn("резервную копию", prompt)
-
-    def test_creative_batch_redirect_names_procedural_tool(self) -> None:
-        self.assertIn(
-            "blender__execute_blender_code",
-            self.provider_mod.creative_batch_redirect("blender__batch_edit"),
-        )
-        self.assertIn(
-            "unity__execute_code",
-            self.provider_mod.creative_batch_redirect("unity__batch_execute"),
-        )
-        self.assertEqual(self.provider_mod.creative_batch_redirect("github__search"), "")
 
     def test_provider_mutation_signal_counts_without_fake_file_path(self) -> None:
         from app.application.code_agent.loop_helpers import tool_state_changed
@@ -414,38 +387,6 @@ class BuildProvidersTest(McpProviderTestBase):
 
 
 # ── Integration with ToolRegistry ──────────────────────────────
-
-
-class McpContextRoutesTest(McpProviderTestBase):
-    def setUp(self) -> None:
-        super().setUp()
-        self.runtime.save_servers([self._fake_spec("ctx")])
-        self.runtime.start_server("ctx")
-
-    def test_resource_routes_use_running_client(self) -> None:
-        from app.api.routes import code_agent_routes as routes
-
-        listed = routes.mcp_list_resources("ctx")
-        self.assertEqual(listed["resources"][0]["uri"], "file:///fake/readme.md")
-
-        read = routes.mcp_read_resource("ctx", "file:///fake/readme.md", max_chars=128)
-        self.assertIn("UNTRUSTED MCP RESOURCE", read["contents"][0]["text"])
-
-        templates = routes.mcp_list_resource_templates("ctx")
-        self.assertEqual(templates["resourceTemplates"][0]["uriTemplate"], "file:///fake/{name}.md")
-
-    def test_prompt_routes_use_running_client(self) -> None:
-        from app.api.routes import code_agent_routes as routes
-
-        listed = routes.mcp_list_prompts("ctx")
-        self.assertEqual(listed["prompts"][0]["name"], "review")
-
-        got = routes.mcp_get_prompt(routes.McpPromptGetRequest(
-            server_id="ctx",
-            name="review",
-            arguments={"code": "x = 1"},
-        ))
-        self.assertIn("UNTRUSTED MCP PROMPT", got["messages"][0]["content"]["text"])
 
 
 class RegistryIntegrationTest(McpProviderTestBase):

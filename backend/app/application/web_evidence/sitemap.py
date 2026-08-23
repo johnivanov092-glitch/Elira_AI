@@ -53,7 +53,7 @@ def _get(
             return {"ok": False, "error": "time budget exceeded"}
         reason = check_ssrf(current, allow_loopback_ports=active_server_ports())
         if reason:
-            return {"ok": False, "error": f"SSRF blocked — {reason}"}
+            return {"ok": False, "error": f"Invalid URL — {reason}"}
         # W6 politeness, deadline-aware: a polite wait that would overshoot the
         # budget aborts instead of sleeping; the request gets the REMAINING
         # budget (capped at 10s), so the 20s discovery budget holds for real.

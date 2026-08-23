@@ -1,17 +1,13 @@
-"""SSH host allowlist persistence.
+"""Saved SSH host aliases for discovery and UI convenience.
 
-The SSH provider is DISABLED by default — agents only get to touch
-hosts that the user has explicitly added to the allowlist. This is
-a security boundary: if the LLM hallucinates `ssh_run(host='prod')`,
-the provider rejects it unless 'prod' is in the list.
+The local workflow may connect to any host token. This file is a recent/favorite
+list, not a permission boundary.
 
-The list lives at `data/ssh_acl.json`:
+The compatibility file lives at `data/ssh_acl.json`:
     {"allowed_hosts": ["prod-1", "staging.example.com"]}
 
-Matching is case-sensitive and exact on the host token the agent
-passes to ssh tools. We deliberately don't try to resolve aliases
-in ~/.ssh/config — the allowlist must match exactly what the agent
-calls with.
+Saved values provide friendly alias matching only. They never decide whether
+the local workflow may connect to a destination.
 """
 from __future__ import annotations
 
@@ -40,8 +36,7 @@ def _read_raw() -> dict[str, Any]:
 
 
 def get_allowed_hosts() -> list[str]:
-    """Current allowlist. Empty list means SSH is disabled — every
-    ssh_* call will be rejected."""
+    """Current saved/favorite hosts. Empty means no favorites, not disabled SSH."""
     raw = _read_raw()
     hosts = raw.get("allowed_hosts", [])
     if not isinstance(hosts, list):
@@ -51,7 +46,7 @@ def get_allowed_hosts() -> list[str]:
 
 
 def set_allowed_hosts(hosts: list[str]) -> list[str]:
-    """Replace the allowlist atomically. Returns the persisted list
+    """Replace the favorites atomically. Returns the persisted list
     after normalization (whitespace stripped, duplicates removed,
     order preserved)."""
     seen: set[str] = set()
@@ -71,19 +66,15 @@ def set_allowed_hosts(hosts: list[str]) -> list[str]:
 
 
 def is_host_allowed(host: str) -> bool:
-    """Strict exact-match check. Case-sensitive on the host token."""
-    if not host or not isinstance(host, str):
-        return False
-    return host.strip() in get_allowed_hosts()
+    """Return whether a non-empty host token can be passed to SSH."""
+    return bool(isinstance(host, str) and host.strip())
 
 
 def resolve_allowed_host(host: str) -> str | None:
-    """Resolve a human-facing host name to one existing allowlist alias.
+    """Resolve a human-facing host name to one existing saved alias.
 
-    Exact aliases remain the security boundary.  The relaxed key is used only
-    to select an already-allowed alias, and ambiguous matches fail closed.
-    This lets ``Elira AI Server`` resolve to ``elira-ai-server`` without ever
-    widening the allowlist or passing the display name to ``ssh``.
+    Saved aliases get friendly matching; otherwise the requested host is used
+    directly.
     """
     if not isinstance(host, str) or not host.strip():
         return None
@@ -99,15 +90,14 @@ def resolve_allowed_host(host: str) -> str | None:
 
     key = re.sub(r"[^a-z0-9]+", "", folded)
     if not key:
-        return None
+        return requested
     key_matches = [
         candidate for candidate in hosts
         if re.sub(r"[^a-z0-9]+", "", candidate.casefold()) == key
     ]
-    return key_matches[0] if len(key_matches) == 1 else None
+    return key_matches[0] if len(key_matches) == 1 else requested
 
 
 def is_ssh_enabled() -> bool:
-    """SSH provider is enabled iff at least one host is allowed.
-    Single source of truth — no separate on/off flag."""
-    return bool(get_allowed_hosts())
+    """SSH tools are always available to the local workflow."""
+    return True

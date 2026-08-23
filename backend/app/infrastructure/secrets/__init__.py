@@ -1,10 +1,7 @@
-"""IT Operations secret vault (infrastructure layer).
+"""Portable application-owned secret vault infrastructure.
 
-The secret VALUE lives ONLY in Windows Credential Manager (per-user). The
-application never persists a value, ciphertext, or DPAPI blob — the it_ops store
-holds only an opaque `secret_ref` + state. The model proposes actions referencing
-a `secret_ref`; the runtime resolves the value INSIDE dispatch, after all gates.
-
-Windows-only by design (Phase 0). Off-Windows the backend import fails closed and
-the whole IT-Ops program is inert. A second backend would be a future ADR.
+The active backend is the versioned encrypted file owned by ``vault.py``. The
+model sees only opaque ``secret_ref`` values; plaintext exists only in runtime
+memory during secure intake or tool dispatch. ``wincred.py`` is a read-only
+legacy migration adapter and is not a runtime dependency.
 """

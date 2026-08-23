@@ -1,7 +1,7 @@
 """Secret redaction for audit / approval surfaces.
 
 Scrubs secret-looking VALUES from tool args and free-text reasons before they
-are persisted (ApprovalStore ``args_json``) or emitted to the event bus /
+are persisted in Workflow request payloads or emitted to the event bus /
 Telegram. Redaction is **value-level**: it keeps the command/structure visible
 (so a human can still see WHAT they are approving) and replaces only the
 sensitive value with ``[REDACTED]``.

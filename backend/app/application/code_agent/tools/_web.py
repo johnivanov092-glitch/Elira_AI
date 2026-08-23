@@ -31,12 +31,9 @@ def _coerce_str_list(value: Any) -> list[str]:
 
 
 def _run_search(query: str, limit: int, cat: str, tr: str) -> list[dict]:
-    """Run one query through the web stack; return its source dicts (or [])."""
+    """Run one query through the web stack; transport failures propagate."""
     from app.infrastructure.search.web_search import search_web
-    try:
-        result = search_web(query, max_results=limit, categories=cat or None, time_range=tr or None)
-    except Exception:
-        return []
+    result = search_web(query, max_results=limit, categories=cat or None, time_range=tr or None)
     return result.get("sources") or []
 
 
@@ -67,6 +64,15 @@ def _format_search_results(sources: list[dict], header: str, limit: int) -> str:
         head = f"\n[{i}] {title}{mark}\n    {url}"
         lines.append(f"{head}\n    {snippet}" if snippet else head)
     return "\n".join(lines)
+
+
+def _image_media_payload(category: str, sources: list[dict], limit: int) -> dict[str, Any]:
+    if category != "images":
+        return {}
+    from app.application.code_agent.answer_media import image_media_from_search_results
+
+    media = image_media_from_search_results(sources, limit=limit)
+    return {"media": media} if media else {}
 
 
 def tool_web_search(
@@ -132,9 +138,19 @@ def tool_web_search(
                             f"через SearXNG ({exc}). Fallback-движки отдают только первую страницу.",
                     "ok": False}
         if not sources:
-            return {"text": f"Страница {page_n} по '{cleaned}' пуста — дальше результатов нет."}
-        return {"text": _format_search_results(
-            sources, f"Результаты, страница {page_n} (SearXNG){focus}:", limit)}
+            return {
+                "text": f"Страница {page_n} по '{cleaned}' пуста — дальше результатов нет.",
+                "ok": True,
+            }
+        return {
+            "text": _format_search_results(
+                sources,
+                f"Результаты, страница {page_n} (SearXNG){focus}:",
+                limit,
+            ),
+            "ok": True,
+            **_image_media_payload(cat, sources, limit),
+        }
 
     query_list = _coerce_str_list(queries)
     if query_list:
@@ -142,10 +158,15 @@ def tool_web_search(
         query_list = query_list[:_WEB_BATCH_MAX]
         import concurrent.futures
         per_query: dict[str, list[dict]] = {}
+        failed_queries = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(query_list), _WEB_BATCH_WORKERS)) as ex:
             futs = {ex.submit(_run_search, q, limit, cat, tr): q for q in query_list}
             for f in concurrent.futures.as_completed(futs):
-                per_query[futs[f]] = f.result() if not f.exception() else []
+                try:
+                    per_query[futs[f]] = f.result()
+                except Exception:
+                    failed_queries += 1
+                    per_query[futs[f]] = []
         seen: set[str] = set()
         merged: list[dict] = []
         for q in query_list:  # preserve query order for stable output
@@ -155,24 +176,55 @@ def tool_web_search(
                     seen.add(u)
                     merged.append(item)
         if not merged:
-            return {"text": f"No web results for {len(query_list)} queries."}
+            if failed_queries == len(query_list):
+                return {
+                    "text": "ERROR: web search unavailable for all queries",
+                    "ok": False,
+                }
+            return {
+                "text": f"No web results for {len(query_list)} queries.",
+                "ok": True,
+            }
         header = f"Found {len(merged)} results across {len(query_list)} parallel queries{focus}:"
-        return {"text": _format_search_results(merged, header, _WEB_BATCH_MAX * limit)}
+        return {
+            "text": _format_search_results(merged, header, _WEB_BATCH_MAX * limit),
+            "ok": True,
+            **_image_media_payload(cat, merged, _WEB_BATCH_MAX * limit),
+        }
 
     # ── Single query (back-compat) ───────────────────────────────────────────
     cleaned = (query or "").strip()
     if not cleaned:
-        return {"text": "ERROR: query is empty (pass `query` or `queries`)"}
+        return {
+            "text": "ERROR: query is empty (pass `query` or `queries`)",
+            "ok": False,
+        }
     try:
         from app.infrastructure.search.web_search import search_web
     except Exception as exc:  # pragma: no cover - import path
-        return {"text": f"ERROR: web search unavailable: {exc}"}
-    result = search_web(cleaned, max_results=limit, categories=cat or None, time_range=tr or None)
+        return {"text": f"ERROR: web search unavailable: {exc}", "ok": False}
+    try:
+        result = search_web(
+            cleaned,
+            max_results=limit,
+            categories=cat or None,
+            time_range=tr or None,
+        )
+    except Exception:
+        return {"text": "ERROR: web search unavailable", "ok": False}
     sources = result.get("sources") or []
     if not sources:
-        return {"text": f"No web results for '{cleaned}'"}
+        return {"text": f"No web results for '{cleaned}'", "ok": True}
     engines = ", ".join(result.get("engines_used") or []) or "?"
-    return {"text": _format_search_results(sources, f"Found {len(sources)} results via {engines}{focus}:", limit)}
+    return {
+        "text": _format_search_results(
+            sources,
+            f"Found {len(sources)} results via {engines}{focus}:",
+            limit,
+        ),
+        "ok": True,
+        **_image_media_payload(cat, sources, limit),
+    }
 
 
 def _fetch_one(url: str, limit: int) -> str:
@@ -187,7 +239,7 @@ def _fetch_one(url: str, limit: int) -> str:
     from app.application.web.ssrf_guard import check_ssrf
     ssrf_reason = check_ssrf(cleaned_url)
     if ssrf_reason:
-        return f"ERROR: SSRF blocked — {ssrf_reason}"
+        return f"ERROR: invalid URL — {ssrf_reason}"
 
     try:
         from app.infrastructure.search.web_search import fetch_page_text
@@ -214,11 +266,7 @@ def _fetch_one(url: str, limit: int) -> str:
 
 
 def _web_corpus_on() -> bool:
-    try:
-        from app.application.feature_flags import flag_enabled
-        return flag_enabled("web_corpus")
-    except Exception:
-        return False
+    return True
 
 
 def _current_run_id() -> str:
@@ -298,10 +346,17 @@ def tool_web_fetch(*, url: str = "", urls: Any = None, max_chars: int = 8000,
                 i = futs[f]
                 blocks[i] = f.result() if not f.exception() else f"ERROR: {f.exception()}"
         ordered = [blocks[i] for i in range(len(url_list))]
-        return {"text": f"Fetched {len(url_list)} pages in parallel:\n\n" + "\n\n———\n\n".join(ordered)}
+        return {
+            "text": (
+                f"Fetched {len(url_list)} pages in parallel:\n\n"
+                + "\n\n———\n\n".join(ordered)
+            ),
+            "ok": any(not block.lstrip().startswith("ERROR:") for block in ordered),
+        }
 
     # ── Single page (back-compat) ────────────────────────────────────────────
-    return {"text": _fetch_one(url, limit)}
+    text = _fetch_one(url, limit)
+    return {"text": text, "ok": not text.lstrip().startswith("ERROR:")}
 
 
 def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str, Any]:
@@ -325,49 +380,11 @@ def tool_web_query(*, query: str, doc_id: str = "", top_k: int = 6) -> dict[str,
     results = res.get("results") or []
     if not results:
         return {"text": res.get("note") or "По запросу ничего не найдено в корпусе.", "ok": True}
-    body = [f"[{r['doc_id']}#{r['chunk_id']}] {r.get('title') or ''} — {r.get('url') or ''}\n{r['quote']}"
+    body = [f"[{r['doc_id']}#{r['chunk_id']} offset={r['offset']}] "
+            f"{r.get('title') or ''} — {r.get('url') or ''}\n{r['quote']}"
             for r in results]
     payload = _corpus.envelope("\n\n———\n\n".join(body), source=f"веб-корпус ({res.get('ranker')})")
     return {"text": payload, "ok": True}
-
-
-def tool_web_claim_add(*, claims: Any) -> dict[str, Any]:
-    """Record load-bearing claims of your answer into the citation ledger, each
-    backed by evidence from the web corpus. Structured only — DO NOT number
-    citations in your prose; the runtime renders the citation appendix itself.
-
-    claims = [{"claim": "<утверждение>",
-               "evidence": [{"doc_id": "<из web_query>", "quote": "<дословная цитата>",
-                             "chunk_id": <опц>, "offset": <опц>}],
-               "support": "<опц: почему цитата подтверждает утверждение — advisory>",
-               "conflicted": <опц bool>}]
-
-    The runtime deterministically checks each quote against the stored source
-    (quote_verified = verbatim provenance; source_verified = the page was really
-    fetched). It NEVER asserts the claim is TRUE — provenance ≠ truth. Bounded:
-    ≤10 claims/call, ≤4 evidence/claim, quote ≤500 chars."""
-    if not _web_corpus_on():
-        return {"text": "ERROR: web_claim_add выключен (фиче-флаг web_corpus)", "ok": False}
-    run_id = _current_run_id()
-    if not run_id:
-        return {"text": "ERROR: web_claim_add требует контекст рана", "ok": False}
-    from app.application.web_evidence.ledger import LedgerBoundsError, add_claims
-    try:
-        res = add_claims(run_id, claims if isinstance(claims, list) else [])
-    except LedgerBoundsError as exc:
-        return {"text": f"ERROR: {exc}", "ok": False}
-    except Exception as exc:  # noqa: BLE001 — store issue must not crash the tool
-        return {"text": f"ERROR: ledger недоступен: {str(exc)[:150]}", "ok": False}
-    # tell the model exactly what verified, so it can fix an unverifiable citation
-    lines = [f"Записано {res['recorded']} утверждений в реестр цитат. Провенанс проверен runtime:"]
-    for c in res["claims"]:
-        oks = sum(1 for e in c["evidence"] if e["quote_verified"])
-        lines.append(f"- [{c['claim_id']}] «{c['claim'][:70]}» — провенанс подтверждён у {oks}/{len(c['evidence'])} цитат")
-        for e in c["evidence"]:
-            if not e["quote_verified"]:
-                lines.append(f"    ✗ {e.get('doc_id') or '(нет doc_id)'}: {e.get('reason')}")
-    lines.append("Не нумеруй цитаты в тексте — runtime добавит реестр сам.")
-    return {"text": "\n".join(lines), "ok": True}
 
 
 def tool_web_sitemap(*, url: str, contains: str = "", max_urls: int = 30) -> dict[str, Any]:
@@ -570,13 +587,15 @@ def _browser_render(url: str, wait_selector: str | None, limit: int,
 def _render_fallback(url: str, limit: int) -> str:
     """Best-effort headless-browser render for a thin/empty static fetch (Phase A).
     Reuses _browser_render in a worker thread (the Playwright sync API must not be
-    called from inside an asyncio loop). Returns '' on ANY failure — Playwright not
-    installed, navigation/timeout error — so web_fetch fails open to the static body.
+    called from inside an asyncio loop). Returns '' on any provider failure so
+    web_fetch falls back to the static body.
     """
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            _title, _final_url, text, _applied, _vp = ex.submit(_browser_render, url, None, limit).result(timeout=45)
+            _title, _final_url, text, _applied, _vp = ex.submit(
+                _browser_render, url, None, limit
+            ).result()
         return (text or "").strip()
     except Exception:
         return ""
@@ -611,7 +630,7 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
     from app.application.web.ssrf_guard import check_ssrf
     reason = check_ssrf(cleaned_url, allow_loopback_ports=active_server_ports())
     if reason:
-        return {"text": f"ERROR: SSRF blocked — {reason}", "ok": False}
+        return {"text": f"ERROR: invalid URL — {reason}", "ok": False}
 
     steps = actions if isinstance(actions, list) else None
     vp = _coerce_viewport(viewport)
@@ -621,7 +640,7 @@ def tool_browser(*, url: str, wait_selector: str | None = None, max_chars: int =
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
             title, final_url, text, applied, vp_signal = ex.submit(
                 _browser_render, cleaned_url, wait_selector, limit, steps, vp
-            ).result(timeout=60 if (steps or vp) else 50)
+            ).result()
     except Exception as exc:
         return {"text": f"ERROR: browser failed: {str(exc)[:300]}", "ok": False}
 

@@ -25,12 +25,73 @@ CleanQueryFunc = Callable[[str], str]
 SubqueryBuilderFunc = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+def _extract_readable_text(soup: Any, max_chars: int) -> str:
+    for tag in soup(
+        [
+            "script",
+            "style",
+            "nav",
+            "header",
+            "footer",
+            "aside",
+            "form",
+            "button",
+            "iframe",
+            "noscript",
+            "svg",
+            "menu",
+            "advertisement",
+            "ad",
+            "banner",
+        ]
+    ):
+        tag.decompose()
+
+    for element in soup.select(
+        "[class*='advert'], [class*='banner'], [class*='cookie'], "
+        "[class*='popup'], [class*='modal'], [id*='advert'], [id*='banner']"
+    ):
+        element.decompose()
+
+    content_selectors = [
+        "article",
+        "main",
+        "[role='main']",
+        ".article-body",
+        ".article-content",
+        ".post-content",
+        ".entry-content",
+        ".news-body",
+        ".story-body",
+        ".text-content",
+        ".content",
+        "#content",
+        "#main-content",
+    ]
+    main_el = None
+    for selector in content_selectors:
+        main_el = soup.select_one(selector)
+        if main_el and len(main_el.get_text(strip=True)) > 100:
+            break
+        main_el = None
+
+    if main_el:
+        text = main_el.get_text(separator="\n", strip=True)
+    else:
+        body = soup.find("body")
+        text = (body or soup).get_text(separator="\n", strip=True)
+
+    lines = [line.strip() for line in text.split("\n") if len(line.strip()) > 20]
+    text = "\n".join(lines)
+    return text[:max_chars] if text else ""
+
+
 def fetch_page_text(url: str, max_chars: int = 4000) -> str:
     """Fetch and extract main text content from a web page."""
     from app.application.web.ssrf_guard import check_ssrf
     ssrf_reason = check_ssrf(url)
     if ssrf_reason:
-        return f"ERROR: SSRF blocked — {ssrf_reason}"
+        return f"ERROR: invalid URL — {ssrf_reason}"
 
     try:
         import requests
@@ -53,65 +114,7 @@ def fetch_page_text(url: str, max_chars: int = 4000) -> str:
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        for tag in soup(
-            [
-                "script",
-                "style",
-                "nav",
-                "header",
-                "footer",
-                "aside",
-                "form",
-                "button",
-                "iframe",
-                "noscript",
-                "svg",
-                "img",
-                "menu",
-                "advertisement",
-                "ad",
-                "banner",
-            ]
-        ):
-            tag.decompose()
-
-        for element in soup.select(
-            "[class*='advert'], [class*='banner'], [class*='cookie'], "
-            "[class*='popup'], [class*='modal'], [id*='advert'], [id*='banner']"
-        ):
-            element.decompose()
-
-        content_selectors = [
-            "article",
-            "main",
-            "[role='main']",
-            ".article-body",
-            ".article-content",
-            ".post-content",
-            ".entry-content",
-            ".news-body",
-            ".story-body",
-            ".text-content",
-            ".content",
-            "#content",
-            "#main-content",
-        ]
-        main_el = None
-        for selector in content_selectors:
-            main_el = soup.select_one(selector)
-            if main_el and len(main_el.get_text(strip=True)) > 100:
-                break
-            main_el = None
-
-        if main_el:
-            text = main_el.get_text(separator="\n", strip=True)
-        else:
-            body = soup.find("body")
-            text = (body or soup).get_text(separator="\n", strip=True)
-
-        lines = [line.strip() for line in text.split("\n") if len(line.strip()) > 20]
-        text = "\n".join(lines)
-        return text[:max_chars] if text else ""
+        return _extract_readable_text(soup, max_chars)
     except Exception:
         return ""
 

@@ -109,15 +109,6 @@ class TestToolSpecMigration(unittest.TestCase):
                         "max_output_chars", "idempotent", "policy_classified"):
                 self.assertIn(col, cols, f"Missing column: {col}")
 
-            # P9.2-FIXUP: trusted-source (builtin) rows are backfilled to classified=1
-            # so the fail-closed executor does not block them before the next re-seed.
-            con = _make_conn(db)
-            try:
-                row = dict(con.execute("SELECT * FROM tools WHERE name='legacy_tool'").fetchone())
-            finally:
-                con.close()
-            self.assertEqual(row["policy_classified"], 1,
-                             "builtin-source row must be backfilled to policy_classified=1")
 
     def test_migration_preserves_existing_rows_with_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,8 +144,7 @@ class TestToolSpecMigration(unittest.TestCase):
             self.assertEqual(row["display_name"], "Old")
             self.assertEqual(row["enabled"], 1)
 
-    def test_migration_leaves_untrusted_source_unclassified(self) -> None:
-        """P9.2-FIXUP: plugin/mcp/custom rows are NOT backfilled — they stay 0."""
+    def test_migration_leaves_legacy_classification_metadata_unchanged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "untrusted.db"
             con = _make_conn(db)
@@ -180,8 +170,7 @@ class TestToolSpecMigration(unittest.TestCase):
             finally:
                 con.close()
             for src in ("plugin", "mcp", "custom"):
-                self.assertEqual(rows[f"{src}_tool"], 0,
-                                 f"{src} source must stay unclassified after migration")
+                self.assertEqual(rows[f"{src}_tool"], 0)
 
     def test_migration_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -272,23 +261,6 @@ class TestToolSpecMigration(unittest.TestCase):
             self.assertTrue(result["side_effect"])
             self.assertIsInstance(result["idempotent"], bool)
             self.assertFalse(result["idempotent"])
-
-    def test_builtin_tools_have_permission_tiers(self) -> None:
-        from app.application.tool_registry.builtins import build_builtin_tools
-        tools = {t["name"]: t for t in build_builtin_tools()}
-
-        for name in ("search_memory", "search_web", "read_project_file", "git_status",
-                     "list_project_tree", "search_project", "preview_project_patch"):
-            t = tools[name]
-            self.assertEqual(t["permission"], "auto", f"{name} should be auto")
-            self.assertFalse(t["side_effect"], f"{name} should not have side_effect")
-
-        for name in ("write_project_file", "apply_project_patch", "python_execute",
-                     "git_commit_push", "browser_run", "project_brain_loop"):
-            t = tools[name]
-            self.assertEqual(t["permission"], "require_approval", f"{name} should require_approval")
-            self.assertTrue(t["side_effect"], f"{name} should have side_effect")
-
 
 if __name__ == "__main__":
     unittest.main()

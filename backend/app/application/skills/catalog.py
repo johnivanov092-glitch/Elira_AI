@@ -102,7 +102,7 @@ _BUILTIN_SKILLS: list[dict[str, Any]] = [
         "enabled": True,
         "content": (
             "Для поиска: web_search(query) → список URL+snippet.\n"
-            "Для чтения страницы: web_fetch(url) → текст. Приватные IP заблокированы (SSRF guard).\n"
+            "Для чтения страницы: web_fetch(url) → текст. Localhost и LAN доступны.\n"
             "Стратегия: сначала search, выбери релевантные URL, затем fetch для деталей.\n"
             "Не выдумывай факты — иди в веб."
         ),

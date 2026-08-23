@@ -11,6 +11,7 @@ All functions under test are pure (no local provider calls, no HTTP, no FS):
 """
 from __future__ import annotations
 
+import logging
 import sys
 import unittest
 from pathlib import Path
@@ -38,6 +39,7 @@ from app.core.web_runtime import (  # noqa: E402
     count_preferred_domain_hits,
     dedupe_results,
     format_search_results,
+    search_web_runtime,
 )
 
 
@@ -581,6 +583,69 @@ class FormatSearchResultsTest(unittest.TestCase):
         result = format_search_results(single)
         self.assertIn("[1]", result)
         self.assertNotIn("[2]", result)
+
+
+class SearchWebRuntimeRelevanceTest(unittest.TestCase):
+    def test_relevant_fallback_result_beats_primary_engine_name_collision(self) -> None:
+        irrelevant = [{
+            "title": "Ed Sheeran - Perfect",
+            "href": "https://video.test/perfect",
+            "body": "song lyrics and official music video",
+            "engine": "searxng",
+        }]
+        relevant = [{
+            "title": "Perfect World Pangu rune guide",
+            "href": "https://game.test/pangu-rune",
+            "body": "skill rune build for the game",
+            "engine": "duckduckgo",
+        }]
+
+        result = search_web_runtime(
+            "Perfect World Pangu rune",
+            max_results=1,
+            engines=("searxng", "duckduckgo"),
+            per_engine=1,
+            resolve_search_engines_func=lambda engines: tuple(engines or ()),
+            engine_funcs={
+                "searxng": lambda *args, **kwargs: irrelevant,
+                "duckduckgo": lambda *args, **kwargs: relevant,
+            },
+            logger_obj=logging.getLogger("search-relevance-test"),
+        )
+
+        self.assertEqual(result[0]["href"], "https://game.test/pangu-rune")
+
+    def test_top_results_include_an_equally_relevant_fallback_engine(self) -> None:
+        searxng = [
+            {
+                "title": f"Perfect World guide {index}",
+                "href": f"https://primary.test/{index}",
+                "body": "Perfect World guide",
+                "engine": "searxng",
+            }
+            for index in range(3)
+        ]
+        duckduckgo = [{
+            "title": "Perfect World guide from the community",
+            "href": "https://fallback.test/guide",
+            "body": "Perfect World guide",
+            "engine": "duckduckgo",
+        }]
+
+        result = search_web_runtime(
+            "Perfect World guide",
+            max_results=3,
+            engines=("searxng", "duckduckgo"),
+            per_engine=3,
+            resolve_search_engines_func=lambda engines: tuple(engines or ()),
+            engine_funcs={
+                "searxng": lambda *args, **kwargs: searxng,
+                "duckduckgo": lambda *args, **kwargs: duckduckgo,
+            },
+            logger_obj=logging.getLogger("search-diversity-test"),
+        )
+
+        self.assertIn("duckduckgo", {item["engine"] for item in result})
 
 
 if __name__ == "__main__":

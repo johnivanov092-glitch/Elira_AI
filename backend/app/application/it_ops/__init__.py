@@ -1,10 +1,7 @@
-"""IT Operations program (Phase 0+) — application layer.
+"""IT Operations application layer behind Workflow runtime control.
 
-The LLM proposes; the runtime owns asset scope, credentials, approval, snapshot,
-verifier, rollback and final status. See docs/IT_OPERATIONS_PLAN.md.
-
-Pure domain types live in the domain layer (`app.domain.it_ops`). Persistence lives
-in the single infrastructure store (`app.infrastructure.it_ops.store`); secret
-VALUES live only in Windows Credential Manager (never in the DB). This package
-holds future application-layer ops logic (adapters, orchestration).
+Assets and profiles are operational metadata, not authorization scopes. Workflow
+permission owns approval; arbitrary local/SSH execution reuses the existing tools.
+Secret values live in the portable encrypted vault, never in the metadata DB and
+never depend on Windows Credential Manager or DPAPI.
 """

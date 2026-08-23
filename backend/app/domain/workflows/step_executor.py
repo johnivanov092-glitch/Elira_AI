@@ -8,12 +8,13 @@ and dispatching agent or tool steps.
 from __future__ import annotations
 
 import json
+import hashlib
 from string import Formatter
-from typing import Any
+from typing import Any, Callable
 
 from app.application.workflows.events import emit_workflow_event
 from app.application.monitoring.runtime import WORKFLOW_ENGINE_AGENT_ID
-from app.application.agent_registry.sandbox import preflight_or_raise
+from app.application.agent_kernel.executor import workflow_approval_matches
 
 STEP_SUCCESS = "on_success"
 STEP_FAILURE = "on_failure"
@@ -119,12 +120,46 @@ def _execute_agent_step(
     mapped_inputs: dict[str, Any],
     run_context: dict[str, Any],
     run_id: str,
+    permission_mode: str = "ask",
 ) -> dict[str, Any]:
     from app.application.chat.runtime import run_agent
 
     config = step.get("config", {}) or {}
     prompt_template = str(config.get("prompt_template", "")).strip()
     prompt = _render_prompt_template(prompt_template, mapped_inputs) if prompt_template else _stringify_template_value(mapped_inputs)
+    resolutions = run_context.get("_workflow_request_resolutions", {})
+    resolution = (
+        resolutions.get(str(step.get("id", "")))
+        if isinstance(resolutions, dict)
+        else None
+    )
+    if isinstance(resolution, dict):
+        safe_resolution = {
+            "action": str(resolution.get("action") or "accept"),
+            "values": (
+                resolution.get("values")
+                if isinstance(resolution.get("values"), dict)
+                else {}
+            ),
+        }
+        prompt = (
+            f"{prompt}\n\n"
+            "----- WORKFLOW UI RESPONSE -----\n"
+            "The Workflow UI resolved your previous request. Continue the same "
+            "step. For an approved tool action, repeat the intended tool call with "
+            "the same arguments; the Workflow resolution authorizes that exact "
+            "call once. For "
+            "input use the returned values. For a secret use only secret_ref. An "
+            "elevated command has already been executed by the native UI bridge; "
+            "use its result and do not repeat it without elevation.\n"
+            f"{json.dumps(safe_resolution, ensure_ascii=False, indent=2)}"
+        )
+    workflow_approval = (
+        resolution.get("approved_tool")
+        if isinstance(resolution, dict)
+        and isinstance(resolution.get("approved_tool"), dict)
+        else None
+    )
     # P9.3: fall back to the "auto" sentinel (not a hardcoded model) so run_agent's
     # shared profile routing engages; an explicit step/context model is preserved.
     model_name = str(config.get("model_name") or run_context.get("model_name") or "auto")
@@ -140,6 +175,9 @@ def _execute_agent_step(
     num_ctx = run_context.get("num_ctx")
     if isinstance(num_ctx, int) and num_ctx > 0:
         extra_kwargs["num_ctx"] = num_ctx
+    reasoning_effort = str(run_context.get("reasoning_effort") or "none")
+    stable_run_key = f"{run_id}:{step.get('id', '')}".encode("utf-8")
+    code_agent_run_id = f"wf-{hashlib.sha256(stable_run_key).hexdigest()[:40]}"
     result = run_agent(
         model_name=model_name,
         profile_name=profile_name,
@@ -164,11 +202,17 @@ def _execute_agent_step(
         use_csv=bool(config.get("use_csv", False)),
         use_webhook=bool(config.get("use_webhook", False)),
         use_plugins=bool(config.get("use_plugins", False)),
+        permission_mode=permission_mode,
+        reasoning_effort=reasoning_effort,
+        code_agent_run_id=code_agent_run_id,
+        pause_for_workflow_request=True,
+        resume=isinstance(resolution, dict),
+        workflow_approval=workflow_approval,
         **extra_kwargs,
     )
 
     answer = str(result.get("answer", ""))
-    return {
+    step_payload = {
         "ok": bool(result.get("ok")),
         "answer": answer,
         "agent_id": str(step.get("agent_id", "")),
@@ -180,6 +224,10 @@ def _execute_agent_step(
         "raw": result,
         "error": result.get("meta", {}).get("error", "") if not result.get("ok") else "",
     }
+    for key in ("status", "request", "response_id"):
+        if key in result:
+            step_payload[key] = result[key]
+    return step_payload
 
 def _execute_tool_step(
     step: dict[str, Any],
@@ -187,23 +235,25 @@ def _execute_tool_step(
     run_context: dict[str, Any],
     workflow_id: str,
     run_id: str,
+    permission_mode: str,
 ) -> dict[str, Any]:
     from app.application.tool_registry.service import run_tool
 
     tool_name = str(step.get("tool_name", "")).strip()
     args = mapped_inputs if isinstance(mapped_inputs, dict) else {"input": mapped_inputs}
-    # Per-tool allowed_tools check for the workflow engine (raises SandboxPolicyError
-    # which the workflow execution layer catches to set sandbox_reason on the step).
-    preflight_or_raise(
-        agent_id=WORKFLOW_ENGINE_AGENT_ID,
-        num_ctx=int(run_context.get("num_ctx") or 0),
-        selected_tools=[tool_name],
-        run_id=run_id,
-        workflow_id=workflow_id,
-        step_id=str(step.get("id", "")),
-        route="workflow.tool",
-        streaming=False,
+    resolutions = run_context.get("_workflow_request_resolutions", {})
+    resolution = (
+        resolutions.get(str(step.get("id", "")))
+        if isinstance(resolutions, dict)
+        else None
     )
+    approved_tool = (
+        resolution.get("approved_tool")
+        if isinstance(resolution, dict)
+        and isinstance(resolution.get("approved_tool"), dict)
+        else {}
+    )
+    workflow_approved = workflow_approval_matches(approved_tool, tool_name, args)
     result = run_tool(
         tool_name,
         args,
@@ -212,6 +262,9 @@ def _execute_tool_step(
         source="workflow",
         workflow_id=workflow_id,
         step_id=str(step.get("id", "")),
+        permission_mode=permission_mode,
+        workflow_approved=workflow_approved,
+        project_root=run_context.get("project_root"),
     )
     ok = bool(result.get("ok"))
     emit_workflow_event(
@@ -237,6 +290,11 @@ def _execute_step(
     context: dict[str, Any],
     step_results: dict[str, Any],
     run_id: str,
+    permission_mode: str = "ask",
+    request_executor: Callable[
+        [dict[str, Any], dict[str, Any], str],
+        dict[str, Any],
+    ] | None = None,
 ) -> dict[str, Any]:
     mapped_inputs = _map_step_inputs(
         step,
@@ -244,9 +302,31 @@ def _execute_step(
         context=context,
         step_results=step_results,
     )
+    if step["type"] == "tool":
+        resolutions = context.get("_workflow_request_resolutions", {})
+        resolution = resolutions.get(str(step.get("id", ""))) if isinstance(resolutions, dict) else None
+        if isinstance(resolution, dict) and isinstance(resolution.get("values"), dict):
+            mapped_inputs = {**mapped_inputs, **resolution["values"]}
     if step["type"] == "agent":
-        return _execute_agent_step(step, mapped_inputs, context, run_id)
-    return _execute_tool_step(step, mapped_inputs, context, workflow_id, run_id)
+        return _execute_agent_step(
+            step,
+            mapped_inputs,
+            context,
+            run_id,
+            permission_mode,
+        )
+    if step["type"] == "request":
+        if request_executor is None:
+            raise RuntimeError("workflow request executor is not configured")
+        return request_executor(step, context, permission_mode)
+    return _execute_tool_step(
+        step,
+        mapped_inputs,
+        context,
+        workflow_id,
+        run_id,
+        permission_mode,
+    )
 
 
 def _resolve_next_step(step: dict[str, Any], *, success: bool) -> str:
@@ -267,4 +347,3 @@ def _resolve_next_step(step: dict[str, Any], *, success: bool) -> str:
 def _step_label(step: dict[str, Any]) -> str:
     config = step.get("config", {}) or {}
     return str(config.get("label") or step.get("save_as") or step.get("id"))
-

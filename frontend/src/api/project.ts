@@ -36,6 +36,8 @@ export type AdvancedMultiAgentRequest = {
   use_orchestrator?: boolean;
   project_root?: string;
   num_ctx?: number;
+  permission_mode?: "ask" | "accept_edits" | "bypass";
+  reasoning_effort?: "none" | "low" | "medium" | "xhigh";
   [key: string]: unknown;
 };
 

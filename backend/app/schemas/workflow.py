@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-WorkflowStepType = Literal["agent", "tool"]
+PermissionMode = Literal["ask", "accept_edits", "bypass"]
+WorkflowStepType = Literal["agent", "tool", "request"]
 WorkflowTransitionWhen = Literal["always", "on_success", "on_failure"]
+WorkflowRequestKind = Literal["input", "secret", "elevation", "approval"]
+WorkflowRequestAction = Literal["accept", "decline", "cancel"]
 
 
 class WorkflowTransition(BaseModel):
@@ -85,6 +88,7 @@ class WorkflowRunCreate(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
     trigger_source: str = "api"
+    permission_mode: PermissionMode = "ask"
 
 
 class WorkflowResumeRequest(BaseModel):
@@ -106,8 +110,43 @@ class WorkflowRun(BaseModel):
     updated_at: str
     finished_at: str | None = None
     trigger_source: str = "api"
+    permission_mode: PermissionMode = "ask"
 
 
 class WorkflowRunListResponse(BaseModel):
     runs: list[WorkflowRun]
     total: int
+
+
+class WorkflowRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["item/request"] = "item/request"
+    request_id: str
+    workflow_id: str
+    run_id: str
+    step_id: str
+    kind: WorkflowRequestKind
+    status: str
+    message: str = ""
+    request_schema: dict[str, Any] = Field(default_factory=dict, alias="schema")
+    sensitive: bool = False
+    action: str = ""
+    created_at: str
+    updated_at: str
+    resolved_at: str | None = None
+
+
+class WorkflowRequestListResponse(BaseModel):
+    requests: list[WorkflowRequest]
+    total: int
+
+
+class WorkflowRequestResolve(BaseModel):
+    action: WorkflowRequestAction
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowRequestResolveResponse(BaseModel):
+    request: WorkflowRequest
+    run: WorkflowRun

@@ -1,25 +1,18 @@
-"""resource_process — the deferred read-only resource tool (R1 + R2).
+"""Resource processing tools over durable resource identifiers.
 
 One general tool over durable resources. It takes ONLY a resource_id, an
-operation, and an execution_target enum — never a path, URL, hostname, argv,
-command, model path, or env. The resource_id is resolved against the CURRENT
-run's binding — a resource that is unknown, owned by another session, or not
-attached to this run fails closed before any bytes are read. The runtime resolves
-the id, checks the operation, reads the capability catalog, selects a registered
-adapter, hands the adapter the internal path, and returns a bounded result. The
-file extension is NOT a routing input; it only lets an adapter validate the
-container after the user has stated the task.
+operation, and an execution_target enum — never a storage path. Resource IDs are
+durable across runs; Workflow permission is the only product authorization layer.
+The runtime resolves the id, selects an adapter, and returns a bounded result.
 """
 from __future__ import annotations
 
 from typing import Any
 
 _ERROR_TEXT = {
-    "no_run_context": "resource_process requires a run context",
     "unknown_operation": "operation must be inspect, extract_text or transcribe",
     "invalid_execution_target": "execution_target must be auto, local_gpu, local_cpu or server_gpu",
     "unsupported_arguments": "resource_process accepts only resource_id, operation and execution_target",
-    "resource_not_bound": "resource is not attached to this run",
     "resource_not_found": "resource not found",
 }
 
@@ -41,14 +34,12 @@ def _refusal(code: str, *, requested_target: str | None) -> dict[str, Any]:
 
 def tool_resource_process(resource_id: str = "", operation: str = "",
                           execution_target: str = "auto", **extra: Any) -> dict[str, Any]:
-    """Process a durable resource attached to this run. Args: resource_id (opaque
+    """Process a durable resource. Args: resource_id (opaque
     id, NOT a path), operation (inspect | extract_text | transcribe), and
     execution_target (auto | local_gpu | local_cpu | server_gpu). Read-only; one
     bounded result; stable ``error`` code with ok=False on any refusal."""
-    from app.application.code_agent.tools import get_current_run_id
-    from app.application.media import execution, processing, resource_store, run_binding
+    from app.application.media import execution, processing, resource_store
 
-    run_id = get_current_run_id()
     resource_id = str(resource_id or "").strip()
     operation = str(operation or "").strip().lower()
     target = str(execution_target or "auto").strip().lower()
@@ -63,26 +54,18 @@ def tool_resource_process(resource_id: str = "", operation: str = "",
     # their names or values.
     if extra:
         return _refusal("unsupported_arguments", requested_target=target)
-    if not run_id:
-        return _refusal("no_run_context", requested_target=target)
-    # Ownership/run gate FIRST — a bare id (or a path passed as an id) that is not
-    # bound to this run is refused before any store lookup or byte read.
-    if not run_binding.is_bound(run_id, resource_id):
-        return _refusal("resource_not_bound", requested_target=target)
     record = resource_store.get_record(resource_id)
     if record is None:
         return _refusal("resource_not_found", requested_target=target)
     return processing.process_resource(record, operation, target)
 
 
-# ── resource_remote_process (R5C) — send a run-bound resource to the env-owned
+# ── resource_remote_process (R5C) — send a durable resource to the env-owned
 #    remote OCR worker and register the recognized text as a new ResourceRef. ────
 
 _REMOTE_ERROR_TEXT = {
-    "no_run_context": "resource_remote_process requires a run context",
     "unsupported_arguments": "resource_remote_process accepts only resource_id and operation",
     "unsupported_operation": "operation must be ocr",
-    "resource_not_bound": "resource is not attached to this run",
     "resource_not_found": "resource not found",
 }
 
@@ -94,14 +77,14 @@ def _remote_refusal(code: str) -> dict[str, Any]:
 
 def tool_resource_remote_process(resource_id: str = "", operation: str = "ocr",
                                  **extra: Any) -> dict[str, Any]:
-    """Process a run-bound resource on the trusted, env-configured remote OCR
+    """Process a durable resource on the configured remote OCR
     worker and attach the recognized text to this run as a NEW resource. Args:
     resource_id (opaque id, NOT a path) and operation (only "ocr"). Sends only the
     resource bytes (data egress → approval); returns a bounded projection with a
     new resource_ref — never the OCR text, a host/URL/token, or a storage path.
     The derived resource works with resource_materialize / resource_publish."""
     from app.application.code_agent.tools import get_current_run_id
-    from app.application.media import remote_execution, resource_store, run_binding
+    from app.application.media import remote_execution, resource_store
 
     run_id = get_current_run_id()
     resource_id = str(resource_id or "").strip()
@@ -113,27 +96,18 @@ def tool_resource_remote_process(resource_id: str = "", operation: str = "ocr",
         return _remote_refusal("unsupported_arguments")
     if operation != "ocr":
         return _remote_refusal("unsupported_operation")
-    if not run_id:
-        return _remote_refusal("no_run_context")
-    # Ownership/run gate FIRST — an unbound id (or a path passed as an id) is
-    # refused before any store lookup, byte read, or network call.
-    if not run_binding.is_bound(run_id, resource_id):
-        return _remote_refusal("resource_not_bound")
     record = resource_store.get_record(resource_id)
     if record is None:
         return _remote_refusal("resource_not_found")
     return remote_execution.run_remote_ocr(record=record, run_id=run_id)
 
 
-# ── resource_materialize (R4A) — bridge a run-bound ResourceRef into the run's
+# ── resource_materialize (R4A) — bridge a durable ResourceRef into the run's
 #    project workspace so the existing file/run_bash tools can process it. ──────
 
-import os as _os                                              # noqa: E402
-import re as _re                                              # noqa: E402
 from pathlib import Path as _Path                             # noqa: E402
 from urllib.parse import quote as _url_quote                 # noqa: E402
 
-_MAX_DEST_DEPTH = 8
 _MAX_NAME_CHARS = 200
 _WINDOWS_FORBIDDEN = frozenset('<>:"|?*')
 _WINDOWS_RESERVED = frozenset(
@@ -144,11 +118,9 @@ _WINDOWS_RESERVED = frozenset(
 )
 
 _MATERIALIZE_ERROR_TEXT = {
-    "no_run_context": "resource_materialize requires a run context",
     "unsupported_arguments": "resource_materialize accepts only resource_id and destination_name",
-    "resource_not_bound": "resource is not attached to this run",
     "resource_not_found": "resource not found",
-    "invalid_destination": "destination must be a relative name inside the project workspace",
+    "invalid_destination": "destination must be a valid relative or absolute filesystem path",
     "destination_exists": "a file already exists at that destination; choose another name",
     "integrity_mismatch": "the materialized copy did not match the resource; nothing was written",
     "materialize_failed": "could not materialize the resource",
@@ -180,57 +152,33 @@ def _safe_component(value: str) -> bool:
 
 
 def _safe_dest(project_root: _Path, name: str) -> _Path | None:
-    """Resolve *name* STRICTLY inside *project_root*. Returns the canonical target
-    path or None on ANY escape. Rejects absolute paths, drive prefixes, UNC,
-    ``..``, NUL/control; and rejects a symlink/junction/reparse escape by resolving
-    the target (which follows existing reparse points) and requiring it to stay
-    under the real project root. There is NO ELIRA_FS_UNRESTRICTED bypass — a
-    materialized file always stays in the workspace."""
-    import ntpath
+    """Resolve a relative project path or an absolute full-machine path."""
     raw = str(name or "")
     if not raw or raw != raw.strip():
         return None
-    if _os.path.isabs(raw) or ntpath.isabs(raw) or ntpath.splitdrive(raw)[0]:
-        return None
-    if raw[:2] in ("\\\\", "//"):                            # UNC
-        return None
-    parts = [p for p in _re.split(r"[\\/]+", raw) if p not in ("", ".")]
-    if not parts or any(not _safe_component(p) for p in parts):
-        return None
-    if len(parts) > _MAX_DEST_DEPTH or any(len(p) > _MAX_NAME_CHARS for p in parts):
-        return None
     try:
-        real_root = project_root.resolve()
-        target = real_root.joinpath(*parts)
-        resolved = target.resolve()                          # follows existing junctions/symlinks
-        resolved.relative_to(real_root)                      # escape → ValueError
+        candidate = _Path(raw)
+        if not candidate.is_absolute():
+            candidate = project_root.resolve() / candidate
+        resolved = candidate.resolve()
     except Exception:  # noqa: BLE001
         return None
-    if resolved == real_root:
+    if resolved == project_root.resolve():
         return None
     return resolved
 
 
 def tool_resource_materialize(project_root: Any, resource_id: str = "",
                               destination_name: str = "", **extra: Any) -> dict[str, Any]:
-    """Materialize a run-bound resource into the project workspace so the existing
+    """Materialize a durable resource into the local filesystem so the existing
     file/run_bash tools can process it. Args: resource_id (opaque id, NOT a path)
-    and optional destination_name (a relative name inside the workspace; default =
-    the resource's safe basename). Writes a NEW file (never overwrites); returns a
-    project-relative path only — never an absolute/storage path."""
-    from app.application.code_agent.tools import get_current_run_id
-    from app.application.media import resource_store, run_binding
+    and optional destination_name (relative to the project or absolute; default =
+    the resource's safe basename). Writes a NEW file and never overwrites."""
+    from app.application.media import resource_store
 
-    run_id = get_current_run_id()
     resource_id = str(resource_id or "").strip()
     if extra:
         return _materialize_refusal("unsupported_arguments")
-    if not run_id:
-        return _materialize_refusal("no_run_context")
-    # Ownership/run gate FIRST — an unbound id (or a path passed as an id) is
-    # refused before any store lookup or byte read.
-    if not run_binding.is_bound(run_id, resource_id):
-        return _materialize_refusal("resource_not_bound")
     record = resource_store.get_record(resource_id)
     if record is None:
         return _materialize_refusal("resource_not_found")
@@ -243,13 +191,16 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
         return _materialize_refusal("invalid_destination")
     if dest.exists():
         return _materialize_refusal("destination_exists")
-    rel = dest.relative_to(root).as_posix()
+    try:
+        display_path = dest.relative_to(root).as_posix()
+    except ValueError:
+        display_path = str(dest)
     try:
         resource_store.materialize(
             record,
             dest.parent,
             dest.name,
-            workspace_root=root,
+            workspace_root=dest.parent,
         )
     except resource_store.ResourceError as exc:
         code = exc.reason if exc.reason in _MATERIALIZE_ERROR_TEXT else "materialize_failed"
@@ -260,13 +211,13 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
     return {
         "ok": True,
         "resource_id": resource_id,
-        "project_path": rel,
+        "project_path": display_path,
         "size": record.size,
         "sha256": record.sha256,
         # Surface it through the existing touched-files/artifact flow.
-        "touched_path": rel,
+        "touched_path": display_path,
         "diff_action": "create",
-        "text": f"Materialized attached resource into {rel} ({record.size} bytes)",
+        "text": f"Materialized attached resource into {display_path} ({record.size} bytes)",
     }
 
 
@@ -275,9 +226,9 @@ def tool_resource_materialize(project_root: Any, resource_id: str = "",
 
 _PUBLISH_ERROR_TEXT = {
     "unsupported_arguments": "resource_publish accepts only project_path and download_name",
-    "invalid_source": "project_path must be a relative path inside the project workspace",
+    "invalid_source": "project_path must be a valid relative or absolute filesystem path",
     "source_not_file": "project_path must be an existing regular file",
-    "source_outside_workspace": "project_path is not inside the project workspace",
+    "source_outside_workspace": "project_path could not be read",
     "invalid_download_name": "download_name must be a plain filename (no path, no '..')",
     "destination_exists": "a download with that name already exists; choose another name",
     "integrity_mismatch": "the published copy did not match the source; nothing was published",
@@ -307,13 +258,13 @@ def _safe_download_name(name: str) -> str | None:
 
 def tool_resource_publish(project_root: Any, project_path: str = "",
                           download_name: str = "", **extra: Any) -> dict[str, Any]:
-    """Publish an already-produced workspace file to the user as a structured
-    download artifact. Args: project_path (a relative path to an existing file in
-    the project workspace, NOT absolute) and optional download_name (a plain safe
+    """Publish an already-produced local file to the user as a structured
+    download artifact. Args: project_path (relative to the project or absolute)
+    and optional download_name (a plain safe
     filename, no directories; default = the source's safe basename). Copies the
     file (streaming, integrity-verified, no-overwrite) into the server download dir
     and returns a download_url for the existing /api/skills/download route — a
-    project-relative path only, never an absolute/storage path."""
+    source path."""
     from app.application.media import resource_store
     from app.core.config import DATA_DIR, GENERATED_DIR
 
@@ -334,7 +285,7 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
 
     try:
         size, sha256 = resource_store.publish_copy(
-            workspace_root=root,
+            workspace_root=src.parent,
             source=src,
             destination_root=DATA_DIR,
             dest_dir=GENERATED_DIR,
@@ -346,13 +297,16 @@ def tool_resource_publish(project_root: Any, project_path: str = "",
     except Exception:  # noqa: BLE001 — never surface a raw path/exception
         return _publish_refusal("publish_failed")
 
-    rel = src.relative_to(root).as_posix()
+    try:
+        display_path = src.relative_to(root).as_posix()
+    except ValueError:
+        display_path = str(src)
     # download_name is set ONLY here, AFTER a verified atomic publish.  This proves
     # byte delivery, not that an arbitrary .pdf/.docx suffix contains that format.
     return {
         "ok": True,
-        "text": f"Published {rel} as downloadable file {name} ({size} bytes).",
-        "project_path": rel,
+        "text": f"Published {display_path} as downloadable file {name} ({size} bytes).",
+        "project_path": display_path,
         "download_url": f"/api/skills/download/{_url_quote(name, safe='')}",
         "download_name": name,
         "size": size,

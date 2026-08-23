@@ -9,11 +9,9 @@ from app.application.code_agent.tools._sandbox import _resolve_safe
 # ─── vision / OCR on project files ────────────────────────────────────────────
 #
 # These let the agent autonomously "see" an image or extract text from a scanned
-# document already present in the project, by wrapping the server vision (:8004)
-# and OCR (:8002) clients. Both clients are env-gated (VISION_ENABLED /
-# OCR_ENABLED, default OFF) and fail-closed (return None when disabled or on
-# failure); we surface that as a clear, non-fatal ERROR string so the agent can
-# react rather than crash the run.
+# document by wrapping the server vision (:8004) and OCR (:8002) clients. A tool
+# call always attempts the configured service; transport failures are returned to
+# the model without terminating the run.
 
 
 def tool_read_image(
@@ -34,16 +32,8 @@ def tool_read_image(
 
     result_resource_id = ""
     if resource_id:
-        from app.application.code_agent.tools import get_current_run_id
-        from app.application.media import resource_store, run_binding
+        from app.application.media import resource_store
 
-        run_id = get_current_run_id()
-        if not run_id:
-            return {"ok": False, "error": "no_run_context",
-                    "text": "ERROR: read_image resource_id requires a run context"}
-        if not run_binding.is_bound(run_id, resource_id):
-            return {"ok": False, "error": "resource_not_bound",
-                    "text": "ERROR: resource is not attached to this run"}
         record = resource_store.get_record(resource_id)
         if record is None:
             return {"ok": False, "error": "resource_not_found",
@@ -76,10 +66,6 @@ def tool_read_image(
         return {"text": "ERROR: vision support unavailable",
                 "ok": False, "error": "vision_unavailable"}
 
-    if not is_vision_enabled():
-        return {"text": "ERROR: vision is disabled (set VISION_ENABLED=1 on the server to enable read_image).",
-                "ok": False, "error": "vision_disabled"}
-
     try:
         description = describe_image(image_name, contents, prompt=(prompt or None))
     except Exception:  # noqa: BLE001 - provider internals must not cross the tool boundary
@@ -106,9 +92,6 @@ def tool_ocr_file(
         from app.infrastructure.llm.vision_ocr import is_ocr_enabled, ocr_document
     except Exception as exc:  # pragma: no cover - import guard
         return {"text": f"ERROR: OCR support unavailable: {exc}", "ok": False}
-
-    if not is_ocr_enabled():
-        return {"text": "ERROR: OCR is disabled (set OCR_ENABLED=1 on the server to enable ocr_file).", "ok": False}
 
     target = _resolve_safe(project_root, path)
     if not target.is_file():

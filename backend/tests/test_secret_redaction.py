@@ -1,17 +1,15 @@
 """P0.1 — secret redaction in audit / approval surfaces.
 
 Unit: redact_secrets masks secret values while keeping command structure visible.
-Integration: create_approval persists a REDACTED args_json, yet
-find_approved_approval still matches on the RAW args — the matching digest
-(args_sha256) is computed from raw args, so redaction never breaks approval
-matching on retry.
+Integration: the unified executor returns a redacted Workflow request while an
+opaque digest still matches the exact raw call once after approval.
 """
 from __future__ import annotations
 
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,7 +18,11 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.redaction import REDACTED, redact_secrets, redact_text  # noqa: E402
-from app.application.monitoring import store as mon_store  # noqa: E402
+from app.application.agent_kernel.executor import (  # noqa: E402
+    ToolExecutionRequest,
+    execute_tool,
+    workflow_approval_matches,
+)
 
 
 class RedactSecretsUnitTest(unittest.TestCase):
@@ -59,33 +61,41 @@ class RedactSecretsUnitTest(unittest.TestCase):
 
 
 class ApprovalRedactionMatchingTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self.db = str(Path(self._tmp.name) / "agent_monitor.db")
-        mon_store.init_db(self.db)
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def test_args_json_redacted_but_matching_intact(self) -> None:
+    def test_workflow_request_is_redacted_but_matching_stays_exact(self) -> None:
         raw_args = {"command": "curl --password hunter2 https://api", "password": "hunter2"}
-        created = mon_store.create_approval(
-            self.db, id="a1", tool_name="run_bash", agent_id="code-agent",
-            source="code-agent", run_id="run-1", project_scope_id="scope:x", args=raw_args,
+        request = ToolExecutionRequest(
+            run_id="run-1",
+            agent_id="code-agent",
+            project_scope_id="scope:x",
+            tool_name="run_bash",
+            args=raw_args,
+            source="code-agent",
+            permission_mode="ask",
         )
-        # Stored / displayed args are redacted — no secret leaks into the store/UI.
-        self.assertEqual(created["args"]["password"], REDACTED)
-        self.assertNotIn("hunter2", str(created["args"]))
+        with patch(
+            "app.application.tool_registry.runtime.get_tool",
+            return_value={"side_effect": True, "max_output_chars": 50000},
+        ):
+            result = execute_tool(
+                request,
+                lambda *_: self.fail("approval request must not dispatch"),
+            )
 
-        # ...yet matching on the RAW args still finds the approval (digest is raw).
-        mon_store.update_approval_status(self.db, "a1", status="approved")
-        found = mon_store.find_approved_approval(
-            self.db, tool_name="run_bash", agent_id="code-agent", source="code-agent",
-            run_id="run-1", project_scope_id="scope:x", args=raw_args,
+        self.assertEqual(result.status, "waiting_approval")
+        workflow_request = result.output["request"]
+        self.assertNotIn("hunter2", str(workflow_request))
+        approved_tool = workflow_request["schema"]["x-elira-tool"]
+        self.assertEqual(approved_tool["arguments"]["password"], REDACTED)
+        self.assertTrue(
+            workflow_approval_matches(approved_tool, "run_bash", raw_args)
         )
-        self.assertIsNotNone(found)
-        self.assertEqual(found["id"], "a1")
-        self.assertNotIn("hunter2", str(found["args"]))
+        self.assertFalse(
+            workflow_approval_matches(
+                approved_tool,
+                "run_bash",
+                {**raw_args, "password": "different"},
+            )
+        )
 
 
 if __name__ == "__main__":

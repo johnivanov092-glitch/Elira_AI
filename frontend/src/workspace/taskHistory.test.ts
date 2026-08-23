@@ -14,7 +14,7 @@ describe("taskHistoryItems", () => {
     const ledger: TaskLedgerEntry[] = [
       { timestamp: 1, type: "tool_call", action: "write_file", result: "completed" },
       { timestamp: 2, type: "final", action: "answer", result: "completed" },
-      { timestamp: 3, type: "error", action: "no_progress", result: "no_progress" },
+      { timestamp: 3, type: "error", action: "cancelled", result: "cancelled" },
     ];
 
     expect(taskHistoryItems(ledger, turns)).toEqual([

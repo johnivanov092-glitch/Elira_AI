@@ -12,7 +12,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.application.code_agent.tool_schemas import build_tool_schemas
 from app.application.tool_providers.builtin import BuiltinToolProvider
-from app.application.tool_registry.runtime import search_tool_specs, seed_builtin_tools
+from app.application.tool_registry.runtime import get_tool, seed_builtin_tools
 
 
 STAGE1_TOOLS = {
@@ -35,16 +35,12 @@ def test_unify_core_stage1_schemas_are_native() -> None:
     assert set(STAGE1_TOOLS).issubset(names)
 
 
-def test_unify_core_stage1_toolspecs_are_search_visible() -> None:
+def test_unify_core_stage1_toolspecs_are_registered() -> None:
     seed_builtin_tools()
-    for name, (permission, side_effect, scopes) in STAGE1_TOOLS.items():
-        hits = [item for item in search_tool_specs(name, limit=50) if item["name"] == name]
-        assert len(hits) == 1
-        hit = hits[0]
-        assert hit["permission"] == permission
+    for name, (_permission, side_effect, _scopes) in STAGE1_TOOLS.items():
+        hit = get_tool(name)
+        assert hit is not None
         assert hit["side_effect"] is side_effect
-        assert hit["scopes"] == scopes
-        assert hit["activatable"] is True
 
 
 def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> None:
@@ -98,6 +94,3 @@ def test_unify_core_stage1_builtin_provider_dispatch_smoke(tmp_path: Path) -> No
         text = str(result.get("text") or "")
         assert text, name
         assert "ERROR:" not in text, (name, text)
-
-    escaped = provider.dispatch("csv", {"file_path": "../outside.csv"})
-    assert "sandbox violation" in escaped["text"]

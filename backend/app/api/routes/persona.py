@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 from app.application.persona.service import (
     get_persona_status,
@@ -21,77 +20,6 @@ def persona_status():
         content=get_persona_status(),
         media_type="application/json; charset=utf-8",
     )
-
-
-@router.get("/triggers")
-def persona_triggers():
-    """Proactivity triggers and their status (Living Persona step C)."""
-    from app.application.persona.proactive import list_triggers
-
-    return JSONResponse(
-        content=list_triggers(),
-        media_type="application/json; charset=utf-8",
-    )
-
-
-@router.get("/suggestions")
-def persona_suggestions(only_unread: bool = True):
-    """Pending proactive suggestions (scheduled check-in queue)."""
-    from app.application.persona.proactive import list_pending
-
-    items = list_pending(only_unread=only_unread)
-    return JSONResponse(
-        content={"ok": True, "suggestions": items, "count": len(items)},
-        media_type="application/json; charset=utf-8",
-    )
-
-
-@router.post("/suggestions/{suggestion_id}/read")
-def persona_suggestion_read(suggestion_id: int):
-    from app.application.persona.proactive import mark_read
-
-    return mark_read(suggestion_id)
-
-
-@router.post("/suggestions/{suggestion_id}/dismiss")
-def persona_suggestion_dismiss(suggestion_id: int):
-    from app.application.persona.proactive import dismiss_suggestion
-
-    return dismiss_suggestion(suggestion_id)
-
-
-@router.post("/suggestions/{suggestion_id}/respond")
-def persona_suggestion_respond(suggestion_id: int, decision: str):
-    """Resolve an enable_ask: decision = approve | deny."""
-    from app.application.persona.proactive import respond_suggestion
-
-    if decision not in ("approve", "deny"):
-        raise HTTPException(status_code=400, detail="decision must be 'approve' or 'deny'")
-    return respond_suggestion(suggestion_id, decision)
-
-
-@router.get("/proactive-config")
-def persona_proactive_config():
-    from app.application.persona.proactive import get_proactive_config
-
-    return JSONResponse(
-        content={"ok": True, **get_proactive_config()},
-        media_type="application/json; charset=utf-8",
-    )
-
-
-class CheckinTimeRequest(BaseModel):
-    checkin_time: str
-
-
-@router.put("/proactive-config")
-def persona_set_proactive_config(payload: CheckinTimeRequest):
-    from app.application.persona.proactive import set_checkin_time
-
-    result = set_checkin_time(payload.checkin_time)
-    if not result.get("ok"):
-        raise HTTPException(status_code=400, detail="checkin_time must be HH:MM")
-    return result
 
 
 @router.get("/mood")

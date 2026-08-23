@@ -9,6 +9,7 @@ see :mod:`app.application.memory.facade`. Prefer importing from here:
 from app.application.memory.facade import (
     add_fact,
     add_semantic,
+    authoritative_facts,
     default_profile,
     delete_fact,
     fact_context,
@@ -26,6 +27,7 @@ from app.application.memory.facade import (
 __all__ = [
     "add_fact",
     "add_semantic",
+    "authoritative_facts",
     "default_profile",
     "delete_fact",
     "fact_context",

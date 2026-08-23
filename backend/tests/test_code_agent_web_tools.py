@@ -18,12 +18,14 @@ from app.application.code_agent.tools import (  # noqa: E402
     tool_web_fetch,
     tool_web_search,
 )
+from app.infrastructure.search.web_runtime import _extract_readable_text  # noqa: E402
 
 
 class WebSearchToolTest(unittest.TestCase):
     def test_empty_query_returns_error(self) -> None:
         result = tool_web_search(query="")
         self.assertIn("ERROR", result["text"])
+        self.assertIs(result["ok"], False)
 
     def test_whitespace_query_returns_error(self) -> None:
         result = tool_web_search(query="   ")
@@ -36,6 +38,16 @@ class WebSearchToolTest(unittest.TestCase):
         ):
             result = tool_web_search(query="abracadabra_no_hits")
         self.assertIn("No web results", result["text"])
+        self.assertIs(result["ok"], True)
+
+    def test_backend_failure_is_not_reported_as_success(self) -> None:
+        with patch(
+            "app.infrastructure.search.web_search.search_web",
+            side_effect=RuntimeError("upstream unavailable"),
+        ):
+            result = tool_web_search(query="python")
+        self.assertIs(result["ok"], False)
+        self.assertIn("ERROR", result["text"])
 
     def test_formats_results_with_index_title_url(self) -> None:
         fake = {
@@ -101,11 +113,70 @@ class WebSearchToolTest(unittest.TestCase):
         # Truncated to ~350 chars + marker, not 1000
         self.assertLess(len(result["text"]), 1200)
 
+    def test_image_search_returns_structured_media_cards(self) -> None:
+        fake = {
+            "sources": [
+                {
+                    "title": "Pangu",
+                    "href": "https://93.184.216.34/pangu",
+                    "body": "Chinese creation myth",
+                    "img_src": "https://93.184.216.34/pangu.jpg",
+                    "thumbnail_src": "https://93.184.216.34/pangu-thumb.jpg",
+                },
+                {
+                    "title": "Blocked local image",
+                    "href": "https://93.184.216.34/source",
+                    "img_src": "http://127.0.0.1/private.jpg",
+                },
+            ],
+            "engines_used": ["DuckDuckGo"],
+        }
+        with patch(
+            "app.infrastructure.search.web_search.search_web",
+            return_value=fake,
+        ):
+            result = tool_web_search(query="Паньгу", categories="images", top_k=3)
+
+        self.assertEqual(result["media"], [
+            {
+                "type": "image",
+                "url": "https://93.184.216.34/pangu-thumb.jpg",
+                "source_url": "https://93.184.216.34/pangu",
+                "title": "Pangu",
+                "source": "93.184.216.34",
+            },
+            {
+                "type": "image",
+                "url": "http://127.0.0.1/private.jpg",
+                "source_url": "https://93.184.216.34/source",
+                "title": "Blocked local image",
+                "source": "93.184.216.34",
+            },
+        ])
+
+    def test_general_search_does_not_auto_attach_image_fields(self) -> None:
+        fake = {
+            "sources": [{
+                "title": "Article",
+                "href": "https://93.184.216.34/article",
+                "img_src": "https://93.184.216.34/image.jpg",
+            }],
+            "engines_used": ["test"],
+        }
+        with patch(
+            "app.infrastructure.search.web_search.search_web",
+            return_value=fake,
+        ):
+            result = tool_web_search(query="article", categories="general")
+
+        self.assertNotIn("media", result)
+
 
 class WebFetchToolTest(unittest.TestCase):
     def test_empty_url_returns_error(self) -> None:
         result = tool_web_fetch(url="")
         self.assertIn("ERROR", result["text"])
+        self.assertIs(result["ok"], False)
 
     def test_unsupported_scheme_returns_error(self) -> None:
         result = tool_web_fetch(url="ftp://example.com/file.txt")
@@ -158,6 +229,7 @@ class WebFetchToolTest(unittest.TestCase):
             result = tool_web_fetch(url="https://example.com/france")
         self.assertIn("Paris", result["text"])
         self.assertIn("https://example.com/france", result["text"])
+        self.assertIs(result["ok"], True)
 
     def test_max_chars_lower_bound_enforced(self) -> None:
         captured: dict[str, int] = {}
@@ -196,6 +268,31 @@ class WebFetchToolTest(unittest.TestCase):
             result = tool_web_fetch(url="https://example.com/")
         self.assertIn("ERROR", result["text"])
         self.assertIn("network down", result["text"])
+        self.assertIs(result["ok"], False)
+
+    def test_nested_main_content_survives_malformed_img_parse_tree(self) -> None:
+        # Some real pages (including docs.python.org pathlib) are recovered by
+        # html.parser with the remaining main content nested under a void <img>.
+        # Destructively removing that image used to erase the whole page.
+        from bs4 import BeautifulSoup
+
+        parsed = BeautifulSoup(
+            "<html><body><main role='main'><p>Introductory paragraph long enough "
+            "to survive line filtering.</p><img src='diagram.png'></main></body></html>",
+            "html.parser",
+        )
+        nested = parsed.new_tag("section")
+        paragraph = parsed.new_tag("p")
+        paragraph.string = (
+            "Path objects expose filesystem semantics and this load-bearing "
+            "documentation must remain readable after decorative cleanup."
+        )
+        nested.append(paragraph)
+        parsed.img.append(nested)
+
+        text = _extract_readable_text(parsed, max_chars=4000)
+
+        self.assertIn("load-bearing documentation", text)
 
 
 class BatchWebToolsTest(unittest.TestCase):
@@ -212,20 +309,39 @@ class BatchWebToolsTest(unittest.TestCase):
                     {"title": "S", "href": "https://shared.com", "body": "s2"}]
 
         with patch.object(w, "_run_search", side_effect=fake_run):
-            text = tool_web_search(queries=["q1", "q2"])["text"]
+            result = tool_web_search(queries=["q1", "q2"])
+        text = result["text"]
+        self.assertIs(result["ok"], True)
         self.assertIn("2 parallel queries", text)
         self.assertIn("https://a.com", text)
         self.assertIn("https://b.com", text)
         self.assertEqual(text.count("https://shared.com"), 1)  # de-duped across queries
 
+    def test_web_search_batch_all_failures_not_ok(self) -> None:
+        import app.application.code_agent.tools._web as w
+
+        with patch.object(w, "_run_search", side_effect=RuntimeError("offline")):
+            result = tool_web_search(queries=["q1", "q2"])
+        self.assertIs(result["ok"], False)
+        self.assertIn("ERROR", result["text"])
+
     def test_web_fetch_batch_fetches_all(self) -> None:
         import app.application.code_agent.tools._web as w
         urls = ["https://x/1", "https://x/2", "https://x/3"]
         with patch.object(w, "_fetch_one", side_effect=lambda u, limit: f"[fetched: {u}]\n\nbody {u}"):
-            text = tool_web_fetch(urls=urls)["text"]
+            result = tool_web_fetch(urls=urls)
+        text = result["text"]
+        self.assertIs(result["ok"], True)
         self.assertIn("3 pages in parallel", text)
         for u in urls:
             self.assertIn(u, text)
+
+    def test_web_fetch_batch_all_failures_not_ok(self) -> None:
+        import app.application.code_agent.tools._web as w
+
+        with patch.object(w, "_fetch_one", return_value="ERROR: unavailable"):
+            result = tool_web_fetch(urls=["https://x/1", "https://x/2"])
+        self.assertIs(result["ok"], False)
 
     def test_batch_is_capped(self) -> None:
         import app.application.code_agent.tools._web as w
@@ -243,6 +359,13 @@ class ToolRegistrationTest(unittest.TestCase):
         names = [s["function"]["name"] for s in build_tool_schemas()]
         self.assertIn("web_search", names)
         self.assertIn("web_fetch", names)
+
+    def test_claim_tool_is_never_exposed(self) -> None:
+        names = {
+            schema["function"]["name"]
+            for schema in build_tool_schemas()
+        }
+        self.assertNotIn("web_claim_add", names)
 
     def test_schemas_include_sandbox_run_and_reset(self) -> None:
         names = [s["function"]["name"] for s in build_tool_schemas()]

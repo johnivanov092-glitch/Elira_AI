@@ -1,6 +1,4 @@
 from .runtime import (
-    BLOCKED,
-    MAX_FILE_SIZE,
     WORKSPACE,
     delete_path,
     diff_file,
@@ -12,8 +10,6 @@ from .runtime import (
 )
 
 __all__ = [
-    "BLOCKED",
-    "MAX_FILE_SIZE",
     "WORKSPACE",
     "delete_path",
     "diff_file",

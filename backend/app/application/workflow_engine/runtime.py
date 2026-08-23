@@ -121,6 +121,7 @@ def start_workflow_run(
     workflow_input: dict[str, Any] | None = None,
     context: dict[str, Any] | None = None,
     trigger_source: str = "api",
+    permission_mode: str = "ask",
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     return _app_start_workflow_run(
@@ -129,6 +130,7 @@ def start_workflow_run(
         workflow_input=workflow_input,
         context=context,
         trigger_source=trigger_source,
+        permission_mode=permission_mode,
         progress_callback=progress_callback,
     )
 

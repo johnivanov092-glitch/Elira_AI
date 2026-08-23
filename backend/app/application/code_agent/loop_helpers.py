@@ -1,4 +1,4 @@
-"""Code-agent loop helpers — text/format, approval, context-window, RAG and
+"""Code-agent loop helpers — text/format, Workflow requests, context-window, RAG and
 telemetry utilities used by the streaming loop.
 
 Extracted verbatim from ``agent_loop.py`` (no behaviour change) to shrink that
@@ -6,8 +6,8 @@ module. This is a *leaf*: it imports nothing from ``agent_loop`` (only from
 ``.history`` for ``summarize_history``, which is itself a leaf), so re-exporting
 these names back into ``agent_loop`` forms no import cycle. The core loop calls
 every helper here through the ``agent_loop`` module namespace, so tests that
-``patch`` these names on ``agent_loop`` (e.g. ``_approval_status``,
-``_APPROVAL_POLL_INTERVAL``, ``_record_code_route_metric``,
+``patch`` these names on ``agent_loop`` (e.g. request polling constants,
+``_WORKFLOW_REQUEST_POLL_INTERVAL``, ``_record_code_route_metric``,
 ``_try_remember_turn``) keep working unchanged.
 """
 from __future__ import annotations
@@ -16,56 +16,13 @@ import logging
 import re
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from app.application.projects.scope import project_scope_id
 from app.application.code_agent.history import summarize_history
-from app.application.code_agent import run_evidence
 from app.infrastructure.text import truncate_middle
-from app.application.code_agent.tool_policy import CRITICAL_TOOLS, EDIT_ONLY_TOOLS
-from app.change_executor.policy import (
-    AUTO,
-    decide_approval,
-    evidence_for_tool_call,
-    tool_call_is_change,
-)
 
 logger = logging.getLogger(__name__)
-
-
-# Patterns that say "user explicitly wants you to RUN something". When
-# present, we suffix the user message with an inline reminder — small
-# but effective at unsticking models that hallucinate "I have no access".
-_EXECUTION_INTENT = re.compile(
-    r"(?<!\w)(запусти|запустить|выполни|выполнить|проверь|проверить|"
-    r"создай файл|создай тест|run|execute|run tests|run it|"
-    r"сделай это|поправь и запусти|"
-    r"можно\s+ли.{0,80}(?:сделать|добавить|изменить|исправить|обновить))(?!\w)",
-    re.IGNORECASE | re.UNICODE,
-)
-_EXPLANATION_ONLY = re.compile(
-    r"(?:только\s+объясни|не\s+меняй|ничего\s+не\s+меняй|без\s+изменений)",
-    re.IGNORECASE | re.UNICODE,
-)
-
-
-def _maybe_inject_execution_reminder(user_message: str) -> str:
-    """If the user's wording clearly demands execution, append a short
-    reminder telling the model 'this is a tool-use turn, not a
-    text-answer turn'. Some local tool-calling models occasionally drift
-    into 'helpful explanation' mode otherwise.
-    """
-    if (
-        _EXECUTION_INTENT.search(user_message or "")
-        and not _EXPLANATION_ONLY.search(user_message or "")
-    ):
-        return (
-            user_message
-            + "\n\n[reminder] Это задача на выполнение. Используй инструменты "
-            + "(run_bash / write_file / read_file и т.д.) и сделай это сам. "
-            + "Не объясняй мне как запустить — запусти."
-        )
-    return user_message
 
 
 def _truncate(text: str, limit: int = 4000) -> str:
@@ -106,20 +63,6 @@ def _messages_char_count(messages: list[dict[str, Any]]) -> int:
     return total
 
 
-WRAP_UP_PROMPT = (
-    "[Прогон оборван: {reason}.] Больше НЕ вызывай инструменты. Подведи ЧЕСТНЫЙ "
-    "итог СТРОГО по фактам из результатов инструментов выше — не приукрашивай:\n"
-    "- Пиши «сделано» ТОЛЬКО если это прямо подтверждает результат конкретного "
-    "инструмента выше. Иначе — «не подтверждено» или «не доделано».\n"
-    "- НЕ пиши «проверено» / «работает» / «зашёл», если в шагах НЕТ вызова, который "
-    "это реально проверил. Предположение — это не проверка.\n"
-    "- НЕ придумывай ключи, пароли, вывод команд, пути или значения, которых не "
-    "было в результатах инструментов. Нет данных — так и скажи «не получил».\n"
-    "- Если шаг завершился ошибкой — напиши, что он ПРОВАЛИЛСЯ, не сглаживай в успех.\n"
-    "Формат: что реально сделано (по фактам), что не доделано, следующий шаг."
-)
-
-
 def _short_arg_hint(args: dict[str, Any]) -> str:
     """Most identifying argument of a tool call, for the run's call log."""
     for key in ("path", "command", "pattern", "query"):
@@ -129,109 +72,10 @@ def _short_arg_hint(args: dict[str, Any]) -> str:
     return ""
 
 
-def _tool_started_requires_approval_delay(tool_name: str, args: dict[str, Any]) -> bool:
-    """Delay live "started" UI until human approval has been granted."""
-    try:
-        from app.application.tool_registry.runtime import get_tool
-        spec = get_tool(tool_name)
-    except Exception:
-        return False
-    if not spec or spec.get("permission") != "require_approval":
-        return False
-    if tool_name == "run_bash":
-        command = str(args.get("command", "")).strip()
-        if command:
-            try:
-                from app.application.code_agent.tools import is_shell_safe
-                return not is_shell_safe(command)
-            except Exception:
-                return True
-    return True
-
-
-# F1: while a tool call waits for human approval the loop pauses and polls
-# the approval status. Module-level so tests can shrink the tick.
-_APPROVAL_POLL_INTERVAL = 1.5
-_APPROVAL_KEEPALIVE_EVERY = 10.0
-
-
-def _approval_status(approval_id: str) -> str:
-    """Current status of an approval row; 'pending' on any lookup problem."""
-    try:
-        from app.application.monitoring import runtime as _mon
-        _mon.expire_old_approvals()
-        row = _mon.get_approval(approval_id) or {}
-        return str(row.get("status") or "pending")
-    except Exception:
-        return "pending"
-
-
-# Permission modes (selector in the composer, mirrored in Settings):
-#   "ask"          — every change pauses for the user (default).
-#   "accept_edits" — low-risk runtime-reversible work proceeds; impactful work pauses.
-#   "bypass"       — normal work proceeds; unprotected high-risk work still pauses.
-# Compatibility inventory from tool_policy; the shared policy owns exact-call decisions.
-_EDIT_ONLY_TOOLS = EDIT_ONLY_TOOLS
-
-
-def _mode_auto_approves(permission_mode: str, tool_name: str) -> bool:
-    """Compatibility helper for coarse tests; real calls use exact arguments."""
-    args = {"command": "noncritical-command"} if tool_name == "run_bash" else {}
-    return _call_auto_approves(permission_mode, tool_name, args)
-
-
-def _call_auto_approves(
-    permission_mode: str,
-    tool_name: str,
-    args: dict[str, Any] | None,
-    *,
-    channel: str = "local",
-) -> bool:
-    """Decide one exact call from mode and runtime-owned safety evidence."""
-    try:
-        evidence = evidence_for_tool_call(tool_name, args)
-        return decide_approval(
-            permission_mode,
-            channel,
-            evidence,
-            is_change=tool_call_is_change(tool_name, args),
-        ) == AUTO
-    except Exception:
-        logger.warning("approval policy failed; requiring approval", exc_info=True)
-        return False
-
-
-# Tools that must ALWAYS be confirmed, even in bypass (from tool_policy; shell
-# criticality is decided per-command below via is_shell_critical).
-_CRITICAL_TOOLS: frozenset[str] = CRITICAL_TOOLS
-
-
-def _is_critical_call(tool_name: str, args: dict[str, Any] | None) -> bool:
-    """A specific call that must NEVER auto-approve — the user confirms it even in
-    bypass mode. Covers destructive-but-legitimate shell commands (rm / git reset
-    / drop / docker rm / kill / uninstall …) and any tool in _CRITICAL_TOOLS.
-    Catastrophic commands are blocked outright elsewhere; this is 'ask, never
-    auto'. Keeps bypass = 'no friction for normal work' while still guarding the
-    handful of operations that destroy data."""
-    if tool_name in _CRITICAL_TOOLS:
-        return True
-    try:
-        return evidence_for_tool_call(tool_name, args).impact == "high"
-    except Exception:
-        logger.warning("approval classification failed; treating call as critical", exc_info=True)
-        return True
-
-
-_REPEAT_REQUEST_MARKERS = (
-    "еще раз", "ещё раз", "повтор", "снова", "заново", "repeat", "again", "same",
-)
-
-
-def _looks_like_repeat_request(text: str) -> bool:
-    """True if the user explicitly asked to repeat / say it again, so an identical
-    answer is legitimate and the anti-repeat gate must NOT fire."""
-    t = (text or "").strip().lower()
-    return any(m in t for m in _REPEAT_REQUEST_MARKERS)
+# A live Composer stream waits on a durable Workflow request and emits periodic
+# SSE keepalives. Module-level values keep transport behaviour configurable.
+_WORKFLOW_REQUEST_POLL_INTERVAL = 1.5
+_WORKFLOW_REQUEST_KEEPALIVE_EVERY = 10.0
 
 
 # Client-side <think> stripper (safety net). The reasoning/content split relies
@@ -247,79 +91,6 @@ def _strip_think_blocks(text: str) -> str:
     return _THINK_BLOCK_RE.sub("", text or "")
 
 
-def _normalized_fingerprint(name: str, args: dict[str, Any]) -> str:
-    """Loop-guard fingerprint with whitespace-collapsed string values, so a stray
-    space/newline in an argument doesn't make an identical retry look 'new' and
-    slip past the repeat counter forever. Structure (offsets, different paths)
-    still distinguishes legitimately different calls."""
-    import json as _json
-
-    def _norm(value: Any) -> Any:
-        if isinstance(value, str):
-            return " ".join(value.split())
-        if isinstance(value, dict):
-            return {str(k): _norm(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [_norm(v) for v in value]
-        return value
-
-    return _json.dumps(
-        {"tool": name, "arguments": _norm(args or {})},
-        ensure_ascii=False, sort_keys=True, default=str,
-    )
-
-
-def _norm_answer(text: str) -> str:
-    """Normalise an assistant answer for exact-duplicate comparison: collapse all
-    whitespace and strip. Deterministic — only answers that are byte-identical
-    after normalisation match, so genuinely different replies never trip the
-    anti-repeat gate (no fuzzy similarity, no false positives on real work)."""
-    return " ".join((text or "").split()).strip()
-
-
-# "I'm about to do X" verbs/openers that a model emits INSTEAD of calling the
-# tool. Covers first-person singular future ("прочитаю", "начну"), first-person
-# plural / "давай …" filler ("давай посмотрим", "проверим", "сделаем" — the most
-# common Russian stall), and English ("let me", "let's"). Deliberately excludes
-# infinitives and 2nd-person imperatives, so a real closing answer that tells the
-# USER what THEY can do ("теперь можешь запустить …") does not match.
-_INTENT_TO_ACT_RE = re.compile(
-    # first-person singular future / intent
-    r"(прочита[юя]|перечита[юя]|дочита[юя]|дочитыва|добавл[юя]|сдела[юя]|"
-    r"напиш[у]|создам|создаю|измен[юя]|исправл[юя]|запущ[у]|перепиш[у]|"
-    r"обновл[юя]|внес[у]|посмотр[юя]|провер[юя]|перейд[у]|начн[уё]|приступ|"
-    r"разбер[у]сь|доработа[юя]|реализу[юя]|проанализиру[юя]|допиш[у]|поправл[юя]|"
-    # first-person plural ("давай посмотрим", "проверим", "сделаем", …)
-    r"посмотрим|глянем|проверим|сделаем|прочитаем|прочтём|прочтем|начнём|начнем|"
-    r"разберёмся|разберемся|добавим|исправим|напишем|создадим|обновим|перепишем|поправим|"
-    r"давай(те)?\s+(посмотр|глян|провер|сдела|разбер|начн|прочит|добав|исправ|напиш|созда|обнов)|"
-    # English
-    r"let me\b|let['’]?s\b|let us\b|i['’]?ll\b|i will\b|i['’]?m going to)",
-    re.IGNORECASE | re.UNICODE,
-)
-
-
-def _looks_like_intent_without_action(text: str) -> bool:
-    """True when the model's prose is a forward-looking plan-to-act ("сейчас
-    прочитаю…", "начну с…", "let me read…") rather than a delivered result —
-    it announces the NEXT step but (the caller has already checked) calls no
-    tool. Conservative on purpose: matches only a first-person intent verb at
-    the START or TAIL of the message. The start matters for long design
-    monologues: a model can open with "Я сделаю...", spend 300 chars describing
-    the plan, and otherwise evade a tail-only check. Used to nudge the agent to
-    actually act instead of ending the turn on a promise (a failure mode
-    amplified by thinking mode)."""
-    t = (text or "").strip()
-    if not t:
-        return False
-    # A delivered answer normally neither STARTS nor ENDS with an unfulfilled
-    # first-person action. Bounded windows avoid matching a future-step mention
-    # buried inside an otherwise substantive result.
-    head = t[:200]
-    tail = t[-200:]
-    return bool(_INTENT_TO_ACT_RE.search(head) or _INTENT_TO_ACT_RE.search(tail))
-
-
 # --- Grounding across turns -------------------------------------------------
 # conversation_history carries only user + assistant TEXT (tool results are
 # dropped — see history._coerce_history). So facts the agent learned via tools
@@ -331,7 +102,9 @@ def _looks_like_intent_without_action(text: str) -> bool:
 # guessing. Read/inspect tools only — pure actions add no facts worth carrying.
 _GROUNDING_FACT_TOOLS = frozenset({
     "project_map", "glob", "grep", "read_file", "run_bash", "run_server",
-    "web_search", "web_fetch", "http_api", "browser", "recall", "write_file", "edit_file",
+    "http_api", "browser", "recall", "write_file", "edit_file",
+    # Raw search snippets and fetched page text are untrusted source material and
+    # are intentionally not persisted as authoritative cross-turn facts.
     # Remote work grounds facts too — a remote read/check/write must survive into
     # the next turn's digest, not vanish because it happened over SSH.
     "ssh_run", "ssh_read", "ssh_write", "ssh_run_ps",
@@ -433,159 +206,6 @@ def _recent_tools_digest(entries: list[str]) -> str:
     if len(body) > _RECENT_TOOL_DIGEST_CHARS:
         body = body[-_RECENT_TOOL_DIGEST_CHARS:]  # keep the most-recent tail
     return body
-
-
-# --- External-fact evidence gate -------------------------------------------
-# The web-evidence corpus validates provenance after web_fetch(store=true), but
-# it cannot help when the model skips the web entirely and answers from memory.
-# Keep this detector deliberately intent-based: it covers requests whose answer
-# materially depends on current/real-world facts, while ordinary explanations,
-# coding work and file-local questions remain untouched.
-_EXTERNAL_EVIDENCE_NUDGE_MAX = 1
-
-
-def _requires_external_evidence(user_message: str, answer: str = "") -> bool:
-    return run_evidence.requires_external_source(user_message, answer)
-
-
-def _answer_admits_missing_external_evidence(answer: str) -> bool:
-    return run_evidence.answer_admits_missing_external_source(answer)
-
-
-def _tool_provides_external_evidence(name: str, text_result: str) -> bool:
-    return run_evidence.tool_provides_external_source(name, text_result)
-
-
-def _external_evidence_backstop() -> str:
-    return run_evidence.external_source_backstop()
-
-
-# --- Ungrounded-file nudge (residual grounding leak) ------------------------
-# established_facts carries what tools GROUNDED, but when the model is asked about
-# something no tool has fetched yet (a file never read), it can still name files
-# from priors ("README describes test_main.py/setup.py" — live-observed). This
-# detector flags file names in the model's answer that NOTHING in the run grounds
-# (no tool result, no verified-facts block, not from the user), so the loop can
-# nudge it to verify via a tool before stating them. Deliberately narrow: it only
-# fires on an actual ungrounded FILE claim, so normal answers never see it.
-_GROUNDING_NUDGE_MAX = 2
-
-
-def _ungrounded_files(answer: str, messages: list[dict], established_facts: list[str]) -> list[str]:
-    return run_evidence.ungrounded_file_claims(answer, messages, established_facts)
-
-
-# Anti-confabulation for generated documents (.docx / .xlsx / .pdf). The run tracks
-# the filenames a VERIFIED file_gen actually produced (its download_name, already
-# existence-checked and backed by a real file). If the final answer presents a document
-# as ready whose EXACT name is not in that list, no real file_gen backs it and the model
-# is passing off draft text as a file. write_file/edit_file are DELIBERATELY excluded: a
-# plain write_file can emit a UTF-8 file literally named report.docx / report.pdf that is
-# not a real Word/PDF document, so a written path is never proof of a real doc.
-# Deliberately narrow: only the formats file_gen emits, exact-basename match.
-_DOCGEN_NUDGE_MAX = 1
-
-
-def _unbacked_docgen_claim(answer: str, generated_docs: list[str]) -> list[str]:
-    """Document filenames (.docx/.xlsx/.pdf) the answer presents as ready that were NOT
-    produced by a verified file_gen this run. `generated_docs` is the list of file_gen
-    download_name values (each existence-checked). EXACT basename match — a produced
-    actual.docx does not back a claimed report.docx. write_file/edit_file paths are not
-    passed in (a written report.pdf may be plain text, not a real PDF). Returns the
-    unbacked claimed basenames; [] when every claimed doc was really generated / none
-    claimed."""
-    return run_evidence.unbacked_document_claims(answer, generated_docs)
-
-
-# --- Near-duplicate loop detection ------------------------------------------
-# The exact-fingerprint loop-guard misses a model that spams ONE tool with
-# slightly-varying args — `ping -n 1 X`, `ping -n 2 X`, `recall "192.1 88"`,
-# `recall "192.169 88"`… Each variant is a DISTINCT fingerprint, so the per-
-# fingerprint count is spread thin and the run burns dozens of steps before the
-# hard limit trips (observed live: a ping loop ran to step 50 / ~59 calls). We
-# collapse near-duplicates: normalise numbers to "N", tokenise, and treat same-
-# tool calls with high token overlap as the SAME churning loop — nudge to change
-# approach, then stop fast. Legit work (read_file over DIFFERENT files) has low
-# overlap and is never flagged.
-_NEAR_DUP_JACCARD = 0.6
-_NEAR_DUP_NUDGE_AT = 3
-_NEAR_DUP_LIMIT = 5
-_NEAR_DUP_WINDOW = 8
-
-
-def _arg_tokens(parsed_args: dict | None) -> frozenset[str]:
-    """Coarse token set of a call's args. Whole number/IP/version tokens collapse
-    to a single "N" (so `192.1` and `192.169.88.2` match, and `ping -n 1 X` /
-    `ping -n 2 X` collapse to the same shape); embedded digits in words are also
-    normalised. Capped so a huge `content` arg (write_file) stays cheap and never
-    dominates. File paths stay whole tokens, so different files don't collapse."""
-    text = " ".join(str(v) for v in (parsed_args or {}).values())[:400].lower()
-    toks: set[str] = set()
-    for t in text.split():
-        if re.fullmatch(r"[\d.:_\-]+", t):  # pure number / IP / version / flag-number
-            toks.add("N")
-        else:
-            toks.add(re.sub(r"\d+", "N", t))
-    return frozenset(toks)
-
-
-def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    return len(a & b) / len(a | b)
-
-
-def _is_near_dup(name: str, tokens: frozenset[str], recent: list[tuple[str, frozenset[str]]]) -> bool:
-    """True if this call closely mirrors a recent call to the SAME tool."""
-    return any(rn == name and _jaccard(tokens, rt) >= _NEAR_DUP_JACCARD for rn, rt in recent)
-
-
-# Progress control (the strategy router) lives in code_agent.progress. This file
-# keeps only the DETERMINISTIC final report used when the router / repetition
-# guards force a stop — built from the journal, never a retelling by the stuck
-# model. See docs/AGENT_RUNTIME_PLAN.md.
-
-
-# UNIVERSAL task-completion claims the model must not make while the deterministic
-# verifier says the task is NOT confirmed. Targets status markers + universal
-# "all/every ... passed", "no unverified", "все … критерии подтверждены" phrasings
-# (with intervening words like "все frontend и SSH критерии …"). It deliberately
-# does NOT match a SINGULAR factual statement ("критерий build подтверждён",
-# "прочитал файл") — only the sweeping "everything passed" claims are neutralised.
-_COMPLETION_CLAIM_RE = re.compile(
-    r"\bCOMPLETED\b"
-    r"|completion[_\s]?status\s*[:=]\s*(?:confirmed|done|complete)"
-    r"|\btask\s+(?:is\s+)?(?:complete|completed|fully\s+done|verified)\b"
-    # EN universal: "all [frontend and SSH] criteria/checks are passed/confirmed"
-    r"|\ball\s+(?:the\s+)?(?:\w+\s+(?:and|or|,|/)?\s*){0,5}(?:criteria|checks?|tests?|requirements)"
-    r"\s+(?:are\s+|were\s+)?(?:passed|pass|met|green|confirmed|verified|ok)"
-    r"|\bevery\s+(?:criterion|check|test)\s+(?:passed|met|confirmed|green|verified)"
-    r"|\bno\s+(?:unverified|failed|unconfirmed|pending)\b"
-    # RU universal: "все [frontend и SSH] критерии подтверждены/выполнены/пройдены"
-    r"|все\s+(?:\w+\s+(?:и|или|,|/)?\s*){0,5}критери\w*"
-    r"\s+(?:подтвержд\w+|выполнен\w+|пройден\w+|проверен\w+|зелён\w+|соблюден\w+|met|passed|ok)"
-    # RU universal: "все [verifier] проверки/checks прошли/пройдены"
-    r"|все\s+(?:\w+\s+){0,4}(?:проверки|verifier[\s'\w-]*checks?|checks?)"
-    r"\s+(?:прошл\w+|пройден\w+|passed|зелён\w+|met|ok|подтвержд\w+)"
-    r"|нет\s+(?:не\s*подтвержд\w+|unverified|failed|провален\w+|unconfirmed|незакрыт\w+)"
-    r"|(?:unverified|failed|не\s*подтвержд\w+|провален\w+)\s+нет\b"
-    r"|(?:задача|работа)\s+(?:полностью\s+)?(?:выполнена|завершена|решена|готова)"
-    r"|полностью\s+готов\w*",
-    re.IGNORECASE,
-)
-_COMPLETION_CLAIM_MASK = "(не подтверждено verifier'ом — см. панель проверки)"
-
-
-def gate_completion_claims(text: str, completion_status: str) -> str:
-    """Guard: when the deterministic completion is NOT `confirmed`, the model's final
-    text may not assert the task is COMPLETED / all criteria passed. Such claims are
-    neutralised so the model's word can never contradict the verifier — the structured
-    criteria (done event) + readiness panel remain the source of truth."""
-    if completion_status == "confirmed" or not text:
-        return text
-    return _COMPLETION_CLAIM_RE.sub(_COMPLETION_CLAIM_MASK, text)
 
 
 # ── Delivery-session ownership registry ─────────────────────────────────────
@@ -758,10 +378,6 @@ def upsert_task_state_message(
     return out
 
 
-def _norm_checklist_text(value: Any) -> str:
-    return " ".join(str(value or "").split()).casefold()
-
-
 def format_checklist_state(items: list[dict], *, max_items: int = 30) -> str:
     """Deterministic one-line-per-item digest of the durable run checklist,
     built from the task_planner rows (server truth, not model prose)."""
@@ -773,192 +389,6 @@ def format_checklist_state(items: list[dict], *, max_items: int = 30) -> str:
     if len(items) > max_items:
         lines.append(f"- … ещё {len(items) - max_items} пунктов")
     return "\n".join(lines)
-
-
-def resume_checklist_guard(run_id: str, parsed_args: dict) -> str | None:
-    """Delivery (C): on a RESUMED slice the durable checklist is the plan of
-    record — `todo_update` may extend it, re-send it verbatim or flip statuses,
-    but may NOT replace existing items with a different plan. Covers BOTH write
-    channels of update_checklist: `items` (position/id upsert) and `updates`
-    (by-id mutation, which can also rewrite `text`). Returns the redirect text
-    (carrying the REAL checklist with ids) when a replacement is detected, None
-    when the call is safe (read / status-or-blocker-only updates / pure
-    extension / same-text re-send).
-
-    Mirrors update_checklist's landing semantics: explicit id wins, else the
-    row already holding the explicit position; items without id/position land on
-    fresh slots (extension) and are always allowed.
-    """
-    raw_items = parsed_args.get("items")
-    raw_updates = parsed_args.get("updates")
-    has_items = isinstance(raw_items, list) and raw_items
-    has_updates = isinstance(raw_updates, list) and raw_updates
-    if not has_items and not has_updates:
-        return None
-    try:
-        from app.application.task_planner.service import list_checklist
-
-        existing = list((list_checklist(run_id) or {}).get("items") or [])
-    except Exception:
-        logger.warning("resume_checklist_guard: checklist read failed for %s", run_id, exc_info=True)
-        return None
-    if not existing:
-        return None
-    by_id = {str(row.get("id") or ""): row for row in existing}
-    by_pos = {int(row.get("position") or 0): row for row in existing}
-
-    def _replaces(landing: dict | None, raw: dict) -> bool:
-        if landing is None:
-            return False
-        new_text = _norm_checklist_text(raw.get("text"))
-        return bool(new_text) and new_text != _norm_checklist_text(landing.get("text"))
-
-    violation = False
-    for raw in (raw_items or []) if has_items else []:
-        if not isinstance(raw, dict):
-            continue
-        raw_id = str(raw.get("id") or raw.get("item_id") or "").strip()
-        landing = by_id.get(raw_id) if raw_id else None
-        if landing is None and not raw_id and raw.get("position") is not None:
-            try:
-                landing = by_pos.get(int(raw.get("position")))
-            except (TypeError, ValueError):
-                landing = None
-        # landing None → fresh slot: extension, allowed
-        if _replaces(landing, raw):
-            violation = True
-            break
-    if not violation and has_updates:
-        for raw in raw_updates:
-            if not isinstance(raw, dict):
-                continue
-            raw_id = str(raw.get("id") or raw.get("item_id") or "").strip()
-            # updates are by-id only; status/blocker-only entries carry no text
-            # and stay allowed — that is the advertised legitimate channel.
-            if _replaces(by_id.get(raw_id) if raw_id else None, raw):
-                violation = True
-                break
-    if not violation:
-        return None
-    done = sum(1 for row in existing if str(row.get("status")) == "completed")
-    return (
-        "[план уже существует] Это продолжение прогона: durable-чеклист создан "
-        f"ранее ({done}/{len(existing)} выполнено) и НЕ пересоздаётся другим планом.\n"
-        f"{format_checklist_state(existing)}\n"
-        "Продолжай с первого открытого пункта. Статусы меняй через "
-        "todo_update(updates=[{id, status}]) — без замены текста пунктов; новые "
-        "шаги добавляй отдельными items, не переписывая существующие."
-    )
-
-
-def _deterministic_stop_summary(
-    reason: str,
-    call_log: list[str],
-    touched_files: list[str],
-    established_facts: list[str],
-    *,
-    exhausted_strategies: list[str] | None = None,
-    next_step: str | None = None,
-) -> str:
-    """Engineering report for a controller-forced stop (loop / no progress). Built
-    deterministically from what ACTUALLY happened — never a retelling by the stuck
-    model — so it can't confabulate success. Structured as an incomplete-work
-    report (done / not done / why / next), the way a normal runtime closes a run.
-    LLM prose (if any) is an optional layer AFTER this, not the source of truth."""
-    uniq = list(dict.fromkeys(f for f in (touched_files or []) if f))
-    digest = _facts_digest(established_facts)
-
-    lines = ["⛔ **Не завершено** — прогон остановлен контроллером.", ""]
-
-    lines.append("**Что сделано (по журналу):**")
-    if uniq:
-        shown = ", ".join(uniq[:12])
-        more = f" (+{len(uniq) - 12})" if len(uniq) > 12 else ""
-        lines.append(f"- Изменённые файлы: {shown}{more}")
-    else:
-        lines.append("- Файлы не изменены")
-    if digest:
-        lines.append("- Проверенные факты:\n" + digest[:900])
-
-    if exhausted_strategies:
-        lines.append("")
-        lines.append("**Что не удалось (исчерпанные стратегии):**")
-        for s in exhausted_strategies[:8]:
-            lines.append(f"- {s}")
-
-    lines.append("")
-    lines.append("**Почему остановлено:**")
-    lines.append(f"- {reason}. Вызовов инструментов: {len(call_log)}.")
-
-    lines.append("")
-    lines.append("**Следующий безопасный шаг:**")
-    lines.append(f"- {next_step or 'уточни путь или спроси пользователя, затем продолжи следующим сообщением'}")
-
-    lines.append("")
-    lines.append("_Детерминированный итог из журнала прогона (не пересказ модели)._")
-    return "\n".join(lines)
-
-
-# R2 Server Lifecycle: dev-server commands must go through run_server (owned,
-# stoppable, real URL) — in run_bash they block until the shell timeout and leak.
-# HEURISTIC by design: this feeds a bounded REDIRECT (worst case = one bad hint),
-# never a verdict (map invariant №10). Review-hardened against the costly false
-# positives: quoted mentions (commit messages, printf), --help/--version probes,
-# one-shot subcommands (`vite build`), and dev-prefixed script names (dev-build).
-_QUOTED_SPAN_RE = re.compile(r'"[^"]*"|\'[^\']*\'')
-_WORD_END = r"(?=\s|$|&|\||;)"
-_DEV_SERVER_CMD_RE = re.compile(
-    r"(?:^|&&|;)\s*(?:"
-    # dev-token scripts: word must END there — `npm run dev-build`/`dev:build` are one-shot
-    r"(?:npm|yarn|pnpm|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)" + _WORD_END +
-    # bare `vite` / `vite --port …` / `vite dev|serve|preview` serve; `vite build` does NOT
-    r"|(?:npx\s+)?vite(?=\s*$|\s+--|\s+(?:dev|serve|preview)" + _WORD_END + r")"
-    r"|(?:npx\s+)?(?:next|nuxt|astro|remix)\s+dev\b"
-    r"|ng\s+serve\b"
-    r"|python3?\s+-m\s+http\.server\b"
-    r"|(?:python3?\s+)?manage\.py\s+runserver\b"
-    # uvicorn only with an app path (module:attr) — `uvicorn --version` is a probe
-    r"|uvicorn\s+[\w./\\]+:[\w.]+"
-    r"|flask\s+run" + _WORD_END +
-    r"|(?:npx\s+)?(?:http-server|live-server|serve)" + _WORD_END +
-    r"|rails\s+s(?:erver)?\b"
-    r"|php\s+-S\s"
-    r")",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_dev_server_command(command: str) -> bool:
-    """A run_bash command that starts a long-lived dev server (guard heuristic)."""
-    cmd = (command or "").strip()
-    low = cmd.lower()
-    if "--help" in low or "--version" in low or "<<" in low:
-        return False   # diagnostics / heredoc file-writes are not server launches
-    # a QUOTED mention (commit message, printf/echo payload) is not a launch
-    cmd = _QUOTED_SPAN_RE.sub(" ", cmd)
-    return bool(_DEV_SERVER_CMD_RE.search(cmd))
-
-
-def _mark_approval_approved(approval_id: str) -> bool:
-    """Programmatically grant an approval row (for non-'ask' permission modes)."""
-    try:
-        from app.application.monitoring import runtime as _mon
-        _mon.update_approval_status(approval_id, status="approved")
-        return True
-    except Exception:
-        return False
-
-
-def _mark_approval_expired(approval_id: str) -> bool:
-    """Expire an approval row the runtime ABANDONS (auto-verifier pass skipping a
-    call that would park on a human) — otherwise a dead pending card lingers in the
-    approvals panel for a run that has already moved on."""
-    try:
-        from app.application.monitoring import runtime as _mon
-        _mon.update_approval_status(approval_id, status="expired")
-        return True
-    except Exception:
-        return False
 
 
 def _flatten_for_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1088,50 +518,6 @@ def _prepare_messages_for_llm(
     return messages, compacted, usage
 
 
-def _wrap_up_text(
-    chat: Callable[..., dict[str, Any]],
-    model: str,
-    num_ctx: int,
-    messages: list[dict[str, Any]],
-    call_log: list[str],
-    reason: str,
-) -> str:
-    """F2: one best-effort no-tools LLM call to summarize an interrupted run
-    (max_steps / deadline) — files on disk are already changed, the user must
-    get «что сделано / что осталось». Falls back to a deterministic summary
-    built from the run's call log. Deliberately outside inference telemetry:
-    it is a single bounded closing call, not part of the tool loop.
-    """
-    try:
-        response = chat(
-            model=model,
-            messages=messages + [{
-                "role": "user",
-                "content": WRAP_UP_PROMPT.format(reason=reason),
-            }],
-            options={"num_ctx": int(num_ctx), "active_context_limit": int(num_ctx)},
-        )
-        text = (((response or {}).get("message") or {}).get("content") or "").strip()
-        # A degenerate model can emit raw <tool_call>…</tool_call> as the wrap-up
-        # content (live: it leaked into the answer after the loop-guard fired).
-        # Strip it; if nothing meaningful is left, fall through to the call-log
-        # summary rather than showing an empty or markup-only answer.
-        from app.application.code_agent.inline_tool_calls import _strip_tool_call_markup
-        text = _strip_tool_call_markup(text)
-        if text:
-            return text
-    except Exception as exc:
-        logger.warning("wrap-up summary call failed: %s", exc)
-    if call_log:
-        shown = "; ".join(call_log[:20])
-        more = f" (+{len(call_log) - 20})" if len(call_log) > 20 else ""
-        return (
-            f"Прогон остановлен: {reason}. Выполнено вызовов: {len(call_log)} — "
-            f"{shown}{more}. Изменения уже на диске; продолжи следующим сообщением."
-        )
-    return f"Прогон остановлен: {reason} — до первого вызова инструмента."
-
-
 def _is_throwaway_project(project_root: Path) -> bool:
     """True when the project lives under the OS temp dir — a disposable
     sandbox from a smoke/experimental run, not a real user project.
@@ -1152,32 +538,52 @@ def _is_throwaway_project(project_root: Path) -> bool:
         return False
 
 
-def _try_remember_turn(*, user_message: str, response_text: str, project_root: Path) -> None:
-    """Fire-and-forget: write a short summary of a successful agent turn
-    to RAG so future `recall(query)` can surface it. Failures are logged
-    but never raised.
+def _try_remember_turn(
+    *,
+    user_message: str,
+    response_text: str,
+    project_root: Path,
+    verified: bool = False,
+    mutation_targets: Iterable[str] = (),
+    verification_targets: Iterable[str] = (),
+) -> None:
+    """Persist only a verified project change, never free-form model prose.
+
+    ``response_text`` stays in the signature for call-site compatibility but is
+    intentionally not stored: a fluent final answer is not evidence.
     """
     if _is_throwaway_project(project_root):
+        return
+    changed = sorted({
+        str(target or "").strip()[:240]
+        for target in mutation_targets
+        if str(target or "").strip()
+    })
+    if not verified or not changed:
         return
     try:
         from app.application.rag_memory.service import add_to_rag
     except Exception:
         return
     user = (user_message or "").strip()
-    answer = (response_text or "").strip()
-    if not user or not answer:
+    if not user:
         return
     if len(user) > 300:
         user = user[:300] + " [...]"
-    if len(answer) > 600:
-        answer = answer[:600] + " [...]"
+    checks = sorted({
+        str(target or "").strip()[:240]
+        for target in verification_targets
+        if str(target or "").strip()
+    })
     project_name = project_root.name or str(project_root)
     scope_id = project_scope_id(project_root)
-    summary = f"[agent_turn project={project_name}] task: {user} | outcome: {answer}"
+    summary = (
+        f"[verified_turn project={project_name}] task: {user} | "
+        f"changed: {', '.join(changed[:20])} | "
+        f"verified: {', '.join(checks[:10]) or 'current project epoch passed'}"
+    )
     try:
-        # Pass project= so the entry is scoped to this project and
-        # recall() from a different project doesn't pull it up.
-        add_to_rag(text=summary, category="agent_turn", importance=3, project=scope_id)
+        add_to_rag(text=summary, category="verified_turn", importance=4, project=scope_id)
     except Exception as exc:
         logger.debug("auto-remember failed: %s", exc)
 
@@ -1209,31 +615,7 @@ def _record_code_route_metric(run_id: str, decision: Any, effective_num_ctx: int
         logger.debug("model route metric recording failed", exc_info=exc)
 
 
-_TOOL_SEARCH_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "tool_search",
-        "description": (
-            "Search for more tools by keyword and activate the relevant ones for "
-            "THIS task. Use it whenever you need a capability you don't currently "
-            "have (e.g. web search, http, sql, run a command). Eligible matches "
-            "become callable on your next step."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Keywords describing the capability you need.",
-                }
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-
-# ask_user is handled INLINE by the loop (like tool_search) — it pauses the run
+# ask_user is handled INLINE by the loop — it pauses the run
 # and waits for a human answer, so it is never dispatched via the executor. The
 # schema is appended to every step so the model can always reach it.
 _ASK_USER_SCHEMA = {
@@ -1263,37 +645,51 @@ _ASK_USER_SCHEMA = {
 }
 
 
-# ssh_request_host is handled INLINE by the loop (like ask_user): the agent
-# CANNOT add hosts to the SSH allowlist itself (that is the security boundary),
-# so it calls this to ask the user to approve one host with a single click. On
-# approval the loop adds the host to the allowlist and ssh_run works for it.
-_SSH_REQUEST_HOST_SCHEMA = {
+_WORKFLOW_REQUEST_SCHEMA = {
     "type": "function",
     "function": {
-        "name": "ssh_request_host",
+        "name": "workflow_request",
         "description": (
-            "Ask the user to add ONE host to the SSH integration (the allowlist "
-            "that enables ssh_run). You CANNOT edit that list yourself — it is the "
-            "user's security boundary. This pauses the run and shows the user an "
-            "Approve/Deny button; on approve the host is added and ssh_run works "
-            "for it in this same run. Call it AFTER the host is set up (key "
-            "installed on the server, ~/.ssh/config alias created). `host` MUST be "
-            "the exact alias/token from the ~/.ssh/config Host entry (e.g. "
-            "'elira-ai-server'), not a bare IP, so ssh_run resolves the right key."
+            "Pause the current Workflow agent step and request one explicit value "
+            "from the Workflow UI. Use `input` for ordinary user data, `secret` "
+            "when the UI must store a credential and return only its secret_ref, "
+            "or `elevation` when Windows must run one command through UAC. This is "
+            "not an authorization policy: after the UI resolves the request the "
+            "same Workflow step resumes with the returned values."
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "host": {
+                "kind": {
                     "type": "string",
-                    "description": "Exact host alias/token to allow (must match the ~/.ssh/config Host entry).",
+                    "enum": ["input", "secret", "elevation"],
                 },
-                "reason": {
+                "message": {
                     "type": "string",
-                    "description": "Short reason, shown to the user in the approval card.",
+                    "description": "Short message shown in the Workflow request card.",
+                },
+                "schema": {
+                    "type": "object",
+                    "description": (
+                        "JSON Schema for input values. For elevation this field is "
+                        "ignored and the native command fields are used."
+                    ),
+                },
+                "program": {
+                    "type": "string",
+                    "description": "Executable passed to the native UAC bridge.",
+                },
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Argument vector passed to the elevated process.",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Optional working directory for the elevated process.",
                 },
             },
-            "required": ["host"],
+            "required": ["kind", "message"],
         },
     },
 }

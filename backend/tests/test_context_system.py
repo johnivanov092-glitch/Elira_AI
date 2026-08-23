@@ -52,7 +52,6 @@ class ContextProfileAndBudgetTest(unittest.TestCase):
         ):
             profile = get_active_context_profile("local-model")
         self.assertEqual(profile["ctx_size"], 262_144)
-        self.assertEqual(profile["timeout_policy"]["long_context"], 900)
 
     def test_budget_formula_reserves_output_system_and_margin(self) -> None:
         budget = calculate_budget(
