@@ -108,6 +108,9 @@ templates and inherit `ask`, `accept_edits`, or `bypass`.
 - Context usage and prompt telemetry include the exact activated tool schemas;
   integrations can no longer fill the server window while the UI reports only
   message text. `context_prepared` updates the UI before prompt prefill starts.
+- Model payloads contain exactly one leading `system` message. Summaries,
+  verified facts and previous tool output remain assistant-shaped runtime
+  context because strict Qwen templates reject late system messages.
 - Every chat payload sets `cache_prompt: true`.
 - Reasoning modes are `none`, `low`, `medium`, `xhigh`.
 - Qwen reads `enable_thinking` + `reasoning_effort`.

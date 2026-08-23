@@ -26,19 +26,22 @@ from app.infrastructure.llm.openai_compatible import (
 
 logger = logging.getLogger(__name__)
 
-# The frontend tags compressed summary turns with this prefix; _coerce_history
-# re-tags them as system messages so the LLM treats them as out-of-band context
-# rather than as its own prior reply.
+# The frontend tags compressed summary turns with this prefix. They remain
+# assistant-shaped runtime context because strict Qwen templates allow a system
+# message only at index 0.
 _SUMMARY_PREFIX = "[CONTEXT SUMMARY]"
 # Grounded facts the discovery tools established in a prior turn (see
 # loop_helpers.FACTS_PREFIX). The frontend carries them as an assistant message;
-# we re-tag to system so the model treats them as an authoritative record of what
-# was actually verified — not its own prose — and answers factual follow-ups from
-# them instead of confabulating.
+# we frame them as authoritative runtime context so factual follow-ups remain
+# grounded without creating a late system message.
 _FACTS_PREFIX = "[ПРОВЕРЕННЫЕ ФАКТЫ]"
 # Verbatim raw output of the previous turn's grounding tools (see
-# loop_helpers.RECENT_TOOLS_PREFIX) — re-tagged to system like the facts block.
+# loop_helpers.RECENT_TOOLS_PREFIX) — framed like the facts block.
 _RECENT_PREFIX = "[РЕЗУЛЬТАТЫ ИНСТРУМЕНТОВ ПРОШЛОГО ХОДА]"
+_RUNTIME_CONTEXT_PREFIX = "[RUNTIME CONTEXT:"
+_SUMMARY_CONTEXT_PREFIX = f"{_RUNTIME_CONTEXT_PREFIX} PRIOR SUMMARY]"
+_FACTS_CONTEXT_PREFIX = f"{_RUNTIME_CONTEXT_PREFIX} VERIFIED FACTS]"
+_RECENT_CONTEXT_PREFIX = f"{_RUNTIME_CONTEXT_PREFIX} RECENT TOOL OUTPUT]"
 
 DEFAULT_MODEL = "local-model"
 # Deprecated compatibility constant. Live runs do not use it; ``None`` means
@@ -65,11 +68,9 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
     Only role + content fields are kept; tool_calls and tool results from
     past turns are dropped (we feed the agent fresh tools each turn).
 
-    Compressed summary turns (assistant messages with the
-    `[CONTEXT SUMMARY]` prefix that the frontend produces after a
-    `summarize_history` call) are re-tagged as system messages so the
-    LLM treats them as out-of-band context rather than as its own prior
-    reply — that prevents 'I never said that' confusion.
+    Runtime summary/facts/tool-output blocks stay assistant-shaped and receive
+    explicit framing. Strict Qwen templates reject any system message after
+    index 0, so history normalization must never create one.
     """
     if not history:
         return []
@@ -88,8 +89,9 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
             if not stripped:
                 continue
             out.append({
-                "role": "system",
+                "role": "assistant",
                 "content": (
+                    f"{_SUMMARY_CONTEXT_PREFIX}\n"
                     "Earlier conversation summary (compressed from prior turns by the "
                     "user — treat as context, not as your own previous answer):\n"
                     + stripped
@@ -101,8 +103,9 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
             if not stripped:
                 continue
             out.append({
-                "role": "system",
+                "role": "assistant",
                 "content": (
+                    f"{_FACTS_CONTEXT_PREFIX}\n"
                     "Проверенные факты, установленные инструментами в предыдущих ходах "
                     "(это ДОСТОВЕРНАЯ запись того, что реально проверено — опирайся на "
                     "неё для фактических вопросов о проекте/файлах/коде; если нужного "
@@ -116,8 +119,9 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
             if not stripped:
                 continue
             out.append({
-                "role": "system",
+                "role": "assistant",
                 "content": (
+                    f"{_RECENT_CONTEXT_PREFIX}\n"
                     "Полный вывод инструментов из ПРЕДЫДУЩЕГО хода (достоверное сырьё — "
                     "опирайся на него дословно для фактических вопросов; чётко отделяй "
                     "то, что тут реально написано, от своих домыслов):\n" + stripped
@@ -232,10 +236,10 @@ def summarize_history(
     for m in reversed(cleaned):
         role = m["role"]
         content = m["content"]
-        if role == "system":
-            # System messages (re-tagged summary turns from earlier
-            # compressions) should appear with a distinctive prefix
-            # so the summarizer treats them as prior summary context.
+        if role == "system" or content.startswith(_RUNTIME_CONTEXT_PREFIX):
+            # Runtime context from earlier turns stays assistant-shaped for the
+            # main Qwen call, but the summarizer must still treat it as prior
+            # context rather than as a normal agent answer.
             prefix = "PRIOR_SUMMARY:"
         elif role == "user":
             prefix = "USER:"
