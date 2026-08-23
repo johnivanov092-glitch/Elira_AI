@@ -1,17 +1,15 @@
-"""Stable prompt ordering for the unified agent runtime.
+"""Stable ordering for the compact built-in capability core.
 
-Runtime providers determine the actual available schemas. These tuples are not
-an allowlist, scope, activation layer, or authorization boundary.
+Runtime providers determine the actual available schemas. Capability loading
+is prompt composition, not an allowlist, scope, or authorization boundary.
 """
 from __future__ import annotations
 
+from app.application.code_agent.capabilities import CORE_BUILTIN_TOOL_ORDER
+
 # Stable order for the local built-in tools in prompts and compatibility APIs.
-BASE_TOOLS: tuple[str, ...] = (
-    "read_file", "glob", "grep", "project_map", "recall", "remember",
-    "todo_update", "delegate_task",
-    "runtime_control",
-    "write_file", "edit_file", "run_bash", "run_server",
-    "web_search", "web_fetch", "http_api",
-)
+BASE_TOOLS: tuple[str, ...] = CORE_BUILTIN_TOOL_ORDER
 # Legacy prompt grouping; persona never changes tool access.
-READONLY_TOOLS: tuple[str, ...] = ("read_file", "glob", "grep", "recall")
+READONLY_TOOLS: tuple[str, ...] = (
+    "capability_load", "read_file", "glob", "grep", "path_exists", "project_map",
+)

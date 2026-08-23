@@ -211,6 +211,8 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
     Unknown MCP tools remain changes and therefore fail closed to approval.
     """
     payload = args if isinstance(args, dict) else {}
+    if str(tool_name or "").strip() == "capability_load":
+        return False
     if str(tool_name or "").strip() == "runtime_control":
         return str(payload.get("operation") or "").strip().lower() not in {
             "status", "mcp_list", "lsp_list", "telegram_status",

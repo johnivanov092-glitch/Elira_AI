@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.application.code_agent.capabilities import (
+    CAPABILITY_GROUPS,
+    capability_catalog_text,
+)
+
 
 # Web-corpus schema additions are always available; runtime availability is the
 # only execution constraint.
@@ -96,6 +101,29 @@ def build_tool_schemas() -> list[dict[str, Any]]:
 
 def _base_tool_schemas() -> list[dict[str, Any]]:
     return [
+        {
+            "type": "function",
+            "function": {
+                "name": "capability_load",
+                "description": (
+                    "Load one optional built-in tool group for this run. This changes "
+                    "only which tool schemas are sent to the model; it is not a "
+                    "permission or approval boundary. Available groups:\n"
+                    + capability_catalog_text()
+                ),
+                "parameters": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "group": {
+                            "type": "string",
+                            "enum": list(CAPABILITY_GROUPS),
+                        },
+                    },
+                    "required": ["group"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {

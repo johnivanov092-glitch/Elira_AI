@@ -33,9 +33,11 @@ returns to the same `run_code_agent`, executor and provider registry.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- The first model turn sees only the compact core. MCP/LSP are selected per run
-  through `runtime_control`; SSH and IT Ops schemas are revealed only after the
-  model explicitly requests their runtime discovery operation.
+- The first model turn sees only the compact built-in core plus
+  `capability_load` and `runtime_control`. The model loads optional built-in
+  groups (`web`, `desktop`, `resources`, `data`, `memory`, `operations`) only
+  when the task needs them. MCP/LSP/SSH/IT Ops follow the same per-run schema
+  visibility rule through `runtime_control`.
 - A new-chat plain greeting has no tool schemas at all; any task, continuation,
   path, command, MCP/SSH request, or existing history uses the normal agent loop.
 - No tool/path/asset/LAN authorization scope, internal ApprovalStore,
@@ -66,6 +68,16 @@ Windows elevation is executed by the Tauri native bridge in
 request. The backend does not require permanent administrator rights.
 
 ## Integration boundary
+
+Built-in schema composition is owned by
+`application/code_agent/capabilities.py`. `capability_load(group)` validates a
+model-selected group, then the existing runtime registry is rebuilt for the
+next model turn. Loaded groups are journalled for Resume/automatic continuation;
+a new run starts with the compact core again. This is prompt composition, not
+authorization: the Workflow permission selector remains the only product-level
+permission decision. A hidden built-in schema does not remove its canonical
+dispatch owner; if a valid native/inline call reaches the runtime, it still uses
+the same ToolExecutor and handler.
 
 MCP, LSP, SSH shortcuts, Telegram, IT Ops, plugins, Workflow scheduling,
 memory/library administration and vault operations are behind the agent's

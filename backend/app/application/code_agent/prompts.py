@@ -194,6 +194,10 @@ _CODE_AGENT_READONLY_TOOLS = tool_policy.READONLY_TOOLS
 # the run's ACTUAL initial tool set, so the prompt never advertises a tool the
 # executor would block as not-activated and never hides an active one.
 TOOL_PROMPT_LINES: dict[str, str] = {
+    "capability_load": (
+        "- capability_load(group) — загрузить нужную группу дополнительных "
+        "инструментов; новые схемы появятся на следующем ходе"
+    ),
     "read_file":     "- read_file(path) — читать файл",
     "write_file":    "- write_file(path, content) — создать или перезаписать файл",
     "edit_file":     "- edit_file(path, old_string, new_string) — точечная правка существующего файла",

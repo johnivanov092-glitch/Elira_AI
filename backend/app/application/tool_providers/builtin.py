@@ -1,13 +1,13 @@
 """Provider that wraps the existing built-in tools.
 
-This is the minimum-change adapter: it doesn't move or rewrite any
-tool — just exposes `build_tool_schemas` and `build_tool_dispatch`
-from `app.application.code_agent.tools` through the ToolProvider
-protocol. All 78 existing code-agent tests pass unchanged.
+This adapter does not move or rewrite tools. It exposes the canonical dispatch
+table and either the full schema inventory or a run-scoped selected subset
+through the ToolProvider protocol.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -22,23 +22,35 @@ logger = logging.getLogger(__name__)
 
 
 class BuiltinToolProvider:
-    """Read/write/edit/glob/grep/run_bash/recall/web_search/web_fetch
-    /sandbox_run/sandbox_reset — the original toolbox."""
+    """Canonical built-in dispatch with optional schema composition."""
 
     name = "builtin"
 
-    def __init__(self, project_root: Path) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        tool_names: Collection[str] | None = None,
+    ) -> None:
         self._project_root = project_root.resolve()
-        # The original tools.py returns a fresh dict on every call;
-        # cache one instance per provider so we don't rebuild the
-        # lambdas for every dispatch.
+        # Cache one dispatch table per provider so lambdas are not rebuilt for
+        # every call. Schema filtering changes visibility, not implementation.
         self._dispatch_table = build_tool_dispatch(self._project_root)
-        self._schemas = build_tool_schemas()
-        self._owned_names = {s["function"]["name"] for s in self._schemas}
+        selected = None if tool_names is None else {
+            str(name).strip() for name in tool_names if str(name).strip()
+        }
+        schemas = build_tool_schemas()
+        self._schemas = [
+            schema for schema in schemas
+            if selected is None
+            or str((schema.get("function") or {}).get("name") or "") in selected
+        ]
+        # Visibility is prompt composition only. The canonical provider remains
+        # able to dispatch every implemented built-in even when its schema was
+        # not selected for this model turn.
+        self._owned_names = set(self._dispatch_table)
 
     def is_enabled(self) -> bool:
-        # Built-in tools are always on; there's no scenario where you
-        # want the code-agent without them.
+        # The greeting fast path omits this provider entirely.
         return True
 
     def get_schemas(self) -> list[dict[str, Any]]:
