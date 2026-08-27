@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from typing import Any
 
 
@@ -40,6 +41,8 @@ _CURRENT_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # run_id -> set of live Popen objects spawned by that run.
 _LIVE_SHELL_PROCS: dict[str, set[subprocess.Popen]] = {}
 _LIVE_SHELL_LOCK = threading.Lock()
+_RUN_CANCEL_CALLBACKS: dict[str, dict[int, Callable[[], None]]] = {}
+_NEXT_CANCEL_CALLBACK_ID = 0
 # run_ids whose processes were explicitly killed by the Stop path. The tool
 # checks this to report "Прервано пользователем" regardless of the OS exit code
 # (taskkill on Windows yields a positive code, so we can't infer Stop from it).
@@ -153,6 +156,65 @@ def register_run_process(proc: subprocess.Popen) -> str:
 def unregister_run_process(run_id: str, proc: subprocess.Popen) -> None:
     """Remove a process previously registered with register_run_process."""
     _unregister_shell_proc(run_id, proc)
+
+
+def register_run_cancel_callback(
+    callback: Callable[[], None],
+) -> tuple[str, int] | None:
+    """Bind a provider-level abort hook to the current Workflow run.
+
+    This is for blocking transports without a directly owned ``Popen`` (for
+    example HTTP MCP). Registration shares the shell Stop marker so a Stop that
+    races ahead of provider setup invokes the callback immediately.
+    """
+    run_id = get_current_run_id()
+    if not run_id:
+        return None
+    global _NEXT_CANCEL_CALLBACK_ID
+    call_now = False
+    with _LIVE_SHELL_LOCK:
+        if run_id in _KILLED_RUN_IDS:
+            call_now = True
+            token = None
+        else:
+            _NEXT_CANCEL_CALLBACK_ID += 1
+            callback_id = _NEXT_CANCEL_CALLBACK_ID
+            _RUN_CANCEL_CALLBACKS.setdefault(run_id, {})[callback_id] = callback
+            token = (run_id, callback_id)
+    if call_now:
+        try:
+            callback()
+        except Exception:
+            pass
+    return token
+
+
+def unregister_run_cancel_callback(token: tuple[str, int] | None) -> None:
+    if token is None:
+        return
+    run_id, callback_id = token
+    with _LIVE_SHELL_LOCK:
+        callbacks = _RUN_CANCEL_CALLBACKS.get(run_id)
+        if callbacks is None:
+            return
+        callbacks.pop(callback_id, None)
+        if not callbacks:
+            _RUN_CANCEL_CALLBACKS.pop(run_id, None)
+
+
+def cancel_run_callbacks(run_id: str) -> int:
+    """Invoke and clear every active provider abort hook for ``run_id``."""
+    with _LIVE_SHELL_LOCK:
+        _KILLED_RUN_IDS.add(run_id)
+        callbacks = list(_RUN_CANCEL_CALLBACKS.pop(run_id, {}).values())
+    invoked = 0
+    for callback in callbacks:
+        try:
+            callback()
+            invoked += 1
+        except Exception:
+            pass
+    return invoked
 
 
 def kill_run_processes(run_id: str) -> int:

@@ -211,8 +211,10 @@ Explicit stop and backend shutdown kill the complete child process tree.
 Workflow Stop is race-safe across process creation. The per-run cancelled
 marker and Popen registration share one lock; if Stop arrives after
 `tool_started` but before registration, the new process tree is killed as soon
-as it registers. Durable Resume reuses the persisted run ID only after this
-cleanup.
+as it registers. MCP and LSP stdio children use the same run ownership, while
+provider-level cancellation callbacks close active HTTP/JSON-RPC transports;
+the UI does not acknowledge cancellation while a detached transport continues
+working. Durable Resume reuses the persisted run ID only after this cleanup.
 
 The former Pipelines control plane is not mounted. Interval schedules are
 `workflow_triggers` in `workflow_engine.db`; they start existing Workflow

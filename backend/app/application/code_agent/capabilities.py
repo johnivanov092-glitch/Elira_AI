@@ -126,9 +126,12 @@ _MODEL_UNCERTAINTY_RE = re.compile(
     re.IGNORECASE,
 )
 _EXTERNAL_FAILURE_TOOLS = frozenset({
-    "runtime_control", "web_fetch", "http_api", "browser", "ssh_run",
+    "web_fetch", "http_api", "browser", "ssh_run",
     "ssh_run_ps", "itops_mikrotik_inventory", "itops_network_inventory",
 })
+_EXTERNAL_RUNTIME_PREFIXES = (
+    "mcp_", "lsp_", "ssh_", "telegram_", "itops_", "plugin_",
+)
 _EXTERNAL_FAILURE_RE = re.compile(
     r"(?:mcp|ssh|http|api|routeros|mikrotik|protocol|version|unsupported|"
     r"not\s+found|unknown|connection|timeout|certificate|tls|jinja|template)",
@@ -209,12 +212,18 @@ def should_escalate_web_after_failure(
     tool_name: str,
     error: str,
     failure_count: int,
+    arguments: dict[str, object] | None = None,
 ) -> bool:
     """Reveal web evidence after an external or repeated failed attempt."""
-    if int(failure_count) >= 2:
-        return True
     name = str(tool_name or "").strip().lower()
     message = str(error or "")
+    if name == "runtime_control":
+        operation = str((arguments or {}).get("operation") or "").strip().lower()
+        # Local stores remain the source of truth for Library, Memory, Vault,
+        # Workflow and Project Corpus errors; Web cannot resolve those states.
+        return operation.startswith(_EXTERNAL_RUNTIME_PREFIXES)
+    if int(failure_count) >= 2:
+        return True
     return name in _EXTERNAL_FAILURE_TOOLS or bool(_EXTERNAL_FAILURE_RE.search(message))
 
 

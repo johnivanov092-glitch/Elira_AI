@@ -328,6 +328,26 @@ class ProviderDispatchTest(McpProviderTestBase):
         # Tag tells the SSE event which server this came from
         self.assertEqual(result["mcp_server"], "x")
 
+    def test_dispatch_registers_and_releases_run_cancel_callback(self) -> None:
+        cancel_token = ("run-1", 7)
+        with (
+            mock.patch.object(
+                self.provider_mod,
+                "register_run_cancel_callback",
+                return_value=cancel_token,
+            ) as register,
+            mock.patch.object(
+                self.provider_mod,
+                "unregister_run_cancel_callback",
+            ) as unregister,
+        ):
+            result = self.provider.dispatch("x__echo", {"text": "hello"})
+
+        self.assertTrue(result["ok"])
+        register.assert_called_once()
+        self.assertTrue(callable(register.call_args.args[0]))
+        unregister.assert_called_once_with(cancel_token)
+
     def test_dispatch_multiple_content_chunks_joined(self) -> None:
         result = self.provider.dispatch("x__search", {"q": "needle"})
         self.assertIn("hit 1", result["text"])

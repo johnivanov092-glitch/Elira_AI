@@ -59,6 +59,8 @@ from urllib.parse import unquote, urlsplit
 from app.application.code_agent.tools import (
     _kill_proc_tree,
     _new_process_group_kwargs,
+    register_run_process,
+    unregister_run_process,
 )
 
 
@@ -160,6 +162,7 @@ class LspClient:
         self._stderr_tail = ""
         self._stopped = False
         self._initialized = False
+        self._run_id = ""
 
     # ── lifecycle ────────────────────────────────────────────────
 
@@ -185,6 +188,8 @@ class LspClient:
             )
         except (OSError, ValueError) as exc:
             raise LspError(f"failed to spawn language server '{self._command}': {exc}") from exc
+
+        self._run_id = register_run_process(self._proc)
 
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
@@ -277,6 +282,8 @@ class LspClient:
                 pass
 
         self._wake_all_pending(LspError("language server stopped"))
+        unregister_run_process(self._run_id, proc)
+        self._run_id = ""
 
     # ── read-only operations ─────────────────────────────────────
 

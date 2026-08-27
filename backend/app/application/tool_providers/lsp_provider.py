@@ -33,11 +33,17 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
-from app.application.code_agent.tools import _resolve_safe, _truncate_middle
+from app.application.code_agent.tools import (
+    _resolve_safe,
+    _truncate_middle,
+    register_run_cancel_callback,
+    unregister_run_cancel_callback,
+)
 from app.application.tool_providers.lsp_client import LspClient, LspError
 from app.application.tool_providers.lsp_runtime import (
     _path_to_uri,
     live_clients,
+    stop_server,
 )
 
 
@@ -347,22 +353,26 @@ class LspToolProvider:
         if not uri:
             return {"text": f"ERROR: cannot form file URI for {path}"}
 
-        language_id = _language_id_for(target, client.language)
-        # Load a disk snapshot so the server analyses the current file. This
-        # writes nothing back — did_open is purely a read-side notification.
-        client.did_open(uri, language_id, text)
+        cancel_token = register_run_cancel_callback(lambda: stop_server(server_id))
+        try:
+            language_id = _language_id_for(target, client.language)
+            # Load a disk snapshot so the server analyses the current file. This
+            # writes nothing back — did_open is purely a read-side notification.
+            client.did_open(uri, language_id, text)
 
-        if tool_name == "lsp_diagnostics":
-            return self._do_diagnostics(client, server_id, uri, project_root)
-        if tool_name == "lsp_definition":
-            return self._do_locations(
-                client, server_id, uri, args, project_root, kind="definition"
-            )
-        if tool_name == "lsp_references":
-            return self._do_locations(
-                client, server_id, uri, args, project_root, kind="references"
-            )
-        return {"text": f"ERROR: unknown LSP tool '{tool_name}'"}
+            if tool_name == "lsp_diagnostics":
+                return self._do_diagnostics(client, server_id, uri, project_root)
+            if tool_name == "lsp_definition":
+                return self._do_locations(
+                    client, server_id, uri, args, project_root, kind="definition"
+                )
+            if tool_name == "lsp_references":
+                return self._do_locations(
+                    client, server_id, uri, args, project_root, kind="references"
+                )
+            return {"text": f"ERROR: unknown LSP tool '{tool_name}'"}
+        finally:
+            unregister_run_cancel_callback(cancel_token)
 
     # ── per-tool handlers ────────────────────────────────────────
 

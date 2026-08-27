@@ -60,6 +60,7 @@ class StopRegistrationRaceTest(unittest.TestCase):
     def tearDown(self):
         with _shell._LIVE_SHELL_LOCK:
             _shell._LIVE_SHELL_PROCS.clear()
+            _shell._RUN_CANCEL_CALLBACKS.clear()
             _shell._KILLED_RUN_IDS.clear()
 
     def test_process_registered_after_stop_is_killed_immediately(self):
@@ -86,6 +87,35 @@ class StopRegistrationRaceTest(unittest.TestCase):
         kill_tree.assert_not_called()
         with _shell._LIVE_SHELL_LOCK:
             self.assertIn(proc, _shell._LIVE_SHELL_PROCS["resumed-run"])
+
+    def test_registered_transport_callback_is_invoked_once_on_stop(self):
+        callback = mock.Mock()
+        context_token = _shell.set_current_run_id("callback-run")
+        try:
+            callback_token = _shell.register_run_cancel_callback(callback)
+        finally:
+            _shell.reset_current_run_id(context_token)
+
+        self.assertEqual(_shell.cancel_run_callbacks("callback-run"), 1)
+        callback.assert_called_once_with()
+        _shell.unregister_run_cancel_callback(callback_token)
+
+        with _shell._LIVE_SHELL_LOCK:
+            self.assertNotIn("callback-run", _shell._RUN_CANCEL_CALLBACKS)
+
+    def test_callback_registered_after_stop_is_invoked_immediately(self):
+        callback = mock.Mock()
+        _shell.kill_run_processes("late-callback-run")
+        context_token = _shell.set_current_run_id("late-callback-run")
+        try:
+            callback_token = _shell.register_run_cancel_callback(callback)
+        finally:
+            _shell.reset_current_run_id(context_token)
+
+        self.assertIsNone(callback_token)
+        callback.assert_called_once_with()
+        with _shell._LIVE_SHELL_LOCK:
+            self.assertNotIn("late-callback-run", _shell._RUN_CANCEL_CALLBACKS)
 
 
 class ParseServerUrlTest(unittest.TestCase):

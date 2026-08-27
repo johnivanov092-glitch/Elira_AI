@@ -45,6 +45,12 @@ from app.application.tool_providers.mcp_sanitize import (
     sanitize_prompt_messages as _sanitize_prompt_messages,
     sanitize_resource_contents as _sanitize_resource_contents,
 )
+from app.application.code_agent.tools._shell import (
+    _kill_proc_tree,
+    _new_process_group_kwargs,
+    register_run_process,
+    unregister_run_process,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +132,7 @@ class McpClient:
         self._next_id = 1
         self._id_lock = threading.Lock()
         self._stopped = False
+        self._run_id = ""
         # Cached after initialize so callers can introspect.
         self.server_info: dict[str, Any] = {}
         self.server_capabilities: dict[str, Any] = {}
@@ -163,11 +170,14 @@ class McpClient:
                 bufsize=1,  # line-buffered
                 env=full_env,
                 cwd=self._cwd,
+                **_new_process_group_kwargs(),
             )
         except FileNotFoundError:
             raise McpError(f"command not found: {self._command!r}")
         except OSError as exc:
             raise McpError(f"failed to spawn {self._command!r}: {exc}")
+
+        self._run_id = register_run_process(self._proc)
 
         self._reader = threading.Thread(
             target=self._read_loop,
@@ -273,11 +283,13 @@ class McpClient:
         try:
             proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_proc_tree(proc)
             try:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 pass
+        unregister_run_process(self._run_id, proc)
+        self._run_id = ""
         # Reader thread should exit on EOF; daemon=True so we don't
         # care if it takes a beat extra.
         # Wake up any pending requesters with an error.

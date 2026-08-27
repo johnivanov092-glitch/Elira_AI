@@ -46,7 +46,17 @@ def test_external_integration_failure_escalates_web_on_first_failure() -> None:
         tool_name="runtime_control",
         error="MCP server start failed: unsupported RouterOS version",
         failure_count=1,
+        arguments={"operation": "mcp_start"},
     ) is True
+
+
+def test_local_runtime_failure_does_not_replace_local_truth_with_web() -> None:
+    assert should_escalate_web_after_failure(
+        tool_name="runtime_control",
+        error="Library item not found",
+        failure_count=2,
+        arguments={"operation": "library_add"},
+    ) is False
 
 
 def test_repeated_local_tool_failure_escalates_web() -> None:

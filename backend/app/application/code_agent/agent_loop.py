@@ -527,10 +527,14 @@ def request_cancel(run_id: str) -> bool:
     # Kill live shell processes regardless of whether the event is registered,
     # so Stop works even on a run whose event was already cleaned up.
     try:
-        from app.application.code_agent.tools import kill_run_processes
+        from app.application.code_agent.tools import (
+            cancel_run_callbacks,
+            kill_run_processes,
+        )
         kill_run_processes(run_id)
+        cancel_run_callbacks(run_id)
     except Exception:
-        logger.warning("kill_run_processes failed for run %s", run_id, exc_info=True)
+        logger.warning("tool cancellation failed for run %s", run_id, exc_info=True)
     try:
         _stop_run_servers(run_id)
     except Exception:
@@ -2237,6 +2241,7 @@ def _stream_code_agent_core(
                 _evidence_web_activated = False
                 if _failed_call:
                     _failure_counts[name] = _failure_counts.get(name, 0) + 1
+                    _failure_counts["__all__"] = _failure_counts.get("__all__", 0) + 1
                     _failure_error = str(
                         tool_meta.get("error") or text_result.split("\n", 1)[0]
                     )[:500]
@@ -2245,7 +2250,8 @@ def _stream_code_agent_core(
                         and should_escalate_web_after_failure(
                             tool_name=name,
                             error=_failure_error,
-                            failure_count=_failure_counts[name],
+                            failure_count=_failure_counts["__all__"],
+                            arguments=parsed_args,
                         )
                     ):
                         active_capability_groups.add("web")

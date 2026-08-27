@@ -40,7 +40,8 @@
     "max_tool_calls": 4
   },
   "background_job_durable": {
-    "task": "Проверь управляемую конечную фоновую задачу. Только через run_server(action='start', kind='job') запусти точную команду python durable_probe.py. Получи PID и опрашивай run_server(action='logs', pid=...) до состояния completed. В ответе укажи DURABLE_LIVE_DONE и exit code. Не изменяй файл и не используй run_bash.",
+    "opt_in": true,
+    "task": "Запусти точную команду python durable_probe.py как управляемую конечную фоновую задачу, чтобы она переживала обычный цикл backend. Дождись её завершения, затем сообщи PID, DURABLE_LIVE_DONE и exit code. Файл не изменяй и не запускай команду как блокирующий foreground-процесс.",
     "files": {
       "durable_probe.py": "import time\nprint('DURABLE_LIVE_STARTED', flush=True)\ntime.sleep(2)\nprint('DURABLE_LIVE_DONE', flush=True)\n"
     },
@@ -84,6 +85,7 @@
     "max_tool_calls": 4
   },
   "science_web": {
+    "opt_in": true,
     "task": "Найди в интернете одну актуальную научную публикацию о квантовой запутанности и дай ссылку на источник.",
     "expected_profile": "Научный",
     "required_tools": ["web_search"],
@@ -96,6 +98,7 @@
     "max_tool_calls": 8
   },
   "medical_web": {
+    "opt_in": true,
     "task": "Найди актуальную официальную рекомендацию ВОЗ о симптомах пневмонии, кратко перескажи её и дай ссылку. Не ставь диагноз.",
     "expected_profile": "Медицина",
     "required_tools": ["web_search"],
@@ -109,6 +112,7 @@
   },
   "mcp_context7": {
     "suite": "integration",
+    "opt_in": true,
     "task": "Через настроенную интеграцию Context7 найди актуальную документацию FastAPI о BackgroundTasks и кратко перескажи её. После ответа останови использованную интеграцию.",
     "expected_profile": "Инженерный",
     "required_tools": ["runtime_control"],
@@ -185,7 +189,7 @@
   "workflow_stop": {
     "suite": "itops",
     "opt_in": true,
-    "task": "Запусти только через run_bash точную долгую команду python long_running_probe.py и дождись результата. Не используй run_server и не изменяй файл.",
+    "task": "Запусти точную долгую команду python long_running_probe.py как обычный foreground-процесс и дождись результата. Не превращай её в фоновую задачу и не изменяй файл.",
     "files": {
       "long_running_probe.py": "import time\nprint('LONG_PROBE_STARTED', flush=True)\ntime.sleep(300)\nprint('LONG_PROBE_SHOULD_NOT_FINISH', flush=True)\n"
     },
@@ -474,7 +478,7 @@
   "vault_restore": {
     "suite": "integration",
     "opt_in": true,
-    "task": "На изолированном eval-backend проверь portable vault: vault_status, затем vault_backup в абсолютный путь vault-backup.elira-vault внутри подключённого проекта, затем vault_restore из того же файла и снова vault_status. Не печатай секреты.",
+    "task": "На изолированном eval-backend проверь portable vault: узнай его состояние, создай резервную копию vault-backup.elira-vault внутри подключённого проекта, восстанови vault из этой копии и повторно проверь состояние. Не печатай секреты.",
     "required_tools": ["runtime_control"],
     "required_runtime_operations": ["vault_status", "vault_backup", "vault_restore"],
     "required_tool_sequence": [
@@ -487,7 +491,7 @@
   "workflow_resume": {
     "suite": "core",
     "opt_in": true,
-    "task": "Проверь Workflow Resume. Если resume_marker.txt отсутствует, создай его с текстом RESUME_MARKER_READY и запусти через run_bash команду python resume_probe.py. Если marker уже существует после Resume, не запускай долгую команду повторно: прочитай marker и ответь точным текстом WORKFLOW_RESUME_COMPLETE.",
+    "task": "Проверь Workflow Resume. Если resume_marker.txt отсутствует, создай его с текстом RESUME_MARKER_READY и запусти python resume_probe.py как обычный foreground-процесс. Если marker уже существует после Resume, не запускай долгую команду повторно: прочитай marker и ответь точным текстом WORKFLOW_RESUME_COMPLETE.",
     "files": {
       "resume_probe.py": "import time\nprint('RESUME_PROBE_STARTED', flush=True)\ntime.sleep(300)\n"
     },
@@ -502,7 +506,7 @@
   "workflow_input": {
     "suite": "core",
     "opt_in": true,
-    "task": "Проверь Workflow needs_input. Вызови workflow_request(kind='input', message='Введите canary', schema={type:'object', properties:{value:{type:'string'}}, required:['value'], additionalProperties:false}). После ответа назови полученное value.",
+    "task": "Попроси меня через карточку Workflow ввести строковое значение canary. После моего ответа назови полученное value.",
     "required_tools": ["workflow_request"],
     "workflow_responses": [
       {"kind": "input", "message_contains": "canary", "values": {"value": "WORKFLOW_INPUT_731"}}
@@ -516,7 +520,7 @@
   "workflow_secret": {
     "suite": "core",
     "opt_in": true,
-    "task": "Проверь Workflow needs_secret без получения plaintext. Вызови workflow_request(kind='secret', message='Нужен тестовый credential'). После ответа подтверди только то, что непрозрачный secret_ref получен; не печатай его значение.",
+    "task": "Попроси меня через защищённую карточку Workflow предоставить тестовый credential без передачи plaintext в чат. После ответа подтверди только получение непрозрачного secret_ref и не печатай его значение.",
     "required_tools": ["workflow_request"],
     "workflow_responses": [
       {"kind": "secret", "message_contains": "credential", "values": {"secret_ref": "sref_eval_canary"}}
@@ -531,7 +535,7 @@
   "workflow_elevation_cancel": {
     "suite": "core",
     "opt_in": true,
-    "task": "Проверь создание Workflow elevation request. Вызови workflow_request(kind='elevation', message='Тест UAC', program='cmd.exe', args=['/c','exit','0']). Не запускай команду обычным shell.",
+    "task": "Запроси через Workflow UI повышение прав для безопасной тестовой команды cmd.exe /c exit 0. Не запускай её обычным shell; тестовая карточка UAC будет отклонена пользователем.",
     "forbidden_tools": ["run_bash"],
     "workflow_responses": [
       {"kind": "elevation", "message_contains": "UAC", "action": "cancel", "values": {}}

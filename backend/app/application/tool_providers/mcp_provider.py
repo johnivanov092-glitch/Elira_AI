@@ -35,8 +35,16 @@ from collections.abc import Collection
 from typing import Any
 
 from app.application.agent_kernel.impact_policy import tool_call_is_change
+from app.application.code_agent.tools._shell import (
+    register_run_cancel_callback,
+    unregister_run_cancel_callback,
+)
 from app.application.tool_providers.mcp_client import McpError
-from app.application.tool_providers.mcp_runtime import get_live_client, list_servers
+from app.application.tool_providers.mcp_runtime import (
+    get_live_client,
+    list_servers,
+    stop_server,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -397,6 +405,9 @@ class McpToolProvider:
                 "error": "mcp_tool_not_found",
                 "text": f"ERROR: tool '{tool_name}' not found on server '{self._server_id}'",
             }
+        cancel_token = register_run_cancel_callback(
+            lambda: stop_server(self._server_id)
+        )
         try:
             safe_args = dict(args or {})
             backup_warning = ""
@@ -440,6 +451,8 @@ class McpToolProvider:
         except Exception as exc:
             logger.exception("mcp dispatch %s failed", tool_name)
             return {"ok": False, "error": "mcp_call_failed", "text": f"ERROR: {exc}"}
+        finally:
+            unregister_run_cancel_callback(cancel_token)
         meta = _flatten_mcp_result(raw_result)
         if backup_warning:
             meta["text"] = f"{backup_warning}\n{meta.get('text', '')}".rstrip()
