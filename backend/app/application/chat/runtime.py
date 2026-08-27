@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.application.code_agent.agent_loop import run_code_agent
-from app.application.library.runtime import build_library_context
+from app.application.library.runtime import inject_library_context
 from app.core.data_files import data_subdir
 
 
@@ -35,18 +35,7 @@ def _normalise_history(history: list[Any] | None) -> list[dict[str, str]]:
 def _with_library_context(message: str, enabled: bool) -> str:
     if not enabled:
         return message
-    try:
-        ctx = build_library_context()
-    except Exception:
-        return message
-    block = str(ctx.get("context") or "").strip()
-    if not block:
-        return message
-    used = ", ".join(str(name) for name in (ctx.get("used_files") or [])) or "attachments"
-    return (
-        f"Context from attached library files ({used}). Use it only if relevant:\n\n"
-        f"{block}\n\n----- USER REQUEST -----\n{message}"
-    )
+    return inject_library_context(message, query=message)
 
 
 def _timeline_from_code_agent(result: dict[str, Any]) -> list[dict[str, Any]]:

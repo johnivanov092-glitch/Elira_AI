@@ -7,6 +7,7 @@ from app.application.agent_kernel.impact_policy import (
     decide_approval,
     evidence_for_tool_call,
     shell_command_is_high_impact,
+    tool_call_is_change,
 )
 from app.application.agent_kernel.executor import ToolExecutionRequest, permission_mode_auto_approves
 
@@ -25,6 +26,11 @@ def test_read_only_call_never_needs_workflow_approval() -> None:
     unknown = SafetyEvidence()
     for mode in ("ask", "accept_edits", "bypass"):
         assert decide_approval(mode, "local", unknown, is_change=False) == AUTO
+
+
+def test_project_corpus_status_is_read_only_but_indexing_is_a_change() -> None:
+    assert not tool_call_is_change("runtime_control", {"operation": "project_status"})
+    assert tool_call_is_change("runtime_control", {"operation": "project_index"})
 
 
 def test_bypass_does_not_depend_on_registry_or_classifier() -> None:

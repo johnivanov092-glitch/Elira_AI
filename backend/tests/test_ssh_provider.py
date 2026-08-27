@@ -169,7 +169,7 @@ class SshExecutionTest(SshProviderTestBase):
         self.assertEqual(result["exit_code"], 3)
         self.assertIn("boom", result["text"])
 
-    def test_timeout_argument_is_compatibility_only(self) -> None:
+    def test_timeout_argument_limits_only_connection_establishment(self) -> None:
         with patch.object(
             self.ssh,
             "run_registered_process",
@@ -183,6 +183,7 @@ class SshExecutionTest(SshProviderTestBase):
 
         self.assertTrue(result["ok"])
         runner.assert_called_once()
+        self.assertIn("ConnectTimeout=1", runner.call_args.args[0])
 
 
 class SshProviderIntegrationTest(SshProviderTestBase):

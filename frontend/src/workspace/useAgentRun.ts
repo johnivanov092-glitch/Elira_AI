@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { fetchContextProfile, type CodeAgentMode, type PermissionMode, type ReasoningEffort } from "../api/codeAgent";
 import type { ResourceAttachment } from "../api/resources";
-import { getActiveProfile } from "../api/profiles";
 import * as bg from "./backgroundRuns";
 import type { Turn } from "./types";
 
@@ -25,23 +24,6 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
   );
   const { turns, running, taskLedger, contextUsage } = snapshot;
 
-  // Active UI persona profile (the `agent_profile` global setting), held in a
-  // ref so `send` can read it synchronously. Refreshed on mount and whenever the
-  // window regains focus, so a switch made in the Composer's ProfilePicker is
-  // picked up before the next send. Empty string → backend persona default.
-  const profileRef = useRef<string>("");
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      void getActiveProfile().then(({ active }) => {
-        if (!cancelled) profileRef.current = active;
-      }).catch(() => {});
-    };
-    refresh();
-    window.addEventListener("focus", refresh);
-    return () => { cancelled = true; window.removeEventListener("focus", refresh); };
-  }, []);
-
   // Seed the composer's context meter at 0% before the first turn, using the
   // live ctx_size from the backend. Re-seeds on model change while still unseeded
   // and not running. Applied only to the currently-displayed session.
@@ -55,8 +37,7 @@ export function useAgentRun(sessionId: string, projectRoot: string, model: strin
   }, [model, sessionId]);
 
   const send = useCallback((text: string, mode: CodeAgentMode, resources?: ResourceAttachment[], permissionMode?: PermissionMode, reasoningEffort?: ReasoningEffort) => {
-    const profileName = profileRef.current || undefined;
-    bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName, permissionMode, reasoningEffort });
+    bg.send({ sessionId, text, mode, projectRoot, model, resources, profileName: "Авто", permissionMode, reasoningEffort });
   }, [sessionId, projectRoot, model]);
 
   // Multi-agent run: streams per-step progress from the pipeline endpoint via

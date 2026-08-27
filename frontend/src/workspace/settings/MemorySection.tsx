@@ -1,14 +1,15 @@
 import { FolderSearch, Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import {
-  addRagItem, deleteRagItem, getRagStats, indexProject, listRagItems,
-  type RagListItem, type RagStats,
+  addRagItem, deleteRagItem, getProjectCorpusStatus, getRagStats, indexProject, listRagItems,
+  type ProjectCorpusStatus, type RagListItem, type RagStats,
 } from "../../api/codeAgent";
 import { cn } from "../../ui/cn";
 import { Loading, Note, Wrap } from "./_shared";
 
 export function MemorySection({ project }: { project: string }) {
   const [stats, setStats] = useState<RagStats | null>(null);
+  const [corpus, setCorpus] = useState<ProjectCorpusStatus | null>(null);
   const [items, setItems] = useState<RagListItem[] | null>(null);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -17,7 +18,9 @@ export function MemorySection({ project }: { project: string }) {
   const reload = useCallback(() => {
     getRagStats().then(setStats).catch(() => setStats(null));
     listRagItems(100).then((r) => setItems(r.items ?? [])).catch(() => setItems([]));
-  }, []);
+    if (project) getProjectCorpusStatus(project).then(setCorpus).catch(() => setCorpus(null));
+    else setCorpus(null);
+  }, [project]);
   useEffect(() => { reload(); }, [reload]);
 
   async function add() {
@@ -35,7 +38,14 @@ export function MemorySection({ project }: { project: string }) {
     setMsg("Индексирую проект…");
     try {
       const r = await indexProject({ projectRoot: project });
-      setMsg(r.ok ? `Готово: ${r.files_processed ?? 0} файлов, ${r.chunks_indexed ?? 0} фрагментов.` : (r.error || "Ошибка индексации."));
+      if (r.ok) {
+        const changed = r.files_indexed ?? 0;
+        const unchanged = r.files_unchanged ?? 0;
+        const resume = r.resume_required ? " Нажми ещё раз, чтобы продолжить." : "";
+        setMsg(`Готово: ${changed} обновлено, ${unchanged} без изменений, ${r.chunks_created ?? 0} новых фрагментов.${resume}`);
+      } else {
+        setMsg(r.error || "Ошибка индексации.");
+      }
       reload();
     } catch { setMsg("Ошибка индексации."); } finally { setBusy(false); }
   }
@@ -58,6 +68,13 @@ export function MemorySection({ project }: { project: string }) {
           {busy ? <Loader2 size={13} className="animate-spin" /> : <FolderSearch size={13} />} Индексировать проект
         </button>
       </div>
+
+      {corpus && corpus.files > 0 && (
+        <div className="mb-3 rounded-lg border border-line px-3 py-2 text-[11.5px] text-t2">
+          Project Corpus: {corpus.files} файлов · {corpus.chunks} фрагментов · {corpus.repositories} репозиториев
+          {(corpus.by_status.failed ?? 0) > 0 ? ` · ошибок: ${corpus.by_status.failed}` : ""}
+        </div>
+      )}
 
       <div className="mb-3 flex gap-2">
         <input

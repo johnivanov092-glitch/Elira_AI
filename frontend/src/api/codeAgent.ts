@@ -60,6 +60,13 @@ export type CodeAgentToolCall = {
   port?: number;
   pid?: number;
   server_started?: boolean;
+  /** run_server(kind="job"): durable lifecycle state and log location. */
+  action?: "start" | "list" | "logs" | "stop" | "stop_all";
+  job_id?: string;
+  kind?: "server" | "job";
+  status?: "running" | "completed" | "failed" | "cancelled";
+  log_path?: string;
+  recovered?: boolean;
   /** The RUNTIME made this call itself (auto-verifier closure pass), not the model. */
   auto_verifier?: boolean;
 };
@@ -103,8 +110,8 @@ export type CodeAgentRunArgs = {
   /** Session id retained for wire compatibility; durable resources are not
    *  authorized or scoped by a transient chat/run binding. */
   sessionId?: string;
-  /** Persona mode returned by /api/profiles; "Авто" lets Elira pick
-   *  per message, a concrete mode locks it. Mirrors chat's profile_name field. */
+  /** Compatibility field. The UI always sends "Авто"; backend domain and
+   *  evidence routers select internal policies per request. */
   profileName?: string;
   /** Approval policy for this run (composer permission selector). Omitted → the
    *  backend default "ask". See {@link PermissionMode}. */
@@ -615,10 +622,34 @@ export type IndexProjectArgs = {
 export type IndexProjectResult = {
   ok: boolean;
   files_processed?: number;
+  files_scanned?: number;
+  files_indexed?: number;
+  files_unchanged?: number;
+  files_failed?: number;
   chunks_indexed?: number;
+  chunks_created?: number;
+  chunks_reused?: number;
   failed_chunks?: number;
+  deleted_chunks?: number;
+  stale_files_removed?: number;
+  repositories?: number;
+  resume_required?: boolean;
+  complete?: boolean;
   patterns?: string[];
   errors?: string[];
+  error?: string;
+};
+
+export type ProjectCorpusStatus = {
+  ok: boolean;
+  project_root: string;
+  project_scope: string;
+  files: number;
+  chunks: number;
+  repositories: number;
+  indexed_at?: string | null;
+  by_status: Record<string, number>;
+  by_language: Record<string, number>;
   error?: string;
 };
 
@@ -632,6 +663,11 @@ export async function indexProject({
     body: { project_root: projectRoot, patterns, replace },
     timeoutMs: 0,
   });
+}
+
+export async function getProjectCorpusStatus(projectRoot: string): Promise<ProjectCorpusStatus> {
+  const qs = new URLSearchParams({ project_root: projectRoot }).toString();
+  return request<ProjectCorpusStatus>(`/api/code-agent/corpus/status?${qs}`);
 }
 
 export type RecallItem = {

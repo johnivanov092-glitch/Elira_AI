@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -10,6 +11,7 @@ from app.application.code_agent.capabilities import (
     CORE_BUILTIN_TOOLS,
     PROFILE_CAPABILITY_GROUPS,
     builtin_tools_for_groups,
+    route_request_capabilities,
 )
 from app.application.code_agent.agent_loop import stream_code_agent
 from app.application.code_agent.tool_schemas import build_tool_schemas
@@ -71,7 +73,7 @@ def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
         return next(responses)
 
     events = list(stream_code_agent(
-        user_message="Найди свежую документацию в интернете",
+        user_message="Выполни локальную задачу",
         project_root=tmp_path,
         run_id="capability-load-web-next-turn",
         chat_fn=fake_chat,
@@ -111,6 +113,60 @@ def test_model_loads_web_group_for_next_turn(tmp_path) -> None:
 
     assert {"web_search", "web_fetch", "browser"} <= resumed_tool_names[0]
     assert "computer" not in resumed_tool_names[0]
+
+
+def test_planner_preloads_selected_group_before_first_execution_turn(
+    tmp_path, monkeypatch,
+) -> None:
+    monkeypatch.setenv("ELIRA_AGENT_RUNS_DIR", str(tmp_path / "runs"))
+    seen_execution_tools: list[set[str]] = []
+    planner_reply = {
+        "goal": "Создать и проверить страницу",
+        "current_state": "Проект существует",
+        "ordered_steps": ["Изменить страницу", "Проверить её в browser"],
+        "acceptance_checks": ["browser(actual_url) показывает страницу"],
+        "risks": [],
+        "capability_groups": ["web"],
+        "current_step": 1,
+    }
+    responses = iter([
+        {"message": {"content": json.dumps(planner_reply), "tool_calls": []}},
+        {"message": {"content": "Готово.", "tool_calls": []}},
+    ])
+
+    def fake_chat(**kwargs):
+        if kwargs.get("tools"):
+            seen_execution_tools.append(
+                _tool_names_from_schemas(kwargs.get("tools") or [])
+            )
+        return next(responses)
+
+    events = list(stream_code_agent(
+        user_message=(
+            "Цель: создать страницу.\n"
+            "Критерии готовности:\n"
+            "- browser открывает страницу и показывает текст `Готово`"
+        ),
+        project_root=tmp_path,
+        run_id="planner-preloads-web",
+        chat_fn=fake_chat,
+        auto_remember=False,
+        permission_mode="ask",
+        reasoning_effort="medium",
+    ))
+
+    assert seen_execution_tools
+    assert {"browser", "screenshot", "web_search"} <= seen_execution_tools[0]
+    activation = next(
+        event for event in events
+        if event.get("type") == "runtime_activation_changed"
+    )
+    assert activation["source"] == "planner"
+    assert activation["runtime_activation"]["capability_groups"] == ["web"]
+    assert not any(
+        event.get("type") == "tool_call" and event.get("tool") == "capability_load"
+        for event in events
+    )
 
 
 def test_group_loading_does_not_expose_unrelated_groups(tmp_path) -> None:
@@ -187,6 +243,9 @@ def test_memory_tool_schemas_distinguish_project_rag_from_user_memory() -> None:
     assert "not long-term user memory" in recall_description
     assert "memory_search" in runtime_description
     assert "memory_list" in runtime_description
+    operations = schemas["runtime_control"]["parameters"]["properties"]["operation"]["enum"]
+    assert "project_index" in operations
+    assert "project_status" in operations
 
 
 def test_unknown_capability_group_fails_without_changing_visibility() -> None:
@@ -196,7 +255,7 @@ def test_unknown_capability_group_fails_without_changing_visibility() -> None:
     assert result["error"] == "unknown_capability_group"
 
 
-def test_auto_routes_every_profile_to_its_starter_tools(tmp_path) -> None:
+def test_auto_routes_every_domain_to_relevant_starter_tools(tmp_path) -> None:
     route_cases = (
         ("Мне тревожно, поговори со мной", "Личный"),
         ("Объясни, почему небо голубое простыми словами", "Баланс"),
@@ -221,6 +280,10 @@ def test_auto_routes_every_profile_to_its_starter_tools(tmp_path) -> None:
 
         effective_profile = resolve_persona_mode(AUTO_PROFILE, message)
         assert effective_profile == expected_profile
+        request_route = route_request_capabilities(
+            message,
+            domain_policy=effective_profile,
+        )
         events = list(stream_code_agent(
             user_message=message,
             project_root=tmp_path,
@@ -237,21 +300,74 @@ def test_auto_routes_every_profile_to_its_starter_tools(tmp_path) -> None:
         assert (
             "itops_network_inventory" in seen_tool_names[0]
         ) is (expected_profile == "Инфраструктура")
+        assert (
+            "ssh_run" in seen_tool_names[0]
+        ) is (expected_profile == "Инфраструктура")
         assert "runtime_control" in seen_tool_names[0]
         assert "Не запускай все MCP автоматически" in seen_system_prompts[0]
         assert "не запускай последовательные `Test-NetConnection`" in seen_system_prompts[0]
         run_started = next(event for event in events if event["type"] == "run_started")
         assert run_started["profile_name"] == expected_profile
+        assert run_started["ui_profile_name"] == "Elira / Auto"
+        assert expected_profile in run_started["domain_policies"]
         assert run_started["runtime_activation"]["capability_groups"] == sorted(
-            PROFILE_CAPABILITY_GROUPS[expected_profile]
+            request_route.capability_groups
         )
         assert run_started["runtime_activation"]["itops"] is (
             expected_profile == "Инфраструктура"
         )
 
 
-def test_explicit_profile_stays_locked_and_auto_followup_keeps_prior_route() -> None:
-    assert resolve_persona_mode("Медицина", "Исправь баг в коде") == "Медицина"
+def test_auto_routes_an_explicit_absolute_filesystem_path_to_engineering() -> None:
+    assert resolve_persona_mode(
+        AUTO_PROFILE,
+        r"Проект не подключён. Прочитай D:\Data\sample\README.md по абсолютному пути.",
+    ) == "Инженерный"
+
+
+def test_auto_routes_explicit_ssh_commands_to_infrastructure() -> None:
+    assert resolve_persona_mode(
+        AUTO_PROFILE,
+        "Подключись по SSH к серверу и выполни `uname -s`.",
+    ) == "Инфраструктура"
+    assert resolve_persona_mode(
+        AUTO_PROFILE,
+        "Подключись к Windows SSH-хосту и выполни `Write-Output OK`.",
+    ) == "Инфраструктура"
+
+
+def test_auto_keeps_ssh_client_code_work_in_engineering() -> None:
+    assert resolve_persona_mode(
+        AUTO_PROFILE,
+        "Исправь баг в Python SSH-клиенте и добавь тест.",
+    ) == "Инженерный"
+
+
+def test_auto_routes_developer_integrations_to_engineering() -> None:
+    for message in (
+        "Проверь подключение открытого редактора Unity.",
+        "Получи статус Blender через интеграцию.",
+        "Найди репозиторий через GitHub.",
+    ):
+        assert resolve_persona_mode(AUTO_PROFILE, message) == "Инженерный"
+
+
+def test_auto_routes_a_user_memory_request_to_personal() -> None:
+    assert resolve_persona_mode(
+        AUTO_PROFILE,
+        "Сохрани важный факт в долговременную память и затем вспомни его.",
+    ) == "Личный"
+
+
+def test_auto_routes_an_explicit_scientific_research_request_to_science() -> None:
+    assert resolve_persona_mode(
+        AUTO_PROFILE,
+        "Проведи научную проверку страницы https://example.com и приведи источник.",
+    ) == "Научный"
+
+
+def test_legacy_explicit_profile_no_longer_locks_auto_route() -> None:
+    assert resolve_persona_mode("Медицина", "Исправь баг в коде") == "Инженерный"
     history = [
         {"role": "user", "content": "Просканируй TCP-порты в локальной сети"},
         {"role": "assistant", "content": "Начинаю диагностику."},

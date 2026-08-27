@@ -221,7 +221,7 @@ def tool_call_is_change(tool_name: str, args: dict[str, Any] | None) -> bool:
             "workflow_list", "workflow_runs", "workflow_trigger_list",
             "workflow_scheduler_status", "memory_stats", "memory_profiles",
             "memory_list", "memory_search", "memory_recall", "library_list",
-            "library_search", "library_context",
+            "library_search", "library_context", "project_status",
         }
     parts = _creative_mcp_parts(tool_name)
     if parts is None:

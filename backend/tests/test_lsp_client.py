@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -30,10 +31,38 @@ from app.application.tool_providers.lsp_client import (  # noqa: E402
     _frame,
     _read_frame,
 )
+from app.application.tool_providers.lsp_runtime import _resolve_server_command  # noqa: E402
 
 
 FAKE_SERVER = Path(__file__).parent / "_lsp_fake_server.py"
 FAKE_URI = "file:///fake.py"
+
+
+class CommandResolutionTest(unittest.TestCase):
+    def test_npx_pyright_form_uses_backend_venv_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = Path(tmp)
+            python_executable = scripts / "python.exe"
+            python_executable.touch()
+            launcher = scripts / "pyright-langserver.exe"
+            launcher.touch()
+            with (
+                patch(
+                    "app.application.tool_providers.lsp_runtime.sys.executable",
+                    str(python_executable),
+                ),
+                patch(
+                    "app.application.tool_providers.lsp_runtime.shutil.which",
+                    return_value=None,
+                ),
+            ):
+                command, args = _resolve_server_command(
+                    "npx",
+                    ["pyright-langserver", "--stdio"],
+                )
+
+        self.assertEqual(command, str(launcher))
+        self.assertEqual(args, ["--stdio"])
 
 
 def _client(
@@ -43,6 +72,8 @@ def _client(
     no_diagnostics: bool = False,
     big_references: bool = False,
     split_frame: bool = False,
+    request_configuration: bool = False,
+    empty_then_diagnostic: bool = False,
     cwd: str | None = None,
 ) -> LspClient:
     env = dict(os.environ)
@@ -56,6 +87,10 @@ def _client(
         env["FAKE_LSP_BIG_REFERENCES"] = "1"
     if split_frame:
         env["FAKE_LSP_SPLIT_FRAME"] = "1"
+    if request_configuration:
+        env["FAKE_LSP_REQUEST_CONFIGURATION"] = "1"
+    if empty_then_diagnostic:
+        env["FAKE_LSP_EMPTY_THEN_DIAGNOSTIC"] = "1"
     return LspClient(
         language="python",
         command=sys.executable,
@@ -151,6 +186,23 @@ class SplitFrameTest(unittest.TestCase):
 
 
 class DiagnosticsTest(unittest.TestCase):
+    def test_windows_file_uri_variants_share_one_diagnostics_cache_key(self) -> None:
+        client = LspClient(language="python", command="unused")
+        requested = "file:///D:/Work/project/probe.py"
+        client._handle_message({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": "file:///d%3A/Work/project/probe.py",
+                "diagnostics": [{"message": "type error"}],
+            },
+        })
+
+        self.assertEqual(
+            client.get_diagnostics(requested, settle=0),
+            [{"message": "type error"}],
+        )
+
     def test_did_open_pushes_diagnostics(self) -> None:
         client = _client()
         try:
@@ -186,6 +238,41 @@ class DiagnosticsTest(unittest.TestCase):
             client.did_open(FAKE_URI, "python", "x = 1\n")
             diags = client.get_diagnostics(FAKE_URI, settle=0.3)
             self.assertIsNone(diags)
+        finally:
+            client.stop()
+
+    def test_server_configuration_request_is_answered_before_diagnostics(self) -> None:
+        client = _client(request_configuration=True)
+        try:
+            client.start()
+            client.did_open(FAKE_URI, "python", "x = 1\n")
+            diags = client.get_diagnostics(FAKE_URI, settle=5.0)
+            self.assertIsNotNone(diags)
+            self.assertEqual(len(diags or []), 2)
+        finally:
+            client.stop()
+
+    def test_reopening_unchanged_document_preserves_cached_diagnostics(self) -> None:
+        client = _client()
+        try:
+            client.start()
+            client.did_open(FAKE_URI, "python", "x = 1\n")
+            first = client.get_diagnostics(FAKE_URI, settle=5.0)
+            self.assertIsNotNone(first)
+            with patch.object(client, "_notify", wraps=client._notify) as notify:
+                client.did_open(FAKE_URI, "python", "x = 1\n")
+            self.assertEqual(notify.call_count, 0)
+            self.assertEqual(client.get_diagnostics(FAKE_URI, settle=0.1), first)
+        finally:
+            client.stop()
+
+    def test_empty_warmup_push_does_not_hide_later_diagnostics(self) -> None:
+        client = _client(empty_then_diagnostic=True)
+        try:
+            client.start()
+            client.did_open(FAKE_URI, "python", "x = 1\n")
+            diags = client.get_diagnostics(FAKE_URI, settle=1.0)
+            self.assertEqual(len(diags or []), 2)
         finally:
             client.stop()
 

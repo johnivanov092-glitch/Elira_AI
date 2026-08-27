@@ -180,13 +180,24 @@ def log_message(chat_id: int, direction: str, text: str) -> None:
         conn.close()
 
 
-def get_telegram_log(limit: int = 50) -> dict[str, Any]:
+def get_telegram_log(
+    limit: int = 50,
+    chat_id: int | None = None,
+) -> dict[str, Any]:
     conn = connect_telegram_db()
     try:
-        rows = conn.execute(
-            "SELECT * FROM telegram_log ORDER BY created_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        bounded_limit = min(max(1, int(limit)), 500)
+        if chat_id is None:
+            rows = conn.execute(
+                "SELECT * FROM telegram_log ORDER BY created_at DESC LIMIT ?",
+                (bounded_limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM telegram_log WHERE chat_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (int(chat_id), bounded_limit),
+            ).fetchall()
         return {"ok": True, "log": [dict(row) for row in rows], "count": len(rows)}
     finally:
         conn.close()

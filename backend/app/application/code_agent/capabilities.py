@@ -7,6 +7,8 @@ been requested for the current run.
 from __future__ import annotations
 
 from collections.abc import Collection
+from dataclasses import dataclass
+import re
 
 
 CORE_BUILTIN_TOOL_ORDER: tuple[str, ...] = (
@@ -63,31 +65,172 @@ ALL_BUILTIN_TOOLS = frozenset().union(
 )
 
 
-# The effective persona selected by Auto (or explicitly locked in the UI)
-# determines only the useful starter schemas. This is prompt composition, not
-# authorization: capability_load/runtime_control can still add another group
-# when the concrete task crosses profile boundaries.
-PROFILE_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
+# Internal domain policies may suggest useful starter schemas. They are not UI
+# profiles and never authorize or prohibit a tool. Request evidence signals
+# below may add multiple groups when a task crosses domains.
+DOMAIN_CAPABILITY_GROUPS: dict[str, frozenset[str]] = {
     "Личный": frozenset({"memory"}),
     "Баланс": frozenset(),
     "Инженерный": frozenset(),  # project/code tools are already in the core
-    "Деловой": frozenset({"web", "resources", "data"}),
-    "Инфраструктура": frozenset(),  # typed IT Ops is a provider, see below
+    "Деловой": frozenset(),
+    "Инфраструктура": frozenset({"web"}),
     "Научный": frozenset({"web", "data"}),
-    "Медицина": frozenset({"web", "resources"}),
+    "Медицина": frozenset({"web"}),
 }
 
-PROFILE_ITOPS_DEFAULTS = frozenset({"Инфраструктура"})
+# Compatibility alias for older imports/tests. The values now describe hidden
+# domain policies, not selectable user profiles.
+PROFILE_CAPABILITY_GROUPS = DOMAIN_CAPABILITY_GROUPS
+
+
+_DOWNLOAD_REQUEST_RE = re.compile(
+    r"(?:скач\w*|download|дай\s+(?:мне\s+)?(?:ссылк\w*|файл)|"
+    r"отдай\s+(?:мне\s+)?файл|файл\w*\s+для\s+скач\w*)",
+    re.IGNORECASE,
+)
+_RESOURCE_REQUEST_RE = re.compile(
+    r"(?:\b(?:pdf|docx|xlsx|pptx|csv|zip)\b|документ\w*|презентац\w*|"
+    r"таблиц\w*|архив\w*|изображени\w*|картинк\w*|скриншот\w*|ocr|"
+    r"распозна\w*\s+текст|сгенер\w*\s+файл)",
+    re.IGNORECASE,
+)
+_DATA_REQUEST_RE = re.compile(
+    r"(?:\b(?:csv|xlsx|sql|sqlite|regex|jsonl)\b|таблиц\w*|датасет\w*|"
+    r"конверт\w*|зашифр\w*|распак\w*|архив\w*)",
+    re.IGNORECASE,
+)
+_WEB_EVIDENCE_RE = re.compile(
+    r"(?:https?://|\bwww\.|интернет\w*|веб[ -]?поиск|web\s*search|"
+    r"документац\w*|официальн\w*\s+сайт|актуальн\w*|последн\w*\s+верси|"
+    r"сегодня|сейчас\s+(?:стоит|действует|работает)|совместим\w*|"
+    r"\b(?:cve|advisory|release notes|latest)\b|"
+    r"незнаком\w*|не\s+понима\w*|не\s+получа\w*|неизвестн\w*\s+ошиб)",
+    re.IGNORECASE,
+)
+_EXTERNAL_TECH_RE = re.compile(
+    r"(?:\b(?:mcp|routeros|mikromcp|mikrotik|openapi|sdk|api|oauth|tls|"
+    r"windows|linux|qwen|llama\.cpp|fastapi|react|vite|npm|pip)\b|"
+    r"верси\w*|протокол\w*|интеграц\w*)",
+    re.IGNORECASE,
+)
+_FINANCE_SECURITY_RE = re.compile(
+    r"(?:\b(?:cve|cvss|exploit|vulnerabilit|security|advisory|zero[ -]?day|"
+    r"курс|валют|акци|облигац|крипт|биткоин|финанс|инвестиц|процентн\w*\s+ставк)\b|"
+    r"уязвим\w*|безопасност\w*|бирж\w*|котировк\w*)",
+    re.IGNORECASE,
+)
+_MODEL_UNCERTAINTY_RE = re.compile(
+    r"(?:\b(?:не\s+знаю|не\s+уверен|нет\s+данных|неизвестно|"
+    r"не\s+получилось|не\s+удалось|не\s+могу\s+определить|"
+    r"информация\s+не\s+найдена|cannot\s+determine|unknown|no\s+data)\b)",
+    re.IGNORECASE,
+)
+_EXTERNAL_FAILURE_TOOLS = frozenset({
+    "runtime_control", "web_fetch", "http_api", "browser", "ssh_run",
+    "ssh_run_ps", "itops_mikrotik_inventory", "itops_network_inventory",
+})
+_EXTERNAL_FAILURE_RE = re.compile(
+    r"(?:mcp|ssh|http|api|routeros|mikrotik|protocol|version|unsupported|"
+    r"not\s+found|unknown|connection|timeout|certificate|tls|jinja|template)",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class RequestCapabilityRoute:
+    """Deterministic preflight result for one Elira request."""
+
+    domain_policies: tuple[str, ...]
+    capability_groups: frozenset[str]
+    include_itops: bool
+    include_ssh: bool
+    download_requested: bool
+    evidence_reasons: tuple[str, ...]
+
+
+def route_request_capabilities(
+    user_message: str,
+    *,
+    domain_policy: str = "Баланс",
+    conversation_history: list[dict[str, object]] | None = None,
+) -> RequestCapabilityRoute:
+    """Select starter schemas from the task, never from a UI profile lock.
+
+    The model can still load more groups later. Web is activated up-front when
+    the task needs current/external evidence, and after failures through
+    ``should_escalate_web_after_failure``.
+    """
+    from app.application.chat.local_chat import classify_domain_policies
+
+    text = str(user_message or "")
+    domains = list(classify_domain_policies(text, conversation_history))
+    if domain_policy and domain_policy not in domains and domain_policy != "Баланс":
+        domains.append(domain_policy)
+
+    groups: set[str] = set()
+    for domain in domains:
+        groups.update(DOMAIN_CAPABILITY_GROUPS.get(domain, ()))
+
+    download_requested = bool(_DOWNLOAD_REQUEST_RE.search(text))
+    if download_requested or _RESOURCE_REQUEST_RE.search(text):
+        groups.add("resources")
+    if _DATA_REQUEST_RE.search(text):
+        groups.add("data")
+
+    evidence_reasons: list[str] = []
+    if _WEB_EVIDENCE_RE.search(text):
+        evidence_reasons.append("request_requires_current_or_external_evidence")
+    if _EXTERNAL_TECH_RE.search(text) and re.search(
+        r"(?:совместим|верси|ошиб|не\s+работ|не\s+получ|как\s+подключ|настро)",
+        text,
+        re.IGNORECASE,
+    ):
+        evidence_reasons.append("external_technology_contract")
+    if _FINANCE_SECURITY_RE.search(text):
+        evidence_reasons.append("finance_or_security_requires_current_sources")
+    if any(domain in {"Инфраструктура", "Медицина", "Научный"} for domain in domains):
+        evidence_reasons.append("domain_requires_sources")
+    if evidence_reasons:
+        groups.add("web")
+
+    include_itops = "Инфраструктура" in domains
+    return RequestCapabilityRoute(
+        domain_policies=tuple(domains),
+        capability_groups=normalize_capability_groups(groups),
+        include_itops=include_itops,
+        include_ssh=include_itops,
+        download_requested=download_requested,
+        evidence_reasons=tuple(dict.fromkeys(evidence_reasons)),
+    )
+
+
+def should_escalate_web_after_failure(
+    *,
+    tool_name: str,
+    error: str,
+    failure_count: int,
+) -> bool:
+    """Reveal web evidence after an external or repeated failed attempt."""
+    if int(failure_count) >= 2:
+        return True
+    name = str(tool_name or "").strip().lower()
+    message = str(error or "")
+    return name in _EXTERNAL_FAILURE_TOOLS or bool(_EXTERNAL_FAILURE_RE.search(message))
+
+
+def should_escalate_web_from_answer(answer: str) -> bool:
+    """Detect an unresolved/uncertain draft before it reaches the user."""
+    return bool(_MODEL_UNCERTAINTY_RE.search(str(answer or "")))
 
 
 def capability_groups_for_profile(profile_name: str) -> frozenset[str]:
-    """Starter built-in groups for one already-resolved persona profile."""
-    return PROFILE_CAPABILITY_GROUPS.get(str(profile_name or "").strip(), frozenset())
+    """Compatibility view of one internal domain policy's starter groups."""
+    return DOMAIN_CAPABILITY_GROUPS.get(str(profile_name or "").strip(), frozenset())
 
 
 def profile_preloads_itops(profile_name: str) -> bool:
-    """Whether this effective profile starts with typed IT Ops schemas."""
-    return str(profile_name or "").strip() in PROFILE_ITOPS_DEFAULTS
+    """Compatibility helper for the internal infrastructure policy."""
+    return str(profile_name or "").strip() == "Инфраструктура"
 
 
 def normalize_capability_groups(groups: Collection[str] | None) -> frozenset[str]:

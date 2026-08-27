@@ -11,6 +11,7 @@ from app.application.smart_memory import (
     is_memory_command,
     list_memories,
     list_profiles,
+    prune_volatile_memories,
     search_memory,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "is_memory_command",
     "list_memories",
     "list_profiles",
+    "prune_volatile_memories",
     "search_memory",
 ]

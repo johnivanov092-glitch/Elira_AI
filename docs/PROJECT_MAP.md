@@ -31,7 +31,7 @@ move Elira's backend state or tools into that repository.
 | Context rollover | `backend/app/application/code_agent/delivery_session.py` |
 | Planning | `backend/app/application/code_agent/planning.py` |
 | Prompts/schemas | `backend/app/application/code_agent/prompts.py`, `tool_schemas.py` |
-| Built-in capability groups | `backend/app/application/code_agent/capabilities.py` |
+| Domain/Capability/Evidence routing + built-in groups | `backend/app/application/code_agent/capabilities.py` |
 | Built-in tool implementations | `backend/app/application/code_agent/tools/` |
 | Runtime control adapter | `backend/app/application/code_agent/tools/_runtime_control.py` |
 | Runtime result contract | `backend/app/application/code_agent/tools/_runtime_control_contract.py` |
@@ -48,7 +48,13 @@ move Elira's backend state or tools into that repository.
 | LLM client | `backend/app/infrastructure/llm/openai_compatible.py` |
 | Portable vault | `backend/app/infrastructure/secrets/vault.py` |
 | IT Ops persistence | `backend/app/infrastructure/it_ops/store.py` |
+| Durable SSH-only MikroTik onboarding/inventory | `backend/app/application/it_ops/mikrotik_registry.py`, `mikrotik_runtime.py` |
 | Memory facade | `backend/app/application/memory/facade.py` |
+| Library upload/import, full-text paging and bounded relevance context | `backend/app/application/library/runtime.py`, `api/routes/library_sqlite.py` |
+| Project Corpus ingestion/recall | `backend/app/application/code_agent/indexing.py` + existing `application/rag_memory` |
+| Durable finite-job recovery | `backend/app/application/code_agent/tools/_run.py`, `_background_jobs.py`, `_job_worker.py` |
+| Core/integration/IT Ops live Harness + scripted Workflow/Stop/Resume + durable audit | `backend/tests/smokes/routing_eval.py`, `routing_cases.json`, `journal_audit.py`, `driver.py` |
+| Deterministic memory Harness | `backend/tests/smokes/memory_eval.py` |
 | SQLite helper | `backend/app/infrastructure/db/connection.py` |
 
 Do not create another loop, executor, registry, provider stack or DB facade.
@@ -96,13 +102,14 @@ data/
 ├─ it_ops.sqlite3
 ├─ integrations.db
 ├─ smart_memory.db
-├─ rag_memory.db
+├─ rag_memory.db             facts, embeddings, Project Corpus chunks + manifest
 ├─ library.db
 ├─ projects.db
 ├─ web_corpus.sqlite3
 ├─ elira_state.db
 ├─ drift_facts.db
-├─ portable_vault.json
+├─ portable_vault.json       encrypted vault; backup includes smart/rag memory
+├─ background_jobs/          machine-local job journal/spec/launch/result sidecars
 ├─ mcp_servers.json
 ├─ lsp_servers.json
 ├─ ssh_acl.json          legacy filename; saved SSH shortcuts

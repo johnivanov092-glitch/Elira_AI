@@ -91,10 +91,13 @@ def secret_request(
     *,
     kind: str = "token",
     existing_secret_ref: str = "",
+    asset_id: str = "",
 ) -> RuntimeRequest:
     schema: dict[str, Any] = {"x-elira-secret-kind": kind}
     if existing_secret_ref:
         schema["x-elira-existing-secret-ref"] = existing_secret_ref
+    if asset_id:
+        schema["x-elira-asset-id"] = asset_id
     return RuntimeRequest(
         "needs_secret",
         {

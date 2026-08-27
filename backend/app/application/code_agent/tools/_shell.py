@@ -120,8 +120,16 @@ def reset_current_run_id(token: contextvars.Token) -> None:
 def _register_shell_proc(run_id: str | None, proc: subprocess.Popen) -> None:
     if not run_id:
         return
+    stop_already_requested = False
     with _LIVE_SHELL_LOCK:
-        _LIVE_SHELL_PROCS.setdefault(run_id, set()).add(proc)
+        # Stop may arrive after tool_started but before the executor worker has
+        # spawned/registered its process. Keep registration and the cancelled
+        # marker check under one lock so that race cannot orphan a new child.
+        stop_already_requested = run_id in _KILLED_RUN_IDS
+        if not stop_already_requested:
+            _LIVE_SHELL_PROCS.setdefault(run_id, set()).add(proc)
+    if stop_already_requested:
+        _kill_proc_tree(proc)
 
 
 def _unregister_shell_proc(run_id: str | None, proc: subprocess.Popen) -> None:
@@ -164,6 +172,17 @@ def kill_run_processes(run_id: str) -> int:
             # Process may have already exited between poll and kill.
             pass
     return killed
+
+
+def clear_run_stop_marker(run_id: str) -> None:
+    """Start a fresh execution generation for a durable run ID.
+
+    Resume intentionally reuses the run ID. A Stop received while no shell was
+    live leaves only the marker, so registration of the resumed generator must
+    clear it before any new tool process can be owned by that run.
+    """
+    with _LIVE_SHELL_LOCK:
+        _KILLED_RUN_IDS.discard(str(run_id or ""))
 
 
 def run_was_stopped(run_id: str | None = None) -> bool:

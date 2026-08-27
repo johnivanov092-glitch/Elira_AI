@@ -107,6 +107,37 @@ def send_message(
     return result
 
 
+def send_telegram_message(
+    *,
+    chat_id: int,
+    text: str,
+    parse_mode: str = "Markdown",
+) -> dict[str, Any]:
+    """Send through the configured bot without exposing its token to the agent."""
+    message = str(text or "").strip()
+    if not message:
+        raise ValueError("Текст Telegram-сообщения не задан")
+    token = _telegram_token()
+    if not token:
+        raise ValueError("Токен Telegram-бота не настроен")
+
+    response = send_message(token, int(chat_id), message, parse_mode=parse_mode)
+    if not response.get("ok"):
+        return {
+            "ok": False,
+            "error": str(response.get("description") or "Telegram sendMessage failed"),
+        }
+
+    payload = response.get("result") if isinstance(response.get("result"), dict) else {}
+    log_message(int(chat_id), "out", message)
+    return {
+        "ok": True,
+        "chat_id": int(chat_id),
+        "message_id": payload.get("message_id"),
+        "date": payload.get("date"),
+    }
+
+
 def send_typing(token: str, chat_id: int) -> None:
     tg_request(
         "sendChatAction",

@@ -31,7 +31,7 @@ def _trace_item_matches(expected: dict[str, Any], actual: dict[str, Any]) -> boo
     prefix = str(expected.get("tool_prefix") or "")
     if prefix and not tool_name.startswith(prefix):
         return False
-    for key in ("tool", "operation", "server_id"):
+    for key in ("tool", "operation", "server_id", "action", "kind", "status"):
         value = expected.get(key)
         if value is not None and str(actual.get(key) or "") != str(value):
             return False
@@ -53,9 +53,11 @@ def _port_states(answer: str, port: int) -> set[str]:
 def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
     """Return contract failures for one live routing case."""
     failures: list[str] = []
-    if summary.get("stop_reason") != "answer":
+    expected_stop_reason = str(spec.get("expected_stop_reason") or "answer")
+    if summary.get("stop_reason") != expected_stop_reason:
         failures.append(
-            f"stop_reason={summary.get('stop_reason')}; error={str(summary.get('error') or '')[:160]}"
+            f"stop_reason={summary.get('stop_reason')}; expected={expected_stop_reason}; "
+            f"error={str(summary.get('error') or '')[:160]}"
         )
 
     expected_profile = str(spec.get("expected_profile") or "")
@@ -94,6 +96,32 @@ def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
         for operation in sorted(all_operations):
             if operation.startswith(str(prefix)):
                 failures.append(f"forbidden runtime operation used: {operation}")
+    workflow_responses = summary.get("workflow_requests_resolved") or []
+    for expected in spec.get("required_workflow_responses") or []:
+        if not any(
+            all(str(item.get(key) or "") == str(value) for key, value in expected.items())
+            for item in workflow_responses
+        ):
+            failures.append(f"missing Workflow response: {expected}")
+    for error in summary.get("workflow_response_errors") or []:
+        failures.append(f"Workflow scripted response error: {error}")
+    unused_workflow_responses = int(summary.get("workflow_responses_unused") or 0)
+    if unused_workflow_responses:
+        failures.append(f"unused Workflow scripted responses: {unused_workflow_responses}")
+    if spec.get("require_workflow_stop") and not summary.get("workflow_stop_requested"):
+        failures.append(
+            f"Workflow Stop was not requested: {summary.get('workflow_stop_error') or 'no matching tool'}"
+        )
+    if spec.get("require_workflow_resume"):
+        if not summary.get("workflow_resume_attempted"):
+            failures.append("Workflow Resume was not attempted")
+        if summary.get("pre_resume_stop_reason") != "cancelled":
+            failures.append(
+                "Workflow Resume prerequisite stop_reason="
+                f"{summary.get('pre_resume_stop_reason')}; expected=cancelled"
+            )
+        if summary.get("workflow_resume_error"):
+            failures.append(f"Workflow Resume failed: {summary.get('workflow_resume_error')}")
 
     tool_trace = summary.get("tool_trace") or []
     cursor = 0
@@ -138,6 +166,25 @@ def evaluate_case(spec: dict[str, Any], summary: dict[str, Any]) -> list[str]:
     for fragment in spec.get("forbidden_answer_contains") or []:
         if str(fragment).casefold() in folded_answer:
             failures.append(f"answer contains forbidden text: {fragment}")
+
+    for claim in spec.get("grounded_action_claims") or []:
+        patterns = [
+            str(pattern).casefold()
+            for pattern in claim.get("answer_contains_any") or []
+            if str(pattern).strip()
+        ]
+        if not patterns or not any(pattern in folded_answer for pattern in patterns):
+            continue
+        evidence = dict(claim.get("evidence") or {})
+        if not evidence or not any(
+            isinstance(item, dict) and _trace_item_matches(evidence, item)
+            for item in tool_trace
+        ):
+            label = evidence.get("operation") or evidence.get("tool") or evidence
+            failures.append(
+                "action claim is not grounded by a successful tool result: "
+                f"{label}"
+            )
 
     source_tools = [str(name) for name in spec.get("answer_source_tools") or []]
     if source_tools:
@@ -296,7 +343,13 @@ def render_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _load_cases(path: Path, only: set[str]) -> dict[str, dict[str, Any]]:
+def _load_cases(
+    path: Path,
+    only: set[str],
+    *,
+    include_opt_in: bool = False,
+    suite: str = "",
+) -> dict[str, dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("routing cases must be a JSON object")
@@ -306,7 +359,11 @@ def _load_cases(path: Path, only: set[str]) -> dict[str, dict[str, Any]]:
     selected = {
         str(name): dict(spec)
         for name, spec in payload.items()
-        if not only or name in only
+        if (
+            (not only or name in only)
+            and (only or include_opt_in or not bool(spec.get("opt_in")))
+            and (not suite or str(spec.get("suite") or "") == suite)
+        )
     }
     if not selected:
         raise ValueError("no routing eval cases selected")
@@ -331,6 +388,36 @@ def _seed_project(project_dir: Path, spec: dict[str, Any]) -> None:
         target.write_text(str(content), encoding="utf-8", newline="\n")
 
 
+def _prepare_case_workspace(
+    output_root: Path,
+    name: str,
+    spec: dict[str, Any],
+) -> tuple[str, str]:
+    mode = str(spec.get("project_mode") or "connected").strip().lower()
+    if mode not in {"connected", "none"}:
+        raise ValueError(f"unsupported project_mode for {name}: {mode}")
+    bucket = "external" if mode == "none" else "projects"
+    workspace = (output_root / bucket / name).resolve()
+    _seed_project(workspace, spec)
+    task = str(spec.get("task") or "").replace(
+        "{ABSOLUTE_TARGET}",
+        str(workspace),
+    )
+    task = task.replace(
+        "{PYRIGHT_LANGSERVER}",
+        str(
+            (
+                REPO_ROOT
+                / "backend"
+                / ".venv"
+                / "Scripts"
+                / "pyright-langserver.exe"
+            ).resolve()
+        ),
+    )
+    return task, "" if mode == "none" else str(workspace)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run live Elira profile/tool/MCP evals through the UI SSE path."
@@ -338,6 +425,12 @@ def main() -> int:
     parser.add_argument("--backend", default="http://127.0.0.1:8000")
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES_PATH)
     parser.add_argument("--only", default="", help="comma-separated case IDs")
+    parser.add_argument(
+        "--suite",
+        choices=("core", "integration", "itops"),
+        default="",
+        help="run one named Harness suite",
+    )
     parser.add_argument(
         "--reasoning-effort",
         choices=("none", "low", "medium", "xhigh"),
@@ -350,6 +443,11 @@ def main() -> int:
         help="client socket timeout in seconds; 0 means no eval-side deadline",
     )
     parser.add_argument("--output-root", type=Path, default=None)
+    parser.add_argument(
+        "--include-opt-in",
+        action="store_true",
+        help="include stateful/external/manual acceptance cases in the default suite",
+    )
     args = parser.parse_args()
 
     if not _backend_up(args.backend):
@@ -358,7 +456,12 @@ def main() -> int:
 
     only = {name.strip() for name in args.only.split(",") if name.strip()}
     try:
-        cases = _load_cases(args.cases.resolve(), only)
+        cases = _load_cases(
+            args.cases.resolve(),
+            only,
+            include_opt_in=args.include_opt_in,
+            suite=args.suite,
+        )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"FAIL cases: {exc}")
         return 1
@@ -374,21 +477,23 @@ def main() -> int:
     print(f"Eval output: {output_root}")
 
     def execute(name: str, spec: dict[str, Any]) -> dict[str, Any]:
-        project_dir = output_root / "projects" / name
-        _seed_project(project_dir, spec)
+        task_text, project_root = _prepare_case_workspace(output_root, name, spec)
         run_id = f"eval-{stamp}-{name}"
         print(f"RUN  {name}: expected profile={spec.get('expected_profile')}")
         try:
             return run_smoke(
                 backend=args.backend,
-                task_text=str(spec.get("task") or ""),
-                project_root=str(project_dir),
+                task_text=task_text,
+                project_root=project_root,
                 run_id=run_id,
                 events_path=output_root / "events" / f"{name}.jsonl",
                 timeout_s=args.timeout if args.timeout > 0 else None,
                 profile_name=str(spec.get("profile_name") or "Авто"),
                 reasoning_effort=args.reasoning_effort,
-                permission_mode="bypass",
+                permission_mode=str(spec.get("permission_mode") or "bypass"),
+                workflow_responses=list(spec.get("workflow_responses") or []),
+                cancel_on_tool=str(spec.get("cancel_on_tool") or ""),
+                resume_after_stop=bool(spec.get("resume_after_stop")),
             )
         except Exception as exc:  # live transport failure belongs in the report
             return {

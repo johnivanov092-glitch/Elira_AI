@@ -40,8 +40,8 @@ _HEADERS: dict[str, tuple[str, ...]] = {
         "проверка рантайма", "логика проверки", "tool economy",
         "экономия инструментов", "правила", "notes", "заметки",
     ),
-    "criteria": ("критерии", "критерии готовности", "success criteria", "проверить",
-                 "definition of done", "готовность", "acceptance", "checks"),
+    "criteria": ("критерий", "критерий готовности", "критерии", "критерии готовности", "success criteria", "проверить",
+                  "definition of done", "готовность", "acceptance", "checks"),
     # SPEC/behaviour sections — describe WHAT to build, NOT how DONE is proven. Their
     # bullets ("Поле ввода с label CIDR", "После нажатия Calculate показать …") are
     # implementation detail, not verifiable readiness criteria, so they are routed to
@@ -58,6 +58,7 @@ _HEADERS: dict[str, tuple[str, ...]] = {
     "report": ("финальный отчёт", "финальный отчет", "отчёт", "отчет", "report"),
 }
 _BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)")
+_NUMBERED_SECTION_RE = re.compile(r"^\s*\d+[.)]\s+(.+?)\s*$")
 _PORT_RE = re.compile(r"(?:порт|port)\s*[:#№]?\s*(\d{2,5})", re.IGNORECASE)
 # Test scripts/commands only — a name must actually look like a test (contains
 # "test"), so the script UNDER test (e.g. agent-lab.ps1) isn't taken for a verifier.
@@ -118,9 +119,39 @@ def _match_header(token: str) -> str | None:
     return None
 
 
+def _match_exact_header(token: str) -> str | None:
+    """Exact-only variant for numbered lines, which are usually list items."""
+    low = token.strip().lower().rstrip(":").strip()
+    return next(
+        (section for section, keys in _HEADERS.items() if low in keys),
+        None,
+    )
+
+
 def _looks_like_criterion(line: str) -> bool:
     low = line.lower()
     return any(cue in low for cue in _CRITERIA_CUES)
+
+
+def _section_header(raw: str) -> tuple[str, str] | None:
+    """Recognise ordinary ``Header: value`` and numbered document headings.
+
+    Long user specifications commonly use headings such as
+    ``19. КРИТЕРИЙ ГОТОВНОСТИ``.  They must be handled before the generic
+    numbered-bullet rule; otherwise every earlier list item becomes a completion
+    gate and a completed delivery is persisted as ``partial``.
+    """
+    line = raw.strip()
+    numbered = _NUMBERED_SECTION_RE.match(line)
+    candidate = numbered.group(1).strip() if numbered else line
+    if ":" in candidate:
+        head, _, rest = candidate.partition(":")
+        section = _match_exact_header(head) if numbered else _match_header(head)
+        return (section, rest.strip()) if section is not None else None
+    if numbered:
+        section = _match_exact_header(candidate.rstrip(":").strip())
+        return (section, "") if section is not None else None
+    return None
 
 
 def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | None:
@@ -139,14 +170,14 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
     details: list[str] = []
     section = "goal"
     saw_goal_header = False
+    criteria_items_seen = False
 
     # An EXPLICIT "Критерии готовности" header means the criteria are enumerated in
     # their own section — so free-floating bullets under the goal / an unrecognised
     # section must NOT be scooped up as criteria too (Subnet Helper: "Функциональность"
     # bullets became criteria only because there was no header above them).
     has_explicit_criteria = any(
-        (not _BULLET_RE.match(raw)) and ":" in (ln := raw.strip())
-        and _match_header(ln.partition(":")[0]) == "criteria"
+        (header := _section_header(raw)) is not None and header[0] == "criteria"
         for raw in text.splitlines()
     )
 
@@ -154,29 +185,38 @@ def derive_task_spec(task_text: str | None, project_root=None) -> TaskSpec | Non
         line = raw.strip()
         if not line:
             continue
+        header = _section_header(raw)
+        if header is not None:
+            section, rest = header
+            if section == "criteria":
+                criteria_items_seen = False
+            if section == "goal":
+                saw_goal_header = True
+            if rest:
+                _route(section, rest, goal_lines, criteria, constraints, stop, details)
+            continue
         bullet = _BULLET_RE.match(raw)
         # A section HEADER is a NON-bullet `<phrase>:` line. A bullet is CONTENT even
         # when it contains a colon — "- content criteria … verifier checks:
         # `ssh_assert_contains`" must NOT be read as a 'checks' header that flips the
         # section and dumps a Подвох rule in as a success criterion.
-        if not bullet and ":" in line:
-            head, _, rest = line.partition(":")
-            sec = _match_header(head)
-            if sec is not None:
-                section = sec
-                if sec == "goal":
-                    saw_goal_header = True
-                rest = rest.strip()
-                if rest:
-                    _route(section, rest, goal_lines, criteria, constraints, stop, details)
-                continue
         # A bullet under the goal (no section header yet) is a criterion ONLY when the
         # task has no explicit criteria section; otherwise it's spec/detail, not a gate.
         goal_bullet_target = "details" if has_explicit_criteria else "criteria"
         if bullet:
             _route(section if section != "goal" else goal_bullet_target,
                    bullet.group(1).strip(), goal_lines, criteria, constraints, stop, details)
+            if section == "criteria":
+                criteria_items_seen = True
             continue
+        if section == "criteria":
+            if re.fullmatch(r"[=\-_*]{3,}", line):
+                continue
+            if line.casefold().startswith("работа считается завершённой только если"):
+                details.append(line)
+                continue
+            if criteria_items_seen and not _looks_like_criterion(line):
+                section = "details"
         _route(section, line, goal_lines, criteria, constraints, stop, details)
 
     goal = " ".join(goal_lines).strip()[:300]

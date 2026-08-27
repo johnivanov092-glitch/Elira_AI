@@ -73,8 +73,9 @@ def add_memory(
     source: str = "auto",
     importance: int = 5,
     profile_name: str | None = None,
+    replaces_id: int | str | None = None,
 ) -> dict[str, Any]:
-    from app.application.smart_memory.search import search_memory, similarity
+    from app.application.smart_memory.search import search_memory, similarity, tokenize
 
     normalized_profile = normalize_profile(profile_name)
     normalized_text = (text or "").strip()
@@ -82,7 +83,83 @@ def add_memory(
     if len(normalized_text) < 3:
         return {"ok": False, "error": "Text is too short", "profile_name": normalized_profile}
 
-    existing = search_memory(normalized_text, limit=3, profile_name=normalized_profile)
+    existing = search_memory(normalized_text, limit=50, profile_name=normalized_profile)
+    is_correction = source == "user_correction" or replaces_id is not None
+    correction_source = "user_correction" if replaces_id is not None else source
+    if is_correction:
+        target: dict[str, Any] | None = None
+        if replaces_id is not None:
+            try:
+                target_id = int(replaces_id)
+            except (TypeError, ValueError):
+                return {
+                    "ok": False,
+                    "error": "Replacement memory id is invalid",
+                    "profile_name": normalized_profile,
+                }
+            conn = connect_memory_db()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM memories WHERE id = ? AND profile_name = ?",
+                    (target_id, normalized_profile),
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                return {
+                    "ok": False,
+                    "error": "Replacement memory was not found in this profile",
+                    "profile_name": normalized_profile,
+                }
+            target = dict(row)
+        else:
+            normalized_tokens = set(tokenize(normalized_text))
+            candidates: list[tuple[float, dict[str, Any]]] = []
+            for item in existing.get("items", []):
+                previous_text = str(item.get("text") or "")
+                score = similarity(normalized_text.lower(), previous_text.lower())
+                shared_tokens = normalized_tokens.intersection(tokenize(previous_text))
+                exact = normalized_text.casefold() == previous_text.strip().casefold()
+                if exact or (score >= 0.45 and len(shared_tokens) >= 2):
+                    candidates.append((score, item))
+            if candidates:
+                _score, target = max(
+                    candidates,
+                    key=lambda pair: (pair[0], int(pair[1].get("importance") or 0)),
+                )
+        if target is not None:
+            previous_text = str(target.get("text") or "")
+            conn = connect_memory_db()
+            try:
+                conn.execute(
+                    """
+                    UPDATE memories
+                    SET text = ?, category = ?, source = ?, importance = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND profile_name = ?
+                    """,
+                    (
+                        normalized_text,
+                        category,
+                        correction_source,
+                        max(1, min(int(importance), 10)),
+                        target["id"],
+                        normalized_profile,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            return {
+                "ok": True,
+                "action": "corrected",
+                "id": target["id"],
+                "text": normalized_text,
+                "previous_text": previous_text,
+                "category": category,
+                "profile_name": normalized_profile,
+            }
+
     for item in existing.get("items", []):
         if similarity(normalized_text.lower(), item["text"].lower()) > 0.85:
             conn = connect_memory_db()
@@ -129,6 +206,51 @@ def add_memory(
         "text": normalized_text,
         "category": category,
         "profile_name": normalized_profile,
+    }
+
+
+def prune_volatile_memories(
+    *,
+    max_age_days: int = 7,
+    dry_run: bool = True,
+    profile_name: str | None = None,
+) -> dict[str, Any]:
+    """Remove only aged operational-state rows; durable user facts are untouched."""
+    safe_days = max(1, int(max_age_days))
+    where = ["category = 'volatile_fact'", "updated_at < datetime('now', ?)"]
+    params: list[Any] = [f"-{safe_days} days"]
+    if profile_name is not None:
+        where.append("profile_name = ?")
+        params.append(normalize_profile(profile_name))
+    where_sql = " AND ".join(where)
+
+    conn = connect_memory_db()
+    try:
+        candidates = int(
+            conn.execute(f"SELECT COUNT(*) FROM memories WHERE {where_sql}", params).fetchone()[0]
+        )
+        sample = [
+            {"id": int(row["id"]), "text": str(row["text"] or "")[:160]}
+            for row in conn.execute(
+                f"SELECT id, text FROM memories WHERE {where_sql} ORDER BY updated_at LIMIT 5",
+                params,
+            ).fetchall()
+        ]
+        pruned = 0
+        if not dry_run and candidates:
+            cursor = conn.execute(f"DELETE FROM memories WHERE {where_sql}", params)
+            pruned = int(cursor.rowcount or 0)
+            conn.commit()
+    finally:
+        conn.close()
+    return {
+        "ok": True,
+        "candidates": candidates,
+        "pruned": pruned,
+        "dry_run": bool(dry_run),
+        "max_age_days": safe_days,
+        "profile_name": normalize_profile(profile_name) if profile_name is not None else None,
+        "sample": sample,
     }
 
 

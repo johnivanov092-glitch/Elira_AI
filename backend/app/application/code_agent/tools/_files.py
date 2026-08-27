@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import glob as globlib
 from pathlib import Path
 from typing import Any
 
@@ -478,10 +479,21 @@ def tool_edit_file(
 
 def tool_glob(project_root: Path, *, pattern: str) -> dict[str, Any]:
     root = project_root.resolve()
+    normalized = str(pattern or "").strip()
+    if not normalized:
+        return {"text": "ERROR: glob pattern is empty"}
+    pattern_path = Path(normalized).expanduser()
+    absolute_pattern = pattern_path.is_absolute()
     matches: list[str] = []
-    for raw_match in root.glob(pattern):
+    raw_matches = (
+        (Path(match) for match in globlib.iglob(normalized, recursive=True))
+        if absolute_pattern
+        else root.glob(normalized)
+    )
+    for raw_match in raw_matches:
         try:
-            matches.append(str(raw_match.relative_to(root)).replace("\\", "/"))
+            display = raw_match if absolute_pattern else raw_match.relative_to(root)
+            matches.append(str(display).replace("\\", "/"))
         except ValueError:
             continue
     matches.sort()

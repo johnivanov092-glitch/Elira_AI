@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
+import re
 from collections.abc import Collection
 from typing import Any
 
@@ -44,6 +46,29 @@ logger = logging.getLogger(__name__)
 # tool names to be a safe sentinel, valid in JSON identifier names
 # so most LLM tokenizers handle it well.
 _NAMESPACE_DELIM = "__"
+_SCHEMA_ROUTING_CHAR_THRESHOLD = 18_000
+_SCHEMA_ROUTING_MAX_TOOLS = 8
+_INTENT_TOKEN_RE = re.compile(r"[0-9a-zа-яё_]+", re.IGNORECASE)
+_GENERIC_INTENT_TOKENS = {
+    "mcp", "server", "tool", "tools", "unity", "blender", "github",
+    "интеграция", "интеграции", "инструмент", "инструменты",
+    "через", "настроенную", "настроенной", "используй",
+}
+_INTENT_ALIASES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
+    (("консол", "сообщен", "ошибк", "предупрежд", "лог"),
+     ("console", "log", "message", "error", "warning", "read")),
+    (("статус", "состоян", "подключ", "соедин"),
+     ("status", "health", "connection", "get")),
+    (("найд", "поиск", "искать"), ("search", "find", "query")),
+    (("прочит", "чтен", "покаж", "получ"), ("read", "get", "list")),
+    (("сцен", "объект", "куб"), ("scene", "gameobject", "object", "manage")),
+    (("созд", "добав"), ("create", "add", "manage")),
+    (("измен", "редакт"), ("update", "edit", "manage")),
+    (("удал",), ("delete", "remove", "manage")),
+    (("скрин", "изображ", "кадр"), ("screenshot", "image", "camera")),
+    (("код", "скрипт"), ("code", "execute", "script")),
+    (("запуст", "тест", "игр"), ("play", "test", "execute")),
+)
 _MAX_INLINE_IMAGE_BYTES = 16 * 1024 * 1024
 _INLINE_IMAGE_PROMPT = (
     "Describe this MCP-produced image precisely for an agent that is validating "
@@ -96,6 +121,94 @@ _CREATIVE_BATCH_TO_PROCEDURAL = {
     "blender__batch_edit": "blender__execute_blender_code",
     "unity__batch_execute": "unity__execute_code",
 }
+
+
+def _intent_tokens(query: str, server_id: str) -> set[str]:
+    text = str(query or "").casefold()
+    server_tokens = set(_INTENT_TOKEN_RE.findall(server_id.casefold()))
+    tokens = {
+        token
+        for token in _INTENT_TOKEN_RE.findall(text)
+        if len(token) >= 2
+        and token not in _GENERIC_INTENT_TOKENS
+        and token not in server_tokens
+    }
+    for markers, aliases in _INTENT_ALIASES:
+        if any(marker in text for marker in markers):
+            tokens.update(aliases)
+    return tokens
+
+
+def _schema_relevance(schema: dict[str, Any], tokens: set[str]) -> int:
+    function = schema.get("function") if isinstance(schema, dict) else None
+    if not isinstance(function, dict):
+        return 0
+    name = str(function.get("name") or "").casefold()
+    original_name = name.split(_NAMESPACE_DELIM, 1)[-1]
+    name_tokens = set(_INTENT_TOKEN_RE.findall(original_name))
+    description = str(function.get("description") or "").casefold()
+    parameters = function.get("parameters")
+    parameter_text = json.dumps(parameters, ensure_ascii=False).casefold()
+    score = 0
+    for token in tokens:
+        if token in name_tokens:
+            score += 12
+        elif token in original_name:
+            score += 7
+        if token in parameter_text:
+            score += 3
+        if token in description:
+            score += 2
+    return score
+
+
+def select_mcp_schemas(
+    schemas: list[dict[str, Any]],
+    *,
+    server_id: str,
+    query: str | None,
+) -> list[dict[str, Any]]:
+    """Return an intent-sized view while retaining full dispatch ownership.
+
+    Small MCP servers remain untouched. Large servers are narrowed only when
+    the current user intent produces a positive match; an ambiguous request
+    keeps the complete set instead of silently hiding capabilities.
+    """
+    serialized_chars = sum(
+        len(json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+        for schema in schemas
+    )
+    if (
+        len(schemas) <= _SCHEMA_ROUTING_MAX_TOOLS
+        and serialized_chars <= _SCHEMA_ROUTING_CHAR_THRESHOLD
+    ):
+        return schemas
+    tokens = _intent_tokens(str(query or ""), server_id)
+    if not tokens:
+        return schemas
+    ranked = sorted(
+        (
+            (_schema_relevance(schema, tokens), index, schema)
+            for index, schema in enumerate(schemas)
+        ),
+        key=lambda row: (-row[0], row[1]),
+    )
+    positive = [row for row in ranked if row[0] > 0]
+    if not positive:
+        return schemas
+    best_score = positive[0][0]
+    minimum_score = max(2, best_score // 3)
+    selected: list[dict[str, Any]] = []
+    selected_chars = 0
+    for score, _index, schema in positive:
+        if score < minimum_score or len(selected) >= _SCHEMA_ROUTING_MAX_TOOLS:
+            break
+        schema_chars = len(json.dumps(schema, ensure_ascii=False, separators=(",", ":")))
+        if selected and selected_chars + schema_chars > _SCHEMA_ROUTING_CHAR_THRESHOLD:
+            continue
+        selected.append(schema)
+        selected_chars += schema_chars
+    return selected or schemas
 
 
 def creative_workflow_prompt(tool_names: set[str] | list[str] | tuple[str, ...]) -> str:
@@ -240,9 +353,10 @@ class McpToolProvider:
     the registry skips it just like a disabled built-in provider.
     """
 
-    def __init__(self, server_id: str) -> None:
+    def __init__(self, server_id: str, *, schema_query: str | None = None) -> None:
         self.name = f"mcp:{server_id}"
         self._server_id = server_id
+        self._schema_query = str(schema_query or "").strip()
         self._schemas: list[dict[str, Any]] = []
         self._owned: set[str] = set()
         self._qualified_to_original: dict[str, str] = {}
@@ -385,7 +499,11 @@ class McpToolProvider:
             })
             mapping[qualified] = original_name
 
-        self._schemas = schemas
+        self._schemas = select_mcp_schemas(
+            schemas,
+            server_id=self._server_id,
+            query=self._schema_query,
+        )
         self._owned = set(mapping.keys())
         self._qualified_to_original = mapping
         self._populated = True
@@ -474,6 +592,8 @@ def sync_mcp_tool_specs(
 
 def build_mcp_providers(
     server_ids: Collection[str] | None = None,
+    *,
+    schema_queries: dict[str, str] | None = None,
 ) -> list[McpToolProvider]:
     """Construct providers for the requested **running** MCP servers.
 
@@ -491,7 +611,11 @@ def build_mcp_providers(
             continue
         if allowed is not None and str(spec.get("id") or "") not in allowed:
             continue
-        providers.append(McpToolProvider(spec["id"]))
+        server_id = str(spec["id"])
+        providers.append(McpToolProvider(
+            server_id,
+            schema_query=(schema_queries or {}).get(server_id),
+        ))
     # Mirror discovered MCP tools into the shared inventory.
     # A session-scoped subset must not mark tools from other live sessions as
     # stale in the global inventory.

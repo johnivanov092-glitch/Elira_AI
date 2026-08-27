@@ -763,7 +763,7 @@ def _build_itops_tools() -> list[dict[str, Any]]:
             "name": "itops_mikrotik_inventory", "handler": _noop,
             "display_name": "IT-Ops MikroTik Inventory", "display_name_ru": "Инвентарь MikroTik",
             "category": "itops",
-            "description": "Read-only MikroTik inventory (system/interfaces/routes/DNS/DHCP) via the configured MCP runtime",
+            "description": "Read-only MikroTik RouterOS 6/7 inventory via the configured typed SSH target",
             "source": "itops",
             "permission": "auto", "side_effect": False, "idempotent": True,
             "scopes": ["net.outbound"],

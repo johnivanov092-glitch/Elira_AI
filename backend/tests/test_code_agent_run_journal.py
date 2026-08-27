@@ -30,6 +30,8 @@ def test_run_journal_writes_atomic_state_events_health_and_redacts(tmp_path: Pat
         "prompt_tokens": 120,
         "completion_tokens": 30,
         "total_tokens": 150,
+        "cached_prompt_tokens": 80,
+        "prompt_tokens_per_second": 400.0,
         "tokens_per_second": 18.5,
         "context": {
             "current_tokens": 900,
@@ -47,6 +49,8 @@ def test_run_journal_writes_atomic_state_events_health_and_redacts(tmp_path: Pat
     assert usage["prompt_tokens"] == 120
     assert usage["completion_tokens"] == 30
     assert usage["total_tokens"] == 150
+    assert usage["cached_prompt_tokens"] == 80
+    assert usage["prompt_tokens_per_second"] == 400.0
     assert usage["tokens_per_second"] == 18.5
     assert usage["context"]["current_tokens"] == 900
     assert usage["context"]["reserved_output_tokens"] == 200

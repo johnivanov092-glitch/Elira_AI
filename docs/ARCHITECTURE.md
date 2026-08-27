@@ -13,6 +13,7 @@ Composer
   -> POST /api/code-agent/stream
   -> delivery_session
   -> agent_loop
+  -> Domain Router + Capability Router + Evidence Router
   -> agent_kernel.executor
   -> runtime_registry
   -> Builtin | SSH | IT Ops | MCP | LSP provider
@@ -33,15 +34,23 @@ returns to the same `run_code_agent`, executor and provider registry.
 - One provider aggregation path: `application/tool_providers/runtime_registry.py`.
 - One durable human control plane: `application/workflows` +
   `workflow_engine.db`.
-- The first model turn sees only the compact built-in core, including
-  `capability_load`, `runtime_control`, and managed background process control
-  through `run_server`. Auto first resolves the task to one effective persona,
-  then that profile receives its narrow starter groups: Personal=`memory`,
-  Business=`web+resources+data`, Infrastructure=typed IT Ops,
-  Science=`web+data`, Medicine=`web+resources`; Balance and Engineering use the
-  core (which already contains project/code tools). The model can load any
-  additional group through `capability_load`. MCP/LSP/SSH remain per-run and
-  appear only after a relevant `runtime_control` request.
+- The UI exposes one profile: `Elira / Auto`. Former profiles are hidden domain
+  policies for tone, evidence requirements and useful starter schemas; they do
+  not lock or authorize tools. A request may combine multiple domains.
+- The first model turn sees the compact built-in core plus deterministic routing:
+  Domain Router classifies the task, Capability Router reveals relevant schema
+  groups, and Evidence Router reveals Web for current/external facts, unknown
+  technologies/errors, finance, medicine, science and security. An external
+  first failure, repeated local failure, or an uncertain draft (`не знаю`, `нет
+  данных`, `не удалось`) triggers one Web evidence pass before the final answer.
+  Local state still comes from local tools; external contracts come from primary
+  sources. The model may load further groups with `capability_load`.
+- A requested download cannot finalize until an artifact receipt exists. The
+  loop requires `resource_publish`, producing the existing clickable UI download
+  card instead of printing a Windows path as if it were a link.
+- MCP/LSP remain per-run and appear only after a relevant `runtime_control`
+  request. Infrastructure intent preloads typed IT Ops and SSH; no MCP is started
+  merely because a domain policy matched.
 - A new-chat plain greeting has no tool schemas at all; any task, continuation,
   path, command, MCP/SSH request, or existing history uses the normal agent loop.
 - No tool/path/asset/LAN authorization scope, internal ApprovalStore,
@@ -53,7 +62,41 @@ returns to the same `run_code_agent`, executor and provider registry.
   builder; SSH file writes explicitly forward stdin.
 - Selecting a project folder persists `project_root` in the session and injects
   its absolute path plus an explicit connected-project block into every new run
-  prompt. No parallel project-awareness helper exists.
+  prompt. It is a default cwd/context, not a permission boundary: with no
+  connected project, explicit absolute paths still work through the same file,
+  map, glob and shell tools. No parallel project-awareness helper exists.
+- Active Library files are request-time candidates. Upload/import extracts and
+  stores reusable full text (physical cap: 1,000,000 characters); the request
+  router uses an FTS5 index in the same `library.db` and injects only up to 10
+  relevant excerpts of 2,500 characters. With no match, ordinary chat receives
+  no Library text; freshest-file fallback exists only for an explicit
+  Library/attachment/document request. `runtime_control` with
+  `library_search → library_read` lets the
+  agent consume the selected document in repeatable pages of at most 10,000
+  characters. The topbar Library can upload directly; a durable chat resource
+  is copied into Library only by the explicit save action. This is separate
+  from current-chat resources, project RAG and run-scoped web Corpus.
+- Project Corpus reuses `rag_memory.db`: `code_agent/indexing.py` discovers one
+  repo, monorepo, or a parent containing multiple Git repos; Git provides native
+  `.gitignore` semantics. `project_corpus_files` is the resumable file manifest,
+  while source-backed `rag_items` rows own chunks, embeddings and
+  repo/file/commit/language metadata. A repeated index call skips matching
+  SHA-256 hashes, replaces changed source versions, removes stale files, and
+  resumes after the per-pass 5000-chunk budget. This is not the run-scoped web
+  Corpus and does not introduce a second vector store.
+- Workflow exposes that owner through `runtime_control(project_status)` and
+  `runtime_control(project_index)`. Both default to the connected project.
+  `memory_recall` maps a project path to the same opaque scope ID, so ingestion
+  and retrieval cannot silently address different namespaces.
+- The memory facade is the application-level boundary over curated facts
+  (`smart_memory.db`) and semantic/project records (`rag_memory.db`). A
+  correction with an explicit `replaces_id` updates that profile's prior
+  curated row in place, including when the wording changes completely.
+  `runtime_control(memory_search)` exposes fact IDs so the agent can make that
+  replacement deterministic; lexical matching remains only a compatibility
+  fallback. Operational `volatile_fact` rows are non-authoritative and
+  `memory_prune` removes only aged volatile rows in addition to the existing
+  bounded semantic-memory prune.
 - Legacy ToolSpec policy columns are inventory compatibility only.
 
 ## Permission selector
@@ -89,13 +132,13 @@ permission decision. A hidden built-in schema does not remove its canonical
 dispatch owner; if a valid native/inline call reaches the runtime, it still uses
 the same ToolExecutor and handler.
 
-`PROFILE_CAPABILITY_GROUPS` and `PROFILE_ITOPS_DEFAULTS` are the deterministic
-profile-to-starter-tool map. They receive the already-resolved effective mode,
-so `Auto + network` becomes `Infrastructure + IT Ops`, while `Auto + code`
-becomes `Engineering + project/code core`. IT Ops is not injected into unrelated
-profiles. This map grants no permission and creates no executor/provider. TCP
-checks in Infrastructure should use `itops_network_inventory` with explicit
-per-connect timeout and concurrency, not sequential shell `Test-NetConnection`.
+`route_request_capabilities()` is the deterministic preflight. It may combine
+code, network, resources, data and Web in one run. `classify_domain_policies()`
+returns all matching hidden policies while `resolve_persona_mode()` retains one
+dominant prompt overlay for compatibility. Neither function grants permission or
+creates an executor/provider. TCP checks use `itops_network_inventory` with an
+explicit per-connect timeout and concurrency, not sequential shell
+`Test-NetConnection`.
 
 MCP, LSP, SSH shortcuts, Telegram, IT Ops, plugins, Workflow scheduling,
 memory/library administration and vault operations are behind the agent's
@@ -103,21 +146,73 @@ memory/library administration and vault operations are behind the agent's
 `completed`, `failed`, `needs_input`, `needs_secret`, `needs_elevation`,
 `waiting_approval`, or `cancelled`. Existing domain runtimes remain owners;
 `runtime_control` is an adapter, not a second executor or registry.
+Telegram uses typed `status/start/users/send/messages` operations; the bot token
+is resolved inside the Telegram runtime from the portable vault and is never an
+agent argument. Successful outgoing messages are written to the durable
+Telegram log, which is also the evidence source for `telegram_messages`.
 
 Long finite commands use the existing `run_server(kind="job")` process runtime.
 `start` returns a PID immediately; `list`/`logs` expose running or terminal state
-and captured output; `stop` and Workflow Stop kill the owned process tree. A
-completed job result is retained in a bounded in-memory tail. There is no
-product wall-clock deadline. Short typed tools stay synchronous; backgrounding
-does not replace transport liveness timeouts such as TCP `connect_timeout`.
+and captured output; `stop` and Workflow Stop kill the owned process tree. Jobs
+run through a small child wrapper inside this same runtime. Before `Popen`, the
+runtime writes a redacted `starting` journal record; the worker then publishes a
+launch sidecar with PID creation identity before executing the raw command and
+writes an exit sidecar independently of the backend. The raw command exists only
+in the short-lived spec deleted by the worker. On Windows the worker uses a new
+process group plus console detachment and, where the host permits it, Job Object
+breakaway; therefore a console/backend restart does not kill it, while explicit
+Stop still terminates its tree. Production startup reconciles these files
+(rejecting PID reuse), reattaches the existing log and restores
+`running/completed/failed/cancelled`. Invalid journals are quarantined rather
+than silently overwritten. Terminal records have bounded count/TTL and are
+machine-local, not portable-vault content. There is no product wall-clock
+deadline. Short typed tools stay synchronous; backgrounding does not replace
+transport liveness timeouts such as TCP `connect_timeout`.
 
 MCP servers do not auto-start with FastAPI or merely because of a persona. When
 the user explicitly requests MCP, or the task requires a configured external
 integration absent from active tools, the model uses `mcp_list`, selects one
 relevant server, and calls `mcp_start(server_id)`; only that server's schemas are
-added to the next model turn. LSP follows the same per-run rule. `ssh_hosts`
+considered for the next model turn. Small MCP servers remain intact. For a large
+server, `McpToolProvider` ranks schemas against the current user task and exposes
+only the positive, bounded subset; ambiguous intent deliberately keeps the full
+set. The provider retains ownership of every advertised tool, so this is prompt
+virtualization, not permission filtering. `mcp_tools(server_id, query)` changes
+the visible subset without restarting the server when the model needs another
+known operation. The selected query is run-scoped and survives Workflow Resume.
+A successful `mcp_start`/`mcp_restart` also returns
+the exact namespaced tool count and up to 50 tool names in server-advertised
+order. It does not duplicate descriptions or JSON schemas, so the model can call
+the right dynamic tool on the next turn without bloating the stable prompt
+prefix; `available_tool_names_truncated=true` reports a longer roster. LSP
+follows the same per-run rule. `ssh_hosts`
 reveals the existing SSH provider and `itops_assets` reveals the IT Ops provider
 without turning those discovery calls into authorization gates.
+
+MikroTik onboarding is SSH-only for RouterOS 6 and 7. The model uses
+`itops_mikrotik_upsert/list/remove/sync`; router identity, version, SSH target and
+key path live as a global `network_device` asset plus an `ssh` connection profile
+in `it_ops.sqlite3`. `itops_mikrotik_inventory` executes one fixed read-only
+RouterOS CLI plan through the canonical SSH provider and records evidence.
+Arbitrary RouterOS CLI uses the same `ssh_run`; command calls use `ssh -n`, a
+connect-only timeout and Workflow Stop for execution cancellation. Registered
+RouterOS 6 targets receive only the required legacy MAC/RSA options without weakening
+other SSH targets. The retired `mikrotik` MCP server and generated
+`data/mikromcp/routers.yaml` are removed during migration/sync.
+An opaque legacy password reference may be preserved during migration for
+recoverability, but typed SSH never uses it; authentication is key/ssh-agent only.
+
+The read-only LSP stdio client answers server-side configuration/progress
+requests, canonicalizes equivalent Windows file URI spellings and waits past an
+empty warm-up diagnostics push. Repeated checks do not send an invalid second
+`didOpen`; changed snapshots are close/open notifications, not edit operations.
+Explicit stop and backend shutdown kill the complete child process tree.
+
+Workflow Stop is race-safe across process creation. The per-run cancelled
+marker and Popen registration share one lock; if Stop arrives after
+`tool_started` but before registration, the new process tree is killed as soon
+as it registers. Durable Resume reuses the persisted run ID only after this
+cleanup.
 
 The former Pipelines control plane is not mounted. Interval schedules are
 `workflow_triggers` in `workflow_engine.db`; they start existing Workflow
@@ -176,7 +271,8 @@ The default root is `data/`, overridden by `ELIRA_DATA_DIR`.
 - `event_bus.db`: durable events/messages/subscriptions.
 - `it_ops.sqlite3`: IT Ops assets/profiles/evidence.
 - `integrations.db`: Telegram configuration/users/log.
-- `smart_memory.db` + `rag_memory.db`: facts and semantic memory.
+- `smart_memory.db` + `rag_memory.db`: facts, semantic memory and Project Corpus
+  chunks/file manifest.
 - `library.db`, `projects.db`, `web_corpus.sqlite3`, `elira_state.db`,
   `drift_facts.db`: domain-specific persistence.
 - `web_corpus.sqlite3` is a run-scoped, seven-day web-evidence cache populated
@@ -184,7 +280,12 @@ The default root is `data/`, overridden by `ELIRA_DATA_DIR`.
   agent memory.
 - `.agent/runs/<run_id>`: code-agent journal.
 - `data/resources`: durable raw resources.
-- `data/portable_vault.json`: AES-256-GCM portable vault.
+- `data/background_jobs/`: machine-local finite-job journal, short-lived specs,
+  launch identities and exit sidecars; logs remain under the owning project's
+  `.elira/servers/`.
+- `data/portable_vault.json`: AES-256-GCM portable vault. User-triggered backup
+  includes `smart_memory.db` and `rag_memory.db` (therefore Project Corpus) but
+  excludes the expiring `web_corpus.sqlite3` cache.
 
 These stores are separate because their transaction, retention and trust
 boundaries differ. Do not merge them to reduce file count.

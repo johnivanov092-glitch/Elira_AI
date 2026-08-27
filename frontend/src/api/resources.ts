@@ -26,6 +26,8 @@ export type ResourceRef = {
 export type ResourceAttachment = ResourceRef & {
   status: "uploading" | "ready" | "error";
   error?: string;
+  libraryStatus?: "saving" | "saved" | "error";
+  libraryError?: string;
 };
 
 export function normalizeKind(value: unknown): ResourceKind {

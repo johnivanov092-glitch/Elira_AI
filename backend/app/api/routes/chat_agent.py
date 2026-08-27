@@ -21,6 +21,7 @@ class MemoryCreateRequest(BaseModel):
     category: str = "fact"
     source: str = "manual"
     importance: int = Field(default=5, ge=1, le=10)
+    replaces_id: int | None = Field(default=None, ge=1)
 
 
 class MemorySearchRequest(BaseModel):
@@ -52,6 +53,7 @@ def memory_add(payload: MemoryCreateRequest):
         source=payload.source,
         importance=payload.importance,
         profile=_PROFILE,
+        replaces_id=payload.replaces_id,
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Не удалось сохранить факт"))

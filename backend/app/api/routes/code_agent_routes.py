@@ -25,6 +25,7 @@ from app.application.code_agent.agent_loop import (
     get_project_prompt,
     init_project_prompt,
     index_project,
+    project_corpus_status,
     recall_from_rag,
     request_cancel,
     set_project_prompt,
@@ -37,7 +38,7 @@ from app.application.code_agent.delivery_session import (
 )
 from app.application.code_agent import sessions as session_store
 from app.application.chat.local_chat import resolve_persona_mode
-from app.application.library.runtime import build_library_context
+from app.application.library.runtime import inject_library_context
 from app.core.data_files import data_subdir
 
 router = APIRouter(prefix="/api/code-agent", tags=["code-agent"])
@@ -68,29 +69,9 @@ def _base_tools_for_request(
     return tuple(dict.fromkeys(tools))
 
 
-def _inject_library_context(message: str) -> str:
-    """Prepend active library-file previews to the user's message.
-
-    Documents/images dropped into the workspace are stored with
-    use_in_context=1 (see uploadLibraryFile). The code agent's tool loop is
-    unaware of the library, so the dropped file is invisible unless we surface
-    it here — mirroring how the chat path injects library context. The block is
-    bounded (build_library_context caps files/chars) so it cannot blow the
-    context window.
-    """
-    try:
-        ctx = build_library_context()
-    except Exception:
-        return message
-    block = (ctx.get("context") or "").strip()
-    if not block:
-        return message
-    used = ", ".join(ctx.get("used_files") or []) or "вложения"
-    header = (
-        "Контекст из прикреплённых файлов "
-        f"({used}). Используй его, если он относится к запросу:"
-    )
-    return f"{header}\n\n{block}\n\n----- ЗАПРОС ПОЛЬЗОВАТЕЛЯ -----\n{message}"
+def _inject_library_context(message: str, *, query: str | None = None) -> str:
+    """Compatibility wrapper around the Library-owned prompt formatter."""
+    return inject_library_context(message, query=query)
 
 
 class CodeAgentAttachment(BaseModel):
@@ -324,7 +305,7 @@ class CodeAgentRequest(BaseModel):
     )
     profile_name: str = Field(
         default="Авто",
-        description="Persona mode: Авто (Elira picks per message), Личный, Баланс or Инженерный. Legacy profile names are migrated automatically.",
+        description="Compatibility field. Elira/Auto selects internal domain policies per request; concrete legacy values no longer lock routing.",
     )
 
 
@@ -505,7 +486,8 @@ def stream(payload: CodeAgentStreamRequest) -> StreamingResponse:
         _inject_resource_context(
             _inject_attachment_context(payload.message, payload.attachments),
             resource_refs,
-        )
+        ),
+        query=payload.message,
     )
 
     def gen():
@@ -718,6 +700,14 @@ def index_project_endpoint(payload: IndexProjectRequest) -> dict[str, Any]:
     return result
 
 
+@router.get("/corpus/status")
+def corpus_status(project_root: str) -> dict[str, Any]:
+    result = project_corpus_status(project_root)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "corpus status failed"))
+    return result
+
+
 @router.post("/recall")
 def recall(payload: RecallRequest) -> dict[str, Any]:
     return recall_from_rag(
@@ -785,21 +775,10 @@ def web_corpus_promote(payload: WebCorpusPromoteRequest) -> dict[str, Any]:
 
 @router.get("/servers")
 def servers_list(run_id: Optional[str] = None) -> dict[str, Any]:
-    """Live run_server registry (R2 observability): every tracked dev server with its
-    owning run_id. `run_id` filters to one run. The smoke suite asserts this is EMPTY
-    after a TaskSpec run — the honest cleanup check the port probe alone can't give
-    (a leaked handle or a server with no parsed URL is invisible to a port scan)."""
-    import time as _time
-    from app.application.code_agent.tools._run import _LIVE_SERVERS, _SERVERS_LOCK, _reap_dead_servers
-    _reap_dead_servers()
-    with _SERVERS_LOCK:
-        handles = list(_LIVE_SERVERS.values())
-    servers = [
-        {"pid": h.pid, "port": h.port, "url": h.url, "command": h.command,
-         "run_id": h.run_id, "age_s": int(_time.time() - h.started_at)}
-        for h in handles
-        if run_id is None or h.run_id == run_id
-    ]
+    """Structured run_server view, including recovered and terminal jobs."""
+    from app.application.code_agent.tools._run import tracked_background_processes
+
+    servers = tracked_background_processes(run_id)
     return {"servers": servers, "count": len(servers)}
 
 

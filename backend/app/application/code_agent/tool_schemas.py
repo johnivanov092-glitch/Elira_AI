@@ -131,7 +131,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Manage integration runtimes hidden behind Workflow UI. For long-term "
                     "user memory, use memory_search first and memory_list when search has no "
-                    "matches; recall is project RAG, not user memory. Also manages: portable vault "
+                    "matches; recall is project RAG, not user memory. Project Corpus indexing and "
+                    "status use project_index/project_status. Also manages: portable vault "
                     "status/backup/restore/lock, MCP and LSP config/lifecycle, Telegram "
                     "config/lifecycle/users, plugins, IT Ops assets/profiles, Workflow "
                     "templates/runs/triggers, memory, and library. Every call returns a "
@@ -145,13 +146,16 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "type": "string",
                             "enum": [
                                 "status",
-                                "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart",
+                                "mcp_list", "mcp_upsert", "mcp_remove", "mcp_start", "mcp_stop", "mcp_restart", "mcp_tools",
                                 "lsp_list", "lsp_upsert", "lsp_remove", "lsp_start", "lsp_stop", "lsp_restart",
                                 "ssh_hosts", "ssh_set_hosts",
                                 "telegram_status", "telegram_configure", "telegram_migrate_legacy_token",
                                 "telegram_start", "telegram_stop", "telegram_test", "telegram_users",
-                                "telegram_toggle_user", "itops_assets", "itops_asset_upsert",
+                                "telegram_toggle_user", "telegram_send", "telegram_messages",
+                                "itops_assets", "itops_asset_upsert",
                                 "itops_asset_remove", "itops_profile_upsert", "itops_profile_remove",
+                                "itops_mikrotik_list", "itops_mikrotik_upsert",
+                                "itops_mikrotik_remove", "itops_mikrotik_sync",
                                 "plugin_list", "plugin_info", "plugin_enable", "plugin_disable",
                                 "plugin_reload", "plugin_configure", "plugin_run",
                                 "workflow_list", "workflow_upsert", "workflow_remove",
@@ -163,8 +167,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                                 "memory_stats", "memory_profiles", "memory_list",
                                 "memory_search", "memory_recall", "memory_add",
                                 "memory_delete", "memory_prune",
-                                "library_list", "library_search", "library_context",
-                                "library_add", "library_toggle", "library_delete",
+                                "project_index", "project_status",
+                                "library_list", "library_search", "library_read",
+                                "library_context", "library_add", "library_import",
+                                "library_toggle", "library_delete",
                                 "vault_status", "vault_lock",
                                 "vault_backup", "vault_restore",
                             ],
@@ -182,7 +188,13 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                         "filename": {"type": "string"},
                         "name": {"type": "string"},
                         "query": {"type": "string"},
-                        "root_path": {"type": "string"},
+                        "root_path": {
+                            "type": "string",
+                            "description": (
+                                "Optional runtime root. Project Corpus defaults to the connected "
+                                "project; relative paths start there. LSP defaults there too."
+                            ),
+                        },
                         "secret_ref": {
                             "type": "string",
                             "description": "Opaque sref_ value; never put a plaintext secret here.",
@@ -192,8 +204,20 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                             "description": (
                                 "Runtime config. MCP secrets use env_secret_refs or "
                                 "secret_header_refs maps whose values are sref_ references. "
+                                "MikroTik onboarding uses itops_mikrotik_upsert with host, "
+                                "user, optional label/router_id/port/TLS/ros_version fields; the password "
+                                "arrives only through the top-level secret_ref. "
                                 "Workflow runs/triggers always inherit the current UI permission "
-                                "mode; config cannot elevate it."
+                                "mode; config cannot elevate it. Project indexing accepts optional "
+                                "patterns: string[] and replace: boolean. memory_recall defaults "
+                                "to the connected Project Corpus; config.project accepts a project "
+                                "path or an existing scope: ID. memory_add accepts its fact in the "
+                                "top-level query or config.fact. Library search returns file_id; "
+                                "library_read uses config.file_id, offset and limit to read the full "
+                                "document page by page. library_import saves an attached durable "
+                                "resource using config.resource_id. Telegram send uses chat_id and "
+                                "the top-level query as message text; telegram_messages accepts "
+                                "optional chat_id and config.limit."
                             ),
                         },
                         "chat_id": {"type": "integer"},
@@ -488,6 +512,14 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "properties": {
                         "fact": {"type": "string", "description": "The fact/correction to remember, as a clear standalone statement."},
                         "correction": {"type": "boolean", "description": "True if this fixes something you got wrong (highest trust). Default false."},
+                        "replaces_id": {
+                            "oneOf": [{"type": "integer"}, {"type": "string"}],
+                            "description": (
+                                "ID of the stored fact being corrected. Obtain it from "
+                                "runtime_control(operation='memory_search'); use it whenever "
+                                "the correction replaces an existing memory."
+                            ),
+                        },
                     },
                     "required": ["fact"],
                 },
@@ -579,9 +611,10 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "finite managed jobs. Unlike run_bash, this returns IMMEDIATELY and the process "
                     "keeps running across turns; output and terminal status remain available through "
                     "logs. Use kind='server' for `npm run dev`/`uvicorn`/`vite`; use kind='job' for "
-                    "a long scan, download, build or other finite command. "
-                    "Actions: 'start' (launch `command`, optional `port`), 'list' (show running "
-                    "processes), 'logs' (status + tail output of `pid`), 'stop' (terminate/clear "
+                    "a long scan, download, build or other finite command. Finite jobs persist their "
+                    "PID identity, logs and completed/failed/cancelled result across backend restarts. "
+                    "Actions: 'start' (launch `command`, optional `port`), 'list' (show tracked "
+                    "processes), 'logs' (status + tail output of `pid`), 'stop' (terminate/cancel "
                     "`pid`), 'stop_all'. "
                     "The process runs until run_server(action='stop') or explicit Workflow Stop."
                 ),

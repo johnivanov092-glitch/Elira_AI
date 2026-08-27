@@ -140,6 +140,12 @@ def init_db(*, conn_factory: Callable[[], Any]) -> None:
                     pass
             if migrated:
                 logger.info("rag_memory: migrated %d embeddings from JSON to BLOB", migrated)
+        if "source_uri" not in existing_cols:
+            conn.execute("ALTER TABLE rag_items ADD COLUMN source_uri TEXT DEFAULT ''")
+        if "source_hash" not in existing_cols:
+            conn.execute("ALTER TABLE rag_items ADD COLUMN source_hash TEXT DEFAULT ''")
+        if "metadata_json" not in existing_cols:
+            conn.execute("ALTER TABLE rag_items ADD COLUMN metadata_json TEXT DEFAULT ''")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rag_category ON rag_items(category)"
         )
@@ -151,6 +157,40 @@ def init_db(*, conn_factory: Callable[[], Any]) -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rag_project ON rag_items(project)"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_rag_project_source
+            ON rag_items(project, category, source_uri, source_hash)
+            """
+        )
+        # The project corpus manifest deliberately lives in the existing RAG
+        # database. It records file-level ingestion state; embeddings and
+        # searchable chunks remain in rag_items, so this is not a second store.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_corpus_files (
+                project TEXT NOT NULL,
+                source_uri TEXT NOT NULL,
+                content_hash TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                mtime_ns INTEGER NOT NULL DEFAULT 0,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT NOT NULL DEFAULT '',
+                repo TEXT NOT NULL DEFAULT '',
+                commit_sha TEXT NOT NULL DEFAULT '',
+                language TEXT NOT NULL DEFAULT '',
+                indexed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (project, source_uri)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_project_corpus_status
+            ON project_corpus_files(project, status)
+            """
         )
         conn.commit()
     finally:
@@ -204,6 +244,9 @@ def add_to_rag(
     category: str = "fact",
     importance: int = 5,
     project: str = "",
+    source_uri: str = "",
+    source_hash: str = "",
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text = text.strip()
     if not text or len(text) < 3:
@@ -211,6 +254,9 @@ def add_to_rag(
 
     text_hash = _text_hash(text)
     project_key = project or ""
+    source_key = source_uri or ""
+    source_version = source_hash or ""
+    metadata_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
 
     # Dedup: if a row with the same text + category + project exists,
     # just bump its importance (capped at 10) instead of inserting a duplicate.
@@ -222,17 +268,26 @@ def add_to_rag(
             """
             SELECT id, importance FROM rag_items
             WHERE text_hash = ? AND category = ? AND COALESCE(project, '') = ?
+              AND COALESCE(source_uri, '') = ? AND COALESCE(source_hash, '') = ?
             LIMIT 1
             """,
-            (text_hash, category, project_key),
+            (text_hash, category, project_key, source_key, source_version),
         ).fetchone()
         if existing:
             existing_id = existing[0] if not hasattr(existing, "keys") else existing["id"]
             existing_imp = existing[1] if not hasattr(existing, "keys") else existing["importance"]
-            new_imp = min(10, int(existing_imp or 0) + 1)
+            # Durable corpus retries must be idempotent. Ordinary memories keep
+            # the historical importance bump on dedup; source-backed chunks do
+            # not grow in importance merely because an interrupted ingestion
+            # resumed and saw the same chunk again.
+            new_imp = (
+                max(int(existing_imp or 0), int(importance))
+                if source_key
+                else min(10, int(existing_imp or 0) + 1)
+            )
             conn.execute(
-                "UPDATE rag_items SET importance = ? WHERE id = ?",
-                (new_imp, existing_id),
+                "UPDATE rag_items SET importance = ?, metadata_json = ? WHERE id = ?",
+                (new_imp, metadata_json, existing_id),
             )
             conn.commit()
             return {
@@ -256,10 +311,24 @@ def add_to_rag(
     try:
         cursor = conn.execute(
             """
-            INSERT INTO rag_items (text, text_hash, category, embedding, embedding_blob, importance, project)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO rag_items (
+                text, text_hash, category, embedding, embedding_blob, importance,
+                project, source_uri, source_hash, metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (text, text_hash, category, "", embedding_blob, importance, project_key),
+            (
+                text,
+                text_hash,
+                category,
+                "",
+                embedding_blob,
+                importance,
+                project_key,
+                source_key,
+                source_version,
+                metadata_json,
+            ),
         )
         item_id = cursor.lastrowid
         conn.commit()
@@ -314,6 +383,7 @@ def search_rag(
         return {"ok": True, "items": [], "count": 0}
 
     query_embedding = get_embedding_func(query)
+    keywords = [word for word in query.lower().split() if len(word) > 2]
 
     # Explicit column list — never SELECT *. Pulling the legacy
     # `embedding` TEXT column on every search wasted ~150ms at 2K rows
@@ -322,7 +392,7 @@ def search_rag(
     # is missing, via a separate query, to drive lazy migration.
     base_cols = (
         "id, text, category, importance, access_count, created_at, "
-        "embedding_blob, text_hash, project"
+        "embedding_blob, text_hash, project, source_uri, source_hash, metadata_json"
     )
     conn = conn_factory()
     try:
@@ -347,6 +417,42 @@ def search_rag(
                 f"SELECT {base_cols} FROM rag_items ORDER BY importance DESC LIMIT ?",
                 (int(candidate_limit),),
             ).fetchall()
+
+        # The importance-ranked cap keeps vector work bounded, but a large
+        # project corpus can contain an exact identifier/path match beyond that
+        # window. Add a second bounded lexical shortlist from the full scoped
+        # store, then deduplicate by row id before hybrid reranking.
+        if keywords:
+            escaped = [
+                "%" + word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+                for word in keywords[:8]
+            ]
+            lexical_where = " OR ".join("LOWER(text) LIKE ? ESCAPE '\\'" for _ in escaped)
+            lexical_limit = min(max(int(candidate_limit), 1), 1000)
+            if project:
+                lexical_rows = conn.execute(
+                    f"""
+                    SELECT {base_cols} FROM rag_items
+                    WHERE (project = ? OR project = '' OR project IS NULL)
+                      AND ({lexical_where})
+                    ORDER BY importance DESC
+                    LIMIT ?
+                    """,
+                    (project, *escaped, lexical_limit),
+                ).fetchall()
+            else:
+                lexical_rows = conn.execute(
+                    f"""
+                    SELECT {base_cols} FROM rag_items
+                    WHERE {lexical_where}
+                    ORDER BY importance DESC
+                    LIMIT ?
+                    """,
+                    (*escaped, lexical_limit),
+                ).fetchall()
+            seen_ids = {int(row["id"]) for row in rows}
+            rows = list(rows)
+            rows.extend(row for row in lexical_rows if int(row["id"]) not in seen_ids)
     finally:
         conn.close()
 
@@ -485,7 +591,6 @@ def search_rag(
     # and rows matching BOTH semantic and lexical rank highest. With no query
     # embedding, cosine is 0 for every row and lexical drives the ranking
     # (keyword-only mode, as before). Local + deterministic — no cloud/cross-encoder.
-    keywords = [word for word in query.lower().split() if len(word) > 2]
     scored: list[tuple[float, dict[str, Any]]] = []
     for i, row_dict in enumerate(parsed_rows):
         cosine = cosine_scores[i]
@@ -500,6 +605,15 @@ def search_rag(
             row_dict.pop("embedding", None)       # don't leak vector to caller
             row_dict.pop("embedding_blob", None)  # don't leak BLOB bytes either
             row_dict.pop("text_hash", None)       # internal
+            row_dict.pop("source_hash", None)     # internal ingestion version
+            raw_metadata = row_dict.pop("metadata_json", "")
+            if raw_metadata:
+                try:
+                    metadata = json.loads(raw_metadata)
+                except (json.JSONDecodeError, TypeError):
+                    metadata = None
+                if isinstance(metadata, dict) and metadata:
+                    row_dict["metadata"] = metadata
             scored.append((score, row_dict))
 
     scored.sort(key=lambda item: -item[0])
@@ -508,6 +622,11 @@ def search_rag(
         entry = {"score": round(score, 3), **item}
         source = _parse_source(entry.get("text") or "")
         if source:
+            metadata = entry.get("metadata")
+            if isinstance(metadata, dict):
+                for key in ("repo", "commit", "language"):
+                    if metadata.get(key):
+                        source[key] = metadata[key]
             entry["source"] = source  # file/line citation for indexed code chunks
         items.append(entry)
 

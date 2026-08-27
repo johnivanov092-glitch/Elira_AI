@@ -1,8 +1,8 @@
 """Tests for LSP server configuration + lifecycle (lsp_runtime).
 
 Disabled-by-default is the headline invariant: no config file ⇒ no
-servers ⇒ provider gives zero schemas. We also cover the opt-in gate
-(start refuses a disabled / not-configured spec), config round-trips
+servers ⇒ provider gives zero schemas. We also cover explicit start
+(a configured disabled spec can still be started on demand), config round-trips
 (save/list/stop/restart), and isolation (no ``lsp_servers.json`` leaks
 into the project's real ``data/`` — everything goes through a temp
 ``ELIRA_DATA_DIR``).
@@ -10,9 +10,8 @@ into the project's real ``data/`` — everything goes through a temp
 Isolation mirrors the projects-registry tests: set ``ELIRA_DATA_DIR``
 to a TemporaryDirectory, then ``importlib.reload`` both ``data_files``
 (it caches ``DATA_DIR`` at import) and ``lsp_runtime`` (it caches
-``CONFIG_PATH`` at import). Pure unittest.TestCase, no real subprocess —
-``start_server`` here only ever hits the "disabled"/"not configured"
-guards, which return before any spawn.
+``CONFIG_PATH`` at import). Subprocess startup is mocked where the
+explicit-start contract is exercised.
 """
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -105,12 +105,14 @@ class StartGuardsTest(unittest.TestCase):
             rt = _fresh_runtime(data)
             try:
                 rt.save_servers([_spec("pyright", enabled=False)])
-                res = rt.start_server("pyright")
-                self.assertFalse(res["ok"])
-                self.assertNotIn("disabled", res["error"])
-                # Spawn failure must not register a live client.
-                self.assertEqual(rt.live_clients(), {})
+                with patch.object(rt, "LspClient") as client_type:
+                    client_type.return_value.is_alive.return_value = True
+                    res = rt.start_server("pyright")
+                self.assertTrue(res["ok"])
+                self.assertNotIn("error", res)
+                self.assertEqual(set(rt.live_clients()), {"pyright"})
             finally:
+                rt.stop_all_servers()
                 os.environ.pop("ELIRA_DATA_DIR", None)
 
     def test_start_never_raises_on_bad_command(self) -> None:

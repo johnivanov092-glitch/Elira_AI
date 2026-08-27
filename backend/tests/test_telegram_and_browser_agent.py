@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = ROOT / "backend"
@@ -111,6 +112,15 @@ class TelegramStoreCRUDTest(unittest.TestCase):
         result = tg_store.get_telegram_log(limit=3)
         self.assertLessEqual(result["count"], 3)
 
+    def test_log_can_be_filtered_by_chat_id(self) -> None:
+        tg_store.log_message(chat_id=111, direction="in", text="one")
+        tg_store.log_message(chat_id=222, direction="in", text="two")
+
+        result = tg_store.get_telegram_log(limit=10, chat_id=222)
+
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["log"][0]["chat_id"], 222)
+
 
 class TelegramRuntimeConfigTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -170,6 +180,26 @@ class TelegramRuntimeConfigTest(unittest.TestCase):
     def test_telegram_bot_status_running_false_initially(self) -> None:
         result = tg_rt.telegram_bot_status()
         self.assertFalse(result["running"])
+
+    def test_typed_send_resolves_token_and_logs_only_a_success(self) -> None:
+        tg_store.set_config_value("bot_token", "123:local-token")
+        with patch.object(
+            tg_rt,
+            "send_message",
+            return_value={"ok": True, "result": {"message_id": 77, "date": 1234}},
+        ) as send:
+            result = tg_rt.send_telegram_message(chat_id=222, text="canary")
+
+        self.assertEqual(result["message_id"], 77)
+        send.assert_called_once_with(
+            "123:local-token",
+            222,
+            "canary",
+            parse_mode="Markdown",
+        )
+        log = tg_store.get_telegram_log(chat_id=222)
+        self.assertEqual(log["count"], 1)
+        self.assertEqual(log["log"][0]["text"], "canary")
 
 
 class BrowserAgentTest(unittest.TestCase):

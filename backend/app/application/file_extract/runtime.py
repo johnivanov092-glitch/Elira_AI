@@ -22,6 +22,20 @@ TEXT_EXTS = {
 }
 
 
+def is_extract_error(text: str) -> bool:
+    """Return True for the extractor's stable bracketed failure messages."""
+    stripped = str(text or "").strip()
+    if not stripped.startswith("["):
+        return False
+    lowered = stripped.lower()
+    return (
+        "ошибка" in lowered
+        or "не установлен" in lowered
+        or "не удалось" in lowered
+        or "не поддерживается" in lowered
+    )
+
+
 def _extract_pdf(data: bytes, max_chars: int = 50000) -> str:
     """Умное извлечение: pypdf → pdfplumber → OCR."""
     try:
@@ -69,15 +83,32 @@ def _extract_docx(data: bytes, max_chars: int = 30000) -> str:
     try:
         from docx import Document
         doc = Document(io.BytesIO(data))
-        parts = []
+        parts: list[str] = []
         total = 0
+
+        def append_bounded(value: str) -> bool:
+            nonlocal total
+            text = value.strip()
+            if not text or total >= max_chars:
+                return total < max_chars
+            remaining = max_chars - total
+            parts.append(text[:remaining])
+            total += min(len(text), remaining)
+            return total < max_chars
+
         for para in doc.paragraphs:
-            text = para.text.strip()
-            if text:
-                if total + len(text) > max_chars:
+            if not append_bounded(para.text):
+                break
+        if total < max_chars:
+            for table_index, table in enumerate(doc.tables, 1):
+                if not append_bounded(f"=== Таблица {table_index} ==="):
                     break
-                parts.append(text)
-                total += len(text)
+                for row in table.rows:
+                    line = " | ".join(cell.text.strip() for cell in row.cells)
+                    if not append_bounded(line):
+                        break
+                if total >= max_chars:
+                    break
         return "\n".join(parts)
     except ImportError:
         return "[python-docx не установлен: pip install python-docx]"
@@ -91,13 +122,21 @@ def _extract_xlsx(data: bytes, max_chars: int = 30000) -> str:
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         parts = []
         total = 0
-        for sheet in wb.sheetnames[:5]:  # Макс 5 листов
+        for sheet in wb.sheetnames:
+            if total >= max_chars:
+                break
             ws = wb[sheet]
-            parts.append(f"=== Лист: {sheet} ===")
-            for row in ws.iter_rows(max_row=200, values_only=True):
+            header = f"=== Лист: {sheet} ==="
+            parts.append(header)
+            total += len(header)
+            for row in ws.iter_rows(values_only=True):
                 cells = [str(c) if c is not None else "" for c in row]
                 line = " | ".join(cells)
                 if total + len(line) > max_chars:
+                    remaining = max_chars - total
+                    if remaining > 0:
+                        parts.append(line[:remaining])
+                        total += remaining
                     break
                 parts.append(line)
                 total += len(line)
@@ -116,12 +155,19 @@ def _extract_xls(data: bytes, max_chars: int = 30000) -> str:
         book = xlrd.open_workbook(file_contents=data)
         parts: list[str] = []
         total = 0
-        for sheet in book.sheets()[:5]:  # макс 5 листов
+        for sheet in book.sheets():
+            if total >= max_chars:
+                break
             parts.append(f"=== Лист: {sheet.name} ===")
-            for r in range(min(sheet.nrows, 200)):
+            total += len(parts[-1])
+            for r in range(sheet.nrows):
                 cells = [str(sheet.cell_value(r, c)) for c in range(sheet.ncols)]
                 line = " | ".join(cells)
                 if total + len(line) > max_chars:
+                    remaining = max_chars - total
+                    if remaining > 0:
+                        parts.append(line[:remaining])
+                        total += remaining
                     break
                 parts.append(line)
                 total += len(line)
@@ -236,27 +282,36 @@ def _transcribe_audio(contents: bytes, filename: str) -> str:
     return (text or "").strip() or "[аудио распознано, но текст пустой]"
 
 
-def extract_file(filename: str, contents: bytes) -> dict:
-    """Извлекает текст из любого поддерживаемого файла."""
+def extract_file(filename: str, contents: bytes, *, max_chars: int | None = None) -> dict:
+    """Извлекает текст из любого поддерживаемого файла.
+
+    ``max_chars`` позволяет владельцу контекста выбрать свой физический предел.
+    Без параметра сохраняются прежние безопасные лимиты каждого формата.
+    """
     filename = (filename or "").strip()
     ext = Path(filename).suffix.lower()
 
+    def limit(default: int) -> int:
+        return default if max_chars is None else max(1, int(max_chars))
+
     if ext == ".pdf":
-        text = _extract_pdf(contents)
+        text = _extract_pdf(contents, limit(50000))
     elif ext in (".docx", ".doc"):
-        text = _extract_docx(contents)
+        text = _extract_docx(contents, limit(30000))
     elif ext == ".xls":
-        text = _extract_xls(contents)
+        text = _extract_xls(contents, limit(30000))
     elif ext in (".xlsx", ".xlsm"):
-        text = _extract_xlsx(contents)
+        text = _extract_xlsx(contents, limit(30000))
     elif ext == ".pptx":
-        text = _extract_pptx(contents)
+        text = _extract_pptx(contents, limit(30000))
     elif ext == ".zip":
-        text = _extract_zip(contents)
+        text = _extract_zip(contents, limit(30000))
     elif ext in _AUDIO_EXTS:
         text = _transcribe_audio(contents, filename)
+        if max_chars is not None:
+            text = text[:limit(30000)]
     else:
-        text = _extract_text(contents)
+        text = _extract_text(contents, limit(30000))
 
     return {
         "ok": True,

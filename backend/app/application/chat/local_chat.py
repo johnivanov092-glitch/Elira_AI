@@ -62,12 +62,15 @@ _CODE_SIGNALS = re.compile(
     r"имплемент|merge|pull\s*request|pr\b|api\b|endpoint|роутинг|миграци|"
     r"bug|fix|refactor|implement|deploy|compile|build|debug|stack\s*trace|"
     r"exception|commit|function|class\b|код\b)"
+    r"|\b(?:unity|blender|github)\b"
     r"|\.(?:py|ts|tsx|js|jsx|go|rs|java|c|cpp|h|sql|json|yaml|yml|sh|toml)\b"
+    r"|(?<![A-Za-z0-9])[A-Za-z]:[\\/]"  # Windows path, not the tail of https:/
     r"|`[^`]+`)",
     re.IGNORECASE,
 )
 _PERSONAL_SIGNALS = re.compile(
     r"\b(?:устал\w*|грустн\w*|тяжело|одиноко|спасибо|"
+    r"запомн\w*|вспомн\w*|долговременн\w*\s+памят\w*|"
     r"как\s+(?:ты|дела|сама)|поговор\w*|посоветуй\s+по\s+жизни|"
     r"пережива\w*|тревож\w*|скуч\w*|люблю|нравишься|"
     r"поддерж\w*|обним\w*|расскажи\s+о\s+себе)\b",
@@ -102,6 +105,12 @@ _INFRA_SIGNALS = re.compile(
     r"|\b(?:tcp|udp|icmp|ping|tracert|dig|vlan|dns|dhcp|nat|ssh|rdp|smb|snmp)\b)",
     re.IGNORECASE,
 )
+_INFRA_ACTION_SIGNALS = re.compile(
+    r"(?:подключ\w*|зайд\w*|проверь|диагност\w*|настро\w*|выполн\w*|"
+    r"запусти|просканир\w*).{0,160}(?:\bssh\b|\brdp\b|\bsmb\b|\bsnmp\b|"
+    r"\btcp\b|\budp\b|\bicmp\b|роутер|router|firewall|подсет|порт\w*)",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 # Medical signals (Медицина): health/clinical — symptoms, treatment, doses,
@@ -122,7 +131,7 @@ _MEDICAL_SIGNALS = re.compile(
 # coding request wins) and after medical (a health question wins). Uses specific
 # scientific terms so generic words ("энергия"/"сила") don't misroute.
 _SCIENCE_SIGNALS = re.compile(
-    r"(?:\b(?:биолог\w*|ген\b|ген[аеовы]\w*|геном\w*|фермент\w*|белок|белк\w*|"
+    r"(?:\b(?:научн\w*|биолог\w*|ген\b|ген[аеовы]\w*|геном\w*|фермент\w*|белок|белк\w*|"
     r"клетк\w*|эволюци\w*|организм\w*|молекул\w*|нейрон\w*|фотосинтез|"
     r"митоз|мейоз|хромосом\w*|физик\w*|квант\w*|частиц\w*|термодинамик\w*|"
     r"энтропи\w*|релятив\w*|электромагнит\w*|гравитаци\w*|нейтрон\w*|"
@@ -169,6 +178,12 @@ def classify_mode(
     text = _routing_text(user_input, conversation_history)
     if not text:
         return DEFAULT_PROFILE
+    # Explicit operations against network/remote infrastructure stay in the
+    # infrastructure domain even when the request contains a quoted command.
+    # Backticks alone are an engineering signal, but should not turn
+    # "подключись по SSH и выполни `uname`" into a coding task.
+    if _INFRA_ACTION_SIGNALS.search(text):
+        return "Инфраструктура"
     if _CODE_SIGNALS.search(text):
         return "Инженерный"
     if _PERSONAL_SIGNALS.search(text):
@@ -184,24 +199,41 @@ def classify_mode(
     return DEFAULT_PROFILE
 
 
+def classify_domain_policies(
+    user_input: str | None,
+    conversation_history: list[dict[str, object]] | None = None,
+) -> tuple[str, ...]:
+    """Return every relevant internal domain policy for one request.
+
+    ``classify_mode`` still picks one dominant tone/persona overlay. Capability
+    routing must not inherit that winner-takes-all behavior: a single task may
+    legitimately combine code, networking, documents and current web evidence.
+    """
+    text = _routing_text(user_input, conversation_history)
+    if not text:
+        return (DEFAULT_PROFILE,)
+    checks = (
+        ("Инженерный", _CODE_SIGNALS),
+        ("Личный", _PERSONAL_SIGNALS),
+        ("Деловой", _BUSINESS_SIGNALS),
+        ("Инфраструктура", _INFRA_SIGNALS),
+        ("Медицина", _MEDICAL_SIGNALS),
+        ("Научный", _SCIENCE_SIGNALS),
+    )
+    matched = tuple(name for name, pattern in checks if pattern.search(text))
+    return matched or (DEFAULT_PROFILE,)
+
+
 def resolve_persona_mode(
     requested: str | None,
     user_input: str | None,
     conversation_history: list[dict[str, object]] | None = None,
 ) -> str:
-    """Resolve the effective mode for a live request (hybrid Авто + lock).
+    """Resolve the internal domain policy for the single ``Elira / Auto`` UI.
 
-    Priority: an explicit per-request mode wins (lock); else the saved
-    `agent_profile`; if that is "Авто" (or unset), classify the message.
+    ``requested`` remains in the wire contract so old clients and durable runs
+    can resume, but it no longer locks tool routing or fragments Elira into a
+    user-selected persona. The current task always selects the internal policy.
     """
-    req = (requested or "").strip()
-    if not req or req.lower() == "default":
-        from app.application.elira_memory.settings import get_settings
-
-        try:
-            req = str(get_settings().get("agent_profile") or AUTO_PROFILE)
-        except Exception:
-            req = AUTO_PROFILE
-    if req == AUTO_PROFILE or req.lower() == "auto":
-        return classify_mode(user_input, conversation_history)
-    return normalize_profile(req)
+    del requested
+    return classify_mode(user_input, conversation_history)

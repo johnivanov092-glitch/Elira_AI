@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -199,6 +201,38 @@ def _path_to_uri(root_path: str | None) -> str | None:
     return urljoin("file:", pathname2url(str(resolved)))
 
 
+def _resolve_server_command(command: str, args: list[str]) -> tuple[str, list[str]]:
+    """Resolve common model-produced LSP launch forms inside this runtime.
+
+    The backend venv's Scripts directory is not necessarily present in the
+    desktop process PATH. Pyright's Python package installs the real
+    ``pyright-langserver`` launcher beside ``sys.executable``; prefer it over
+    an ``npx pyright-langserver`` form, which otherwise performs network and
+    package-manager work during an agent run.
+    """
+    command_name = Path(command).name.casefold()
+    normalized_args = list(args)
+    if (
+        command_name in {"npx", "npx.cmd", "npx.exe"}
+        and normalized_args
+        and normalized_args[0].casefold() == "pyright-langserver"
+    ):
+        command = "pyright-langserver"
+        normalized_args = normalized_args[1:]
+
+    located = shutil.which(command)
+    if located:
+        return located, normalized_args
+
+    scripts_dir = Path(sys.executable).resolve().parent
+    suffixes = ("", ".exe", ".cmd") if not Path(command).suffix else ("",)
+    for suffix in suffixes:
+        candidate = scripts_dir / f"{command}{suffix}"
+        if candidate.is_file():
+            return str(candidate), normalized_args
+    return command, normalized_args
+
+
 def start_server(server_id: str, root_path: str | None = None) -> dict[str, Any]:
     """Bring up the configured server with this id, analysing `root_path`.
 
@@ -216,10 +250,11 @@ def start_server(server_id: str, root_path: str | None = None) -> dict[str, Any]
         if existing is not None:
             _stop_locked(server_id)
 
+        command, args = _resolve_server_command(spec["command"], spec["args"])
         client = LspClient(
             language=spec["language"],
-            command=spec["command"],
-            args=spec["args"],
+            command=command,
+            args=args,
             root_uri=_path_to_uri(root_path),
             cwd=root_path or None,
         )

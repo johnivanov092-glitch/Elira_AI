@@ -168,6 +168,11 @@ def _portable_components() -> dict[str, tuple[str, Path]]:
         "integrations.db": ("sqlite", data_file("integrations.db")),
         "agent_registry.db": ("sqlite", data_file("agent_registry.db")),
         "tool_registry.db": ("sqlite", data_file("tool_registry.db")),
+        # Curated facts and semantic/Project Corpus memory are encrypted in the
+        # same user-triggered portable bundle. The run-scoped web Corpus remains
+        # an expiring cache and is intentionally excluded.
+        "smart_memory.db": ("sqlite", data_file("smart_memory.db")),
+        "rag_memory.db": ("sqlite", data_file("rag_memory.db")),
         "mcp_servers.json": ("json", data_file("mcp_servers.json")),
         "lsp_servers.json": ("json", data_file("lsp_servers.json")),
         "ssh_acl.json": ("json", data_file("ssh_acl.json")),
@@ -368,7 +373,10 @@ def _atomic_write(document: dict[str, Any]) -> None:
             pass
         if path.exists():
             shutil.copyfile(path, previous_temp)
-            with previous_temp.open("rb") as handle:
+            # Windows rejects fsync on a read-only CRT descriptor with EBADF.
+            # The copy is ours, so open it read/write solely to flush the bytes
+            # before the atomic rename to ``.prev``.
+            with previous_temp.open("rb+") as handle:
                 os.fsync(handle.fileno())
             os.replace(previous_temp, previous)
         os.replace(temp, path)
@@ -724,7 +732,7 @@ def rotate_recovery_key() -> dict[str, Any]:
 
 
 def backup(destination: str | Path) -> dict[str, Any]:
-    """Bundle encrypted vault, Workflow state and integration runtime metadata."""
+    """Bundle encrypted vault, Workflow/integration state and durable memory."""
     with _lock:
         source = _vault_path()
         document = _read_document()

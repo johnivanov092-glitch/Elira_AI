@@ -43,6 +43,7 @@ _LOCK = threading.Lock()
 _LIVE_CLIENTS: dict[str, McpClient] = {}
 # id → last connect-attempt error message (or None on success)
 _LAST_ERROR: dict[str, str | None] = {}
+_MAX_REPORTED_TOOL_NAMES = 50
 
 
 # ── Config persistence ──────────────────────────────────────────
@@ -270,6 +271,63 @@ def _resolve_secret_refs(refs: dict[str, str]) -> dict[str, str]:
     return {name: vault.resolve(secret_ref) for name, secret_ref in refs.items()}
 
 
+def _discover_tool_names(client: Any, server_id: str) -> dict[str, Any]:
+    """Return a compact, schema-free summary of the server's callable tools."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for tool in client.list_tools():
+        name = tool.get("name") if isinstance(tool, dict) else None
+        if not isinstance(name, str) or not name:
+            continue
+        qualified = f"{server_id}__{name}"
+        if qualified in seen:
+            continue
+        seen.add(qualified)
+        names.append(qualified)
+    return {
+        "available_tool_count": len(names),
+        "available_tool_names": names[:_MAX_REPORTED_TOOL_NAMES],
+        "available_tool_names_truncated": len(names) > _MAX_REPORTED_TOOL_NAMES,
+    }
+
+
+def discover_tools(server_id: str) -> dict[str, Any]:
+    """Return the compact tool catalog for one already-running server."""
+    with _LOCK:
+        client = _LIVE_CLIENTS.get(str(server_id))
+        if client is None or not client.is_alive():
+            return {
+                "ok": False,
+                "error": f"server '{server_id}' is not running",
+                "server_id": str(server_id),
+            }
+        try:
+            summary = _discover_tool_names(client, str(server_id))
+        except Exception as exc:
+            return _tool_discovery_failure(
+                str(server_id),
+                exc,
+                already_running=True,
+            )
+        return {"ok": True, "server_id": str(server_id), **summary}
+
+
+def _tool_discovery_failure(
+    server_id: str,
+    exc: Exception,
+    *,
+    already_running: bool,
+) -> dict[str, Any]:
+    msg = f"MCP tool discovery failed: {exc}"
+    _LAST_ERROR[server_id] = msg
+    return {
+        "ok": False,
+        "error": msg,
+        "server_id": server_id,
+        "already_running": already_running,
+    }
+
+
 def start_server(server_id: str) -> dict[str, Any]:
     """Bring up the configured server with this id. Idempotent if the
     server is already running."""
@@ -279,7 +337,21 @@ def start_server(server_id: str) -> dict[str, Any]:
             return {"ok": False, "error": f"server '{server_id}' not configured"}
         existing = _LIVE_CLIENTS.get(server_id)
         if existing is not None and existing.is_alive():
-            return {"ok": True, "already_running": True, "server_id": server_id}
+            try:
+                tool_summary = _discover_tool_names(existing, server_id)
+            except Exception as exc:
+                return _tool_discovery_failure(
+                    server_id,
+                    exc,
+                    already_running=True,
+                )
+            _LAST_ERROR[server_id] = None
+            return {
+                "ok": True,
+                "already_running": True,
+                "server_id": server_id,
+                **tool_summary,
+            }
         # Stale entry (crashed process) — clear it.
         if existing is not None:
             _stop_locked(server_id)
@@ -326,6 +398,23 @@ def start_server(server_id: str) -> dict[str, Any]:
             _LAST_ERROR[server_id] = str(exc)
             return {"ok": False, "error": str(exc)}
 
+        try:
+            tool_summary = _discover_tool_names(client, server_id)
+        except Exception as exc:
+            try:
+                client.stop()
+            except Exception:
+                logger.warning(
+                    "mcp_runtime: cleanup after failed tool discovery for %r raised",
+                    server_id,
+                    exc_info=True,
+                )
+            return _tool_discovery_failure(
+                server_id,
+                exc,
+                already_running=False,
+            )
+
         _LIVE_CLIENTS[server_id] = client
         _LAST_ERROR[server_id] = None
         return {
@@ -333,6 +422,7 @@ def start_server(server_id: str) -> dict[str, Any]:
             "already_running": False,
             "server_id": server_id,
             "server_info": client.server_info,
+            **tool_summary,
         }
 
 

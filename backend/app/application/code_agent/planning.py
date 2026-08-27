@@ -45,14 +45,19 @@ PLANNING_SYSTEM_PROMPT = (
     '  "ordered_steps": ["короткие конкретные шаги в порядке выполнения"],\n'
     '  "acceptance_checks": ["проверки, доказывающие готовность: typecheck/test/build/…"],\n'
     '  "risks": ["короткие риски/подводные камни"],\n'
+    '  "capability_groups": ["нужные группы из web, desktop, resources, data, memory, operations"],\n'
     '  "current_step": 1\n'
     "}\n\n"
     "ordered_steps и acceptance_checks непустые. current_step — 1-базовый индекс "
     "первого шага. Верни только JSON."
 )
 
-_PLAN_FIELDS = frozenset({
+_PLAN_REQUIRED_FIELDS = frozenset({
     "goal", "current_state", "ordered_steps", "acceptance_checks", "risks", "current_step",
+})
+_PLAN_OPTIONAL_FIELDS = frozenset({"capability_groups"})
+_PLAN_CAPABILITY_GROUPS = frozenset({
+    "web", "desktop", "resources", "data", "memory", "operations",
 })
 
 
@@ -66,6 +71,7 @@ class PlanArtifact:
     ordered_steps: list[str] = field(default_factory=list)
     acceptance_checks: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
+    capability_groups: list[str] = field(default_factory=list)
     current_step: int = 1
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,6 +81,7 @@ class PlanArtifact:
             "ordered_steps": list(self.ordered_steps),
             "acceptance_checks": list(self.acceptance_checks),
             "risks": list(self.risks),
+            "capability_groups": list(self.capability_groups),
             "current_step": int(self.current_step),
         }
 
@@ -98,11 +105,17 @@ def _clean_str_list(value: Any, *, cap: int = 20, item_cap: int = 300) -> list[s
 def plan_artifact_from_dict(data: Any) -> PlanArtifact | None:
     """Coerce+validate a plan dict. Returns None on anything unusable — the
     caller treats None as planning_fallback (never a hang, never a re-plan)."""
-    if not isinstance(data, dict) or set(data) != _PLAN_FIELDS:
+    if (
+        not isinstance(data, dict)
+        or not _PLAN_REQUIRED_FIELDS.issubset(data)
+        or not set(data).issubset(_PLAN_REQUIRED_FIELDS | _PLAN_OPTIONAL_FIELDS)
+    ):
         return None
     steps = _clean_str_list(data.get("ordered_steps"))
     checks = _clean_str_list(data.get("acceptance_checks"))
     risks = _clean_str_list(data.get("risks"), cap=10)
+    raw_groups = data.get("capability_groups", [])
+    groups = _clean_str_list(raw_groups, cap=len(_PLAN_CAPABILITY_GROUPS), item_cap=20)
     goal_raw = data.get("goal")
     state_raw = data.get("current_state")
     current_raw = data.get("current_step")
@@ -114,6 +127,8 @@ def plan_artifact_from_dict(data: Any) -> PlanArtifact | None:
         or steps is None
         or checks is None
         or risks is None
+        or groups is None
+        or any(group not in _PLAN_CAPABILITY_GROUPS for group in groups)
     ):
         return None
     goal = goal_raw.strip()[:400]
@@ -127,6 +142,7 @@ def plan_artifact_from_dict(data: Any) -> PlanArtifact | None:
         ordered_steps=steps,
         acceptance_checks=checks,
         risks=risks,
+        capability_groups=list(dict.fromkeys(groups)),
         current_step=current,
     )
 
@@ -215,6 +231,8 @@ def plan_context_block(plan: PlanArtifact) -> str:
         lines.append(f"  {mark} {i}. {step}")
     lines.append(f"Текущий шаг: {idx}. {plan.ordered_steps[idx - 1]}")
     lines.append("Проверки готовности: " + "; ".join(plan.acceptance_checks))
+    if plan.capability_groups:
+        lines.append("Группы инструментов: " + ", ".join(plan.capability_groups))
     lines.append(
         "После изменения переходи к указанной проверке — не делай серию правок "
         "без обратной связи."

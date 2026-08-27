@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
+from app.application.code_agent.inline_tool_calls import _strip_tool_call_markup
 from app.infrastructure.llm.openai_compatible import (
     chat_completion,
     is_local_llm_model,
@@ -84,6 +85,10 @@ def _coerce_history(history: list[dict[str, Any]] | None) -> list[dict[str, Any]
             continue
         if not isinstance(content, str) or not content:
             continue
+        if role == "assistant":
+            content = _strip_tool_call_markup(content).strip()
+            if not content:
+                continue
         if role == "assistant" and content.startswith(_SUMMARY_PREFIX):
             stripped = content[len(_SUMMARY_PREFIX):].lstrip("\n").lstrip()
             if not stripped:

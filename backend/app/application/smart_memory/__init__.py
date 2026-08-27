@@ -10,6 +10,7 @@ from app.application.smart_memory.store import (
     init_memory_db,
     list_memories,
     list_profiles,
+    prune_volatile_memories,
 )
 
 __all__ = [
@@ -25,5 +26,6 @@ __all__ = [
     "is_memory_command",
     "list_memories",
     "list_profiles",
+    "prune_volatile_memories",
     "search_memory",
 ]

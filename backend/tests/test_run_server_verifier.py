@@ -19,7 +19,8 @@ import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
 
-from app.application.code_agent.tools import _run  # noqa: E402
+from app.application.code_agent.tools import _background_jobs, _run  # noqa: E402
+from app.application.code_agent.tools import _shell  # noqa: E402
 from app.application.code_agent.tools._run import _parse_server_url, active_server_ports  # noqa: E402
 from app.application.web.ssrf_guard import check_ssrf  # noqa: E402
 
@@ -53,6 +54,38 @@ class DestructiveActionWorkflowPermissionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as ws:
             out = _run.tool_run_bash(Path(ws), command="   ")
         self.assertFalse(out["ok"])
+
+
+class StopRegistrationRaceTest(unittest.TestCase):
+    def tearDown(self):
+        with _shell._LIVE_SHELL_LOCK:
+            _shell._LIVE_SHELL_PROCS.clear()
+            _shell._KILLED_RUN_IDS.clear()
+
+    def test_process_registered_after_stop_is_killed_immediately(self):
+        proc = mock.MagicMock()
+        proc.poll.return_value = None
+        _shell.kill_run_processes("race-run")
+
+        with mock.patch.object(_shell, "_kill_proc_tree") as kill_tree:
+            _shell._register_shell_proc("race-run", proc)
+
+        kill_tree.assert_called_once_with(proc)
+        with _shell._LIVE_SHELL_LOCK:
+            self.assertNotIn("race-run", _shell._LIVE_SHELL_PROCS)
+
+    def test_new_run_registration_can_clear_a_stale_stop_marker(self):
+        proc = mock.MagicMock()
+        proc.poll.return_value = None
+        _shell.kill_run_processes("resumed-run")
+        _shell.clear_run_stop_marker("resumed-run")
+
+        with mock.patch.object(_shell, "_kill_proc_tree") as kill_tree:
+            _shell._register_shell_proc("resumed-run", proc)
+
+        kill_tree.assert_not_called()
+        with _shell._LIVE_SHELL_LOCK:
+            self.assertIn(proc, _shell._LIVE_SHELL_PROCS["resumed-run"])
 
 
 class ParseServerUrlTest(unittest.TestCase):
@@ -168,6 +201,16 @@ class RunServerHonestyTest(unittest.TestCase):
         out = _run.tool_run_server(Path("."), action="start", command="")
         self.assertFalse(out["ok"])
 
+    def test_stop_of_untracked_pid_is_ok_false(self):
+        out = _run.tool_run_server(Path("."), action="stop", pid=999_999_999)
+        self.assertIs(out.get("ok"), False)
+        self.assertIn("no tracked server", out["text"])
+
+    def test_unknown_action_is_ok_false(self):
+        out = _run.tool_run_server(Path("."), action="restart")
+        self.assertIs(out.get("ok"), False)
+        self.assertIn("unknown action", out["text"])
+
 
 class ServerLifecycleOwnershipTest(unittest.TestCase):
     """R2 Server Lifecycle: the runtime owns what it started. Ownership is tagged from
@@ -281,6 +324,14 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
         with _run._SERVERS_LOCK:
             _run._LIVE_SERVERS.clear()
 
+    def test_windows_job_worker_detaches_from_backend_console_and_job(self):
+        if _run.os.name != "nt":
+            self.skipTest("Windows process flags only")
+        flags = _run._job_process_group_kwargs()["creationflags"]
+        self.assertTrue(flags & subprocess.CREATE_NEW_PROCESS_GROUP)
+        self.assertTrue(flags & subprocess.DETACHED_PROCESS)
+        self.assertTrue(flags & _run._WINDOWS_CREATE_BREAKAWAY_FROM_JOB)
+
     def test_completed_job_keeps_status_and_final_output_until_cleanup(self):
         command = (
             f'"{sys.executable}" -c "import time; '
@@ -288,6 +339,11 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
             'print(\'JOB_DONE\')"'
         )
         with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(
+                 _background_jobs,
+                 "_state_dir",
+                 return_value=Path(tmp) / "background_jobs",
+             ), \
              mock.patch.object(_run, "_auto_verify_gui") as verify_gui:
             started_at = time.monotonic()
             started = _run.tool_run_server(
@@ -300,6 +356,8 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
             self.assertTrue(started.get("ok"), started.get("text"))
             self.assertLess(start_elapsed, 1.0)
             pid = int(started["pid"])
+            self.assertTrue(started.get("job_id"))
+            self.assertIs(started.get("recovered"), False)
 
             live_result: dict[str, object] = {}
             deadline = time.monotonic() + 1.0
@@ -309,6 +367,8 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
                     break
                 time.sleep(0.05)
             self.assertEqual(live_result.get("status"), "running")
+            self.assertEqual(live_result.get("job_id"), started.get("job_id"))
+            self.assertIs(live_result.get("recovered"), False)
             self.assertIn("JOB_STARTED", str(live_result.get("text", "")))
 
             with _run._SERVERS_LOCK:
@@ -320,6 +380,8 @@ class BackgroundJobLifecycleTest(unittest.TestCase):
         verify_gui.assert_not_called()
         self.assertTrue(result.get("ok"), result.get("text"))
         self.assertEqual(result.get("status"), "completed")
+        self.assertEqual(result.get("job_id"), started.get("job_id"))
+        self.assertIs(result.get("recovered"), False)
         self.assertEqual(result.get("exit_code"), 0)
         self.assertIn("JOB_DONE", result.get("text", ""))
 

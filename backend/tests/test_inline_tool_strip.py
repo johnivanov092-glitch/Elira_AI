@@ -15,6 +15,7 @@ BACKEND_ROOT = ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+from app.application.code_agent.history import _coerce_history  # noqa: E402
 from app.application.code_agent.inline_tool_calls import _strip_tool_call_markup  # noqa: E402
 
 
@@ -42,6 +43,24 @@ class StripToolCallMarkupTest(unittest.TestCase):
         out = _strip_tool_call_markup(s)
         self.assertNotIn("<tool_call", out)
         self.assertNotIn("<function=", out)
+
+    def test_orphan_closing_tags_are_removed(self):
+        s = (
+            "Файл для скачивания:\n"
+            "`D:\\AIWork\\Elira_AI`\n"
+            "</parameter>\n</function>\n</tool_call>"
+        )
+        out = _strip_tool_call_markup(s)
+        self.assertEqual(out, "Файл для скачивания:\n`D:\\AIWork\\Elira_AI`")
+
+    def test_orphan_tool_tags_are_removed_from_prior_assistant_history(self):
+        history = _coerce_history([
+            {
+                "role": "assistant",
+                "content": "Имя файла: report.pdf\n</parameter></function></tool_call>",
+            },
+        ])
+        self.assertEqual(history, [{"role": "assistant", "content": "Имя файла: report.pdf"}])
 
     def test_empty_and_none_safe(self):
         self.assertEqual(_strip_tool_call_markup(""), "")

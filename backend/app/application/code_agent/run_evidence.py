@@ -475,6 +475,21 @@ class RunEvidence:
                 _basename(name),
             ))
 
+        if (
+            provider_ok
+            and tool == "resource_publish"
+            and str(output.get("download_name") or "").strip()
+            and str(output.get("download_url") or "").strip()
+        ):
+            name = str(output["download_name"]).strip()
+            self._receipts.append(EvidenceReceipt(
+                EvidenceKind.ARTIFACT,
+                tool,
+                self._project_epoch,
+                True,
+                _basename(name),
+            ))
+
         if provider_ok and tool_provides_external_source(tool, text_result):
             self._receipts.append(EvidenceReceipt(
                 EvidenceKind.EXTERNAL_SOURCE,

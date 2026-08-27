@@ -78,10 +78,18 @@ def _ssh_args(
         args.append("-n")
     if connect_timeout_seconds is not None:
         args.extend(["-o", f"ConnectTimeout={max(1, int(connect_timeout_seconds))}"])
+    compatibility_args: list[str] = []
+    try:
+        from app.application.it_ops.mikrotik_registry import ssh_compatibility_args
+
+        compatibility_args = ssh_compatibility_args(canonical)
+    except Exception:
+        logger.warning("failed to resolve per-target SSH compatibility", exc_info=True)
     return [
         *args,
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=accept-new",
+        *compatibility_args,
         canonical,
     ]
 
@@ -129,9 +137,17 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
     if not isinstance(command, str) or not command.strip():
         return {"text": "ERROR: command is empty", "ok": False}
 
-    del timeout  # compatibility input; Workflow Stop owns termination
     try:
-        proc = run_registered_process([*_ssh_args(host), command])
+        # This is only the OpenSSH connection-establishment timeout. Once the
+        # remote command starts, it has no execution deadline; Workflow Stop is
+        # the sole cancellation owner.
+        connect_timeout = max(1, int(timeout))
+        proc = run_registered_process([
+            *_ssh_args(host, connect_timeout_seconds=connect_timeout),
+            command,
+        ])
+    except (TypeError, ValueError):
+        return {"text": "ERROR: timeout must be an integer", "ok": False}
     except FileNotFoundError:
         return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     except Exception as exc:

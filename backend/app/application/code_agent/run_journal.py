@@ -18,12 +18,12 @@ from typing import Any
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _SECRET_KEYS = re.compile(r"(?:api[_-]?key|authorization|password|secret|token|cookie)", re.I)
 _TOKEN_METRIC_KEYS = re.compile(
-    r"^(?:(?:prompt|completion|total|input|output|cached|reasoning|audio|"
+    r"^(?:(?:prompt|completion|total|input|output|cached|cached[_-]prompt|reasoning|audio|"
     r"current|free|available[_-]input|reserved[_-]output|reserved[_-]system|"
     r"safety[_-]margin|max|max[_-]context|max[_-]output|compacted|history|"
     r"user|budget|doc|left|right|accepted[_-]prediction|rejected[_-]prediction|"
     r"cache[_-]read[_-]input|cache[_-]creation[_-]input)[_-]tokens|"
-    r"tokens[_-](?:per[_-]second|before|after)|token[_-]budget)$",
+    r"(?:prompt[_-])?tokens[_-](?:per[_-]second|before|after)|token[_-]budget)$",
     re.I,
 )
 _MAX_STRING = 40_000

@@ -1,15 +1,452 @@
 from __future__ import annotations
 
+import json
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import pytest
 
 
 SMOKES_DIR = Path(__file__).resolve().parent / "smokes"
 if str(SMOKES_DIR) not in sys.path:
     sys.path.insert(0, str(SMOKES_DIR))
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
-from driver import summarize_events  # noqa: E402
-from routing_eval import evaluate_case, render_markdown, run_suite  # noqa: E402
+from driver import run_smoke, summarize_events  # noqa: E402
+from routing_eval import (  # noqa: E402
+    DEFAULT_CASES_PATH,
+    _load_cases,
+    _prepare_case_workspace,
+    evaluate_case,
+    render_markdown,
+    run_suite,
+)
+
+
+def test_live_driver_resolves_scripted_workflow_input_through_public_api(
+    tmp_path: Path,
+) -> None:
+    resolved = threading.Event()
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+        def _json(self, payload: dict) -> None:
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self) -> None:  # noqa: N802
+            path = urlsplit(self.path).path
+            if path == "/api/agent-os/workflow-runs":
+                self._json({
+                    "runs": [{
+                        "run_id": "wf-scripted",
+                        "context": {"code_agent_run_id": "eval-scripted"},
+                    }],
+                    "total": 1,
+                })
+                return
+            if path == "/api/agent-os/workflow-runs/wf-scripted/requests":
+                requests = [] if resolved.is_set() else [{
+                    "request_id": "req-scripted",
+                    "run_id": "wf-scripted",
+                    "kind": "input",
+                    "status": "pending",
+                    "message": "Укажите текст факта",
+                    "schema": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }]
+                self._json({"requests": requests, "total": len(requests)})
+                return
+            self.send_error(404)
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = urlsplit(self.path).path
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/code-agent/stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b'data: {"type":"run_started","profile_name":"Personal"}\n\n')
+                self.wfile.flush()
+                assert resolved.wait(5), "scripted Workflow response was not sent"
+                self.wfile.write(
+                    b'data: {"type":"final_response","text":"done"}\n\n'
+                    b'data: {"type":"done","stop_reason":"answer"}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if path == "/api/agent-os/workflow-requests/req-scripted/resolve":
+                received.append(payload)
+                resolved.set()
+                self._json({"request": {"status": "resolved"}, "run": {"status": "running"}})
+                return
+            self.send_error(404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        summary = run_smoke(
+            backend=f"http://127.0.0.1:{server.server_port}",
+            task_text="Запомни факт",
+            project_root=str(tmp_path),
+            run_id="eval-scripted",
+            events_path=tmp_path / "events.jsonl",
+            timeout_s=10,
+            workflow_responses=[{
+                "kind": "input",
+                "message_contains": "текст факта",
+                "values": {"query": "SCRIPTED_CANARY"},
+            }],
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert received == [{
+        "action": "accept",
+        "values": {"query": "SCRIPTED_CANARY"},
+    }]
+    assert summary["stop_reason"] == "answer"
+    assert summary["workflow_requests_resolved"] == [{
+        "request_id": "req-scripted",
+        "kind": "input",
+        "action": "accept",
+    }]
+    assert summary["workflow_response_errors"] == []
+    assert summary["workflow_responses_unused"] == 0
+
+
+def test_live_driver_rejects_plaintext_secret_and_fake_elevation(tmp_path: Path) -> None:
+    common = {
+        "backend": "http://127.0.0.1:1",
+        "task_text": "request",
+        "project_root": str(tmp_path),
+        "run_id": "invalid-script",
+        "events_path": tmp_path / "events.jsonl",
+    }
+    with pytest.raises(ValueError, match="secret_ref"):
+        run_smoke(
+            **common,
+            workflow_responses=[{
+                "kind": "secret",
+                "values": {"token": "plaintext-is-forbidden"},
+            }],
+        )
+    with pytest.raises(ValueError, match="cannot fake elevation"):
+        run_smoke(
+            **common,
+            workflow_responses=[{
+                "kind": "elevation",
+                "action": "accept",
+                "values": {"elevated": True},
+            }],
+        )
+
+
+def test_live_driver_stops_the_run_when_the_selected_tool_starts(tmp_path: Path) -> None:
+    cancelled = threading.Event()
+    received: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = urlsplit(self.path).path
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/code-agent/stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(
+                    b'data: {"type":"run_started","profile_name":"Engineering"}\n\n'
+                    b'data: {"type":"tool_started","tool":"run_bash","arguments":{}}\n\n'
+                )
+                self.wfile.flush()
+                assert cancelled.wait(5), "Workflow Stop was not sent"
+                self.wfile.write(
+                    b'data: {"type":"done","stop_reason":"cancelled","error":"Cancelled by user"}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if path == "/api/code-agent/cancel":
+                received.append(payload)
+                cancelled.set()
+                encoded = b'{"ok":true,"found":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            self.send_error(404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        summary = run_smoke(
+            backend=f"http://127.0.0.1:{server.server_port}",
+            task_text="Run a long command",
+            project_root=str(tmp_path),
+            run_id="eval-stop",
+            events_path=tmp_path / "stop-events.jsonl",
+            timeout_s=10,
+            cancel_on_tool="run_bash",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert received == [{"run_id": "eval-stop"}]
+    assert summary["stop_reason"] == "cancelled"
+    assert summary["workflow_stop_requested"] is True
+
+
+def test_live_driver_resumes_the_same_run_through_public_api(tmp_path: Path) -> None:
+    cancelled = threading.Event()
+    resumed = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+        def _sse(self, chunks: bytes) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(chunks)
+            self.wfile.flush()
+
+        def do_POST(self) -> None:  # noqa: N802
+            path = urlsplit(self.path).path
+            length = int(self.headers.get("Content-Length") or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            if path == "/api/code-agent/stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(
+                    b'data: {"type":"run_started","profile_name":"Engineering"}\n\n'
+                    b'data: {"type":"tool_started","tool":"run_bash","arguments":{}}\n\n'
+                )
+                self.wfile.flush()
+                assert cancelled.wait(5)
+                self.wfile.write(
+                    b'data: {"type":"done","stop_reason":"cancelled","resumable":true}\n\n'
+                )
+                self.wfile.flush()
+                return
+            if path == "/api/code-agent/cancel":
+                assert payload == {"run_id": "eval-resume"}
+                cancelled.set()
+                encoded = b'{"ok":true,"found":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            if path == "/api/code-agent/runs/eval-resume/resume":
+                resumed.set()
+                self._sse(
+                    b'data: {"type":"run_started","profile_name":"Engineering"}\n\n'
+                    b'data: {"type":"final_response","text":"RESUME_COMPLETE"}\n\n'
+                    b'data: {"type":"done","stop_reason":"answer"}\n\n'
+                )
+                return
+            self.send_error(404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        summary = run_smoke(
+            backend=f"http://127.0.0.1:{server.server_port}",
+            task_text="Stop and resume",
+            project_root=str(tmp_path),
+            run_id="eval-resume",
+            events_path=tmp_path / "resume-events.jsonl",
+            timeout_s=10,
+            cancel_on_tool="run_bash",
+            resume_after_stop=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert resumed.is_set()
+    assert summary["pre_resume_stop_reason"] == "cancelled"
+    assert summary["workflow_resume_attempted"] is True
+    assert summary["workflow_resume_error"] == ""
+    assert summary["stop_reason"] == "answer"
+    assert summary["answer"] == "RESUME_COMPLETE"
+
+
+def test_case_evaluator_checks_scripted_workflow_responses() -> None:
+    spec = {
+        "required_workflow_responses": [{"kind": "input", "action": "accept"}],
+    }
+    summary = {
+        "stop_reason": "answer",
+        "workflow_requests_resolved": [{
+            "request_id": "req-1",
+            "kind": "input",
+            "action": "accept",
+        }],
+        "workflow_response_errors": [],
+        "workflow_responses_unused": 0,
+    }
+
+    assert evaluate_case(spec, summary) == []
+
+    summary["workflow_response_errors"] = ["request failed"]
+    summary["workflow_responses_unused"] = 1
+    failures = evaluate_case(spec, summary)
+    assert "Workflow scripted response error: request failed" in failures
+    assert "unused Workflow scripted responses: 1" in failures
+
+
+def test_case_evaluator_can_expect_an_explicit_workflow_stop() -> None:
+    spec = {"expected_stop_reason": "cancelled"}
+    summary = {"stop_reason": "cancelled", "error": "Cancelled by user"}
+
+    assert evaluate_case(spec, summary) == []
+
+
+def test_default_suite_skips_opt_in_cases_but_explicit_selection_runs_them() -> None:
+    default_cases = _load_cases(DEFAULT_CASES_PATH, set())
+    selected = _load_cases(DEFAULT_CASES_PATH, {"project_corpus_workflow"})
+
+    assert "project_corpus_workflow" not in default_cases
+    assert list(selected) == ["project_corpus_workflow"]
+
+
+def test_case_loader_filters_named_harness_suites() -> None:
+    core_cases = _load_cases(DEFAULT_CASES_PATH, set(), suite="core")
+    integration_cases = _load_cases(
+        DEFAULT_CASES_PATH,
+        set(),
+        include_opt_in=True,
+        suite="integration",
+    )
+
+    assert core_cases
+    assert all(case.get("suite") == "core" for case in core_cases.values())
+    assert integration_cases
+    assert all(case.get("suite") == "integration" for case in integration_cases.values())
+
+
+def test_no_project_case_uses_an_external_absolute_workspace(tmp_path: Path) -> None:
+    task, project_root = _prepare_case_workspace(
+        tmp_path,
+        "absolute_path_no_project",
+        {
+            "project_mode": "none",
+            "task": "Прочитай {ABSOLUTE_TARGET}\\README.md",
+            "files": {"README.md": "ABSOLUTE_PATH_CANARY"},
+        },
+    )
+
+    assert project_root == ""
+    assert "{ABSOLUTE_TARGET}" not in task
+    assert str((tmp_path / "external" / "absolute_path_no_project").resolve()) in task
+    assert (tmp_path / "external" / "absolute_path_no_project" / "README.md").is_file()
+
+
+def test_case_workspace_expands_the_pinned_python_lsp_executable(tmp_path: Path) -> None:
+    task, _project_root = _prepare_case_workspace(
+        tmp_path,
+        "lsp_python",
+        {"task": "Запусти {PYRIGHT_LANGSERVER}"},
+    )
+
+    assert "{PYRIGHT_LANGSERVER}" not in task
+    assert "backend" in task
+    assert "pyright-langserver" in task
+
+
+def test_agent_sse_forwards_structured_background_job_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.application.agent_kernel.executor import ToolExecutionResult
+    from app.application.code_agent import agent_loop
+
+    responses = iter([
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": "run_server",
+                        "arguments": {
+                            "action": "start",
+                            "kind": "job",
+                            "command": "python durable_probe.py",
+                        },
+                    },
+                }],
+            },
+        },
+        {"message": {"content": "Готово.", "tool_calls": []}},
+    ])
+
+    monkeypatch.setattr(
+        agent_loop,
+        "_kernel_exec",
+        lambda *_args, **_kwargs: ToolExecutionResult(
+            status="ok",
+            output={
+                "ok": True,
+                "text": "Job started",
+                "action": "start",
+                "kind": "job",
+                "status": "running",
+                "job_id": "job-1",
+                "pid": 42,
+                "log_path": str(tmp_path / "job.log"),
+                "recovered": False,
+            },
+        ),
+    )
+    events = list(agent_loop.stream_code_agent(
+        user_message="Запусти фоновую задачу",
+        project_root=tmp_path,
+        chat_fn=lambda **_kwargs: next(responses),
+        permission_mode="bypass",
+        auto_remember=False,
+    ))
+    event = next(item for item in events if item.get("type") == "tool_call")
+
+    assert event["action"] == "start"
+    assert event["kind"] == "job"
+    assert event["status"] == "running"
+    assert event["job_id"] == "job-1"
+    assert event["pid"] == 42
+    assert event["log_path"].endswith("job.log")
+    assert event["recovered"] is False
 
 
 def test_sse_summary_reports_profile_tools_mcp_and_latency() -> None:
@@ -138,6 +575,94 @@ def test_sse_summary_reports_profile_tools_mcp_and_latency() -> None:
     assert summary["tokens_per_second"] == 21.5
     assert summary["model_ttft_ms"] == 420
     assert "Порт 8000 открыт" in summary["answer"]
+
+
+def test_sse_summary_replays_redacted_journal_metrics_and_flags_false_success() -> None:
+    events = [
+        {"type": "run_started", "profile_name": "Инженерный"},
+        {
+            "type": "tool_call",
+            "tool": "run_server",
+            "arguments": {"action": "stop", "pid": 123},
+            "ok": True,
+            "result": "ERROR: no tracked server with pid=123.",
+        },
+        {
+            "type": "usage",
+            "prompt_tokens": 1000,
+            "cached_prompt_tokens": "[REDACTED]",
+            "cache_hit_ratio": 0.8,
+            "prompt_tokens_per_second": "[REDACTED]",
+            "tokens_per_second": 30.0,
+            "ttft_ms": 1200,
+            "context": {
+                "current_tokens": 900,
+                "breakdown": {"tools": 700},
+            },
+        },
+        {"type": "done", "stop_reason": "answer", "resumable": False},
+    ]
+
+    summary = summarize_events(events, run_id="journal-run", duration_s=2.0)
+
+    assert summary["cached_prompt_tokens"] == 0
+    assert summary["cached_prompt_tokens_available"] is False
+    assert summary["cache_hit_ratio"] == 0.8
+    assert summary["prompt_tokens_per_second"] == 0.0
+    assert summary["error_prefixed_successes"] == 1
+    assert summary["failed_tool_calls"] == 0
+    assert summary["final_tool_context_tokens"] == 700
+
+
+def test_live_eval_can_require_background_job_start_then_completed_logs() -> None:
+    events = [
+        {"type": "run_started", "profile_name": "Инженерный"},
+        {
+            "type": "tool_call",
+            "tool": "run_server",
+            "arguments": {"action": "start", "kind": "job", "command": "worker"},
+            "ok": True,
+            "status": "running",
+        },
+        {
+            "type": "tool_call",
+            "tool": "run_server",
+            "arguments": {"action": "logs", "pid": 42},
+            "ok": True,
+            "status": "completed",
+            "exit_code": 0,
+        },
+        {"type": "final_response", "text": "DURABLE_LIVE_DONE exit=0"},
+        {"type": "done", "stop_reason": "answer", "criteria": []},
+    ]
+    summary = summarize_events(events, run_id="job-live", duration_s=2.0)
+    assert summary["tool_trace"] == [
+        {
+            "tool": "run_server",
+            "action": "start",
+            "kind": "job",
+            "status": "running",
+            "ok": True,
+        },
+        {
+            "tool": "run_server",
+            "action": "logs",
+            "status": "completed",
+            "ok": True,
+        },
+    ]
+    spec = {
+        "expected_profile": "Инженерный",
+        "required_tools": ["run_server"],
+        "required_tool_sequence": [
+            {"tool": "run_server", "action": "start", "kind": "job", "status": "running"},
+            {"tool": "run_server", "action": "logs", "status": "completed"},
+        ],
+        "required_answer_contains": ["DURABLE_LIVE_DONE", "exit=0"],
+        "max_tool_calls": 3,
+    }
+
+    assert evaluate_case(spec, summary) == []
 
 
 def test_case_evaluator_checks_profile_tools_runtime_and_activation() -> None:
@@ -289,6 +814,33 @@ def test_case_evaluator_grounds_network_states_and_citations_to_tool_results() -
     assert "answer does not cite a URL returned by: web_search" in failures
     assert "answer does not report port 8000 as open" in failures
     assert "answer does not report port 65534 as not open" in failures
+
+
+def test_case_evaluator_rejects_an_action_claim_without_successful_evidence() -> None:
+    spec = {
+        "grounded_action_claims": [{
+            "answer_contains_any": ["отправлено", "сообщение отправлено"],
+            "evidence": {"tool": "runtime_control", "operation": "telegram_send"},
+        }],
+    }
+    summary = {
+        "stop_reason": "answer",
+        "answer": "Сообщение отправлено.",
+        "tool_trace": [{
+            "tool": "runtime_control",
+            "operation": "telegram_send",
+            "ok": False,
+        }],
+    }
+
+    failures = evaluate_case(spec, summary)
+
+    assert failures == [
+        "action claim is not grounded by a successful tool result: telegram_send"
+    ]
+
+    summary["tool_trace"][0]["ok"] = True
+    assert evaluate_case(spec, summary) == []
 
 
 def test_suite_report_keeps_each_failure_and_aggregates_metrics() -> None:

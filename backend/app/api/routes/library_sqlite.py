@@ -4,6 +4,7 @@ library_sqlite.py - SQLite-backed file library routes.
 API:
   GET  /api/lib/list
   POST /api/lib/add
+  POST /api/lib/import-resource
   POST /api/lib/toggle
   DELETE /api/lib/{id}
   POST /api/lib/search
@@ -19,6 +20,7 @@ from app.application.library.runtime import (
     add_file_contents,
     delete_file,
     get_context_files,
+    import_resource,
     list_files,
     search_files,
     toggle_context,
@@ -52,9 +54,21 @@ async def add_file(
     )
 
 
+@router.post("/import-resource")
+async def import_resource_route(
+    resource_id: str = Form(...),
+    use_in_context: bool = Form(True),
+):
+    return await asyncio.to_thread(
+        import_resource,
+        resource_id,
+        use_in_context=use_in_context,
+    )
+
+
 @router.post("/toggle")
-def toggle_context_route(file_id: int = Form(...), enabled: bool = Form(True)):
-    return toggle_context(file_id, enabled=enabled)
+async def toggle_context_route(file_id: int = Form(...), enabled: bool = Form(True)):
+    return await asyncio.to_thread(toggle_context, file_id, enabled=enabled)
 
 
 @router.delete("/{file_id}")

@@ -16,6 +16,8 @@ Behavior can be tweaked via env vars (set by the test before spawn):
   FAKE_LSP_NO_DIAGNOSTICS=1  — no publishDiagnostics push (settle-timeout)
   FAKE_LSP_BIG_REFERENCES=1  — references returns more than the cap
   FAKE_LSP_SPLIT_FRAME=1      — flush header and body separately (partial read)
+  FAKE_LSP_REQUEST_CONFIGURATION=1 — require a workspace/configuration reply
+  FAKE_LSP_EMPTY_THEN_DIAGNOSTIC=1 — publish an empty warm-up before real diagnostics
 """
 from __future__ import annotations
 
@@ -96,6 +98,40 @@ def _location(uri: str, line: int, char: int) -> dict:
 
 
 def main() -> None:
+    configuration_received = False
+    pending_open: dict | None = None
+
+    def publish_diagnostics(params: dict) -> None:
+        text_doc = params.get("textDocument") or {}
+        uri = text_doc.get("uri") or "file:///fake.py"
+        _write({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": [
+                    {
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 5},
+                        },
+                        "severity": 1,
+                        "message": "fake error: undefined name",
+                        "source": "fake-lsp",
+                    },
+                    {
+                        "range": {
+                            "start": {"line": 2, "character": 4},
+                            "end": {"line": 2, "character": 9},
+                        },
+                        "severity": 2,
+                        "message": "fake warning: unused variable",
+                        "source": "fake-lsp",
+                    },
+                ],
+            },
+        })
+
     while True:
         req = _read_frame()
         if req is None:
@@ -126,42 +162,40 @@ def main() -> None:
             })
 
         elif method == "initialized":
-            pass  # notification, no response
+            if os.environ.get("FAKE_LSP_REQUEST_CONFIGURATION"):
+                _write({
+                    "jsonrpc": "2.0",
+                    "id": 9001,
+                    "method": "workspace/configuration",
+                    "params": {"items": [{"section": "fake"}]},
+                })
+
+        elif method is None and rid == 9001:
+            configuration_received = req.get("result") == [None]
+            if configuration_received and pending_open is not None:
+                publish_diagnostics(pending_open)
+                pending_open = None
 
         elif method == "textDocument/didOpen":
             if os.environ.get("FAKE_LSP_NO_DIAGNOSTICS"):
                 continue  # no push → client.get_diagnostics settle-times out
-            text_doc = params.get("textDocument") or {}
-            uri = text_doc.get("uri") or "file:///fake.py"
+            if os.environ.get("FAKE_LSP_REQUEST_CONFIGURATION") and not configuration_received:
+                pending_open = params
+                continue
+            if os.environ.get("FAKE_LSP_EMPTY_THEN_DIAGNOSTIC"):
+                text_doc = params.get("textDocument") or {}
+                _write({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/publishDiagnostics",
+                    "params": {
+                        "uri": text_doc.get("uri") or "file:///fake.py",
+                        "diagnostics": [],
+                    },
+                })
+                time.sleep(0.15)
             # Push a diagnostic (notification, no id) — this is how real
             # servers report problems, asynchronously after didOpen.
-            _write({
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": uri,
-                    "diagnostics": [
-                        {
-                            "range": {
-                                "start": {"line": 0, "character": 0},
-                                "end": {"line": 0, "character": 5},
-                            },
-                            "severity": 1,
-                            "message": "fake error: undefined name",
-                            "source": "fake-lsp",
-                        },
-                        {
-                            "range": {
-                                "start": {"line": 2, "character": 4},
-                                "end": {"line": 2, "character": 9},
-                            },
-                            "severity": 2,
-                            "message": "fake warning: unused variable",
-                            "source": "fake-lsp",
-                        },
-                    ],
-                },
-            })
+            publish_diagnostics(params)
 
         elif method == "textDocument/definition":
             text_doc = params.get("textDocument") or {}

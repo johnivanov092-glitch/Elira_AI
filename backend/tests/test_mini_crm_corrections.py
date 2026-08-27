@@ -263,6 +263,29 @@ class VerifierKindMatchingTest(unittest.TestCase):
 
 
 class TaskSpecWorkflowBoundaryTest(unittest.TestCase):
+    def test_numbered_singular_readiness_heading_bounds_long_spec(self):
+        task = """1. ОБЩАЯ ЗАДАЧА
+Создай коммерческий сайт.
+- локальные LLM;
+- корпоративный RAG;
+
+14. АНИМАЦИИ
+- reveal on scroll;
+- prefers-reduced-motion.
+
+19. КРИТЕРИЙ ГОТОВНОСТИ
+- сайт запускается;
+- npm run build завершается успешно.
+"""
+        spec = derive_task_spec(task)
+        self.assertIsNotNone(spec)
+        self.assertEqual(
+            spec.success_criteria,
+            ["сайт запускается;", "npm run build завершается успешно."],
+        )
+        self.assertIn("локальные LLM;", spec.details)
+        self.assertIn("reveal on scroll;", spec.details)
+
     def test_work_order_after_criteria_does_not_become_more_criteria(self):
         task = """Цель:
 Сделать Mini CRM.

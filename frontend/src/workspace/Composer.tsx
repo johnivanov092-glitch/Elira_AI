@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
+import { Blocks, Brain, Check, ChevronDown, Code, FileText, Image as ImageIcon, Library, Loader2, Plus, Send, Shield, ShieldAlert, ShieldCheck, Square, Users, X } from "lucide-react";
 import type { CodeAgentMode, ContextUsage, PermissionMode, ReasoningEffort } from "../api/codeAgent";
+import { importResourceToLibrary } from "../api/library";
 import { uploadResource, type ResourceAttachment } from "../api/resources";
-import { getActiveProfile, listProfiles, setActiveProfile, type ProfileInfo } from "../api/profiles";
 import { Chip } from "../ui/Chip";
 import { MicButton } from "./MicButton";
 import { cn } from "../ui/cn";
@@ -22,8 +22,8 @@ export type ComposerAttachControls = {
 };
 
 /** Composer per v4: mode chip + "+" (project / files / skills) + plugins + send.
- *  Runs are always "code" mode — web_search/web_fetch are base tools available in
- *  every run, so a separate "Поиск" mode added nothing and was removed.
+ *  Runs use one Elira/Auto profile. Domain and evidence routers reveal relevant
+ *  tools for the current request, so a manual persona/tool profile is unnecessary.
  *  Attachments are carried regardless, so file picking lives inside the "+" menu
  *  (opened in the
  *  Shell) — Composer hands the Shell a trigger for its hidden file input. */
@@ -217,6 +217,27 @@ export function Composer({
     }
   }
 
+  async function saveToLibrary(resourceId: string) {
+    setAttachments((prev) => prev.map((item) => (
+      item.resource_id === resourceId
+        ? { ...item, libraryStatus: "saving", libraryError: undefined }
+        : item
+    )));
+    try {
+      await importResourceToLibrary(resourceId, { useInContext: true });
+      setAttachments((prev) => prev.map((item) => (
+        item.resource_id === resourceId ? { ...item, libraryStatus: "saved" } : item
+      )));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Не удалось сохранить в Library";
+      setAttachments((prev) => prev.map((item) => (
+        item.resource_id === resourceId
+          ? { ...item, libraryStatus: "error", libraryError: message }
+          : item
+      )));
+    }
+  }
+
   return (
     <div className="border-t border-line px-4 pb-4 pt-3">
       <div className="mx-auto max-w-[760px]">
@@ -226,7 +247,6 @@ export function Composer({
             effort={reasoningEffort}
             onChange={setReasoningEffort}
           />
-          <ProfilePicker />
           <MicButton onText={(t) => onChange(value ? `${value} ${t}` : t)} disabled={running} />
           <MultiAgentChip
             active={multiAgent}
@@ -253,7 +273,11 @@ export function Composer({
             {attachments.map((a, i) => (
               <span
                 key={a.resource_id || `err-${a.name}-${i}`}
-                title={a.status === "error" ? (a.error || "Ошибка загрузки") : `${a.kind} · ${a.size.toLocaleString()} байт`}
+                title={a.status === "error"
+                  ? (a.error || "Ошибка загрузки")
+                  : a.libraryStatus === "error"
+                    ? (a.libraryError || "Ошибка Library")
+                    : `${a.kind} · ${a.size.toLocaleString()} байт`}
                 className={cn(
                   "flex items-center gap-1.5 rounded-full border px-2 py-1 text-[11px]",
                   a.status === "error" ? "border-red-500/50 text-red-400" : "border-line text-t2",
@@ -261,6 +285,25 @@ export function Composer({
               >
                 {a.kind === "image" ? <ImageIcon size={12} className="shrink-0" /> : <FileText size={12} className="shrink-0" />}
                 <span className="max-w-[160px] truncate">{a.name}</span>
+                {a.status === "ready" && (
+                  <button
+                    type="button"
+                    onClick={() => { void saveToLibrary(a.resource_id); }}
+                    disabled={a.libraryStatus === "saving" || a.libraryStatus === "saved"}
+                    aria-label={a.libraryStatus === "saved" ? "Сохранено в Library" : "Сохранить в Library"}
+                    title={a.libraryStatus === "saved" ? "Сохранено в Library и добавлено в контекст" : "Сохранить в Library"}
+                    className={cn(
+                      "shrink-0 transition-colors hover:text-tx disabled:cursor-default",
+                      a.libraryStatus === "saved" ? "text-ac" : a.libraryStatus === "error" ? "text-red-400" : "text-mut",
+                    )}
+                  >
+                    {a.libraryStatus === "saving"
+                      ? <Loader2 size={12} className="animate-spin" />
+                      : a.libraryStatus === "saved"
+                        ? <Check size={12} />
+                        : <Library size={12} />}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
@@ -667,103 +710,5 @@ function ContextGauge({ usage, tone }: { usage: ContextUsage; tone: string }) {
         />
       </svg>
     </span>
-  );
-}
-
-/** Active-agent-profile picker for the Composer slice. Self-contained: loads the
- *  profile list (/api/profiles) and the active one (/api/elira/settings →
- *  agent_profile) on mount, and switches the SAME global setting on pick —
- *  mirroring Settings' ProfilesSection, so the two stay in sync. */
-function ProfilePicker() {
-  const [profiles, setProfiles] = useState<ProfileInfo[] | null>(null);
-  const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
-  const [active, setActive] = useState("");
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    let alive = true;
-    listProfiles().then((p) => { if (alive) setProfiles(p); });
-    getActiveProfile()
-      .then(({ settings: s, active: a }) => { if (alive) { setSettings(s); setActive(a); } })
-      .catch(() => { /* offline */ });
-    return () => { alive = false; };
-  }, []);
-
-  // Close the menu on any outside click.
-  useEffect(() => {
-    if (!open) return;
-    function onDocClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open]);
-
-  async function pick(name: string) {
-    setOpen(false);
-    if (busy || !settings || name === active) return;
-    const prev = active;
-    setActive(name); // optimistic
-    setBusy(true);
-    try {
-      await setActiveProfile(name, settings);
-      setSettings({ ...settings, agent_profile: name });
-    } catch {
-      setActive(prev); // revert on failure
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Hide entirely when the server has no profiles (or is offline).
-  if (profiles !== null && profiles.length === 0) return null;
-
-  const current = profiles?.find((p) => p.name === active);
-  const label = current?.name || active || "Режим";
-  const icon = current?.icon || "•";
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={busy || profiles === null}
-        title="Режим Elira"
-        aria-label="Режим Elira"
-        className="flex h-7 items-center gap-1.5 rounded-full border border-line px-2.5 text-[11px] text-t2 transition-colors hover:bg-hover hover:text-tx disabled:opacity-60"
-      >
-        <span className="text-[12px] leading-none">{icon}</span>
-        <span className="max-w-[120px] truncate">{label}</span>
-        <ChevronDown size={12} className="shrink-0 text-mut" />
-      </button>
-      {open && profiles && profiles.length > 0 && (
-        <div className="absolute bottom-full left-0 z-20 mb-1.5 max-h-[280px] w-[240px] overflow-y-auto rounded-lg border border-line bg-card p-1 shadow-lg">
-          {profiles.map((p) => (
-            <button
-              key={p.name}
-              type="button"
-              onClick={() => pick(p.name)}
-              disabled={busy}
-              className={cn(
-                "flex w-full items-start gap-2.5 rounded-md px-2 py-1.5 text-left transition-colors disabled:opacity-60",
-                p.name === active ? "bg-acs" : "hover:bg-hover",
-              )}
-            >
-              <span className="mt-0.5 w-4 shrink-0 text-center text-[13px]">{p.icon || "•"}</span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5 text-[12.5px] text-tx">
-                  <span className="truncate">{p.name}</span>
-                  {p.name === active && <Check size={12} className="shrink-0 text-ac" />}
-                  {p.is_default && p.name !== active && <span className="shrink-0 text-[9.5px] text-mut">по умолчанию</span>}
-                </span>
-                {p.short && <span className="block truncate text-[11px] text-mut">{p.short}</span>}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }

@@ -53,12 +53,19 @@ def _make_conn_factory() -> tuple[Any, Any]:
 
 
 class SchemaMigrationTest(unittest.TestCase):
-    def test_init_adds_text_hash_and_project_columns(self) -> None:
+    def test_init_adds_rag_and_project_corpus_schema(self) -> None:
         factory, holder = _make_conn_factory()
         runtime.init_db(conn_factory=factory)
         cols = {row[1] for row in holder.execute("PRAGMA table_info(rag_items)").fetchall()}
         self.assertIn("text_hash", cols)
         self.assertIn("project", cols)
+        self.assertIn("source_uri", cols)
+        self.assertIn("source_hash", cols)
+        self.assertIn("metadata_json", cols)
+        tables = {row[0] for row in holder.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()}
+        self.assertIn("project_corpus_files", tables)
 
     def test_init_creates_lookup_indexes(self) -> None:
         factory, holder = _make_conn_factory()
@@ -66,6 +73,7 @@ class SchemaMigrationTest(unittest.TestCase):
         idx_names = {row[1] for row in holder.execute("PRAGMA index_list(rag_items)").fetchall()}
         self.assertIn("idx_rag_hash_cat", idx_names)
         self.assertIn("idx_rag_project", idx_names)
+        self.assertIn("idx_rag_project_source", idx_names)
 
     def test_legacy_row_backfilled_with_hash(self) -> None:
         """A row inserted before the schema migration must get a hash

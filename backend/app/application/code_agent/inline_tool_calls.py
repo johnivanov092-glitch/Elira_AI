@@ -183,7 +183,17 @@ def _extract_inline_tool_calls(content: str, known_tools: set[str]) -> list[dict
 
 def _contains_tool_trace(content: str) -> bool:
     lowered = str(content or "").lower()
-    return "<tool_call" in lowered or "<function=" in lowered
+    return any(
+        marker in lowered
+        for marker in (
+            "<tool_call",
+            "</tool_call",
+            "<function=",
+            "</function",
+            "<parameter=",
+            "</parameter",
+        )
+    )
 
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call\b[^>]*>.*?</tool_call>", re.DOTALL | re.IGNORECASE)

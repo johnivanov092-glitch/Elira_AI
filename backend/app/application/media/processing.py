@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from app.application.file_extract.runtime import TEXT_EXTS, _AUDIO_EXTS
+from app.application.file_extract.runtime import TEXT_EXTS, _AUDIO_EXTS, is_extract_error
 from app.application.media import execution, resource_store
 
 logger = logging.getLogger(__name__)
@@ -55,12 +55,7 @@ def _looks_like_extract_error(text: str) -> bool:
     """file_extract signals failure in-band as a bracketed Russian string with
     ok=True — detect it (same heuristic as the chat attach route) so a wrapper
     never reports a parse failure as success."""
-    stripped = str(text or "").strip()
-    if not stripped.startswith("["):
-        return False
-    low = stripped.lower()
-    return ("ошибка" in low or "не установлен" in low or "не удалось" in low
-            or "не поддерживается" in low)
+    return is_extract_error(text)
 
 
 def _execution_result(result: dict[str, Any], *, requested_target: str,

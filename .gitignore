@@ -146,6 +146,9 @@ data/code_agent_backups/
 # MCP server list — machine-local (absolute tool paths) and may carry
 # secret_headers for HTTP MCP servers; never commit.
 data/mcp_servers.json
+# LSP launchers and editor MCP state contain machine-local absolute paths.
+data/lsp_servers.json
+backend/.playwright-mcp/
 # DBHub multi-database config holds DB connection strings (credentials); never commit.
 data/dbhub.toml
 
@@ -153,6 +156,8 @@ data/dbhub.toml
 # The Fernet key self-generates when absent; committing it defeats encryption.
 data/elira_secret.key
 data/elira_api_token
+data/portable_vault.json
+data/portable_vault.json.prev
 
 # user-uploaded runtime files — personal data, never commit
 data/uploads/
@@ -160,6 +165,7 @@ data/chat_agent_workspace/
 data/webview2/
 # durable resource store (R1 adaptive resources) — uploaded originals + meta
 data/resources/
+data/background_jobs/
 .elira_chat_uploads/
 /Chat/
 

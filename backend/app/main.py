@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Elira AI API")
 
 
+def _recover_background_job_runtime() -> None:
+    """Rebuild durable finite-job handles when the ASGI application starts."""
+    try:
+        from app.application.code_agent.tools._run import recover_background_jobs
+
+        recovered_jobs = recover_background_jobs()
+        if recovered_jobs.get("recovered"):
+            logger.info("recovered background jobs: %s", recovered_jobs)
+    except Exception as exc:
+        logger.warning("background job startup recovery failed: %s", exc)
+
+
 def _shutdown_integration_runtimes() -> None:
     """Release explicitly started child runtimes on a graceful backend stop."""
     from app.application.tool_providers import lsp_runtime, mcp_runtime
@@ -42,6 +54,7 @@ def _shutdown_integration_runtimes() -> None:
     lsp_runtime.stop_all_servers()
 
 
+app.add_event_handler("startup", _recover_background_job_runtime)
 app.add_event_handler("shutdown", _shutdown_integration_runtimes)
 
 

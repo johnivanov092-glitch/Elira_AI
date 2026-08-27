@@ -45,10 +45,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import unquote, urlsplit
 
 # Reuse the battle-tested process-group spawn + Windows tree-kill from the
 # code-agent shell tools rather than re-deriving them. A bare ``proc.kill()``
@@ -74,6 +77,28 @@ DEFAULT_DIAGNOSTICS_SETTLE = 5.0
 
 # Bounded tail kept from the server's stderr for crash diagnostics.
 _STDERR_TAIL_CAP = 8000
+
+
+def _uri_cache_key(uri: str) -> str:
+    """Canonical diagnostics key for equivalent file-URI spellings.
+
+    Pyright on Windows accepts ``file:///D:/...`` but publishes diagnostics
+    under ``file:///d%3A/...``. LSP document identities are URI based, so the
+    cache must collapse those representations without altering the URI sent
+    on the wire.
+    """
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return uri
+    if parsed.scheme.casefold() != "file":
+        return uri
+    path = unquote(parsed.path).replace("\\", "/")
+    if len(path) >= 3 and path[0] == "/" and path[1].isalpha() and path[2] == ":":
+        path = f"/{path[1].lower()}{path[2:]}"
+    if os.name == "nt":
+        path = path.casefold()
+    return f"file://{parsed.netloc.casefold()}{path}"
 
 
 class LspError(Exception):
@@ -121,6 +146,7 @@ class LspClient:
         self._stderr_reader: Optional[threading.Thread] = None
 
         self._id_lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._next_id = 0
         self._pending: dict[int, _PendingRequest] = {}
         self._pending_lock = threading.Lock()
@@ -128,6 +154,8 @@ class LspClient:
         # uri → list[diagnostic dict]; replaced wholesale on each push.
         self._diagnostics: dict[str, list[dict[str, Any]]] = {}
         self._diag_lock = threading.Lock()
+        self._opened_documents: dict[str, str] = {}
+        self._document_versions: dict[str, int] = {}
 
         self._stderr_tail = ""
         self._stopped = False
@@ -179,6 +207,11 @@ class LspClient:
             "processId": None,
             "rootUri": self._root_uri,
             "capabilities": {
+                "workspace": {
+                    "configuration": True,
+                    "workspaceFolders": True,
+                },
+                "window": {"workDoneProgress": True},
                 "textDocument": {
                     "publishDiagnostics": {"relatedInformation": False},
                     "definition": {"linkSupport": True},
@@ -255,17 +288,29 @@ class LspClient:
         ``get_diagnostics`` polls. We only ever send a snapshot the caller
         already read from disk — nothing is written back.
         """
+        cache_key = _uri_cache_key(uri)
+        previous_text = self._opened_documents.get(cache_key)
+        if previous_text == text:
+            # Diagnostics are a push cache. Re-sending didOpen for an already
+            # open, unchanged document is invalid LSP and many real servers do
+            # not publish again; keeping the cache makes retries deterministic.
+            return
+        if previous_text is not None:
+            self._notify("textDocument/didClose", {"textDocument": {"uri": uri}})
         with self._diag_lock:
             # Drop any stale push for this uri so get_diagnostics waits for
             # the fresh one rather than returning the previous open's result.
-            self._diagnostics.pop(uri, None)
+            self._diagnostics.pop(cache_key, None)
+        version = self._document_versions.get(cache_key, 0) + 1
+        self._document_versions[cache_key] = version
+        self._opened_documents[cache_key] = text
         self._notify(
             "textDocument/didOpen",
             {
                 "textDocument": {
                     "uri": uri,
                     "languageId": language_id,
-                    "version": 1,
+                    "version": version,
                     "text": text,
                 }
             },
@@ -284,19 +329,29 @@ class LspClient:
         once a push has arrived, or ``None`` if none arrived in time —
         which the provider surfaces as "not ready yet, retry".
         """
-        deadline = threading.TIMEOUT_MAX if settle is None else settle
-        waited = 0.0
+        deadline = None if settle is None else time.monotonic() + max(0.0, float(settle))
         step = 0.05
+        latest: Optional[list[dict[str, Any]]] = None
         while True:
             with self._diag_lock:
-                if uri in self._diagnostics:
-                    return list(self._diagnostics[uri])
+                cache_key = _uri_cache_key(uri)
+                if cache_key in self._diagnostics:
+                    latest = list(self._diagnostics[cache_key])
+                    # Some servers (notably rust-analyzer) publish an empty
+                    # warm-up snapshot before their real diagnostics. A
+                    # non-empty snapshot is actionable immediately; an empty
+                    # one is returned only after the settle budget expires.
+                    if latest:
+                        return latest
             if not self.is_alive():
-                return None
-            if waited >= deadline:
-                return None
-            threading.Event().wait(step)
-            waited += step
+                return latest
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return latest
+                threading.Event().wait(min(step, remaining))
+            else:
+                threading.Event().wait(step)
 
     def definition(self, uri: str, line: int, character: int) -> list[dict[str, Any]]:
         """textDocument/definition → normalized list of {uri, range}.
@@ -390,8 +445,9 @@ class LspClient:
         if proc.poll() is not None:
             raise LspError("server process has exited")
         try:
-            proc.stdin.write(_frame(message))
-            proc.stdin.flush()
+            with self._send_lock:
+                proc.stdin.write(_frame(message))
+                proc.stdin.flush()
         except (BrokenPipeError, OSError, ValueError) as exc:
             raise LspError(f"failed to write to server: {exc}") from exc
 
@@ -428,17 +484,60 @@ class LspClient:
                 pending.event.set()
             return
 
-        # A server-initiated request (has id AND method): we are read-only
-        # and answer nothing. Some servers tolerate this; the ones that
-        # require a reply (e.g. workspace/configuration) simply won't get
-        # one, which only degrades richness, never correctness.
+        # Real servers such as Pyright block analysis until their
+        # workspace/configuration request is answered. Reply to the small,
+        # read-only subset needed for diagnostics/navigation; explicitly
+        # reject mutation requests and unknown methods so the server never
+        # waits forever for this client.
+        if msg_id is not None and isinstance(method, str):
+            params = message.get("params") or {}
+            if method == "workspace/configuration":
+                items = params.get("items") if isinstance(params, dict) else None
+                result: Any = [None] * len(items) if isinstance(items, list) else []
+                response = {"jsonrpc": JSONRPC_VERSION, "id": msg_id, "result": result}
+            elif method == "workspace/workspaceFolders":
+                folders = (
+                    [{"uri": self._root_uri, "name": "root"}]
+                    if self._root_uri
+                    else None
+                )
+                response = {"jsonrpc": JSONRPC_VERSION, "id": msg_id, "result": folders}
+            elif method in {
+                "client/registerCapability",
+                "client/unregisterCapability",
+                "window/workDoneProgress/create",
+            }:
+                response = {"jsonrpc": JSONRPC_VERSION, "id": msg_id, "result": None}
+            elif method == "workspace/applyEdit":
+                response = {
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": msg_id,
+                    "result": {
+                        "applied": False,
+                        "failureReason": "Elira LSP client is read-only",
+                    },
+                }
+            else:
+                response = {
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": msg_id,
+                    "error": {"code": -32601, "message": "method not supported"},
+                }
+            try:
+                self._send(response)
+            except LspError:
+                logger.debug("failed to answer LSP server request %s", method, exc_info=True)
+            return
+
         if method == "textDocument/publishDiagnostics":
             params = message.get("params") or {}
             uri = params.get("uri")
             if isinstance(uri, str):
                 diags = params.get("diagnostics")
                 with self._diag_lock:
-                    self._diagnostics[uri] = list(diags) if isinstance(diags, list) else []
+                    self._diagnostics[_uri_cache_key(uri)] = (
+                        list(diags) if isinstance(diags, list) else []
+                    )
             return
         # Any other notification/server-request is dropped intentionally.
 

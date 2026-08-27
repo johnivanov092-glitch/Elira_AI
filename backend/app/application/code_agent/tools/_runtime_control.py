@@ -14,6 +14,7 @@ from app.application.code_agent.tools._runtime_control_contract import (
     RuntimeRequest as _RuntimeRequest,
     completed as _completed,
     failed as _failed,
+    input_request as _input_request,
     requested as _requested,
     require_id as _require_id,
     secret_request as _secret_request,
@@ -22,6 +23,7 @@ from app.application.code_agent.tools._runtime_control_contract import (
 from app.application.code_agent.tools._runtime_control_data import (
     library_control as _library_control,
     memory_control as _memory_control,
+    project_control as _project_control,
 )
 from app.application.code_agent.tools._runtime_control_workflows import (
     workflow_control as _workflow_control,
@@ -127,12 +129,35 @@ def _mcp_control(operation: str, server_id: str, config: dict[str, Any]) -> dict
         "server_id",
         "ID MCP server",
     )
+    if operation in {"mcp_start", "mcp_restart"}:
+        server = next(
+            (item for item in mcp_runtime.list_servers() if str(item.get("id")) == sid),
+            None,
+        )
+        secret_refs: list[str] = []
+        if isinstance(server, dict):
+            for field in ("env_secret_refs", "secret_header_refs"):
+                refs = server.get(field)
+                if isinstance(refs, dict):
+                    secret_refs.extend(
+                        str(value).strip() for value in refs.values() if str(value).strip()
+                    )
+        if secret_refs:
+            from app.infrastructure.secrets import vault
+
+            if vault.status().get("locked"):
+                raise _secret_request(
+                    "Разблокируйте portable vault в карточке Workflow, чтобы запустить MCP.",
+                    existing_secret_ref=secret_refs[0],
+                )
     if operation == "mcp_start":
         return mcp_runtime.start_server(sid)
     if operation == "mcp_stop":
         return mcp_runtime.stop_server(sid)
     if operation == "mcp_restart":
         return mcp_runtime.restart_server(sid)
+    if operation == "mcp_tools":
+        return mcp_runtime.discover_tools(sid)
     current = mcp_runtime.list_servers()
     if operation == "mcp_remove":
         saved = mcp_runtime.save_servers([
@@ -171,6 +196,8 @@ def _ssh_control(operation: str, config: dict[str, Any]) -> dict[str, Any]:
 def _lsp_control(
     operation: str,
     server_id: str,
+    name: str,
+    kind: str,
     root_path: str,
     config: dict[str, Any],
 ) -> dict[str, Any]:
@@ -179,7 +206,7 @@ def _lsp_control(
     if operation == "lsp_list":
         return {"ok": True, "servers": lsp_runtime.list_servers()}
     sid = _require_id(
-        server_id or str(config.get("id", "")),
+        server_id or str(config.get("id", "")) or name,
         "server_id",
         "ID LSP server",
     )
@@ -199,6 +226,16 @@ def _lsp_control(
         }
     if operation == "lsp_upsert":
         candidate = {**config, "id": sid}
+        language = str(candidate.get("language") or candidate.get("kind") or kind).strip()
+        if language.casefold() in {"", "lsp", "language-server", "language_server"}:
+            identity = " ".join((sid, str(candidate.get("command") or ""))).casefold()
+            if "pyright" in identity or "pylsp" in identity:
+                language = "python"
+            elif "typescript" in identity or "tsserver" in identity:
+                language = "typescript"
+            elif "rust-analyzer" in identity or "rust_analyzer" in identity:
+                language = "rust"
+        candidate["language"] = language
         saved = lsp_runtime.save_servers(_upsert_by_id(current, candidate))
         if not any(item.get("id") == sid for item in saved):
             raise ValueError("LSP server config is invalid")
@@ -212,6 +249,7 @@ def _telegram_control(
     config: dict[str, Any],
     chat_id: int | None,
     allowed: bool | None,
+    query: str,
 ) -> dict[str, Any]:
     from app.application import telegram
     from app.application.telegram.store import get_config_value, set_config_value
@@ -244,6 +282,36 @@ def _telegram_control(
                 existing_secret_ref=token_ref,
             )
         return telegram.test_telegram_connection()
+    if operation == "telegram_send":
+        if chat_id is None:
+            raise _input_request("Укажите Telegram chat_id.", "chat_id", "Telegram chat ID")
+        text = query or str(config.get("text") or "")
+        if not text.strip():
+            raise _input_request(
+                "Укажите текст Telegram-сообщения.",
+                "query",
+                "Текст сообщения",
+            )
+        token_ref = get_config_value("bot_token_ref", "").strip()
+        if not token_ref:
+            raise _secret_request("Для отправки в Telegram нужен bot token.")
+        from app.infrastructure.secrets import vault
+
+        if vault.status().get("locked"):
+            raise _secret_request(
+                "Разблокируйте portable vault для отправки в Telegram.",
+                existing_secret_ref=token_ref,
+            )
+        return telegram.send_telegram_message(
+            chat_id=int(chat_id),
+            text=text,
+            parse_mode=str(config.get("parse_mode") or "Markdown"),
+        )
+    if operation == "telegram_messages":
+        return telegram.get_telegram_log(
+            limit=min(max(1, int(config.get("limit") or 50)), 500),
+            chat_id=int(chat_id) if chat_id is not None else None,
+        )
     if operation == "telegram_users":
         return telegram.list_telegram_users()
     if operation == "telegram_toggle_user":
@@ -290,6 +358,59 @@ def _itops_control(
     from app.infrastructure.it_ops import store
 
     store.init_db()
+    if operation == "itops_mikrotik_list":
+        from app.application.it_ops import mikrotik_registry
+
+        return {"ok": True, "routers": mikrotik_registry.list_routers()}
+    if operation == "itops_mikrotik_sync":
+        from app.application.it_ops import mikrotik_registry
+
+        return mikrotik_registry.sync_runtime()
+    if operation == "itops_mikrotik_upsert":
+        from app.application.it_ops import mikrotik_registry
+
+        host = _require_id(
+            str(config.get("host") or config.get("endpoint") or ""),
+            "host",
+            "адрес MikroTik",
+        )
+        if config.get("password") or config.get("token") or config.get("private_key"):
+            raise ValueError(
+                "MikroTik uses non-interactive typed SSH with an OpenSSH key or ssh-agent; "
+                "password/private_key values are not accepted in tool arguments."
+            )
+        raw_port = config.get("port")
+        if isinstance(raw_port, bool):
+            raise ValueError("config.port must be an integer")
+        port = int(raw_port) if raw_port not in (None, "") else None
+        raw_tags = config.get("tags")
+        if raw_tags is not None and not isinstance(raw_tags, list):
+            raise ValueError("config.tags must be an array")
+        return mikrotik_registry.upsert_router(
+            host=host,
+            label=str(config.get("label") or ""),
+            user=_require_id(
+                str(config.get("user") or ""),
+                "user",
+                "логин MikroTik",
+            ),
+            auth_ref=str(secret_ref or config.get("auth_ref") or "").strip(),
+            asset_id=asset_id or str(config.get("asset_id") or ""),
+            router_id=str(config.get("router_id") or ""),
+            ssh_alias=str(config.get("ssh_alias") or ""),
+            identity_file=str(config.get("identity_file") or ""),
+            port=port,
+            ros_version=str(config.get("ros_version") or ""),
+            tags=[str(item) for item in (raw_tags or [])],
+        )
+    if operation == "itops_mikrotik_remove":
+        from app.application.it_ops import mikrotik_registry
+
+        return mikrotik_registry.remove_router(
+            asset_id=asset_id or str(config.get("asset_id") or ""),
+            router_id=str(config.get("router_id") or ""),
+            host=str(config.get("host") or config.get("endpoint") or ""),
+        )
     if operation == "itops_assets":
         return {
             "ok": True,
@@ -420,11 +541,25 @@ def tool_runtime_control(
         elif op.startswith("mcp_"):
             result = _mcp_control(op, server_id, settings)
         elif op.startswith("lsp_"):
-            result = _lsp_control(op, server_id, root_path or str(project_root), settings)
+            result = _lsp_control(
+                op,
+                server_id,
+                name,
+                kind,
+                root_path or str(project_root),
+                settings,
+            )
         elif op.startswith("ssh_"):
             result = _ssh_control(op, settings)
         elif op.startswith("telegram_"):
-            result = _telegram_control(op, secret_ref, settings, chat_id, allowed)
+            result = _telegram_control(
+                op,
+                secret_ref,
+                settings,
+                chat_id,
+                allowed,
+                query,
+            )
         elif op.startswith("itops_"):
             result = _itops_control(
                 op,
@@ -450,7 +585,9 @@ def tool_runtime_control(
                 settings,
             )
         elif op.startswith("memory_"):
-            result = _memory_control(op, memory_id, query, settings)
+            result = _memory_control(op, memory_id, query, settings, project_root)
+        elif op.startswith("project_"):
+            result = _project_control(op, project_root, root_path, settings)
         elif op.startswith("library_"):
             result = _library_control(
                 op,

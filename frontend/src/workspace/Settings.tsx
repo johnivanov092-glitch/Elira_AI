@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { BookMarked, Brain, Cpu, MessageSquare, Palette, Sparkles, UserCog, Volume2, X, type LucideIcon } from "lucide-react";
+import { BookMarked, Brain, Cpu, MessageSquare, Palette, Sparkles, Volume2, X, type LucideIcon } from "lucide-react";
 import { cn } from "../ui/cn";
 import { ModelSection } from "./settings/ModelSection";
-import { ProfilesSection } from "./settings/ProfilesSection";
 import { PersonaSection } from "./settings/PersonaSection";
 import { MemorySection } from "./settings/MemorySection";
 import { LibrarySection } from "./settings/LibrarySection";
@@ -11,12 +10,11 @@ import { VoiceSection } from "./settings/VoiceSection";
 import { ThemeSection } from "./settings/ThemeSection";
 
 export type SettingsSection =
-  | "model" | "profiles" | "persona" | "memory" | "library" | "chatmemory"
+  | "model" | "persona" | "memory" | "library" | "chatmemory"
   | "voice" | "theme";
 
 const NAV: { id: SettingsSection; label: string; icon: LucideIcon }[] = [
   { id: "model", label: "Модель", icon: Cpu },
-  { id: "profiles", label: "Профили", icon: UserCog },
   { id: "persona", label: "Личность", icon: Sparkles },
   { id: "memory", label: "Память", icon: Brain },
   { id: "library", label: "Библиотека", icon: BookMarked },
@@ -53,7 +51,6 @@ export function Settings({ model, onModel, onClose, project, initialSection }: {
             <X size={14} />
           </button>
           {section === "model" && <ModelSection model={model} onModel={onModel} />}
-          {section === "profiles" && <ProfilesSection />}
           {section === "persona" && <PersonaSection />}
           {section === "memory" && <MemorySection project={project} />}
           {section === "library" && <LibrarySection />}

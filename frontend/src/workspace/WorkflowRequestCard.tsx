@@ -80,6 +80,11 @@ function existingSecretRef(request: WorkflowRequest): string {
   return typeof value === "string" ? value : "";
 }
 
+function requestedSecretAssetId(request: WorkflowRequest): string {
+  const value = request.schema?.["x-elira-asset-id"];
+  return typeof value === "string" ? value : "";
+}
+
 function requestPresentation(kind: WorkflowRequest["kind"]) {
   if (kind === "secret") {
     return { Icon: KeyRound, title: "Нужен секрет", className: "text-amber-300" };
@@ -226,6 +231,7 @@ export function WorkflowRequestCard({
       const stored = await createPortableSecret({
         kind: secretKind,
         value: secretValue,
+        assetId: requestedSecretAssetId(request) || undefined,
         lifecycle: "persistent",
       });
       setSecretValue("");

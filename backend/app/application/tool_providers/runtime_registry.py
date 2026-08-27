@@ -1,7 +1,7 @@
 """Canonical provider registry shared by agent and Workflow tool steps."""
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 from app.application.tool_providers.base import ToolProvider
@@ -19,6 +19,7 @@ def build_runtime_tool_registry(
     include_builtin: bool = True,
     builtin_tool_names: Collection[str] | None = None,
     mcp_server_ids: Collection[str] | None = None,
+    mcp_schema_queries: Mapping[str, str] | None = None,
     lsp_server_ids: Collection[str] | None = None,
     include_ssh: bool = True,
     include_itops: bool = True,
@@ -39,5 +40,8 @@ def build_runtime_tool_registry(
     if include_itops:
         providers.append(ItopsToolProvider())
     providers.extend(build_lsp_providers(lsp_server_ids))
-    providers.extend(build_mcp_providers(mcp_server_ids))
+    providers.extend(build_mcp_providers(
+        mcp_server_ids,
+        schema_queries=dict(mcp_schema_queries or {}),
+    ))
     return ToolRegistry(providers)

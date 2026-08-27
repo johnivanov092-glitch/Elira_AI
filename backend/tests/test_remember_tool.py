@@ -15,12 +15,18 @@ class RememberToolTest(unittest.TestCase):
     def test_correction_stored_as_authoritative(self):
         with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 1}) as m, \
              tempfile.TemporaryDirectory() as tmp:
-            res = tool_remember(Path(tmp), fact="Столица QA — Тестбург", correction=True)
+            res = tool_remember(
+                Path(tmp),
+                fact="Столица QA — Тестбург",
+                correction=True,
+                replaces_id=41,
+            )
         self.assertTrue(res["ok"])
         kw = m.call_args.kwargs
         self.assertEqual(kw["source"], "user_correction")
         self.assertEqual(kw["importance"], 10)
         self.assertEqual(kw["category"], "user_fact")
+        self.assertEqual(kw["replaces_id"], 41)
 
     def test_plain_fact_source_user(self):
         with patch("app.application.memory.add_fact", return_value={"ok": True, "id": 2}) as m, \
@@ -41,7 +47,6 @@ class RememberToolTest(unittest.TestCase):
             res = tool_remember(Path(tmp), fact="valid fact here")
         self.assertFalse(res["ok"])
         self.assertIn("Не удалось", res["text"])
-
 
 class UserFactsInjectionTest(unittest.TestCase):
     """Relevant durable user facts are injected into the system prompt."""

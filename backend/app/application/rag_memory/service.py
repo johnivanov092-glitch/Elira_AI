@@ -59,6 +59,9 @@ def add_to_rag(
     category: str = "fact",
     importance: int = 5,
     project: str = "",
+    source_uri: str = "",
+    source_hash: str = "",
+    metadata: dict | None = None,
 ) -> dict:
     return rag_runtime.add_to_rag(
         conn_factory=_conn,
@@ -67,6 +70,9 @@ def add_to_rag(
         category=category,
         importance=importance,
         project=project,
+        source_uri=source_uri,
+        source_hash=source_hash,
+        metadata=metadata,
     )
 
 

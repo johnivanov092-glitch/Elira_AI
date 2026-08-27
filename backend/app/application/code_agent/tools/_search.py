@@ -56,7 +56,14 @@ def tool_grep(
             if len(files) >= _GREP_MAX_FILES:
                 break
     out: list[str] = []
-    root = project_root.resolve()
+    project_base = project_root.resolve()
+    try:
+        base.relative_to(project_base)
+        root = project_base
+    except ValueError:
+        # An explicit absolute path is a valid one-off workspace even when no
+        # project is connected. Keep display paths relative to that directory.
+        root = base.parent if base.is_file() else base
     for f in files:
         try:
             if f.stat().st_size > _GREP_MAX_FILE_BYTES:
@@ -205,7 +212,14 @@ def tool_project_map(
     base = _resolve_safe(project_root, path) if path else project_root.resolve()
     if not base.is_dir():
         return {"text": f"ERROR: not a directory: {path or '.'}"}
-    root = project_root.resolve()
+    project_base = project_root.resolve()
+    try:
+        base.relative_to(project_base)
+        root = project_base
+    except ValueError:
+        # The selected project is a default cwd, not an authorization scope.
+        # For a one-off absolute directory, report paths relative to that root.
+        root = base
     try:
         max_depth = max(1, min(int(max_depth), 8))
         max_files = max(20, min(int(max_files), 2000))
@@ -301,6 +315,7 @@ def tool_remember(
     *,
     fact: str,
     correction: bool = False,
+    replaces_id: int | str | None = None,
 ) -> dict[str, Any]:
     """Persist a user fact/correction into curated memory.
 
@@ -315,7 +330,13 @@ def tool_remember(
         return {"ok": False, "text": "Нечего запоминать: факт слишком короткий."}
     src = "user_correction" if correction else "user"
     try:
-        res = mem.add_fact(text, category="user_fact", source=src, importance=10 if correction else 8)
+        res = mem.add_fact(
+            text,
+            category="user_fact",
+            source=src,
+            importance=10 if correction else 8,
+            replaces_id=replaces_id if correction else None,
+        )
     except Exception as exc:  # noqa: BLE001 — memory failure must not break the run
         return {"ok": False, "text": f"Не удалось сохранить факт: {exc}"}
     if not res.get("ok"):

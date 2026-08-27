@@ -931,10 +931,9 @@ class ItopsToolProvider:
                 "function": {
                     "name": "itops_mikrotik_inventory",
                     "description": (
-                        "Read-only MikroTik inventory via the mikrotik MCP runtime: system "
-                        "(resource/identity/license/routerboard/clock), interfaces, routes, DNS and "
-                        "DHCP servers, projected and bounded. Takes an explicit configured router_id. "
-                        "IP addresses are not covered when the upstream runtime lacks that tool."
+                        "Read-only RouterOS 6/7 inventory via typed non-interactive SSH: system, "
+                        "identity, interfaces, IP addresses, routes, DNS and DHCP servers. Takes an "
+                        "explicit registered router_id; the fixed command plan cannot perform writes."
                     ),
                     "parameters": {
                         "type": "object",

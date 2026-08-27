@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import importlib
+import json
 import os
 import sys
 import tempfile
@@ -132,17 +133,73 @@ class LifecycleTest(McpProviderTestBase):
         r = self.runtime.start_server("x")
         self.assertTrue(r["ok"])
         self.assertFalse(r["already_running"])
+        self.assertEqual(r["available_tool_count"], 2)
+        self.assertEqual(r["available_tool_names"], ["x__echo", "x__search"])
+        self.assertFalse(r["available_tool_names_truncated"])
+        self.assertNotIn("inputSchema", str(r))
         # Listing shows status=running
         status = next(s for s in self.runtime.list_servers() if s["id"] == "x")
         self.assertEqual(status["status"], "running")
         # Start again → idempotent
         r2 = self.runtime.start_server("x")
         self.assertTrue(r2["already_running"])
+        self.assertEqual(r2["available_tool_names"], ["x__echo", "x__search"])
         # Stop
         self.runtime.stop_server("x")
         self.assertIsNone(self.runtime.get_live_client("x"))
         status_after = next(s for s in self.runtime.list_servers() if s["id"] == "x")
         self.assertEqual(status_after["status"], "stopped")
+
+    def test_repeated_start_discovery_failure_preserves_running_server(self) -> None:
+        self.runtime.save_servers([self._fake_spec("x")])
+        self.runtime.start_server("x")
+        client = self.runtime.get_live_client("x")
+
+        with mock.patch.object(
+            self.runtime,
+            "_discover_tool_names",
+            side_effect=RuntimeError("temporary discovery error"),
+        ):
+            result = self.runtime.start_server("x")
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["already_running"])
+        self.assertIs(self.runtime.get_live_client("x"), client)
+
+        recovered = self.runtime.start_server("x")
+        status = next(
+            item for item in self.runtime.list_servers() if item["id"] == "x"
+        )
+        self.assertTrue(recovered["ok"])
+        self.assertIsNone(status["last_error"])
+
+    def test_initial_discovery_failure_cleans_up_new_server(self) -> None:
+        self.runtime.save_servers([self._fake_spec("x")])
+
+        with mock.patch.object(
+            self.runtime,
+            "_discover_tool_names",
+            side_effect=RuntimeError("discovery failed"),
+        ):
+            result = self.runtime.start_server("x")
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["already_running"])
+        self.assertIsNone(self.runtime.get_live_client("x"))
+
+    def test_tool_name_summary_preserves_order_and_caps_payload(self) -> None:
+        client = mock.Mock()
+        client.list_tools.return_value = [
+            {"name": f"tool_{index}"} for index in range(55)
+        ]
+
+        result = self.runtime._discover_tool_names(client, "many")
+
+        self.assertEqual(result["available_tool_count"], 55)
+        self.assertEqual(len(result["available_tool_names"]), 50)
+        self.assertEqual(result["available_tool_names"][0], "many__tool_0")
+        self.assertEqual(result["available_tool_names"][-1], "many__tool_49")
+        self.assertTrue(result["available_tool_names_truncated"])
 
     def test_stop_unknown_server_is_noop(self) -> None:
         result = self.runtime.stop_server("never_started")
@@ -194,6 +251,67 @@ class ProviderSchemaTest(McpProviderTestBase):
         params = echo_schema["function"]["parameters"]
         self.assertEqual(params["type"], "object")
         self.assertIn("text", params["properties"])
+
+    def test_large_schema_set_is_routed_by_natural_user_intent(self) -> None:
+        tools = [
+            {
+                "name": "read_console",
+                "description": "Read Unity console messages, warnings and errors. " + "x" * 2000,
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"count": {"type": "integer"}},
+                },
+            },
+            *[
+                {
+                    "name": f"manage_asset_{index}",
+                    "description": "Create and update project assets. " + "x" * 2000,
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                }
+                for index in range(12)
+            ],
+        ]
+        client = mock.Mock()
+        client.list_tools.return_value = tools
+        provider = self.provider_mod.McpToolProvider(
+            "unity",
+            schema_query="Прочитай последние пять сообщений Unity Console.",
+        )
+
+        with mock.patch.object(self.provider_mod, "get_live_client", return_value=client):
+            schemas = provider.get_schemas()
+
+        names = {schema["function"]["name"] for schema in schemas}
+        self.assertEqual(names, {"unity__read_console"})
+        self.assertTrue(provider.owns("unity__manage_asset_0"))
+        self.assertLess(
+            len(json.dumps(schemas, ensure_ascii=False)),
+            len(json.dumps(tools, ensure_ascii=False)),
+        )
+
+    def test_ambiguous_large_mcp_request_keeps_all_schemas(self) -> None:
+        tools = [
+            {
+                "name": f"operation_{index}",
+                "description": "Specialized operation. " + "x" * 2000,
+                "inputSchema": {"type": "object", "properties": {}},
+            }
+            for index in range(10)
+        ]
+        client = mock.Mock()
+        client.list_tools.return_value = tools
+        provider = self.provider_mod.McpToolProvider(
+            "unity",
+            schema_query="Используй Unity MCP.",
+        )
+
+        with mock.patch.object(self.provider_mod, "get_live_client", return_value=client):
+            schemas = provider.get_schemas()
+
+        self.assertEqual(len(schemas), len(tools))
 
 
 class ProviderDispatchTest(McpProviderTestBase):

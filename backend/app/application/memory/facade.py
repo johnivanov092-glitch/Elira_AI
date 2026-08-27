@@ -41,6 +41,7 @@ def add_fact(
     source: str = "manual",
     importance: int = 5,
     profile: str | None = None,
+    replaces_id: int | str | None = None,
 ) -> dict[str, Any]:
     from app.application import smart_memory
     from app.application.memory.policy import normalize_fact_category
@@ -51,6 +52,7 @@ def add_fact(
         source=source,
         importance=importance,
         profile_name=_profile(profile),
+        replaces_id=replaces_id,
     )
 
 
@@ -80,6 +82,21 @@ def fact_stats(*, profile: str | None = None) -> dict[str, Any]:
     from app.application import smart_memory
 
     return smart_memory.get_stats(profile_name=_profile(profile))
+
+
+def prune_volatile_facts(
+    *,
+    max_age_days: int = 7,
+    dry_run: bool = True,
+    profile: str | None = None,
+) -> dict[str, Any]:
+    from app.application import smart_memory
+
+    return smart_memory.prune_volatile_memories(
+        max_age_days=max_age_days,
+        dry_run=dry_run,
+        profile_name=_profile(profile),
+    )
 
 
 def fact_context(query: str, *, max_items: int = 5, profile: str | None = None) -> str:

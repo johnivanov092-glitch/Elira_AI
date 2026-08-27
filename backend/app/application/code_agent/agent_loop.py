@@ -33,9 +33,10 @@ from app.application.tool_providers.mcp_provider import (
 from app.application.code_agent.capabilities import (
     ALL_BUILTIN_TOOLS,
     builtin_tools_for_groups,
-    capability_groups_for_profile,
     normalize_capability_groups,
-    profile_preloads_itops,
+    route_request_capabilities,
+    should_escalate_web_after_failure,
+    should_escalate_web_from_answer,
 )
 from app.application.code_agent.answer_media import merge_answer_media
 from app.application.code_agent.planning import (
@@ -84,6 +85,7 @@ from app.application.code_agent.indexing import (  # noqa: F401
     INDEX_MAX_TOTAL_CHUNKS,
     INDEX_SKIP_DIRS,
     index_project,
+    project_corpus_status,
     recall_from_rag,
     reindex_file,
     unindex_file,
@@ -537,6 +539,12 @@ def request_cancel(run_id: str) -> bool:
 
 
 def _register_run(run_id: str) -> threading.Event:
+    try:
+        from app.application.code_agent.tools._shell import clear_run_stop_marker
+
+        clear_run_stop_marker(run_id)
+    except Exception:
+        logger.warning("failed to clear stale Stop marker for run %s", run_id, exc_info=True)
     ev = threading.Event()
     with _REGISTRY_LOCK:
         _CANCEL_REGISTRY[run_id] = ev
@@ -618,7 +626,7 @@ def _load_planning_state(run_id: str) -> "tuple[PlanArtifact | None, bool]":
 
 def _load_runtime_activation_state(
     run_id: str,
-) -> tuple[set[str], set[str], bool, bool, set[str]]:
+) -> tuple[set[str], set[str], dict[str, str], bool, bool, set[str]]:
     """Restore run-scoped integration and built-in schema visibility."""
     try:
         from app.application.code_agent.run_journal import RunJournal
@@ -631,6 +639,13 @@ def _load_runtime_activation_state(
     return (
         {str(value) for value in stored.get("mcp_server_ids") or [] if str(value)},
         {str(value) for value in stored.get("lsp_server_ids") or [] if str(value)},
+        {
+            str(key): str(value)
+            for key, value in (stored.get("mcp_schema_queries") or {}).items()
+            if str(key) and str(value)
+        }
+        if isinstance(stored.get("mcp_schema_queries"), dict)
+        else {},
         bool(stored.get("ssh")),
         bool(stored.get("itops")),
         set(normalize_capability_groups(stored.get("capability_groups"))),
@@ -755,16 +770,21 @@ def _stream_code_agent_core(
         (
             active_mcp_server_ids,
             active_lsp_server_ids,
+            active_mcp_schema_queries,
             ssh_tools_active,
             itops_tools_active,
             active_capability_groups,
         ) = _load_runtime_activation_state(rid)
-        # Auto has already resolved to one effective persona before entering the
-        # loop. Give that profile its narrow starter bundle; other capabilities
-        # remain available through capability_load/runtime_control.
-        active_capability_groups.update(capability_groups_for_profile(profile_name))
-        if profile_preloads_itops(profile_name):
-            itops_tools_active = True
+        # One visible Elira/Auto profile; hidden domain policies and evidence
+        # signals select starter schemas. This is visibility, not authorization.
+        request_route = route_request_capabilities(
+            user_message,
+            domain_policy=profile_name,
+            conversation_history=conversation_history,
+        )
+        active_capability_groups.update(request_route.capability_groups)
+        itops_tools_active = itops_tools_active or request_route.include_itops
+        ssh_tools_active = ssh_tools_active or request_route.include_ssh
 
         requested_builtin_tools = {
             str(name).strip()
@@ -787,6 +807,7 @@ def _stream_code_agent_core(
                     else builtin_names
                 ),
                 mcp_server_ids=() if simple_greeting else active_mcp_server_ids,
+                mcp_schema_queries=active_mcp_schema_queries,
                 lsp_server_ids=() if simple_greeting else active_lsp_server_ids,
                 include_ssh=not simple_greeting and ssh_tools_active,
                 include_itops=not simple_greeting and itops_tools_active,
@@ -796,6 +817,7 @@ def _stream_code_agent_core(
             return {
                 "mcp_server_ids": sorted(active_mcp_server_ids),
                 "lsp_server_ids": sorted(active_lsp_server_ids),
+                "mcp_schema_queries": dict(sorted(active_mcp_schema_queries.items())),
                 "ssh": ssh_tools_active,
                 "itops": itops_tools_active,
                 "capability_groups": sorted(active_capability_groups),
@@ -849,6 +871,13 @@ def _stream_code_agent_core(
                 profile_name=profile_name,
                 task_text=user_message,
             )
+            if request_route.evidence_reasons:
+                system_prompt += (
+                    "\n\n[EVIDENCE ROUTER] Для этой задачи автоматически подключён Web. "
+                    "Проверяй актуальные внешние факты сначала по официальной документации "
+                    "или первичному источнику; локальное состояние проверяй локальными tools. "
+                    "Не повторяй неудачную внешнюю команду вслепую."
+                )
         _creative_context = [str(user_message or "")]
         for _turn in list(conversation_history or [])[-8:]:
             if isinstance(_turn, dict) and isinstance(_turn.get("content"), str):
@@ -906,6 +935,9 @@ def _stream_code_agent_core(
             "type": "run_started",
             "run_id": rid,
             "profile_name": profile_name,
+            "ui_profile_name": "Elira / Auto",
+            "domain_policies": list(request_route.domain_policies),
+            "evidence_reasons": list(request_route.evidence_reasons),
             "runtime_activation": runtime_activation_snapshot(),
         }
         yield {
@@ -943,6 +975,9 @@ def _stream_code_agent_core(
         # project epoch, making older verification receipts stale.
         run_evidence = RunEvidence()
         _last_failure: dict[str, str] = {}  # for the deterministic stop summary
+        _failure_counts: dict[str, int] = {}
+        _download_delivery_correction_sent = False
+        _evidence_answer_correction_sent = False
 
         # TaskSpec per-criterion state (Ph7.4/7.5): DONE is decided by verifiers,
         # not the model's word. Each criterion is unconfirmed → confirmed (a matching
@@ -1058,6 +1093,25 @@ def _stream_code_agent_core(
             else:
                 applied_thinking_mode = "planning_then_execution"
                 yield {"type": "plan_ready", "run_id": rid, "plan": plan.to_dict()}
+
+        # The planning LLM can select optional schema groups before the first
+        # execution turn.  This keeps the execution prompt prefix stable instead
+        # of loading (for example) browser tools after tens of thousands of tokens
+        # and forcing an expensive cold prefill.  It changes visibility only;
+        # execution still goes through the canonical registry/executor.
+        if plan is not None:
+            planned_groups = set(normalize_capability_groups(plan.capability_groups))
+            new_groups = planned_groups - active_capability_groups
+            if new_groups:
+                active_capability_groups.update(new_groups)
+                registry = rebuild_registry()
+                all_schemas = registry.collect_schemas()
+                yield {
+                    "type": "runtime_activation_changed",
+                    "run_id": rid,
+                    "source": "planner",
+                    "runtime_activation": runtime_activation_snapshot(),
+                }
 
         # Structural event ONLY when a planning preflight actually engaged. A
         # direct/simple run emits nothing new and retains the one-call path.
@@ -1426,7 +1480,67 @@ def _stream_code_agent_core(
 
             if not tool_calls:
                 final_text = _strip_tool_call_markup(content or last_text)
-                answer_status = "complete"
+                if (
+                    "web" not in active_capability_groups
+                    and not _evidence_answer_correction_sent
+                    and should_escalate_web_from_answer(final_text)
+                ):
+                    active_capability_groups.add("web")
+                    registry = rebuild_registry()
+                    all_schemas = registry.collect_schemas()
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal evidence correction] Ответ остался неопределённым. "
+                            "Web tools теперь доступны: сначала проверь официальную "
+                            "документацию или первичный источник, затем дай подтверждённый "
+                            "ответ. Локальное состояние по-прежнему проверяй локальными tools."
+                        ),
+                    })
+                    _evidence_answer_correction_sent = True
+                    yield {
+                        "type": "runtime_activation_changed",
+                        "run_id": rid,
+                        "step": step,
+                        "source": "evidence_uncertain_answer",
+                        "runtime_activation": runtime_activation_snapshot(),
+                    }
+                    continue
+                if (
+                    request_route.download_requested
+                    and not run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
+                    and not _download_delivery_correction_sent
+                ):
+                    candidate = mutated_files[-1] if mutated_files else ""
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal delivery correction] Пользователь запросил файл для "
+                            "скачивания, но download artifact ещё не создан. "
+                            + (
+                                f"Опубликуй последний созданный файл `{candidate}` через "
+                                "resource_publish и только затем дай итоговый ответ."
+                                if candidate
+                                else "Сначала создай требуемый файл, затем обязательно вызови "
+                                "resource_publish и только после этого отвечай."
+                            )
+                        ),
+                    })
+                    _download_delivery_correction_sent = True
+                    call_log.append("delivery router requested resource_publish")
+                    continue
+                download_delivery_failed = bool(
+                    request_route.download_requested
+                    and not run_evidence.receipts_of_kind(EvidenceKind.ARTIFACT)
+                )
+                if download_delivery_failed:
+                    final_text = (
+                        "Файл не был опубликован: Workflow не получил подтверждённый "
+                        "download artifact, поэтому кнопка скачивания не создана."
+                    )
+                answer_status = "degraded" if download_delivery_failed else "complete"
                 # Evidence remains structured in the done event for observability,
                 # but it cannot block finalization or rewrite the model's answer.
                 criteria.finalize_conditionals()
@@ -2084,10 +2198,14 @@ def _stream_code_agent_core(
                         )
                         or ""
                     ).strip()
-                    if _runtime_operation in {"mcp_start", "mcp_restart"} and _runtime_server_id:
+                    if _runtime_operation in {"mcp_start", "mcp_restart", "mcp_tools"} and _runtime_server_id:
                         active_mcp_server_ids.add(_runtime_server_id)
+                        active_mcp_schema_queries[_runtime_server_id] = str(
+                            parsed_args.get("query") or user_message
+                        ).strip()
                     elif _runtime_operation in {"mcp_stop", "mcp_remove"}:
                         active_mcp_server_ids.discard(_runtime_server_id)
+                        active_mcp_schema_queries.pop(_runtime_server_id, None)
                     elif _runtime_operation in {"lsp_start", "lsp_restart"} and _runtime_server_id:
                         active_lsp_server_ids.add(_runtime_server_id)
                     elif _runtime_operation in {"lsp_stop", "lsp_remove"}:
@@ -2115,6 +2233,26 @@ def _stream_code_agent_core(
                             _last_server_url = ""
                 text_result = str(tool_meta.get("text", ""))
                 _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
+                _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
+                _evidence_web_activated = False
+                if _failed_call:
+                    _failure_counts[name] = _failure_counts.get(name, 0) + 1
+                    _failure_error = str(
+                        tool_meta.get("error") or text_result.split("\n", 1)[0]
+                    )[:500]
+                    if (
+                        "web" not in active_capability_groups
+                        and should_escalate_web_after_failure(
+                            tool_name=name,
+                            error=_failure_error,
+                            failure_count=_failure_counts[name],
+                        )
+                    ):
+                        active_capability_groups.add("web")
+                        registry = rebuild_registry()
+                        all_schemas = registry.collect_schemas()
+                        _runtime_activation_snapshot = runtime_activation_snapshot()
+                        _evidence_web_activated = True
                 _state_changed = tool_state_changed(
                     name,
                     tool_meta,
@@ -2162,7 +2300,8 @@ def _stream_code_agent_core(
                     "exit_code", "verifier", "evidence", "download_url",
                     "download_name", "project_path", "size", "sha256",
                     "actual_url", "local_url", "actual_port", "port", "pid",
-                    "server_started", "media",
+                    "server_started", "media", "action", "kind", "status",
+                    "job_id", "log_path", "recovered",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.
@@ -2183,12 +2322,20 @@ def _stream_code_agent_core(
                     criteria.invalidate_after_mutation()
                     verification_log.clear()
                 yield event
+                if _evidence_web_activated:
+                    yield {
+                        "type": "runtime_activation_changed",
+                        "run_id": rid,
+                        "step": step,
+                        "source": "evidence_failure",
+                        "trigger_tool": name,
+                        "runtime_activation": runtime_activation_snapshot(),
+                    }
                 tool_round_trips += 1
                 _hint = _short_arg_hint(parsed_args)
                 call_log.append(
                     f"{name}({_hint}) {'ok' if tool_meta.get('ok', True) else 'error'}"
                 )
-                _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
                 if _failed_call:
                     _path = str(parsed_args.get("path") or parsed_args.get("command") or "").strip()
                     _err = str(tool_meta.get("error") or text_result.split("\n", 1)[0])[:180]
@@ -2203,6 +2350,12 @@ def _stream_code_agent_core(
                 # could blow out `num_ctx` and start eating the system
                 # prompt off the front of the context.
                 _tool_content = _truncate_for_llm(text_result)
+                if _evidence_web_activated:
+                    _tool_content += (
+                        "\n\n[EVIDENCE ROUTER] Web tools are now available. Before retrying "
+                        "this failed external/unknown operation, search the official "
+                        "documentation or primary source for the exact error and version."
+                    )
                 # Grounding fact from this call — computed HERE (before the tool
                 # message is appended) so the progress controller can judge whether
                 # the call revealed anything NEW.

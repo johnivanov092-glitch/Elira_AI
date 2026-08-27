@@ -63,12 +63,18 @@ def _port_listening(port: int) -> bool:
 
 
 def _run_servers_left(backend: str, run_id: str) -> list[dict]:
-    """Live run_server registry entries still owned by `run_id` — the honest cleanup
-    check (a leaked handle or a server with no parsed URL is invisible to the port
-    probe alone; John's P1b review of the R5 DoD)."""
+    """Live run_server entries still owned by ``run_id``.
+
+    Terminal finite-job records intentionally remain visible for durable audit;
+    only a running process is a cleanup leak.
+    """
     try:
         data = _get_json(backend.rstrip("/") + f"/api/code-agent/servers?run_id={run_id}")
-        return list(data.get("servers") or [])
+        return [
+            item
+            for item in (data.get("servers") or [])
+            if item.get("status") == "running"
+        ]
     except Exception as exc:
         return [{"error": f"servers endpoint unreachable: {exc}"}]
 
