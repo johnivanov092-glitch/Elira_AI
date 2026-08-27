@@ -45,8 +45,6 @@ npm --prefix frontend run typecheck
 npm --prefix frontend run build
 backend\.venv\Scripts\python.exe -m pytest -q
 ```
-Each commit on a named branch is reviewed by the Opus gate
-(`.claude/hooks` writes `.claude/review/<sha>.md`, first line `VERDICT: PASS`).
 Commit/push only when asked; create named branches so work is visible.
 
 ## Agent skills
