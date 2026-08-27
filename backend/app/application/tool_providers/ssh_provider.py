@@ -25,9 +25,11 @@ Runtime model:
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from app.application.tool_providers.ssh_acl import (
@@ -51,12 +53,162 @@ _DEFAULT_READ_BYTES = 100_000
 # Tool output back to the LLM is also capped (separate from the
 # read cap, which limits what we fetch over the wire).
 _LLM_OUTPUT_LIMIT = 16_000
+_FOREGROUND_SLEEP_LIMIT_SECONDS = 30.0
+
+
+def _contains_long_sleep(command: str) -> bool:
+    normalized = " ".join(str(command or "").split()).lower()
+    duration_patterns = (
+        (r"\bstart-sleep\s+(?:-seconds?\s+)?(\d+(?:\.\d+)?)", 1.0),
+        (r"\bstart-sleep\s+-milliseconds?\s+(\d+(?:\.\d+)?)", 0.001),
+        (r"(?<![-\w])sleep\s+(\d+(?:\.\d+)?)", 1.0),
+        (r"\btimeout\s+/t\s+(\d+(?:\.\d+)?)", 1.0),
+    )
+    for pattern, multiplier in duration_patterns:
+        for match in re.finditer(pattern, normalized):
+            if float(match.group(1)) * multiplier >= _FOREGROUND_SLEEP_LIMIT_SECONDS:
+                return True
+    return False
+
+
+def _foreground_block_reason(command: str) -> str | None:
+    """Return why *command* must not own a synchronous SSH tool call.
+
+    Keep this deliberately narrow: these PowerShell primitives explicitly wait
+    for another process and caused real workflows to remain inside one tool call
+    for minutes. Ordinary finite remote commands still use the foreground path.
+    """
+    normalized = " ".join(str(command or "").split()).lower()
+    if "start-process" in normalized and re.search(
+        r"(?:^|\s)-wait(?=$|[\s;|&)])",
+        normalized,
+    ):
+        return "powershell_start_process_wait"
+    if re.search(r"\.waitforexit\s*\(", normalized):
+        return "powershell_wait_for_exit"
+    if re.search(r"\.waitforstatus\s*\(", normalized):
+        return "powershell_wait_for_status"
+    if re.search(r"(?:^|[;|&]\s*|\s)wait-process(?:\s|$)", normalized):
+        return "powershell_wait_process"
+    if re.search(r"(?:^|[;|&]\s*|\s)(?:start|restart|stop)-service(?:\s|$)", normalized):
+        return "powershell_service_control"
+    if _contains_long_sleep(normalized):
+        return "long_sleep"
+    return None
+
+
+def _needs_background_result(reason: str) -> dict[str, Any]:
+    feedback = {
+        "status": "needs_background",
+        "error": "long_running_foreground",
+        "reason": reason,
+        "recommended_tool": "run_server",
+        "recommended_arguments": {"action": "start", "kind": "job"},
+        "next_action": (
+            "Launch the equivalent SSH command with run_server(kind='job'), "
+            "then poll run_server(action='logs', pid=...). Do not retry it "
+            "through a synchronous SSH tool."
+        ),
+    }
+    return {
+        **feedback,
+        "ok": False,
+        "text": json.dumps(feedback, ensure_ascii=False, indent=2),
+    }
+
+
+def _background_ssh_argv(tool_name: str, args: dict[str, Any]) -> list[str]:
+    host = str(args.get("host") or "").strip()
+    if tool_name == "ssh_run_ps":
+        return _ssh_command_argv(
+            host,
+            _powershell_remote_command(str(args.get("script") or "")),
+        )
+
+    connect_timeout = max(1, int(args.get("timeout", 60)))
+    return _ssh_command_argv(
+        host,
+        str(args.get("command") or ""),
+        connect_timeout_seconds=connect_timeout,
+    )
+
+
+def _background_ssh_display(tool_name: str, args: dict[str, Any]) -> str:
+    host = resolve_allowed_host(str(args.get("host") or "")) or str(
+        args.get("host") or ""
+    ).strip()
+    if tool_name == "ssh_run_ps":
+        return (
+            f"ssh {host} -- powershell -EncodedCommand "
+            f"(script: {len(str(args.get('script') or ''))} chars)"
+        )
+    return f"ssh {host} -- {str(args.get('command') or '')}"
+
+
+def _start_background_ssh_job(
+    project_root: Path,
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    from app.application.code_agent.tools._run import start_background_argv_job
+
+    try:
+        argv = _background_ssh_argv(tool_name, args)
+    except (TypeError, ValueError):
+        return {"text": "ERROR: timeout must be an integer", "ok": False}
+
+    result = start_background_argv_job(
+        project_root,
+        argv=argv,
+        display_command=_background_ssh_display(tool_name, args),
+    )
+    redirected = {
+        **result,
+        "backgrounded": bool(result.get("ok")),
+        "redirected_from": tool_name,
+        "redirect_reason": reason,
+        "recommended_tool": "run_server",
+    }
+    if not result.get("ok"):
+        return redirected
+    pid = int(result["pid"])
+    structured_feedback = {
+        "status": str(result.get("status") or "running"),
+        "backgrounded": True,
+        "pid": pid,
+        "kind": "job",
+        "redirected_from": tool_name,
+        "redirect_reason": reason,
+        "recommended_tool": "run_server",
+        "recommended_arguments": {"action": "logs", "pid": pid},
+    }
+    redirected["recommended_arguments"] = structured_feedback[
+        "recommended_arguments"
+    ]
+    redirected["text"] = (
+        f"Blocking {tool_name} call was moved to the managed background job runtime.\n"
+        f"{result.get('text', '')}\n"
+        f"Next: run_server(action='logs', pid={pid}) until status is terminal.\n\n"
+        "STRUCTURED_TOOL_RESULT:\n"
+        f"{json.dumps(structured_feedback, ensure_ascii=False, indent=2)}"
+    )
+    return redirected
 
 
 def _truncate_for_llm(text: str, limit: int = _LLM_OUTPUT_LIMIT) -> str:
     # Was a head-only cut that dropped the exit code / last error at the bottom of
     # a remote command's output — now the shared head+tail truncation keeps both.
     return truncate_middle(text, limit)
+
+
+def _powershell_remote_command(script: str) -> str:
+    b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return (
+        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
+        f"-EncodedCommand {b64}"
+    )
 
 
 def _ssh_args(
@@ -91,6 +243,21 @@ def _ssh_args(
         "-o", "StrictHostKeyChecking=accept-new",
         *compatibility_args,
         canonical,
+    ]
+
+
+def _ssh_command_argv(
+    host: str,
+    command: str,
+    *,
+    connect_timeout_seconds: int | None = None,
+) -> list[str]:
+    return [
+        *_ssh_args(
+            host,
+            connect_timeout_seconds=connect_timeout_seconds,
+        ),
+        command,
     ]
 
 
@@ -136,16 +303,20 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
         return {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(command, str) or not command.strip():
         return {"text": "ERROR: command is empty", "ok": False}
+    block_reason = _foreground_block_reason(command)
+    if block_reason is not None:
+        return _needs_background_result(block_reason)
 
     try:
         # This is only the OpenSSH connection-establishment timeout. Once the
         # remote command starts, it has no execution deadline; Workflow Stop is
         # the sole cancellation owner.
         connect_timeout = max(1, int(timeout))
-        proc = run_registered_process([
-            *_ssh_args(host, connect_timeout_seconds=connect_timeout),
+        proc = run_registered_process(_ssh_command_argv(
+            host,
             command,
-        ])
+            connect_timeout_seconds=connect_timeout,
+        ))
     except (TypeError, ValueError):
         return {"text": "ERROR: timeout must be an integer", "ok": False}
     except FileNotFoundError:
@@ -576,15 +747,14 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
         return {"text": f"ERROR: {err}", "ok": False}
     if not isinstance(script, str) or not script.strip():
         return {"text": "ERROR: script is empty", "ok": False}
+    block_reason = _foreground_block_reason(script)
+    if block_reason is not None:
+        return _needs_background_result(block_reason)
 
     del timeout  # compatibility input; Workflow Stop owns termination
-    b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    remote_cmd = (
-        "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
-        f"-EncodedCommand {b64}"
-    )
+    remote_cmd = _powershell_remote_command(script)
     try:
-        proc = run_registered_process([*_ssh_args(host), remote_cmd])
+        proc = run_registered_process(_ssh_command_argv(host, remote_cmd))
     except FileNotFoundError:
         return {"text": "ERROR: `ssh` binary not found on this machine", "ok": False}
     except Exception as exc:
@@ -704,7 +874,11 @@ def _schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Run a shell command on a remote machine via SSH. "
                     "The host may be any SSH alias, hostname or IP address. "
-                    "Returns stdout + stderr + exit code."
+                    "Returns stdout + stderr + exit code. Known blocking wait "
+                    "constructs are automatically moved to the managed "
+                    "run_server(kind='job') runtime; poll its PID with "
+                    "run_server(action='logs'). A low-level caller without job "
+                    "runtime context receives status needs_background."
                 ),
                 "parameters": {
                     "type": "object",
@@ -768,7 +942,11 @@ def _schemas() -> list[dict[str, Any]]:
                     "pipes, $_ , and here-strings are NEVER mangled by ssh/cmd.exe — "
                     "use this instead of hand-escaping `ssh host \"powershell …\"` "
                     "through run_bash. To edit a remote file prefer ssh_write; for "
-                    "POSIX remotes use ssh_run."
+                    "POSIX remotes use ssh_run. Known blocking wait constructs are "
+                    "automatically moved to the managed run_server(kind='job') "
+                    "runtime; poll its PID with run_server(action='logs'). A "
+                    "low-level caller without job runtime context receives status "
+                    "needs_background."
                 ),
                 "parameters": {
                     "type": "object",
@@ -945,6 +1123,13 @@ class SshToolProvider:
 
     name = "ssh"
 
+    def __init__(self, project_root: Path | str | None = None) -> None:
+        self._project_root = (
+            Path(project_root).expanduser().resolve()
+            if project_root is not None
+            else None
+        )
+
     def is_enabled(self) -> bool:
         return is_ssh_enabled()
 
@@ -959,7 +1144,19 @@ class SshToolProvider:
         if handler is None:
             return {"text": f"ERROR: unknown SSH tool '{tool_name}'"}
         try:
-            return handler(**args)
+            result = handler(**args)
+            if (
+                self._project_root is not None
+                and tool_name in {"ssh_run", "ssh_run_ps"}
+                and result.get("status") == "needs_background"
+            ):
+                return _start_background_ssh_job(
+                    self._project_root,
+                    tool_name=tool_name,
+                    args=args,
+                    reason=str(result.get("reason") or "long_running_foreground"),
+                )
+            return result
         except TypeError as exc:
             return {"text": f"ERROR: bad arguments to {tool_name}: {exc}"}
         except Exception as exc:

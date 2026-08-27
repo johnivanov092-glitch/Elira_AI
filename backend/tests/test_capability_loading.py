@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
-import json
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -219,6 +220,98 @@ def test_inline_existing_builtin_is_callable_without_loading_its_schema(tmp_path
         and event.get("ok") is True
         for event in events
     )
+
+
+def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> None:
+    model_contexts: list[list[dict]] = []
+    responses = iter([
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": "ssh_run_ps",
+                        "arguments": {
+                            "host": "media-server",
+                            "script": "Start-Process jellyfin_setup.exe -Wait",
+                        },
+                    },
+                }],
+            },
+        },
+        {"message": {"content": "Фоновая задача запущена.", "tool_calls": []}},
+        {
+            "message": {
+                "content": "",
+                "tool_calls": [{
+                    "function": {
+                        "name": "run_server",
+                        "arguments": {"action": "logs", "pid": 4242},
+                    },
+                }],
+            },
+        },
+        {"message": {"content": "Jellyfin установлен.", "tool_calls": []}},
+    ])
+
+    def fake_chat(**kwargs):
+        model_contexts.append(json.loads(json.dumps(
+            kwargs["messages"],
+            ensure_ascii=False,
+        )))
+        return next(responses)
+
+    started = {
+        "ok": True,
+        "status": "running",
+        "kind": "job",
+        "pid": 4242,
+        "text": "Job started in background.",
+    }
+    with patch(
+        "app.application.code_agent.tools._run.start_background_argv_job",
+        return_value=started,
+    ), patch(
+        "app.application.code_agent.tools._dispatch.tool_run_server",
+        return_value={
+            "ok": True,
+            "status": "completed",
+            "kind": "job",
+            "pid": 4242,
+            "exit_code": 0,
+            "text": "SSH job completed successfully.",
+        },
+    ):
+        events = list(stream_code_agent(
+            user_message="Установи Jellyfin по SSH на media-server.",
+            project_root=tmp_path,
+            run_id="ssh-background-feedback",
+            chat_fn=fake_chat,
+            auto_remember=False,
+            permission_mode="bypass",
+            profile_name="Инфраструктура",
+        ))
+
+    assert len(model_contexts) >= 4
+    assert "run_server(action='logs', pid=4242)" in model_contexts[1][-1]["content"]
+    assert '"backgrounded": true' in model_contexts[1][-1]["content"]
+    assert "Задачу нельзя завершать" in model_contexts[2][-1]["content"]
+    assert "SSH job completed successfully" in model_contexts[3][-1]["content"]
+    ssh_event = next(
+        event for event in events
+        if event.get("type") == "tool_call"
+        and event.get("tool") == "ssh_run_ps"
+    )
+    assert ssh_event["ok"] is True
+    assert ssh_event["status"] == "running"
+    assert ssh_event["backgrounded"] is True
+    assert ssh_event["redirected_from"] == "ssh_run_ps"
+    logs_event = next(
+        event for event in events
+        if event.get("type") == "tool_call"
+        and event.get("tool") == "run_server"
+    )
+    assert logs_event["status"] == "completed"
 
 
 def test_every_builtin_schema_is_reachable_from_core_or_one_group() -> None:

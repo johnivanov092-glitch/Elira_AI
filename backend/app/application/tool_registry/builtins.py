@@ -595,7 +595,10 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
         {
             "name": "ssh_run", "handler": _noop,
             "display_name": "SSH Run", "display_name_ru": "SSH команда",
-            "category": "ssh", "description": "Run a shell command on a remote host via SSH",
+            "category": "ssh", "description": (
+                "Run a shell command on a remote host via SSH; known blocking "
+                "waits are moved to the managed background job runtime"
+            ),
             "source": "ssh",
             "permission": "require_approval", "side_effect": True, "idempotent": False,
             "scopes": ["net.outbound", "shell.exec"],
@@ -614,7 +617,11 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
             "name": "ssh_run_ps", "handler": _noop,
             "display_name": "SSH PowerShell", "display_name_ru": "SSH PowerShell",
             "category": "ssh",
-            "description": "Run a PowerShell script on a remote Windows host via SSH (base64, no quoting)",
+            "description": (
+                "Run a PowerShell script on a remote Windows host via SSH "
+                "(base64, no quoting); known blocking waits are moved to the "
+                "managed background job runtime"
+            ),
             "source": "ssh",
             "permission": "require_approval", "side_effect": True, "idempotent": False,
             "scopes": ["net.outbound", "shell.exec"],

@@ -36,7 +36,7 @@ def build_runtime_tool_registry(
     if include_builtin:
         providers.append(BuiltinToolProvider(root, builtin_tool_names))
     if include_ssh:
-        providers.append(SshToolProvider())
+        providers.append(SshToolProvider(root))
     if include_itops:
         providers.append(ItopsToolProvider())
     providers.extend(build_lsp_providers(lsp_server_ids))

@@ -40,6 +40,21 @@ def main(argv: list[str] | None = None) -> int:
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
         job_id = str(spec["job_id"])
         command = str(spec["command"])
+        raw_command_argv = spec.get("command_argv")
+        if raw_command_argv is None:
+            command_argv = None
+        elif (
+            isinstance(raw_command_argv, list)
+            and raw_command_argv
+            and all(
+                isinstance(item, str) and "\x00" not in item
+                for item in raw_command_argv
+            )
+            and raw_command_argv[0]
+        ):
+            command_argv = list(raw_command_argv)
+        else:
+            raise TypeError("command_argv must be a non-empty string array")
         cwd = str(spec["cwd"])
         launch_path = Path(str(spec["launch_path"]))
         result_path = Path(str(spec["result_path"]))
@@ -81,8 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     error: str | None = None
     try:
         child = subprocess.Popen(
-            command,
-            shell=True,
+            command_argv if command_argv is not None else command,
+            shell=command_argv is None,
             cwd=cwd,
             stdin=subprocess.DEVNULL,
         )

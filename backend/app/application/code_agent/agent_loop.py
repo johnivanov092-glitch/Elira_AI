@@ -982,6 +982,7 @@ def _stream_code_agent_core(
         _failure_counts: dict[str, int] = {}
         _download_delivery_correction_sent = False
         _evidence_answer_correction_sent = False
+        pending_redirected_jobs: set[int] = set()
 
         # TaskSpec per-criterion state (Ph7.4/7.5): DONE is decided by verifiers,
         # not the model's word. Each criterion is unconfirmed → confirmed (a matching
@@ -1484,6 +1485,27 @@ def _stream_code_agent_core(
 
             if not tool_calls:
                 final_text = _strip_tool_call_markup(content or last_text)
+                if pending_redirected_jobs:
+                    pending_list = ", ".join(
+                        str(pid) for pid in sorted(pending_redirected_jobs)
+                    )
+                    messages.append({"role": "assistant", "content": final_text})
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[internal background-job correction] Задачу нельзя "
+                            "завершать, пока автоматически перенесённая SSH job не "
+                            "получила terminal status. Вызови "
+                            "run_server(action='logs', pid=...) для каждого PID: "
+                            f"{pending_list}. Если status=running — опроси позже; "
+                            "если completed/failed/cancelled — учти результат и "
+                            "только затем отвечай пользователю."
+                        ),
+                    })
+                    call_log.append(
+                        "completion blocked by redirected SSH job: " + pending_list
+                    )
+                    continue
                 if (
                     "web" not in active_capability_groups
                     and not _evidence_answer_correction_sent
@@ -2235,6 +2257,22 @@ def _stream_code_agent_core(
                         # server's address. A later verdict re-adopts via actual_url.
                         if not _server_url_alive(_last_server_url):
                             _last_server_url = ""
+                if (
+                    tool_meta.get("backgrounded") is True
+                    and str(tool_meta.get("status") or "") == "running"
+                    and tool_meta.get("pid") is not None
+                ):
+                    pending_redirected_jobs.add(int(tool_meta["pid"]))
+                if name == "run_server" and parsed_args.get("pid") is not None:
+                    _job_pid = int(parsed_args["pid"])
+                    _job_status = str(tool_meta.get("status") or "")
+                    if (
+                        _job_pid in pending_redirected_jobs
+                        and str(parsed_args.get("action") or "start").lower()
+                        in {"logs", "stop"}
+                        and _job_status in {"completed", "failed", "cancelled"}
+                    ):
+                        pending_redirected_jobs.discard(_job_pid)
                 text_result = str(tool_meta.get("text", ""))
                 _tool_ok = bool(tool_meta.get("ok", _exec_result.status == "ok"))
                 _failed_call = _exec_result.status != "ok" or tool_meta.get("ok") is False
@@ -2308,6 +2346,7 @@ def _stream_code_agent_core(
                     "actual_url", "local_url", "actual_port", "port", "pid",
                     "server_started", "media", "action", "kind", "status",
                     "job_id", "log_path", "recovered",
+                    "backgrounded", "redirected_from", "redirect_reason",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.

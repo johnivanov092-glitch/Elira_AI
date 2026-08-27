@@ -88,6 +88,98 @@ class SavedHostDiscoveryTest(SshProviderTestBase):
 
 
 class SshExecutionTest(SshProviderTestBase):
+    def test_blocking_powershell_wait_is_redirected_before_ssh_starts(self) -> None:
+        script = (
+            "$installer = 'C:\\Temp\\jellyfin_setup.exe'; "
+            "Start-Process $installer -ArgumentList '/S' -Wait; "
+            "Get-Service Jellyfin"
+        )
+
+        with patch.object(self.ssh, "run_registered_process") as runner:
+            result = self.ssh.tool_ssh_run_ps(
+                host="media-server",
+                script=script,
+            )
+
+        runner.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "needs_background")
+        self.assertEqual(result["error"], "long_running_foreground")
+        self.assertEqual(result["recommended_tool"], "run_server")
+        self.assertEqual(
+            result["recommended_arguments"],
+            {"action": "start", "kind": "job"},
+        )
+        self.assertIn('"status": "needs_background"', result["text"])
+        self.assertIn('"recommended_tool": "run_server"', result["text"])
+
+    def test_wait_for_exit_is_redirected_from_raw_ssh_command(self) -> None:
+        command = (
+            "powershell -NoProfile -Command \"$p = Start-Process "
+            "jellyfin_setup.exe -PassThru; $p.WaitForExit(300000)\""
+        )
+
+        with patch.object(self.ssh, "run_registered_process") as runner:
+            result = self.ssh.tool_ssh_run(
+                host="media-server",
+                command=command,
+            )
+
+        runner.assert_not_called()
+        self.assertEqual(result["status"], "needs_background")
+        self.assertEqual(result["reason"], "powershell_wait_for_exit")
+
+    def test_long_remote_sleep_is_redirected_before_ssh_starts(self) -> None:
+        with patch.object(self.ssh, "run_registered_process") as runner:
+            result = self.ssh.tool_ssh_run_ps(
+                host="media-server",
+                script="Start-Sleep -Seconds 45; Get-Service Jellyfin",
+            )
+
+        runner.assert_not_called()
+        self.assertEqual(result["status"], "needs_background")
+        self.assertEqual(result["reason"], "long_sleep")
+
+    def test_service_wait_is_redirected_before_ssh_starts(self) -> None:
+        with patch.object(self.ssh, "run_registered_process") as runner:
+            result = self.ssh.tool_ssh_run_ps(
+                host="media-server",
+                script=(
+                    "$service = Get-Service Jellyfin; "
+                    "$service.WaitForStatus('Running', '00:01:00')"
+                ),
+            )
+
+        runner.assert_not_called()
+        self.assertEqual(result["status"], "needs_background")
+        self.assertEqual(result["reason"], "powershell_wait_for_status")
+
+    def test_start_service_is_redirected_before_ssh_starts(self) -> None:
+        with patch.object(self.ssh, "run_registered_process") as runner:
+            result = self.ssh.tool_ssh_run_ps(
+                host="media-server",
+                script="Start-Service Jellyfin; Get-Service Jellyfin",
+            )
+
+        runner.assert_not_called()
+        self.assertEqual(result["status"], "needs_background")
+        self.assertEqual(result["reason"], "powershell_service_control")
+
+    def test_short_remote_sleep_remains_a_foreground_command(self) -> None:
+        with patch.object(
+            self.ssh,
+            "run_registered_process",
+            return_value=_proc(stdout=b"ready\n"),
+        ) as runner:
+            result = self.ssh.tool_ssh_run_ps(
+                host="media-server",
+                script="Start-Sleep -Seconds 2; Write-Output ready",
+            )
+
+        runner.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertNotIn("status", result)
+
     def test_arbitrary_direct_target_executes_as_one_argv_item(self) -> None:
         with patch.object(
             self.ssh,
@@ -187,6 +279,54 @@ class SshExecutionTest(SshProviderTestBase):
 
 
 class SshProviderIntegrationTest(SshProviderTestBase):
+    def test_provider_auto_backgrounds_blocking_ssh_without_shell_quoting(self) -> None:
+        provider = self.ssh.SshToolProvider(Path(self._tmp.name))
+        started = {
+            "ok": True,
+            "status": "running",
+            "kind": "job",
+            "pid": 4242,
+            "text": "Job started in background.",
+        }
+
+        with patch.object(self.ssh, "run_registered_process") as foreground, patch(
+            "app.application.code_agent.tools._run.start_background_argv_job",
+            return_value=started,
+        ) as background:
+            result = provider.dispatch(
+                "ssh_run_ps",
+                {
+                    "host": "media-server",
+                    "script": "Start-Process jellyfin_setup.exe -Wait",
+                },
+            )
+
+        foreground.assert_not_called()
+        call = background.call_args
+        self.assertEqual(call.args[0], Path(self._tmp.name).resolve())
+        self.assertEqual(call.kwargs["argv"][0], "ssh")
+        self.assertIn("-EncodedCommand", call.kwargs["argv"][-1])
+        self.assertIn("script:", call.kwargs["display_command"])
+        self.assertNotIn("jellyfin_setup", call.kwargs["display_command"])
+        self.assertNotIn(call.kwargs["argv"][-1], call.kwargs["display_command"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["backgrounded"])
+        self.assertEqual(result["redirected_from"], "ssh_run_ps")
+        self.assertEqual(result["pid"], 4242)
+        self.assertIn("run_server(action='logs', pid=4242)", result["text"])
+
+    def test_command_schemas_explain_background_redirect_contract(self) -> None:
+        schemas = {
+            item["function"]["name"]: item["function"]
+            for item in self.ssh.SshToolProvider().get_schemas()
+        }
+
+        for name in ("ssh_run", "ssh_run_ps"):
+            with self.subTest(tool=name):
+                description = schemas[name]["description"]
+                self.assertIn("needs_background", description)
+                self.assertIn("run_server", description)
+
     def test_provider_is_always_enabled_and_exposes_tools(self) -> None:
         provider = self.ssh.SshToolProvider()
         self.assertTrue(provider.is_enabled())

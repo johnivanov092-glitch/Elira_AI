@@ -201,6 +201,17 @@ other SSH targets. The retired `mikrotik` MCP server and generated
 `data/mikromcp/routers.yaml` are removed during migration/sync.
 An opaque legacy password reference may be preserved during migration for
 recoverability, but typed SSH never uses it; authentication is key/ssh-agent only.
+Known blocking SSH waits (`Start-Process -Wait`, `WaitForExit`,
+`WaitForStatus`, `Wait-Process`, service-control cmdlets and sleeps of at least
+30 seconds) are intercepted before the synchronous SSH process starts. The
+runtime transfers the original SSH argv, including encoded PowerShell, to the canonical
+`run_server(kind="job")` path without reparsing it through a local shell. The
+tool returns the managed PID immediately and the model polls
+`run_server(action="logs")`; low-level callers without project/job context
+receive a structured `needs_background` result instead.
+Workflow Stop always terminates the managed local SSH process tree. A remote
+process that the submitted script explicitly detaches can outlive the SSH
+channel and therefore still requires an explicit remote cleanup operation.
 
 The read-only LSP stdio client answers server-side configuration/progress
 requests, canonicalizes equivalent Windows file URI spellings and waits past an

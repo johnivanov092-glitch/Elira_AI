@@ -64,6 +64,48 @@ def test_prelaunch_journal_is_durable_and_redacts_command(tmp_path: Path) -> Non
         _background_jobs.discard_prepared_job(prepared)
 
 
+def test_background_job_accepts_argv_without_shell_reparsing(tmp_path: Path) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        started = _run.start_background_argv_job(
+            tmp_path,
+            argv=[
+                sys.executable,
+                "-c",
+                "import sys; print(sys.argv[1], flush=True)",
+                "SSH_ARGV_A&B|C",
+            ],
+            display_command="python argv probe",
+        )
+        try:
+            assert started["ok"] is True
+            pid = int(started["pid"])
+            deadline = time.monotonic() + 5
+            result = started
+            while time.monotonic() < deadline:
+                result = _run.tool_run_server(
+                    tmp_path,
+                    action="logs",
+                    kind="job",
+                    pid=pid,
+                )
+                if result.get("status") != "running":
+                    break
+                time.sleep(0.05)
+
+            assert result["status"] == "completed"
+            assert result["exit_code"] == 0
+            assert "SSH_ARGV_A&B|C" in result["text"]
+        finally:
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.clear()
+
+
 def test_corrupt_journal_is_quarantined_before_new_write(tmp_path: Path) -> None:
     from app.application.code_agent.tools import _background_jobs
 

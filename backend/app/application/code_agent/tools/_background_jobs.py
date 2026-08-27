@@ -209,23 +209,24 @@ def prepare_job(
     log_path: Path,
     run_id: str | None,
     started_at: float,
+    command_argv: list[str] | None = None,
 ) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
     state_dir = _state_dir()
     spec_path = state_dir / f"{job_id}.spec.json"
     launch_path = state_dir / f"{job_id}.launch.json"
     result_path = state_dir / f"{job_id}.result.json"
-    _atomic_json(
-        spec_path,
-        {
-            "schema_version": _SCHEMA_VERSION,
-            "job_id": job_id,
-            "command": command,
-            "cwd": str(cwd.resolve()),
-            "launch_path": str(launch_path.resolve()),
-            "result_path": str(result_path.resolve()),
-        },
-    )
+    spec = {
+        "schema_version": _SCHEMA_VERSION,
+        "job_id": job_id,
+        "command": command,
+        "cwd": str(cwd.resolve()),
+        "launch_path": str(launch_path.resolve()),
+        "result_path": str(result_path.resolve()),
+    }
+    if command_argv is not None:
+        spec["command_argv"] = list(command_argv)
+    _atomic_json(spec_path, spec)
     prepared = {
         "job_id": job_id,
         "spec_path": spec_path,

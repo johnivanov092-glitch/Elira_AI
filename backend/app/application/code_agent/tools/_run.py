@@ -766,7 +766,7 @@ def _server_verdict(text: str, handle: "_ServerHandle | None", action: str) -> d
     }
 
 
-def tool_run_server(
+def _tool_run_server_impl(
     project_root: Path,
     *,
     action: str = "start",
@@ -774,6 +774,8 @@ def tool_run_server(
     port: int | None = None,
     pid: int | None = None,
     kind: str = "server",
+    _argv: list[str] | None = None,
+    _display_command: str | None = None,
 ) -> dict[str, Any]:
     """Manage background servers and finite jobs through one process runtime.
 
@@ -950,7 +952,35 @@ def tool_run_server(
             "ok": False,
         }
 
-    cleaned_command = (command or "").strip()
+    command_argv: list[str] | None = None
+    if _argv is not None:
+        if process_kind != "job":
+            return {
+                "text": "ERROR: argv launch is supported only for kind='job'.",
+                "ok": False,
+            }
+        if (
+            not isinstance(_argv, list)
+            or not _argv
+            or not all(
+                isinstance(item, str) and "\x00" not in item
+                for item in _argv
+            )
+            or not _argv[0]
+        ):
+            return {
+                "text": "ERROR: _argv must be a non-empty string array.",
+                "ok": False,
+            }
+        command_argv = list(_argv)
+        if _display_command is not None and not isinstance(_display_command, str):
+            return {
+                "text": "ERROR: _display_command must be a string.",
+                "ok": False,
+            }
+        cleaned_command = str(_display_command or shlex.join(command_argv)).strip()
+    else:
+        cleaned_command = (command or "").strip()
     if not cleaned_command:
         return {"text": "ERROR: action 'start' requires a command.", "ok": False}
     display_command = redact_text(cleaned_command)
@@ -974,11 +1004,12 @@ def tool_run_server(
     try:
         if process_kind == "job":
             prepared_job = prepare_job(
-                cleaned_command,
+                display_command if command_argv is not None else cleaned_command,
                 project_root,
                 log_path=log_path,
                 run_id=run_id,
                 started_at=started_at,
+                command_argv=command_argv,
             )
         # Binary: the server child writes its raw bytes straight to this fd; we
         # decode on read (_read_log_tail) so Windows OEM output isn't mangled.
@@ -1224,3 +1255,39 @@ def tool_run_server(
             f"(pid={proc.pid}, port={actual_port or '?'})"
         ),
     }
+
+
+def tool_run_server(
+    project_root: Path,
+    *,
+    action: str = "start",
+    command: str = "",
+    port: int | None = None,
+    pid: int | None = None,
+    kind: str = "server",
+) -> dict[str, Any]:
+    """Public model-facing background process tool."""
+    return _tool_run_server_impl(
+        project_root,
+        action=action,
+        command=command,
+        port=port,
+        pid=pid,
+        kind=kind,
+    )
+
+
+def start_background_argv_job(
+    project_root: Path,
+    *,
+    argv: list[str],
+    display_command: str,
+) -> dict[str, Any]:
+    """Internal argv-safe adapter into the canonical durable job runtime."""
+    return _tool_run_server_impl(
+        project_root,
+        action="start",
+        kind="job",
+        _argv=argv,
+        _display_command=display_command,
+    )
