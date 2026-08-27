@@ -204,14 +204,20 @@ recoverability, but typed SSH never uses it; authentication is key/ssh-agent onl
 Known blocking SSH waits (`Start-Process -Wait`, `WaitForExit`,
 `WaitForStatus`, `Wait-Process`, service-control cmdlets and sleeps of at least
 30 seconds) are intercepted before the synchronous SSH process starts. The
-runtime transfers the original SSH argv, including encoded PowerShell, to the canonical
-`run_server(kind="job")` path without reparsing it through a local shell. The
-tool returns the managed PID immediately and the model polls
-`run_server(action="logs")`; low-level callers without project/job context
-receive a structured `needs_background` result instead.
-Workflow Stop always terminates the managed local SSH process tree. A remote
-process that the submitted script explicitly detaches can outlive the SSH
-channel and therefore still requires an explicit remote cleanup operation.
+typed `ssh_run_ps` path wraps the original encoded PowerShell in a managed
+remote child, transfers the SSH argv to canonical `run_server(kind="job")`
+without local-shell reparsing, and records the local job PID plus the remote
+Windows PID and process-start identity. The model receives structured poll and
+cancel calls. `run_server` logs/list recover this metadata after a backend
+restart; explicit stop verifies the same remote process identity, enumerates its
+descendants, and confirms bounded process-tree cleanup through `taskkill /T /F`
+before closing the local SSH job. Workflow Stop attempts the same bounded
+cleanup before forcing local teardown and persists its status for later
+logs/list inspection. Raw `ssh_run` PowerShell waits are
+rejected with a structured `ssh_run_ps` recommendation so quoting and remote
+cleanup are not lost; blocking POSIX commands retain argv-safe background
+transfer. Low-level callers without project/job context receive
+`needs_background`.
 
 The read-only LSP stdio client answers server-side configuration/progress
 requests, canonicalizes equivalent Windows file URI spellings and waits past an

@@ -596,8 +596,8 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
             "name": "ssh_run", "handler": _noop,
             "display_name": "SSH Run", "display_name_ru": "SSH команда",
             "category": "ssh", "description": (
-                "Run a shell command on a remote host via SSH; known blocking "
-                "waits are moved to the managed background job runtime"
+                "Run a shell command on a remote host via SSH; blocking commands "
+                "use managed jobs, while raw PowerShell routes to ssh_run_ps"
             ),
             "source": "ssh",
             "permission": "require_approval", "side_effect": True, "idempotent": False,
@@ -620,7 +620,7 @@ def _build_ssh_tools() -> list[dict[str, Any]]:
             "description": (
                 "Run a PowerShell script on a remote Windows host via SSH "
                 "(base64, no quoting); known blocking waits are moved to the "
-                "managed background job runtime"
+                "managed background job runtime with remote PID cleanup"
             ),
             "source": "ssh",
             "permission": "require_approval", "side_effect": True, "idempotent": False,

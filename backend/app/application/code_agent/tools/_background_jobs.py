@@ -210,6 +210,7 @@ def prepare_job(
     run_id: str | None,
     started_at: float,
     command_argv: list[str] | None = None,
+    runtime_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     job_id = uuid.uuid4().hex
     state_dir = _state_dir()
@@ -257,6 +258,8 @@ def prepare_job(
         "finished_at": None,
         "error": None,
     }
+    if runtime_metadata:
+        record["runtime_metadata"] = dict(runtime_metadata)
     try:
         with _JOURNAL_LOCK:
             journal = _load_journal()
@@ -313,6 +316,22 @@ def activate_job(
         _prune_terminal_records(journal)
         _atomic_json(_journal_path(), journal)
     return dict(record)
+
+
+def update_job_runtime_metadata(
+    job_id: str,
+    runtime_metadata: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Persist runtime-owned metadata without exposing it through tool args."""
+    with _JOURNAL_LOCK:
+        journal = _load_journal()
+        record = journal["jobs"].get(str(job_id))
+        if not isinstance(record, dict):
+            return None
+        record["runtime_metadata"] = dict(runtime_metadata)
+        record["updated_at"] = time.time()
+        _atomic_json(_journal_path(), journal)
+        return dict(record)
 
 
 def _activate_from_launch(record: dict[str, Any]) -> bool:

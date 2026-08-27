@@ -613,6 +613,8 @@ def _base_tool_schemas() -> list[dict[str, Any]]:
                     "logs. Use kind='server' for `npm run dev`/`uvicorn`/`vite`; use kind='job' for "
                     "a long scan, download, build or other finite command. Finite jobs persist their "
                     "PID identity, logs and completed/failed/cancelled result across backend restarts. "
+                    "Managed Windows SSH jobs also expose a remote_pid; stop performs bounded "
+                    "remote process-tree cleanup and returns remote_cleanup_status. "
                     "Actions: 'start' (launch `command`, optional `port`), 'list' (show tracked "
                     "processes), 'logs' (status + tail output of `pid`), 'stop' (terminate/cancel "
                     "`pid`), 'stop_all'. "

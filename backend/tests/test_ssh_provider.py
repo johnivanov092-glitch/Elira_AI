@@ -5,13 +5,14 @@ are replaced by a module-level process runner in these unit tests.
 """
 from __future__ import annotations
 
+import base64
 import importlib
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 from unittest.mock import patch
 
 
@@ -180,6 +181,92 @@ class SshExecutionTest(SshProviderTestBase):
         self.assertTrue(result["ok"])
         self.assertNotIn("status", result)
 
+    def test_remote_windows_process_tree_cleanup_is_verified(self) -> None:
+        with patch.object(
+            self.ssh,
+            "run_registered_process",
+            return_value=_proc(
+                stdout=b"SUCCESS\r\n__ELIRA_REMOTE_STOP__=stopped:7312\r\n"
+            ),
+        ) as runner:
+            result = self.ssh.stop_remote_windows_process_tree(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["remote_pid"], 7312)
+        self.assertEqual(result["remote_cleanup_status"], "stopped")
+        argv = runner.call_args.args[0]
+        self.assertIn("media-server", argv)
+        self.assertIn("-EncodedCommand", argv[-1])
+        cleanup_payload = argv[-1].rsplit(" ", 1)[-1]
+        cleanup_script = base64.b64decode(cleanup_payload).decode("utf-16-le")
+        self.assertIn("Get-CimInstance Win32_Process", cleanup_script)
+        self.assertIn("$survivors", cleanup_script)
+        self.assertIn("$expectedStartTicks=638602560000000000", cleanup_script)
+
+    def test_remote_windows_cleanup_requires_success_marker(self) -> None:
+        with patch.object(
+            self.ssh,
+            "run_registered_process",
+            return_value=_proc(stdout=b"taskkill returned without proof\r\n"),
+        ):
+            result = self.ssh.stop_remote_windows_process_tree(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["remote_cleanup_status"], "failed")
+
+    def test_remote_windows_cleanup_requires_process_identity(self) -> None:
+        with patch.object(self.ssh, "run_registered_process") as runner:
+            result = self.ssh.stop_remote_windows_process_tree(
+                host="media-server",
+                remote_pid=7312,
+            )
+
+        runner.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["remote_cleanup_status"], "invalid_identity")
+
+    def test_remote_windows_cleanup_rejects_reused_pid_identity(self) -> None:
+        with patch.object(
+            self.ssh,
+            "run_registered_process",
+            return_value=_proc(
+                returncode=3,
+                stdout=b"__ELIRA_REMOTE_STOP__=identity_mismatch:123\r\n",
+            ),
+        ):
+            result = self.ssh.stop_remote_windows_process_tree(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["remote_cleanup_status"], "identity_mismatch")
+
+    def test_remote_windows_cleanup_has_a_bounded_timeout(self) -> None:
+        with patch.object(
+            self.ssh,
+            "run_registered_process",
+            side_effect=TimeoutExpired(["ssh"], timeout=20),
+        ) as runner:
+            result = self.ssh.stop_remote_windows_process_tree(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["remote_cleanup_status"], "timeout")
+        self.assertEqual(runner.call_args.kwargs["timeout_seconds"], 20.0)
+
     def test_arbitrary_direct_target_executes_as_one_argv_item(self) -> None:
         with patch.object(
             self.ssh,
@@ -286,6 +373,10 @@ class SshProviderIntegrationTest(SshProviderTestBase):
             "status": "running",
             "kind": "job",
             "pid": 4242,
+            "remote_pid": 7312,
+            "remote_cleanup_supported": True,
+            "remote_process_identity_captured": True,
+            "remote_cleanup_ready": True,
             "text": "Job started in background.",
         }
 
@@ -306,14 +397,90 @@ class SshProviderIntegrationTest(SshProviderTestBase):
         self.assertEqual(call.args[0], Path(self._tmp.name).resolve())
         self.assertEqual(call.kwargs["argv"][0], "ssh")
         self.assertIn("-EncodedCommand", call.kwargs["argv"][-1])
+        wrapper_payload = call.kwargs["argv"][-1].rsplit(" ", 1)[-1]
+        wrapper = base64.b64decode(wrapper_payload).decode("utf-16-le")
+        self.assertIn("__ELIRA_REMOTE_PID__=", wrapper)
+        self.assertIn("StartTime.ToUniversalTime().Ticks", wrapper)
+        self.assertIn(
+            base64.b64encode(
+                "Start-Process jellyfin_setup.exe -Wait".encode("utf-16-le")
+            ).decode("ascii"),
+            wrapper,
+        )
         self.assertIn("script:", call.kwargs["display_command"])
         self.assertNotIn("jellyfin_setup", call.kwargs["display_command"])
         self.assertNotIn(call.kwargs["argv"][-1], call.kwargs["display_command"])
+        cleanup = call.kwargs["runtime_metadata"]["remote_cleanup"]
+        self.assertEqual(cleanup["kind"], "ssh_windows_process_tree")
+        self.assertEqual(cleanup["host"], "media-server")
         self.assertTrue(result["ok"])
         self.assertTrue(result["backgrounded"])
         self.assertEqual(result["redirected_from"], "ssh_run_ps")
         self.assertEqual(result["pid"], 4242)
-        self.assertIn("run_server(action='logs', pid=4242)", result["text"])
+        self.assertEqual(result["remote_pid"], 7312)
+        self.assertTrue(result["remote_cleanup_supported"])
+        self.assertTrue(result["remote_process_identity_captured"])
+        self.assertTrue(result["remote_cleanup_ready"])
+        self.assertIn(
+            "run_server(action='logs', kind='job', pid=4242)",
+            result["text"],
+        )
+        self.assertIn('"remote_pid": 7312', result["text"])
+        self.assertIn('"remote_cleanup_supported": true', result["text"])
+        self.assertIn('"remote_process_identity_captured": true', result["text"])
+        self.assertIn('"remote_cleanup_ready": true', result["text"])
+        self.assertIn('"action": "stop"', result["text"])
+
+    def test_provider_auto_backgrounds_blocking_posix_ssh_without_cleanup(self) -> None:
+        provider = self.ssh.SshToolProvider(Path(self._tmp.name))
+        with patch(
+            "app.application.code_agent.tools._run.start_background_argv_job",
+            return_value={
+                "ok": True,
+                "status": "running",
+                "kind": "job",
+                "pid": 4242,
+                "text": "Job started in background.",
+            },
+        ) as background:
+            result = provider.dispatch(
+                "ssh_run",
+                {
+                    "host": "linux-server",
+                    "command": "sleep 45; grep powershell app.log",
+                },
+            )
+
+        self.assertTrue(result["backgrounded"])
+        self.assertFalse(result["remote_cleanup_supported"])
+        self.assertIsNone(background.call_args.kwargs["runtime_metadata"])
+        self.assertEqual(
+            background.call_args.kwargs["argv"][-1],
+            "sleep 45; grep powershell app.log",
+        )
+
+    def test_raw_powershell_wait_redirects_qwen_to_typed_ssh_tool(self) -> None:
+        provider = self.ssh.SshToolProvider(Path(self._tmp.name))
+        with patch(
+            "app.application.code_agent.tools._run.start_background_argv_job",
+        ) as background:
+            result = provider.dispatch(
+                "ssh_run",
+                {
+                    "host": "media-server",
+                    "command": (
+                        "powershell -Command \"$p=Start-Process setup.exe "
+                        "-PassThru; $p.WaitForExit(300000)\""
+                    ),
+                },
+            )
+
+        background.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "needs_background")
+        self.assertEqual(result["recommended_tool"], "ssh_run_ps")
+        self.assertEqual(result["missing_required_arguments"], ["script"])
+        self.assertIn('"recommended_tool": "ssh_run_ps"', result["text"])
 
     def test_command_schemas_explain_background_redirect_contract(self) -> None:
         schemas = {

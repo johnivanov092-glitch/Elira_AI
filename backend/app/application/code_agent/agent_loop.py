@@ -1496,7 +1496,7 @@ def _stream_code_agent_core(
                             "[internal background-job correction] Задачу нельзя "
                             "завершать, пока автоматически перенесённая SSH job не "
                             "получила terminal status. Вызови "
-                            "run_server(action='logs', pid=...) для каждого PID: "
+                            "run_server(action='logs', kind='job', pid=...) для каждого PID: "
                             f"{pending_list}. Если status=running — опроси позже; "
                             "если completed/failed/cancelled — учти результат и "
                             "только затем отвечай пользователю."
@@ -2347,6 +2347,9 @@ def _stream_code_agent_core(
                     "server_started", "media", "action", "kind", "status",
                     "job_id", "log_path", "recovered",
                     "backgrounded", "redirected_from", "redirect_reason",
+                    "remote_pid", "remote_pid_pending",
+                    "remote_cleanup_supported", "remote_cleanup_status",
+                    "remote_process_identity_captured", "remote_cleanup_ready",
                 ):
                     if opt in tool_meta:
                         # Keep diff payloads truncated too to keep events small.

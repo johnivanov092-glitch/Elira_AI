@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -16,6 +17,7 @@ from app.application.code_agent.tools._background_jobs import (
     discard_prepared_job,
     prepare_job,
     reconcile_job_records,
+    update_job_runtime_metadata,
     write_terminal_result,
 )
 from app.application.code_agent.tools._sandbox import _truncate_middle
@@ -335,6 +337,93 @@ _LIVE_SERVERS: dict[int, _ServerHandle] = {}
 _SERVERS_LOCK = threading.Lock()
 _COMPLETED_JOB_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _COMPLETED_JOB_RETAIN_LIMIT = 32
+_REMOTE_PID_CAPTURE_WAIT_SECONDS = 1.5
+_REMOTE_PID_LOG_PREFIX_BYTES = 64_000
+
+
+def _read_remote_pid_output(log_path: Path) -> str:
+    """Read the stable log prefix where the managed wrapper emits its PID."""
+    try:
+        with log_path.open("rb") as handle:
+            return _decode_console(handle.read(_REMOTE_PID_LOG_PREFIX_BYTES))
+    except OSError:
+        return ""
+
+
+def _remote_cleanup_metadata(handle: _ServerHandle) -> dict[str, Any] | None:
+    metadata = (handle.job_record or {}).get("runtime_metadata")
+    if not isinstance(metadata, dict):
+        return None
+    cleanup = metadata.get("remote_cleanup")
+    return cleanup if isinstance(cleanup, dict) else None
+
+
+def _capture_remote_pid(handle: _ServerHandle) -> int | None:
+    cleanup = _remote_cleanup_metadata(handle)
+    if cleanup is None:
+        return None
+    try:
+        remote_pid = int(cleanup.get("remote_pid") or 0)
+    except (TypeError, ValueError):
+        remote_pid = 0
+    existing_remote_pid = remote_pid
+    try:
+        started_ticks = int(cleanup.get("remote_process_started_ticks") or 0)
+    except (TypeError, ValueError):
+        started_ticks = 0
+    if remote_pid > 0 and started_ticks > 0:
+        return remote_pid
+    marker = str(cleanup.get("remote_pid_marker") or "")
+    if not marker or not handle.log_path:
+        return remote_pid or None
+    match = re.search(
+        re.escape(marker) + r"(?P<pid>\d+)(?::(?P<started_ticks>\d+))?",
+        _read_remote_pid_output(handle.log_path),
+    )
+    if match is None:
+        return remote_pid or None
+    remote_pid = int(match.group("pid"))
+    matched_started_ticks = match.group("started_ticks")
+    if (
+        remote_pid == existing_remote_pid
+        and matched_started_ticks is None
+    ):
+        return remote_pid
+    metadata = dict((handle.job_record or {}).get("runtime_metadata") or {})
+    captured_cleanup = {**cleanup, "remote_pid": remote_pid}
+    if matched_started_ticks is not None:
+        captured_cleanup["remote_process_started_ticks"] = int(
+            matched_started_ticks
+        )
+    metadata["remote_cleanup"] = captured_cleanup
+    stored = update_job_runtime_metadata(str(handle.job_id or ""), metadata)
+    if stored is not None:
+        handle.job_record = stored
+    return remote_pid
+
+
+def _remote_job_fields(handle: _ServerHandle) -> dict[str, Any]:
+    cleanup = _remote_cleanup_metadata(handle)
+    if cleanup is None:
+        return {}
+    remote_pid = _capture_remote_pid(handle)
+    cleanup = _remote_cleanup_metadata(handle) or cleanup
+    fields = {
+        "remote_pid": remote_pid,
+        "remote_pid_pending": remote_pid is None and handle.status == "running",
+        "remote_cleanup_supported": (
+            cleanup.get("kind") == "ssh_windows_process_tree"
+        ),
+        "remote_process_identity_captured": bool(
+            cleanup.get("remote_process_started_ticks")
+        ),
+        "remote_cleanup_ready": bool(
+            remote_pid and cleanup.get("remote_process_started_ticks")
+        ),
+    }
+    if cleanup.get("remote_cleanup_status"):
+        fields["remote_cleanup_status"] = cleanup["remote_cleanup_status"]
+    return fields
 
 
 def _apply_job_record(handle: _ServerHandle, record: dict[str, Any]) -> str:
@@ -355,7 +444,9 @@ def _refresh_job_handle(handle: _ServerHandle) -> str:
             None,
         )
         if record is not None:
-            return _apply_job_record(handle, record)
+            status = _apply_job_record(handle, record)
+            _capture_remote_pid(handle)
+            return status
     returncode = handle.proc.poll()
     handle.exit_code = returncode
     handle.status = "running" if returncode is None else (
@@ -363,6 +454,7 @@ def _refresh_job_handle(handle: _ServerHandle) -> str:
     )
     if returncode is not None and handle.finished_at is None:
         handle.finished_at = time.time()
+    _capture_remote_pid(handle)
     return handle.status
 
 
@@ -439,6 +531,7 @@ def tracked_background_processes(run_id: str | None = None) -> list[dict[str, An
                 "log_path": str(handle.log_path),
                 "age_s": max(0, int(time.time() - handle.started_at)),
                 "recovered": handle.recovered,
+                **_remote_job_fields(handle),
             }
         )
     return sorted(processes, key=lambda item: int(item["age_s"]), reverse=True)
@@ -556,6 +649,125 @@ def _mark_job_cancelled(handle: _ServerHandle) -> None:
     handle.job_record.update(payload)
 
 
+def _persist_remote_cleanup_result(
+    handle: _ServerHandle,
+    result: dict[str, Any],
+) -> None:
+    cleanup = _remote_cleanup_metadata(handle)
+    if cleanup is None or not handle.job_id:
+        return
+    metadata = dict((handle.job_record or {}).get("runtime_metadata") or {})
+    updated_cleanup = {
+        **cleanup,
+        "remote_cleanup_status": str(
+            result.get("remote_cleanup_status") or "failed"
+        ),
+        "remote_cleanup_updated_at": time.time(),
+    }
+    try:
+        remote_pid = int(result.get("remote_pid") or 0)
+    except (TypeError, ValueError):
+        remote_pid = 0
+    if remote_pid > 0:
+        updated_cleanup["remote_pid"] = remote_pid
+    metadata["remote_cleanup"] = updated_cleanup
+    try:
+        stored = update_job_runtime_metadata(str(handle.job_id), metadata)
+    except Exception:
+        # Cancellation must not depend on journal availability. The remote
+        # cleanup result is still returned to the caller for this attempt.
+        return
+    if stored is not None:
+        handle.job_record = stored
+
+
+def _stop_remote_job_process(handle: _ServerHandle) -> dict[str, Any]:
+    metadata = (
+        (handle.job_record or {}).get("runtime_metadata")
+        if handle.kind == "job"
+        else None
+    )
+    cleanup = (
+        metadata.get("remote_cleanup")
+        if isinstance(metadata, dict)
+        else None
+    )
+    if not isinstance(cleanup, dict):
+        return {"required": False, "ok": True}
+    if cleanup.get("kind") != "ssh_windows_process_tree":
+        return {
+            "required": True,
+            "ok": False,
+            "remote_cleanup_status": "unsupported",
+            "text": "unsupported remote cleanup kind",
+        }
+    if cleanup.get("remote_cleanup_status") in {"stopped", "already_stopped"}:
+        return {
+            "required": True,
+            "ok": True,
+            "remote_pid": cleanup.get("remote_pid"),
+            "remote_cleanup_status": cleanup["remote_cleanup_status"],
+            "text": "remote process-tree cleanup was already verified",
+        }
+    host = str(cleanup.get("host") or "").strip()
+    try:
+        remote_pid = int(cleanup.get("remote_pid") or 0)
+    except (TypeError, ValueError):
+        remote_pid = 0
+    try:
+        remote_started_ticks = int(
+            cleanup.get("remote_process_started_ticks") or 0
+        )
+    except (TypeError, ValueError):
+        remote_started_ticks = 0
+    if not host or remote_pid <= 0:
+        result = {
+            "required": True,
+            "ok": False,
+            "remote_pid": remote_pid or None,
+            "remote_cleanup_status": "missing_remote_pid",
+            "text": "remote cleanup metadata has no captured PID",
+        }
+        _persist_remote_cleanup_result(handle, result)
+        return result
+    if remote_started_ticks <= 0:
+        result = {
+            "required": True,
+            "ok": False,
+            "remote_pid": remote_pid,
+            "remote_cleanup_status": "missing_remote_identity",
+            "text": (
+                "remote cleanup metadata has no process-start identity; "
+                "refusing to stop a potentially reused PID"
+            ),
+        }
+        _persist_remote_cleanup_result(handle, result)
+        return result
+    try:
+        from app.application.tool_providers.ssh_provider import (
+            stop_remote_windows_process_tree,
+        )
+
+        result = stop_remote_windows_process_tree(
+            host=host,
+            remote_pid=remote_pid,
+            remote_started_ticks=remote_started_ticks or None,
+        )
+    except Exception as exc:
+        result = {
+            "required": True,
+            "ok": False,
+            "remote_pid": remote_pid,
+            "remote_cleanup_status": "error",
+            "text": f"remote cleanup crashed: {exc}",
+        }
+        _persist_remote_cleanup_result(handle, result)
+        return result
+    merged = {"required": True, **result}
+    _persist_remote_cleanup_result(handle, merged)
+    return merged
+
+
 def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
     """Stop every live process owned by ``run_id``; retain cancelled job audit."""
     if not run_id:
@@ -565,9 +777,13 @@ def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
     stopped: list[dict[str, Any]] = []
     for pid, h in owned:
         was_alive = False
+        remote_cleanup = {"required": False, "ok": True}
         try:
             was_alive = h.proc.poll() is None
             if was_alive:
+                if h.kind == "job":
+                    _refresh_job_handle(h)
+                    remote_cleanup = _stop_remote_job_process(h)
                 _kill_proc_tree(h.proc)
                 try:
                     h.proc.wait(timeout=5)
@@ -580,7 +796,20 @@ def stop_run_servers(run_id: str) -> list[dict[str, Any]]:
             # tracked (list/stop_all), not silently leak.
             continue
         if was_alive:
-            stopped.append({"pid": pid, "port": h.port, "url": h.url, "command": h.command})
+            item = {
+                "pid": pid,
+                "port": h.port,
+                "url": h.url,
+                "command": h.command,
+            }
+            if remote_cleanup.get("required"):
+                item.update({
+                    "remote_pid": remote_cleanup.get("remote_pid"),
+                    "remote_cleanup_status": remote_cleanup.get(
+                        "remote_cleanup_status"
+                    ),
+                })
+            stopped.append(item)
         if h.kind == "job" and was_alive:
             _mark_job_cancelled(h)
         else:
@@ -733,6 +962,9 @@ def stop_all_servers() -> int:
         try:
             was_alive = h.proc.poll() is None
             if was_alive:
+                if h.kind == "job":
+                    _refresh_job_handle(h)
+                    _stop_remote_job_process(h)
                 _kill_proc_tree(h.proc)
                 try:
                     h.proc.wait(timeout=5)
@@ -776,6 +1008,7 @@ def _tool_run_server_impl(
     kind: str = "server",
     _argv: list[str] | None = None,
     _display_command: str | None = None,
+    _runtime_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Manage background servers and finite jobs through one process runtime.
 
@@ -827,6 +1060,7 @@ def _tool_run_server_impl(
                     "run_id": h.run_id,
                     "log_path": str(h.log_path),
                     "recovered": h.recovered,
+                    **_remote_job_fields(h),
                 }
             )
             if h.kind == "server" and h.port and returncode is None:
@@ -874,6 +1108,41 @@ def _tool_run_server_impl(
         )
         if h.kind == "server":
             return _server_verdict(text, h if (running and h.port) else None, "logs")
+        remote_fields = _remote_job_fields(h)
+        if remote_fields:
+            feedback: dict[str, Any] = {
+                "action": "logs",
+                "kind": "job",
+                "pid": h.pid,
+                "status": status,
+                "terminal": status in {"completed", "failed", "cancelled"},
+                **remote_fields,
+            }
+            if running:
+                feedback["next_actions"] = [
+                    {
+                        "when": "monitor",
+                        "tool": "run_server",
+                        "arguments": {
+                            "action": "logs",
+                            "kind": "job",
+                            "pid": h.pid,
+                        },
+                    },
+                    {
+                        "when": "cancel",
+                        "tool": "run_server",
+                        "arguments": {
+                            "action": "stop",
+                            "kind": "job",
+                            "pid": h.pid,
+                        },
+                    },
+                ]
+            text += (
+                "\n\nSTRUCTURED_TOOL_RESULT:\n"
+                + json.dumps(feedback, ensure_ascii=False, indent=2)
+            )
         return {
             "text": text,
             "ok": status in {"running", "completed"},
@@ -885,6 +1154,7 @@ def _tool_run_server_impl(
             "exit_code": exit_code,
             "log_path": str(h.log_path),
             "recovered": h.recovered,
+            **remote_fields,
         }
 
     if act == "stop":
@@ -898,9 +1168,26 @@ def _tool_run_server_impl(
         # otherwise a failed taskkill reported "Stopped" while the process lived on,
         # untracked and unstoppable (John's P1a review; same rule as stop_run_servers).
         if h.kind == "job" and _refresh_job_handle(h) != "running":
-            return {
-                "text": f"job pid={pid} already {h.status}; no running process to stop.",
-                "ok": h.status in {"completed", "cancelled"},
+            cleanup = _remote_cleanup_metadata(h)
+            cleanup_status = str(
+                (cleanup or {}).get("remote_cleanup_status") or ""
+            )
+            remote_cleanup = {"required": False, "ok": True}
+            if (
+                cleanup is not None
+                and h.status in {"failed", "cancelled"}
+                and cleanup_status not in {"stopped", "already_stopped"}
+            ):
+                remote_cleanup = _stop_remote_job_process(h)
+            text = f"job pid={pid} already {h.status}; no local process to stop."
+            if remote_cleanup.get("required"):
+                text += f"\n{remote_cleanup.get('text') or ''}"
+            result = {
+                "text": text,
+                "ok": (
+                    h.status in {"completed", "cancelled"}
+                    and bool(remote_cleanup.get("ok"))
+                ),
                 "action": "stop",
                 "kind": "job",
                 "pid": h.pid,
@@ -908,6 +1195,37 @@ def _tool_run_server_impl(
                 "status": h.status,
                 "exit_code": h.exit_code,
                 "log_path": str(h.log_path),
+                "recovered": h.recovered,
+                **_remote_job_fields(h),
+            }
+            if remote_cleanup.get("required"):
+                result.update({
+                    "remote_pid": remote_cleanup.get("remote_pid"),
+                    "remote_cleanup_status": remote_cleanup.get(
+                        "remote_cleanup_status"
+                    ),
+                    "remote_cleanup_supported": True,
+                })
+            return result
+        remote_cleanup = _stop_remote_job_process(h)
+        if remote_cleanup.get("required") and not remote_cleanup.get("ok"):
+            return {
+                "text": (
+                    f"ERROR: remote cleanup failed for job pid={pid}: "
+                    f"{remote_cleanup.get('text') or 'unknown error'}. "
+                    "The managed SSH job remains running and tracked."
+                ),
+                "ok": False,
+                "action": "stop",
+                "kind": "job",
+                "pid": h.pid,
+                "job_id": h.job_id,
+                "status": "running",
+                "remote_pid": remote_cleanup.get("remote_pid"),
+                "remote_cleanup_status": remote_cleanup.get(
+                    "remote_cleanup_status"
+                ),
+                "remote_cleanup_supported": True,
                 "recovered": h.recovered,
             }
         was_alive = h.proc.poll() is None
@@ -930,8 +1248,17 @@ def _tool_run_server_impl(
             _refresh_job_handle(h)
             if was_alive and h.exit_code is None:
                 _mark_job_cancelled(h)
-            return {
-                "text": f"Stopped job pid={pid} [{h.status}] — {h.command}",
+            remote_text = (
+                f"\n{remote_cleanup.get('text')}"
+                if remote_cleanup.get("required")
+                and remote_cleanup.get("text")
+                else ""
+            )
+            result = {
+                "text": (
+                    f"Stopped job pid={pid} [{h.status}] — {h.command}"
+                    f"{remote_text}"
+                ),
                 "ok": True,
                 "action": "stop",
                 "kind": "job",
@@ -942,6 +1269,15 @@ def _tool_run_server_impl(
                 "log_path": str(h.log_path),
                 "recovered": h.recovered,
             }
+            if remote_cleanup.get("required"):
+                result.update({
+                    "remote_pid": remote_cleanup.get("remote_pid"),
+                    "remote_cleanup_status": remote_cleanup.get(
+                        "remote_cleanup_status"
+                    ),
+                    "remote_cleanup_supported": True,
+                })
+            return result
         with _SERVERS_LOCK:
             _LIVE_SERVERS.pop(int(pid), None)
         return {"text": f"Stopped {h.kind} pid={pid} — {h.command}"}
@@ -1010,6 +1346,7 @@ def _tool_run_server_impl(
                 run_id=run_id,
                 started_at=started_at,
                 command_argv=command_argv,
+                runtime_metadata=_runtime_metadata,
             )
         # Binary: the server child writes its raw bytes straight to this fd; we
         # decode on read (_read_log_tail) so Windows OEM output isn't mangled.
@@ -1122,6 +1459,15 @@ def _tool_run_server_impl(
     time.sleep(_SERVER_STARTUP_GRACE if process_kind == "server" else 0.05)
     if process_kind == "job":
         _refresh_job_handle(handle)
+        if _remote_cleanup_metadata(handle) is not None:
+            capture_deadline = time.monotonic() + _REMOTE_PID_CAPTURE_WAIT_SECONDS
+            while (
+                handle.status == "running"
+                and _capture_remote_pid(handle) is None
+                and time.monotonic() < capture_deadline
+            ):
+                time.sleep(0.05)
+                _refresh_job_handle(handle)
     if proc.poll() is not None or (process_kind == "job" and handle.status != "running"):
         if process_kind == "server":
             with _SERVERS_LOCK:
@@ -1149,6 +1495,7 @@ def _tool_run_server_impl(
                 "exit_code": exit_code,
                 "log_path": str(log_path),
                 "recovered": handle.recovered,
+                **_remote_job_fields(handle),
             }
         # A server start that died (incl. "Port … is already in use") is NOT ok — otherwise
         # the loop reads a missing `ok` as True and a failed start looks like success,
@@ -1197,6 +1544,7 @@ def _tool_run_server_impl(
             "status": "running",
             "log_path": str(log_path),
             "recovered": handle.recovered,
+            **_remote_job_fields(handle),
         }
 
     if actual_url:
@@ -1282,6 +1630,7 @@ def start_background_argv_job(
     *,
     argv: list[str],
     display_command: str,
+    runtime_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Internal argv-safe adapter into the canonical durable job runtime."""
     return _tool_run_server_impl(
@@ -1290,4 +1639,5 @@ def start_background_argv_job(
         kind="job",
         _argv=argv,
         _display_command=display_command,
+        _runtime_metadata=runtime_metadata,
     )

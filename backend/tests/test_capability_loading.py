@@ -266,6 +266,10 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
         "status": "running",
         "kind": "job",
         "pid": 4242,
+        "remote_pid": 7312,
+        "remote_cleanup_supported": True,
+        "remote_process_identity_captured": True,
+        "remote_cleanup_ready": True,
         "text": "Job started in background.",
     }
     with patch(
@@ -293,8 +297,17 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
         ))
 
     assert len(model_contexts) >= 4
-    assert "run_server(action='logs', pid=4242)" in model_contexts[1][-1]["content"]
+    assert (
+        "run_server(action='logs', kind='job', pid=4242)"
+        in model_contexts[1][-1]["content"]
+    )
     assert '"backgrounded": true' in model_contexts[1][-1]["content"]
+    assert '"remote_pid": 7312' in model_contexts[1][-1]["content"]
+    assert '"remote_cleanup_supported": true' in model_contexts[1][-1]["content"]
+    assert (
+        '"remote_process_identity_captured": true'
+        in model_contexts[1][-1]["content"]
+    )
     assert "Задачу нельзя завершать" in model_contexts[2][-1]["content"]
     assert "SSH job completed successfully" in model_contexts[3][-1]["content"]
     ssh_event = next(
@@ -306,6 +319,10 @@ def test_backgrounded_ssh_pid_reaches_the_model_and_event_stream(tmp_path) -> No
     assert ssh_event["status"] == "running"
     assert ssh_event["backgrounded"] is True
     assert ssh_event["redirected_from"] == "ssh_run_ps"
+    assert ssh_event["remote_pid"] == 7312
+    assert ssh_event["remote_cleanup_supported"] is True
+    assert ssh_event["remote_process_identity_captured"] is True
+    assert ssh_event["remote_cleanup_ready"] is True
     logs_event = next(
         event for event in events
         if event.get("type") == "tool_call"

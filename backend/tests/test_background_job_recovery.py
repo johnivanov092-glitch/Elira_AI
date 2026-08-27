@@ -106,6 +106,457 @@ def test_background_job_accepts_argv_without_shell_reparsing(tmp_path: Path) -> 
                 _run._LIVE_SERVERS.clear()
 
 
+def test_run_server_stop_cleans_up_managed_remote_windows_process(
+    tmp_path: Path,
+) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        started = _run.start_background_argv_job(
+            tmp_path,
+            argv=[
+                sys.executable,
+                "-c",
+                "import time; time.sleep(30)",
+            ],
+            display_command="managed remote probe",
+            runtime_metadata={
+                "remote_cleanup": {
+                    "kind": "ssh_windows_process_tree",
+                    "host": "media-server",
+                    "remote_pid": 7312,
+                    "remote_process_started_ticks": 638602560000000000,
+                },
+            },
+        )
+        try:
+            with mock.patch(
+                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                return_value={
+                    "ok": True,
+                    "remote_pid": 7312,
+                    "remote_cleanup_status": "stopped",
+                    "text": "remote process tree stopped",
+                },
+            ) as remote_stop:
+                result = _run.tool_run_server(
+                    tmp_path,
+                    action="stop",
+                    kind="job",
+                    pid=int(started["pid"]),
+                )
+
+            remote_stop.assert_called_once_with(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+            assert result["ok"] is True
+            assert result["status"] == "cancelled"
+            assert result["remote_pid"] == 7312
+            assert result["remote_cleanup_status"] == "stopped"
+            assert "remote process tree stopped" in result["text"]
+        finally:
+            _run.stop_all_servers()
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.clear()
+
+
+def test_workflow_stop_attempts_managed_remote_windows_cleanup(tmp_path: Path) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run, _shell
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        token = _shell.set_current_run_id("remote-cleanup-run")
+        try:
+            started = _run.start_background_argv_job(
+                tmp_path,
+                argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+                display_command="workflow remote cleanup probe",
+                runtime_metadata={
+                    "remote_cleanup": {
+                        "kind": "ssh_windows_process_tree",
+                        "host": "media-server",
+                        "remote_pid": 7312,
+                        "remote_process_started_ticks": 638602560000000000,
+                    },
+                },
+            )
+        finally:
+            _shell.reset_current_run_id(token)
+        try:
+            with mock.patch(
+                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                return_value={
+                    "ok": True,
+                    "remote_pid": 7312,
+                    "remote_cleanup_status": "stopped",
+                    "text": "remote stopped",
+                },
+            ) as remote_stop:
+                stopped = _run.stop_run_servers("remote-cleanup-run")
+
+            remote_stop.assert_called_once_with(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+            assert stopped == [{
+                "pid": int(started["pid"]),
+                "port": None,
+                "url": None,
+                "command": "workflow remote cleanup probe",
+                "remote_pid": 7312,
+                "remote_cleanup_status": "stopped",
+            }]
+            journal = json.loads(
+                (tmp_path / "background_jobs" / "jobs.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cleanup = journal["jobs"][started["job_id"]]["runtime_metadata"][
+                "remote_cleanup"
+            ]
+            assert cleanup["remote_cleanup_status"] == "stopped"
+        finally:
+            _run.stop_all_servers()
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.clear()
+
+
+def test_workflow_stop_local_teardown_survives_cleanup_journal_failure(
+    tmp_path: Path,
+) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run, _shell
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        token = _shell.set_current_run_id("cleanup-journal-failure")
+        try:
+            started = _run.start_background_argv_job(
+                tmp_path,
+                argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+                display_command="cleanup journal failure probe",
+                runtime_metadata={
+                    "remote_cleanup": {
+                        "kind": "ssh_windows_process_tree",
+                        "host": "media-server",
+                        "remote_pid": 7312,
+                        "remote_process_started_ticks": 638602560000000000,
+                    },
+                },
+            )
+        finally:
+            _shell.reset_current_run_id(token)
+        with mock.patch(
+            "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+            return_value={
+                "ok": True,
+                "remote_pid": 7312,
+                "remote_cleanup_status": "stopped",
+                "text": "remote stopped",
+            },
+        ), mock.patch.object(
+            _run,
+            "update_job_runtime_metadata",
+            side_effect=OSError("journal unavailable"),
+        ):
+            stopped = _run.stop_run_servers("cleanup-journal-failure")
+
+        assert stopped[0]["pid"] == int(started["pid"])
+        with _run._SERVERS_LOCK:
+            assert _run._LIVE_SERVERS[int(started["pid"])].proc.poll() is not None
+            _run._LIVE_SERVERS.clear()
+
+
+def test_background_job_captures_and_persists_remote_pid(tmp_path: Path) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        started = _run.start_background_argv_job(
+            tmp_path,
+            argv=[
+                sys.executable,
+                "-c",
+                (
+                    "import time; "
+                    "print('__ELIRA_REMOTE_PID__=7312:638602560000000000', flush=True); "
+                    "time.sleep(30)"
+                ),
+            ],
+            display_command="managed remote pid probe",
+            runtime_metadata={
+                "remote_cleanup": {
+                    "kind": "ssh_windows_process_tree",
+                    "host": "media-server",
+                    "remote_pid_marker": "__ELIRA_REMOTE_PID__=",
+                },
+            },
+        )
+        try:
+            assert started["ok"] is True
+            assert started["remote_pid"] == 7312
+            assert started["remote_cleanup_supported"] is True
+            tracked = next(
+                item
+                for item in _run.tracked_background_processes()
+                if item["pid"] == started["pid"]
+            )
+            assert tracked["remote_pid"] == 7312
+            logs = _run.tool_run_server(
+                tmp_path,
+                action="logs",
+                kind="job",
+                pid=int(started["pid"]),
+            )
+            assert '"remote_pid": 7312' in logs["text"]
+            assert '"remote_pid_pending": false' in logs["text"]
+            assert '"remote_process_identity_captured": true' in logs["text"]
+            assert '"remote_cleanup_ready": true' in logs["text"]
+            assert '"action": "stop"' in logs["text"]
+
+            journal = json.loads(
+                (tmp_path / "background_jobs" / "jobs.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            record = journal["jobs"][started["job_id"]]
+            assert (
+                record["runtime_metadata"]["remote_cleanup"]["remote_pid"]
+                == 7312
+            )
+            assert (
+                record["runtime_metadata"]["remote_cleanup"][
+                    "remote_process_started_ticks"
+                ]
+                == 638602560000000000
+            )
+        finally:
+            with mock.patch(
+                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                return_value={
+                    "ok": True,
+                    "remote_pid": 7312,
+                    "remote_cleanup_status": "stopped",
+                    "text": "remote stopped",
+                },
+            ):
+                _run.stop_all_servers()
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.clear()
+
+
+def test_recovered_background_job_preserves_remote_cleanup_metadata(
+    tmp_path: Path,
+) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        started = _run.start_background_argv_job(
+            tmp_path,
+            argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+            display_command="recoverable remote probe",
+            runtime_metadata={
+                "remote_cleanup": {
+                    "kind": "ssh_windows_process_tree",
+                    "host": "media-server",
+                    "remote_pid": 7312,
+                    "remote_process_started_ticks": 638602560000000000,
+                },
+            },
+        )
+        pid = int(started["pid"])
+        with _run._SERVERS_LOCK:
+            original = _run._LIVE_SERVERS.pop(pid)
+        try:
+            recovery = _run.recover_background_jobs()
+            # Reuse the live Popen handle for deterministic in-process teardown.
+            # Cross-process RecoveredJobProcess cancellation is covered below;
+            # this test isolates durable remote-cleanup metadata restoration.
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS[pid].proc = original.proc
+            with mock.patch(
+                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                return_value={
+                    "ok": True,
+                    "remote_pid": 7312,
+                    "remote_cleanup_status": "stopped",
+                    "text": "remote stopped after recovery",
+                },
+            ) as remote_stop:
+                stopped = _run.tool_run_server(
+                    tmp_path,
+                    action="stop",
+                    kind="job",
+                    pid=pid,
+                )
+
+            assert recovery["running"] == 1
+            assert stopped["ok"] is True, stopped
+            assert stopped["status"] == "cancelled"
+            assert stopped["recovered"] is True
+            assert stopped["remote_pid"] == 7312
+            remote_stop.assert_called_once_with(
+                host="media-server",
+                remote_pid=7312,
+                remote_started_ticks=638602560000000000,
+            )
+        finally:
+            if original.proc.poll() is None:
+                _run._kill_proc_tree(original.proc)
+                original.proc.wait(timeout=5)
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.clear()
+
+
+def test_remote_cleanup_failure_keeps_background_job_running_and_tracked(
+    tmp_path: Path,
+) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run
+
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        started = _run.start_background_argv_job(
+            tmp_path,
+            argv=[sys.executable, "-c", "import time; time.sleep(30)"],
+            display_command="remote cleanup retry probe",
+            runtime_metadata={
+                "remote_cleanup": {
+                    "kind": "ssh_windows_process_tree",
+                    "host": "media-server",
+                    "remote_pid": 7312,
+                    "remote_process_started_ticks": 638602560000000000,
+                },
+            },
+        )
+        pid = int(started["pid"])
+        try:
+            with mock.patch(
+                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                return_value={
+                    "ok": False,
+                    "remote_pid": 7312,
+                    "remote_cleanup_status": "failed",
+                    "text": "remote process tree is still running",
+                },
+            ):
+                result = _run.tool_run_server(
+                    tmp_path,
+                    action="stop",
+                    kind="job",
+                    pid=pid,
+                )
+
+            assert result["ok"] is False
+            assert result["status"] == "running"
+            assert result["remote_cleanup_status"] == "failed"
+            with _run._SERVERS_LOCK:
+                assert _run._LIVE_SERVERS[pid].proc.poll() is None
+        finally:
+            with mock.patch(
+                "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+                return_value={
+                    "ok": True,
+                    "remote_pid": 7312,
+                    "remote_cleanup_status": "stopped",
+                    "text": "remote stopped",
+                },
+            ):
+                _run.stop_all_servers()
+            with _run._SERVERS_LOCK:
+                _run._LIVE_SERVERS.clear()
+
+
+def test_failed_local_ssh_job_can_still_clean_verified_remote_process(
+    tmp_path: Path,
+) -> None:
+    from app.application.code_agent.tools import _background_jobs, _run
+
+    started_ticks = 638602560000000000
+    with mock.patch.object(
+        _background_jobs,
+        "_state_dir",
+        return_value=tmp_path / "background_jobs",
+    ):
+        started = _run.start_background_argv_job(
+            tmp_path,
+            argv=[
+                sys.executable,
+                "-c",
+                "import time; time.sleep(0.2); raise SystemExit(7)",
+            ],
+            display_command="failed local ssh probe",
+            runtime_metadata={
+                "remote_cleanup": {
+                    "kind": "ssh_windows_process_tree",
+                    "host": "media-server",
+                    "remote_pid": 7312,
+                    "remote_process_started_ticks": started_ticks,
+                },
+            },
+        )
+        pid = int(started["pid"])
+        deadline = time.monotonic() + 5
+        logs = started
+        while logs.get("status") == "running" and time.monotonic() < deadline:
+            time.sleep(0.05)
+            logs = _run.tool_run_server(
+                tmp_path,
+                action="logs",
+                kind="job",
+                pid=pid,
+            )
+        assert logs["status"] == "failed"
+
+        with mock.patch(
+            "app.application.tool_providers.ssh_provider.stop_remote_windows_process_tree",
+            return_value={
+                "ok": True,
+                "remote_pid": 7312,
+                "remote_cleanup_status": "stopped",
+                "text": "verified remote tree stopped",
+            },
+        ) as remote_stop:
+            stopped = _run.tool_run_server(
+                tmp_path,
+                action="stop",
+                kind="job",
+                pid=pid,
+            )
+
+        assert stopped["status"] == "failed"
+        assert stopped["remote_cleanup_status"] == "stopped"
+        assert "verified remote tree stopped" in stopped["text"]
+        remote_stop.assert_called_once_with(
+            host="media-server",
+            remote_pid=7312,
+            remote_started_ticks=started_ticks,
+        )
+        with _run._SERVERS_LOCK:
+            _run._LIVE_SERVERS.clear()
+
+
 def test_corrupt_journal_is_quarantined_before_new_write(tmp_path: Path) -> None:
     from app.application.code_agent.tools import _background_jobs
 

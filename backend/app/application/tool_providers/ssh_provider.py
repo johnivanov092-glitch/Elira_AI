@@ -40,6 +40,7 @@ from app.application.tool_providers.ssh_acl import (
 from app.infrastructure.encoding import decode_console
 from app.infrastructure.text import truncate_middle
 from app.application.code_agent.tools._shell import (
+    _kill_proc_tree,
     _new_process_group_kwargs,
     register_run_process,
     unregister_run_process,
@@ -54,6 +55,13 @@ _DEFAULT_READ_BYTES = 100_000
 # read cap, which limits what we fetch over the wire).
 _LLM_OUTPUT_LIMIT = 16_000
 _FOREGROUND_SLEEP_LIMIT_SECONDS = 30.0
+_REMOTE_PID_MARKER = "__ELIRA_REMOTE_PID__="
+_REMOTE_CLEANUP_TIMEOUT_SECONDS = 20.0
+_POWERSHELL_COMMAND_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:cmd(?:\.exe)?\s+(?:/c|/s\s+/c)\s+)?"
+    r"(?:powershell|pwsh)(?:\.exe)?\b)",
+    re.IGNORECASE,
+)
 
 
 def _contains_long_sleep(command: str) -> bool:
@@ -97,19 +105,30 @@ def _foreground_block_reason(command: str) -> str | None:
     return None
 
 
-def _needs_background_result(reason: str) -> dict[str, Any]:
+def _needs_background_result(
+    reason: str,
+    *,
+    recommended_tool: str = "run_server",
+    recommended_arguments: dict[str, Any] | None = None,
+    missing_required_arguments: list[str] | None = None,
+    next_action: str | None = None,
+) -> dict[str, Any]:
     feedback = {
         "status": "needs_background",
         "error": "long_running_foreground",
         "reason": reason,
-        "recommended_tool": "run_server",
-        "recommended_arguments": {"action": "start", "kind": "job"},
-        "next_action": (
+        "recommended_tool": recommended_tool,
+        "recommended_arguments": recommended_arguments
+        or {"action": "start", "kind": "job"},
+        "next_action": next_action
+        or (
             "Launch the equivalent SSH command with run_server(kind='job'), "
             "then poll run_server(action='logs', pid=...). Do not retry it "
             "through a synchronous SSH tool."
         ),
     }
+    if missing_required_arguments:
+        feedback["missing_required_arguments"] = list(missing_required_arguments)
     return {
         **feedback,
         "ok": False,
@@ -122,7 +141,7 @@ def _background_ssh_argv(tool_name: str, args: dict[str, Any]) -> list[str]:
     if tool_name == "ssh_run_ps":
         return _ssh_command_argv(
             host,
-            _powershell_remote_command(str(args.get("script") or "")),
+            _powershell_managed_job_command(str(args.get("script") or "")),
         )
 
     connect_timeout = max(1, int(args.get("timeout", 60)))
@@ -159,10 +178,26 @@ def _start_background_ssh_job(
     except (TypeError, ValueError):
         return {"text": "ERROR: timeout must be an integer", "ok": False}
 
+    runtime_metadata = (
+        {
+            "remote_cleanup": {
+                "kind": "ssh_windows_process_tree",
+                "host": resolve_allowed_host(str(args.get("host") or ""))
+                or str(args.get("host") or "").strip(),
+                "remote_pid_marker": _REMOTE_PID_MARKER,
+            }
+        }
+        if tool_name == "ssh_run_ps"
+        else None
+    )
     result = start_background_argv_job(
         project_root,
         argv=argv,
         display_command=_background_ssh_display(tool_name, args),
+        runtime_metadata=runtime_metadata,
+    )
+    remote_cleanup_supported = bool(
+        result.get("ok") and tool_name == "ssh_run_ps"
     )
     redirected = {
         **result,
@@ -170,6 +205,7 @@ def _start_background_ssh_job(
         "redirected_from": tool_name,
         "redirect_reason": reason,
         "recommended_tool": "run_server",
+        "remote_cleanup_supported": remote_cleanup_supported,
     }
     if not result.get("ok"):
         return redirected
@@ -182,7 +218,26 @@ def _start_background_ssh_job(
         "redirected_from": tool_name,
         "redirect_reason": reason,
         "recommended_tool": "run_server",
-        "recommended_arguments": {"action": "logs", "pid": pid},
+        "recommended_arguments": {"action": "logs", "kind": "job", "pid": pid},
+        "remote_pid": result.get("remote_pid"),
+        "remote_pid_pending": bool(result.get("remote_pid_pending")),
+        "remote_cleanup_supported": remote_cleanup_supported,
+        "remote_process_identity_captured": bool(
+            result.get("remote_process_identity_captured")
+        ),
+        "remote_cleanup_ready": bool(result.get("remote_cleanup_ready")),
+        "next_actions": [
+            {
+                "when": "monitor",
+                "tool": "run_server",
+                "arguments": {"action": "logs", "kind": "job", "pid": pid},
+            },
+            {
+                "when": "cancel",
+                "tool": "run_server",
+                "arguments": {"action": "stop", "kind": "job", "pid": pid},
+            },
+        ],
     }
     redirected["recommended_arguments"] = structured_feedback[
         "recommended_arguments"
@@ -190,7 +245,7 @@ def _start_background_ssh_job(
     redirected["text"] = (
         f"Blocking {tool_name} call was moved to the managed background job runtime.\n"
         f"{result.get('text', '')}\n"
-        f"Next: run_server(action='logs', pid={pid}) until status is terminal.\n\n"
+        f"Next: run_server(action='logs', kind='job', pid={pid}) until status is terminal.\n\n"
         "STRUCTURED_TOOL_RESULT:\n"
         f"{json.dumps(structured_feedback, ensure_ascii=False, indent=2)}"
     )
@@ -209,6 +264,24 @@ def _powershell_remote_command(script: str) -> str:
         "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass "
         f"-EncodedCommand {b64}"
     )
+
+
+def _powershell_managed_job_command(script: str) -> str:
+    payload = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    wrapper = (
+        "$ErrorActionPreference='Stop';"
+        f"$payload='{payload}';"
+        "$arguments=@('-NoProfile','-NonInteractive','-ExecutionPolicy',"
+        "'Bypass','-EncodedCommand',$payload);"
+        "$process=Start-Process -FilePath 'powershell.exe' "
+        "-ArgumentList $arguments -PassThru -NoNewWindow;"
+        "$startedTicks=$process.StartTime.ToUniversalTime().Ticks;"
+        f"Write-Output ('{_REMOTE_PID_MARKER}'+$process.Id+':'+$startedTicks);"
+        "[Console]::Out.Flush();"
+        "$process.WaitForExit();"
+        "exit $process.ExitCode"
+    )
+    return _powershell_remote_command(wrapper)
 
 
 def _ssh_args(
@@ -274,8 +347,9 @@ def run_registered_process(
     argv: list[str],
     *,
     input: bytes | None = None,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a child until natural exit or Workflow Stop, with no product timeout."""
+    """Run a child until exit/Workflow Stop, optionally with an internal bound."""
     proc = subprocess.Popen(
         argv,
         stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
@@ -285,7 +359,20 @@ def run_registered_process(
     )
     run_id = register_run_process(proc)
     try:
-        stdout, stderr = proc.communicate(input=input)
+        try:
+            stdout, stderr = proc.communicate(
+                input=input,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            _kill_proc_tree(proc)
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            raise
     finally:
         unregister_run_process(run_id, proc)
     return subprocess.CompletedProcess(argv, int(proc.returncode), stdout or b"", stderr or b"")
@@ -305,6 +392,18 @@ def tool_ssh_run(*, host: str, command: str, timeout: int = 60) -> dict[str, Any
         return {"text": "ERROR: command is empty", "ok": False}
     block_reason = _foreground_block_reason(command)
     if block_reason is not None:
+        if _POWERSHELL_COMMAND_PREFIX_RE.search(command):
+            return _needs_background_result(
+                block_reason,
+                recommended_tool="ssh_run_ps",
+                recommended_arguments={"host": host},
+                missing_required_arguments=["script"],
+                next_action=(
+                    "Extract the PowerShell source from this rejected raw command "
+                    "and call ssh_run_ps(host, script). The typed tool preserves "
+                    "quoting, captures the remote PID and uses a managed job."
+                ),
+            )
         return _needs_background_result(block_reason)
 
     try:
@@ -778,6 +877,164 @@ def tool_ssh_run_ps(*, host: str, script: str, timeout: int = 120) -> dict[str, 
     }
 
 
+def stop_remote_windows_process_tree(
+    *,
+    host: str,
+    remote_pid: int,
+    remote_started_ticks: int | None = None,
+) -> dict[str, Any]:
+    """Stop and verify one managed remote Windows process tree over SSH."""
+    err = _validate_host(host)
+    if err is not None:
+        return {
+            "ok": False,
+            "remote_pid": remote_pid,
+            "remote_cleanup_status": "invalid_host",
+            "text": f"ERROR: {err}",
+        }
+    try:
+        pid = int(remote_pid)
+    except (TypeError, ValueError):
+        pid = 0
+    if pid <= 0:
+        return {
+            "ok": False,
+            "remote_pid": remote_pid,
+            "remote_cleanup_status": "invalid_pid",
+            "text": "ERROR: remote_pid must be a positive integer",
+        }
+    try:
+        expected_started_ticks = int(remote_started_ticks or 0)
+    except (TypeError, ValueError):
+        expected_started_ticks = 0
+    if expected_started_ticks <= 0:
+        return {
+            "ok": False,
+            "remote_pid": pid,
+            "remote_cleanup_status": "invalid_identity",
+            "text": "ERROR: remote process-start identity is required",
+        }
+
+    script = (
+        "$ErrorActionPreference='Stop';"
+        f"$targetPid={pid};"
+        f"$expectedStartTicks={expected_started_ticks};"
+        "$process=Get-Process -Id $targetPid -ErrorAction SilentlyContinue;"
+        "if($null -eq $process){"
+        "Write-Output ('__ELIRA_REMOTE_STOP__=root_missing_unverified:'+$targetPid);"
+        "exit 4};"
+        "$actualStartTicks=$process.StartTime.ToUniversalTime().Ticks;"
+        "if($expectedStartTicks -gt 0 -and $actualStartTicks -ne $expectedStartTicks){"
+        "Write-Output ('__ELIRA_REMOTE_STOP__=identity_mismatch:'+$actualStartTicks);"
+        "exit 3};"
+        "$tracked=@([pscustomobject]@{"
+        "Pid=[int]$targetPid;StartTicks=[int64]$actualStartTicks});"
+        "$queue=New-Object System.Collections.Queue;"
+        "$queue.Enqueue($targetPid);"
+        "while($queue.Count -gt 0){"
+        "$parentPid=[int]$queue.Dequeue();"
+        "$children=@(Get-CimInstance Win32_Process "
+        "-Filter ('ParentProcessId='+$parentPid));"
+        "foreach($child in $children){"
+        "$childPid=[int]$child.ProcessId;"
+        "if(-not ($tracked | Where-Object {$_.Pid -eq $childPid})){"
+        "$childProcess=Get-Process -Id $childPid -ErrorAction SilentlyContinue;"
+        "if($null -ne $childProcess){"
+        "$childTicks=$childProcess.StartTime.ToUniversalTime().Ticks;"
+        "$tracked+=@([pscustomobject]@{"
+        "Pid=$childPid;StartTicks=[int64]$childTicks});"
+        "$queue.Enqueue($childPid)}}}};"
+        "$rootNow=Get-Process -Id $targetPid -ErrorAction SilentlyContinue;"
+        "if($null -eq $rootNow){"
+        "Write-Output ('__ELIRA_REMOTE_STOP__=root_missing_unverified:'+$targetPid);"
+        "exit 4};"
+        "if($rootNow.StartTime.ToUniversalTime().Ticks -ne $expectedStartTicks){"
+        "Write-Output ('__ELIRA_REMOTE_STOP__=identity_mismatch:'+"
+        "$rootNow.StartTime.ToUniversalTime().Ticks);exit 3};"
+        "$taskkillOutput=& taskkill.exe /PID $targetPid /T /F 2>&1;"
+        "$taskkillOutput | ForEach-Object { Write-Output $_ };"
+        "Start-Sleep -Milliseconds 250;"
+        "$survivors=@($tracked | Where-Object {"
+        "$current=Get-Process -Id $_.Pid -ErrorAction SilentlyContinue;"
+        "$null -ne $current -and "
+        "$current.StartTime.ToUniversalTime().Ticks -eq $_.StartTicks});"
+        "if($survivors.Count -gt 0){"
+        "foreach($survivor in @($survivors | Sort-Object Pid -Descending)){"
+        "$current=Get-Process -Id $survivor.Pid -ErrorAction SilentlyContinue;"
+        "if($null -ne $current -and "
+        "$current.StartTime.ToUniversalTime().Ticks -eq $survivor.StartTicks){"
+        "Stop-Process -Id $survivor.Pid -Force -ErrorAction SilentlyContinue}};"
+        "Start-Sleep -Milliseconds 250};"
+        "$survivors=@($tracked | Where-Object {"
+        "$current=Get-Process -Id $_.Pid -ErrorAction SilentlyContinue;"
+        "$null -ne $current -and "
+        "$current.StartTime.ToUniversalTime().Ticks -eq $_.StartTicks});"
+        "$lateChildren=@(Get-CimInstance Win32_Process "
+        "-Filter ('ParentProcessId='+$targetPid));"
+        "if($survivors.Count -gt 0 -or $lateChildren.Count -gt 0){"
+        "throw ('remote process tree is still running: '+"
+        "(($survivors | ForEach-Object {[string]$_.Pid}) -join ','))};"
+        "Write-Output ('__ELIRA_REMOTE_STOP__=stopped:'+$targetPid)"
+    )
+    try:
+        proc = run_registered_process(_ssh_command_argv(
+            host,
+            _powershell_remote_command(script),
+            connect_timeout_seconds=15,
+        ), timeout_seconds=_REMOTE_CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "remote_pid": pid,
+            "remote_cleanup_status": "timeout",
+            "text": (
+                "ERROR: remote cleanup did not finish within "
+                f"{int(_REMOTE_CLEANUP_TIMEOUT_SECONDS)} seconds"
+            ),
+        }
+    except FileNotFoundError:
+        return {
+            "ok": False,
+            "remote_pid": pid,
+            "remote_cleanup_status": "ssh_unavailable",
+            "text": "ERROR: `ssh` binary not found on this machine",
+        }
+    except Exception as exc:
+        logger.exception("remote SSH cleanup failed for host=%s pid=%s", host, pid)
+        return {
+            "ok": False,
+            "remote_pid": pid,
+            "remote_cleanup_status": "ssh_error",
+            "text": f"ERROR: {exc}",
+        }
+
+    stdout = decode_console(proc.stdout)
+    stderr = decode_console(proc.stderr)
+    stopped_match = re.search(r"__ELIRA_REMOTE_STOP__=stopped:(\d+)", stdout)
+    if stopped_match is not None:
+        status = "stopped"
+        pid = int(stopped_match.group(1))
+    elif "__ELIRA_REMOTE_STOP__=identity_mismatch" in stdout:
+        status = "identity_mismatch"
+    elif "__ELIRA_REMOTE_STOP__=root_missing_unverified" in stdout:
+        status = "root_missing_unverified"
+    else:
+        status = "failed"
+    ok = proc.returncode == 0 and status == "stopped"
+    details = [f"remote Windows process tree pid={pid}: {status}"]
+    if stdout:
+        details.append(_truncate_for_llm(stdout.rstrip()))
+    if stderr:
+        details.append(_truncate_for_llm(stderr.rstrip()))
+    return {
+        "ok": ok,
+        "remote_pid": pid,
+        "remote_cleanup_status": status,
+        "exit_code": proc.returncode,
+        "text": "\n".join(details),
+    }
+
+
 def tool_ssh_list_hosts() -> dict[str, Any]:
     """List the currently saved SSH hosts. Useful for the agent
     when the user says 'check the production server' and there's
@@ -874,11 +1131,13 @@ def _schemas() -> list[dict[str, Any]]:
                 "description": (
                     "Run a shell command on a remote machine via SSH. "
                     "The host may be any SSH alias, hostname or IP address. "
-                    "Returns stdout + stderr + exit code. Known blocking wait "
-                    "constructs are automatically moved to the managed "
-                    "run_server(kind='job') runtime; poll its PID with "
-                    "run_server(action='logs'). A low-level caller without job "
-                    "runtime context receives status needs_background."
+                    "Returns stdout + stderr + exit code. A raw PowerShell command "
+                    "with a known blocking wait returns structured status "
+                    "needs_background and recommended_tool=ssh_run_ps; call that "
+                    "typed tool with the original PowerShell source. Other known "
+                    "blocking waits are moved to an argv-safe managed run_server "
+                    "job when runtime context is available; otherwise they return "
+                    "a structured run_server recommendation."
                 ),
                 "parameters": {
                     "type": "object",
@@ -944,9 +1203,12 @@ def _schemas() -> list[dict[str, Any]]:
                     "through run_bash. To edit a remote file prefer ssh_write; for "
                     "POSIX remotes use ssh_run. Known blocking wait constructs are "
                     "automatically moved to the managed run_server(kind='job') "
-                    "runtime; poll its PID with run_server(action='logs'). A "
-                    "low-level caller without job runtime context receives status "
-                    "needs_background."
+                    "runtime. The result exposes the local managed pid, remote_pid "
+                    "and remote_cleanup_supported. Poll with "
+                    "run_server(action='logs', kind='job', pid=...), or cancel the "
+                    "remote Windows process tree with run_server(action='stop', "
+                    "kind='job', pid=...). A low-level caller without job runtime "
+                    "context receives structured status needs_background."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1147,7 +1409,13 @@ class SshToolProvider:
             result = handler(**args)
             if (
                 self._project_root is not None
-                and tool_name in {"ssh_run", "ssh_run_ps"}
+                and (
+                    tool_name == "ssh_run_ps"
+                    or (
+                        tool_name == "ssh_run"
+                        and result.get("recommended_tool") == "run_server"
+                    )
+                )
                 and result.get("status") == "needs_background"
             ):
                 return _start_background_ssh_job(
